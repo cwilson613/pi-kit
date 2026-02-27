@@ -8,7 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ARCHIVE_SEPARATOR } from "./types.js";
-import { DEFAULT_TEMPLATE } from "./template.js";
+import { DEFAULT_TEMPLATE, countContentLines } from "./template.js";
 
 export class MemoryStorage {
   private memoryDir: string;
@@ -63,10 +63,7 @@ export class MemoryStorage {
   /** Count non-empty, non-comment lines in active memory */
   countLines(): number {
     const content = this.readMemory();
-    return content.split("\n").filter((l) => {
-      const trimmed = l.trim();
-      return trimmed !== "" && !trimmed.startsWith("<!--");
-    }).length;
+    return countContentLines(content);
   }
 
   /**
@@ -87,7 +84,7 @@ export class MemoryStorage {
     }
 
     return {
-      linesWritten: activeMemory.split("\n").filter((l) => l.trim() !== "").length,
+      linesWritten: countContentLines(activeMemory),
       factsArchived,
     };
   }
@@ -152,7 +149,7 @@ export class MemoryStorage {
         .sort()
         .map((f) => {
           const content = fs.readFileSync(path.join(this.archiveDir, f), "utf8");
-          const lines = content.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("<!--")).length;
+          const lines = countContentLines(content);
           return { month: f.replace(".md", ""), lines };
         });
     } catch {

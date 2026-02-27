@@ -32,10 +32,6 @@ export const SECTIONS = [
 export type SectionName = (typeof SECTIONS)[number];
 
 /**
- * Append a bullet to a specific section in the memory markdown.
- * Returns the updated markdown string.
- */
-/**
  * Check if a bullet already exists in the section (exact or near-duplicate).
  * Normalizes whitespace and leading "- " for comparison.
  */
@@ -49,10 +45,14 @@ function isDuplicate(existingLines: string[], bullet: string): boolean {
   });
 }
 
+/**
+ * Append a bullet to a specific section in the memory markdown.
+ * Returns the updated markdown string.
+ */
 export function appendToSection(markdown: string, section: SectionName, bullet: string): string {
   const sectionHeader = `## ${section}`;
   const lines = markdown.split("\n");
-  const headerIdx = lines.findIndex((l) => l.trim().startsWith(sectionHeader));
+  const headerIdx = lines.findIndex((l) => l.trim() === sectionHeader);
 
   if (headerIdx === -1) {
     // Section not found — append it
@@ -81,4 +81,15 @@ export function appendToSection(markdown: string, section: SectionName, bullet: 
 
   lines.splice(insertIdx, 0, bullet);
   return lines.join("\n");
+}
+
+/**
+ * Count non-empty, non-comment lines in markdown content.
+ * Filters out empty lines and HTML comment lines starting with <!--.
+ */
+export function countContentLines(content: string): number {
+  return content.split("\n").filter((l) => {
+    const trimmed = l.trim();
+    return trimmed !== "" && !trimmed.startsWith("<!--");
+  }).length;
 }

@@ -4,8 +4,11 @@
  * A "mind" is a named memory store with its own lifecycle:
  *   created → filled → refined → retired/ingested
  *
- * Minds live in .pi/memory/minds/<name>/memory.md
- * The active mind is tracked in .pi/memory/minds/active.json
+ * Minds live in .pi/memory/minds/<name>/memory.md by default (local),
+ * or can be linked/remote (read-only external sources).
+ *
+ * The mind registry (.pi/memory/minds/registry.json) maps names to sources.
+ * The active mind is tracked in .pi/memory/minds/active.json.
  */
 
 import * as fs from "node:fs";
@@ -27,13 +30,31 @@ function validateMindName(name: string): string {
   return name;
 }
 
+export type MindOrigin =
+  | { type: "local" }
+  | { type: "link"; path: string }
+  | { type: "remote"; url: string; lastSync?: string };
+
 export interface MindMeta {
   name: string;
   description: string;
   created: string;
   status: "active" | "refined" | "retired";
-  parent?: string; // Name of mind this was ingested from
+  parent?: string;
   lineCount: number;
+  origin?: MindOrigin;
+  readonly?: boolean;
+}
+
+/** Registry entry — maps a mind name to its source location */
+interface RegistryEntry {
+  origin: MindOrigin;
+  readonly?: boolean;
+}
+
+/** On-disk registry format */
+interface MindRegistry {
+  [name: string]: RegistryEntry;
 }
 
 /**
@@ -47,10 +68,12 @@ interface ActiveMindState {
 export class MindManager {
   private mindsDir: string;
   private stateFile: string;
+  private registryFile: string;
 
   constructor(private baseMemoryDir: string) {
     this.mindsDir = path.join(baseMemoryDir, "minds");
     this.stateFile = path.join(this.mindsDir, "active.json");
+    this.registryFile = path.join(this.mindsDir, "registry.json");
   }
 
   init(): void {
@@ -71,6 +94,137 @@ export class MindManager {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Registry
+  // ---------------------------------------------------------------------------
+
+  /** Read the mind registry (name → source mapping) */
+  private readRegistry(): MindRegistry {
+    try {
+      return JSON.parse(fs.readFileSync(this.registryFile, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  /** Write the mind registry */
+  private writeRegistry(registry: MindRegistry): void {
+    fs.writeFileSync(this.registryFile, JSON.stringify(registry, null, 2), "utf8");
+  }
+
+  /** Register a mind in the registry */
+  private registerMind(name: string, entry: RegistryEntry): void {
+    const registry = this.readRegistry();
+    registry[name] = entry;
+    this.writeRegistry(registry);
+  }
+
+  /** Unregister a mind from the registry */
+  private unregisterMind(name: string): void {
+    const registry = this.readRegistry();
+    delete registry[name];
+    this.writeRegistry(registry);
+  }
+
+  /** Get registry entry for a mind (undefined = unregistered local mind) */
+  getRegistryEntry(name: string): RegistryEntry | undefined {
+    return this.readRegistry()[name];
+  }
+
+  /**
+   * Link an external mind directory (read-only by default).
+   * Creates a registry entry pointing to the external path.
+   * The external directory must contain memory.md and meta.json.
+   */
+  link(name: string, externalPath: string, options?: { readonly?: boolean }): MindMeta {
+    validateMindName(name);
+    const resolvedPath = path.resolve(externalPath);
+
+    const memoryPath = path.join(resolvedPath, "memory.md");
+    if (!fs.existsSync(memoryPath)) {
+      throw new Error(`External mind path "${resolvedPath}" does not contain memory.md`);
+    }
+
+    // Create a local directory that symlinks or caches the external content
+    const dir = this.getMindDir(name);
+    fs.mkdirSync(dir, { recursive: true });
+
+    // Copy content from external source
+    const content = fs.readFileSync(memoryPath, "utf8");
+    fs.writeFileSync(this.getMindMemoryPath(name), content, "utf8");
+
+    // Read or create meta
+    const externalMetaPath = path.join(resolvedPath, "meta.json");
+    let meta: MindMeta;
+    try {
+      const raw = JSON.parse(fs.readFileSync(externalMetaPath, "utf8"));
+      meta = {
+        ...raw,
+        name, // Override name to local name
+        origin: { type: "link", path: resolvedPath },
+        readonly: options?.readonly ?? true,
+        lineCount: countContentLines(content),
+      };
+    } catch {
+      meta = {
+        name,
+        description: `Linked from ${resolvedPath}`,
+        created: new Date().toISOString().split("T")[0],
+        status: "active",
+        lineCount: countContentLines(content),
+        origin: { type: "link", path: resolvedPath },
+        readonly: options?.readonly ?? true,
+      };
+    }
+
+    this.writeMeta(name, meta);
+    this.registerMind(name, {
+      origin: { type: "link", path: resolvedPath },
+      readonly: options?.readonly ?? true,
+    });
+
+    return meta;
+  }
+
+  /**
+   * Sync a linked mind from its external source.
+   * Refreshes content from the linked path.
+   */
+  sync(name: string): { updated: boolean; lineCount: number } {
+    const entry = this.getRegistryEntry(name);
+    if (!entry || entry.origin.type !== "link") {
+      throw new Error(`Mind "${name}" is not a linked mind`);
+    }
+
+    const externalPath = entry.origin.path;
+    const memoryPath = path.join(externalPath, "memory.md");
+    if (!fs.existsSync(memoryPath)) {
+      throw new Error(`External source "${externalPath}" no longer contains memory.md`);
+    }
+
+    const externalContent = fs.readFileSync(memoryPath, "utf8");
+    const localContent = this.readMindMemory(name);
+
+    if (externalContent === localContent) {
+      return { updated: false, lineCount: countContentLines(localContent) };
+    }
+
+    fs.writeFileSync(this.getMindMemoryPath(name), externalContent, "utf8");
+    const lineCount = countContentLines(externalContent);
+
+    const meta = this.readMeta(name);
+    if (meta) {
+      meta.lineCount = lineCount;
+      this.writeMeta(name, meta);
+    }
+
+    return { updated: true, lineCount };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Active mind state
+  // ---------------------------------------------------------------------------
+
   /** Get the name of the currently active mind (null = default) */
   getActiveMindName(): string | null {
     try {
@@ -90,6 +244,10 @@ export class MindManager {
     const state: ActiveMindState = { activeMind: name };
     fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2), "utf8");
   }
+
+  // ---------------------------------------------------------------------------
+  // Path resolution
+  // ---------------------------------------------------------------------------
 
   /** Get the memory directory for a mind */
   getMindDir(name: string): string {
@@ -112,6 +270,16 @@ export class MindManager {
     return fs.existsSync(this.getMindMemoryPath(name));
   }
 
+  /** Check if a mind is read-only */
+  isReadonly(name: string): boolean {
+    const meta = this.readMeta(name);
+    return meta?.readonly === true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // CRUD
+  // ---------------------------------------------------------------------------
+
   /** Create a new mind */
   create(name: string, description: string, template?: string): MindMeta {
     const dir = this.getMindDir(name);
@@ -127,37 +295,52 @@ export class MindManager {
       created: new Date().toISOString().split("T")[0],
       status: "active",
       lineCount: countContentLines(content),
+      origin: { type: "local" },
     };
     this.writeMeta(name, meta);
+    this.registerMind(name, { origin: { type: "local" } });
     return meta;
   }
 
   /** List all minds */
   list(): MindMeta[] {
     try {
-      const entries = fs.readdirSync(this.mindsDir, { withFileTypes: true });
+      const registry = this.readRegistry();
       const minds: MindMeta[] = [];
 
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-
+      // Collect from registry first (authoritative)
+      for (const name of Object.keys(registry)) {
         try {
-          const meta = this.readMeta(entry.name);
+          const meta = this.readMeta(name);
           if (meta) {
-            // Refresh line count
-            meta.lineCount = countContentLines(
-              this.readMindMemory(entry.name),
-            );
+            meta.lineCount = countContentLines(this.readMindMemory(name));
             minds.push(meta);
           }
         } catch {
-          // Skip invalid mind directories (e.g., .DS_Store, malformed names)
+          continue;
+        }
+      }
+
+      // Also scan directory for unregistered local minds (backward compat)
+      const entries = fs.readdirSync(this.mindsDir, { withFileTypes: true });
+      const registeredNames = new Set(Object.keys(registry));
+
+      for (const entry of entries) {
+        if (!entry.isDirectory() || registeredNames.has(entry.name)) continue;
+        try {
+          const meta = this.readMeta(entry.name);
+          if (meta) {
+            meta.lineCount = countContentLines(this.readMindMemory(entry.name));
+            // Backfill registry
+            this.registerMind(entry.name, { origin: meta.origin ?? { type: "local" } });
+            minds.push(meta);
+          }
+        } catch {
           continue;
         }
       }
 
       return minds.sort((a, b) => {
-        // Active first, then refined, then retired
         const order = { active: 0, refined: 1, retired: 2 };
         return (order[a.status] ?? 3) - (order[b.status] ?? 3);
       });
@@ -175,8 +358,9 @@ export class MindManager {
     }
   }
 
-  /** Write a mind's memory content */
+  /** Write a mind's memory content (throws if readonly) */
   writeMindMemory(name: string, content: string): void {
+    this.assertWritable(name);
     fs.writeFileSync(this.getMindMemoryPath(name), content, "utf8");
   }
 
@@ -185,7 +369,6 @@ export class MindManager {
     try {
       const metaPath = path.join(this.getMindDir(name), "meta.json");
       const raw = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-      // Basic shape validation — reject malformed meta
       if (typeof raw.name !== "string" || typeof raw.status !== "string") {
         return null;
       }
@@ -201,14 +384,19 @@ export class MindManager {
     fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
   }
 
-  /** Update a mind's status */
+  /** Update a mind's status (throws if readonly) */
   setStatus(name: string, status: MindMeta["status"]): void {
+    this.assertWritable(name);
     const meta = this.readMeta(name);
     if (meta) {
       meta.status = status;
       this.writeMeta(name, meta);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Ingest
+  // ---------------------------------------------------------------------------
 
   /**
    * Ingest a mind into another (merge memories, retire source).
@@ -219,14 +407,13 @@ export class MindManager {
     if (sourceName === targetName) {
       throw new Error(`Cannot ingest mind "${sourceName}" into itself`);
     }
+    this.assertWritable(targetName);
 
     const sourceContent = this.readMindMemory(sourceName);
     let targetContent = this.readMindMemory(targetName);
 
-    // Parse source into section → bullet[] map
     const sectionBullets = this.parseSectionBullets(sourceContent);
 
-    // Append bullets into target under their respective sections
     let totalIngested = 0;
     for (const [section, bullets] of sectionBullets) {
       for (const bullet of bullets) {
@@ -239,7 +426,11 @@ export class MindManager {
     }
 
     this.writeMindMemory(targetName, targetContent);
-    this.setStatus(sourceName, "retired");
+
+    // Only retire source if it's writable
+    if (!this.isReadonly(sourceName)) {
+      this.setStatus(sourceName, "retired");
+    }
 
     const targetMeta = this.readMeta(targetName);
     if (targetMeta) {
@@ -261,7 +452,6 @@ export class MindManager {
       targetContent = DEFAULT_TEMPLATE;
     }
 
-    // Parse source and append section-aware
     const sectionBullets = this.parseSectionBullets(sourceContent);
     let totalIngested = 0;
 
@@ -276,16 +466,24 @@ export class MindManager {
     }
 
     fs.writeFileSync(defaultMemoryPath, targetContent, "utf8");
-    this.setStatus(sourceName, "retired");
+
+    if (!this.isReadonly(sourceName)) {
+      this.setStatus(sourceName, "retired");
+    }
+
     return { factsIngested: totalIngested };
   }
 
+  // ---------------------------------------------------------------------------
+  // Delete / Fork
+  // ---------------------------------------------------------------------------
+
   /** Delete a mind entirely */
   delete(name: string): void {
-    // Check active state BEFORE deleting — mindExists() would return false after rmSync
     const wasActive = this.getActiveMindName() === name;
     const dir = this.getMindDir(name);
     fs.rmSync(dir, { recursive: true, force: true });
+    this.unregisterMind(name);
 
     if (wasActive) {
       this.setActiveMind(null);
@@ -299,6 +497,17 @@ export class MindManager {
     meta.parent = sourceName;
     this.writeMeta(newName, meta);
     return meta;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /** Throw if a mind is readonly */
+  private assertWritable(name: string): void {
+    if (this.isReadonly(name)) {
+      throw new Error(`Mind "${name}" is read-only`);
+    }
   }
 
   /**

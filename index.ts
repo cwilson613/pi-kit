@@ -369,20 +369,24 @@ export default function (pi: ExtensionAPI) {
     for (const mind of minds) {
       const isActive = activeName === mind.name;
       const icon = statusIcon[mind.status] ?? "?";
+      const badges: string[] = [
+        isActive ? "active" : mind.status,
+        `${mind.lineCount} lines`,
+      ];
+      if (mind.readonly) badges.push("read-only");
+      if (mind.origin?.type === "link") badges.push("linked");
+      if (mind.description) badges.push(mind.description);
+      if (mind.parent) badges.push(`(from: ${mind.parent})`);
       items.push({
         value: mind.name,
         label: `${isActive ? "▸ " : "  "}${icon} ${mind.name}`,
-        description: [
-          isActive ? "active" : mind.status,
-          `${mind.lineCount} lines`,
-          mind.description,
-          mind.parent ? `(from: ${mind.parent})` : "",
-        ].filter(Boolean).join(" • "),
+        description: badges.join(" • "),
       });
     }
 
     // Action entries
     items.push({ value: "__create__", label: "  + Create new mind", description: "Start a fresh memory store" });
+    items.push({ value: "__link__", label: "  ⟷ Link external mind", description: "Import from a path (read-only)" });
     items.push({ value: "__edit__", label: "  ✎ Edit current mind", description: "Open in editor" });
     items.push({ value: "__refresh__", label: "  ↻ Refresh current mind", description: "Prune and consolidate memory" });
 
@@ -413,14 +417,24 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    const isLinked = meta.origin?.type === "link";
+    const isReadonly = meta.readonly === true;
+
     const actions: SelectItem[] = [
       { value: "switch", label: "Switch to this mind", description: "Make it the active memory store" },
-      { value: "edit", label: "Edit in editor", description: "Open memory.md in editor" },
-      { value: "fork", label: "Fork", description: "Create a copy with a new name" },
-      { value: "ingest", label: "Ingest into another mind", description: "Merge facts and retire this mind" },
-      { value: "status", label: "Change status", description: `Currently: ${meta.status}` },
-      { value: "delete", label: "Delete", description: "Remove this mind permanently" },
     ];
+    if (!isReadonly) {
+      actions.push({ value: "edit", label: "Edit in editor", description: "Open memory.md in editor" });
+    }
+    if (isLinked) {
+      actions.push({ value: "sync", label: "Sync from source", description: `Pull latest from ${(meta.origin as any).path}` });
+    }
+    actions.push({ value: "fork", label: "Fork", description: "Create a writable copy with a new name" });
+    actions.push({ value: "ingest", label: "Ingest into another mind", description: "Merge facts into a target" });
+    if (!isReadonly) {
+      actions.push({ value: "status", label: "Change status", description: `Currently: ${meta.status}` });
+    }
+    actions.push({ value: "delete", label: "Delete", description: isLinked ? "Remove link (source unaffected)" : "Remove this mind permanently" });
 
     const action = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
       const container = new Container();
@@ -457,6 +471,20 @@ export default function (pi: ExtensionAPI) {
         updateStatus(ctx);
         ctx.ui.notify(`Switched to mind: ${mindName}`, "success");
         notifyMindSwitch(mindName, storage!.countLines());
+        break;
+      }
+      case "sync": {
+        try {
+          const result = mindManager.sync(mindName);
+          if (result.updated) {
+            ctx.ui.notify(`Synced "${mindName}" from source (${result.lineCount} lines)`, "success");
+            updateStatus(ctx);
+          } else {
+            ctx.ui.notify(`"${mindName}" is already up to date`, "info");
+          }
+        } catch (err: any) {
+          ctx.ui.notify(`Sync failed: ${err.message}`, "error");
+        }
         break;
       }
       case "edit": {
@@ -515,9 +543,11 @@ export default function (pi: ExtensionAPI) {
         const sourceContent = mindManager.readMindMemory(mindName);
         const bulletCount = sourceContent.split("\n").filter((l) => l.trim().startsWith("- ")).length;
 
+        const sourceReadonly = mindManager.isReadonly(mindName);
+        const retireMsg = sourceReadonly ? "" : ` and retire "${mindName}"`;
         const ok = await ctx.ui.confirm(
           "Ingest Mind",
-          `Merge ${bulletCount} bullets from "${mindName}" into "${targetLabel}" (duplicates skipped) and retire "${mindName}"?`,
+          `Merge ${bulletCount} bullets from "${mindName}" into "${targetLabel}" (duplicates skipped)${retireMsg}?`,
         );
         if (!ok) return;
 
@@ -585,7 +615,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("memory", {
     description: "Interactive mind manager — view, switch, create, fork, ingest memory stores",
     getArgumentCompletions: (prefix: string) => {
-      const subs = ["edit", "refresh", "clear", "archive"];
+      const subs = ["edit", "refresh", "clear", "archive", "link"];
       const filtered = subs.filter((s) => s.startsWith(prefix));
       return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
     },
@@ -649,6 +679,33 @@ export default function (pi: ExtensionAPI) {
             storage.writeMemory(template);
             ctx.ui.notify("Memory cleared", "success");
             updateStatus(ctx);
+          }
+          return;
+        }
+
+        case "link": {
+          const parts = args?.trim().split(/\s+/).slice(1) ?? [];
+          if (parts.length < 1) {
+            ctx.ui.notify("Usage: /memory link <path> [name]", "warning");
+            return;
+          }
+          const linkPath = parts[0];
+          const linkName = (parts[1] ?? path.basename(linkPath))
+            .replace(/[^a-zA-Z0-9_-]/g, "-")
+            .replace(/^[^a-zA-Z0-9]+/, "");
+          if (!linkName) {
+            ctx.ui.notify("Could not derive a valid name from path", "error");
+            return;
+          }
+          if (mindManager.mindExists(linkName)) {
+            ctx.ui.notify(`Mind "${linkName}" already exists`, "error");
+            return;
+          }
+          try {
+            const meta = mindManager.link(linkName, linkPath);
+            ctx.ui.notify(`Linked "${linkName}" from ${linkPath} (${meta.lineCount} lines, read-only)`, "success");
+          } catch (err: any) {
+            ctx.ui.notify(err.message, "error");
           }
           return;
         }
@@ -729,6 +786,32 @@ export default function (pi: ExtensionAPI) {
           notifyMindSwitch(sanitized, storage!.countLines());
         }
         ctx.ui.notify(`Created mind: ${sanitized}`, "success");
+        return;
+      }
+
+      if (selected === "__link__") {
+        const linkPath = await ctx.ui.input("Path to external mind directory:");
+        if (!linkPath?.trim()) return;
+        const linkName = await ctx.ui.input("Local name for this mind:");
+        if (!linkName?.trim()) return;
+        const sanitized = linkName.trim().replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "");
+        if (!sanitized) {
+          ctx.ui.notify("Name must contain at least one alphanumeric character", "error");
+          return;
+        }
+        if (sanitized !== linkName.trim()) {
+          ctx.ui.notify(`Name sanitized to: ${sanitized}`, "info");
+        }
+        if (mindManager.mindExists(sanitized)) {
+          ctx.ui.notify(`Mind "${sanitized}" already exists`, "error");
+          return;
+        }
+        try {
+          const meta = mindManager.link(sanitized, linkPath.trim());
+          ctx.ui.notify(`Linked "${sanitized}" from ${linkPath.trim()} (${meta.lineCount} lines, read-only)`, "success");
+        } catch (err: any) {
+          ctx.ui.notify(err.message, "error");
+        }
         return;
       }
 

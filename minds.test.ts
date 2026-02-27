@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
-import { MindManager } from "./minds.js";
+import { MindManager, type MindMeta } from "./minds.js";
 import { appendToSection, DEFAULT_TEMPLATE } from "./template.js";
 
 describe("MindManager", () => {
@@ -586,6 +586,242 @@ describe("MindManager", () => {
 
       const reread = manager.readMeta("my-mind");
       assert.equal(reread?.description, "Updated description");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Registry and origin tracking
+  // ---------------------------------------------------------------------------
+  describe("registry", () => {
+    it("create registers mind with local origin", () => {
+      manager.create("local-mind", "desc");
+      const entry = manager.getRegistryEntry("local-mind");
+      assert.ok(entry, "should have registry entry");
+      assert.equal(entry!.origin.type, "local");
+    });
+
+    it("meta includes origin after create", () => {
+      manager.create("local-mind", "desc");
+      const meta = manager.readMeta("local-mind");
+      assert.ok(meta?.origin);
+      assert.equal(meta!.origin!.type, "local");
+    });
+
+    it("delete removes registry entry", () => {
+      manager.create("doomed", "desc");
+      assert.ok(manager.getRegistryEntry("doomed"));
+      manager.delete("doomed");
+      assert.equal(manager.getRegistryEntry("doomed"), undefined);
+    });
+
+    it("list backfills unregistered minds into registry", () => {
+      // Create a mind directory manually (no registry entry)
+      const mindDir = path.join(baseMemoryDir, "minds", "orphan");
+      fs.mkdirSync(path.join(mindDir, "archive"), { recursive: true });
+      fs.writeFileSync(path.join(mindDir, "memory.md"), DEFAULT_TEMPLATE, "utf8");
+      const meta: MindMeta = {
+        name: "orphan",
+        description: "Orphaned mind",
+        created: "2026-01-01",
+        status: "active",
+        lineCount: 0,
+      };
+      fs.writeFileSync(path.join(mindDir, "meta.json"), JSON.stringify(meta), "utf8");
+
+      const minds = manager.list();
+      assert.ok(minds.some((m) => m.name === "orphan"), "orphan should appear in list");
+      // Should now be registered
+      assert.ok(manager.getRegistryEntry("orphan"), "orphan should be backfilled into registry");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Readonly enforcement
+  // ---------------------------------------------------------------------------
+  describe("readonly", () => {
+    it("isReadonly returns false for normal minds", () => {
+      manager.create("writable", "desc");
+      assert.equal(manager.isReadonly("writable"), false);
+    });
+
+    it("isReadonly returns true for readonly minds", () => {
+      manager.create("locked", "desc");
+      const meta = manager.readMeta("locked")!;
+      meta.readonly = true;
+      manager.writeMeta("locked", meta);
+      assert.equal(manager.isReadonly("locked"), true);
+    });
+
+    it("writeMindMemory throws on readonly mind", () => {
+      manager.create("locked", "desc");
+      const meta = manager.readMeta("locked")!;
+      meta.readonly = true;
+      manager.writeMeta("locked", meta);
+
+      assert.throws(
+        () => manager.writeMindMemory("locked", "new content"),
+        /read-only/,
+      );
+    });
+
+    it("setStatus throws on readonly mind", () => {
+      manager.create("locked", "desc");
+      const meta = manager.readMeta("locked")!;
+      meta.readonly = true;
+      manager.writeMeta("locked", meta);
+
+      assert.throws(
+        () => manager.setStatus("locked", "retired"),
+        /read-only/,
+      );
+    });
+
+    it("ingest into readonly target throws", () => {
+      manager.create("source", "src");
+      manager.create("locked-target", "tgt");
+      const meta = manager.readMeta("locked-target")!;
+      meta.readonly = true;
+      manager.writeMeta("locked-target", meta);
+
+      assert.throws(
+        () => manager.ingest("source", "locked-target"),
+        /read-only/,
+      );
+    });
+
+    it("ingest from readonly source does not retire it", () => {
+      manager.create("ro-source", "read-only src");
+      let src = manager.readMindMemory("ro-source");
+      src = appendToSection(src, "Architecture", "- RO fact");
+      // Write directly to bypass readonly check (simulating initial content)
+      fs.writeFileSync(
+        path.join(baseMemoryDir, "minds", "ro-source", "memory.md"),
+        src,
+        "utf8",
+      );
+      const srcMeta = manager.readMeta("ro-source")!;
+      srcMeta.readonly = true;
+      manager.writeMeta("ro-source", srcMeta);
+
+      manager.create("target", "writable target");
+      const result = manager.ingest("ro-source", "target");
+
+      assert.equal(result.factsIngested, 1);
+      // Source should NOT be retired
+      const afterMeta = manager.readMeta("ro-source");
+      assert.equal(afterMeta?.status, "active", "readonly source should not be retired");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Link and sync
+  // ---------------------------------------------------------------------------
+  describe("link and sync", () => {
+    let externalDir: string;
+
+    beforeEach(() => {
+      externalDir = path.join(tmpDir, "external-mind");
+      fs.mkdirSync(externalDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(externalDir, "memory.md"),
+        DEFAULT_TEMPLATE + "- External fact\n",
+        "utf8",
+      );
+    });
+
+    it("link creates a mind from an external path", () => {
+      const meta = manager.link("ext", externalDir);
+      assert.equal(meta.name, "ext");
+      assert.equal(meta.readonly, true);
+      assert.equal(meta.origin?.type, "link");
+      assert.ok(manager.mindExists("ext"));
+    });
+
+    it("linked mind content matches external source", () => {
+      manager.link("ext", externalDir);
+      const content = manager.readMindMemory("ext");
+      assert.ok(content.includes("- External fact"));
+    });
+
+    it("linked mind appears in list with link badge", () => {
+      manager.link("ext", externalDir);
+      const minds = manager.list();
+      const ext = minds.find((m) => m.name === "ext");
+      assert.ok(ext);
+      assert.equal(ext!.origin?.type, "link");
+      assert.equal(ext!.readonly, true);
+    });
+
+    it("link throws if external path has no memory.md", () => {
+      const emptyDir = path.join(tmpDir, "empty-ext");
+      fs.mkdirSync(emptyDir, { recursive: true });
+      assert.throws(
+        () => manager.link("bad", emptyDir),
+        /does not contain memory\.md/,
+      );
+    });
+
+    it("link registers in registry", () => {
+      manager.link("ext", externalDir);
+      const entry = manager.getRegistryEntry("ext");
+      assert.ok(entry);
+      assert.equal(entry!.origin.type, "link");
+      assert.equal(entry!.readonly, true);
+    });
+
+    it("sync updates content from external source", () => {
+      manager.link("ext", externalDir);
+
+      // Modify external source
+      fs.writeFileSync(
+        path.join(externalDir, "memory.md"),
+        DEFAULT_TEMPLATE + "- External fact\n- New external fact\n",
+        "utf8",
+      );
+
+      const result = manager.sync("ext");
+      assert.equal(result.updated, true);
+
+      const content = manager.readMindMemory("ext");
+      assert.ok(content.includes("- New external fact"));
+    });
+
+    it("sync returns updated:false when content unchanged", () => {
+      manager.link("ext", externalDir);
+      const result = manager.sync("ext");
+      assert.equal(result.updated, false);
+    });
+
+    it("sync throws for non-linked minds", () => {
+      manager.create("local", "desc");
+      assert.throws(
+        () => manager.sync("local"),
+        /not a linked mind/,
+      );
+    });
+
+    it("fork of linked mind creates a writable local copy", () => {
+      manager.link("ext", externalDir);
+      const forked = manager.fork("ext", "ext-fork", "Writable copy");
+
+      assert.equal(forked.parent, "ext");
+      assert.equal(manager.isReadonly("ext-fork"), false);
+      const content = manager.readMindMemory("ext-fork");
+      assert.ok(content.includes("- External fact"));
+
+      // Can write to the fork
+      assert.doesNotThrow(() => {
+        manager.writeMindMemory("ext-fork", content + "- Local addition\n");
+      });
+    });
+
+    it("delete of linked mind removes link but not external source", () => {
+      manager.link("ext", externalDir);
+      manager.delete("ext");
+
+      assert.equal(manager.mindExists("ext"), false);
+      // External source should still exist
+      assert.ok(fs.existsSync(path.join(externalDir, "memory.md")));
     });
   });
 });

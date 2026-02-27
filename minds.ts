@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DEFAULT_TEMPLATE } from "./template.js";
-import { SECTIONS, appendToSection, type SectionName } from "./template.js";
+import { SECTIONS, appendToSection, countContentLines, type SectionName } from "./template.js";
 
 const VALID_MIND_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
@@ -109,7 +109,7 @@ export class MindManager {
       description,
       created: new Date().toISOString().split("T")[0],
       status: "active",
-      lineCount: this.countContentLines(content),
+      lineCount: countContentLines(content),
     };
     this.writeMeta(name, meta);
     return meta;
@@ -126,7 +126,7 @@ export class MindManager {
         const meta = this.readMeta(entry.name);
         if (meta) {
           // Refresh line count
-          meta.lineCount = this.countContentLines(
+          meta.lineCount = countContentLines(
             this.readMindMemory(entry.name),
           );
           minds.push(meta);
@@ -231,7 +231,7 @@ export class MindManager {
 
     const targetMeta = this.readMeta(targetName);
     if (targetMeta) {
-      targetMeta.lineCount = this.countContentLines(targetContent);
+      targetMeta.lineCount = countContentLines(targetContent);
       this.writeMeta(targetName, targetMeta);
     }
 
@@ -298,10 +298,4 @@ export class MindManager {
     return meta;
   }
 
-  private countContentLines(content: string): number {
-    return content.split("\n").filter((l) => {
-      const trimmed = l.trim();
-      return trimmed !== "" && !trimmed.startsWith("<!--");
-    }).length;
-  }
 }

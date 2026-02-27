@@ -123,13 +123,19 @@ export class MindManager {
 
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        const meta = this.readMeta(entry.name);
-        if (meta) {
-          // Refresh line count
-          meta.lineCount = this.countContentLines(
-            this.readMindMemory(entry.name),
-          );
-          minds.push(meta);
+
+        try {
+          const meta = this.readMeta(entry.name);
+          if (meta) {
+            // Refresh line count
+            meta.lineCount = this.countContentLines(
+              this.readMindMemory(entry.name),
+            );
+            minds.push(meta);
+          }
+        } catch {
+          // Skip invalid mind directories (e.g., .DS_Store, malformed names)
+          continue;
         }
       }
 
@@ -188,31 +194,15 @@ export class MindManager {
    * respective section headers in the target.
    */
   ingest(sourceName: string, targetName: string): { factsIngested: number } {
+    if (sourceName === targetName) {
+      throw new Error(`Cannot ingest mind "${sourceName}" into itself`);
+    }
+
     const sourceContent = this.readMindMemory(sourceName);
     let targetContent = this.readMindMemory(targetName);
 
     // Parse source into section → bullet[] map
-    const sectionBullets = new Map<SectionName, string[]>();
-    let currentSection: SectionName | null = null;
-
-    for (const line of sourceContent.split("\n")) {
-      const sectionMatch = line.match(/^## (.+)$/);
-      if (sectionMatch) {
-        const name = sectionMatch[1].trim();
-        if ((SECTIONS as readonly string[]).includes(name)) {
-          currentSection = name as SectionName;
-        } else {
-          currentSection = null;
-        }
-        continue;
-      }
-      if (currentSection && line.trim().startsWith("- ")) {
-        if (!sectionBullets.has(currentSection)) {
-          sectionBullets.set(currentSection, []);
-        }
-        sectionBullets.get(currentSection)!.push(line);
-      }
-    }
+    const sectionBullets = this.parseSectionBullets(sourceContent);
 
     // Append bullets into target under their respective sections
     let totalIngested = 0;
@@ -239,7 +229,7 @@ export class MindManager {
   }
 
   /** Ingest a mind into the default project memory */
-  ingestIntoDefault(sourceName: string, cwd: string): { factsIngested: number } {
+  ingestIntoDefault(sourceName: string): { factsIngested: number } {
     const sourceContent = this.readMindMemory(sourceName);
     const defaultMemoryPath = path.join(this.baseMemoryDir, "memory.md");
     let targetContent: string;
@@ -250,22 +240,12 @@ export class MindManager {
     }
 
     // Parse source and append section-aware
-    let currentSection: SectionName | null = null;
+    const sectionBullets = this.parseSectionBullets(sourceContent);
     let totalIngested = 0;
 
-    for (const line of sourceContent.split("\n")) {
-      const sectionMatch = line.match(/^## (.+)$/);
-      if (sectionMatch) {
-        const name = sectionMatch[1].trim();
-        if ((SECTIONS as readonly string[]).includes(name)) {
-          currentSection = name as SectionName;
-        } else {
-          currentSection = null;
-        }
-        continue;
-      }
-      if (currentSection && line.trim().startsWith("- ")) {
-        const updated = appendToSection(targetContent, currentSection, line);
+    for (const [section, bullets] of sectionBullets) {
+      for (const bullet of bullets) {
+        const updated = appendToSection(targetContent, section, bullet);
         if (updated !== targetContent) {
           targetContent = updated;
           totalIngested++;
@@ -296,6 +276,36 @@ export class MindManager {
     meta.parent = sourceName;
     this.writeMeta(newName, meta);
     return meta;
+  }
+
+  /**
+   * Parse content into sections and their associated bullets.
+   * Returns a map of section names to arrays of bullet lines.
+   */
+  private parseSectionBullets(content: string): Map<SectionName, string[]> {
+    const sectionBullets = new Map<SectionName, string[]>();
+    let currentSection: SectionName | null = null;
+
+    for (const line of content.split("\n")) {
+      const sectionMatch = line.match(/^## (.+)$/);
+      if (sectionMatch) {
+        const sectionName = sectionMatch[1].trim();
+        if ((SECTIONS as readonly string[]).includes(sectionName)) {
+          currentSection = sectionName as SectionName;
+        } else {
+          currentSection = null;
+        }
+        continue;
+      }
+      if (currentSection && line.trim().startsWith("- ")) {
+        if (!sectionBullets.has(currentSection)) {
+          sectionBullets.set(currentSection, []);
+        }
+        sectionBullets.get(currentSection)!.push(line);
+      }
+    }
+
+    return sectionBullets;
   }
 
   private countContentLines(content: string): number {

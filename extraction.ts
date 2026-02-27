@@ -82,14 +82,6 @@ export function shouldExtract(state: ExtractionTriggerState, currentTokens: numb
 /** Currently running extraction process, if any */
 let activeExtractionProc: ChildProcess | null = null;
 
-/** Kill any running extraction subprocess */
-export function killActiveExtraction(): void {
-  if (activeExtractionProc) {
-    activeExtractionProc.kill("SIGTERM");
-    activeExtractionProc = null;
-  }
-}
-
 export async function runExtraction(
   cwd: string,
   currentMemory: string,

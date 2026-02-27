@@ -48,7 +48,7 @@ export default function (pi: ExtensionAPI) {
   let firstTurn = true;
   let config: MemoryConfig = { ...DEFAULT_CONFIG };
   let activeExtractionPromise: Promise<void> | null = null;
-  let lastCtx: ExtensionContext | null = null;
+  let sessionActive = false;
 
   /** Rebuild storage to point at the currently active mind */
   function rebuildStorage(cwd: string): void {
@@ -74,7 +74,7 @@ export default function (pi: ExtensionAPI) {
     postCompaction = false;
     firstTurn = true;
     activeExtractionPromise = null;
-    lastCtx = ctx;
+    sessionActive = true;
     updateStatus(ctx);
   });
 
@@ -92,7 +92,7 @@ export default function (pi: ExtensionAPI) {
 
     // Otherwise, if there's been meaningful activity since last extraction,
     // run a final one with the shorter shutdown timeout
-    if (!storage || !lastCtx) return;
+    if (!storage || !sessionActive) return;
     const usage = ctx.getContextUsage();
     if (!usage) return;
 

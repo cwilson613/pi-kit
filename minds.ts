@@ -36,8 +36,12 @@ export interface MindMeta {
   lineCount: number;
 }
 
+/**
+ * Persisted active mind selection. Global to the project (on disk),
+ * not per-session — concurrent pi sessions share this state.
+ */
 interface ActiveMindState {
-  activeMind: string | null; // null = default (legacy .pi/memory/memory.md)
+  activeMind: string | null; // null = default (.pi/memory/memory.md)
 }
 
 export class MindManager {
@@ -51,6 +55,20 @@ export class MindManager {
 
   init(): void {
     fs.mkdirSync(this.mindsDir, { recursive: true });
+
+    // Ensure .pi/memory is gitignored in project repos
+    const gitignorePath = path.join(this.baseMemoryDir, "..", ".gitignore");
+    try {
+      const existing = fs.existsSync(gitignorePath)
+        ? fs.readFileSync(gitignorePath, "utf8")
+        : "";
+      if (!existing.includes("memory/")) {
+        const entry = existing.endsWith("\n") || existing === "" ? "memory/\n" : "\nmemory/\n";
+        fs.writeFileSync(gitignorePath, existing + entry, "utf8");
+      }
+    } catch {
+      // Best-effort — project may not have .pi/ in git
+    }
   }
 
   /** Get the name of the currently active mind (null = default) */

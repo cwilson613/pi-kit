@@ -144,8 +144,42 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_compact", async () => {
+  pi.on("session_compact", async (_event, ctx) => {
     postCompaction = true;
+
+    // Compaction is the ideal extraction point — we're about to lose the full
+    // conversation context. Run extraction against the pre-compaction messages
+    // before they're truncated.
+    if (storage && !triggerState.isRunning) {
+      const targetStorage = storage;
+      triggerState.isRunning = true;
+
+      try {
+        const currentMemory = targetStorage.readMemory();
+        const branch = ctx.sessionManager.getBranch();
+        const messages = branch
+          .filter((e): e is SessionMessageEntry => e.type === "message")
+          .map((e) => e.message);
+
+        const recentMessages = messages.slice(-30);
+        if (recentMessages.length > 0) {
+          const serialized = serializeConversation(convertToLlm(recentMessages));
+          const result = await runExtraction(ctx.cwd, currentMemory, serialized, config);
+          targetStorage.writeExtractionResult(result);
+
+          const usage = ctx.getContextUsage();
+          triggerState.lastExtractedTokens = usage?.tokens ?? 0;
+          triggerState.isInitialized = true;
+          consecutiveExtractionFailures = 0;
+        }
+      } catch {
+        consecutiveExtractionFailures++;
+      } finally {
+        triggerState.isRunning = false;
+      }
+    }
+
+    // Reset counters after extraction attempt — fresh slate post-compaction
     triggerState.toolCallsSinceExtract = 0;
     triggerState.manualStoresSinceExtract = 0;
   });

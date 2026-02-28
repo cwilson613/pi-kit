@@ -32,4 +32,3 @@ export const DEFAULT_CONFIG: MemoryConfig = {
   shutdownExtractionTimeout: 15_000,
 };
 
-export const ARCHIVE_SEPARATOR = "---ARCHIVE---";

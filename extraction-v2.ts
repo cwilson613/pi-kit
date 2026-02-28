@@ -9,16 +9,116 @@
  *   reinforce — "This existing fact is still true" (by ID)
  *   supersede — "This new fact replaces that old one" (by ID + new content)
  *   archive   — "This fact appears stale/wrong" (by ID)
+ *   connect   — "These two facts are related" (global extraction only)
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { MemoryConfig } from "./types.js";
 import type { Fact, Edge } from "./factstore.js";
 
+// ---------------------------------------------------------------------------
+// Shared subprocess runner
+// ---------------------------------------------------------------------------
+
+/** Track the currently running extraction process for cancellation */
+let activeProc: ChildProcess | null = null;
+
 /**
- * Build the extraction prompt for JSONL output.
- * Includes current facts with IDs so the agent can reference them.
+ * Kill the active extraction process if one is running.
+ * Returns true if a process was killed.
  */
+export function killActiveExtraction(): boolean {
+  if (activeProc) {
+    activeProc.kill("SIGTERM");
+    activeProc = null;
+    return true;
+  }
+  return false;
+}
+
+/** Check if an extraction is currently in progress */
+export function isExtractionRunning(): boolean {
+  return activeProc !== null;
+}
+
+/**
+ * Spawn a pi subprocess with a system prompt and user message.
+ * Returns the raw stdout output. Handles timeout, cleanup, code fence stripping.
+ */
+function spawnExtraction(opts: {
+  cwd: string;
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  timeout: number;
+  label: string;
+}): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    if (activeProc) {
+      reject(new Error(`${opts.label}: extraction already in progress`));
+      return;
+    }
+
+    const args = [
+      "--model", opts.model,
+      "--no-session", "--no-tools", "--no-extensions",
+      "--no-skills", "--no-themes", "--thinking", "off",
+      "--system-prompt", opts.systemPrompt,
+      "-p", opts.userMessage,
+    ];
+
+    const proc = spawn("pi", args, {
+      cwd: opts.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    activeProc = proc;
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+
+    let escalationTimer: ReturnType<typeof setTimeout> | null = null;
+    const timeoutHandle = setTimeout(() => {
+      proc.kill("SIGTERM");
+      escalationTimer = setTimeout(() => {
+        if (!proc.killed) proc.kill("SIGKILL");
+      }, 5000);
+      reject(new Error(`${opts.label} timed out`));
+    }, opts.timeout);
+
+    proc.on("close", (code) => {
+      clearTimeout(timeoutHandle);
+      if (escalationTimer) clearTimeout(escalationTimer);
+      activeProc = null;
+
+      const output = stdout.trim();
+      if (code === 0 && output) {
+        // Strip code fences if the model wraps output
+        const cleaned = output
+          .replace(/^```(?:jsonl?|json)?\n?/, "")
+          .replace(/\n?```\s*$/, "");
+        resolve(cleaned);
+      } else if (code === 0 && !output) {
+        resolve("");
+      } else {
+        reject(new Error(`${opts.label} failed (exit ${code}): ${stderr.slice(0, 500)}`));
+      }
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(timeoutHandle);
+      activeProc = null;
+      reject(err);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Project extraction
+// ---------------------------------------------------------------------------
+
 function buildExtractionPrompt(maxLines: number): string {
   return `You are a project memory curator. You receive:
 1. Current active facts (with IDs) from the project's memory database
@@ -80,11 +180,8 @@ export function formatFactsForExtraction(facts: Fact[]): string {
   return lines.join("\n");
 }
 
-/** Currently running extraction process */
-let activeExtractionProc: ChildProcess | null = null;
-
 /**
- * Run extraction against conversation context.
+ * Run project extraction (Phase 1).
  * Returns raw JSONL output from the extraction agent.
  */
 export async function runExtractionV2(
@@ -104,82 +201,18 @@ export async function runExtractionV2(
     "\n\nOutput JSONL actions based on what you observe.",
   ].join("");
 
-  return new Promise<string>((resolve, reject) => {
-    if (activeExtractionProc) {
-      reject(new Error("Extraction already in progress"));
-      return;
-    }
-
-    const args = [
-      "--model",
-      config.extractionModel,
-      "--no-session",
-      "--no-tools",
-      "--no-extensions",
-      "--no-skills",
-      "--no-themes",
-      "--thinking",
-      "off",
-      "--system-prompt",
-      prompt,
-      "-p",
-      userMessage,
-    ];
-
-    const proc = spawn("pi", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    activeExtractionProc = proc;
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (d: Buffer) => {
-      stdout += d.toString();
-    });
-    proc.stderr.on("data", (d: Buffer) => {
-      stderr += d.toString();
-    });
-
-    let escalationTimer: ReturnType<typeof setTimeout> | null = null;
-    const timeout = setTimeout(() => {
-      proc.kill("SIGTERM");
-      escalationTimer = setTimeout(() => {
-        if (!proc.killed) proc.kill("SIGKILL");
-      }, 5000);
-      reject(new Error("Extraction timed out"));
-    }, config.extractionTimeout);
-
-    proc.on("close", (code) => {
-      clearTimeout(timeout);
-      if (escalationTimer) clearTimeout(escalationTimer);
-      activeExtractionProc = null;
-      const output = stdout.trim();
-      if (code === 0 && output) {
-        // Strip code fences if the model wraps output despite instructions
-        const cleaned = output
-          .replace(/^```(?:jsonl?|json)?\n?/, "")
-          .replace(/\n?```\s*$/, "");
-        resolve(cleaned);
-      } else if (code === 0 && !output) {
-        // No output = nothing to remember
-        resolve("");
-      } else {
-        reject(new Error(`Extraction failed (exit ${code}): ${stderr.slice(0, 500)}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timeout);
-      activeExtractionProc = null;
-      reject(err);
-    });
+  return spawnExtraction({
+    cwd,
+    model: config.extractionModel,
+    systemPrompt: prompt,
+    userMessage,
+    timeout: config.extractionTimeout,
+    label: "Project extraction",
   });
 }
 
 // ---------------------------------------------------------------------------
-// Global mind extraction — Phase 2
+// Phase 2: Global extraction
 // ---------------------------------------------------------------------------
 
 function buildGlobalExtractionPrompt(): string {
@@ -199,8 +232,10 @@ ACTION TYPES:
   → An existing global fact is confirmed by this project's evidence.
 
 {"type":"connect","source":"<fact_id>","target":"<fact_id>","relation":"runs_on","description":"k8s deployment depends on host OS kernel features"}
-  → Two facts are meaningfully related. The relation is a short verb phrase describing
-    the directional relationship from source to target.
+  → Two GLOBAL facts are meaningfully related. Both source and target must be IDs from
+    the EXISTING GLOBAL FACTS section — not from the new project facts.
+    First promote a project fact via "observe", then connect the promoted global copy.
+    The relation is a short verb phrase describing the directional relationship.
     Common patterns: runs_on, depends_on, motivated_by, contradicts, enables,
     generalizes, instance_of, requires, conflicts_with, replaces, preceded_by
     But use whatever verb phrase best captures the relationship.
@@ -215,6 +250,9 @@ RULES:
 - Output ONLY valid JSONL. One JSON object per line.
 - Only promote facts that would be useful across MULTIPLE projects.
 - Rewrite promoted facts to remove project-specific names, paths, and details.
+- Connections must reference GLOBAL fact IDs only (from "EXISTING GLOBAL FACTS" section).
+  To connect a new project fact, first promote it with "observe", then in the NEXT
+  extraction cycle it will have a global ID you can reference.
 - Connections should represent genuine analytical insight, not surface keyword overlap.
 - Prefer fewer, high-quality connections over many weak ones.
 - A connection between facts in different sections is more valuable than within the same section.
@@ -231,16 +269,16 @@ export function formatGlobalExtractionInput(
 ): string {
   const lines: string[] = [];
 
-  lines.push("=== NEW PROJECT FACTS (candidates for promotion/connection) ===");
+  lines.push("=== NEW PROJECT FACTS (candidates for promotion — these IDs are project-scoped, NOT referenceable in connect actions) ===");
   if (newProjectFacts.length === 0) {
     lines.push("(none)");
   } else {
     for (const f of newProjectFacts) {
-      lines.push(`[${f.id}] (${f.section}) ${f.content}`);
+      lines.push(`(${f.section}) ${f.content}`);
     }
   }
 
-  lines.push("\n=== EXISTING GLOBAL FACTS ===");
+  lines.push("\n=== EXISTING GLOBAL FACTS (use these IDs in connect actions) ===");
   if (globalFacts.length === 0) {
     lines.push("(empty — this is the first global extraction)");
   } else {
@@ -266,7 +304,7 @@ export function formatGlobalExtractionInput(
 }
 
 /**
- * Run global extraction — Phase 2 of the extraction chain.
+ * Run global extraction (Phase 2).
  * Only called when Phase 1 produced new facts.
  */
 export async function runGlobalExtraction(
@@ -276,82 +314,19 @@ export async function runGlobalExtraction(
   globalEdges: Edge[],
   config: MemoryConfig,
 ): Promise<string> {
-  const prompt = buildGlobalExtractionPrompt();
   const input = formatGlobalExtractionInput(newProjectFacts, globalFacts, globalEdges);
 
   const userMessage = [
     input,
-    "\n\nOutput JSONL actions: promote generalizable facts and identify connections.",
+    "\n\nOutput JSONL actions: promote generalizable facts and identify connections between GLOBAL facts.",
   ].join("");
 
-  return new Promise<string>((resolve, reject) => {
-    if (activeExtractionProc) {
-      reject(new Error("Extraction already in progress"));
-      return;
-    }
-
-    const args = [
-      "--model",
-      config.extractionModel,
-      "--no-session",
-      "--no-tools",
-      "--no-extensions",
-      "--no-skills",
-      "--no-themes",
-      "--thinking",
-      "off",
-      "--system-prompt",
-      prompt,
-      "-p",
-      userMessage,
-    ];
-
-    const proc = spawn("pi", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    activeExtractionProc = proc;
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (d: Buffer) => {
-      stdout += d.toString();
-    });
-    proc.stderr.on("data", (d: Buffer) => {
-      stderr += d.toString();
-    });
-
-    let escalationTimer: ReturnType<typeof setTimeout> | null = null;
-    const timeout = setTimeout(() => {
-      proc.kill("SIGTERM");
-      escalationTimer = setTimeout(() => {
-        if (!proc.killed) proc.kill("SIGKILL");
-      }, 5000);
-      reject(new Error("Global extraction timed out"));
-    }, config.extractionTimeout);
-
-    proc.on("close", (code) => {
-      clearTimeout(timeout);
-      if (escalationTimer) clearTimeout(escalationTimer);
-      activeExtractionProc = null;
-      const output = stdout.trim();
-      if (code === 0 && output) {
-        const cleaned = output
-          .replace(/^```(?:jsonl?|json)?\n?/, "")
-          .replace(/\n?```\s*$/, "");
-        resolve(cleaned);
-      } else if (code === 0 && !output) {
-        resolve("");
-      } else {
-        reject(new Error(`Global extraction failed (exit ${code}): ${stderr.slice(0, 500)}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timeout);
-      activeExtractionProc = null;
-      reject(err);
-    });
+  return spawnExtraction({
+    cwd,
+    model: config.extractionModel,
+    systemPrompt: buildGlobalExtractionPrompt(),
+    userMessage,
+    timeout: config.extractionTimeout,
+    label: "Global extraction",
   });
 }

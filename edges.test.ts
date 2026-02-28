@@ -301,3 +301,43 @@ describe("renderForInjection includes edges", () => {
     fs.rmSync(dir2, { recursive: true, force: true });
   });
 });
+
+describe("getEdgesForFacts", () => {
+  let dir: string;
+  let store: FactStore;
+
+  before(() => {
+    dir = tmpDir();
+    store = new FactStore(dir);
+    const a = store.storeFact({ section: "Architecture", content: "Fact A for batch edge test", source: "manual" }).id;
+    const b = store.storeFact({ section: "Architecture", content: "Fact B for batch edge test", source: "manual" }).id;
+    const c = store.storeFact({ section: "Architecture", content: "Fact C for batch edge test", source: "manual" }).id;
+    store.storeEdge({ sourceFact: a, targetFact: b, relation: "r1", description: "a-b" });
+    store.storeEdge({ sourceFact: b, targetFact: c, relation: "r2", description: "b-c" });
+    store.storeEdge({ sourceFact: a, targetFact: c, relation: "r3", description: "a-c" });
+  });
+
+  after(() => {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns edges connected to any of the given fact IDs", () => {
+    const facts = store.getActiveFacts("default");
+    const aId = facts.find(f => f.content.includes("Fact A"))!.id;
+    const edges = store.getEdgesForFacts([aId]);
+    assert.equal(edges.length, 2); // r1 (a-b) and r3 (a-c)
+  });
+
+  it("respects limit parameter", () => {
+    const facts = store.getActiveFacts("default");
+    const aId = facts.find(f => f.content.includes("Fact A"))!.id;
+    const edges = store.getEdgesForFacts([aId], 1);
+    assert.equal(edges.length, 1);
+  });
+
+  it("returns empty for no matching fact IDs", () => {
+    const edges = store.getEdgesForFacts(["nonexistent"]);
+    assert.equal(edges.length, 0);
+  });
+});

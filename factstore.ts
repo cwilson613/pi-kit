@@ -599,6 +599,28 @@ export class FactStore {
     return null;
   }
 
+  /**
+   * Get active edges connected to any of the given fact IDs.
+   * Returns top N by reinforcement count, filtered by min confidence after decay.
+   */
+  getEdgesForFacts(factIds: string[], limit: number = 20, minConfidence: number = DECAY.minimumConfidence): Edge[] {
+    if (factIds.length === 0) return [];
+
+    const placeholders = factIds.map(() => "?").join(",");
+    const edges = this.db.prepare(`
+      SELECT * FROM edges
+      WHERE status = 'active'
+        AND (source_fact_id IN (${placeholders}) OR target_fact_id IN (${placeholders}))
+      ORDER BY reinforcement_count DESC
+      LIMIT ?
+    `).all(...factIds, ...factIds, limit * 2) as Edge[]; // fetch extra to account for decay filtering
+
+    const decayed = this.applyEdgeDecay(edges);
+    return decayed
+      .filter(e => e.confidence >= minConfidence)
+      .slice(0, limit);
+  }
+
   /** Apply confidence decay to edges (same math as facts) */
   private applyEdgeDecay(edges: Edge[]): Edge[] {
     const now = Date.now();
@@ -769,8 +791,9 @@ export class FactStore {
    * Render active facts as Markdown-KV for LLM context injection.
    * Filters by confidence threshold and respects a line budget.
    */
-  renderForInjection(mind: string, opts?: { maxFacts?: number; minConfidence?: number }): string {
+  renderForInjection(mind: string, opts?: { maxFacts?: number; minConfidence?: number; maxEdges?: number }): string {
     const maxFacts = opts?.maxFacts ?? 80;
+    const maxEdges = opts?.maxEdges ?? 20;
     const minConfidence = opts?.minConfidence ?? DECAY.minimumConfidence;
 
     let facts = this.getActiveFacts(mind);
@@ -823,12 +846,10 @@ export class FactStore {
       lines.push("");
     }
 
-    // Render edges between rendered facts
-    const allEdges = this.getActiveEdges();
-    const relevantEdges = allEdges.filter(
-      e => e.confidence >= minConfidence &&
-           (renderedFactIds.has(e.source_fact_id) || renderedFactIds.has(e.target_fact_id))
-    );
+    // Render edges between rendered facts (capped)
+    const relevantEdges = renderedFactIds.size > 0
+      ? this.getEdgesForFacts([...renderedFactIds], maxEdges, minConfidence)
+      : [];
 
     if (relevantEdges.length > 0) {
       lines.push("## Connections");

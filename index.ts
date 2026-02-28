@@ -36,7 +36,7 @@ import {
   createTriggerState,
   shouldExtract,
 } from "./triggers.js";
-import { runExtractionV2, runGlobalExtraction, formatFactsForExtraction, formatGlobalExtractionInput } from "./extraction-v2.js";
+import { runExtractionV2, runGlobalExtraction } from "./extraction-v2.js";
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.js";
 import { SECTIONS } from "./template.js";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
@@ -228,12 +228,17 @@ export default function (pi: ExtensionAPI) {
 
             if (globalRawOutput.trim()) {
               const globalActions = parseExtractionOutput(globalRawOutput);
+              // Process fact actions first — observe creates new global facts
+              // that connect actions can then reference
               const factActions = globalActions.filter(a => a.type !== "connect");
               const edgeActions = globalActions.filter(a => a.type === "connect");
 
               if (factActions.length > 0) {
                 globalStore.processExtraction(globalMind, factActions);
               }
+              // Edge actions reference global fact IDs (from existing global facts
+              // or from facts just promoted via observe in the same extraction).
+              // processEdges validates both endpoints exist before storing.
               if (edgeActions.length > 0) {
                 globalStore.processEdges(edgeActions);
               }
@@ -249,6 +254,45 @@ export default function (pi: ExtensionAPI) {
     }
 
     updateStatus(ctx);
+  }
+
+  /**
+   * Run a memory refresh — extraction with no conversation context.
+   * Used by /memory refresh command and __refresh__ menu action.
+   */
+  function startRefresh(ctx: ExtensionCommandContext): void {
+    ctx.ui.notify("Running extraction to prune and consolidate memory (15–60s)…", "info");
+    activeExtractionPromise = (async () => {
+      try {
+        triggerState.isRunning = true;
+        const mind = activeMind();
+        const currentFacts = store!.getActiveFacts(mind);
+        const rawOutput = await runExtractionV2(
+          ctx.cwd,
+          currentFacts,
+          `[Memory refresh requested. Review existing facts for accuracy and relevance. Archive stale or redundant facts. No new conversation context.]`,
+          config,
+        );
+        if (rawOutput.trim()) {
+          const actions = parseExtractionOutput(rawOutput);
+          if (actions.length > 0) {
+            const result = store!.processExtraction(mind, actions);
+            ctx.ui.notify(
+              `Memory refreshed: ${result.added} added, ${result.reinforced} reinforced`,
+              "success",
+            );
+          }
+        } else {
+          ctx.ui.notify("No changes needed", "info");
+        }
+        updateStatus(ctx);
+      } catch (err: any) {
+        ctx.ui.notify(`Refresh failed: ${err.message}`, "error");
+      } finally {
+        triggerState.isRunning = false;
+      }
+    })();
+    activeExtractionPromise.finally(() => { activeExtractionPromise = null; });
   }
 
   // --- Context Injection ---
@@ -484,21 +528,36 @@ export default function (pi: ExtensionAPI) {
       description: Type.String({ description: "Human-readable description of why these facts are connected" }),
     }),
     async execute(_toolCallId, params) {
-      // Use global store if available, fall back to project store
-      const edgeStore = globalStore ?? store;
-      if (!edgeStore) {
-        return { content: [{ type: "text", text: "Memory not initialized." }], isError: true };
-      }
+      // Resolve which store owns each fact — edges must connect facts in the same DB
+      const sourceInProject = store?.getFact(params.source_fact_id);
+      const sourceInGlobal = globalStore?.getFact(params.source_fact_id);
+      const targetInProject = store?.getFact(params.target_fact_id);
+      const targetInGlobal = globalStore?.getFact(params.target_fact_id);
 
-      // Verify both facts exist (check both stores)
-      const sourceFact = store?.getFact(params.source_fact_id) ?? globalStore?.getFact(params.source_fact_id);
-      const targetFact = store?.getFact(params.target_fact_id) ?? globalStore?.getFact(params.target_fact_id);
+      const sourceFact = sourceInProject ?? sourceInGlobal;
+      const targetFact = targetInProject ?? targetInGlobal;
 
       if (!sourceFact) {
         return { content: [{ type: "text", text: `Source fact not found: ${params.source_fact_id}` }], isError: true };
       }
       if (!targetFact) {
         return { content: [{ type: "text", text: `Target fact not found: ${params.target_fact_id}` }], isError: true };
+      }
+
+      // Both facts must be in the same store for FK integrity
+      const sourceIsGlobal = !!sourceInGlobal && !sourceInProject;
+      const targetIsGlobal = !!targetInGlobal && !targetInProject;
+
+      let edgeStore: FactStore;
+      if (sourceIsGlobal && targetIsGlobal) {
+        edgeStore = globalStore!;
+      } else if (!sourceIsGlobal && !targetIsGlobal) {
+        edgeStore = store!;
+      } else {
+        return {
+          content: [{ type: "text", text: "Cannot connect facts across databases. Both facts must be in the same store (project or global). Promote the project fact to global first." }],
+          isError: true,
+        };
       }
 
       const result = edgeStore.storeEdge({
@@ -767,39 +826,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "refresh": {
-          ctx.ui.notify("Running extraction to prune and consolidate memory (15–60s)…", "info");
-          activeExtractionPromise = (async () => {
-            try {
-              triggerState.isRunning = true;
-              const mind = activeMind();
-              const currentFacts = store!.getActiveFacts(mind);
-              const factsFormatted = formatFactsForExtraction(currentFacts);
-              const rawOutput = await runExtractionV2(
-                ctx.cwd,
-                currentFacts,
-                `[Memory refresh requested. Review existing facts for accuracy and relevance. Archive stale or redundant facts. No new conversation context.]`,
-                config,
-              );
-              if (rawOutput.trim()) {
-                const actions = parseExtractionOutput(rawOutput);
-                if (actions.length > 0) {
-                  const result = store!.processExtraction(mind, actions);
-                  ctx.ui.notify(
-                    `Memory refreshed: ${result.added} added, ${result.reinforced} reinforced`,
-                    "success",
-                  );
-                }
-              } else {
-                ctx.ui.notify("No changes needed", "info");
-              }
-              updateStatus(ctx);
-            } catch (err: any) {
-              ctx.ui.notify(`Refresh failed: ${err.message}`, "error");
-            } finally {
-              triggerState.isRunning = false;
-            }
-          })();
-          activeExtractionPromise.finally(() => { activeExtractionPromise = null; });
+          startRefresh(ctx);
           return;
         }
 
@@ -954,38 +981,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (selected === "__refresh__") {
-        ctx.ui.notify("Running extraction to prune and consolidate memory (15–60s)…", "info");
-        activeExtractionPromise = (async () => {
-          try {
-            triggerState.isRunning = true;
-            const mind = activeMind();
-            const currentFacts = store!.getActiveFacts(mind);
-            const rawOutput = await runExtractionV2(
-              ctx.cwd,
-              currentFacts,
-              `[Memory refresh requested. Review existing facts for accuracy and relevance. Archive stale or redundant facts. No new conversation context.]`,
-              config,
-            );
-            if (rawOutput.trim()) {
-              const actions = parseExtractionOutput(rawOutput);
-              if (actions.length > 0) {
-                const result = store!.processExtraction(mind, actions);
-                ctx.ui.notify(
-                  `Memory refreshed: ${result.added} added, ${result.reinforced} reinforced`,
-                  "success",
-                );
-              }
-            } else {
-              ctx.ui.notify("No changes needed", "info");
-            }
-            updateStatus(ctx);
-          } catch (err: any) {
-            ctx.ui.notify(`Refresh failed: ${err.message}`, "error");
-          } finally {
-            triggerState.isRunning = false;
-          }
-        })();
-        activeExtractionPromise.finally(() => { activeExtractionPromise = null; });
+        startRefresh(ctx);
         return;
       }
 

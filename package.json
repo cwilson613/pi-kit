@@ -1,16 +1,8 @@
 {
-  "name": "project-memory",
+  "name": "pi-kit",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "better-sqlite3": "^12.6.2"
-  }
+  "description": "Personal pi package — extensions, skills, prompts, themes",
+  "keywords": ["pi-package"],
+  "author": "cwilson613",
+  "license": "ISC"
 }

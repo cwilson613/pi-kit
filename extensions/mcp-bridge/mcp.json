@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "notion": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "env": {
+        "OPENAPI_MCP_HEADERS": "{\"Authorization\": \"Bearer ${NOTION_API_KEY}\", \"Notion-Version\": \"2022-06-28\"}"
+      }
+    },
+    "scribe": {
+      "command": "/Users/cwilson/.pi/agent/git/github.com/recro/scribe-backend/run-mcp.sh",
+      "args": []
+    }
+  }
+}

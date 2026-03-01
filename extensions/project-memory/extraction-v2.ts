@@ -29,7 +29,12 @@ let activeProc: ChildProcess | null = null;
  */
 export function killActiveExtraction(): boolean {
   if (activeProc) {
-    activeProc.kill("SIGTERM");
+    // Kill the process group (negative PID) since we spawn detached
+    try {
+      if (activeProc.pid) process.kill(-activeProc.pid, "SIGTERM");
+    } catch {
+      activeProc.kill("SIGTERM");
+    }
     activeProc = null;
     return true;
   }
@@ -70,6 +75,11 @@ function spawnExtraction(opts: {
     const proc = spawn("pi", args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      // Detach into new session so child has no controlling terminal.
+      // Prevents child pi from opening /dev/tty and setting kitty keyboard
+      // protocol, which corrupts parent terminal state if child is killed.
+      detached: true,
+      env: { ...process.env, TERM: "dumb" },
     });
     activeProc = proc;
 
@@ -80,10 +90,17 @@ function spawnExtraction(opts: {
     proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
 
     let escalationTimer: ReturnType<typeof setTimeout> | null = null;
+    const killProc = (signal: NodeJS.Signals) => {
+      try {
+        if (proc.pid) process.kill(-proc.pid, signal);
+      } catch {
+        proc.kill(signal);
+      }
+    };
     const timeoutHandle = setTimeout(() => {
-      proc.kill("SIGTERM");
+      killProc("SIGTERM");
       escalationTimer = setTimeout(() => {
-        if (!proc.killed) proc.kill("SIGKILL");
+        if (!proc.killed) killProc("SIGKILL");
       }, 5000);
       reject(new Error(`${opts.label} timed out`));
     }, opts.timeout);

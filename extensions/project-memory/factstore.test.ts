@@ -32,6 +32,16 @@ describe("FactStore", () => {
 
   // --- Basic CRUD ---
 
+  it("uses custom dbName when provided", () => {
+    const customDir = tmpDir();
+    const custom = new FactStore(customDir, { dbName: "global.db" });
+    custom.storeFact({ section: "Architecture", content: "test fact" });
+    assert.ok(fs.existsSync(path.join(customDir, "global.db")));
+    assert.ok(!fs.existsSync(path.join(customDir, "facts.db")));
+    custom.close();
+    fs.rmSync(customDir, { recursive: true, force: true });
+  });
+
   it("stores and retrieves a fact", () => {
     const { id, duplicate } = store.storeFact({
       section: "Architecture",

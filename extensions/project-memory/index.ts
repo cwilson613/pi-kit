@@ -36,7 +36,7 @@ import {
   createTriggerState,
   shouldExtract,
 } from "./triggers.js";
-import { runExtractionV2, runGlobalExtraction } from "./extraction-v2.js";
+import { runExtractionV2, runGlobalExtraction, killActiveExtraction } from "./extraction-v2.js";
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.js";
 import { SECTIONS } from "./template.js";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
@@ -91,10 +91,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Initialize global store (user-level, shared across projects)
-    // Skip if project memory IS the global path (e.g., working from ~/)
-    if (path.resolve(memoryDir) !== path.resolve(globalMemoryDir)) {
-      globalStore = new FactStore(globalMemoryDir, { decay: GLOBAL_DECAY });
-    }
+    // Uses global.db to avoid collision with project facts.db when CWD is ~/
+    globalStore = new FactStore(globalMemoryDir, { decay: GLOBAL_DECAY, dbName: "global.db" });
 
     // Ensure .gitignore covers memory/
     const gitignorePath = path.join(memoryDir, "..", ".gitignore");
@@ -123,17 +121,19 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, ctx) => {
     sessionActive = false;
 
-    // Only wait briefly for an already-running extraction.
-    // Do NOT start a new extraction during shutdown — the TUI remains interactive
-    // and long-running extractions cause stray keypresses to trigger UI overlays
-    // (e.g., Session Tree). Unextracted data persists and will be picked up next session.
+    // Kill any running extraction subprocess immediately.
+    // On /reload, the old module is discarded — orphaned subprocesses with dangling
+    // pipe listeners corrupt terminal state (ANSI escape sequences leak to stdout).
+    killActiveExtraction();
+
+    // Wait briefly for the extraction promise to settle after kill
     if (activeExtractionPromise) {
       if (ctx.hasUI) {
         ctx.ui.setStatus("memory", ctx.ui.theme.fg("dim", "saving memory…"));
       }
       let timeoutId: NodeJS.Timeout | null = null;
       const timeout = new Promise<void>((resolve) => {
-        timeoutId = setTimeout(resolve, 5_000);
+        timeoutId = setTimeout(resolve, 2_000);
       });
       await Promise.race([activeExtractionPromise, timeout]);
       if (timeoutId) clearTimeout(timeoutId);
@@ -966,6 +966,51 @@ export default function (pi: ExtensionAPI) {
 
       // Selected an existing mind — show actions
       await showMindActions(ctx, selected);
+    },
+  });
+
+  pi.registerCommand("exit", {
+    description: "Run memory extraction and exit gracefully (avoids /reload terminal corruption)",
+    handler: async (_args, ctx) => {
+      if (!store) {
+        ctx.shutdown();
+        return;
+      }
+
+      const mind = activeMind();
+      const factsBefore = store.countActiveFacts(mind);
+
+      // Run a final extraction if we have conversation context
+      if (!triggerState.isRunning) {
+        ctx.ui.notify("Running final memory extraction before exit…", "info");
+        triggerState.isRunning = true;
+        try {
+          await runExtractionCycle(ctx, config);
+        } catch {
+          // Best effort — don't block exit
+        } finally {
+          triggerState.isRunning = false;
+        }
+      } else {
+        // Wait for in-flight extraction
+        if (activeExtractionPromise) {
+          ctx.ui.notify("Waiting for in-flight extraction…", "info");
+          const timeout = new Promise<void>(r => setTimeout(r, 5_000));
+          await Promise.race([activeExtractionPromise, timeout]);
+        }
+      }
+
+      const factsAfter = store.countActiveFacts(mind);
+      const delta = factsAfter - factsBefore;
+      const msg = delta > 0
+        ? `Memory saved (${factsAfter} facts, +${delta} new). Goodbye!`
+        : `Memory saved (${factsAfter} facts). Goodbye!`;
+      ctx.ui.notify(msg, "success");
+
+      // Small delay so the notification renders
+      await new Promise(r => setTimeout(r, 200));
+
+      ctx.shutdown();
     },
   });
 }

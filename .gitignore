@@ -1,2 +1,9 @@
 node_modules/
 package-lock.json
+*.db
+*.db-wal
+*.db-shm
+.env
+bin/rg
+bin/fd
+.claude/

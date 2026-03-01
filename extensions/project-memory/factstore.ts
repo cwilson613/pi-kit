@@ -220,9 +220,9 @@ export class FactStore {
   private dbPath: string;
   private decayProfile: DecayProfile;
 
-  constructor(memoryDir: string, opts?: { decay?: DecayProfile }) {
+  constructor(memoryDir: string, opts?: { decay?: DecayProfile; dbName?: string }) {
     this.decayProfile = opts?.decay ?? DECAY;
-    this.dbPath = path.join(memoryDir, "facts.db");
+    this.dbPath = path.join(memoryDir, opts?.dbName ?? "facts.db");
     fs.mkdirSync(memoryDir, { recursive: true });
     this.db = new Database(this.dbPath);
     this.db.pragma("journal_mode = WAL");

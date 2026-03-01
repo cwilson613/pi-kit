@@ -4,5 +4,9 @@
   "description": "Personal pi package — extensions, skills, prompts, themes",
   "keywords": ["pi-package"],
   "author": "cwilson613",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^12.6.2"
+  }
 }

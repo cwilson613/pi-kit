@@ -267,6 +267,52 @@ function isSecretAccessCommand(command: string): boolean {
 }
 
 // ============================================================================
+// Bitwarden vault health check
+// ============================================================================
+
+function bwVaultStatus(): "unlocked" | "locked" | "unauthenticated" | null {
+  try {
+    const raw = execSync("bw status 2>/dev/null", {
+      encoding: "utf-8",
+      timeout: 5_000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    const obj = JSON.parse(raw);
+    return obj.status ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function recipesUsingBw(): string[] {
+  return Object.keys(recipes).filter((k) => /\bbw\b/.test(recipes[k]));
+}
+
+// ============================================================================
+// macOS Keychain helpers
+// ============================================================================
+
+const KEYCHAIN_ACCOUNT = "pi-kit";
+const KEYCHAIN_SERVICE_PREFIX = "pi-kit/";
+
+/**
+ * Store a value in the macOS login keychain under service "pi-kit/<name>".
+ * macOS will prompt Touch ID / password / smart card automatically if the
+ * keychain is locked — the OS owns the auth flow, we just call the command.
+ */
+function storeInKeychain(secretName: string, value: string): void {
+  // Use -U to update if item already exists
+  execSync(
+    `security add-generic-password -U -a ${JSON.stringify(KEYCHAIN_ACCOUNT)} -s ${JSON.stringify(KEYCHAIN_SERVICE_PREFIX + secretName)} -w ${JSON.stringify(value)}`,
+    { stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }
+  );
+}
+
+function keychainRecipe(secretName: string): string {
+  return `!security find-generic-password -a ${JSON.stringify(KEYCHAIN_ACCOUNT)} -ws ${JSON.stringify(KEYCHAIN_SERVICE_PREFIX + secretName)}`;
+}
+
+// ============================================================================
 // Extension
 // ============================================================================
 
@@ -294,6 +340,33 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    // Bitwarden vault health check — warn early if vault is locked
+    const bwKeys = recipesUsingBw();
+    if (bwKeys.length > 0) {
+      const vaultStatus = bwVaultStatus();
+      if (vaultStatus === "locked") {
+        ctx.ui.notify(
+          `🔒 Bitwarden vault is locked\n\n` +
+          `${bwKeys.length} secret${bwKeys.length > 1 ? "s use" : " uses"} Bitwarden (${bwKeys.join(", ")}) ` +
+          `and won't resolve until the vault is unlocked.\n\n` +
+          `Unlock with:  bw unlock --raw\n` +
+          `Then run:     export BW_SESSION=<key>\n\n` +
+          `If the Bitwarden desktop app is running with biometrics enabled,\n` +
+          `you can also use:  bw unlock --biometrics`,
+          "warn"
+        );
+      } else if (vaultStatus === "unauthenticated") {
+        ctx.ui.notify(
+          `🔐 Not logged in to Bitwarden\n\n` +
+          `${bwKeys.length} secret${bwKeys.length > 1 ? "s use" : " uses"} Bitwarden but no session exists.\n\n` +
+          `Log in with:  bw login\n` +
+          `Then unlock:  bw unlock --raw\n` +
+          `Then run:     export BW_SESSION=<key>`,
+          "warn"
+        );
+      }
+    }
+
     const count = resolvedCache.size;
     if (count > 0) {
       ctx.ui.notify(
@@ -478,36 +551,227 @@ export default function (pi: ExtensionAPI) {
           const desc = KNOWN_SECRETS[secretName] || "Custom secret";
           const currentRecipe = recipes[secretName];
 
-          const options = [
-            `Environment variable (reads $${secretName} at runtime)`,
-            "Shell command (e.g., !security find-generic-password -ws 'name')",
-            "Custom environment variable name",
-            "Literal value (⚠️ stored in plaintext — not recommended)",
-          ];
+          // Check which backends are available
+          let hasBw = false;
+          let hasOp = false;
+          let hasKeychain = false;
+          try { execSync("which bw", { stdio: "pipe" }); hasBw = true; } catch {}
+          try { execSync("which op", { stdio: "pipe" }); hasOp = true; } catch {}
+          try { execSync("which security", { stdio: "pipe" }); hasKeychain = true; } catch {}
+
+          const options: string[] = [];
+
+          if (hasBw) {
+            options.push("Bitwarden — look up from your vault (recommended)");
+          }
+          if (hasKeychain) {
+            options.push("macOS Keychain — read from login keychain");
+          }
+          if (hasOp) {
+            options.push("1Password — read via op CLI");
+          }
+          options.push(
+            `Environment variable — reads $${secretName} at runtime`,
+            "Shell command — custom command (stdout = secret value)",
+          );
+          if (hasKeychain) {
+            options.push("Enter value → store in macOS Keychain (Touch ID / password protected)");
+          } else {
+            options.push("Paste value — enter the value now (⚠️ stored in plaintext)");
+          }
           if (currentRecipe) {
             options.push("Remove this secret's recipe");
           }
 
+          const statusLine = currentRecipe
+            ? `Current: ${currentRecipe.startsWith("literal:") ? "literal (hidden)" : currentRecipe}`
+            : "Not configured";
+
           const choice = await ctx.ui.select(
-            `Configure: ${secretName}\n${desc}\n${currentRecipe ? `Current: ${currentRecipe.startsWith("literal:") ? "literal (hidden)" : currentRecipe}` : "Not configured"}`,
+            `Configure: ${secretName}\n${desc}\n${statusLine}\n\nChoose how to resolve this secret:`,
             options
           );
 
           if (!choice) return;
 
-          if (choice.startsWith("Environment variable (reads")) {
+          if (choice.startsWith("Bitwarden")) {
+            // Guide through Bitwarden lookup
+            ctx.ui.notify("Searching Bitwarden vault...\nMake sure you're logged in (bw login) and the vault is unlocked (bw unlock).", "info");
+
+            // Check BW status
+            let bwStatus = "";
+            try {
+              bwStatus = execSync("bw status 2>/dev/null", { encoding: "utf-8" }).trim();
+            } catch {}
+
+            const statusObj = bwStatus ? JSON.parse(bwStatus) : {};
+
+            if (statusObj.status === "unauthenticated") {
+              ctx.ui.notify("❌ Not logged in to Bitwarden.\n\nRun:  bw login\nThen: bw unlock\nThen retry /secrets configure " + secretName, "error");
+              return;
+            }
+
+            if (statusObj.status === "locked") {
+              ctx.ui.notify("🔒 Bitwarden vault is locked.\n\nRun:  bw unlock\nCopy the BW_SESSION export command and run it.\nThen retry /secrets configure " + secretName, "error");
+              return;
+            }
+
+            // Search for items matching the secret name
+            const searchTerm = secretName.toLowerCase().replace(/_/g, " ");
+            let items: any[] = [];
+            try {
+              const raw = execSync(`bw list items --search "${searchTerm}" 2>/dev/null`, {
+                encoding: "utf-8",
+                timeout: 15_000,
+                env: { ...process.env },
+              }).trim();
+              items = JSON.parse(raw || "[]");
+            } catch (e: any) {
+              ctx.ui.notify(`❌ Bitwarden search failed. Is your vault unlocked?\n\nRun: bw unlock\nExport the BW_SESSION, then retry.`, "error");
+              return;
+            }
+
+            if (items.length === 0) {
+              // No results — offer to search with custom term or enter item ID
+              const alt = await ctx.ui.input(
+                `No Bitwarden items found for "${searchTerm}".\n\nEnter a search term, item name, or item ID (or leave empty to cancel):`
+              );
+              if (!alt) return;
+
+              try {
+                const raw = execSync(`bw list items --search "${alt}" 2>/dev/null`, {
+                  encoding: "utf-8",
+                  timeout: 15_000,
+                  env: { ...process.env },
+                }).trim();
+                items = JSON.parse(raw || "[]");
+              } catch {}
+
+              if (items.length === 0) {
+                ctx.ui.notify(`No items found for "${alt}" either. Create the entry in Bitwarden first, then retry.`, "error");
+                return;
+              }
+            }
+
+            // Let user pick which item
+            const itemChoices = items.map((item: any) => {
+              const folder = item.folderId ? ` [folder]` : "";
+              const hasNotes = item.notes ? " 📝" : "";
+              const fieldCount = item.fields?.length || 0;
+              const fields = fieldCount > 0 ? ` (${fieldCount} custom fields)` : "";
+              return `${item.name}${folder}${hasNotes}${fields}  — id:${item.id.slice(0, 8)}`;
+            });
+
+            const picked = items.length === 1
+              ? itemChoices[0]
+              : await ctx.ui.select(`Found ${items.length} items. Which one has the secret?`, itemChoices);
+            if (!picked) return;
+
+            const pickedIdx = itemChoices.indexOf(picked);
+            const pickedItem = items[pickedIdx];
+
+            // Determine which field to read
+            const fieldOptions: string[] = [];
+            if (pickedItem.login?.password) fieldOptions.push("Password field");
+            if (pickedItem.login?.username) fieldOptions.push("Username field");
+            if (pickedItem.notes) fieldOptions.push("Notes field");
+            if (pickedItem.fields) {
+              for (const f of pickedItem.fields) {
+                fieldOptions.push(`Custom field: ${f.name}`);
+              }
+            }
+
+            let bwRecipe: string;
+
+            if (fieldOptions.length === 0) {
+              ctx.ui.notify("❌ This item has no readable fields (no password, notes, or custom fields).", "error");
+              return;
+            } else if (fieldOptions.length === 1) {
+              // Only one option, use it
+              const fo = fieldOptions[0];
+              if (fo === "Password field") {
+                bwRecipe = `!bw get password "${pickedItem.name}"`;
+              } else if (fo === "Username field") {
+                bwRecipe = `!bw get username "${pickedItem.name}"`;
+              } else if (fo === "Notes field") {
+                bwRecipe = `!bw get notes "${pickedItem.name}"`;
+              } else {
+                const fieldName = fo.replace("Custom field: ", "");
+                bwRecipe = `!bw get item "${pickedItem.name}" | jq -r '.fields[] | select(.name=="${fieldName}") | .value'`;
+              }
+            } else {
+              const fieldChoice = await ctx.ui.select("Which field contains the secret?", fieldOptions);
+              if (!fieldChoice) return;
+
+              if (fieldChoice === "Password field") {
+                bwRecipe = `!bw get password "${pickedItem.name}"`;
+              } else if (fieldChoice === "Username field") {
+                bwRecipe = `!bw get username "${pickedItem.name}"`;
+              } else if (fieldChoice === "Notes field") {
+                bwRecipe = `!bw get notes "${pickedItem.name}"`;
+              } else {
+                const fieldName = fieldChoice.replace("Custom field: ", "");
+                bwRecipe = `!bw get item "${pickedItem.name}" | jq -r '.fields[] | select(.name=="${fieldName}") | .value'`;
+              }
+            }
+
+            recipes[secretName] = bwRecipe;
+          } else if (choice.startsWith("macOS Keychain")) {
+            const serviceName = await ctx.ui.input(
+              `Enter the Keychain service name for ${secretName}:\n\n` +
+              `To find it: Keychain Access app → search for the item → "Where" field\n` +
+              `Or list items: security find-generic-password -l "${secretName.toLowerCase()}"`
+            );
+            if (!serviceName) return;
+            recipes[secretName] = `!security find-generic-password -ws '${serviceName}'`;
+          } else if (choice.startsWith("1Password")) {
+            const ref = await ctx.ui.input(
+              `Enter the 1Password item reference for ${secretName}:\n\n` +
+              `Format: op://vault/item/field\n` +
+              `Example: op://Private/API Keys/brave-search`
+            );
+            if (!ref) return;
+            recipes[secretName] = ref.startsWith("op://") ? `!op read "${ref}"` : `!op read "op://${ref}"`;
+          } else if (choice.startsWith("Environment variable")) {
             recipes[secretName] = secretName;
           } else if (choice.startsWith("Shell command")) {
-            const cmd = await ctx.ui.input(`Enter shell command for ${secretName}:\n(prefix with ! is optional)`);
+            const cmd = await ctx.ui.input(
+              `Enter shell command for ${secretName}:\n\n` +
+              `The command's stdout will be used as the secret value.\n` +
+              `Examples:\n` +
+              `  bw get password "my-api-key"\n` +
+              `  security find-generic-password -ws 'service-name'\n` +
+              `  cat ~/.config/some-tool/token`
+            );
             if (!cmd) return;
             recipes[secretName] = cmd.startsWith("!") ? cmd : `!${cmd}`;
-          } else if (choice.startsWith("Custom environment")) {
-            const envName = await ctx.ui.input(`Enter environment variable name for ${secretName}:`);
-            if (!envName) return;
-            recipes[secretName] = envName;
-          } else if (choice.startsWith("Literal value")) {
+          } else if (choice.startsWith("Enter value → store in macOS Keychain")) {
+            // macOS handles auth (Touch ID / password / smart card) transparently
+            // when security add-generic-password runs — no need to pre-unlock
             const val = await ctx.ui.input(
-              `⚠️  Enter literal value for ${secretName}:\n(This will be stored in plaintext in secrets.json)`
+              `Enter the value for ${secretName}:\n\n` +
+              `It will be stored in the macOS login keychain under "pi-kit/${secretName}".\n` +
+              `macOS will prompt for Touch ID, password, or smart card if needed.`
+            );
+            if (!val) return;
+
+            try {
+              storeInKeychain(secretName, val);
+              recipes[secretName] = keychainRecipe(secretName);
+            } catch (e: any) {
+              ctx.ui.notify(
+                `❌ Failed to store in Keychain: ${e.message}\n\n` +
+                `Make sure the login keychain is accessible. If you're in a headless ` +
+                `environment, use the "Shell command" or "Environment variable" option instead.`,
+                "error"
+              );
+              return;
+            }
+          } else if (choice.startsWith("Paste value")) {
+            const val = await ctx.ui.input(
+              `⚠️  Enter the value for ${secretName}:\n\n` +
+              `This will be stored in plaintext in ~/.pi/agent/secrets.json.\n` +
+              `Consider using Bitwarden or Keychain instead.`
             );
             if (!val) return;
             recipes[secretName] = `literal:${val}`;

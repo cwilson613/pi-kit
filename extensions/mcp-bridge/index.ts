@@ -7,29 +7,22 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  type ServerConfig,
+  type HttpServerConfig,
+  type StdioServerConfig,
+  isHttpConfig,
+  resolveEnvVars,
+  resolveEnvObj,
+  isAuthError,
+  isTransportError,
+  extractText,
+  AUTH_REMEDIATION,
+} from "./lib.js";
 
 // ---------------------------------------------------------------------------
 // Config types
 // ---------------------------------------------------------------------------
-
-interface StdioServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
-
-interface HttpServerConfig {
-  url: string;
-  headers?: Record<string, string>;
-  /** Connection timeout in ms (default: 15000) */
-  timeout?: number;
-}
-
-type ServerConfig = StdioServerConfig | HttpServerConfig;
-
-function isHttpConfig(config: ServerConfig): config is HttpServerConfig {
-  return "url" in config;
-}
 
 interface McpConfig {
   servers: Record<string, ServerConfig>;
@@ -50,24 +43,6 @@ interface ConnectedServer {
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
 // ---------------------------------------------------------------------------
-// Auth error detection
-// ---------------------------------------------------------------------------
-
-const AUTH_REMEDIATION =
-  "Your GitHub token may be expired or invalid.\n" +
-  "Run `gh auth login` to re-authenticate, then restart your pi session.";
-
-function isAuthError(err: any): boolean {
-  // StreamableHTTPError from connect/start phase
-  if (err?.code === 401 || err?.code === 403) return true;
-  // Generic Error from send() phase: "Error POSTing to endpoint (HTTP 401): ..."
-  const msg = err?.message ?? "";
-  if (/HTTP\s+40[13]\b/.test(msg)) return true;
-  if (/unauthorized|forbidden|invalid.*token|expired.*token|token.*expired/i.test(msg)) return true;
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -81,22 +56,6 @@ export default function (pi: ExtensionAPI) {
   // In-flight reconnect promises, keyed by server name. Prevents concurrent
   // reconnect attempts from racing and leaking duplicate connections.
   const reconnecting = new Map<string, Promise<ConnectedServer | null>>();
-
-  // ── Env var resolution ──────────────────────────────────────────────────
-
-  function resolveEnvVars(value: string): string {
-    return value.replace(/\$\{(\w+)\}/g, (_, key) => process.env[key] ?? "");
-  }
-
-  function resolveEnvObj(
-    obj: Record<string, string>
-  ): Record<string, string> {
-    const resolved: Record<string, string> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      resolved[k] = resolveEnvVars(v);
-    }
-    return resolved;
-  }
 
   // ── Timeout helper ──────────────────────────────────────────────────────
 
@@ -234,31 +193,6 @@ export default function (pi: ExtensionAPI) {
     return attempt;
   }
 
-  // ── Tool execution helper ──────────────────────────────────────────────
-
-  function getServer(name: string): ConnectedServer | undefined {
-    return servers[name];
-  }
-
-  function extractText(result: any): string {
-    return (result.content as any[])
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => c.text)
-      .join("\n") || "(empty response)";
-  }
-
-  function isTransportError(err: any): boolean {
-    const msg = err?.message ?? "";
-    return (
-      msg.includes("not connected") ||
-      msg.includes("aborted") ||
-      msg.includes("ECONNREFUSED") ||
-      msg.includes("fetch failed") ||
-      msg.includes("network") ||
-      err?.code === "ECONNRESET"
-    );
-  }
-
   // ── Tool registration ──────────────────────────────────────────────────
 
   function jsonSchemaToTypebox(schema: any): any {
@@ -283,7 +217,7 @@ export default function (pi: ExtensionAPI) {
 
         async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
           // Always read current server — may have been replaced by reconnect
-          const current = getServer(serverName);
+          const current = servers[serverName];
           if (!current) {
             return {
               content: [{ type: "text", text: `Error: server ${serverName} is not connected` }],

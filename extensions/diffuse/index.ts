@@ -111,6 +111,11 @@ export default function diffuseExtension(pi: ExtensionAPI) {
 			"For fast iteration, use 'schnell'. For quality, use 'dev'.",
 			"Quantize to 4 or 8 bits to reduce memory usage and speed up generation.",
 		].join("\n"),
+		promptSnippet: "Generate images locally via FLUX.1 on Apple Silicon (no cloud API)",
+		promptGuidelines: [
+			"Use 'diagram' preset for technical diagrams, 'schnell' for fast iteration, 'dev' for quality",
+			"Quantize to 4 or 8 bits to reduce memory usage and speed up generation",
+		],
 
 		parameters: Type.Object({
 			prompt:    Type.String({ description: "Text prompt describing the image to generate" }),
@@ -216,6 +221,7 @@ export default function diffuseExtension(pi: ExtensionAPI) {
 			"Output is saved to ~/.pi/visuals/ when rendered as PNG. " +
 			"Requires mmdc for PNG output (npm install -g @mermaid-js/mermaid-cli); " +
 			"falls back to syntax-highlighted source if mmdc is not installed.",
+		promptSnippet: "Render Mermaid diagrams as inline images (flowcharts, ER, sequence, etc.)",
 		parameters: Type.Object({
 			code:  Type.String({ description: "Mermaid diagram source code (raw syntax, no backtick fences)" }),
 			title: Type.Optional(Type.String({ description: "Optional title for the diagram" })),

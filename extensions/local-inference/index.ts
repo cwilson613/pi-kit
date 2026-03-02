@@ -211,6 +211,11 @@ export default function (pi: ExtensionAPI) {
       "You receive the local model's response and can review, edit, or use it. " +
       "The local model has NO access to tools, files, or conversation context — " +
       "you must include all necessary context in the prompt.",
+    promptSnippet: "Delegate sub-tasks to local LLM via Ollama (zero API cost, on-device)",
+    promptGuidelines: [
+      "Include ALL necessary context in the prompt — the local model cannot see conversation history or access tools",
+      "Use for boilerplate generation, file summarization, code transforms, and drafting text for review",
+    ],
     parameters: Type.Object({
       prompt: Type.String({
         description: "Complete prompt for the local model. Include ALL necessary context — the local model cannot see our conversation or access any tools.",
@@ -354,6 +359,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "List all models currently available in the local inference server (Ollama). " +
       "Use to check what's loaded before delegating work.",
+    promptSnippet: "List available Ollama models before delegating work",
     parameters: Type.Object({}),
     execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
       const baseUrl = getBaseUrl();

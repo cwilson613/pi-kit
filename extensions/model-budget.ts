@@ -35,6 +35,11 @@ export default function (pi: ExtensionAPI) {
       "Use 'haiku' for simple lookups, formatting, and boilerplate generation. " +
       "Downgrade when the current task is straightforward to conserve budget. " +
       "Upgrade when you encounter something that needs deeper reasoning.",
+    promptSnippet: "Switch model tier (opus/sonnet/haiku) to match task complexity and conserve budget",
+    promptGuidelines: [
+      "Downgrade to sonnet for routine file edits, command execution, and cleanup tasks",
+      "Upgrade to opus when encountering architecture decisions, complex debugging, or multi-step planning",
+    ],
     parameters: Type.Object({
       tier: StringEnum(["opus", "sonnet", "haiku"], {
         description: "Target model tier",

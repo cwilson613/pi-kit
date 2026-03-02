@@ -444,6 +444,12 @@ export default function (pi: ExtensionAPI) {
       "Use when you need context about why something was done a certain way,",
       "known problems, or project conventions.",
     ].join(" "),
+    promptSnippet: "Read accumulated project knowledge (architecture, decisions, constraints, patterns)",
+    promptGuidelines: [
+      "Use memory_query at session start or when context about prior decisions is needed",
+      "Use memory_store to persist important discoveries — facts survive across sessions",
+      "Use memory_archive to remove stale facts and memory_compact to free context window space",
+    ],
     parameters: Type.Object({}),
     async execute() {
       if (!store) {
@@ -468,6 +474,7 @@ export default function (pi: ExtensionAPI) {
       "non-obvious patterns, tricky bugs, environment details.",
       "Facts persist across sessions.",
     ].join(" "),
+    promptSnippet: "Store a fact to project memory (persists across sessions)",
     parameters: Type.Object({
       section: StringEnum(
         ["Architecture", "Decisions", "Constraints", "Known Issues", "Patterns & Conventions", "Specs"] as const,
@@ -517,6 +524,7 @@ export default function (pi: ExtensionAPI) {
       "Ideal for updating specs, correcting facts, or evolving decisions.",
       "Get fact IDs from memory_query output (shown in [brackets]).",
     ].join(" "),
+    promptSnippet: "Replace an existing fact with an updated version (atomic supersede)",
     parameters: Type.Object({
       fact_id: Type.String({ description: "ID of the fact to supersede" }),
       section: StringEnum(
@@ -560,6 +568,7 @@ export default function (pi: ExtensionAPI) {
       "Use when active memory doesn't have historical context you need —",
       "past decisions, old constraints, migration history, removed facts.",
     ].join(" "),
+    promptSnippet: "Search archived memories from previous months",
     parameters: Type.Object({
       query: Type.String({ description: "Search terms (file paths, symbol names, concepts)" }),
     }),
@@ -610,6 +619,7 @@ export default function (pi: ExtensionAPI) {
       "Common patterns: runs_on, depends_on, motivated_by, contradicts, enables, generalizes,",
       "instance_of, requires, conflicts_with, replaces, preceded_by.",
     ].join(" "),
+    promptSnippet: "Create a relationship between two facts in the knowledge graph",
     parameters: Type.Object({
       source_fact_id: Type.String({ description: "ID of the source fact" }),
       target_fact_id: Type.String({ description: "ID of the target fact" }),
@@ -681,6 +691,7 @@ export default function (pi: ExtensionAPI) {
       "Archived facts are searchable via memory_search_archive but no longer injected into context.",
       "Get fact IDs from memory_query output (shown in [brackets] when using the tool).",
     ].join(" "),
+    promptSnippet: "Archive stale facts by ID (removes from active context, keeps in archive)",
     parameters: Type.Object({
       fact_ids: Type.Array(Type.String(), {
         description: "One or more fact IDs to archive",
@@ -736,6 +747,7 @@ export default function (pi: ExtensionAPI) {
       "Use proactively when context is growing large, or after bulk archiving stale facts.",
       "The compaction runs asynchronously — the agent loop continues after it completes.",
     ].join(" "),
+    promptSnippet: "Trigger context compaction to free context window space",
     parameters: Type.Object({
       instructions: Type.Optional(Type.String({
         description: "Optional focus instructions for the compaction summary (e.g., 'preserve the architecture discussion')",

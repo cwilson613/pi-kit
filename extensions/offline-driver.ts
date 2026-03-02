@@ -265,6 +265,10 @@ export default function (pi: ExtensionAPI) {
       "Use when you detect connectivity issues, API errors, or when the user requests offline mode. " +
       "The best available local model is auto-selected: Nemotron 3 Nano (1M context), " +
       "Devstral Small 2 (384K, code-focused), or Qwen3 30B (256K, general).",
+    promptSnippet: "Switch from cloud to local Ollama model for offline operation or API failure recovery",
+    promptGuidelines: [
+      "Use when detecting repeated API errors, timeouts, or connectivity failures",
+    ],
     parameters: Type.Object({
       reason: Type.String({
         description: "Why switching to offline mode",

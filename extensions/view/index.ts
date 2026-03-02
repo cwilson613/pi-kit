@@ -661,6 +661,7 @@ export default function (pi: ExtensionAPI) {
 			"Documents (docx/xlsx/pptx/epub) convert to markdown via pandoc. " +
 			"Code files get syntax highlighting. " +
 			"For PDFs, specify a page number to view a specific page.",
+		promptSnippet: "View files inline with rich rendering (images, PDFs, docs, code)",
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the file to view" }),
 			page: Type.Optional(Type.Number({ description: "Page number for PDFs (default: first 3 pages)" })),

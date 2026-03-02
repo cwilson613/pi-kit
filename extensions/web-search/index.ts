@@ -92,6 +92,10 @@ export default function (pi: ExtensionAPI) {
 
 Available providers: brave (independent index), tavily (AI-optimized, extracts content), serper (Google results).
 Only providers with configured API keys are available.`,
+    promptSnippet: "Search the web via multiple providers (brave, tavily, serper) with quick/deep/compare modes",
+    promptGuidelines: [
+      "Use 'compare' mode for research requiring cross-source verification",
+    ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       provider: Type.Optional(

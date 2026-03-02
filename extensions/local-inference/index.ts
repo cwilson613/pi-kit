@@ -272,9 +272,11 @@ export default function (pi: ExtensionAPI) {
         // Prefer models roughly by capability heuristic (larger/newer = higher score)
         const ranked = [...cachedModels].sort((a, b) => {
           const score = (id: string) => {
-            if (id.includes("qwen2.5:32b")) return 100;
-            if (id.includes("qwen")) return 80;
-            if (id.includes("llama3.1")) return 70;
+            if (id.includes("nemotron")) return 110;
+            if (id.includes("qwen3")) return 100;
+            if (id.includes("devstral")) return 95;
+            if (id.includes("qwen2.5")) return 80;
+            if (id.includes("qwen")) return 75;
             if (id.includes("llama")) return 60;
             if (id.includes("mistral")) return 50;
             if (id.includes("gemma")) return 45;
@@ -290,7 +292,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: "No chat models available in Ollama. Pull a model with: ollama pull qwen2.5:32b",
+              text: "No chat models available in Ollama. Pull a model with: ollama pull nemotron-3-nano:30b",
             },
           ],
         };

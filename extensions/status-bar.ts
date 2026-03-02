@@ -166,39 +166,12 @@ export default function (pi: ExtensionAPI) {
     render(ctx);
   });
 
-  // — /usage command — runs ccu with optional args
+  // — /usage command — opens Claude usage dashboard
   pi.registerCommand("usage", {
-    description: "Show Claude Code usage stats (runs ccu). Args: [time] [project] e.g. '7d', '1m styrened'",
-    handler: async (args, ctx) => {
-      const ccuArgs = ["-a"]; // always show all projects unless filtered
-
-      if (args) {
-        const parts = args.trim().split(/\s+/);
-        for (const part of parts) {
-          // If it looks like a time filter (digits + unit)
-          if (/^\d+[dhmy]$/.test(part) || /^\d{4}-/.test(part)) {
-            ccuArgs.push("-t", part);
-          } else {
-            ccuArgs.push("-p", part);
-          }
-        }
-      }
-
-      ctx.ui.notify("Running claude-code-usage...", "info");
-
-      try {
-        const result = await pi.exec("npx", ["claude-code-usage", ...ccuArgs], {
-          timeout: 30000,
-        });
-        if (result.stdout) {
-          ctx.ui.notify(result.stdout, "info");
-        }
-        if (result.stderr && result.code !== 0) {
-          ctx.ui.notify(result.stderr, "error");
-        }
-      } catch (e: any) {
-        ctx.ui.notify(`ccu failed: ${e.message}`, "error");
-      }
+    description: "Open Claude usage dashboard in browser",
+    handler: async (_args, ctx) => {
+      await pi.exec("open", ["https://claude.ai/settings/usage"]);
+      ctx.ui.notify("Opened claude.ai/settings/usage", "info");
     },
   });
 }

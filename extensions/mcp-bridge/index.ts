@@ -48,10 +48,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
 export default function (pi: ExtensionAPI) {
   const servers: Record<string, ConnectedServer> = {};
-  const configPath = path.join(
-    path.dirname(new URL(import.meta.url).pathname),
-    "mcp.json"
-  );
+  const configPath = path.join(import.meta.dirname, "mcp.json");
 
   // In-flight reconnect promises, keyed by server name. Prevents concurrent
   // reconnect attempts from racing and leaking duplicate connections.

@@ -649,36 +649,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ------------------------------------------------------------------
-	// render_diagram tool — render inline Mermaid code as an image
-	// ------------------------------------------------------------------
-	pi.registerTool({
-		name: "render_diagram",
-		label: "Render Diagram",
-		description:
-			"Render inline Mermaid diagram source code as an image inline in the terminal. " +
-			"Use this to visualize architecture diagrams, flowcharts, ER diagrams, sequence diagrams, " +
-			"class diagrams, state machines, Gantt charts, and any other Mermaid diagram type. " +
-			"The diagram is written to a temp file and rendered via mmdc if available, " +
-			"otherwise displayed as syntax-highlighted source.",
-		parameters: Type.Object({
-			code: Type.String({ description: "Mermaid diagram source code (the raw mermaid syntax, without backtick fences)" }),
-			title: Type.Optional(Type.String({ description: "Optional title for the diagram" })),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const { writeFileSync } = require("node:fs");
-			const tmp = mkdtempSync(join(tmpdir(), "pi-diagram-"));
-			const mmdPath = join(tmp, "diagram.mmd");
-			writeFileSync(mmdPath, params.code, "utf-8");
-			const result = viewDiagram(mmdPath);
-			// Prepend title if provided
-			if (params.title && result.content[0]?.type === "text") {
-				(result.content[0] as any).text = `# ${params.title}\n\n${(result.content[0] as any).text}`;
-			}
-			return result;
-		},
-	});
-
-	// ------------------------------------------------------------------
 	// view tool — LLM can show files inline
 	// ------------------------------------------------------------------
 	pi.registerTool({

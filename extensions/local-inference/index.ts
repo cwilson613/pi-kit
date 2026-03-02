@@ -2,7 +2,7 @@
  * local-inference — Delegate sub-tasks to locally running LLM inference servers
  *
  * Registers an `ask_local_model` tool that the driving agent (Claude) can call to
- * delegate specific sub-tasks to local models running in LMStudio, Ollama, or any
+ * delegate specific sub-tasks to local models running via Ollama or any
  * OpenAI-compatible local server. Zero API cost for delegated work.
  *
  * Use cases:
@@ -15,18 +15,17 @@
  * Architecture:
  *   This is Option C (tool-callable sub-agent): the driving agent stays Claude
  *   with reliable tool use and reasoning, but can offload cheap work to local models.
- *   The abstraction layer supports multiple backends, starting with LMStudio.
+ *   The abstraction layer supports any OpenAI-compatible backend. Default: Ollama.
  *
  * Environment:
- *   LMSTUDIO_URL — LMStudio API base URL (default: http://localhost:1234)
- *   LOCAL_INFERENCE_URL — generic override for any OpenAI-compatible server
+ *   LOCAL_INFERENCE_URL — API base URL (default: http://localhost:11434, Ollama)
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 
-const DEFAULT_URL = "http://localhost:1234";
+const DEFAULT_URL = "http://localhost:11434";
 
 interface LocalModel {
   id: string;
@@ -57,7 +56,7 @@ interface ChatResponse {
 }
 
 function getBaseUrl(): string {
-  return process.env.LOCAL_INFERENCE_URL || process.env.LMSTUDIO_URL || DEFAULT_URL;
+  return process.env.LOCAL_INFERENCE_URL || DEFAULT_URL;
 }
 
 async function discoverModels(baseUrl: string): Promise<LocalModel[]> {
@@ -158,7 +157,7 @@ export default function (pi: ExtensionAPI) {
     label: "Ask Local Model",
     description:
       "Delegate a sub-task to a locally running LLM (zero API cost). " +
-      "The local model runs on-device via LMStudio. Use for:\n" +
+      "The local model runs on-device via Ollama. Use for:\n" +
       "- Boilerplate/template generation\n" +
       "- File summarization or content transforms\n" +
       "- Code formatting, conversion, or simple generation\n" +
@@ -215,7 +214,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: `Local inference server not available at ${baseUrl}. Is LMStudio running?`,
+              text: `Local inference server not available at ${baseUrl}. Is Ollama running? Start with: ollama serve`,
             },
           ],
         };
@@ -224,16 +223,15 @@ export default function (pi: ExtensionAPI) {
       // Model selection: explicit > auto (prefer largest/most capable)
       let modelId = params.model;
       if (!modelId) {
-        // Prefer models roughly by capability heuristic:
-        // gpt-oss-20b > nemotron > glm > others
+        // Prefer models roughly by capability heuristic (larger/newer = higher score)
         const ranked = [...cachedModels].sort((a, b) => {
           const score = (id: string) => {
-            if (id.includes("gpt-oss")) return 100;
-            if (id.includes("nemotron")) return 80;
-            if (id.includes("qwen")) return 70;
+            if (id.includes("qwen2.5:32b")) return 100;
+            if (id.includes("qwen")) return 80;
+            if (id.includes("llama3.1")) return 70;
             if (id.includes("llama")) return 60;
             if (id.includes("mistral")) return 50;
-            if (id.includes("glm")) return 40;
+            if (id.includes("gemma")) return 45;
             return 30;
           };
           return score(b.id) - score(a.id);
@@ -246,7 +244,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: "No chat models available in LMStudio. Load a model and try again.",
+              text: "No chat models available in Ollama. Pull a model with: ollama pull qwen2.5:32b",
             },
           ],
         };
@@ -309,7 +307,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: `No models available at ${baseUrl}. Is LMStudio running?`,
+              text: `No models available at ${baseUrl}. Is Ollama running? Start with: ollama serve`,
             },
           ],
         };
@@ -338,7 +336,7 @@ export default function (pi: ExtensionAPI) {
       const models = await refreshModels();
       const all = await listAllModels(getBaseUrl());
       if (all.length === 0) {
-        ctx.ui.notify("No local models available — is LMStudio running?", "warning");
+        ctx.ui.notify("No local models available — is Ollama running?", "warning");
       } else {
         const names = all.map((m) => m.id).join("\n  ");
         ctx.ui.notify(`Local models:\n  ${names}`, "info");

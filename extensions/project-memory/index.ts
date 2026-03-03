@@ -60,6 +60,49 @@ import { migrateToFactStore, needsMigration, markMigrated } from "./migration.js
 import { SECTIONS } from "./template.js";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
 
+/**
+ * Compute degeneracy pressure as an exponential curve from onset to warning threshold.
+ * Returns 0 below onset, 1 at warning threshold, exponential growth between.
+ *
+ * The curve is: pressure = (e^(k*t) - 1) / (e^k - 1)
+ * where t = (pct - onset) / (warning - onset), normalized 0→1
+ * and k controls steepness (higher = more exponential, 3 gives ~20:1 ratio)
+ */
+function computeDegeneracyPressure(
+  pct: number,
+  onset: number,
+  warning: number,
+  k = 3,
+): number {
+  if (pct < onset) return 0;
+  if (pct >= warning) return 1;
+  const t = (pct - onset) / (warning - onset);
+  return (Math.exp(k * t) - 1) / (Math.exp(k) - 1);
+}
+
+/**
+ * Map degeneracy pressure (0→1) to a context-appropriate guidance message.
+ * Messages escalate in urgency and specificity as pressure increases.
+ */
+function pressureGuidance(pressure: number, pct: number): string | null {
+  if (pressure <= 0) return null;
+
+  // Five levels of escalating guidance
+  if (pressure < 0.15) {
+    return `📊 Context: ${pct}% — Wrap up current threads before starting new large tasks.`;
+  }
+  if (pressure < 0.35) {
+    return `📊 Context: ${pct}% — Finish current work, then compact before starting anything new.`;
+  }
+  if (pressure < 0.6) {
+    return `📊 Context: ${pct}% (elevated) — Complete your current task and call **memory_compact**. Avoid starting new multi-step work.`;
+  }
+  if (pressure < 0.85) {
+    return `⚠️ Context: ${pct}% (high) — You should **memory_compact** now unless you're mid-implementation with uncommitted changes. New tasks will not fit.`;
+  }
+  return `🔴 Context: ${pct}% (critical) — Call **memory_compact** immediately. All stored facts and working memory survive compaction.`;
+}
+
 const VALID_MIND_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
 function sanitizeMindName(input: string): string | null {
@@ -654,16 +697,24 @@ export default function (pi: ExtensionAPI) {
       ? ` Showing ${injectionMode} subset — use memory_recall for more.`
       : "";
 
-    // Context pressure warning
+    // Context pressure — continuous gradient from onset through warning
     let pressureWarning = "";
-    if (compactionWarned && !autoCompacted) {
+    if (!autoCompacted) {
       const usage = ctx.getContextUsage();
       const pct = usage?.percent != null ? Math.round(usage.percent) : null;
-      if (pct !== null && pct >= config.compactionWarningPercent) {
-        pressureWarning = `\n\n⚠️ **Context pressure: ${pct}%** — You should call **memory_compact** soon. ` +
-          `All stored facts and working memory survive compaction. ` +
-          `If you're between tasks or at a natural boundary, compact now. ` +
-          `Auto-compaction triggers at ${config.compactionAutoPercent}%.`;
+      if (pct !== null) {
+        const pressure = computeDegeneracyPressure(
+          pct,
+          config.pressureOnsetPercent,
+          config.compactionWarningPercent,
+        );
+        const guidance = pressureGuidance(pressure, pct);
+        if (guidance) {
+          pressureWarning = `\n\n${guidance}` +
+            (compactionWarned
+              ? ` Auto-compaction triggers at ${config.compactionAutoPercent}%.`
+              : "");
+        }
       }
     }
 

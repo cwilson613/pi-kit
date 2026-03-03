@@ -246,9 +246,100 @@ export class FactStore {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.initSchema();
+    this.runMigrations();
+  }
+
+  /** Current schema version — bump when adding migrations */
+  static readonly SCHEMA_VERSION = 2;
+
+  private getSchemaVersion(): number {
+    try {
+      const row = this.db.prepare(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`).get();
+      return row?.version ?? 0;
+    } catch {
+      return 0; // Table doesn't exist yet
+    }
+  }
+
+  private setSchemaVersion(version: number): void {
+    this.db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`
+    ).run(version, new Date().toISOString());
+  }
+
+  /**
+   * Run schema migrations incrementally.
+   * Each migration is idempotent and tagged with a version number.
+   * Version 1 = initial schema (CREATE TABLE IF NOT EXISTS in initSchema).
+   * Version 2+ = incremental ALTER/CREATE statements.
+   */
+  private runMigrations(): void {
+    const current = this.getSchemaVersion();
+    const target = FactStore.SCHEMA_VERSION;
+
+    if (current >= target) return;
+
+    // Migration 1→2: Add vector and episode tables (v3 Hippocampus)
+    // These use CREATE TABLE IF NOT EXISTS so they're idempotent even for
+    // databases that already have them from the original non-versioned code.
+    if (current < 2) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS facts_vec (
+          fact_id    TEXT PRIMARY KEY,
+          embedding  BLOB NOT NULL,
+          model      TEXT NOT NULL,
+          dims       INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS episodes (
+          id          TEXT PRIMARY KEY,
+          mind        TEXT NOT NULL DEFAULT 'default',
+          title       TEXT NOT NULL,
+          narrative   TEXT NOT NULL,
+          date        TEXT NOT NULL,
+          session_id  TEXT,
+          created_at  TEXT NOT NULL,
+          FOREIGN KEY (mind) REFERENCES minds(name) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS episode_facts (
+          episode_id TEXT NOT NULL,
+          fact_id    TEXT NOT NULL,
+          PRIMARY KEY (episode_id, fact_id),
+          FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
+          FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_episodes_mind
+          ON episodes(mind, date DESC);
+        CREATE INDEX IF NOT EXISTS idx_episodes_date
+          ON episodes(date DESC);
+
+        CREATE TABLE IF NOT EXISTS episodes_vec (
+          episode_id TEXT PRIMARY KEY,
+          embedding  BLOB NOT NULL,
+          model      TEXT NOT NULL,
+          dims       INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+        );
+      `);
+      this.setSchemaVersion(2);
+    }
   }
 
   private initSchema(): void {
+    // Schema version tracking — must be first so migrations can read it
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version    INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+    `);
+
+    // Version 1 tables — core schema
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS minds (
         name        TEXT PRIMARY KEY,
@@ -364,56 +455,12 @@ export class FactStore {
       `);
     }
 
-    // Vector embeddings table for semantic retrieval
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS facts_vec (
-        fact_id    TEXT PRIMARY KEY,
-        embedding  BLOB NOT NULL,
-        model      TEXT NOT NULL,
-        dims       INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE
-      );
-    `);
+    // Vector and episode tables are created in runMigrations() (version 2+).
 
-    // Episode table for session narratives
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS episodes (
-        id          TEXT PRIMARY KEY,
-        mind        TEXT NOT NULL DEFAULT 'default',
-        title       TEXT NOT NULL,
-        narrative   TEXT NOT NULL,
-        date        TEXT NOT NULL,
-        session_id  TEXT,
-        created_at  TEXT NOT NULL,
-        FOREIGN KEY (mind) REFERENCES minds(name) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS episode_facts (
-        episode_id TEXT NOT NULL,
-        fact_id    TEXT NOT NULL,
-        PRIMARY KEY (episode_id, fact_id),
-        FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
-        FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_episodes_mind
-        ON episodes(mind, date DESC);
-      CREATE INDEX IF NOT EXISTS idx_episodes_date
-        ON episodes(date DESC);
-    `);
-
-    // Vector table for episode embeddings
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS episodes_vec (
-        episode_id TEXT PRIMARY KEY,
-        embedding  BLOB NOT NULL,
-        model      TEXT NOT NULL,
-        dims       INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
-      );
-    `);
+    // Mark version 1 if this is a fresh database
+    if (this.getSchemaVersion() === 0) {
+      this.setSchemaVersion(1);
+    }
 
     // Ensure 'default' mind exists
     const defaultMind = this.db.prepare(`SELECT 1 FROM minds WHERE name = 'default'`).get();

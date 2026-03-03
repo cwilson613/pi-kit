@@ -190,6 +190,18 @@ RULES:
 - Keep fact content self-contained and concise (one line, no bullet prefix).
 - Valid sections: Architecture, Decisions, Constraints, Known Issues, Patterns & Conventions, Specs
 
+FACT DENSITY — POINTERS OVER CONTENT:
+- Facts are injected into every agent turn. Every token counts.
+- For implementation details (formulas, method signatures, schemas, config shapes):
+  store a POINTER fact — name the concept + reference the file path. The agent can
+  read the file when it actually needs the details.
+  GOOD: "project-memory pressure system: 3 tiers (40%/65%/85%). See extensions/project-memory/pressure.ts"
+  BAD:  "project-memory degeneracy pressure uses computeDegeneracyPressure(pct, onset, warning, k=3) with formula (e^(k*t)-1)/(e^k-1) where t=..."
+- INLINE the content only when the fact is frequently needed and short enough that a
+  file read would waste more tokens than the inline content (e.g., env var names,
+  CLI flags, version numbers, short constraints).
+- When in doubt: if the fact exceeds ~40 words, it probably belongs as a pointer.
+
 TARGET: aim for at most ${maxLines} active facts total. If the memory is near capacity, use "archive" on the least relevant facts to make room.
 
 If the conversation contains nothing worth remembering, output nothing.`;
@@ -294,7 +306,11 @@ RULES:
 - Connections should represent genuine analytical insight, not surface keyword overlap.
 - Prefer fewer, high-quality connections over many weak ones.
 - A connection between facts in different sections is more valuable than within the same section.
-- If the new project facts don't contain anything generalizable, output nothing.`;
+- If the new project facts don't contain anything generalizable, output nothing.
+
+FACT DENSITY — keep facts concise (~40 words max). For implementation details,
+reference file paths instead of inlining formulas/schemas/signatures. Global facts
+especially must be lean since they're injected across ALL projects.`;
 }
 
 /**

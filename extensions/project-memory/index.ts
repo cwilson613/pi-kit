@@ -1,5 +1,5 @@
 /**
- * Project Memory Extension — v3 (Hippocampus)
+ * Project Memory Extension
  *
  * Persistent, cross-session project knowledge stored in SQLite with
  * confidence-decay reinforcement, semantic retrieval via local embeddings,
@@ -667,7 +667,7 @@ export default function (pi: ExtensionAPI) {
       const globalMind = globalStore.getActiveMind() ?? "default";
       const globalFactCount = globalStore.countActiveFacts(globalMind);
       if (globalFactCount > 0) {
-        const globalRendered = globalStore.renderForInjection(globalMind, { maxFacts: 15 });
+        const globalRendered = globalStore.renderForInjection(globalMind, { maxFacts: 15, maxEdges: 0 });
         globalSection = `\n\n<!-- Global Knowledge — cross-project facts and connections -->\n${globalRendered}`;
       }
     }
@@ -1031,6 +1031,11 @@ export default function (pi: ExtensionAPI) {
       "Facts persist across sessions.",
     ].join(" "),
     promptSnippet: "Store a fact to project memory (persists across sessions)",
+    promptGuidelines: [
+      "Use memory_store to persist important discoveries — facts survive across sessions",
+      "Prefer pointer facts ('X does Y. See path/to/file.ts') over inlining implementation details",
+      "Store facts when you discover: architecture decisions, non-obvious constraints, tricky bugs, environment quirks",
+    ].join("\n"),
     parameters: Type.Object({
       section: StringEnum(
         ["Architecture", "Decisions", "Constraints", "Known Issues", "Patterns & Conventions", "Specs"] as const,
@@ -1333,6 +1338,9 @@ export default function (pi: ExtensionAPI) {
       "The compaction runs asynchronously — the agent loop continues after it completes.",
     ].join(" "),
     promptSnippet: "Trigger context compaction to free context window space",
+    promptGuidelines: [
+      "Use proactively when context is growing large, or after bulk archiving stale facts",
+    ].join("\n"),
     parameters: Type.Object({
       instructions: Type.Optional(Type.String({
         description: "Optional focus instructions for the compaction summary (e.g., 'preserve the architecture discussion')",

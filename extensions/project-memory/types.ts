@@ -25,6 +25,12 @@ export interface MemoryConfig {
   compactionWarningPercent: number;
   /** Context % at which to auto-compact without asking */
   compactionAutoPercent: number;
+  /** Use local model as fallback when cloud compaction fails */
+  compactionLocalFallback: boolean;
+  /** Timeout for local model compaction inference in ms */
+  compactionLocalTimeout: number;
+  /** Max consecutive compaction retry attempts before giving up for the session */
+  compactionRetryLimit: number;
 }
 
 export const DEFAULT_CONFIG: MemoryConfig = {
@@ -39,5 +45,8 @@ export const DEFAULT_CONFIG: MemoryConfig = {
   pressureOnsetPercent: 40,
   compactionWarningPercent: 65,
   compactionAutoPercent: 85,
+  compactionLocalFallback: true,
+  compactionLocalTimeout: 120_000,
+  compactionRetryLimit: 3,
 };
 

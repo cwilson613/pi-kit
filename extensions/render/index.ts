@@ -32,7 +32,7 @@ import { readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { mkdtempSync } from "node:fs";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "../lib/typebox-helpers";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 

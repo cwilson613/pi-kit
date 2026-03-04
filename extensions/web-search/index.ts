@@ -4,7 +4,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "../lib/typebox-helpers";
 import { getAvailableProviders, getProvider, type SearchResult } from "./providers.ts";
 
 function deduplicateResults(results: SearchResult[]): SearchResult[] {

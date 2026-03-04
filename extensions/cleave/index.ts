@@ -12,7 +12,7 @@
  * The Claude Code SDK calls are replaced with pi's extension API.
  */
 
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "../lib/typebox-helpers";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 

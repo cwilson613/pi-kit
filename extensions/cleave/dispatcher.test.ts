@@ -3,49 +3,11 @@
  *
  * We can't easily test the full dispatch pipeline (requires pi subprocess),
  * but the semaphore is the critical fix and is testable in isolation.
- * We also re-export it for testing via a workaround since it's not exported.
  */
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-
-// ── AsyncSemaphore reimplemented for testing ────────────────────────────────
-// Mirrors the implementation in dispatcher.ts exactly.
-// If the implementation changes, this must change too.
-
-class AsyncSemaphore {
-	private count: number;
-	private readonly limit: number;
-	private readonly waiters: Array<() => void> = [];
-
-	constructor(limit: number) {
-		this.limit = limit;
-		this.count = 0;
-	}
-
-	async acquire(): Promise<void> {
-		if (this.count < this.limit) {
-			this.count++;
-			return;
-		}
-		return new Promise<void>((resolve) => {
-			this.waiters.push(resolve);
-		});
-	}
-
-	release(): void {
-		const next = this.waiters.shift();
-		if (next) {
-			next();
-		} else {
-			this.count--;
-		}
-	}
-
-	/** Expose count for testing */
-	get activeCount(): number { return this.count; }
-	get waitingCount(): number { return this.waiters.length; }
-}
+import { AsyncSemaphore } from "./dispatcher.js";
 
 // ─── AsyncSemaphore ─────────────────────────────────────────────────────────
 

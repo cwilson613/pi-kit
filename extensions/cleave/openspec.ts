@@ -158,17 +158,24 @@ export function parseTasksFile(content: string): TaskGroup[] {
 /**
  * Convert OpenSpec task groups to cleave ChildPlan[].
  *
- * Each group becomes a child. Dependencies are inferred:
- * - Groups are assumed independent by default
- * - If group title contains "after X" or "requires X", a dependency is added
+ * Each group becomes a child. Dependencies are inferred from:
+ * - Explicit markers in title: "after X", "requires X", "depends on X"
+ * - Task text references to earlier group titles
  *
- * Returns null if fewer than 2 groups (not worth cleaving).
+ * Groups where ALL tasks are already done are filtered out.
+ *
+ * Returns null if fewer than 2 executable groups (not worth cleaving).
  */
 export function taskGroupsToChildPlans(groups: TaskGroup[]): ChildPlan[] | null {
-	if (groups.length < 2) return null;
+	// Filter out groups where all tasks are done
+	const activeGroups = groups.filter((g) =>
+		g.tasks.length === 0 || g.tasks.some((t) => !t.done),
+	);
+
+	if (activeGroups.length < 2) return null;
 
 	// Cap at 4 children (cleave limit)
-	const effectiveGroups = groups.length > 4 ? mergeSmallGroups(groups, 4) : groups;
+	const effectiveGroups = activeGroups.length > 4 ? mergeSmallGroups(activeGroups, 4) : activeGroups;
 
 	const plans: ChildPlan[] = effectiveGroups.map((group) => {
 		const label = group.title
@@ -198,7 +205,47 @@ export function taskGroupsToChildPlans(groups: TaskGroup[]): ChildPlan[] | null 
 		};
 	});
 
+	// Infer dependencies from explicit markers and title references
+	inferDependencies(plans);
+
 	return plans;
+}
+
+/**
+ * Infer inter-group dependencies from explicit markers in descriptions.
+ *
+ * Looks for patterns like:
+ * - "after <label>" or "after <title words>"
+ * - "requires <label>"
+ * - "depends on <label>"
+ * - Task text referencing an earlier group's title
+ */
+function inferDependencies(plans: ChildPlan[]): void {
+	const labelSet = new Set(plans.map((p) => p.label));
+
+	for (let i = 0; i < plans.length; i++) {
+		const text = plans[i].description.toLowerCase();
+
+		for (let j = 0; j < plans.length; j++) {
+			if (i === j) continue;
+			const otherLabel = plans[j].label;
+			// Convert label back to words for fuzzy matching: "database-layer" → "database layer"
+			const otherWords = otherLabel.replace(/-/g, " ");
+
+			// Explicit markers: "after X", "requires X", "depends on X"
+			const markers = [
+				`after ${otherLabel}`, `after ${otherWords}`,
+				`requires ${otherLabel}`, `requires ${otherWords}`,
+				`depends on ${otherLabel}`, `depends on ${otherWords}`,
+			];
+
+			if (markers.some((m) => text.includes(m))) {
+				if (labelSet.has(otherLabel) && !plans[i].dependsOn.includes(otherLabel)) {
+					plans[i].dependsOn.push(otherLabel);
+				}
+			}
+		}
+	}
 }
 
 /**
@@ -221,7 +268,7 @@ export function openspecChangeToSplitPlan(changePath: string): SplitPlan | null 
 	if (existsSync(proposalPath)) {
 		const proposal = readFileSync(proposalPath, "utf-8");
 		// Extract intent section
-		const intentMatch = proposal.match(/##\s+Intent\s*\n([\s\S]*?)(?=\n##|\n$)/);
+		const intentMatch = proposal.match(/##\s+Intent\s*\n([\s\S]*?)(?=\n##|$)/);
 		if (intentMatch) {
 			rationale = intentMatch[1].trim().slice(0, 200);
 		}

@@ -160,7 +160,7 @@ async function spawnChild(
  * Simple async semaphore. Guarantees that at most `limit` tasks run
  * concurrently. Uses a queue of resolve callbacks — no polling, no races.
  */
-class AsyncSemaphore {
+export class AsyncSemaphore {
 	private count: number;
 	private readonly limit: number;
 	private readonly waiters: Array<() => void> = [];
@@ -189,6 +189,11 @@ class AsyncSemaphore {
 			this.count--;
 		}
 	}
+
+	/** Current number of acquired slots (for testing/debugging). */
+	get activeCount(): number { return this.count; }
+	/** Current number of waiters in queue (for testing/debugging). */
+	get waitingCount(): number { return this.waiters.length; }
 }
 
 // ─── Dispatch orchestration ─────────────────────────────────────────────────

@@ -14,7 +14,7 @@
 
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
+import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { assessDirective, PATTERNS } from "./assessment.js";
@@ -179,8 +179,23 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 					const matched = executableChanges.find((c) =>
 						directiveSlug.includes(c.name) || c.name.includes(directiveSlug.slice(0, 20)),
 					);
-					const change = matched || executableChanges[0];
-					const plan = openspecChangeToSplitPlan(change.path);
+
+					// Only use OpenSpec if we found a matching change — never silently
+					// pick an unrelated change
+					if (!matched) {
+						// No match — mention available changes but fall through to LLM planner
+						pi.sendMessage({
+							customType: "view",
+							content: [
+								`OpenSpec changes found but none matched the directive.`,
+								`Available: ${executableChanges.map((c) => c.name).join(", ")}`,
+								`Falling back to LLM planner.`,
+							].join("\n"),
+							display: true,
+						});
+					}
+					const change = matched;
+					const plan = change ? openspecChangeToSplitPlan(change.path) : null;
 
 					if (plan) {
 						const planJson = JSON.stringify(plan, null, 2);
@@ -434,7 +449,28 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			}
 
 			// ── CLEANUP ────────────────────────────────────────────────
-			await cleanupWorktrees(pi, repoPath);
+			// Only clean up worktrees if all merges succeeded. On merge
+			// failure, preserve branches so the user can manually resolve.
+			const mergeFailures = mergeResults.filter((m) => !m.success);
+			if (mergeFailures.length === 0) {
+				await cleanupWorktrees(pi, repoPath);
+			} else {
+				// Still prune worktree directories (they're copies), but keep the branches
+				const wtResult = await pi.exec("git", ["worktree", "list", "--porcelain"], {
+					cwd: repoPath, timeout: 5_000,
+				});
+				for (const line of wtResult.stdout.split("\n")) {
+					if (line.startsWith("worktree ")) {
+						const wtPath = line.replace("worktree ", "").trim();
+						if (wtPath.includes("cleave") || wtPath.includes(".cleave-wt-")) {
+							await pi.exec("git", ["worktree", "remove", "--force", wtPath], {
+								cwd: repoPath, timeout: 10_000,
+							}).catch(() => {});
+						}
+					}
+				}
+				await pi.exec("git", ["worktree", "prune"], { cwd: repoPath, timeout: 5_000 }).catch(() => {});
+			}
 
 			// ── REPORT ─────────────────────────────────────────────────
 			state.phase = "complete";
@@ -454,7 +490,6 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			// Build report
 			const completedCount = state.children.filter((c) => c.status === "completed").length;
 			const failedCount = state.children.filter((c) => c.status === "failed").length;
-			const mergeFailures = mergeResults.filter((m) => !m.success);
 
 			const reportLines = [
 				`## Cleave Report: ${state.runId}`,
@@ -499,7 +534,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			}
 
 			const rawReport = reportLines.join("\n");
-			const truncation = truncateHead(rawReport, {
+			const truncation = truncateTail(rawReport, {
 				maxLines: DEFAULT_MAX_LINES,
 				maxBytes: DEFAULT_MAX_BYTES,
 			});

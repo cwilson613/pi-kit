@@ -205,17 +205,17 @@ const SYSTEM_SIGNALS: Record<string, string[]> = {
 // CORE FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Pattern for file extension detection. Use via fileExtMatches() — never call .test() on this directly. */
-const FILE_EXT_PATTERN = /\w+\.(ts|tsx|js|jsx|py|java|go|rs|rb|php|cpp|c|h|kt|swift|cs|m|scala)\b/g;
+/** Source pattern for file extension detection — shared by the safe wrappers below. */
+const FILE_EXT_SOURCE = String.raw`\w+\.(ts|tsx|js|jsx|py|java|go|rs|rb|php|cpp|c|h|kt|swift|cs|m|scala)\b`;
 
 /** Safe wrapper: always returns fresh matches, no global state leakage. */
 function fileExtMatches(text: string): RegExpMatchArray[] {
-	return [...text.matchAll(new RegExp(FILE_EXT_PATTERN.source, "g"))];
+	return [...text.matchAll(new RegExp(FILE_EXT_SOURCE, "g"))];
 }
 
 /** Safe wrapper for test: uses a non-global regex, no lastIndex mutation. */
 function hasFileExt(text: string): boolean {
-	return new RegExp(FILE_EXT_PATTERN.source).test(text);
+	return new RegExp(FILE_EXT_SOURCE).test(text);
 }
 
 /**

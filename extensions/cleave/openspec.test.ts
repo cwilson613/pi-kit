@@ -157,6 +157,62 @@ describe("taskGroupsToChildPlans", () => {
 		assert.ok(plans.length <= 4, `Expected <= 4, got ${plans.length}`);
 	});
 
+	it("filters out groups where all tasks are done", () => {
+		const groups = [
+			{ number: 1, title: "Done Group", tasks: [
+				{ id: "1.1", text: "Already done", done: true },
+			]},
+			{ number: 2, title: "Active A", tasks: [
+				{ id: "2.1", text: "Do this", done: false },
+			]},
+			{ number: 3, title: "Active B", tasks: [
+				{ id: "3.1", text: "Do that", done: false },
+			]},
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.ok(plans);
+		assert.equal(plans.length, 2);
+		assert.equal(plans[0].label, "active-a");
+		assert.equal(plans[1].label, "active-b");
+	});
+
+	it("returns null when all groups are done except one", () => {
+		const groups = [
+			{ number: 1, title: "Done", tasks: [{ id: "1.1", text: "x", done: true }] },
+			{ number: 2, title: "Active", tasks: [{ id: "2.1", text: "y", done: false }] },
+		];
+		assert.equal(taskGroupsToChildPlans(groups), null);
+	});
+
+	it("infers dependencies from 'after' markers", () => {
+		const groups = [
+			{ number: 1, title: "Database", tasks: [{ id: "1.1", text: "Create tables", done: false }] },
+			{ number: 2, title: "API", tasks: [{ id: "2.1", text: "Build endpoints after database", done: false }] },
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.ok(plans);
+		assert.deepEqual(plans[1].dependsOn, ["database"]);
+	});
+
+	it("infers dependencies from 'requires' markers", () => {
+		const groups = [
+			{ number: 1, title: "Auth Layer", tasks: [{ id: "1.1", text: "Add JWT", done: false }] },
+			{ number: 2, title: "Protected Routes", tasks: [{ id: "2.1", text: "Requires auth layer middleware", done: false }] },
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.ok(plans);
+		assert.deepEqual(plans[1].dependsOn, ["auth-layer"]);
+	});
+
+	it("does not infer self-dependencies", () => {
+		const groups = [
+			{ number: 1, title: "Setup", tasks: [{ id: "1.1", text: "Setup requires setup tools", done: false }] },
+			{ number: 2, title: "Build", tasks: [{ id: "2.1", text: "Build it", done: false }] },
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.deepEqual(plans[0].dependsOn, []);
+	});
+
 	it("normalizes labels to kebab-case", () => {
 		const groups = [
 			{ number: 1, title: "My Cool Feature!", tasks: [{ id: "1.1", text: "a", done: false }] },
@@ -307,5 +363,12 @@ In scope: login, register, logout
 		fs.writeFileSync(path.join(dir, "tasks.md"), "## 1. A\n- [ ] x\n## 2. B\n- [ ] y");
 		const plan = openspecChangeToSplitPlan(dir)!;
 		assert.ok(plan.rationale.includes("OpenSpec change"));
+	});
+
+	it("extracts intent from proposal without trailing newline", () => {
+		fs.writeFileSync(path.join(dir, "tasks.md"), "## 1. A\n- [ ] x\n## 2. B\n- [ ] y");
+		fs.writeFileSync(path.join(dir, "proposal.md"), "## Intent\nAdd dark mode support.");
+		const plan = openspecChangeToSplitPlan(dir)!;
+		assert.ok(plan.rationale.includes("dark mode"), `Got: ${plan.rationale}`);
 	});
 });

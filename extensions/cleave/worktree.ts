@@ -6,7 +6,13 @@
  * Completed branches are merged back to base after harvesting.
  */
 
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
+/** Base directory for cleave worktrees. */
+const WORKTREE_HOME = join(homedir(), ".pi", "cleave", "wt");
 
 export interface WorktreeInfo {
 	path: string;
@@ -70,8 +76,9 @@ export async function createWorktree(
 	baseBranch: string,
 ): Promise<WorktreeInfo> {
 	const branch = `cleave/${childId}-${childLabel}`;
-	// Worktree goes in a sibling directory to avoid cluttering the repo
-	const worktreePath = `${repoPath}/../.cleave-wt-${childId}-${childLabel}`;
+	// Worktree goes in ~/.pi/cleave/wt/ to avoid polluting the repo or its parent
+	mkdirSync(WORKTREE_HOME, { recursive: true });
+	const worktreePath = join(WORKTREE_HOME, `${childId}-${childLabel}`);
 
 	// Delete branch if it already exists (leftover from a previous run)
 	await pi.exec("git", ["branch", "-D", branch], {
@@ -161,8 +168,12 @@ export async function cleanupWorktrees(
 	const worktreePaths: string[] = [];
 
 	for (const line of lines) {
-		if (line.startsWith("worktree ") && line.includes(".cleave-wt-")) {
-			worktreePaths.push(line.replace("worktree ", "").trim());
+		if (line.startsWith("worktree ")) {
+			const wtPath = line.replace("worktree ", "").trim();
+			// Match worktrees in the cleave wt directory or legacy .cleave-wt- locations
+			if (wtPath.includes(WORKTREE_HOME) || wtPath.includes(".cleave-wt-")) {
+				worktreePaths.push(wtPath);
+			}
 		}
 	}
 

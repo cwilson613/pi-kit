@@ -1,54 +1,65 @@
 /**
- * status-bar — Severity-colored context gauge + turn counter
+ * status-bar — Severity-colored context gauge with memory segment + turn counter
  *
- * Renders: T{turns} ████████░░░░░░░░ {pct}%
+ * Renders: T{turns} ▓▓████████░░░░░░ {pct}%
+ *                    ^^-- memory (accent)
+ *                      ^^^^^^^^-- conversation (severity-colored)
+ *                              ^^^^^^^^-- free (dim)
  *
- * Bar color = context fullness severity (a direct value proposition —
- * it affects both remaining window AND inference quality):
- *   green (<70%), yellow (70-90%), red (>90%)
+ * The memory segment shows how much of the context window is occupied
+ * by injected project memory (facts, episodes, global knowledge).
+ * Data comes from shared-state.ts, written by the project-memory extension.
  *
- * The built-in footer already renders token counts, cost, model, and
- * context %/window on line 2 — this extension adds only the visual
- * gauge and turn counter.
+ * Bar colors:
+ *   accent       — memory injection (facts/episodes/global knowledge)
+ *   green/yellow/red — conversation context (severity by total fullness)
+ *   dim          — free space
  *
- * Source: ctx.getContextUsage().percent
+ * Source: ctx.getContextUsage().percent, sharedState.memoryTokenEstimate
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { sharedState } from "./shared-state.js";
 
 export default function (pi: ExtensionAPI) {
   let turns = 0;
 
   /**
-   * Build a context gauge colored by severity.
+   * Build a context gauge with a memory segment.
    *
-   * Color reflects a single value proposition: context fullness directly
-   * affects remaining window capacity AND current inference quality.
-   *   green (<70%)  — plenty of room
-   *   yellow (70-90%) — getting tight, consider compacting
-   *   red (>90%)    — compact now, quality is degrading
-   *
-   * Token types (cache/input/output) are NOT color-coded here — they have
-   * no inherent good/bad mapping, and the built-in footer already shows
-   * their counts as ↑input ↓output R{cache} W{write}.
-   *
-   * Source: ctx.getContextUsage().percent
+   * Three segments:
+   *   1. Memory (accent) — estimated tokens from project memory injection
+   *   2. Conversation (severity-colored) — remaining used context
+   *   3. Free (dim) — unused context window
    */
   function buildContextBar(ctx: ExtensionContext, barWidth: number): string {
     const theme = ctx.ui.theme;
     const usage = ctx.getContextUsage();
     const pct = usage?.percent ?? 0;
+    const contextWindow = usage?.contextWindow ?? 0;
 
     if (barWidth <= 0) return "";
 
-    const filledBlocks = pct > 0 ? Math.max(1, Math.round((pct / 100) * barWidth)) : 0;
-    const emptyBlocks = barWidth - filledBlocks;
+    // Calculate memory's share of the context window
+    const memTokens = sharedState.memoryTokenEstimate;
+    const memPct = contextWindow > 0 ? (memTokens / contextWindow) * 100 : 0;
 
-    const color = pct > 90 ? "error" : pct > 70 ? "warning" : "success";
+    // Conversation = total used - memory
+    const convPct = Math.max(0, pct - memPct);
+
+    // Convert percentages to block counts
+    const memBlocks = memPct > 0 ? Math.max(1, Math.round((memPct / 100) * barWidth)) : 0;
+    const convBlocks = convPct > 0 ? Math.max(1, Math.round((convPct / 100) * barWidth)) : 0;
+    const totalFilled = Math.min(memBlocks + convBlocks, barWidth);
+    const freeBlocks = barWidth - totalFilled;
+
+    // Severity color for conversation portion (based on TOTAL fullness)
+    const convColor = pct > 90 ? "error" : pct > 70 ? "warning" : "success";
 
     let bar = "";
-    if (filledBlocks > 0) bar += theme.fg(color, "█".repeat(filledBlocks));
-    if (emptyBlocks > 0) bar += theme.fg("dim", "░".repeat(emptyBlocks));
+    if (memBlocks > 0) bar += theme.fg("accent", "▓".repeat(memBlocks));
+    if (convBlocks > 0) bar += theme.fg(convColor, "█".repeat(convBlocks));
+    if (freeBlocks > 0) bar += theme.fg("dim", "░".repeat(freeBlocks));
 
     return bar;
   }
@@ -61,7 +72,6 @@ export default function (pi: ExtensionAPI) {
       const usage = ctx.getContextUsage();
       const pct = usage?.percent ?? 0;
 
-      // T{turns} [████████░░░░] {pct}%
       const parts: string[] = [];
 
       parts.push(theme.fg("dim", `T${turns}`));
@@ -86,7 +96,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   // — Events —
-  // Re-render after state changes. Source: pi extension event lifecycle.
 
   pi.on("session_start", async (_event, ctx) => {
     turns = 0;

@@ -59,6 +59,7 @@ import { runExtractionV2, runGlobalExtraction, killActiveExtraction, killAllSubp
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.js";
 import { SECTIONS } from "./template.js";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
+import { sharedState } from "../shared-state.js";
 
 /**
  * Compute degeneracy pressure as an exponential curve from onset to warning threshold.
@@ -718,17 +719,22 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    const injectionContent = [
+      `Project memory available${mindLabel} (${factCount} facts from this and previous sessions).${injectionNote}`,
+      memoryTools + "\n\n",
+      rendered,
+      episodeSection,
+      globalSection,
+      pressureWarning,
+    ].join(" ");
+
+    // Estimate token count (~4 chars per token) and publish for status-bar
+    sharedState.memoryTokenEstimate = Math.round(injectionContent.length / 4);
+
     return {
       message: {
         customType: "project-memory",
-        content: [
-          `Project memory available${mindLabel} (${factCount} facts from this and previous sessions).${injectionNote}`,
-          memoryTools + "\n\n",
-          rendered,
-          episodeSection,
-          globalSection,
-          pressureWarning,
-        ].join(" "),
+        content: injectionContent,
         display: false,
       },
     };

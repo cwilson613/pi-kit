@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "./lib/typebox-helpers";
 
 const TIERS = {
   opus: { id: "claude-opus-4-6", label: "opus", icon: "🧠" },

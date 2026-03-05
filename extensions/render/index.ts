@@ -1,14 +1,14 @@
 // @secret HF_TOKEN "HuggingFace token (gated model access for FLUX.1)"
 // @config DIFFUSION_CLI_DIR "Path to uv project with mflux installed" [default: ~/diffusion-cli]
 // @config PI_VISUALS_DIR "Output directory for generated images and diagrams" [default: ~/.pi/visuals]
-// @config EXCALIDRAW_RENDER_DIR "Path to Excalidraw render pipeline (uv + playwright)" [default: <pi-kit>/skills/visualize/references/excalidraw]
+// @config EXCALIDRAW_RENDER_DIR "Path to Excalidraw render pipeline (uv + playwright)" [default: <pi-kit>/extensions/render/excalidraw-renderer]
 
 /**
  * render — Visual rendering extension for pi
  *
  * Provides three tools:
  *   - generate_image_local: AI image generation via FLUX.1 (mflux, Apple Silicon MLX)
- *   - render_diagram: Mermaid diagram rendering via mmdc (falls back to source)
+ *   - render_diagram: D2 diagram rendering via d2 CLI
  *   - render_excalidraw: Excalidraw JSON → PNG via Playwright + headless Chromium
  *
  * All tools save output to ~/.pi/visuals/ for persistence across sessions.
@@ -19,8 +19,8 @@
  *     - uv + mflux installed (set DIFFUSION_CLI_DIR or use ~/diffusion-cli default)
  *     - HuggingFace token for gated models: /secrets configure HF_TOKEN
  *   render_diagram:
- *     - mmdc (optional, for PNG output): npm install -g @mermaid-js/mermaid-cli
- *     - Falls back to syntax-highlighted source if mmdc is not installed
+ *     - d2 CLI (installed via Nix or brew)
+ *     - Falls back to syntax-highlighted source if d2 is not installed
  *   render_excalidraw:
  *     - uv + playwright + chromium
  *     - First-time setup: cd <EXCALIDRAW_RENDER_DIR> && uv sync && uv run playwright install chromium
@@ -32,7 +32,7 @@ import { readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { mkdtempSync } from "node:fs";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "../lib/typebox-helpers";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -70,10 +70,9 @@ function hasCmd(cmd: string): boolean {
 
 const DIFFUSION_CLI_DIR = process.env.DIFFUSION_CLI_DIR || join(homedir(), "diffusion-cli");
 
-// Excalidraw renderer lives alongside the visualize skill references.
-// Resolve relative to this extension file → ../../skills/visualize/references/excalidraw
+// Excalidraw renderer lives alongside this extension.
 const EXCALIDRAW_RENDER_DIR = process.env.EXCALIDRAW_RENDER_DIR ||
-	join(import.meta.dirname ?? __dirname, "..", "..", "skills", "visualize", "references", "excalidraw");
+	join(import.meta.dirname ?? __dirname, "excalidraw-renderer");
 
 const PRESETS = ["schnell", "dev", "dev-fast", "diagram", "portrait", "wide"] as const;
 
@@ -217,60 +216,93 @@ export default function renderExtension(pi: ExtensionAPI) {
 	});
 
 	// ------------------------------------------------------------------
-	// render_diagram — Mermaid code → inline image via mmdc
+	// render_diagram — D2 code → inline PNG via d2 CLI
 	// ------------------------------------------------------------------
 	pi.registerTool({
 		name: "render_diagram",
 		label: "Render Diagram",
 		description:
-			"Render inline Mermaid diagram source code as an image inline in the terminal. " +
+			"Render a D2 diagram as an inline PNG image in the terminal. " +
+			"D2 is a modern declarative diagramming language (https://d2lang.com). " +
 			"Use for architecture diagrams, flowcharts, ER diagrams, sequence diagrams, " +
-			"class diagrams, state machines, Gantt charts, and any other Mermaid diagram type. " +
-			"Output is saved to ~/.pi/visuals/ when rendered as PNG. " +
-			"Requires mmdc for PNG output (npm install -g @mermaid-js/mermaid-cli); " +
-			"falls back to syntax-highlighted source if mmdc is not installed.",
-		promptSnippet: "Render Mermaid diagrams as inline images (flowcharts, ER, sequence, etc.)",
+			"class diagrams, state machines, and any structural diagram. " +
+			"Output is saved to ~/.pi/visuals/ for persistence. " +
+			"Requires d2 CLI (installed via Nix or brew).",
+		promptSnippet: "Render D2 diagrams as inline images (flowcharts, ER, sequence, architecture, etc.)",
+		promptGuidelines: [
+			"Use D2 syntax, NOT Mermaid. D2 reference: https://d2lang.com/tour/intro",
+			"Use --theme 200 (dark) and --layout elk for best results",
+			"Apply Verdant semantic colors via style blocks: fill, stroke, font-color",
+		],
 		parameters: Type.Object({
-			code:  Type.String({ description: "Mermaid diagram source code (raw syntax, no backtick fences)" }),
-			title: Type.Optional(Type.String({ description: "Optional title for the diagram" })),
+			code:   Type.String({ description: "D2 diagram source code" }),
+			title:  Type.Optional(Type.String({ description: "Optional title for the diagram" })),
+			layout: Type.Optional(StringEnum(["dagre", "elk"] as const, { description: "Layout engine (default: elk)" })),
+			theme:  Type.Optional(Type.Number({ description: "D2 theme ID (default: 200 = dark)" })),
+			sketch: Type.Optional(Type.Boolean({ description: "Sketch/hand-drawn mode (default: false)" })),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			// Write source to a persistent .mmd file in visuals dir
-			const slug = (params.title || "diagram").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 40);
-			const mmdPath  = visualsPath(`${timestamp()}_${slug}.mmd`);
-			writeFileSync(mmdPath, params.code, "utf-8");
-
-			const titlePrefix = params.title ? `# ${params.title}\n\n` : "";
-
-			if (hasCmd("mmdc")) {
-				const outPng = mmdPath.replace(/\.mmd$/, ".png");
-				try {
-					execSync(
-						`mmdc -i ${JSON.stringify(mmdPath)} -o ${JSON.stringify(outPng)} -b transparent -w 1200 2>/dev/null`,
-						{ timeout: 15_000 }
-					);
-					if (existsSync(outPng) && statSync(outPng).size > 0) {
-						const data = readFileSync(outPng).toString("base64");
-						return {
-							content: [
-								{ type: "text",  text: `${titlePrefix}📊 Mermaid  ·  Saved: ${outPng}` },
-								{ type: "image", data, mimeType: "image/png" },
-							],
-							details: { rendered: true, mmdPath, pngPath: outPng },
-						};
-					}
-				} catch { /* fall through to source display */ }
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			if (!hasCmd("d2")) {
+				throw new Error(
+					"d2 CLI not found. Install via Nix (nix profile install nixpkgs#d2) " +
+					"or brew (brew install d2)."
+				);
 			}
 
-			// Fallback: syntax-highlighted source
-			const hint = hasCmd("mmdc") ? "" : "\n> Install mmdc for PNG rendering: `npm install -g @mermaid-js/mermaid-cli`";
-			return {
-				content: [{
-					type: "text",
-					text: `${titlePrefix}📊 Mermaid source  ·  Saved: ${mmdPath}${hint}\n\n\`\`\`mermaid\n${params.code}\n\`\`\``,
-				}],
-				details: { rendered: false, mmdPath },
-			};
+			const slug = (params.title || "diagram").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 40);
+			const d2Path  = visualsPath(`${timestamp()}_${slug}.d2`);
+			const outPng  = d2Path.replace(/\.d2$/, ".png");
+			writeFileSync(d2Path, params.code, "utf-8");
+
+			const titlePrefix = params.title ? `# ${params.title}\n\n` : "";
+			const layout = params.layout ?? "elk";
+			const theme = params.theme ?? 200; // dark theme
+
+			const args = [
+				"-l", layout,
+				"-t", String(theme),
+				"--pad", "40",
+			];
+			if (params.sketch) args.push("--sketch");
+			args.push(d2Path, outPng);
+
+			onUpdate?.({
+				content: [{ type: "text", text: `Rendering D2 diagram (${layout})…` }],
+				details: { d2Path, layout, theme },
+			});
+
+			const startTime = Date.now();
+			try {
+				const result = await pi.exec("d2", args, { signal, timeout: 30_000 });
+				const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+				if (result.code !== 0) {
+					const stderr = result.stderr || "";
+					throw new Error(`d2 failed (exit ${result.code}):\n${stderr.slice(-1500)}`);
+				}
+
+				if (!existsSync(outPng) || statSync(outPng).size === 0) {
+					throw new Error(`d2 produced no output at ${outPng}`);
+				}
+
+				const data = readFileSync(outPng).toString("base64");
+				return {
+					content: [
+						{ type: "text",  text: `${titlePrefix}📊 D2 (${layout}, ${elapsed}s)  ·  Saved: ${outPng}` },
+						{ type: "image", data, mimeType: "image/png" },
+					],
+					details: { rendered: true, d2Path, pngPath: outPng, layout, theme, elapsed: Number(elapsed) },
+				};
+			} catch (err: any) {
+				// Fallback: show source
+				return {
+					content: [{
+						type: "text",
+						text: `${titlePrefix}📊 D2 source (render failed: ${err.message})  ·  Saved: ${d2Path}\n\n\`\`\`d2\n${params.code}\n\`\`\``,
+					}],
+					details: { rendered: false, d2Path, error: err.message },
+				};
+			}
 		},
 	});
 
@@ -286,6 +318,17 @@ export default function renderExtension(pi: ExtensionAPI) {
 			"Output is saved to ~/.pi/visuals/. " +
 			"First-time setup: cd <render_dir> && uv sync && uv run playwright install chromium",
 		promptSnippet: "Render .excalidraw JSON files to inline PNG images",
+		promptGuidelines: [
+			"Include ALL necessary context in the prompt — the local model cannot see conversation history or access tools",
+			"Use Excalidraw for freeform visual arguments where spatial layout matters — not for structural diagrams (use D2 for those)",
+			"Write complete .excalidraw JSON with the element template: roughness 0, fillStyle solid, fontFamily 3 (Cascadia), viewBackgroundColor #ffffff",
+			"Every element id must be unique; index values must be alphabetically ordered (a0, a1, a2...)",
+			"If a text element has containerId, the container must list that text in boundElements",
+			"Arrow points are relative to the arrow's x/y — first point is always [0, 0]",
+			"Apply Verdant semantic colors: primary (#3b82f6/#1e3a5f), start (#fed7aa/#c2410c), end (#a7f3d0/#047857), decision (#fef3c7/#b45309), ai (#ddd6fe/#6d28d9), evidence (#1e293b/#334155)",
+			"Text on dark fills: #ffffff. Text on light fills: #374151",
+			"Diagrams argue, not display — the shape should mirror the concept (fan-out for one-to-many, convergence for aggregation, timeline for sequences)",
+		],
 		parameters: Type.Object({
 			path:   Type.String({ description: "Path to .excalidraw JSON file to render" }),
 			scale:  Type.Optional(Type.Number({ description: "Device scale factor (default: 2)" })),
@@ -374,13 +417,13 @@ export default function renderExtension(pi: ExtensionAPI) {
 			if (!args?.trim()) {
 				// Show status instead of error
 				const mfluxOk = existsSync(join(DIFFUSION_CLI_DIR, ".venv", "bin", "mflux-generate"));
-				const mmdcOk  = hasCmd("mmdc");
+				const d2Ok    = hasCmd("d2");
 				const excaliOk = existsSync(join(EXCALIDRAW_RENDER_DIR, "uv.lock"));
 				const status = [
 					`**Visual generation status**`,
 					``,
 					`FLUX.1 (generate_image_local): ${mfluxOk ? "✅ ready" : `❌ not found — set up ${DIFFUSION_CLI_DIR}`}`,
-					`Mermaid (render_diagram): ${mmdcOk ? "✅ ready" : "⚠️  not installed — \`npm install -g @mermaid-js/mermaid-cli\`"}`,
+					`D2 (render_diagram): ${d2Ok ? "✅ ready" : "❌ not installed — \`nix profile install nixpkgs#d2\` or \`brew install d2\`"}`,
 					`Excalidraw (render_excalidraw): ${excaliOk ? "✅ ready" : `⚠️  not set up — \`cd ${EXCALIDRAW_RENDER_DIR} && uv sync && uv run playwright install chromium\``}`,
 					`Output directory: \`${VISUALS_DIR}\``,
 					``,

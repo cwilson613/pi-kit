@@ -7,14 +7,14 @@
  * Supported formats:
  *   Images:    jpg, jpeg, png, gif, webp, svg, bmp, tiff, ico, heic
  *   Documents: pdf, docx, xlsx, pptx, odt, epub, html, csv, tsv, rtf
- *   Diagrams:  mermaid (.mmd)
+ *   Diagrams:  D2 (.d2)
  *   Data:      json, yaml, xml, toml
  *   Text:      md, txt, and any text file (syntax-highlighted)
  *
  * Dependencies:
  *   - poppler (pdftotext, pdftoppm) — PDF rendering
  *   - pandoc — document conversion
- *   - mmdc — optional, mermaid diagram rendering
+ *   - d2 — D2 diagram rendering
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -42,7 +42,7 @@ const PANDOC_EXTS = new Set([
 	".html", ".htm", ".rtf", ".rst", ".textile",
 	".mediawiki", ".org", ".opml", ".csv", ".tsv", ".bib",
 ]);
-const DIAGRAM_EXTS = new Set([".mmd", ".mermaid"]);
+const DIAGRAM_EXTS = new Set([".d2"]);
 const DATA_EXTS = new Set([".json", ".yaml", ".yml", ".xml", ".toml"]);
 const MARKDOWN_EXTS = new Set([".md", ".markdown", ".mdx"]);
 
@@ -329,16 +329,16 @@ function viewPandoc(filePath: string): ViewResult {
 function viewDiagram(filePath: string): ViewResult {
 	const src = readFileSync(filePath, "utf-8");
 
-	if (hasCmd("mmdc")) {
-		const tmp = mkdtempSync(join(tmpdir(), "pi-view-mmd-"));
+	if (hasCmd("d2")) {
+		const tmp = mkdtempSync(join(tmpdir(), "pi-view-d2-"));
 		const outPng = join(tmp, "diagram.png");
 		try {
-			run(`mmdc -i "${filePath}" -o "${outPng}" -b transparent -w 1200 2>/dev/null`, { timeout: 15_000 });
+			run(`d2 --theme 200 --layout elk --pad 40 "${filePath}" "${outPng}" 2>/dev/null`, { timeout: 15_000 });
 			if (existsSync(outPng) && statSync(outPng).size > 0) {
 				const data = readFileSync(outPng).toString("base64");
 				return {
 					content: [
-						{ type: "text", text: fileHeader(filePath, "📊", "Mermaid") },
+						{ type: "text", text: fileHeader(filePath, "📊", "D2") },
 						{ type: "image", data, mimeType: "image/png" },
 					],
 					details: { kind: "diagram", path: filePath, rendered: true },
@@ -348,7 +348,7 @@ function viewDiagram(filePath: string): ViewResult {
 	}
 
 	return {
-		content: [{ type: "text", text: `${fileHeader(filePath, "📊", "Mermaid source")}\n\n\`\`\`mermaid\n${src}\n\`\`\`` }],
+		content: [{ type: "text", text: `${fileHeader(filePath, "📊", "D2 source")}\n\n\`\`\`d2\n${src}\n\`\`\`` }],
 		details: { kind: "diagram", path: filePath, rendered: false },
 	};
 }

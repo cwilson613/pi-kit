@@ -6,16 +6,17 @@
  *
  * Layer 1: resolveSecret() — extensions call this to get secrets from user-configured recipes
  * Layer 2: Output redaction — scrubs known secret values from tool results before they reach the agent
- * Layer 3: Bash guard — confirms before commands that access secret stores
+ * Layer 3: Tool guard — blocks/confirms tool calls that access sensitive paths or secret stores
  * Layer 4: Recipe file — stores resolution recipes, never literal secrets
  * Layer 5: Local model scrub — redacts secrets from outbound ask_local_model prompts
+ * Layer 6: Audit log — append-only record of all guard decisions
  *
  * Commands: /secrets list, /secrets configure <name>, /secrets rm <name>, /secrets test <name>
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
+import { join, resolve } from "path";
 import { homedir } from "os";
 import { execSync, execFileSync } from "child_process";
 
@@ -25,6 +26,7 @@ import { execSync, execFileSync } from "child_process";
 
 const SECRETS_DIR = join(homedir(), ".pi", "agent");
 const SECRETS_FILE = join(SECRETS_DIR, "secrets.json");
+const AUDIT_LOG_FILE = join(SECRETS_DIR, "secrets-audit.jsonl");
 
 /** Fallback secrets not tied to a specific extension */
 const BUILTIN_SECRETS: Record<string, string> = {};
@@ -207,13 +209,33 @@ export function resolveSecret(name: string): string | undefined {
 }
 
 // ============================================================================
+// Layer 6: Audit log
+// ============================================================================
+
+function logGuardDecision(event: {
+  tool: string;
+  target: string;
+  action: "blocked" | "allowed" | "confirmed";
+  reason: string;
+}): void {
+  try {
+    mkdirSync(SECRETS_DIR, { recursive: true });
+    const entry = JSON.stringify({ ...event, timestamp: new Date().toISOString() }) + "\n";
+    appendFileSync(AUDIT_LOG_FILE, entry, { mode: 0o600 });
+  } catch {}
+}
+
+// ============================================================================
 // Layer 2: Output redaction
 // ============================================================================
+
+/** Minimum secret length for redaction. Shorter values cause too many false positives. */
+const MIN_REDACT_LENGTH = 4;
 
 function redactString(input: string, secrets: Array<{ name: string; value: string }>): string {
   let result = input;
   for (const { name, value } of secrets) {
-    if (value.length < 8) continue; // Don't redact very short values (too many false positives)
+    if (value.length < MIN_REDACT_LENGTH) continue;
 
     // Escape regex special characters in the secret value
     const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -222,20 +244,33 @@ function redactString(input: string, secrets: Array<{ name: string; value: strin
     // Replace all occurrences of the full value
     result = result.replace(new RegExp(escaped, "g"), marker);
 
-    // Also redact partial prefixes (first 20 chars) for long secrets that may be truncated
-    if (value.length > 24) {
-      const partialEscaped = value.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Also check for base64-encoded form of the secret
+    try {
+      const b64 = Buffer.from(value).toString("base64");
+      if (b64.length >= 8) {
+        const b64Escaped = b64.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        result = result.replace(new RegExp(b64Escaped, "g"), `[REDACTED:${name}:base64]`);
+      }
+    } catch {}
+
+    // Also redact partial prefixes for very long secrets (40+ chars)
+    // Use only first 12 chars to reduce false positives from standard prefixes
+    if (value.length > 40) {
+      const partialEscaped = value.slice(0, 12).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       result = result.replace(new RegExp(partialEscaped, "g"), marker);
     }
   }
   return result;
 }
 
-function redactContent(content: any[]): any[] {
-  const secrets = Array.from(resolvedCache.entries())
-    .filter(([_, v]) => v.length >= 8)
+function getRedactableSecrets(): Array<{ name: string; value: string }> {
+  return Array.from(resolvedCache.entries())
+    .filter(([_, v]) => v.length >= MIN_REDACT_LENGTH)
     .map(([name, value]) => ({ name, value }));
+}
 
+function redactContent(content: any[]): any[] {
+  const secrets = getRedactableSecrets();
   if (secrets.length === 0) return content;
 
   return content.map((block: any) => {
@@ -250,40 +285,127 @@ function redactContent(content: any[]): any[] {
 }
 
 // ============================================================================
+// Layer 3: Sensitive path detection
+// ============================================================================
+
+/**
+ * Sensitive path patterns. Each entry defines:
+ * - pattern: regex to match against resolved absolute paths
+ * - description: human-readable label for UI prompts
+ * - action: "block" = hard block (no override), "confirm" = prompt user
+ */
+const SENSITIVE_PATH_PATTERNS: Array<{
+  pattern: RegExp;
+  description: string;
+  action: "block" | "confirm";
+}> = [
+  // The recipe store itself — hard block, only /secrets commands may access
+  { pattern: /\.pi\/agent\/secrets\.json$/i, description: "secrets recipe store", action: "block" },
+  // The audit log — hard block, prevent tampering
+  { pattern: /\.pi\/agent\/secrets-audit\.jsonl$/i, description: "secrets audit log", action: "block" },
+  // Dotenv files
+  { pattern: /\.env(\.[a-z]+)?$/i, description: "dotenv file", action: "confirm" },
+  // SSH keys and config
+  { pattern: /\.ssh\/(id_[a-z0-9]+|config|known_hosts|authorized_keys)(\.pub)?$/i, description: "SSH credential/config", action: "confirm" },
+  // AWS credentials
+  { pattern: /\.aws\/(credentials|config)$/i, description: "AWS credentials", action: "confirm" },
+  // GCP credentials
+  { pattern: /\.config\/gcloud\/.*(credentials|tokens|properties)/i, description: "GCP credentials", action: "confirm" },
+  // Azure credentials
+  { pattern: /\.azure\/(credentials|accessTokens\.json)/i, description: "Azure credentials", action: "confirm" },
+  // GPG private data
+  { pattern: /\.gnupg\/(secring|trustdb|private-keys)/i, description: "GPG private data", action: "confirm" },
+  // Netrc
+  { pattern: /\.(netrc|curlrc)$/i, description: "netrc/curlrc file", action: "confirm" },
+  // Generic credential files
+  { pattern: /\bcredentials?\.(json|yaml|yml|toml|xml)$/i, description: "credentials file", action: "confirm" },
+  // Token/secret/key files
+  { pattern: /\b(token|secret|private[_-]?key)\.(json|pem|key|txt)$/i, description: "token/key file", action: "confirm" },
+  // Docker config (contains registry auth tokens)
+  { pattern: /\.docker\/config\.json$/i, description: "Docker config (may contain auth)", action: "confirm" },
+  // NPM auth
+  { pattern: /\.npmrc$/i, description: "npm config (may contain auth tokens)", action: "confirm" },
+  // Kubernetes config
+  { pattern: /\.kube\/config$/i, description: "Kubernetes config", action: "confirm" },
+];
+
+/**
+ * Check if a path matches any sensitive path pattern.
+ * Returns the matching entry or undefined.
+ */
+function matchSensitivePath(filePath: string): { description: string; action: "block" | "confirm" } | undefined {
+  // Normalize: resolve to absolute, then check patterns
+  let normalized: string;
+  try {
+    normalized = resolve(filePath);
+  } catch {
+    normalized = filePath;
+  }
+
+  for (const entry of SENSITIVE_PATH_PATTERNS) {
+    if (entry.pattern.test(normalized) || entry.pattern.test(filePath)) {
+      return { description: entry.description, action: entry.action };
+    }
+  }
+  return undefined;
+}
+
+// ============================================================================
 // Layer 3: Bash guard patterns
 // ============================================================================
 
 const SECRET_ACCESS_PATTERNS = [
+  // ── Direct secret store access ──
   // macOS Keychain
   /\bsecurity\s+find-generic-password/i,
   /\bsecurity\s+find-internet-password/i,
-
   // 1Password
   /\bop\s+(read|get|item)\b/i,
   // pass (GPG password store)
   /\bpass\s+(show|ls)\b/i,
   // Vault
   /\bvault\s+(read|kv\s+get)\b/i,
-  // Environment variable dumping
+
+  // ── Environment variable dumping ──
+  // Targeted env access with secret-adjacent keywords
   /\benv\b.*\b(key|token|secret|password|credential)/i,
   /\bprintenv\b.*\b(key|token|secret|password|credential)/i,
-  /\bset\b.*\b(key|token|secret|password|credential)/i,
-  // Echo/cat of known secret env vars
-  /\becho\s+\$[A-Z_]*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i,
-  /\bcat\b.*\b(secrets?|credentials?|\.env)\b/i,
-  // AWS/GCP credential files
-  /\bcat\b.*\.(aws|gcloud)\/credentials/i,
-  // Our own secrets file — match the specific path, not just any filename mention
+  // Echo/printf of known secret env vars
+  /\b(echo|printf)\s+.*\$[A-Z_]*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i,
+  // Full env dumps (these can leak all injected secrets)
+  /\bnode\s+-e\s+.*process\.env/i,
+  /\bpython[23]?\s+-c\s+.*os\.environ/i,
+  /\bruby\s+-e\s+.*ENV/i,
+  /\bperl\s+-e\s+.*%ENV/i,
+
+  // ── File readers on sensitive paths ──
+  // cat/less/more/head/tail/bat on secret-adjacent files
+  /\b(cat|less|more|head|tail|bat|batcat)\b.*(secrets?\.json|\bcredentials?\b|\.env\b)/i,
+  // jq on secret files
+  /\bjq\b.*\b(secrets?\.json|credentials?)\b/i,
+  // sed/awk/grep reading secret files
+  /\b(sed|awk|grep)\b.*\b(secrets?\.json|credentials?)\b/i,
+  // Our own secrets file — match the specific path
   /\.pi\/agent\/secrets\.json/i,
   // Writing to secrets file (via tee, redirect, etc.)
   />\s*.*\.pi\/agent\/secrets\.json/i,
+  // AWS/GCP credential file access
+  /\b(cat|less|more|head|tail)\b.*\.(aws|gcloud)\/(credentials|config)/i,
+
+  // ── Command wrapping (shell indirection) ──
+  // sh/bash/zsh -c wrapping with secret-adjacent content
+  /\b(sh|bash|zsh)\s+-c\s+.*\b(security|op\s+read|pass\s+show|vault\s+read|keychain|credential|secret)/i,
+  // Python/Ruby/Node/Perl subprocess wrappers accessing secret stores
+  /\b(python[23]?|ruby|node|perl)\b.*\b(security\s+find|op\s+read|find-generic-password|secrets?\.json)/i,
+  // Base64 decode piped to shell (obfuscation technique)
+  /\bbase64\s+(-d|--decode)\b.*\|\s*(sh|bash|zsh)\b/i,
+  // eval with encoded content
+  /\beval\b.*\$\(.*base64/i,
 ];
 
 function isSecretAccessCommand(command: string): boolean {
   return SECRET_ACCESS_PATTERNS.some((p) => p.test(command));
 }
-
-
 
 // ============================================================================
 // macOS Keychain helpers
@@ -324,6 +446,9 @@ export default function (pi: ExtensionAPI) {
   // Load recipes on init
   recipes = loadRecipes();
 
+  // Warn about literal recipes at load time
+  const literalRecipes = Object.entries(recipes).filter(([_, r]) => r.startsWith("literal:"));
+
   // Pre-resolve all configured secrets at init time (Layer 1)
   // Resolved values are injected into process.env so other extensions
   // can keep using process.env.X without importing from this module.
@@ -348,8 +473,9 @@ export default function (pi: ExtensionAPI) {
     const failed = Object.keys(recipes).filter(k => !resolvedCache.has(k));
 
     if (resolved.length > 0) {
+      // Don't leak secret names to the agent — just show count
       ctx.ui.notify(
-        `🔐 ${resolved.length} secret${resolved.length !== 1 ? "s" : ""} resolved (${resolved.join(", ")})`,
+        `🔐 ${resolved.length} secret${resolved.length !== 1 ? "s" : ""} resolved`,
         "info"
       );
     }
@@ -357,8 +483,17 @@ export default function (pi: ExtensionAPI) {
     // Surface failures prominently — don't let broken secrets go unnoticed
     if (failed.length > 0) {
       ctx.ui.notify(
-        `❌ ${failed.length} secret${failed.length !== 1 ? "s" : ""} failed to resolve: ${failed.join(", ")}\n` +
-        `Run /secrets configure <name> to fix, or /secrets rm <name> to remove.`,
+        `❌ ${failed.length} secret${failed.length !== 1 ? "s" : ""} failed to resolve.\n` +
+        `Run /secrets list to see details, then /secrets configure <name> to fix.`,
+        "error"
+      );
+    }
+
+    // Warn about literal recipes (plaintext secrets in secrets.json)
+    if (literalRecipes.length > 0) {
+      ctx.ui.notify(
+        `⚠️ ${literalRecipes.length} secret${literalRecipes.length !== 1 ? "s" : ""} stored as plaintext literal${literalRecipes.length !== 1 ? "s" : ""}.\n` +
+        `Run /secrets configure <name> to migrate to Keychain or another secure backend.`,
         "error"
       );
     }
@@ -387,26 +522,143 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ──────────────────────────────────────────────────────────────
-  // Layer 3 + 5: Bash guard and local model scrub (single handler)
+  // Layer 3: Tool guards (read, grep, find, ls, bash, write, edit, ask_local_model)
   // ──────────────────────────────────────────────────────────────
 
-  pi.on("tool_call", async (event, ctx) => {
-    // Guard: block write/edit to secrets.json
-    if (event.toolName === "write" || event.toolName === "edit") {
-      const path = (event.input as any).path as string;
-      if (path && /\.pi\/agent\/secrets\.json/i.test(path)) {
-        return {
-          block: true,
-          reason: "🔐 Blocked: use /secrets configure to manage secret recipes, not direct file writes.",
-        };
-      }
+  /**
+   * Helper: given a tool name, a sensitive path match, and the context,
+   * handle the block/confirm logic and return the appropriate ToolCallEventResult.
+   */
+  async function handleSensitivePathAccess(
+    toolName: string,
+    filePath: string,
+    match: { description: string; action: "block" | "confirm" },
+    ctx: any,
+  ): Promise<{ block: boolean; reason: string } | undefined> {
+    if (match.action === "block") {
+      logGuardDecision({ tool: toolName, target: filePath, action: "blocked", reason: match.description });
+      return {
+        block: true,
+        reason: `🔐 Blocked: ${toolName} access to ${match.description} (${filePath}). Use /secrets commands to manage secrets.`,
+      };
     }
 
-    // Layer 3: Bash guard — confirm before secret-access commands
+    // action === "confirm"
+    if (!ctx.hasUI) {
+      logGuardDecision({ tool: toolName, target: filePath, action: "blocked", reason: `${match.description} (no UI)` });
+      return {
+        block: true,
+        reason: `🔐 Blocked: ${toolName} access to ${match.description} (no UI for confirmation)`,
+      };
+    }
+
+    const choice = await ctx.ui.select(
+      `🔐 This ${toolName} accesses a sensitive file:\n\n` +
+      `  ${filePath}\n  (${match.description})\n\nAllow?`,
+      ["Yes, allow this time", "No, block it"]
+    );
+
+    if (choice !== "Yes, allow this time") {
+      logGuardDecision({ tool: toolName, target: filePath, action: "blocked", reason: `${match.description} (user denied)` });
+      return { block: true, reason: `🔐 Blocked by user: ${match.description}` };
+    }
+
+    logGuardDecision({ tool: toolName, target: filePath, action: "confirmed", reason: match.description });
+    return undefined;
+  }
+
+  pi.on("tool_call", async (event, ctx) => {
+    // ── Guard: read tool ──
+    if (event.toolName === "read") {
+      const path = (event.input as any).path as string;
+      if (path) {
+        const match = matchSensitivePath(path);
+        if (match) {
+          return handleSensitivePathAccess("read", path, match, ctx);
+        }
+      }
+      return undefined;
+    }
+
+    // ── Guard: write/edit tools — block writes to secrets.json and audit log ──
+    if (event.toolName === "write" || event.toolName === "edit") {
+      const path = (event.input as any).path as string;
+      if (path) {
+        const match = matchSensitivePath(path);
+        if (match && match.action === "block") {
+          logGuardDecision({ tool: event.toolName, target: path, action: "blocked", reason: match.description });
+          return {
+            block: true,
+            reason: `🔐 Blocked: use /secrets configure to manage secret recipes, not direct file ${event.toolName}s.`,
+          };
+        }
+      }
+      return undefined;
+    }
+
+    // ── Guard: grep tool ──
+    if (event.toolName === "grep") {
+      const input = event.input as any;
+      const searchPath = input.path as string | undefined;
+      const pattern = input.pattern as string | undefined;
+
+      // Check if grep target path is sensitive
+      if (searchPath) {
+        const match = matchSensitivePath(searchPath);
+        if (match) {
+          return handleSensitivePathAccess("grep", searchPath, match, ctx);
+        }
+      }
+
+      // Check if the grep pattern itself contains a known secret value
+      if (pattern && resolvedCache.size > 0) {
+        for (const [name, value] of resolvedCache.entries()) {
+          if (value.length >= MIN_REDACT_LENGTH && pattern.includes(value)) {
+            logGuardDecision({ tool: "grep", target: `pattern containing ${name}`, action: "blocked", reason: "grep pattern contains secret value" });
+            return {
+              block: true,
+              reason: `🔐 Blocked: grep pattern contains the value of secret ${name}. Don't search for secret values directly.`,
+            };
+          }
+        }
+      }
+      return undefined;
+    }
+
+    // ── Guard: find tool ──
+    if (event.toolName === "find") {
+      const input = event.input as any;
+      const searchPath = input.path as string | undefined;
+
+      if (searchPath) {
+        const match = matchSensitivePath(searchPath);
+        if (match) {
+          return handleSensitivePathAccess("find", searchPath, match, ctx);
+        }
+      }
+      return undefined;
+    }
+
+    // ── Guard: ls tool ──
+    if (event.toolName === "ls") {
+      const input = event.input as any;
+      const lsPath = input.path as string | undefined;
+
+      if (lsPath) {
+        const match = matchSensitivePath(lsPath);
+        if (match) {
+          return handleSensitivePathAccess("ls", lsPath, match, ctx);
+        }
+      }
+      return undefined;
+    }
+
+    // ── Guard: bash tool ──
     if (event.toolName === "bash") {
       const command = (event.input as any).command as string;
       if (isSecretAccessCommand(command)) {
         if (!ctx.hasUI) {
+          logGuardDecision({ tool: "bash", target: command, action: "blocked", reason: "secret store access (no UI)" });
           return {
             block: true,
             reason: "🔐 Blocked: command accesses secret store (no UI for confirmation)",
@@ -419,25 +671,26 @@ export default function (pi: ExtensionAPI) {
         );
 
         if (choice !== "Yes, allow this time") {
+          logGuardDecision({ tool: "bash", target: command, action: "blocked", reason: "secret store access (user denied)" });
           return { block: true, reason: "🔐 Blocked by user: secret store access" };
         }
+
+        logGuardDecision({ tool: "bash", target: command, action: "confirmed", reason: "secret store access" });
       }
       return undefined;
     }
 
-    // Layer 5: Scrub secrets from local model prompts
+    // ── Layer 5: Scrub secrets from local model prompts ──
     if (event.toolName === "ask_local_model") {
       const input = event.input as any;
       if (!input.prompt || resolvedCache.size === 0) return undefined;
 
-      const secrets = Array.from(resolvedCache.entries())
-        .filter(([_, v]) => v.length >= 8)
-        .map(([name, value]) => ({ name, value }));
-
+      const secrets = getRedactableSecrets();
       const cleanPrompt = redactString(input.prompt, secrets);
       const cleanSystem = input.system ? redactString(input.system, secrets) : input.system;
 
       if (cleanPrompt !== input.prompt || cleanSystem !== input.system) {
+        logGuardDecision({ tool: "ask_local_model", target: "(prompt)", action: "blocked", reason: "prompt contains secret values" });
         return {
           block: true,
           reason:
@@ -495,7 +748,7 @@ export default function (pi: ExtensionAPI) {
               ? recipe.startsWith("!")
                 ? `command: ${recipe.slice(1, 40)}${recipe.length > 41 ? "..." : ""}`
                 : recipe.startsWith("literal:")
-                  ? "⚠️  literal value (insecure)"
+                  ? "⚠️  literal value (insecure — run /secrets configure to migrate)"
                   : `env: ${recipe}`
               : resolved
                 ? "env (auto-detected)"
@@ -516,7 +769,7 @@ export default function (pi: ExtensionAPI) {
             const status = resolved ? "✅" : "❌";
             lines.push(`  ${status} ${name} (custom)`);
             lines.push(
-              `     Source: ${recipe.startsWith("!") ? `command: ${recipe.slice(1, 40)}` : recipe.startsWith("literal:") ? "⚠️  literal" : `env: ${recipe}`}`
+              `     Source: ${recipe.startsWith("!") ? `command: ${recipe.slice(1, 40)}` : recipe.startsWith("literal:") ? "⚠️  literal (insecure)" : `env: ${recipe}`}`
             );
             lines.push("");
           }
@@ -527,7 +780,6 @@ export default function (pi: ExtensionAPI) {
             lines.push("", "Configuration overrides (@config):", "");
             for (const [name, { description, default: defaultVal }] of configEntries) {
               const envVal = process.env[name];
-              const effective = envVal || defaultVal || "(not set)";
               const isOverridden = !!envVal && envVal !== defaultVal;
               const status = isOverridden ? "⚙️" : "  ";
               lines.push(`  ${status} ${name}`);
@@ -774,3 +1026,15 @@ export default function (pi: ExtensionAPI) {
     },
   });
 }
+
+// ============================================================================
+// Exports for testing
+// ============================================================================
+
+export {
+  matchSensitivePath,
+  isSecretAccessCommand,
+  redactString,
+  MIN_REDACT_LENGTH,
+  SENSITIVE_PATH_PATTERNS,
+};

@@ -7,42 +7,55 @@ import { Type } from "@sinclair/typebox";
  * Offline Driver Extension
  *
  * Provides seamless failover from cloud (Anthropic) to local (Ollama) models.
+ * Auto-registers available Ollama models via pi.registerProvider() on session start,
+ * eliminating the need for a static models.json config.
+ *
  * Registers /offline and /online commands plus a switch_to_offline_driver tool
  * the agent can self-invoke when it detects connectivity issues.
- *
- * Depends on models.json having a "local" provider with Ollama models registered.
  */
 
 const OLLAMA_URL = process.env.LOCAL_INFERENCE_URL || "http://localhost:11434";
+const PROVIDER_NAME = "local";
+
+// Known models with metadata for ranking and display
+const KNOWN_MODELS: Record<string, { label: string; icon: string; contextWindow: number; maxTokens: number }> = {
+  "nemotron-3-nano:30b": { label: "Nemotron 3 Nano 30B", icon: "🏔️", contextWindow: 131072, maxTokens: 32768 },
+  "devstral-small-2:24b": { label: "Devstral Small 2 24B", icon: "🔧", contextWindow: 131072, maxTokens: 32768 },
+  "qwen3:30b": { label: "Qwen3 30B", icon: "🐉", contextWindow: 131072, maxTokens: 32768 },
+};
 
 // Preferred offline models in priority order
-const OFFLINE_MODELS = [
-  { id: "nemotron-3-nano:30b", label: "Nemotron 3 Nano 30B", icon: "🏔️" },
-  { id: "devstral-small-2:24b", label: "Devstral Small 2 24B", icon: "🔧" },
-  { id: "qwen3:30b", label: "Qwen3 30B", icon: "🐉" },
-] as const;
+const PREFERRED_ORDER = ["nemotron-3-nano:30b", "devstral-small-2:24b", "qwen3:30b"];
 
 // State
 let savedCloudModel: string | null = null;
 let savedCloudProvider: string | null = null;
 let isOffline = false;
+let registeredModels: string[] = [];
 
-async function checkOllama(): Promise<{ ok: boolean; models: string[] }> {
+interface OllamaModel {
+  name: string;
+  model?: string;
+  size?: number;
+  details?: { parameter_size?: string; family?: string };
+}
+
+async function discoverOllamaModels(): Promise<OllamaModel[]> {
   try {
     const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return { ok: false, models: [] };
-    const data = (await res.json()) as { models?: Array<{ name: string }> };
-    const models = (data.models || []).map((m) => m.name.replace(/:latest$/, ""));
-    return { ok: true, models };
+    if (!res.ok) return [];
+    const data = (await res.json()) as { models?: OllamaModel[] };
+    return data.models || [];
   } catch {
-    return { ok: false, models: [] };
+    return [];
   }
 }
 
+function normalizeModelId(name: string): string {
+  return name.replace(/:latest$/, "");
+}
+
 async function checkAnthropic(): Promise<boolean> {
-  // Connectivity check only — we don't need to authenticate, just verify
-  // we can reach Anthropic's servers. A HEAD or lightweight GET to their
-  // domain suffices. Pi handles auth via OAuth (auth.json), not env vars.
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -57,33 +70,51 @@ async function checkAnthropic(): Promise<boolean> {
       }),
       signal: AbortSignal.timeout(5000),
     });
-    // Any HTTP response (including 401 auth error) means network is reachable.
-    // Only a fetch exception (DNS failure, timeout, connection refused) means offline.
+    // Any HTTP response means network is reachable
     return true;
   } catch {
     return false;
   }
 }
 
-async function selectBestOfflineModel(
-  ctx: any
-): Promise<{ model: any; spec: (typeof OFFLINE_MODELS)[number] } | null> {
-  const ollama = await checkOllama();
-  if (!ollama.ok) return null;
+/**
+ * Register discovered Ollama models as a pi provider via the official API.
+ * This lets pi-ai handle all streaming, token tracking, and protocol details.
+ */
+function registerOllamaProvider(pi: ExtensionAPI, ollamaModels: OllamaModel[]): string[] {
+  const chatModels = ollamaModels
+    .map((m) => normalizeModelId(m.name))
+    .filter((id) => !id.includes("embed")); // exclude embedding models
 
-  for (const spec of OFFLINE_MODELS) {
-    // Check if the model is available in Ollama
-    const available = ollama.models.some(
-      (m) => m === spec.id || m === spec.id.replace(/:.*$/, "")
-    );
-    if (!available) continue;
+  if (chatModels.length === 0) return [];
 
-    // Check if it's registered in the model registry
-    const model = ctx.modelRegistry.find("local", spec.id);
-    if (model) return { model, spec };
-  }
+  const models = chatModels.map((id) => {
+    const known = KNOWN_MODELS[id];
+    return {
+      id,
+      name: known?.label || id,
+      reasoning: false,
+      input: ["text"] as ("text" | "image")[],
+      contextWindow: known?.contextWindow || 131072,
+      maxTokens: known?.maxTokens || 32768,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      compat: {
+        supportsDeveloperRole: false,
+        supportsReasoningEffort: false,
+        maxTokensField: "max_tokens" as const,
+        requiresThinkingAsText: true,
+      },
+    };
+  });
 
-  return null;
+  pi.registerProvider(PROVIDER_NAME, {
+    baseUrl: `${OLLAMA_URL}/v1`,
+    api: "openai-completions",
+    apiKey: "ollama",
+    models,
+  });
+
+  return chatModels;
 }
 
 async function goOffline(
@@ -92,59 +123,48 @@ async function goOffline(
   preferredModel?: string
 ): Promise<{ success: boolean; message: string }> {
   if (isOffline) {
-    // Verify the model is still available in Ollama (may have been unloaded)
-    const ollama = await checkOllama();
-    if (ollama.ok) {
-      return { success: true, message: "Already in offline mode." };
-    }
-    // Ollama went away — reset state and fall through to re-select
-    isOffline = false;
+    return { success: true, message: "Already in offline mode." };
   }
 
   // Save current cloud model for /online restoration
   const current = ctx.model;
-  if (current && current.provider !== "local") {
+  if (current && current.provider !== PROVIDER_NAME) {
     savedCloudModel = current.id;
     savedCloudProvider = current.provider;
   }
 
-  // If a specific model was requested, try that first
-  if (preferredModel) {
-    const spec = OFFLINE_MODELS.find((m) => m.id === preferredModel);
-    if (spec) {
-      const model = ctx.modelRegistry.find("local", spec.id);
-      if (model) {
-        const success = await pi.setModel(model);
-        if (success) {
-          isOffline = true;
-          ctx.ui.setStatus("offline-driver", `${spec.icon} OFFLINE: ${spec.label}`);
-          return {
-            success: true,
-            message: `Switched to offline driver: ${spec.label} (${spec.id})`,
-          };
-        }
-      }
-    }
-  }
-
-  // Auto-select best available
-  const best = await selectBestOfflineModel(ctx);
-  if (!best) {
+  // Re-discover and register in case models changed
+  const ollamaModels = await discoverOllamaModels();
+  if (ollamaModels.length === 0) {
     return {
       success: false,
-      message:
-        "No offline models available. Is Ollama running? Are models pulled? (ollama list)",
+      message: `Ollama not available at ${OLLAMA_URL}. Is it running? Start with: ollama serve`,
     };
   }
+  registeredModels = registerOllamaProvider(pi, ollamaModels);
 
-  const success = await pi.setModel(best.model);
+  // Select model: preferred > priority order > first available
+  const targetId = preferredModel && registeredModels.includes(preferredModel)
+    ? preferredModel
+    : PREFERRED_ORDER.find((id) => registeredModels.includes(id)) || registeredModels[0];
+
+  if (!targetId) {
+    return { success: false, message: "No chat models available in Ollama." };
+  }
+
+  const model = ctx.modelRegistry.find(PROVIDER_NAME, targetId);
+  if (!model) {
+    return { success: false, message: `Model ${targetId} not found in registry after registration.` };
+  }
+
+  const success = await pi.setModel(model);
   if (success) {
     isOffline = true;
-    ctx.ui.setStatus("offline-driver", `${best.spec.icon} OFFLINE: ${best.spec.label}`);
-    return {
-      success: true,
-      message: `Switched to offline driver: ${best.spec.label} (${best.spec.id})`,
-    };
+    const known = KNOWN_MODELS[targetId];
+    const icon = known?.icon || "🏠";
+    const label = known?.label || targetId;
+    ctx.ui.setStatus("offline-driver", `${icon} OFFLINE: ${label}`);
+    return { success: true, message: `Switched to offline driver: ${label} (${targetId})` };
   }
 
   return { success: false, message: "Failed to set offline model." };
@@ -173,8 +193,7 @@ async function goOnline(
   if (!anthropicOk) {
     return {
       success: false,
-      message:
-        "Anthropic API is still unreachable. Staying in offline mode. Retry with /online when connectivity is restored.",
+      message: "Anthropic API still unreachable. Staying offline. Retry with /online when connectivity is restored.",
     };
   }
 
@@ -182,26 +201,26 @@ async function goOnline(
   if (success) {
     isOffline = false;
     ctx.ui.setStatus("offline-driver", "");
-    return {
-      success: true,
-      message: `Restored cloud driver: ${provider}/${modelId}`,
-    };
+    return { success: true, message: `Restored cloud driver: ${provider}/${modelId}` };
   }
 
   return { success: false, message: "Failed to restore cloud model." };
 }
 
 export default function (pi: ExtensionAPI) {
-  // Health check on session start
+  // Auto-discover and register Ollama models on session start
   pi.on("session_start", async (_event, ctx) => {
-    const [anthropicOk, ollama] = await Promise.all([checkAnthropic(), checkOllama()]);
+    const [anthropicOk, ollamaModels] = await Promise.all([
+      checkAnthropic(),
+      discoverOllamaModels(),
+    ]);
 
-    const ollamaModels = ollama.ok
-      ? OFFLINE_MODELS.filter((m) =>
-          ollama.models.some((om) => om === m.id || om === m.id.replace(/:.*$/, ""))
-        )
-      : [];
+    // Register Ollama models via pi.registerProvider() — pi-ai handles streaming
+    if (ollamaModels.length > 0) {
+      registeredModels = registerOllamaProvider(pi, ollamaModels);
+    }
 
+    const driverModels = registeredModels.filter((id) => PREFERRED_ORDER.includes(id));
     const parts: string[] = [];
 
     if (anthropicOk) {
@@ -210,32 +229,27 @@ export default function (pi: ExtensionAPI) {
       parts.push("⚠️ Anthropic: UNREACHABLE");
     }
 
-    if (ollama.ok) {
-      const names = ollamaModels.map((m) => m.label).join(", ");
+    if (registeredModels.length > 0) {
+      const names = driverModels.map((id) => KNOWN_MODELS[id]?.label || id).join(", ");
       parts.push(
-        `🏠 Ollama: ${ollamaModels.length} driver model${ollamaModels.length !== 1 ? "s" : ""} ready${ollamaModels.length > 0 ? ` (${names})` : ""}`
+        `🏠 Ollama: ${driverModels.length} driver model${driverModels.length !== 1 ? "s" : ""} registered${driverModels.length > 0 ? ` (${names})` : ""}`
       );
     } else {
       parts.push("🏠 Ollama: not running");
     }
 
-    ctx.ui.notify(parts.join(" | "), anthropicOk ? "info" : "warn");
+    ctx.ui.notify(parts.join(" | "), anthropicOk ? "info" : "warning");
 
-    // Always save the starting cloud model (reset stale state from prior sessions)
+    // Save starting cloud model
     const current = ctx.model;
-    if (current && current.provider !== "local") {
+    if (current && current.provider !== PROVIDER_NAME) {
       savedCloudModel = current.id;
       savedCloudProvider = current.provider;
     }
-    // Reset offline flag — each session starts fresh
     isOffline = false;
 
-    // If Anthropic is unreachable and we have local models, suggest /offline
-    if (!anthropicOk && ollamaModels.length > 0) {
-      ctx.ui.notify(
-        "💡 Cloud unavailable. Use /offline to switch to local driver.",
-        "warn"
-      );
+    if (!anthropicOk && driverModels.length > 0) {
+      ctx.ui.notify("💡 Cloud unavailable. Use /offline to switch to local driver.", "warning");
     }
   });
 

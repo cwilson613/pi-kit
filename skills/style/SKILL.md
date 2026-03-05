@@ -1,26 +1,11 @@
 ---
 name: style
-description: Unified visual style guide. Defines the Verdant color system, typography, spacing, and semantic palette shared across pi TUI theme, Excalidraw diagrams, Mermaid diagrams, and generated images. Use when creating any visual output to ensure consistency.
+description: Unified visual style guide. Defines the Verdant color system, typography, spacing, and semantic palette shared across pi TUI theme, Excalidraw diagrams, D2 diagrams, and generated images. Use when creating any visual output to ensure consistency.
 ---
 
 # Style Guide
 
 Canonical design system for all visual output. Every diagram, theme, and generated image should derive from these tokens. When in doubt, reference this — not ad-hoc hex values.
-
-## When Invoked Directly
-
-When the user runs `/style` (or `/skill:style`), respond based on arguments:
-
-| Invocation | Action |
-|------------|--------|
-| `/style` (no args) | Display the Quick Reference Card (bottom of this doc) as a formatted code block, then offer: "Run `/style palette` to render a visual swatch, or `/style check <file>` to audit colors." |
-| `/style palette` | Render a Mermaid diagram showing the full Verdant palette as a visual swatch — use labeled colored nodes for each token group (core, signals, excalidraw semantics). |
-| `/style mermaid` | Output the Mermaid `%%{init}%%` dark theme block ready to copy-paste. |
-| `/style check <file>` | Read the specified file, find any hardcoded hex colors, and report which ones match Verdant tokens, which match Excalidraw semantics, and which are off-palette. |
-| `/style excalidraw` | Display the Excalidraw semantic palette table with fill/stroke pairs and usage guidance. |
-| `/style <anything else>` | Treat as a question about the style system and answer from this document. |
-
----
 
 ## Design Philosophy
 
@@ -29,7 +14,7 @@ When the user runs `/style` (or `/skill:style`), respond based on arguments:
 Principles:
 1. **Semantic color, not decorative** — every color communicates purpose
 2. **Contrast over subtlety** — dark backgrounds demand bright, readable foregrounds
-3. **Consistency across mediums** — same palette whether it's a TUI, an Excalidraw diagram, or a Mermaid chart
+3. **Consistency across mediums** — same palette whether it's a TUI, an Excalidraw diagram, or a D2 chart
 4. **Hierarchy through scale and weight** — not through color proliferation
 
 ---
@@ -38,7 +23,7 @@ Principles:
 
 ### Core Palette
 
-Derived from `themes/verdant.json`. These are the ground-truth tokens.
+Derived from `themes/default.json`. These are the ground-truth tokens.
 
 | Token | Hex | Role |
 |-------|-----|------|
@@ -86,32 +71,46 @@ For diagram elements. Maps purpose → fill/stroke pairs. Defined in `extensions
 - Dark fills (`primary`, `secondary`, `evidence`): use `#ffffff` (white)
 - The element factories handle this automatically via luminance calculation
 
-### Mermaid Theme Colors
+### D2 Diagram Styling
 
-When using `render_diagram`, Mermaid uses its own theming. For consistency with Verdant:
+When using `render_diagram` (D2), apply Verdant colors via `style` blocks:
 
-```
-%%{init: {'theme': 'dark', 'themeVariables': {
-  'primaryColor': '#3b82f6',
-  'primaryTextColor': '#ffffff',
-  'primaryBorderColor': '#1e3a5f',
-  'secondaryColor': '#1a2428',
-  'tertiaryColor': '#151c20',
-  'lineColor': '#3dc9b0',
-  'textColor': '#d4e8e4',
-  'mainBkg': '#151c20',
-  'nodeBorder': '#2d4a47',
-  'clusterBkg': '#0c0e12',
-  'clusterBorder': '#2d4a47',
-  'titleColor': '#8ac4b8',
-  'edgeLabelBackground': '#151c20',
-  'noteTextColor': '#d4e8e4',
-  'noteBkgColor': '#1a2428',
-  'noteBorderColor': '#2d4a47'
-}}}%%
+```d2
+component: API Server {
+  style: {
+    fill: "#3b82f6"
+    stroke: "#1e3a5f"
+    font-color: "#ffffff"
+    border-radius: 8
+  }
+}
 ```
 
-Paste this `%%{init}%%` block at the top of Mermaid diagram source when dark-themed output is needed. For quick diagrams where theming doesn't matter, omit it.
+**Defaults:** D2 renders with `--theme 200` (dark) and `--layout elk`. Use semantic colors from the Excalidraw palette table above — they work identically in D2 style blocks.
+
+**D2 connection styling:**
+```d2
+a -> b: label {
+  style: {
+    stroke: "#3dc9b0"
+    font-color: "#d4e8e4"
+  }
+}
+```
+
+**D2 container styling (for groups/subgraphs):**
+```d2
+group: Infrastructure {
+  style: {
+    fill: "#0c0e12"
+    stroke: "#2d4a47"
+    font-color: "#8ac4b8"
+  }
+
+  db: Database
+  cache: Redis
+}
+```
 
 ---
 
@@ -176,6 +175,14 @@ Paste this `%%{init}%%` block at the top of Mermaid diagram source when dark-the
 
 ## Rendering Defaults
 
+### D2
+
+- `--theme 200` — dark theme
+- `--layout elk` — ELK layered algorithm (cleaner than dagre for most diagrams)
+- `--pad 40` — comfortable padding
+- Apply Verdant colors via style blocks (see D2 Diagram Styling above)
+- D2 is the primary diagram tool — use for all structural diagrams
+
 ### Excalidraw
 
 - `roughness: 0` — clean, not hand-drawn
@@ -184,19 +191,14 @@ Paste this `%%{init}%%` block at the top of Mermaid diagram source when dark-the
 - `roundness: { type: 3 }` — adaptive corners on rectangles
 - `fontFamily: 3` — Cascadia (monospace)
 - `viewBackgroundColor: "#ffffff"` — white canvas (prints well; dark theme elements still pop)
-
-### Mermaid
-
-- Default theme is fine for quick structural diagrams
-- Use the dark `%%{init}%%` block (above) for presentation-quality output
-- Keep diagrams simple — Mermaid is for structure, Excalidraw is for argument
+- Use for freeform visual arguments where spatial layout matters — not for structural diagrams
 
 ### FLUX.1 (Image Generation)
 
 - Use `diagram` preset (1024×768) for technical visuals
 - Use `schnell` for iteration, `dev` for finals
 - Quantize to `4` bits on 16GB machines
-- Prompts should reference the verdant palette by description: "dark teal-green accent on deep charcoal background"
+- Prompts should reference the palette by description: "dark teal-green accent on deep charcoal background"
 
 ---
 

@@ -37,7 +37,7 @@ When upstream updates (or if something breaks):
 # 1. Check what changed
 cd /tmp && git clone https://github.com/swiftlysingh/excalidraw-cli.git
 diff -u excalidraw-cli/src/types/excalidraw.ts \
-  ~/.pi/agent/git/github.com/cwilson613/pi-kit/extensions/diffuse/excalidraw/types.ts
+  ~/.pi/agent/git/github.com/cwilson613/pi-kit/extensions/render/excalidraw/types.ts
 
 # 2. Key files to diff:
 #    src/types/excalidraw.ts → types.ts

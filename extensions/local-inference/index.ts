@@ -22,7 +22,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "../lib/typebox-helpers";
 
 const DEFAULT_URL = "http://localhost:11434";
 

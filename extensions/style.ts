@@ -2,11 +2,9 @@
  * style — /style command for the Verdant design system
  *
  * Registers `/style [subcommand]` as an interactive command.
- * Subcommands: (none), palette, mermaid, excalidraw, check <file>
+ * Subcommands: (none), palette, d2, excalidraw, check <file>
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -28,7 +26,7 @@ const CORE_PALETTE = {
 };
 
 const SIGNALS = {
-	green:  "#3daa8e",
+	green:  "#34d399",
 	red:    "#f44747",
 	orange: "#e98100",
 	yellow: "#e9c400",
@@ -48,24 +46,52 @@ const EXCALIDRAW_SEMANTICS: Record<string, { fill: string; stroke: string; use: 
 	inactive:  { fill: "#dbeafe", stroke: "#1e40af", use: "Disabled, inactive, future-state" },
 };
 
-const MERMAID_INIT = `%%{init: {'theme': 'dark', 'themeVariables': {
-  'primaryColor': '#3b82f6',
-  'primaryTextColor': '#ffffff',
-  'primaryBorderColor': '#1e3a5f',
-  'secondaryColor': '#1a2428',
-  'tertiaryColor': '#151c20',
-  'lineColor': '#3dc9b0',
-  'textColor': '#d4e8e4',
-  'mainBkg': '#151c20',
-  'nodeBorder': '#2d4a47',
-  'clusterBkg': '#0c0e12',
-  'clusterBorder': '#2d4a47',
-  'titleColor': '#8ac4b8',
-  'edgeLabelBackground': '#151c20',
-  'noteTextColor': '#d4e8e4',
-  'noteBkgColor': '#1a2428',
-  'noteBorderColor': '#2d4a47'
-}}}%%`;
+const D2_STYLE_TEMPLATE = `# Verdant D2 style template — paste into your .d2 file
+
+# Primary component
+component: Label {
+  style: {
+    fill: "#3b82f6"
+    stroke: "#1e3a5f"
+    font-color: "#ffffff"
+    border-radius: 8
+  }
+}
+
+# Start / entry point
+entry: Trigger {
+  style: {
+    fill: "#fed7aa"
+    stroke: "#c2410c"
+    font-color: "#374151"
+  }
+}
+
+# End / output
+result: Output {
+  style: {
+    fill: "#a7f3d0"
+    stroke: "#047857"
+    font-color: "#374151"
+  }
+}
+
+# Connection
+entry -> component -> result {
+  style: {
+    stroke: "#3dc9b0"
+    font-color: "#d4e8e4"
+  }
+}
+
+# Container
+group: Infrastructure {
+  style: {
+    fill: "#0c0e12"
+    stroke: "#2d4a47"
+    font-color: "#8ac4b8"
+  }
+}`;
 
 // Collect all known hex values for color auditing
 const ALL_TOKENS: Record<string, string> = {
@@ -105,7 +131,7 @@ function quickRef(): string {
 		`evidence:  ${EXCALIDRAW_SEMANTICS.evidence.fill} / ${EXCALIDRAW_SEMANTICS.evidence.stroke}    inactive:  ${EXCALIDRAW_SEMANTICS.inactive.fill} / ${EXCALIDRAW_SEMANTICS.inactive.stroke}`,
 		"```",
 		"",
-		"`/style palette` — render visual swatch  ·  `/style mermaid` — dark theme init block",
+		"`/style palette` — render visual swatch  ·  `/style d2` — D2 style template",
 		"`/style excalidraw` — semantic palette table  ·  `/style check <file>` — audit colors",
 	].join("\n");
 }
@@ -126,22 +152,23 @@ function excalidrawTable(): string {
 	].join("\n");
 }
 
-function mermaidBlock(): string {
+function d2Template(): string {
 	return [
-		"**Mermaid Dark Theme Init Block**",
+		"**D2 Verdant Style Template**",
 		"",
-		"Paste at the top of your Mermaid diagram source:",
+		"Copy and adapt for your diagrams. Renders with `--theme 200 --layout elk`:",
 		"",
-		"```",
-		MERMAID_INIT,
+		"```d2",
+		D2_STYLE_TEMPLATE,
 		"```",
 	].join("\n");
 }
 
 function auditColors(filePath: string): string {
+	const fs = require("node:fs");
 	let content: string;
 	try {
-		content = readFileSync(filePath, "utf-8");
+		content = fs.readFileSync(filePath, "utf-8");
 	} catch {
 		return `❌ Could not read file: \`${filePath}\``;
 	}
@@ -187,7 +214,21 @@ function auditColors(filePath: string): string {
 
 export default function styleExtension(pi: ExtensionAPI) {
 	pi.registerCommand("style", {
-		description: "Verdant design system (usage: /style [palette|mermaid|excalidraw|check <file>])",
+		description: "Verdant design system (usage: /style [palette|d2|excalidraw|check <file>])",
+		getArgumentCompletions: (prefix: string) => {
+			const parts = prefix.split(/\s+/);
+			if (parts.length <= 1) {
+				const subs: Array<{ value: string; label: string; description: string }> = [
+					{ value: "palette", label: "palette", description: "Render visual swatch" },
+					{ value: "d2", label: "d2", description: "D2 style template" },
+					{ value: "excalidraw", label: "excalidraw", description: "Semantic palette table" },
+					{ value: "check", label: "check", description: "Audit file colors" },
+				];
+				const filtered = subs.filter(s => s.value.startsWith(parts[0] || ""));
+				return filtered.length > 0 ? filtered : null;
+			}
+			return null;
+		},
 		handler: async (args, _ctx) => {
 			const trimmed = (args || "").trim();
 			const [subcommand, ...rest] = trimmed.split(/\s+/);
@@ -199,18 +240,18 @@ export default function styleExtension(pi: ExtensionAPI) {
 					output = quickRef();
 					break;
 				case "palette":
-					// Delegate to agent to render via render_diagram tool
+					// Delegate to agent to render via render_diagram tool (D2)
 					pi.sendUserMessage(
-						"Render a Mermaid diagram showing the Verdant palette as a visual swatch. " +
-						"Use the style skill's color tokens. Group into: Core (bg/cardBg/surfaceBg + primary/primaryMuted/primaryBright + fg/mutedFg/dimFg), " +
+						"Render a D2 diagram showing the Verdant palette as a visual swatch. " +
+						"Use the style skill's color tokens. Group into containers: Core (bg/cardBg/surfaceBg + primary/primaryMuted/primaryBright + fg/mutedFg/dimFg), " +
 						"Signals (green/red/orange/yellow), and Borders (borderColor/borderDim). " +
-						"Use block/flowchart nodes with style directives to color each node with its actual hex value. " +
-						"Use the Mermaid dark theme init block from the style skill.",
+						"Style each node with its actual hex value as fill color, appropriate font-color for contrast, " +
+						"and label it with token name + hex value. Use D2 style blocks.",
 						{ deliverAs: "followUp" },
 					);
 					return;
-				case "mermaid":
-					output = mermaidBlock();
+				case "d2":
+					output = d2Template();
 					break;
 				case "excalidraw":
 					output = excalidrawTable();

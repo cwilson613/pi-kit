@@ -44,7 +44,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, SessionMessageEntry } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "../lib/typebox-helpers";
 import { Type } from "@sinclair/typebox";
 import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
 import { FactStore, parseExtractionOutput, GLOBAL_DECAY, type MindRecord, type Fact } from "./factstore.js";
@@ -59,6 +59,163 @@ import { runExtractionV2, runGlobalExtraction, killActiveExtraction, killAllSubp
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.js";
 import { SECTIONS } from "./template.js";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
+import { sharedState } from "../shared-state.js";
+
+// ---------------------------------------------------------------------------
+// Compaction prompt constants (mirrors pi's internal prompts for local-model fallback)
+// ---------------------------------------------------------------------------
+
+const COMPACTION_SYSTEM_PROMPT = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
+
+const COMPACTION_INITIAL_PROMPT = `Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish?]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+
+const COMPACTION_UPDATE_PROMPT = `Update the existing structured summary with new information from the conversation. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context
+- UPDATE Progress: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+
+Use the same format (Goal, Constraints & Preferences, Progress, Key Decisions, Next Steps, Critical Context).
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+
+const COMPACTION_TURN_PREFIX_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix.`;
+
+// ---------------------------------------------------------------------------
+// Ollama helpers for local-model compaction fallback
+// ---------------------------------------------------------------------------
+
+const OLLAMA_URL = () => process.env.OLLAMA_HOST || process.env.LOCAL_INFERENCE_URL || "http://localhost:11434";
+
+/** Embedding model names that must not be used for chat completions */
+const EMBEDDING_MODEL_PATTERN = /embed|embedding/i;
+
+/** Preferred models for summarization, in priority order */
+const PREFERRED_CHAT_MODELS = [
+  "devstral-small-2:24b", "qwen3:30b", "nemotron-3-nano:30b",
+  "devstral-small", "qwen3", "nemotron",
+];
+
+/**
+ * Discover a chat-capable local model via Ollama's OpenAI-compatible API.
+ * Returns model ID or null if unavailable.
+ */
+async function discoverLocalChatModel(): Promise<string | null> {
+  try {
+    const resp = await fetch(`${OLLAMA_URL()}/v1/models`, { signal: AbortSignal.timeout(2_000) });
+    if (!resp.ok) return null;
+    const data = await resp.json() as { data?: Array<{ id: string }> };
+    const available = (data.data?.map((m: { id: string }) => m.id) ?? [])
+      .filter((id: string) => !EMBEDDING_MODEL_PATTERN.test(id));
+    if (available.length === 0) return null;
+
+    // Try preferred models first (startsWith for exact matching)
+    for (const pref of PREFERRED_CHAT_MODELS) {
+      const found = available.find((id: string) => id.startsWith(pref));
+      if (found) return found;
+    }
+    return available[0]; // Any non-embedding model
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send a chat completion to Ollama. Returns trimmed content or null.
+ */
+async function ollamaChat(
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  opts: { maxTokens?: number; signal?: AbortSignal },
+): Promise<string | null> {
+  const resp = await fetch(`${OLLAMA_URL()}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      max_tokens: opts.maxTokens ?? 4096,
+      temperature: 0.3,
+      // Request a reasonable context window for the local model
+      num_ctx: 32768,
+    }),
+    signal: opts.signal,
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+  return content || null;
+}
+
+/**
+ * Format file operations for appending to compaction summary.
+ * Mirrors pi core's formatFileOperations but inlined since it's not exported.
+ */
+function formatFileOps(fileOps: { read: Set<string>; edited: Set<string>; written: Set<string> }): string {
+  const modified = new Set([...fileOps.edited, ...fileOps.written]);
+  const readOnly = [...fileOps.read].filter(f => !modified.has(f)).sort();
+  const modifiedFiles = [...modified].sort();
+
+  const sections: string[] = [];
+  if (readOnly.length > 0) sections.push(`<read-files>\n${readOnly.join("\n")}\n</read-files>`);
+  if (modifiedFiles.length > 0) sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`);
+  return sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
+}
+
+/**
+ * Build details object for CompactionResult from file operations.
+ */
+function buildFileDetails(fileOps: { read: Set<string>; edited: Set<string>; written: Set<string> }) {
+  const modified = new Set([...fileOps.edited, ...fileOps.written]);
+  const readFiles = [...fileOps.read].filter(f => !modified.has(f)).sort();
+  const modifiedFiles = [...modified].sort();
+  return { readFiles, modifiedFiles };
+}
 
 /**
  * Compute degeneracy pressure as an exponential curve from onset to warning threshold.
@@ -127,6 +284,8 @@ export default function (pi: ExtensionAPI) {
   // --- Context Pressure State ---
   let compactionWarned = false;   // true after we've injected a warning this cycle
   let autoCompacted = false;      // true after auto-compaction triggered this cycle
+  let compactionRetryCount = 0;   // consecutive compaction failures this session
+  let useLocalCompaction = false; // set true after cloud failure to trigger local fallback
 
   // --- Embedding / Semantic Retrieval State ---
   let embeddingAvailable = false;
@@ -433,6 +592,112 @@ export default function (pi: ExtensionAPI) {
     store?.close(); globalStore?.close();
   });
 
+  // --- Local-model compaction fallback ---
+  // Only intercepts compaction when `useLocalCompaction` flag is set (after cloud failure).
+  // Cloud gets first attempt; this is the safety net.
+  pi.on("session_before_compact", async (event, ctx) => {
+    if (!useLocalCompaction || !config.compactionLocalFallback) return;
+    useLocalCompaction = false; // consume the flag
+
+    const prep = event.preparation;
+    if (!prep || prep.messagesToSummarize.length === 0) return;
+
+    const localModel = await discoverLocalChatModel();
+    if (!localModel) return; // No local model — cloud retry will also fail, but that's logged
+
+    if (ctx.hasUI) {
+      ctx.ui.notify("Cloud compaction failed — falling back to local model", "warning");
+    }
+
+    const timeoutSignal = AbortSignal.timeout(config.compactionLocalTimeout);
+    const combinedSignal = AbortSignal.any([event.signal, timeoutSignal]);
+
+    // Build summarization prompt
+    const llmMessages = convertToLlm(prep.messagesToSummarize);
+    let conversationText = serializeConversation(llmMessages);
+
+    // Truncate to ~60k chars (~15k tokens) to fit local model context windows.
+    // Most local models have 8k-32k context; we leave room for system prompt + output.
+    const MAX_CONVERSATION_CHARS = 60_000;
+    if (conversationText.length > MAX_CONVERSATION_CHARS) {
+      conversationText = "...[earlier conversation truncated]...\n\n"
+        + conversationText.slice(-MAX_CONVERSATION_CHARS);
+    }
+
+    let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+    if (prep.previousSummary) {
+      promptText += `<previous-summary>\n${prep.previousSummary}\n</previous-summary>\n\n`;
+    }
+
+    // Inject project memory context for richer summaries
+    if (store) {
+      const mind = activeMind();
+      const facts = store.getActiveFacts(mind);
+      if (facts.length > 0) {
+        const factLines = facts.slice(0, 30).map((f: Fact) => `- [${f.section}] ${f.content}`).join("\n");
+        promptText += `<project-memory>\n${factLines}\n</project-memory>\n\n`;
+        promptText += "The project memory above provides persistent context. Reference relevant facts in your summary.\n\n";
+      }
+    }
+
+    const basePrompt = prep.previousSummary
+      ? COMPACTION_UPDATE_PROMPT
+      : COMPACTION_INITIAL_PROMPT;
+
+    const customInstructions = event.customInstructions;
+    promptText += customInstructions ? `${basePrompt}\n\nAdditional focus: ${customInstructions}` : basePrompt;
+
+    // Handle split turn prefix
+    let turnPrefixSummary = "";
+    if (prep.isSplitTurn && prep.turnPrefixMessages.length > 0) {
+      const prefixMessages = convertToLlm(prep.turnPrefixMessages);
+      let prefixText = serializeConversation(prefixMessages);
+      if (prefixText.length > MAX_CONVERSATION_CHARS) {
+        prefixText = "...[truncated]...\n\n" + prefixText.slice(-MAX_CONVERSATION_CHARS);
+      }
+      const prefixPrompt = `<conversation>\n${prefixText}\n</conversation>\n\n${COMPACTION_TURN_PREFIX_PROMPT}`;
+
+      try {
+        const prefixResp = await ollamaChat(localModel, COMPACTION_SYSTEM_PROMPT, prefixPrompt, {
+          maxTokens: 2048, signal: combinedSignal,
+        });
+        if (prefixResp) turnPrefixSummary = prefixResp;
+      } catch {
+        // If turn prefix fails, continue without it
+      }
+    }
+
+    // Generate main summary via local model
+    try {
+      const summary = await ollamaChat(localModel, COMPACTION_SYSTEM_PROMPT, promptText, {
+        maxTokens: 4096, signal: combinedSignal,
+      });
+
+      if (!summary) return; // Empty response — compaction fails entirely (already retried)
+
+      let fullSummary = summary;
+      if (turnPrefixSummary) {
+        fullSummary += `\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
+      }
+
+      // Append file operations (mirrors pi core behavior)
+      fullSummary += formatFileOps(prep.fileOps);
+
+      return {
+        compaction: {
+          summary: fullSummary,
+          firstKeptEntryId: prep.firstKeptEntryId,
+          tokensBefore: prep.tokensBefore,
+          details: buildFileDetails(prep.fileOps),
+        },
+      };
+    } catch (err) {
+      // Local model failed — compaction fails entirely
+      console.error(`[project-memory] Local model compaction failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+  });
+
   pi.on("session_compact", async (_event, ctx) => {
     postCompaction = true;
 
@@ -455,7 +720,18 @@ export default function (pi: ExtensionAPI) {
     triggerState.manualStoresSinceExtract = 0;
     compactionWarned = false;
     autoCompacted = false;
+    compactionRetryCount = 0; // successful compaction resets retry counter
   });
+
+  // --- Compaction retry with local model fallback ---
+  // Pi's own auto-compaction handles triggering at its threshold (~contextWindow - reserveTokens).
+  // When cloud compaction fails (overloaded_error), pi doesn't retry. On the next
+  // tool_execution_end, if context is still above our threshold, we trigger compaction
+  // ourselves with the local model fallback enabled.
+  //
+  // Flow: pi auto-compact (cloud) → fails → next tool_execution_end → still over threshold
+  //       → we set useLocalCompaction=true → ctx.compact() → session_before_compact
+  //       → local model generates summary → success → resume relay
 
   // --- Extraction cycle ---
 
@@ -490,7 +766,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Phase 2: Global extraction — if new facts were created and global store exists
-      if (result.newFactIds.length > 0 && globalStore) {
+      if (result.newFactIds.length > 0 && globalStore && cfg.globalExtractionEnabled) {
         try {
           const newFacts = result.newFactIds
             .map(id => store!.getFact(id))
@@ -525,8 +801,13 @@ export default function (pi: ExtensionAPI) {
           }
         } catch (err) {
           // Global extraction is best-effort — don't fail the whole cycle
-          if (ctx.hasUI) {
-            ctx.ui.notify(`Global extraction failed: ${(err as Error).message}`, "warning");
+          const msg = (err as Error).message ?? "";
+          const isRateLimit = /\b429\b/.test(msg) || msg.includes("rate_limit_error");
+          if (isRateLimit) {
+            // Rate limited — silently skip, will retry next cycle
+          } else if (ctx.hasUI) {
+            const short = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
+            ctx.ui.notify(`Global extraction failed: ${short}`, "warning");
           }
         }
       }
@@ -718,17 +999,22 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    const injectionContent = [
+      `Project memory available${mindLabel} (${factCount} facts from this and previous sessions).${injectionNote}`,
+      memoryTools + "\n\n",
+      rendered,
+      episodeSection,
+      globalSection,
+      pressureWarning,
+    ].join(" ");
+
+    // Estimate token count (~4 chars per token) and publish for status-bar
+    sharedState.memoryTokenEstimate = Math.round(injectionContent.length / 4);
+
     return {
       message: {
         customType: "project-memory",
-        content: [
-          `Project memory available${mindLabel} (${factCount} facts from this and previous sessions).${injectionNote}`,
-          memoryTools + "\n\n",
-          rendered,
-          episodeSection,
-          globalSection,
-          pressureWarning,
-        ].join(" "),
+        content: injectionContent,
         display: false,
       },
     };
@@ -748,18 +1034,55 @@ export default function (pi: ExtensionAPI) {
     const usage = ctx.getContextUsage();
     if (!usage) return;
 
-    // --- Context Pressure: Auto-compact at critical threshold ---
+    // --- Context Pressure: Auto-compact with local fallback ---
+    // Pi's built-in auto-compaction triggers at ~92% (contextWindow - reserveTokens).
+    // We trigger earlier at compactionAutoPercent (default 85%) as a safety net.
+    // On first attempt, we let the cloud try (no useLocalCompaction flag).
+    // If that fails, autoCompacted stays false (reset in onError) and on the next
+    // tool_execution_end we retry with useLocalCompaction=true.
     const pct = usage.percent ?? 0;
-    if (pct >= config.compactionAutoPercent && !autoCompacted) {
+    if (pct >= config.compactionAutoPercent && !autoCompacted && compactionRetryCount < config.compactionRetryLimit) {
       autoCompacted = true;
+      const isRetry = compactionRetryCount > 0;
+      if (isRetry) {
+        useLocalCompaction = true; // Previous cloud attempt failed — use local model
+        console.error(`[project-memory] Retrying compaction with local model (attempt ${compactionRetryCount + 1})`);
+      }
       if (ctx.hasUI) {
         ctx.ui.notify(
-          `Context at ${Math.round(pct)}% — auto-compacting to preserve session continuity.`,
+          isRetry
+            ? `Retrying compaction via local model (attempt ${compactionRetryCount + 1})…`
+            : `Context at ${Math.round(pct)}% — auto-compacting to preserve session continuity.`,
           "warning",
         );
       }
       ctx.compact({
         customInstructions: "Session hit auto-compaction threshold. Preserve recent work context and any in-progress task state.",
+        onComplete: () => {
+          // Relay: send a hidden custom message that triggers a new turn.
+          // Uses sendMessage (not sendUserMessage) to avoid polluting the transcript.
+          pi.sendMessage(
+            {
+              customType: "compaction-resume",
+              content: [
+                "Context was auto-compacted to free space. Your project memory and working memory are intact.",
+                "",
+                "**Resume your previous task.** The compaction summary above preserves your progress.",
+                "If you need to recall specific facts, use `memory_recall(query)` for targeted retrieval.",
+              ].join("\n"),
+              display: false,
+            },
+            { triggerTurn: true },
+          );
+        },
+        onError: (err: Error) => {
+          compactionRetryCount++;
+          autoCompacted = false; // allow retry on next tool_execution_end
+          console.error(`[project-memory] Compaction failed (attempt ${compactionRetryCount}/${config.compactionRetryLimit}): ${err.message}`);
+          if (compactionRetryCount >= config.compactionRetryLimit && ctx.hasUI) {
+            ctx.ui.notify("Compaction failed after max retries. Context may be degraded.", "error");
+          }
+        },
       });
     } else if (pct >= config.compactionWarningPercent && !compactionWarned) {
       // Mark warning — will be injected via before_agent_start
@@ -1032,9 +1355,11 @@ export default function (pi: ExtensionAPI) {
     ].join(" "),
     promptSnippet: "Store a fact to project memory (persists across sessions)",
     promptGuidelines: [
-      "Use memory_store to persist important discoveries — facts survive across sessions",
+      "Store conclusions, not investigation steps — if you're still debugging, don't store yet",
+      "Store current state, not transitions — write 'X is used for Y', not 'X replaced Z for Y'",
+      "Before storing, check if an existing fact covers it — use memory_supersede instead of adding duplicates",
+      "After resolving a bug, archive all investigation breadcrumbs and store one decision fact about the fix",
       "Prefer pointer facts ('X does Y. See path/to/file.ts') over inlining implementation details",
-      "Store facts when you discover: architecture decisions, non-obvious constraints, tricky bugs, environment quirks",
     ].join("\n"),
     parameters: Type.Object({
       section: StringEnum(
@@ -1353,6 +1678,54 @@ export default function (pi: ExtensionAPI) {
 
       ctx.compact({
         customInstructions: params.instructions,
+        onComplete: () => {
+          // Send hidden resume message that starts a new turn with memory injected.
+          // Uses sendMessage (not sendUserMessage) to avoid polluting the transcript.
+          pi.sendMessage(
+            {
+              customType: "compaction-resume",
+              content: [
+                "Context compaction complete. Your project memory and working memory are intact.",
+                "",
+                "**Continue where you left off.** Use `memory_recall(query)` if you need to retrieve specific facts.",
+              ].join("\n"),
+              display: false,
+            },
+            { triggerTurn: true },
+          );
+          compactionRetryCount = 0;
+        },
+        onError: (err: Error) => {
+          compactionRetryCount++;
+          console.error(`[project-memory] Manual compaction failed: ${err.message}`);
+
+          if (compactionRetryCount < config.compactionRetryLimit) {
+            // Retry with local model
+            useLocalCompaction = true;
+            ctx.compact({
+              customInstructions: params.instructions,
+              onComplete: () => {
+                pi.sendMessage(
+                  {
+                    customType: "compaction-resume",
+                    content: "Context compacted via local model fallback. **Continue where you left off.**",
+                    display: false,
+                  },
+                  { triggerTurn: true },
+                );
+                compactionRetryCount = 0;
+              },
+              onError: (retryErr: Error) => {
+                console.error(`[project-memory] Local model compaction also failed: ${retryErr.message}`);
+                if (ctx.hasUI) {
+                  ctx.ui.notify("Compaction failed (cloud + local).", "error");
+                }
+              },
+            });
+          } else if (ctx.hasUI) {
+            ctx.ui.notify("Compaction failed after max retries.", "error");
+          }
+        },
       });
 
       return {
@@ -1361,7 +1734,7 @@ export default function (pi: ExtensionAPI) {
           text: [
             `Context compaction triggered (was ${pct} full, ${tokens} tokens).`,
             "Compaction runs in the background — older messages will be summarized.",
-            "After the next response, use memory_query to reload project knowledge.",
+            "You will be prompted to continue after compaction completes.",
           ].join("\n"),
         }],
         details: { tokensBefore: usage?.tokens, percent: pct },
@@ -1572,15 +1945,29 @@ export default function (pi: ExtensionAPI) {
   function updateStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI || !store) return;
 
+    const theme = ctx.ui.theme;
     const mind = activeMind();
     const count = store.countActiveFacts(mind);
-    const vecIcon = embeddingAvailable ? "⚡" : "";
-    const wmCount = workingMemory.size > 0 ? ` wm:${workingMemory.size}` : "";
-    if (mind !== "default") {
-      ctx.ui.setStatus("memory", ctx.ui.theme.fg("dim", `🧠${vecIcon} ${mind} (${count}${wmCount})`));
-    } else {
-      ctx.ui.setStatus("memory", ctx.ui.theme.fg("dim", `🧠${vecIcon} ${count}${wmCount}`));
+
+    // Label + fact count as a single unit: "Memory: 2 facts" or "Memory(mind): 2 facts"
+    const label = mind !== "default" ? `Memory(${mind}): ${count} facts` : `Memory: ${count} facts`;
+    const badges: string[] = [];
+
+    // Working memory — pinned facts count
+    if (workingMemory.size > 0) {
+      badges.push(`${workingMemory.size} pinned`);
     }
+
+    // Semantic search availability
+    if (embeddingAvailable) {
+      badges.push("semantic");
+    }
+
+    const status = badges.length > 0
+      ? `${label} · ${badges.join(" · ")}`
+      : label;
+
+    ctx.ui.setStatus("memory", theme.fg("dim", status));
   }
 
   // --- Commands ---
@@ -1790,7 +2177,9 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       if (!store) {
         ctx.shutdown();
-        setTimeout(() => process.exit(0), 2000);
+        await new Promise<void>(resolve => {
+          setTimeout(() => { resolve(); process.exit(0); }, 10_000);
+        });
         return;
       }
 
@@ -1826,10 +2215,22 @@ export default function (pi: ExtensionAPI) {
       // Small delay so the notification renders
       await new Promise(r => setTimeout(r, 200));
 
+      // ctx.shutdown() is fire-and-forget internally (sets shutdownRequested flag
+      // and calls void this.shutdown() in interactive mode). We must keep this
+      // command handler alive so control doesn't return to the REPL prompt —
+      // otherwise the user sees the input prompt again instead of the process exiting.
       ctx.shutdown();
 
-      // Fallback: if shutdown() doesn't terminate within 2s, force exit
-      setTimeout(() => process.exit(0), 2000);
+      // Block until process.exit() is called by the shutdown flow.
+      // The shutdown handler runs session_shutdown events (episode generation,
+      // JSONL export) then calls process.exit(0). If that takes too long or
+      // hangs, force exit after 10s as a safety net.
+      await new Promise<void>(resolve => {
+        setTimeout(() => {
+          resolve();
+          process.exit(0);
+        }, 10_000);
+      });
     },
   });
 }

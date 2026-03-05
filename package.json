@@ -31,7 +31,8 @@
       "./extensions/terminal-title.ts",
       "./extensions/view",
       "./extensions/web-search",
-      "./extensions/whoami.ts"
+      "./extensions/whoami.ts",
+      "./extensions/design-tree"
     ],
     "skills": [
       "./skills"

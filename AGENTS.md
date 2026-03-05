@@ -1,6 +1,6 @@
 # pi-kit Project Directives
 
-> Global directives (attribution, completion standards, memory sync, branch hygiene) are defined in `~/.pi/agent/AGENTS.md` and apply to all sessions. This file adds pi-kit-specific context.
+> Global directives (attribution, completion standards, memory sync, branch hygiene) are deployed automatically to `~/.pi/agent/AGENTS.md` by the defaults extension on first session start. They apply to all projects. To customize, edit that file — but remove the `<!-- managed by pi-kit -->` marker or your changes will be overwritten on update.
 
 ## Contributing
 

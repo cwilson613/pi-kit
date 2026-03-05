@@ -802,10 +802,12 @@ export default function (pi: ExtensionAPI) {
         } catch (err) {
           // Global extraction is best-effort — don't fail the whole cycle
           const msg = (err as Error).message ?? "";
-          if (msg.includes("429") || msg.includes("rate_limit")) {
+          const isRateLimit = /\b429\b/.test(msg) || msg.includes("rate_limit_error");
+          if (isRateLimit) {
             // Rate limited — silently skip, will retry next cycle
           } else if (ctx.hasUI) {
-            ctx.ui.notify(`Global extraction failed (non-critical)`, "warning");
+            const short = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
+            ctx.ui.notify(`Global extraction failed: ${short}`, "warning");
           }
         }
       }

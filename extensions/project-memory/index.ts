@@ -721,6 +721,31 @@ export default function (pi: ExtensionAPI) {
     compactionWarned = false;
     autoCompacted = false;
     compactionRetryCount = 0; // successful compaction resets retry counter
+
+    // Resume the agent after ANY compaction (pi-initiated or extension-initiated).
+    // Pi's built-in auto-compaction at threshold doesn't resume the agent — it just
+    // compacts and goes idle. Without this, the agent hangs after compaction.
+    //
+    // IMPORTANT: Use setTimeout to avoid reentrancy. In pi's auto-compaction path,
+    // session_compact fires from within _handleAgentEvent(agent_end). Calling
+    // agent.prompt() synchronously here would cause reentrant event processing
+    // (agent_start inside agent_end handling). The 100ms delay matches pi's own
+    // pattern for post-compaction resume (see _runAutoCompaction's setTimeout).
+    setTimeout(() => {
+      pi.sendMessage(
+        {
+          customType: "compaction-resume",
+          content: [
+            "Context was compacted to free space. Your project memory and working memory are intact.",
+            "",
+            "**Resume your previous task.** The compaction summary above preserves your progress.",
+            "If you need to recall specific facts, use `memory_recall(query)` for targeted retrieval.",
+          ].join("\n"),
+          display: false,
+        },
+        { triggerTurn: true },
+      );
+    }, 100);
   });
 
   // --- Compaction retry with local model fallback ---
@@ -1058,23 +1083,7 @@ export default function (pi: ExtensionAPI) {
       }
       ctx.compact({
         customInstructions: "Session hit auto-compaction threshold. Preserve recent work context and any in-progress task state.",
-        onComplete: () => {
-          // Relay: send a hidden custom message that triggers a new turn.
-          // Uses sendMessage (not sendUserMessage) to avoid polluting the transcript.
-          pi.sendMessage(
-            {
-              customType: "compaction-resume",
-              content: [
-                "Context was auto-compacted to free space. Your project memory and working memory are intact.",
-                "",
-                "**Resume your previous task.** The compaction summary above preserves your progress.",
-                "If you need to recall specific facts, use `memory_recall(query)` for targeted retrieval.",
-              ].join("\n"),
-              display: false,
-            },
-            { triggerTurn: true },
-          );
-        },
+        // Resume is handled centrally in session_compact handler (covers all compaction sources).
         onError: (err: Error) => {
           compactionRetryCount++;
           autoCompacted = false; // allow retry on next tool_execution_end
@@ -1676,25 +1685,9 @@ export default function (pi: ExtensionAPI) {
       const pct = usage?.percent != null ? `${Math.round(usage.percent)}%` : "unknown";
       const tokens = usage?.tokens?.toLocaleString() ?? "unknown";
 
+      // Resume is handled centrally in session_compact handler (covers all compaction sources).
       ctx.compact({
         customInstructions: params.instructions,
-        onComplete: () => {
-          // Send hidden resume message that starts a new turn with memory injected.
-          // Uses sendMessage (not sendUserMessage) to avoid polluting the transcript.
-          pi.sendMessage(
-            {
-              customType: "compaction-resume",
-              content: [
-                "Context compaction complete. Your project memory and working memory are intact.",
-                "",
-                "**Continue where you left off.** Use `memory_recall(query)` if you need to retrieve specific facts.",
-              ].join("\n"),
-              display: false,
-            },
-            { triggerTurn: true },
-          );
-          compactionRetryCount = 0;
-        },
         onError: (err: Error) => {
           compactionRetryCount++;
           console.error(`[project-memory] Manual compaction failed: ${err.message}`);
@@ -1704,17 +1697,6 @@ export default function (pi: ExtensionAPI) {
             useLocalCompaction = true;
             ctx.compact({
               customInstructions: params.instructions,
-              onComplete: () => {
-                pi.sendMessage(
-                  {
-                    customType: "compaction-resume",
-                    content: "Context compacted via local model fallback. **Continue where you left off.**",
-                    display: false,
-                  },
-                  { triggerTurn: true },
-                );
-                compactionRetryCount = 0;
-              },
               onError: (retryErr: Error) => {
                 console.error(`[project-memory] Local model compaction also failed: ${retryErr.message}`);
                 if (ctx.hasUI) {

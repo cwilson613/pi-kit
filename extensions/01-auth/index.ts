@@ -1,3 +1,8 @@
+// @secret GITHUB_TOKEN "GitHub personal access token (alternative to gh auth login)"
+// @secret GITLAB_TOKEN "GitLab personal access token (alternative to glab auth login)"
+// @secret AWS_ACCESS_KEY_ID "AWS access key ID (alternative to aws sso login)"
+// @secret AWS_SECRET_ACCESS_KEY "AWS secret access key"
+
 /**
  * Auth Extension — authentication status, diagnosis, and refresh across dev tools.
  *
@@ -6,7 +11,7 @@
  *   - `/auth` command: interactive auth management
  *     - `/auth` or `/auth status` — check all providers
  *     - `/auth check <provider>` — check a specific provider
- *     - `/auth refresh <provider>` — attempt to refresh credentials
+ *     - `/auth refresh <provider>` — show refresh command + offer /secrets path
  *     - `/auth list` — list available providers
  *
  * Security model:
@@ -18,14 +23,10 @@
  *     and parse error output for specific failure reasons.
  *
  * Load order: 01-auth loads after 00-secrets, so process.env is populated.
- *
- * @secret GITHUB_TOKEN "GitHub personal access token (alternative to gh auth login)"
- * @secret GITLAB_TOKEN "GitLab personal access token (alternative to glab auth login)"
- * @secret AWS_ACCESS_KEY_ID "AWS access key ID (alternative to aws sso login)"
- * @secret AWS_SECRET_ACCESS_KEY "AWS secret access key"
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -58,32 +59,46 @@ export interface AuthProvider {
 
 // ─── Error Diagnosis Helpers ─────────────────────────────────────
 
-/** Classify common HTTP/auth error patterns from CLI stderr. */
+/**
+ * Classify auth-specific error patterns from CLI stderr.
+ *
+ * Pattern ordering matters: expired is checked before invalid because
+ * "invalid token has expired" should classify as expired, not invalid.
+ *
+ * Only auth-specific keywords are matched. Generic terms like "denied"
+ * or "invalid" are scoped with adjacent auth context words to avoid
+ * false positives on non-auth errors like "invalid region".
+ */
 function diagnoseError(stderr: string): { status: AuthStatus; reason: string } {
 	const lower = stderr.toLowerCase();
 
-	// Expired tokens
-	if (lower.includes("expired") || lower.includes("expiredtoken") || lower.includes("token has expired")
-		|| lower.includes("token is expired") || lower.includes("session expired")) {
+	// Expired tokens — most specific, check first
+	if (lower.includes("token has expired") || lower.includes("token is expired")
+		|| lower.includes("session expired") || lower.includes("expiredtoken")
+		|| lower.includes("credentials have expired")
+		|| /\bexpired\b.*\b(?:token|session|credential|certificate)\b/.test(lower)
+		|| /\b(?:token|session|credential|certificate)\b.*\bexpired\b/.test(lower)) {
 		return { status: "expired", reason: "Token or session has expired" };
 	}
 
-	// Invalid/revoked tokens
-	if (lower.includes("invalid") || lower.includes("unauthorized") || lower.includes("401")
-		|| lower.includes("bad credentials") || lower.includes("authentication failed")
-		|| lower.includes("revoked") || lower.includes("denied")) {
+	// Not logged in — check before invalid to avoid "not authenticated" matching "invalid"
+	if (lower.includes("not logged") || lower.includes("no token") || lower.includes("not authenticated")
+		|| lower.includes("login required") || lower.includes("no credentials")
+		|| lower.includes("no valid credentials")) {
+		return { status: "none", reason: "Not authenticated" };
+	}
+
+	// Invalid/revoked credentials — scoped to auth-relevant context
+	if (lower.includes("bad credentials") || lower.includes("authentication failed")
+		|| lower.includes("revoked")
+		|| /\b401\b/.test(lower) || lower.includes("unauthorized")) {
 		return { status: "invalid", reason: extractErrorLine(stderr) };
 	}
 
-	// Forbidden (authenticated but no access)
-	if (lower.includes("403") || lower.includes("forbidden") || lower.includes("insufficient scope")) {
+	// Forbidden (authenticated but insufficient permissions)
+	if (/\b403\b/.test(lower) || lower.includes("insufficient scope")
+		|| lower.includes("access denied")) {
 		return { status: "invalid", reason: `Authenticated but forbidden: ${extractErrorLine(stderr)}` };
-	}
-
-	// Not logged in
-	if (lower.includes("not logged") || lower.includes("no token") || lower.includes("not authenticated")
-		|| lower.includes("login required") || lower.includes("no credentials")) {
-		return { status: "none", reason: "Not authenticated" };
 	}
 
 	return { status: "none", reason: extractErrorLine(stderr) || "Authentication failed" };
@@ -92,8 +107,8 @@ function diagnoseError(stderr: string): { status: AuthStatus; reason: string } {
 /** Extract the most informative error line from multi-line stderr. */
 function extractErrorLine(stderr: string): string {
 	const lines = stderr.trim().split("\n").filter(l => l.trim());
-	// Prefer lines with "error", "failed", or specific status info
-	const errorLine = lines.find(l => /error|failed|invalid|expired|denied|unauthorized/i.test(l));
+	// Prefer lines with auth-relevant error keywords
+	const errorLine = lines.find(l => /error|failed|invalid|expired|denied|unauthorized|401|403/i.test(l));
 	if (errorLine) return errorLine.trim().slice(0, 200);
 	// Fall back to first non-empty line
 	return (lines[0] || "Unknown error").trim().slice(0, 200);
@@ -114,10 +129,10 @@ const gitProvider: AuthProvider = {
 		const email = emailResult.stdout.trim() || "";
 
 		if (name && email) {
-			return { provider: "git", status: "ok", detail: `${name} <${email}>` };
+			return { provider: this.id, status: "ok", detail: `${name} <${email}>` };
 		}
 		return {
-			provider: "git",
+			provider: this.id,
 			status: "none",
 			detail: `name: ${name || "(not set)"}, email: ${email || "(not set)"}`,
 			refresh: this.refreshCommand,
@@ -135,23 +150,24 @@ const githubProvider: AuthProvider = {
 	async check(pi, signal) {
 		const which = await pi.exec("which", ["gh"], { signal, timeout: 3_000 });
 		if (which.code !== 0) {
-			return { provider: "github", status: "missing", detail: "gh CLI not installed" };
+			return { provider: this.id, status: "missing", detail: "gh CLI not installed" };
 		}
 
 		const result = await pi.exec("gh", ["auth", "status"], { signal, timeout: 10_000 });
 		const output = (result.stdout + "\n" + result.stderr).trim();
 
 		if (result.code === 0) {
-			const accountMatch = output.match(/Logged in to .+ as (\S+)/);
+			// gh auth status output: "Logged in to github.com account <user> (<method>)"
+			const accountMatch = output.match(/Logged in to \S+ account (\S+)/);
 			const scopeMatch = output.match(/Token scopes:(.+)/);
 			let detail = accountMatch ? accountMatch[1] : "authenticated";
 			if (scopeMatch) detail += ` (scopes: ${scopeMatch[1].trim()})`;
-			return { provider: "github", status: "ok", detail, refresh: this.refreshCommand };
+			return { provider: this.id, status: "ok", detail, refresh: this.refreshCommand };
 		}
 
 		const diag = diagnoseError(output);
 		return {
-			provider: "github",
+			provider: this.id,
 			status: diag.status,
 			detail: diag.reason,
 			error: output.slice(0, 300),
@@ -174,28 +190,29 @@ const gitlabProvider: AuthProvider = {
 			// glab not installed — check if GITLAB_TOKEN is set via secrets
 			if (process.env.GITLAB_TOKEN) {
 				return {
-					provider: "gitlab",
+					provider: this.id,
 					status: "ok",
 					detail: "GITLAB_TOKEN set (glab CLI not installed)",
 				};
 			}
-			return { provider: "gitlab", status: "missing", detail: "glab CLI not installed" };
+			return { provider: this.id, status: "missing", detail: "glab CLI not installed" };
 		}
 
 		const result = await pi.exec("glab", ["auth", "status"], { signal, timeout: 10_000 });
 		const output = (result.stdout + "\n" + result.stderr).trim();
 
 		if (result.code === 0) {
-			const accountMatch = output.match(/Logged in to .+ as (\S+)/i);
+			// glab output: "Logged in to <host> as <user>" or "Logged in to <host> account <user>"
+			const accountMatch = output.match(/Logged in to \S+ (?:as|account) (\S+)/i);
 			const hostMatch = output.match(/Logged in to (\S+)/i);
 			let detail = accountMatch ? accountMatch[1] : "authenticated";
 			if (hostMatch) detail += ` @ ${hostMatch[1]}`;
-			return { provider: "gitlab", status: "ok", detail, refresh: this.refreshCommand };
+			return { provider: this.id, status: "ok", detail, refresh: this.refreshCommand };
 		}
 
 		const diag = diagnoseError(output);
 		return {
-			provider: "gitlab",
+			provider: this.id,
 			status: diag.status,
 			detail: diag.reason,
 			error: output.slice(0, 300),
@@ -215,7 +232,7 @@ const awsProvider: AuthProvider = {
 	async check(pi, signal) {
 		const which = await pi.exec("which", ["aws"], { signal, timeout: 3_000 });
 		if (which.code !== 0) {
-			return { provider: "aws", status: "missing", detail: "aws CLI not installed" };
+			return { provider: this.id, status: "missing", detail: "aws CLI not installed" };
 		}
 
 		const result = await pi.exec("aws", ["sts", "get-caller-identity", "--output", "json"], { signal, timeout: 10_000 });
@@ -224,19 +241,19 @@ const awsProvider: AuthProvider = {
 			try {
 				const identity = JSON.parse(result.stdout.trim());
 				return {
-					provider: "aws",
+					provider: this.id,
 					status: "ok",
 					detail: identity.Arn || identity.Account || "authenticated",
 					refresh: this.refreshCommand,
 				};
 			} catch {
-				return { provider: "aws", status: "ok", detail: "authenticated", refresh: this.refreshCommand };
+				return { provider: this.id, status: "ok", detail: "authenticated", refresh: this.refreshCommand };
 			}
 		}
 
 		const diag = diagnoseError(result.stderr || result.stdout);
 		return {
-			provider: "aws",
+			provider: this.id,
 			status: diag.status,
 			detail: diag.reason,
 			error: (result.stderr || result.stdout).slice(0, 300),
@@ -255,17 +272,17 @@ const kubernetesProvider: AuthProvider = {
 	async check(pi, signal) {
 		const which = await pi.exec("which", ["kubectl"], { signal, timeout: 3_000 });
 		if (which.code !== 0) {
-			return { provider: "kubernetes", status: "missing", detail: "kubectl not installed" };
+			return { provider: this.id, status: "missing", detail: "kubectl not installed" };
 		}
 
-		const ctx = await pi.exec("kubectl", ["config", "current-context"], { signal, timeout: 5_000 });
-		if (ctx.code === 0) {
-			const context = ctx.stdout.trim();
+		const kctx = await pi.exec("kubectl", ["config", "current-context"], { signal, timeout: 5_000 });
+		if (kctx.code === 0) {
+			const context = kctx.stdout.trim();
 			// Verify the context actually works
 			const verify = await pi.exec("kubectl", ["cluster-info", "--request-timeout=5s"], { signal, timeout: 10_000 });
 			if (verify.code === 0) {
 				return {
-					provider: "kubernetes",
+					provider: this.id,
 					status: "ok",
 					detail: `context: ${context}`,
 					refresh: this.refreshCommand,
@@ -273,7 +290,7 @@ const kubernetesProvider: AuthProvider = {
 			}
 			const diag = diagnoseError(verify.stderr || verify.stdout);
 			return {
-				provider: "kubernetes",
+				provider: this.id,
 				status: diag.status,
 				detail: `context: ${context} — ${diag.reason}`,
 				error: (verify.stderr || "").slice(0, 300),
@@ -282,7 +299,7 @@ const kubernetesProvider: AuthProvider = {
 		}
 
 		return {
-			provider: "kubernetes",
+			provider: this.id,
 			status: "none",
 			detail: "No context set",
 			refresh: this.refreshCommand,
@@ -302,7 +319,7 @@ const ociProvider: AuthProvider = {
 		const cmd = podmanWhich.code === 0 ? "podman" : dockerWhich.code === 0 ? "docker" : null;
 
 		if (!cmd) {
-			return { provider: "oci", status: "missing", detail: "Neither podman nor docker installed" };
+			return { provider: this.id, status: "missing", detail: "Neither podman nor docker installed" };
 		}
 
 		// Update refresh command to use actual container runtime
@@ -311,7 +328,7 @@ const ociProvider: AuthProvider = {
 		const result = await pi.exec(cmd, ["login", "--get-login", "ghcr.io"], { signal, timeout: 5_000 });
 		if (result.code === 0) {
 			return {
-				provider: "oci",
+				provider: this.id,
 				status: "ok",
 				detail: `ghcr.io: ${result.stdout.trim()} (${cmd})`,
 				refresh,
@@ -319,7 +336,7 @@ const ociProvider: AuthProvider = {
 		}
 
 		return {
-			provider: "oci",
+			provider: this.id,
 			status: "none",
 			detail: `Not logged in to ghcr.io (${cmd})`,
 			refresh,
@@ -342,6 +359,24 @@ const ALL_PROVIDERS: AuthProvider[] = [
 function findProvider(idOrName: string): AuthProvider | undefined {
 	const lower = idOrName.toLowerCase();
 	return ALL_PROVIDERS.find(p => p.id === lower || p.name.toLowerCase() === lower);
+}
+
+// ─── Shared check-all helper ─────────────────────────────────────
+
+async function checkAllProviders(pi: ExtensionAPI, signal?: AbortSignal): Promise<AuthResult[]> {
+	const results: AuthResult[] = [];
+	for (const provider of ALL_PROVIDERS) {
+		try {
+			results.push(await provider.check(pi, signal));
+		} catch (e: any) {
+			results.push({
+				provider: provider.id,
+				status: "none",
+				detail: `Check failed: ${e.message}`,
+			});
+		}
+	}
+	return results;
 }
 
 // ─── Formatting ──────────────────────────────────────────────────
@@ -412,19 +447,7 @@ export default function authExtension(pi: ExtensionAPI) {
 		parameters: Type.Object({}),
 
 		async execute(_toolCallId, _params, signal, _onUpdate, _ctx) {
-			const results: AuthResult[] = [];
-			for (const provider of ALL_PROVIDERS) {
-				try {
-					results.push(await provider.check(pi, signal));
-				} catch (e: any) {
-					results.push({
-						provider: provider.name,
-						status: "none",
-						detail: `Check failed: ${e.message}`,
-					});
-				}
-			}
-
+			const results = await checkAllProviders(pi, signal);
 			const text = formatResults(results);
 			return {
 				content: [{ type: "text", text }],
@@ -437,6 +460,26 @@ export default function authExtension(pi: ExtensionAPI) {
 					})),
 				},
 			};
+		},
+
+		renderCall(_args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("whoami")), 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			if (result.isError) {
+				return new Text(theme.fg("error", result.content?.[0]?.text || "Error"), 0, 0);
+			}
+			const checks = (result.details?.checks || []) as Array<{ provider: string; status: string; detail: string }>;
+			const parts = checks.map(c => {
+				const icon = STATUS_ICONS[c.status as AuthStatus] || "?";
+				const color = c.status === "ok" ? "success"
+					: c.status === "expired" ? "warning"
+					: c.status === "missing" ? "muted"
+					: "error";
+				return theme.fg(color as Parameters<typeof theme.fg>[0], `${icon} ${c.provider}`);
+			});
+			return new Text(parts.join(theme.fg("dim", " · ")), 0, 0);
 		},
 	});
 
@@ -474,18 +517,7 @@ export default function authExtension(pi: ExtensionAPI) {
 			switch (subcommand) {
 				case "status":
 				case "": {
-					const results: AuthResult[] = [];
-					for (const provider of ALL_PROVIDERS) {
-						try {
-							results.push(await provider.check(pi));
-						} catch (e: any) {
-							results.push({
-								provider: provider.name,
-								status: "none",
-								detail: `Check failed: ${e.message}`,
-							});
-						}
-					}
+					const results = await checkAllProviders(pi);
 					const text = formatResults(results);
 					pi.sendMessage({ customType: "view", content: text, display: true });
 					break;
@@ -553,68 +585,29 @@ export default function authExtension(pi: ExtensionAPI) {
 						return;
 					}
 
-					// Offer refresh options
-					const options: string[] = [];
-					options.push(`Run: ${provider.refreshCommand}`);
-					if (provider.tokenEnvVar) {
-						options.push(`Configure token: /secrets configure ${provider.tokenEnvVar}`);
-					}
-					options.push("Cancel");
-
+					// Show refresh instructions — don't execute interactive commands
+					// because pi.exec runs without a TTY. CLI login commands (gh auth login,
+					// glab auth login, aws sso login) require browser interaction.
 					const statusLabel = current.status === "expired"
 						? "expired"
 						: current.status === "invalid"
 							? "invalid"
 							: "not authenticated";
 
-					const choice = await ctx.ui.select(
-						`${provider.name} — ${statusLabel}\n` +
-						(current.error ? `Error: ${current.error.split("\n")[0].slice(0, 120)}\n` : "") +
-						`\nHow would you like to fix this?`,
-						options
-					);
-
-					if (!choice || choice === "Cancel") return;
-
-					if (choice.startsWith("Configure token")) {
-						ctx.ui.notify(
-							`Run: /secrets configure ${provider.tokenEnvVar}\n` +
-							`This will store the token securely via the secrets extension.`,
-							"info"
-						);
-						return;
+					const lines = [
+						`**${provider.name}** — ${statusLabel}`,
+					];
+					if (current.error) {
+						lines.push(`Error: ${current.error.split("\n")[0].slice(0, 120)}`);
 					}
-
-					if (choice.startsWith("Run:")) {
-						// Interactive CLI auth — run in terminal
-						ctx.ui.notify(
-							`Running: ${provider.refreshCommand}\n` +
-							`This may open a browser for authentication.`,
-							"info"
-						);
-						const result = await pi.exec("bash", ["-c", provider.refreshCommand], { timeout: 120_000 });
-						if (result.code === 0) {
-							// Verify the refresh worked
-							try {
-								const verify = await provider.check(pi);
-								if (verify.status === "ok") {
-									ctx.ui.notify(`✅ ${provider.name} authenticated: ${verify.detail}`, "info");
-								} else {
-									ctx.ui.notify(
-										`⚠️ ${provider.name} refresh completed but verification failed: ${verify.detail}`,
-										"warning"
-									);
-								}
-							} catch {
-								ctx.ui.notify(`${provider.name} refresh completed — run /auth check ${provider.id} to verify`, "info");
-							}
-						} else {
-							ctx.ui.notify(
-								`❌ ${provider.name} refresh failed (exit ${result.code})\n${(result.stderr || result.stdout).slice(0, 200)}`,
-								"error"
-							);
-						}
+					lines.push("", "**Options:**");
+					lines.push(`  1. Run in your terminal: \`${provider.refreshCommand}\``);
+					if (provider.tokenEnvVar) {
+						lines.push(`  2. Configure token: \`/secrets configure ${provider.tokenEnvVar}\``);
 					}
+					lines.push("", "After authenticating, run `/auth check " + provider.id + "` to verify.");
+
+					pi.sendMessage({ customType: "view", content: lines.join("\n"), display: true });
 					break;
 				}
 
@@ -633,7 +626,7 @@ export default function authExtension(pi: ExtensionAPI) {
 						"Usage: /auth <status|check|refresh|list> [provider]\n\n" +
 						"  /auth               — check all providers\n" +
 						"  /auth check github  — check a specific provider\n" +
-						"  /auth refresh aws   — refresh expired credentials\n" +
+						"  /auth refresh aws   — show refresh instructions\n" +
 						"  /auth list          — list available providers",
 						"info"
 					);
@@ -646,18 +639,7 @@ export default function authExtension(pi: ExtensionAPI) {
 	pi.registerCommand("whoami", {
 		description: "Alias for /auth status — check authentication across dev tools",
 		handler: async (_args, _ctx) => {
-			const results: AuthResult[] = [];
-			for (const provider of ALL_PROVIDERS) {
-				try {
-					results.push(await provider.check(pi));
-				} catch (e: any) {
-					results.push({
-						provider: provider.name,
-						status: "none",
-						detail: `Check failed: ${e.message}`,
-					});
-				}
-			}
+			const results = await checkAllProviders(pi);
 			const text = formatResults(results);
 			pi.sendMessage({ customType: "view", content: text, display: true });
 		},
@@ -672,4 +654,5 @@ export {
 	ALL_PROVIDERS,
 	formatResults,
 	findProvider,
+	checkAllProviders,
 };

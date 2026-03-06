@@ -91,7 +91,7 @@ Connect external MCP (Model Context Protocol) servers as pi tools.
 | Extension | Description |
 |-----------|-------------|
 | `chronos` | Authoritative date/time from system clock — eliminates AI date math errors |
-| `whoami` | Check auth status across git, GitHub, AWS, k8s, OCI registries |
+| `01-auth` | Auth status, diagnosis, and refresh across git, GitHub, GitLab, AWS, k8s, OCI (`/auth`, `/whoami`) |
 | `view` | Inline file viewer — images, PDFs, docs, syntax-highlighted code |
 | `distill` | Context distillation for session handoff (`/distill`) |
 | `session-log` | Append-only structured session tracking |

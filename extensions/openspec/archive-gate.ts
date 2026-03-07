@@ -6,12 +6,14 @@ import * as path from "node:path";
 import { scanDesignDocs, writeNodeDocument, getNodeSections } from "../design-tree/tree.ts";
 
 /**
- * Scan the design tree for nodes whose openspec_change matches the archived
- * change name. Transition any node in "implementing" status to "implemented"
- * using a single writeNodeDocument call (consistent with executeImplement).
+ * Scan the design tree for nodes matching the archived OpenSpec change.
+ * Matches by explicit `openspec_change` frontmatter field OR by convention
+ * (node ID = change name). Transitions `implementing` or `decided` nodes
+ * to `implemented` — the decided fallback handles OpenSpec-first workflows
+ * where the design tree `implement` action was never run.
  *
  * @param cwd     Project root (parent of the docs/ directory)
- * @param changeName  OpenSpec change name to match against openspec_change field
+ * @param changeName  OpenSpec change name to match against
  * @returns IDs of nodes transitioned to implemented
  */
 export function transitionDesignNodesOnArchive(cwd: string, changeName: string): string[] {
@@ -22,7 +24,13 @@ export function transitionDesignNodesOnArchive(cwd: string, changeName: string):
 	const transitioned: string[] = [];
 
 	for (const node of tree.nodes.values()) {
-		if (node.openspec_change === changeName && node.status === "implementing") {
+		// Match by explicit openspec_change field OR by convention (node ID = change name)
+		const matches = node.openspec_change === changeName || node.id === changeName;
+		// Transition implementing → implemented (primary path)
+		// Also transition decided → implemented (fallback for OpenSpec-first workflows
+		// where the design tree `implement` action was never run)
+		const transitionable = node.status === "implementing" || node.status === "decided";
+		if (matches && transitionable) {
 			const sections = getNodeSections(node);
 			writeNodeDocument({ ...node, status: "implemented" }, sections);
 			transitioned.push(node.id);

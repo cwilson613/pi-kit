@@ -61,13 +61,13 @@ describe("archive gate — design tree transitions", () => {
 		assert.strictEqual(tree.nodes.get("node-a")?.status, "implementing");
 	});
 
-	it("does not transition decided nodes even with matching change", () => {
+	it("transitions decided nodes with matching change (OpenSpec-first workflow)", () => {
 		writeDesignDoc(docsDir, "node-b", "decided", "my-feature");
 		const result = transitionDesignNodesOnArchive(tmpDir, "my-feature");
-		assert.deepStrictEqual(result, []);
+		assert.deepStrictEqual(result, ["node-b"]);
 
 		const tree = scanDesignDocs(docsDir);
-		assert.strictEqual(tree.nodes.get("node-b")?.status, "decided");
+		assert.strictEqual(tree.nodes.get("node-b")?.status, "implemented");
 	});
 
 	it("transitions multiple implementing nodes", () => {
@@ -76,9 +76,10 @@ describe("archive gate — design tree transitions", () => {
 		writeDesignDoc(docsDir, "node-3", "decided", "big-change");
 
 		const result = transitionDesignNodesOnArchive(tmpDir, "big-change");
-		assert.strictEqual(result.length, 2);
+		assert.strictEqual(result.length, 3);
 		assert.ok(result.includes("node-1"));
 		assert.ok(result.includes("node-2"));
+		assert.ok(result.includes("node-3"));
 	});
 
 	it("returns empty when docs dir does not exist", () => {
@@ -86,9 +87,27 @@ describe("archive gate — design tree transitions", () => {
 		assert.deepStrictEqual(result, []);
 	});
 
-	it("returns empty when no nodes have openspec_change", () => {
+	it("returns empty when no nodes have openspec_change and ID doesn't match", () => {
 		writeDesignDoc(docsDir, "plain-node", "implementing");
 		const result = transitionDesignNodesOnArchive(tmpDir, "my-feature");
 		assert.deepStrictEqual(result, []);
+	});
+
+	it("transitions by convention when node ID matches change name (no openspec_change field)", () => {
+		writeDesignDoc(docsDir, "my-feature", "decided");
+		const result = transitionDesignNodesOnArchive(tmpDir, "my-feature");
+		assert.deepStrictEqual(result, ["my-feature"]);
+
+		const tree = scanDesignDocs(docsDir);
+		assert.strictEqual(tree.nodes.get("my-feature")?.status, "implemented");
+	});
+
+	it("does not transition seed or exploring nodes even with matching ID", () => {
+		writeDesignDoc(docsDir, "my-feature", "exploring");
+		const result = transitionDesignNodesOnArchive(tmpDir, "my-feature");
+		assert.deepStrictEqual(result, []);
+
+		const tree = scanDesignDocs(docsDir);
+		assert.strictEqual(tree.nodes.get("my-feature")?.status, "exploring");
 	});
 });

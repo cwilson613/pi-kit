@@ -1431,7 +1431,7 @@ describe("transitionDesignNodesOnArchive", () => {
 		assert.equal(tree.nodes.get("gate-test")!.status, "implemented");
 	});
 
-	it("does not transition decided nodes", () => {
+	it("transitions decided nodes with matching change (OpenSpec-first workflow)", () => {
 		const docsDir = path.join(tmpDir, "docs");
 		const node = createNode(docsDir, { id: "decided-gate", title: "Decided Gate", status: "decided" });
 		let content = fs.readFileSync(node.filePath, "utf-8");
@@ -1439,7 +1439,10 @@ describe("transitionDesignNodesOnArchive", () => {
 		fs.writeFileSync(node.filePath, content);
 
 		const transitioned = transitionDesignNodesOnArchive(tmpDir, "decided-gate");
-		assert.deepEqual(transitioned, []);
+		assert.deepEqual(transitioned, ["decided-gate"]);
+
+		const tree = scanDesignDocs(docsDir);
+		assert.equal(tree.nodes.get("decided-gate")!.status, "implemented");
 	});
 
 	it("returns empty for non-matching change name", () => {

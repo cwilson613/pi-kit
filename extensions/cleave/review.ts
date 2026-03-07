@@ -96,7 +96,19 @@ export function buildReviewPrompt(
 	taskContent: string,
 	rootDirective: string,
 	worktreePath: string,
+	guardrailOutput?: string,
 ): string {
+	const guardrailSection = guardrailOutput
+		? [
+			"### Deterministic Findings",
+			"",
+			guardrailOutput,
+			"",
+			"These are compiler/linter results — confirmed issues, not opinions. Any failures here are Critical severity.",
+			"",
+		].join("\n")
+		: "";
+
 	return [
 		"## Adversarial Code Review",
 		"",
@@ -114,6 +126,7 @@ export function buildReviewPrompt(
 		taskContent,
 		"```",
 		"",
+		...(guardrailSection ? [guardrailSection] : []),
 		"### Review Procedure",
 		"",
 		"1. Read every file in the task's scope",
@@ -398,6 +411,10 @@ export function detectChurn(
 
 // ─── Execute With Review ────────────────────────────────────────────────────
 
+// ─── Guardrail Integration ──────────────────────────────────────────────────
+
+import { discoverGuardrails, runGuardrails, formatGuardrailResults } from "./guardrails.ts";
+
 /**
  * Callback interface for the review loop to spawn subprocesses.
  *
@@ -462,6 +479,19 @@ export async function executeWithReview(
 		};
 	}
 
+	// Step 1.5: Run guardrails before review (deterministic checks)
+	let guardrailOutput: string | undefined;
+	try {
+		const checks = discoverGuardrails(worktreePath);
+		if (checks.length > 0) {
+			const suite = runGuardrails(worktreePath, checks);
+			const formatted = formatGuardrailResults(suite);
+			if (formatted) guardrailOutput = formatted;
+		}
+	} catch {
+		// Guardrail discovery/execution failed — continue without it
+	}
+
 	// Step 2+: Review loop
 	const reviewHistory: ReviewRound[] = [];
 	let previousIssues: ReviewIssue[] = [];
@@ -471,8 +501,13 @@ export async function executeWithReview(
 		// Re-read task content (may have been updated by execute/fix)
 		const currentTaskContent = executor.readFile(taskFilePath);
 
-		// Run review
-		const reviewPrompt = buildReviewPrompt(currentTaskContent, rootDirective, worktreePath);
+		// Run review — include guardrail output on first round
+		const reviewPrompt = buildReviewPrompt(
+			currentTaskContent,
+			rootDirective,
+			worktreePath,
+			round === 0 ? guardrailOutput : undefined,
+		);
 		const reviewResult = await executor.review(reviewPrompt, worktreePath);
 
 		// Parse review output

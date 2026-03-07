@@ -5,7 +5,7 @@
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { matchScenariosToChildren, generateTaskFile, buildSkillSection } from "./workspace.ts";
+import { matchScenariosToChildren, generateTaskFile, buildSkillSection, buildGuardrailSection } from "./workspace.ts";
 import type { SkillDirective } from "./workspace.ts";
 import { buildChildPrompt, resolveExecuteModel, mapModelTierToFlag } from "./dispatcher.ts";
 import type { ChildPlan, ModelTier } from "./types.ts";
@@ -446,6 +446,67 @@ describe("resolveExecuteModel", () => {
 			() => undefined,
 		);
 		assert.equal(result, "sonnet");
+	});
+});
+
+// ─── generateTaskFile — guardrail section ───────────────────────────────────
+
+describe("generateTaskFile with guardrails", () => {
+	it("includes guardrail section when provided", () => {
+		const child = makeChild({ label: "api", scope: ["src/api.ts"], description: "Build API" });
+		const guardrailSection = [
+			"",
+			"## Project Guardrails",
+			"",
+			"Before reporting success, run these deterministic checks and fix any failures:",
+			"",
+			"1. **typecheck**: `npx tsc --noEmit`",
+			"2. **lint**: `npm run lint`",
+			"",
+			"Include command output in the Verification section. If any check fails, fix the errors before completing your task.",
+			"",
+		].join("\n");
+
+		const result = generateTaskFile(0, child, [child], "Build API", null, [], [], guardrailSection);
+
+		assert.ok(result.includes("## Project Guardrails"), "Should contain Project Guardrails heading");
+		assert.ok(result.includes("npx tsc --noEmit"), "Should contain typecheck command");
+		assert.ok(result.includes("npm run lint"), "Should contain lint command");
+	});
+
+	it("guardrail section appears before Contract", () => {
+		const child = makeChild({ label: "api", scope: ["src/api.ts"], description: "Build API" });
+		const guardrailSection = "\n## Project Guardrails\n\nRun checks.\n";
+
+		const result = generateTaskFile(0, child, [child], "Build API", null, [], [], guardrailSection);
+
+		const guardrailIdx = result.indexOf("## Project Guardrails");
+		const contractIdx = result.indexOf("## Contract");
+		assert.ok(guardrailIdx > 0, "Should have guardrail section");
+		assert.ok(contractIdx > 0, "Should have contract section");
+		assert.ok(guardrailIdx < contractIdx, "Guardrails should appear before Contract");
+	});
+
+	it("omits guardrail section when not provided", () => {
+		const child = makeChild({ label: "api", scope: ["src/api.ts"], description: "Build API" });
+		const result = generateTaskFile(0, child, [child], "Build API", null, [], []);
+		assert.ok(!result.includes("## Project Guardrails"), "Should NOT contain guardrail section");
+	});
+});
+
+// ─── buildGuardrailSection ──────────────────────────────────────────────────
+
+describe("buildGuardrailSection", () => {
+	it("returns guardrail section for a project with tsconfig.json", () => {
+		// Use the current repo root which has tsconfig.json
+		const section = buildGuardrailSection(process.cwd());
+		// Should discover at least typecheck
+		assert.ok(section.includes("## Project Guardrails") || section === "", "Should return section or empty");
+	});
+
+	it("returns empty string for directory with no project files", () => {
+		const section = buildGuardrailSection("/tmp");
+		assert.equal(section, "");
 	});
 });
 

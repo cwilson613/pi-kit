@@ -13,6 +13,42 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChildPlan, CleaveState, SplitPlan } from "./types.ts";
 import type { OpenSpecContext } from "./openspec.ts";
+import { discoverGuardrails } from "./guardrails.ts";
+import type { GuardrailCheck } from "./guardrails.ts";
+
+// ─── Guardrail Section ─────────────────────────────────────────────────────
+
+/**
+ * Build a guardrail section for child task files.
+ *
+ * Discovers project guardrails (typecheck, lint, etc.) and generates
+ * a markdown section instructing the child to run them before reporting success.
+ *
+ * @param cwd - Project root directory to discover guardrails from
+ * @returns Markdown section string, or empty string if no guardrails found
+ */
+export function buildGuardrailSection(cwd: string): string {
+	const checks = discoverGuardrails(cwd);
+	if (checks.length === 0) return "";
+
+	const lines = [
+		"",
+		"## Project Guardrails",
+		"",
+		"Before reporting success, run these deterministic checks and fix any failures:",
+		"",
+	];
+
+	for (let i = 0; i < checks.length; i++) {
+		lines.push(`${i + 1}. **${checks[i].name}**: \`${checks[i].command}\``);
+	}
+
+	lines.push("");
+	lines.push("Include command output in the Verification section. If any check fails, fix the errors before completing your task.");
+	lines.push("");
+
+	return lines.join("\n");
+}
 
 // ─── Skill Directives ──────────────────────────────────────────────────────
 
@@ -82,12 +118,15 @@ export function initWorkspace(
 	// Pre-compute scenario assignments across all children (orphan detection)
 	const scenarioAssignments = matchScenariosToChildren(plan.children, openspecContext);
 
+	// Discover guardrails once, reuse for all children
+	const guardrailSection = buildGuardrailSection(_repoPath);
+
 	// Generate child task files
 	for (let i = 0; i < plan.children.length; i++) {
 		const child = plan.children[i];
 		const childScenarios = scenarioAssignments.get(i) ?? [];
 		const childSkillDirectives = resolvedSkills?.get(i) ?? [];
-		const taskContent = generateTaskFile(i, child, plan.children, state.directive, openspecContext, childScenarios, childSkillDirectives);
+		const taskContent = generateTaskFile(i, child, plan.children, state.directive, openspecContext, childScenarios, childSkillDirectives, guardrailSection);
 		writeFileSync(join(wsPath, `${i}-task.md`), taskContent, "utf-8");
 	}
 
@@ -125,6 +164,7 @@ export function generateTaskFile(
 	openspecContext?: OpenSpecContext | null,
 	assignedScenarios?: AssignedScenario[],
 	skillDirectives?: SkillDirective[],
+	guardrailSection?: string,
 ): string {
 	const siblingRefs = allChildren
 		.filter((_, i) => i !== taskId)
@@ -166,7 +206,7 @@ ${child.description}
 ${scopeList}
 
 ${depsNote}
-${skillSection}${designSection}
+${skillSection}${designSection}${guardrailSection ?? ""}
 ## Contract
 
 1. Only work on files within your scope

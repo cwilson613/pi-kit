@@ -119,19 +119,12 @@ export class DashboardFooter implements Component {
         dashParts.push(theme.fg("accent", `◈ ${dt.decidedCount}/${dt.nodeCount}`) +
           ` ${statusIcon} ${dt.focusedNode.title}${qSuffix}`);
       } else if (wide) {
-        // Wide: spell out counts + top node IDs
+        // Wide: spell out counts, no node IDs (visible in raised mode)
         const parts = [`${dt.decidedCount} decided`];
         if (dt.exploringCount > 0) parts.push(`${dt.exploringCount} exploring`);
         if (dt.implementingCount > 0) parts.push(`${dt.implementingCount} impl`);
         if (dt.openQuestionCount > 0) parts.push(`${dt.openQuestionCount}?`);
-        // Show first 2 node IDs for context when no focus
-        let nodeHint = "";
-        if (!dt.focusedNode && dt.nodes && dt.nodes.length > 0) {
-          const ids = dt.nodes.slice(0, 2).map(n => n.id);
-          const overflow = dt.nodes.length > 2 ? "…" : "";
-          nodeHint = theme.fg("dim", ` (${ids.join(", ")}${overflow})`);
-        }
-        dashParts.push(theme.fg("accent", `◈ Design`) + theme.fg("dim", ` ${parts.join(", ")}`) + nodeHint);
+        dashParts.push(theme.fg("accent", `◈ Design`) + theme.fg("dim", ` ${parts.join(", ")}`));
       } else {
         // Narrow: terse
         let dtSummary = `◈ D:${dt.decidedCount}`;
@@ -148,19 +141,17 @@ export class DashboardFooter implements Component {
       const active = os.changes.filter(c => c.stage !== "archived");
       if (active.length > 0) {
         if (wide) {
-          // Wide: show change names with progress
-          const changeParts = active.slice(0, ultraWide ? 4 : 2).map(c => {
-            const done = c.tasksTotal > 0 && c.tasksDone >= c.tasksTotal;
-            const icon = done ? theme.fg("success", "✓") : "";
-            const progress = c.tasksTotal > 0
-              ? theme.fg("dim", ` ${c.tasksDone}/${c.tasksTotal}`)
-              : "";
-            return `${c.name}${progress}${icon}`;
-          });
-          const overflow = active.length > (ultraWide ? 4 : 2)
-            ? theme.fg("dim", ` +${active.length - (ultraWide ? 4 : 2)}`)
+          // Wide: aggregate progress only — individual changes visible in raised mode
+          const totalDone = active.reduce((s, c) => s + c.tasksDone, 0);
+          const totalAll = active.reduce((s, c) => s + c.tasksTotal, 0);
+          const allDone = totalAll > 0 && totalDone >= totalAll;
+          const progress = totalAll > 0
+            ? theme.fg(allDone ? "success" : "dim", ` ${totalDone}/${totalAll}`)
             : "";
-          dashParts.push(theme.fg("accent", "◎ Spec") + " " + changeParts.join(theme.fg("dim", " · ")) + overflow);
+          const icon = allDone ? theme.fg("success", " ✓") : "";
+          dashParts.push(theme.fg("accent", `◎ Spec`) +
+            theme.fg("dim", ` ${active.length} change${active.length > 1 ? "s" : ""}`) +
+            progress + icon);
         } else {
           dashParts.push(theme.fg("accent", `◎ OS:${active.length}`));
         }
@@ -570,14 +561,16 @@ export class DashboardFooter implements Component {
       lines.push(theme.fg("dim", statsLine));
     }
 
-    // Extension statuses
-    const extensionStatuses = this.footerData.getExtensionStatuses();
-    if (extensionStatuses.size > 0) {
-      const sortedStatuses = Array.from(extensionStatuses.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([, text]) => sanitizeStatusText(text));
-      const statusLine = sortedStatuses.join(" ");
-      lines.push(truncateToWidth(statusLine, width, "…"));
+    // Extension statuses — only in raised mode (too noisy for compact)
+    if (this.dashState.mode === "raised") {
+      const extensionStatuses = this.footerData.getExtensionStatuses();
+      if (extensionStatuses.size > 0) {
+        const sortedStatuses = Array.from(extensionStatuses.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([, text]) => sanitizeStatusText(text));
+        const statusLine = sortedStatuses.join(" ");
+        lines.push(truncateToWidth(statusLine, width, "…"));
+      }
     }
 
     return lines;

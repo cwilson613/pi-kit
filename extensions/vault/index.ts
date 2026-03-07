@@ -16,7 +16,6 @@
 
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { DEPS } from "../bootstrap/deps.js";
 
 const DEFAULT_PORT = 3333;
 const BINARY_NAME = "mdserve";
@@ -26,8 +25,12 @@ let mdservePort: number | null = null;
 let mdserveDir: string | null = null;
 
 function hasBinary(): boolean {
-	const dep = DEPS.find((d) => d.id === "mdserve");
-	return dep ? dep.check() : false;
+	try {
+		execSync(`which ${BINARY_NAME}`, { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function openBrowser(url: string): void {

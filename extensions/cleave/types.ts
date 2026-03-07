@@ -88,6 +88,19 @@ export interface ChildState {
 	backend?: "local" | "cloud";
 	/** Resolved execution model tier for this child */
 	executeModel?: string;
+	/** Number of review iterations completed (0 = no review, 1+ = reviewed) */
+	reviewIterations?: number;
+	/** Review history: verdict + issues per round */
+	reviewHistory?: Array<{
+		round: number;
+		status: string;
+		issueCount: number;
+		reappeared: string[];
+	}>;
+	/** Final review decision */
+	reviewDecision?: "accepted" | "escalated" | "no_review";
+	/** Escalation reason if review loop failed */
+	reviewEscalationReason?: string;
 }
 
 export type CleavePhase =

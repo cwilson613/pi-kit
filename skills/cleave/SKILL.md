@@ -98,6 +98,72 @@ Full-Stack CRUD, Authentication System, External Service Integration,
 Database Migration, Performance Optimization, Breaking API Change,
 Simple Refactor, Bug Fix, Refactor.
 
+## Adversarial Review Loop
+
+When `review: true` is passed to `cleave_run`, each child's work is reviewed
+after execution using a tiered loop:
+
+```
+Execute (cheap) → Review (opus) → [pass? done : Fix (cheap) → Review (opus)]
+```
+
+### Severity Gating
+
+| Severity | Action | Max Fix Iterations |
+|----------|--------|--------------------|
+| Nits only | Accept | 0 |
+| Warnings | Fix then accept | 1 (configurable) |
+| Critical | Fix then escalate if unresolved | 2 (configurable) |
+| Critical + security | Immediate escalate | 0 |
+
+### Churn Detection
+
+Between review rounds, issue descriptions are normalized and compared.
+If >50% of current issues appeared in the previous round (configurable
+threshold), the loop bails — the fix agent is going in circles.
+
+### Review Configuration
+
+Pass to `cleave_run`:
+- `review: true` — enable the review loop
+- `review_max_warning_fixes: 1` — max fix iterations for warnings
+- `review_max_critical_fixes: 2` — max fix iterations for criticals
+- `review_churn_threshold: 0.5` — reappearance fraction to trigger bail
+
+### Review State
+
+After execution, each child's state includes:
+- `reviewIterations` — number of review rounds completed
+- `reviewHistory` — verdict + issue count per round
+- `reviewDecision` — `accepted`, `escalated`, or `no_review`
+- `reviewEscalationReason` — why the review loop gave up (if escalated)
+
+## Skill-Aware Dispatch
+
+Children automatically receive skill directives based on their file scope.
+Skills are matched via file pattern → skill mapping (e.g., `*.py` → python,
+`Containerfile` → oci) and can be overridden with task annotations.
+
+### Skill Annotations
+
+Task groups in `tasks.md` can declare skills via HTML comments:
+
+```markdown
+## 2. Container Build
+<!-- skills: oci, python -->
+- [ ] Write Containerfile
+```
+
+Annotations override auto-matching for that child.
+
+### Model Tier Routing
+
+Skills can hint at the model complexity needed. The resolution order is:
+1. Local override (if `prefer_local: true` and Ollama available)
+2. Explicit annotation on the child plan
+3. Skill-based tier hint (highest `preferredTier` wins)
+4. Default: sonnet
+
 ## Architecture
 
 ```
@@ -107,6 +173,8 @@ extensions/cleave/
   planner.ts      — LLM prompt builder, JSON plan parser, wave computation
   openspec.ts     — OpenSpec tasks.md parser → ChildPlan[] conversion
   dispatcher.ts   — Child process dispatch, AsyncSemaphore, wave execution
+  review.ts       — Adversarial review loop, severity gating, churn detection
+  skills.ts       — Skill matching, resolution, model tier hints
   conflicts.ts    — 4-step conflict detection (file overlap, decision
                     contradiction, interface mismatch, assumption violation)
   workspace.ts    — Workspace management under ~/.pi/cleave/

@@ -21,6 +21,7 @@ import { Type } from "@sinclair/typebox";
 import { assessDirective, PATTERNS } from "./assessment.js";
 import { detectConflicts, parseTaskResult } from "./conflicts.js";
 import { dispatchChildren, resolveExecuteModel } from "./dispatcher.js";
+import { DEFAULT_REVIEW_CONFIG, type ReviewConfig } from "./review.js";
 import {
 	detectOpenSpec,
 	findExecutableChanges,
@@ -975,6 +976,30 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 						"post-merge verification checks specs against implementation.",
 				}),
 			),
+			review: Type.Optional(
+				Type.Boolean({
+					description:
+						"Enable adversarial review loop after each child completes. " +
+						"Runs an opus-tier reviewer that checks for bugs, security issues, " +
+						"and spec compliance. Severity-gated fix iterations with churn detection. " +
+						"Default: false.",
+				}),
+			),
+			review_max_warning_fixes: Type.Optional(
+				Type.Number({
+					description: "Maximum fix iterations for warning-level issues (default: 1)",
+				}),
+			),
+			review_max_critical_fixes: Type.Optional(
+				Type.Number({
+					description: "Maximum fix iterations for critical issues before escalation (default: 2)",
+				}),
+			),
+			review_churn_threshold: Type.Optional(
+				Type.Number({
+					description: "Fraction of reappearing issues that triggers churn bail (default: 0.5)",
+				}),
+			),
 		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1114,6 +1139,14 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 				details: { phase: "dispatch", children: state.children },
 			});
 
+			// ── REVIEW CONFIG ──────────────────────────────────────
+			const reviewConfig: ReviewConfig = {
+				enabled: params.review ?? DEFAULT_REVIEW_CONFIG.enabled,
+				maxWarningFixes: params.review_max_warning_fixes ?? DEFAULT_REVIEW_CONFIG.maxWarningFixes,
+				maxCriticalFixes: params.review_max_critical_fixes ?? DEFAULT_REVIEW_CONFIG.maxCriticalFixes,
+				churnThreshold: params.review_churn_threshold ?? DEFAULT_REVIEW_CONFIG.churnThreshold,
+			};
+
 			await dispatchChildren(
 				pi,
 				state,
@@ -1127,6 +1160,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 						details: { phase: "dispatch", children: state.children },
 					});
 				},
+				reviewConfig,
 			);
 
 			// ── HARVEST + CONFLICTS ────────────────────────────────────
@@ -1231,8 +1265,12 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			for (const child of state.children) {
 				const icon = child.status === "completed" ? "✓" : child.status === "failed" ? "✗" : "⏳";
 				const dur = child.durationSec ? ` (${child.durationSec}s)` : "";
-				reportLines.push(`  ${icon} **${child.label}** [${child.backend ?? "cloud"}]${dur}: ${child.status}`);
+				const reviewNote = child.reviewIterations && child.reviewIterations > 0
+					? ` [${child.reviewIterations} review${child.reviewIterations > 1 ? "s" : ""}: ${child.reviewDecision}]`
+					: "";
+				reportLines.push(`  ${icon} **${child.label}** [${child.backend ?? "cloud"}]${dur}: ${child.status}${reviewNote}`);
 				if (child.error) reportLines.push(`    Error: ${child.error}`);
+				if (child.reviewEscalationReason) reportLines.push(`    Review: ${child.reviewEscalationReason}`);
 			}
 
 			// Conflicts

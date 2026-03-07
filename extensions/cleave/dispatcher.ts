@@ -22,6 +22,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { ChildState, CleaveState, ModelTier } from "./types.js";
 import { computeDispatchWaves } from "./planner.js";
+import { executeWithReview, type ReviewConfig, type ReviewExecutor, DEFAULT_REVIEW_CONFIG } from "./review.js";
 import { saveState } from "./workspace.js";
 
 // ─── Result section parsing ─────────────────────────────────────────────────
@@ -302,12 +303,14 @@ export async function dispatchChildren(
 	localModel?: string,
 	signal?: AbortSignal,
 	onProgress?: (msg: string) => void,
+	reviewConfig?: ReviewConfig,
 ): Promise<void> {
 	const waves = computeDispatchWaves(
 		state.children.map((c) => ({ label: c.label, dependsOn: c.dependsOn })),
 	);
 
 	const semaphore = new AsyncSemaphore(maxParallel);
+	const effectiveReviewConfig = reviewConfig ?? DEFAULT_REVIEW_CONFIG;
 
 	for (let waveIdx = 0; waveIdx < waves.length; waveIdx++) {
 		const waveLabels = waves[waveIdx];
@@ -320,7 +323,7 @@ export async function dispatchChildren(
 		const promises = waveChildren.map(async (child) => {
 			await semaphore.acquire();
 			try {
-				await dispatchSingleChild(pi, state, child, childTimeoutMs, localModel, signal);
+				await dispatchSingleChild(pi, state, child, childTimeoutMs, localModel, signal, effectiveReviewConfig);
 			} finally {
 				semaphore.release();
 			}
@@ -342,6 +345,9 @@ export async function dispatchChildren(
  * Per-child model routing: each child's `executeModel` tier determines
  * which model is passed via `--model`. The `localModel` param provides
  * the Ollama model name for children with "local" tier.
+ *
+ * When review is enabled, the execution is wrapped in executeWithReview
+ * which runs an adversarial review loop with severity gating and churn detection.
  */
 async function dispatchSingleChild(
 	pi: ExtensionAPI,
@@ -350,6 +356,7 @@ async function dispatchSingleChild(
 	timeoutMs: number,
 	localModel?: string,
 	signal?: AbortSignal,
+	reviewConfig?: ReviewConfig,
 ): Promise<void> {
 	// Skip children that already failed (e.g., worktree creation failure)
 	if (child.status === "failed") return;
@@ -381,14 +388,32 @@ async function dispatchSingleChild(
 	// Determine working directory
 	const cwd = child.worktreePath || state.repoPath;
 
-	// Spawn with per-child model
-	const result = await spawnChild(
-		prompt,
+	// Build executor adapter for the review loop
+	const executor: ReviewExecutor = {
+		execute: async (execPrompt: string, execCwd: string, execModelFlag?: string) => {
+			return spawnChild(execPrompt, execCwd, timeoutMs, signal, execModelFlag);
+		},
+		review: async (reviewPrompt: string, reviewCwd: string) => {
+			// Reviews always use opus (D4: highest available tier)
+			return spawnChild(reviewPrompt, reviewCwd, timeoutMs, signal, "opus");
+		},
+		readFile: (path: string) => readFileSync(path, "utf-8"),
+	};
+
+	const effectiveReviewConfig = reviewConfig ?? DEFAULT_REVIEW_CONFIG;
+
+	// Execute with optional review loop
+	const reviewResult = await executeWithReview(
+		executor,
+		taskFilePath,
+		state.directive,
 		cwd,
-		timeoutMs,
-		signal,
+		effectiveReviewConfig,
 		modelFlag,
 	);
+
+	// Use the initial execution result for status determination
+	const result = reviewResult.executeResult;
 
 	child.completedAt = new Date().toISOString();
 	if (child.startedAt) {
@@ -397,6 +422,20 @@ async function dispatchSingleChild(
 		);
 	}
 
+	// Persist review metadata on the child state
+	child.reviewIterations = reviewResult.reviewHistory.length;
+	child.reviewDecision = reviewResult.finalDecision;
+	child.reviewHistory = reviewResult.reviewHistory.map((r) => ({
+		round: r.round,
+		status: r.verdict.status,
+		issueCount: r.verdict.issues.length,
+		reappeared: r.reappeared,
+	}));
+	if (reviewResult.escalationReason) {
+		child.reviewEscalationReason = reviewResult.escalationReason;
+	}
+
+	// Determine child status from process exit code
 	if (result.exitCode === 0) {
 		child.status = "completed";
 	} else if (result.exitCode === -1) {
@@ -405,6 +444,12 @@ async function dispatchSingleChild(
 	} else {
 		child.status = "failed";
 		child.error = result.stderr.slice(0, 2000) || `Exit code ${result.exitCode}`;
+	}
+
+	// If review escalated, mark the child as failed
+	if (reviewResult.finalDecision === "escalated") {
+		child.status = "failed";
+		child.error = `Review escalated: ${reviewResult.escalationReason}`;
 	}
 
 	// Re-read the task file to check if the child updated the status.
@@ -421,7 +466,10 @@ async function dispatchSingleChild(
 			child.error = "Child reported FAILED in task file";
 		} else if (resultSection.includes("**Status:** SUCCESS") || resultSection.includes("**Status:** PARTIAL")) {
 			// Child explicitly reported success — trust the task file over exit code
-			child.status = "completed";
+			// But only if review didn't escalate
+			if (reviewResult.finalDecision !== "escalated") {
+				child.status = "completed";
+			}
 		}
 	} catch {
 		// Task file not readable — keep whatever status we have

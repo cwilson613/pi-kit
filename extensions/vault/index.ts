@@ -4,14 +4,14 @@
  * Spawns mdserve to render interlinked project markdown as a navigable
  * web UI with wikilink resolution, graph view, and live reload.
  *
+ * Auto-starts mdserve on session_start if the binary is on $PATH.
+ * Stores port in sharedState for URI resolver consumption.
+ *
  * Commands:
- *   /vault           — Start mdserve on the project root (or resume if running)
+ *   /vault           — Show status (running/stopped, port, PID)
  *   /vault [path]    — Start mdserve on a specific directory
  *   /vault stop      — Stop the running mdserve instance
- *   /vault status    — Show whether mdserve is running and on which port
  *   /vault graph     — Open the graph view in the browser
- *
- * Dependency: mdserve binary (managed by /bootstrap)
  */
 
 import { execSync, spawn, type ChildProcess } from "node:child_process";
@@ -23,6 +23,7 @@ const BINARY_NAME = "mdserve";
 let mdserveProcess: ChildProcess | null = null;
 let mdservePort: number | null = null;
 let mdserveDir: string | null = null;
+let piInstance: ExtensionAPI | null = null;
 
 function hasBinary(): boolean {
 	try {
@@ -40,22 +41,34 @@ function openBrowser(url: string): void {
 	} catch { /* user can open manually */ }
 }
 
+function updateSharedState(): void {
+	if (piInstance) {
+		if (mdservePort) {
+			piInstance.sharedState.set("mdserve.port", mdservePort);
+		} else {
+			piInstance.sharedState.set("mdserve.port", undefined);
+		}
+	}
+}
+
 function stopMdserve(): string {
 	if (mdserveProcess) {
+		const pid = mdserveProcess.pid;
 		mdserveProcess.kill("SIGTERM");
 		mdserveProcess = null;
-		const msg = `Stopped mdserve (was serving ${mdserveDir} on port ${mdservePort})`;
+		const msg = `Stopped mdserve (PID ${pid}, was serving ${mdserveDir} on port ${mdservePort})`;
 		mdservePort = null;
 		mdserveDir = null;
+		updateSharedState();
 		return msg;
 	}
 	return "mdserve is not running.";
 }
 
-function startMdserve(dir: string, port: number): string {
+function spawnMdserve(dir: string, port: number, options?: { silent?: boolean }): string {
 	if (mdserveProcess) {
 		if (mdserveDir === dir) {
-			return `mdserve already running at http://127.0.0.1:${mdservePort}\n` +
+			return `mdserve already running at http://127.0.0.1:${mdservePort} (PID ${mdserveProcess.pid})\n` +
 				`Serving: ${mdserveDir}\n` +
 				`Use \`/vault stop\` to stop, or \`/vault graph\` to open graph view.`;
 		}
@@ -70,10 +83,14 @@ function startMdserve(dir: string, port: number): string {
 	mdserveProcess = child;
 	mdservePort = port;
 	mdserveDir = dir;
+	updateSharedState();
 
 	child.stdout?.on("data", (data: Buffer) => {
 		const match = data.toString().match(/using (\d+) instead/);
-		if (match) mdservePort = parseInt(match[1], 10);
+		if (match) {
+			mdservePort = parseInt(match[1], 10);
+			updateSharedState();
+		}
 	});
 
 	child.on("exit", () => {
@@ -81,12 +98,16 @@ function startMdserve(dir: string, port: number): string {
 			mdserveProcess = null;
 			mdservePort = null;
 			mdserveDir = null;
+			updateSharedState();
 		}
 	});
 
-	openBrowser(`http://127.0.0.1:${port}`);
+	if (!options?.silent) {
+		openBrowser(`http://127.0.0.1:${port}`);
+	}
 
-	return `Started mdserve at http://127.0.0.1:${port}\n` +
+	const prefix = options?.silent ? "Auto-started" : "Started";
+	return `${prefix} mdserve at http://127.0.0.1:${port} (PID ${child.pid})\n` +
 		`Serving: ${dir}\n` +
 		`Graph view: http://127.0.0.1:${port}/graph\n` +
 		`Use \`/vault stop\` to stop.`;
@@ -95,10 +116,22 @@ function startMdserve(dir: string, port: number): string {
 const NOT_INSTALLED = "`mdserve` is not installed. Run `/bootstrap` to set up pi-kit dependencies.";
 
 export default function (pi: ExtensionAPI) {
+	piInstance = pi;
+
+	// Auto-start mdserve on session start if binary is available
+	pi.on("session_start", () => {
+		if (hasBinary()) {
+			spawnMdserve(process.cwd(), DEFAULT_PORT, { silent: true });
+		}
+	});
+
 	pi.on("session_shutdown", () => {
 		if (mdserveProcess) {
 			mdserveProcess.kill("SIGTERM");
 			mdserveProcess = null;
+			mdservePort = null;
+			mdserveDir = null;
+			updateSharedState();
 		}
 	});
 
@@ -113,18 +146,22 @@ export default function (pi: ExtensionAPI) {
 					return;
 
 				case "status":
+				case "": {
+					// Default: show status
 					if (mdserveProcess) {
 						ctx.ui.notify(
-							`mdserve is running at http://127.0.0.1:${mdservePort}\n` +
+							`mdserve is running (PID ${mdserveProcess.pid})\n` +
+							`URL: http://127.0.0.1:${mdservePort}\n` +
 							`Serving: ${mdserveDir}`,
 							"info",
 						);
 					} else if (!hasBinary()) {
 						ctx.ui.notify(NOT_INSTALLED, "warning");
 					} else {
-						ctx.ui.notify("mdserve is not running. Use /vault to start.", "info");
+						ctx.ui.notify("mdserve is not running. Use `/vault [path]` to start.", "info");
 					}
 					return;
+				}
 
 				case "graph":
 					if (!hasBinary()) { ctx.ui.notify(NOT_INSTALLED, "warning"); return; }
@@ -133,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`Opened graph view at http://127.0.0.1:${mdservePort}/graph`, "info");
 					} else {
 						const dir = process.cwd();
-						ctx.ui.notify(startMdserve(dir, DEFAULT_PORT), "info");
+						ctx.ui.notify(spawnMdserve(dir, DEFAULT_PORT), "info");
 						setTimeout(() => {
 							if (mdservePort) openBrowser(`http://127.0.0.1:${mdservePort}/graph`);
 						}, 1000);
@@ -142,8 +179,8 @@ export default function (pi: ExtensionAPI) {
 
 				default: {
 					if (!hasBinary()) { ctx.ui.notify(NOT_INSTALLED, "warning"); return; }
-					const dir = subcommand || process.cwd();
-					ctx.ui.notify(startMdserve(dir, DEFAULT_PORT), "info");
+					const dir = subcommand;
+					ctx.ui.notify(spawnMdserve(dir, DEFAULT_PORT), "info");
 					return;
 				}
 			}

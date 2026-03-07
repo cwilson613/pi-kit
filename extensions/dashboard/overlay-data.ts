@@ -42,11 +42,13 @@ export const MAX_CONTENT_LINES = 30;
 // ── Status icon helper ──────────────────────────────────────────
 
 const STATUS_ICONS: Record<string, { color: string; icon: string }> = {
-  decided:   { color: "success",  icon: "●" },
-  exploring: { color: "accent",   icon: "◐" },
-  seed:      { color: "muted",    icon: "◌" },
-  blocked:   { color: "error",    icon: "✕" },
-  deferred:  { color: "warning",  icon: "◑" },
+  decided:      { color: "success",  icon: "●" },
+  exploring:    { color: "accent",   icon: "◐" },
+  seed:         { color: "muted",    icon: "◌" },
+  blocked:      { color: "error",    icon: "✕" },
+  deferred:     { color: "warning",  icon: "◑" },
+  implementing: { color: "warning",  icon: "⟳" },
+  implemented:  { color: "success",  icon: "✓" },
 };
 
 export function statusIcon(status: string, th: ThemeFn): string {

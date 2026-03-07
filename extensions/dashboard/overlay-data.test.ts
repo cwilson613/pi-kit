@@ -44,6 +44,8 @@ describe("statusIcon", () => {
     assert.equal(statusIcon("seed", th), "◌");
     assert.equal(statusIcon("blocked", th), "✕");
     assert.equal(statusIcon("deferred", th), "◑");
+    assert.equal(statusIcon("implementing", th), "⟳");
+    assert.equal(statusIcon("implemented", th), "✓");
   });
 
   it("returns default icon for unknown status", () => {
@@ -164,6 +166,54 @@ describe("buildDesignItems", () => {
     assert.ok(renderItem(nodeItems[1]!).includes("Beta"), "should include node title");
   });
 
+  it("skips focused node from node list to avoid duplication", () => {
+    const items = buildDesignItems({
+      nodeCount: 3, decidedCount: 1, exploringCount: 2, blockedCount: 0,
+      openQuestionCount: 0,
+      focusedNode: { id: "b", title: "Beta", status: "exploring", questions: [] },
+      nodes: [
+        { id: "a", title: "Alpha", status: "decided", questionCount: 0 },
+        { id: "b", title: "Beta", status: "exploring", questionCount: 0 },
+        { id: "c", title: "Gamma", status: "seed", questionCount: 0 },
+      ],
+    }, new Set());
+
+    const nodeItems = items.filter(i => i.key.startsWith("dt-node-"));
+    assert.equal(nodeItems.length, 2, "focused node should be excluded from list");
+    assert.ok(!nodeItems.find(i => i.key === "dt-node-b"), "node b should not appear in list");
+    assert.ok(items.find(i => i.key === "dt-focused-b"), "node b should appear as focused");
+  });
+
+  it("renders question count badge on nodes with open questions", () => {
+    const items = buildDesignItems({
+      nodeCount: 1, decidedCount: 0, exploringCount: 1, blockedCount: 0,
+      openQuestionCount: 3, focusedNode: null,
+      nodes: [
+        { id: "x", title: "Has Questions", status: "exploring", questionCount: 3 },
+      ],
+    }, new Set());
+
+    const node = items.find(i => i.key === "dt-node-x");
+    assert.ok(node, "should have node item");
+    const text = renderItem(node);
+    assert.ok(text.includes("(3?)"), `expected question badge, got: ${text}`);
+  });
+
+  it("omits question badge when questionCount is 0", () => {
+    const items = buildDesignItems({
+      nodeCount: 1, decidedCount: 1, exploringCount: 0, blockedCount: 0,
+      openQuestionCount: 0, focusedNode: null,
+      nodes: [
+        { id: "y", title: "No Questions", status: "decided", questionCount: 0 },
+      ],
+    }, new Set());
+
+    const node = items.find(i => i.key === "dt-node-y");
+    assert.ok(node);
+    const text = renderItem(node);
+    assert.ok(!text.includes("?"), `should not have question badge, got: ${text}`);
+  });
+
   it("shows empty hint when no nodes array", () => {
     const items = buildDesignItems({
       nodeCount: 0, decidedCount: 0, exploringCount: 0, blockedCount: 0,
@@ -245,7 +295,7 @@ describe("buildCleaveItems", () => {
 
   it("builds child summary and items", () => {
     const items = buildCleaveItems({
-      status: "running", runId: null,
+      status: "running", runId: undefined,
       children: [
         { label: "alpha", status: "done", elapsed: 45 },
         { label: "beta", status: "running" },
@@ -269,7 +319,7 @@ describe("buildCleaveItems", () => {
   it("shows elapsed time when expanded", () => {
     const expanded = new Set(["cl-child-alpha"]);
     const items = buildCleaveItems({
-      status: "done", runId: null,
+      status: "done", runId: undefined,
       children: [{ label: "alpha", status: "done", elapsed: 125 }],
     }, expanded);
 
@@ -282,7 +332,7 @@ describe("buildCleaveItems", () => {
   it("shows seconds-only for short durations", () => {
     const expanded = new Set(["cl-child-fast"]);
     const items = buildCleaveItems({
-      status: "done", runId: null,
+      status: "done", runId: undefined,
       children: [{ label: "fast", status: "done", elapsed: 8 }],
     }, expanded);
 

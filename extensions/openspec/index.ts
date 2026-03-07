@@ -69,12 +69,9 @@ function emitOpenSpecState(cwd: string, pi: ExtensionAPI): void {
 
 export default function openspecExtension(pi: ExtensionAPI): void {
 
-	// ─── Dashboard: emit on first turn ──────────────────────────────
+	// ─── Dashboard: emit on session start so dashboard has data immediately ───
 
-	let dashboardFirstTurn = true;
-	pi.on("before_agent_start", (_event, ctx) => {
-		if (!dashboardFirstTurn) return;
-		dashboardFirstTurn = false;
+	pi.on("session_start", async (_event, ctx) => {
 		emitOpenSpecState(ctx.cwd, pi);
 	});
 

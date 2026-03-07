@@ -107,18 +107,25 @@ export default function (pi: ExtensionAPI) {
       return footer;
     });
 
-    // Subscribe to dashboard:update events from producer extensions
+    // Subscribe to dashboard:update events from producer extensions.
+    // Don't setContext here — ctx from session_start would overwrite
+    // the fresher ctx set by turn_end/message_end. The footer reads
+    // sharedState directly at render time; ctx is only needed for
+    // token stats which the per-turn handlers keep current.
     unsubscribeEvents = pi.events.on(DASHBOARD_UPDATE_EVENT, () => {
-      if (footer) footer.setContext(ctx);
       tui?.requestRender();
     });
 
-    // Deferred initial render — lets other extensions populate sharedState
-    // during their session_start handlers before we first draw
-    setTimeout(() => {
-      if (footer) footer.setContext(ctx);
+    // Deferred initial render — design-tree emits synchronously during
+    // its session_start handler (which fires before ours per extension
+    // load order), so sharedState.designTree is already populated.
+    // We just need to trigger a render after setFooter has installed.
+    // Use queueMicrotask to run after the current event loop tick
+    // completes (all sync session_start work is done) but before any
+    // setTimeout-based async work.
+    queueMicrotask(() => {
       tui?.requestRender();
-    }, 100);
+    });
   });
 
   // ── Session shutdown: cleanup ─────────────────────────────────

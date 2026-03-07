@@ -4,14 +4,16 @@
 
 // ─── Node Status ─────────────────────────────────────────────────────────────
 
-export type NodeStatus = "seed" | "exploring" | "decided" | "blocked" | "deferred";
+export type NodeStatus = "seed" | "exploring" | "decided" | "implementing" | "implemented" | "blocked" | "deferred";
 
-export const VALID_STATUSES: NodeStatus[] = ["seed", "exploring", "decided", "blocked", "deferred"];
+export const VALID_STATUSES: NodeStatus[] = ["seed", "exploring", "decided", "implementing", "implemented", "blocked", "deferred"];
 
 export const STATUS_ICONS: Record<NodeStatus, string> = {
 	seed: "◌",
 	exploring: "◐",
 	decided: "●",
+	implementing: "⚙",
+	implemented: "✔",
 	blocked: "✕",
 	deferred: "◑",
 };
@@ -20,6 +22,8 @@ export const STATUS_COLORS: Record<NodeStatus, string> = {
 	seed: "muted",
 	exploring: "accent",
 	decided: "success",
+	implementing: "info",
+	implemented: "success",
 	blocked: "error",
 	deferred: "warning",
 };
@@ -73,6 +77,10 @@ export interface DesignNode {
 	tags: string[];
 	/** Open questions — synced from ## Open Questions body section */
 	open_questions: string[];
+	/** Git branches associated with this node (e.g. from cleave worktrees) */
+	branches: string[];
+	/** OpenSpec change name linked to this node */
+	openspec_change?: string;
 	filePath: string;
 	lastModified: number;
 }

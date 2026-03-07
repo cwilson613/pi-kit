@@ -115,6 +115,12 @@ export function generateFrontmatter(node: Omit<DesignNode, "filePath" | "lastMod
 	} else {
 		fm += "open_questions: []\n";
 	}
+	if (node.branches && node.branches.length > 0) {
+		fm += `branches: [${node.branches.join(", ")}]\n`;
+	}
+	if (node.openspec_change) {
+		fm += `openspec_change: ${node.openspec_change}\n`;
+	}
 	fm += "---\n";
 	return fm;
 }
@@ -412,6 +418,8 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 				related: (fm.related as string[]) || [],
 				tags: (fm.tags as string[]) || [],
 				open_questions: mergedQuestions,
+				branches: (fm.branches as string[]) || [],
+				openspec_change: fm.openspec_change as string | undefined,
 				filePath,
 				lastModified: fs.statSync(filePath).mtimeMs,
 			};
@@ -505,6 +513,7 @@ export function createNode(
 		related: [],
 		tags: opts.tags || [],
 		open_questions: [],
+		branches: [],
 	};
 
 	const sections: DocumentSections = {

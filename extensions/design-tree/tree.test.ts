@@ -36,6 +36,8 @@ import {
 	scaffoldOpenSpecChange,
 } from "./tree.js";
 
+import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS } from "./types.js";
+
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
 function makeTmpDir(): string {
@@ -952,5 +954,145 @@ describe("full round-trip: create → mutate → scan → verify", () => {
 		const children = getChildren(tree, "api-design");
 		assert.equal(children.length, 1);
 		assert.equal(children[0].id, "auth-model");
+	});
+});
+
+// ─── New statuses: implementing / implemented ────────────────────────────────
+
+describe("implementing and implemented statuses", () => {
+	it("are valid NodeStatus values", () => {
+		assert.ok(VALID_STATUSES.includes("implementing"));
+		assert.ok(VALID_STATUSES.includes("implemented"));
+	});
+
+	it("have STATUS_ICONS entries", () => {
+		assert.equal(STATUS_ICONS.implementing, "⚙");
+		assert.equal(STATUS_ICONS.implemented, "✔");
+	});
+
+	it("have STATUS_COLORS entries", () => {
+		assert.equal(STATUS_COLORS.implementing, "info");
+		assert.equal(STATUS_COLORS.implemented, "success");
+	});
+});
+
+// ─── branches and openspec_change frontmatter ────────────────────────────────
+
+describe("branches and openspec_change frontmatter", () => {
+	it("generateFrontmatter includes branches when non-empty", () => {
+		const node = {
+			id: "test",
+			title: "Test",
+			status: "implementing" as const,
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: ["feature/impl-test", "cleave/test-0"],
+		};
+		const fm = generateFrontmatter(node);
+		assert.ok(fm.includes("branches: [feature/impl-test, cleave/test-0]"));
+	});
+
+	it("generateFrontmatter omits branches when empty", () => {
+		const node = {
+			id: "test",
+			title: "Test",
+			status: "decided" as const,
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+		};
+		const fm = generateFrontmatter(node);
+		assert.ok(!fm.includes("branches"));
+	});
+
+	it("generateFrontmatter includes openspec_change when set", () => {
+		const node = {
+			id: "test",
+			title: "Test",
+			status: "implementing" as const,
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+			openspec_change: "my-change",
+		};
+		const fm = generateFrontmatter(node);
+		assert.ok(fm.includes("openspec_change: my-change"));
+	});
+
+	it("generateFrontmatter omits openspec_change when not set", () => {
+		const node = {
+			id: "test",
+			title: "Test",
+			status: "decided" as const,
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+		};
+		const fm = generateFrontmatter(node);
+		assert.ok(!fm.includes("openspec_change"));
+	});
+
+	it("parseFrontmatter round-trips branches and openspec_change", () => {
+		const fm = [
+			"---",
+			"id: roundtrip",
+			"title: Roundtrip Test",
+			"status: implementing",
+			"branches: [feat/a, feat/b]",
+			"openspec_change: lifecycle-change",
+			"open_questions: []",
+			"---",
+			"# Content",
+		].join("\n");
+		const parsed = parseFrontmatter(fm);
+		assert.ok(parsed);
+		assert.deepEqual(parsed.branches, ["feat/a", "feat/b"]);
+		assert.equal(parsed.openspec_change, "lifecycle-change");
+		assert.equal(parsed.status, "implementing");
+	});
+
+	let tmpDir: string;
+	before(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-branches-"));
+	});
+	after(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("scanDesignDocs parses branches and openspec_change from files", () => {
+		const doc = [
+			"---",
+			"id: scan-test",
+			"title: Scan Test",
+			"status: implementing",
+			"branches: [feature/scan-test]",
+			"openspec_change: scan-change",
+			"open_questions: []",
+			"---",
+			"# Scan Test",
+			"## Overview",
+			"Test node.",
+		].join("\n");
+		fs.writeFileSync(path.join(tmpDir, "scan-test.md"), doc);
+		const tree = scanDesignDocs(tmpDir);
+		const node = tree.nodes.get("scan-test");
+		assert.ok(node);
+		assert.equal(node.status, "implementing");
+		assert.deepEqual(node.branches, ["feature/scan-test"]);
+		assert.equal(node.openspec_change, "scan-change");
+	});
+
+	it("createNode initializes branches as empty array", () => {
+		const node = createNode(tmpDir, { id: "new-branches", title: "New" });
+		assert.deepEqual(node.branches, []);
+		assert.equal(node.openspec_change, undefined);
 	});
 });

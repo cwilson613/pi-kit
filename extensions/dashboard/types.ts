@@ -21,6 +21,8 @@ export interface DesignTreeDashboardState {
   nodeCount: number;
   decidedCount: number;
   exploringCount: number;
+  implementingCount: number;
+  implementedCount: number;
   blockedCount: number;
   openQuestionCount: number;
   focusedNode: DesignTreeFocusedNode | null;

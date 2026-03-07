@@ -10,52 +10,31 @@
  *   /vault stop      — Stop the running mdserve instance
  *   /vault status    — Show whether mdserve is running and on which port
  *   /vault graph     — Open the graph view in the browser
- *   /vault install   — Install mdserve from source
  *
- * Bootstrap:
- *   On first session start, checks for mdserve binary. If missing, emits
- *   a one-time notification with install instructions. The /vault install
- *   command handles the actual cargo install.
+ * Dependency: mdserve binary (managed by /bootstrap)
  */
 
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { DEPS } from "../bootstrap/deps.js";
 
 const DEFAULT_PORT = 3333;
 const BINARY_NAME = "mdserve";
-const REPO_URL = "https://github.com/cwilson613/mdserve";
-const REPO_BRANCH = "feature/wikilinks-graph";
 
-// Track running mdserve process per session
 let mdserveProcess: ChildProcess | null = null;
 let mdservePort: number | null = null;
 let mdserveDir: string | null = null;
 
 function hasBinary(): boolean {
-	try {
-		execSync(`which ${BINARY_NAME}`, { stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function hasCargoInstalled(): boolean {
-	try {
-		execSync("which cargo", { stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
+	const dep = DEPS.find((d) => d.id === "mdserve");
+	return dep ? dep.check() : false;
 }
 
 function openBrowser(url: string): void {
 	try {
 		const cmd = process.platform === "darwin" ? "open" : "xdg-open";
 		spawn(cmd, [url], { stdio: "ignore", detached: true }).unref();
-	} catch {
-		// ignore — user can open manually
-	}
+	} catch { /* user can open manually */ }
 }
 
 function stopMdserve(): string {
@@ -77,7 +56,6 @@ function startMdserve(dir: string, port: number): string {
 				`Serving: ${mdserveDir}\n` +
 				`Use \`/vault stop\` to stop, or \`/vault graph\` to open graph view.`;
 		}
-		// Different directory — stop and restart
 		stopMdserve();
 	}
 
@@ -92,9 +70,7 @@ function startMdserve(dir: string, port: number): string {
 
 	child.stdout?.on("data", (data: Buffer) => {
 		const match = data.toString().match(/using (\d+) instead/);
-		if (match) {
-			mdservePort = parseInt(match[1], 10);
-		}
+		if (match) mdservePort = parseInt(match[1], 10);
 	});
 
 	child.on("exit", () => {
@@ -113,36 +89,9 @@ function startMdserve(dir: string, port: number): string {
 		`Use \`/vault stop\` to stop.`;
 }
 
-const INSTALL_MSG_NO_CARGO =
-	`\`mdserve\` requires the Rust toolchain to build from source.\n` +
-	`Install Rust first: https://rustup.rs\n` +
-	`Then run: \`/vault install\``;
-
-const INSTALL_MSG =
-	`\`mdserve\` is not installed. Run \`/vault install\` to build and install it.\n` +
-	`(Requires Rust toolchain — takes ~60s on first build)`;
+const NOT_INSTALLED = "`mdserve` is not installed. Run `/bootstrap` to set up pi-kit dependencies.";
 
 export default function (pi: ExtensionAPI) {
-	// --- Bootstrap: check for mdserve on session start ---
-	pi.on("session_start", async (_event, ctx) => {
-		if (!hasBinary()) {
-			if (ctx.hasUI) {
-				if (hasCargoInstalled()) {
-					ctx.ui.notify(
-						"vault: mdserve not found. Run /vault install to set up.",
-						"info",
-					);
-				} else {
-					ctx.ui.notify(
-						"vault: mdserve requires Rust toolchain. See https://rustup.rs",
-						"info",
-					);
-				}
-			}
-		}
-	});
-
-	// --- Cleanup on session end ---
 	pi.on("session_end", () => {
 		if (mdserveProcess) {
 			mdserveProcess.kill("SIGTERM");
@@ -157,40 +106,6 @@ export default function (pi: ExtensionAPI) {
 			const subcommand = args.trim().split(/\s+/)[0]?.toLowerCase() || "";
 
 			switch (subcommand) {
-				case "install": {
-					if (hasBinary()) {
-						ctx.say("mdserve is already installed.");
-						return;
-					}
-					if (!hasCargoInstalled()) {
-						ctx.say(INSTALL_MSG_NO_CARGO);
-						return;
-					}
-
-					ctx.say("Installing mdserve from source... (this takes ~60s on first build)");
-
-					try {
-						execSync(
-							`cargo install --git ${REPO_URL} --branch ${REPO_BRANCH}`,
-							{
-								stdio: "inherit",
-								timeout: 300_000, // 5 min max
-							},
-						);
-						ctx.say("✅ mdserve installed successfully. Run `/vault` to start.");
-					} catch (e: any) {
-						ctx.say(
-							`❌ Installation failed.\n\n` +
-							`You can try manually:\n` +
-							`\`\`\`\n` +
-							`cargo install --git ${REPO_URL} --branch ${REPO_BRANCH}\n` +
-							`\`\`\`\n\n` +
-							`Error: ${e.message || e}`,
-						);
-					}
-					return;
-				}
-
 				case "stop":
 					ctx.say(stopMdserve());
 					return;
@@ -202,17 +117,14 @@ export default function (pi: ExtensionAPI) {
 							`Serving: ${mdserveDir}`,
 						);
 					} else if (!hasBinary()) {
-						ctx.say(hasCargoInstalled() ? INSTALL_MSG : INSTALL_MSG_NO_CARGO);
+						ctx.say(NOT_INSTALLED);
 					} else {
 						ctx.say("mdserve is not running. Use `/vault` to start.");
 					}
 					return;
 
 				case "graph":
-					if (!hasBinary()) {
-						ctx.say(hasCargoInstalled() ? INSTALL_MSG : INSTALL_MSG_NO_CARGO);
-						return;
-					}
+					if (!hasBinary()) { ctx.say(NOT_INSTALLED); return; }
 					if (mdserveProcess && mdservePort) {
 						openBrowser(`http://127.0.0.1:${mdservePort}/graph`);
 						ctx.say(`Opened graph view at http://127.0.0.1:${mdservePort}/graph`);
@@ -220,19 +132,13 @@ export default function (pi: ExtensionAPI) {
 						const dir = process.cwd();
 						ctx.say(startMdserve(dir, DEFAULT_PORT));
 						setTimeout(() => {
-							if (mdservePort) {
-								openBrowser(`http://127.0.0.1:${mdservePort}/graph`);
-							}
+							if (mdservePort) openBrowser(`http://127.0.0.1:${mdservePort}/graph`);
 						}, 1000);
 					}
 					return;
 
 				default: {
-					if (!hasBinary()) {
-						ctx.say(hasCargoInstalled() ? INSTALL_MSG : INSTALL_MSG_NO_CARGO);
-						return;
-					}
-					// Default: start serving. Subcommand might be a path.
+					if (!hasBinary()) { ctx.say(NOT_INSTALLED); return; }
 					const dir = subcommand || process.cwd();
 					ctx.say(startMdserve(dir, DEFAULT_PORT));
 					return;

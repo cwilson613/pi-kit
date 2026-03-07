@@ -12,6 +12,7 @@
   "license": "ISC",
   "pi": {
     "extensions": [
+      "./extensions/bootstrap",
       "./extensions/auto-compact.ts",
       "./extensions/00-secrets",
       "./extensions/01-auth",

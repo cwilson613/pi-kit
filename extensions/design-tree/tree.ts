@@ -115,6 +115,12 @@ export function generateFrontmatter(node: Omit<DesignNode, "filePath" | "lastMod
 	} else {
 		fm += "open_questions: []\n";
 	}
+	if (node.branches && node.branches.length > 0) {
+		fm += `branches: [${node.branches.map((b) => yamlQuote(b)).join(", ")}]\n`;
+	}
+	if (node.openspec_change) {
+		fm += `openspec_change: ${node.openspec_change}\n`;
+	}
 	fm += "---\n";
 	return fm;
 }
@@ -412,6 +418,8 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 				related: (fm.related as string[]) || [],
 				tags: (fm.tags as string[]) || [],
 				open_questions: mergedQuestions,
+				branches: (fm.branches as string[]) || [],
+				openspec_change: fm.openspec_change as string | undefined,
 				filePath,
 				lastModified: fs.statSync(filePath).mtimeMs,
 			};
@@ -505,6 +513,7 @@ export function createNode(
 		related: [],
 		tags: opts.tags || [],
 		open_questions: [],
+		branches: [],
 	};
 
 	const sections: DocumentSections = {
@@ -796,6 +805,101 @@ export function toSlug(text: string, maxLen: number = 40): string {
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-|-$/g, "")
 		.slice(0, maxLen);
+}
+
+// ─── Branch Association ──────────────────────────────────────────────────────
+
+/**
+ * Match a git branch name to a design node using segment-aware matching.
+ *
+ * Algorithm:
+ *   1. Split branch on "/" to get path segments (e.g. "feature/auth-strategy" → ["feature", "auth-strategy"])
+ *   2. For each implementing node, check if any segment starts with the node ID
+ *      when both are split on hyphens (segment-aware prefix match)
+ *   3. Longest matching node ID wins (prevents "auth" matching when "auth-strategy" exists)
+ *
+ * Only matches nodes with status "implementing".
+ *
+ * @returns The matched DesignNode, or null if no match.
+ */
+export function matchBranchToNode(tree: DesignTree, branchName: string): DesignNode | null {
+	if (!branchName || branchName === "main" || branchName === "detached") return null;
+
+	// Split branch on "/" to get path segments
+	const branchSegments = branchName.split("/");
+
+	let bestMatch: DesignNode | null = null;
+	let bestMatchLength = 0;
+
+	for (const node of tree.nodes.values()) {
+		if (node.status !== "implementing") continue;
+
+		const nodeIdParts = node.id.split("-");
+
+		for (const segment of branchSegments) {
+			const segmentParts = segment.split("-");
+
+			// Check if node ID parts are a prefix of this segment's parts
+			if (nodeIdParts.length <= segmentParts.length &&
+				nodeIdParts.every((part, i) => part === segmentParts[i])) {
+				if (node.id.length > bestMatchLength) {
+					bestMatch = node;
+					bestMatchLength = node.id.length;
+				}
+			}
+		}
+	}
+
+	return bestMatch;
+}
+
+/**
+ * Append a branch name to a node's branches list and write to disk.
+ * Skips if the branch is already listed.
+ */
+export function appendBranch(node: DesignNode, branchName: string): DesignNode {
+	if (node.branches.includes(branchName)) return node;
+
+	const updatedNode = {
+		...node,
+		branches: [...node.branches, branchName],
+	};
+
+	const content = fs.readFileSync(node.filePath, "utf-8");
+	const body = extractBody(content);
+	const sections = parseSections(body);
+	writeNodeDocument(updatedNode, sections);
+
+	return updatedNode;
+}
+
+/**
+ * Read the current git branch from .git/HEAD.
+ * Returns null if not in a git repo, "detached" for detached HEAD.
+ */
+export function readGitBranch(cwd: string): string | null {
+	try {
+		const gitPath = path.join(cwd, ".git");
+		if (!fs.existsSync(gitPath)) return null;
+
+		let headPath: string;
+		const stat = fs.statSync(gitPath);
+		if (stat.isFile()) {
+			// Worktree: .git is a file pointing to the real git dir
+			const content = fs.readFileSync(gitPath, "utf-8").trim();
+			if (!content.startsWith("gitdir: ")) return null;
+			const gitDir = content.slice(8);
+			headPath = path.resolve(cwd, gitDir, "HEAD");
+		} else {
+			headPath = path.join(gitPath, "HEAD");
+		}
+
+		if (!fs.existsSync(headPath)) return null;
+		const headContent = fs.readFileSync(headPath, "utf-8").trim();
+		return headContent.startsWith("ref: refs/heads/") ? headContent.slice(16) : "detached";
+	} catch {
+		return null;
+	}
 }
 
 // ─── OpenSpec Bridge ─────────────────────────────────────────────────────────

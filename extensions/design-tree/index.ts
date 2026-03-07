@@ -48,6 +48,9 @@ import {
 	toSlug,
 	validateNodeId,
 	scaffoldOpenSpecChange,
+	matchBranchToNode,
+	appendBranch,
+	readGitBranch,
 } from "./tree.js";
 
 // ─── Extension ───────────────────────────────────────────────────────────────
@@ -1064,6 +1067,10 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		reload(ctx.cwd);
+
+		// Auto-associate branch on every turn (catches branch switches)
+		tryAssociateBranch(ctx);
+
 		if (tree.nodes.size === 0) return;
 
 		if (focusedNode) {
@@ -1168,6 +1175,24 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		return new Text(text, 0, 0);
 	});
 
+	// ─── Branch Auto-Association ─────────────────────────────────────────
+
+	let lastAssociatedBranch: string | null = null;
+
+	function tryAssociateBranch(ctx: ExtensionContext): void {
+		const branch = readGitBranch(ctx.cwd);
+		if (!branch || branch === lastAssociatedBranch) return;
+		lastAssociatedBranch = branch;
+
+		reload(ctx.cwd);
+		const matched = matchBranchToNode(tree, branch);
+		if (matched && !matched.branches.includes(branch)) {
+			const updated = appendBranch(matched, branch);
+			tree.nodes.set(updated.id, updated);
+			emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
+		}
+	}
+
 	// ─── Session Lifecycle ───────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -1188,6 +1213,9 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		if (tree.nodes.size > 0) {
 			emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 		}
+
+		// Auto-associate current branch on session start
+		tryAssociateBranch(ctx);
 	});
 
 	pi.on("agent_end", async () => {

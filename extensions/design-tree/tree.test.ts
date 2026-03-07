@@ -34,6 +34,9 @@ import {
 	extractBody,
 	validateNodeId,
 	scaffoldOpenSpecChange,
+	matchBranchToNode,
+	appendBranch,
+	readGitBranch,
 } from "./tree.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
@@ -865,6 +868,147 @@ describe("scaffoldOpenSpecChange", () => {
 		const taskPattern = /^- \[ \] \d+\.\d+ .+$/m;
 		assert.ok(groupPattern.test(tasks), "tasks.md must have ## N. Title groups");
 		assert.ok(taskPattern.test(tasks), "tasks.md must have - [ ] N.M task items");
+	});
+});
+
+// ─── Branch Association ──────────────────────────────────────────────────────
+
+describe("matchBranchToNode", () => {
+	let tmpDir: string;
+	let docsDir: string;
+
+	before(() => {
+		tmpDir = makeTmpDir();
+		docsDir = path.join(tmpDir, "docs");
+	});
+
+	after(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("matches feature/<node-id> to implementing node", () => {
+		createNode(docsDir, { id: "auth-strategy", title: "Auth Strategy", status: "implementing" });
+		const tree = scanDesignDocs(docsDir);
+		const match = matchBranchToNode(tree, "feature/auth-strategy");
+		assert.ok(match);
+		assert.equal(match.id, "auth-strategy");
+	});
+
+	it("matches with extra suffix segments after node ID", () => {
+		const tree = scanDesignDocs(docsDir);
+		const match = matchBranchToNode(tree, "feature/auth-strategy-fix-tokens");
+		assert.ok(match);
+		assert.equal(match.id, "auth-strategy");
+	});
+
+	it("returns null for non-implementing nodes", () => {
+		createNode(docsDir, { id: "decided-node", title: "Decided Node", status: "decided" });
+		const tree = scanDesignDocs(docsDir);
+		const match = matchBranchToNode(tree, "feature/decided-node");
+		assert.equal(match, null);
+	});
+
+	it("returns null for main branch", () => {
+		const tree = scanDesignDocs(docsDir);
+		assert.equal(matchBranchToNode(tree, "main"), null);
+	});
+
+	it("returns null for detached HEAD", () => {
+		const tree = scanDesignDocs(docsDir);
+		assert.equal(matchBranchToNode(tree, "detached"), null);
+	});
+
+	it("returns null for empty branch name", () => {
+		const tree = scanDesignDocs(docsDir);
+		assert.equal(matchBranchToNode(tree, ""), null);
+	});
+
+	it("longest match wins when multiple nodes could match", () => {
+		createNode(docsDir, { id: "auth", title: "Auth", status: "implementing" });
+		const tree = scanDesignDocs(docsDir);
+		// "auth-strategy" (longer) should win over "auth" (shorter)
+		const match = matchBranchToNode(tree, "feature/auth-strategy-v2");
+		assert.ok(match);
+		assert.equal(match.id, "auth-strategy");
+	});
+
+	it("matches exact segment without false prefix match", () => {
+		// "auth" should NOT match "authorize" because "auth" != "authorize" at segment level
+		createNode(docsDir, { id: "authorize", title: "Authorize", status: "implementing" });
+		const tree = scanDesignDocs(docsDir);
+		const match = matchBranchToNode(tree, "feature/auth-fix");
+		assert.ok(match);
+		assert.equal(match.id, "auth"); // "auth" matches, not "authorize"
+	});
+
+	it("handles multi-segment branch paths", () => {
+		const tree = scanDesignDocs(docsDir);
+		const match = matchBranchToNode(tree, "fix/release/auth-strategy-patch");
+		assert.ok(match);
+		assert.equal(match.id, "auth-strategy");
+	});
+
+	it("returns null when no implementing nodes exist", () => {
+		const emptyDir = path.join(makeTmpDir(), "docs");
+		createNode(emptyDir, { id: "only-seed", title: "Seed", status: "seed" });
+		const tree = scanDesignDocs(emptyDir);
+		assert.equal(matchBranchToNode(tree, "feature/only-seed"), null);
+		fs.rmSync(path.dirname(emptyDir), { recursive: true, force: true });
+	});
+});
+
+describe("appendBranch", () => {
+	let tmpDir: string;
+	let docsDir: string;
+
+	before(() => {
+		tmpDir = makeTmpDir();
+		docsDir = path.join(tmpDir, "docs");
+	});
+
+	after(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("appends branch to node and persists to frontmatter", () => {
+		const node = createNode(docsDir, { id: "branch-test", title: "Branch Test", status: "implementing" });
+		const updated = appendBranch(node, "feature/branch-test");
+		assert.deepEqual(updated.branches, ["feature/branch-test"]);
+
+		// Verify persisted
+		const tree = scanDesignDocs(docsDir);
+		const reloaded = tree.nodes.get("branch-test")!;
+		assert.deepEqual(reloaded.branches, ["feature/branch-test"]);
+	});
+
+	it("does not duplicate existing branch", () => {
+		const tree = scanDesignDocs(docsDir);
+		const node = tree.nodes.get("branch-test")!;
+		const updated = appendBranch(node, "feature/branch-test");
+		assert.deepEqual(updated.branches, ["feature/branch-test"]);
+	});
+
+	it("appends multiple branches", () => {
+		const tree = scanDesignDocs(docsDir);
+		const node = tree.nodes.get("branch-test")!;
+		const updated = appendBranch(node, "fix/branch-test-hotfix");
+		assert.deepEqual(updated.branches, ["feature/branch-test", "fix/branch-test-hotfix"]);
+	});
+});
+
+describe("readGitBranch", () => {
+	it("reads current branch from cwd", () => {
+		// We're in a git repo, so this should return something
+		const branch = readGitBranch(process.cwd());
+		assert.ok(branch !== null);
+		assert.ok(typeof branch === "string");
+	});
+
+	it("returns null for non-git directory", () => {
+		const tmpDir = makeTmpDir();
+		const branch = readGitBranch(tmpDir);
+		assert.equal(branch, null);
+		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
 });
 

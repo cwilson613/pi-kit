@@ -11,7 +11,7 @@
  *                         add_dependency, branch, focus, unfocus, implement)
  *
  * Commands for interactive use:
- *   /design list|focus|unfocus|decide|explore|block|defer|branch|frontier|new|update|implement|widget
+ *   /design list|focus|unfocus|decide|explore|block|defer|branch|frontier|new|update|implement
  *
  * Documents use YAML frontmatter + structured body sections:
  *   ## Overview | ## Research | ## Decisions | ## Open Questions | ## Implementation Notes
@@ -23,6 +23,9 @@ import { StringEnum } from "../lib/typebox-helpers.js";
 import { Text } from "@mariozechner/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+import { sharedState, DASHBOARD_UPDATE_EVENT } from "../shared-state.ts";
+import type { DesignTreeDashboardState } from "../shared-state.ts";
 
 import type { DesignNode, DesignTree, NodeStatus } from "./types.js";
 import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS } from "./types.js";
@@ -52,7 +55,6 @@ import {
 export default function designTreeExtension(pi: ExtensionAPI): void {
 	let tree: DesignTree = { nodes: new Map(), docsDir: "" };
 	let focusedNode: string | null = null;
-	let widgetHidden = false;
 
 	function reload(cwd: string): void {
 		const docsDir = path.join(cwd, "docs");
@@ -63,51 +65,34 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		return path.join(cwd, "docs");
 	}
 
-	// ─── Widget ──────────────────────────────────────────────────────────
+	// ─── Dashboard State Emitter ─────────────────────────────────────────
 
-	function updateWidget(ctx: ExtensionContext): void {
-		if (tree.nodes.size === 0 || widgetHidden) {
-			ctx.ui.setWidget("design-tree", undefined);
-			return;
+	function emitDesignTreeState(ctx: ExtensionContext, dt: DesignTree, focused: DesignNode | null): void {
+		const nodes = Array.from(dt.nodes.values());
+		const state: DesignTreeDashboardState = {
+			nodeCount: nodes.length,
+			decidedCount: nodes.filter((n) => n.status === "decided").length,
+			exploringCount: nodes.filter((n) => n.status === "exploring" || n.status === "seed").length,
+			blockedCount: nodes.filter((n) => n.status === "blocked").length,
+			openQuestionCount: getAllOpenQuestions(dt).length,
+			focusedNode: focused
+				? {
+						id: focused.id,
+						title: focused.title,
+						status: focused.status,
+						questions: [...focused.open_questions],
+					}
+				: null,
+		};
+
+		sharedState.designTree = state;
+
+		// Notify dashboard if event bus is available
+		try {
+			(ctx as any).events?.emit?.(DASHBOARD_UPDATE_EVENT);
+		} catch {
+			// Dashboard polls on tool events too — silent fallback
 		}
-
-		const lines: string[] = [];
-		const decided = Array.from(tree.nodes.values()).filter((n) => n.status === "decided").length;
-		const exploring = Array.from(tree.nodes.values()).filter(
-			(n) => n.status === "exploring" || n.status === "seed",
-		).length;
-		const blocked = Array.from(tree.nodes.values()).filter((n) => n.status === "blocked").length;
-		const total = tree.nodes.size;
-		const openQ = getAllOpenQuestions(tree).length;
-
-		let summary = ctx.ui.theme.fg("accent", ctx.ui.theme.bold("◈ Design Tree"));
-		summary += ctx.ui.theme.fg("muted", ` ${decided}/${total} decided`);
-		summary += ctx.ui.theme.fg("dim", ` · ${exploring} exploring · ${openQ}?`);
-		if (blocked > 0) {
-			summary += ctx.ui.theme.fg("error", ` · ${blocked} blocked`);
-		}
-		lines.push(summary);
-
-		if (focusedNode) {
-			const node = tree.nodes.get(focusedNode);
-			if (node) {
-				const icon = STATUS_ICONS[node.status];
-				const color = STATUS_COLORS[node.status] as Parameters<typeof ctx.ui.theme.fg>[0];
-				let focusLine = ctx.ui.theme.fg("accent", "▸ ");
-				focusLine += ctx.ui.theme.fg(color, `${icon} `);
-				focusLine += ctx.ui.theme.fg("accent", ctx.ui.theme.bold(node.title));
-				if (node.open_questions.length > 0) {
-					focusLine += ctx.ui.theme.fg("dim", ` — ${node.open_questions.length} open questions`);
-				}
-				lines.push(focusLine);
-
-				if (node.open_questions.length > 0) {
-					lines.push(ctx.ui.theme.fg("dim", `  ? ${node.open_questions[0]}`));
-				}
-			}
-		}
-
-		ctx.ui.setWidget("design-tree", lines, { placement: "belowEditor" });
 	}
 
 	// ─── Tool: design_tree (queries) ─────────────────────────────────────
@@ -419,7 +404,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 					reload(ctx.cwd);
 					focusedNode = params.node_id;
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 
 					return {
 						content: [{ type: "text", text: `Created design node '${node.title}' (${node.status}) at ${node.filePath}` }],
@@ -443,7 +428,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					const oldStatus = node.status;
 					const updated = setNodeStatus(node, newStatus);
 					tree.nodes.set(updated.id, updated);
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 
 					let text = `${STATUS_ICONS[newStatus]} '${node.title}': ${oldStatus} → ${newStatus}`;
 
@@ -480,7 +465,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					}
 					const updated = addOpenQuestion(node, params.question);
 					tree.nodes.set(updated.id, updated);
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					return {
 						content: [{ type: "text", text: `Added question to '${node.title}': ${params.question}` }],
 						details: { id: node.id, question: params.question, totalQuestions: updated.open_questions.length },
@@ -498,7 +483,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					}
 					const updated = removeOpenQuestion(node, params.question);
 					tree.nodes.set(updated.id, updated);
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					return {
 						content: [{ type: "text", text: `Removed question from '${node.title}'` }],
 						details: { id: node.id, remainingQuestions: updated.open_questions.length },
@@ -628,7 +613,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 					reload(ctx.cwd);
 					focusedNode = childId;
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 
 					return {
 						content: [{
@@ -658,7 +643,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						tree.nodes.set(updated.id, updated);
 					}
 
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					return {
 						content: [{ type: "text", text: `Focused on '${node.title}'. Context will be injected on next turn.` }],
 						details: { focusedNode: params.node_id },
@@ -667,7 +652,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 				case "unfocus": {
 					focusedNode = null;
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					return {
 						content: [{ type: "text", text: "Design focus cleared." }],
 						details: { focusedNode: null },
@@ -732,12 +717,12 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		description:
 			"Design tree: list | focus [id] | unfocus | decide [id] | explore [id] | " +
 			"block [id] | defer [id] | branch | frontier | new <id> <title> | " +
-			"update [id] | implement [id] | widget",
+			"update [id] | implement [id]",
 		getArgumentCompletions: (prefix: string) => {
 			const subcommands = [
 				"list", "focus", "unfocus", "decide", "explore",
 				"block", "defer", "branch", "frontier", "new", "update",
-				"implement", "widget",
+				"implement",
 			];
 			const parts = prefix.split(" ");
 			if (parts.length <= 1) {
@@ -828,7 +813,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							ctx.ui.notify(`${node.title}: seed → exploring`, "info");
 						}
 					}
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 
 					const node = tree.nodes.get(focusedNode!)!;
 					const openQ = node.open_questions.length > 0
@@ -848,7 +833,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 				case "unfocus": {
 					focusedNode = null;
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					ctx.ui.notify("Design focus cleared", "info");
 					break;
 				}
@@ -874,7 +859,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					setNodeStatus(node, newStatus);
 					if (subcommand === "explore") focusedNode = id;
 					reload(ctx.cwd);
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					ctx.ui.notify(`${STATUS_ICONS[newStatus]} '${node.title}' → ${newStatus}`, "success");
 					break;
 				}
@@ -891,7 +876,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						const match = choice.match(/^\[([^\]]+)\]/);
 						if (match) {
 							focusedNode = match[1];
-							updateWidget(ctx);
+							emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 							const node = tree.nodes.get(match[1])!;
 							const question = choice.replace(/^\[[^\]]+\]\s*/, "");
 							pi.sendMessage(
@@ -940,7 +925,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					branchFromQuestion(tree, nodeId, selected, newId, newTitle);
 					reload(ctx.cwd);
 					focusedNode = newId;
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					ctx.ui.notify(`Created ${newId}.md — branched from ${node.title}`, "success");
 					break;
 				}
@@ -960,7 +945,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					createNode(docsDir(ctx.cwd), { id, title });
 					reload(ctx.cwd);
 					focusedNode = id;
-					updateWidget(ctx);
+					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 					ctx.ui.notify(`Created ${id}.md`, "success");
 					break;
 				}
@@ -990,7 +975,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						if (!question) return;
 						addOpenQuestion(node, question);
 						reload(ctx.cwd);
-						updateWidget(ctx);
+						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 						ctx.ui.notify(`Added question to ${node.title}`, "success");
 					} else if (action === "Remove open question") {
 						if (node.open_questions.length === 0) {
@@ -1001,7 +986,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						if (!toRemove) return;
 						removeOpenQuestion(node, toRemove);
 						reload(ctx.cwd);
-						updateWidget(ctx);
+						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 						ctx.ui.notify(`Removed question from ${node.title}`, "success");
 					} else if (action === "Add dependency") {
 						const otherNodes = Array.from(tree.nodes.keys()).filter(
@@ -1019,7 +1004,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						if (!choice) return;
 						addDependency(node, choice.split(" — ")[0]);
 						reload(ctx.cwd);
-						updateWidget(ctx);
+						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 						ctx.ui.notify(`Added dependency: ${choice.split(" — ")[0]}`, "success");
 					} else if (action === "Add related node") {
 						const otherNodes = Array.from(tree.nodes.keys()).filter(
@@ -1039,7 +1024,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						const targetNode = tree.nodes.get(relatedId);
 						addRelated(node, relatedId, targetNode);
 						reload(ctx.cwd);
-						updateWidget(ctx);
+						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 						ctx.ui.notify(`Added related: ${relatedId} (bidirectional)`, "success");
 					}
 					break;
@@ -1070,20 +1055,9 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					break;
 				}
 
-				case "widget": {
-					widgetHidden = !widgetHidden;
-					if (widgetHidden) {
-						ctx.ui.setWidget("design-tree", undefined);
-					} else {
-						updateWidget(ctx);
-					}
-					ctx.ui.notify(`Design tree widget ${widgetHidden ? "hidden" : "shown"}`, "info");
-					break;
-				}
-
 				default:
 					ctx.ui.notify(
-						"Subcommands: list, focus, unfocus, decide, explore, block, defer, branch, frontier, new, update, implement, widget",
+						"Subcommands: list, focus, unfocus, decide, explore, block, defer, branch, frontier, new, update, implement",
 						"info",
 					);
 			}
@@ -1216,7 +1190,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		}
 
 		if (tree.nodes.size > 0) {
-			updateWidget(ctx);
+			emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 		}
 	});
 

@@ -1,14 +1,21 @@
 /**
  * Shared debug logging for pi-kit extensions.
  *
- * Output goes to stderr so it doesn't interfere with TUI rendering.
+ * Output goes to a log file (~/.pi/agent/pi-kit-debug.log) so it doesn't
+ * corrupt the TUI. Tail the file in a separate terminal to watch live:
+ *   tail -f ~/.pi/agent/pi-kit-debug.log
+ *
  * Controlled by PI_DEBUG environment variable:
  *   PI_DEBUG=1           — all extensions
  *   PI_DEBUG=dashboard   — only dashboard
  *   PI_DEBUG=openspec,cleave — comma-separated list
  *
- * Each log line: [ext:tag] message {json}
+ * Each log line: [HH:mm:ss.SSS scope:tag] {json}
  */
+
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 const PI_DEBUG = process.env.PI_DEBUG ?? "";
 const debugAll = PI_DEBUG === "1" || PI_DEBUG === "*" || PI_DEBUG === "true";
@@ -16,14 +23,31 @@ const debugScopes = new Set(
   debugAll ? [] : PI_DEBUG.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 );
 
+const LOG_DIR = join(homedir(), ".pi", "agent");
+const LOG_PATH = join(LOG_DIR, "pi-kit-debug.log");
+let dirEnsured = false;
+
+function ensureDir(): void {
+  if (dirEnsured) return;
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+  } catch {
+    // best effort
+  }
+  dirEnsured = true;
+}
+
 function isEnabled(scope: string): boolean {
   if (debugAll) return true;
   if (debugScopes.size === 0) return false;
   return debugScopes.has(scope.toLowerCase());
 }
 
+/** Path to the debug log file, for display to users. */
+export const DEBUG_LOG_PATH = LOG_PATH;
+
 /**
- * Log a debug message to stderr.
+ * Log a debug message to the pi-kit debug log file.
  *
  * @param scope - Extension name (e.g. "dashboard", "openspec", "cleave")
  * @param tag - Sub-tag for the message (e.g. "render", "emitState", "session_start")
@@ -31,11 +55,15 @@ function isEnabled(scope: string): boolean {
  */
 export function debug(scope: string, tag: string, data?: Record<string, unknown>): void {
   if (!isEnabled(scope)) return;
+  ensureDir();
   const ts = new Date().toISOString().slice(11, 23); // HH:mm:ss.SSS
   const prefix = `[${ts} ${scope}:${tag}]`;
-  if (data && Object.keys(data).length > 0) {
-    process.stderr.write(`${prefix} ${JSON.stringify(data)}\n`);
-  } else {
-    process.stderr.write(`${prefix}\n`);
+  const line = data && Object.keys(data).length > 0
+    ? `${prefix} ${JSON.stringify(data)}\n`
+    : `${prefix}\n`;
+  try {
+    appendFileSync(LOG_PATH, line);
+  } catch {
+    // best effort — don't crash extensions over logging
   }
 }

@@ -302,13 +302,22 @@ export function severityGate(
 	const warnings = verdict.issues.filter((i) => i.severity === "warning");
 	const securityCriticals = criticals.filter((i) => i.security);
 
-	// PASS or only nits → accept
-	if (verdict.status === "PASS" || (criticals.length === 0 && warnings.length === 0)) {
+	// PASS → accept
+	if (verdict.status === "PASS") {
 		return { action: "accept" };
 	}
 
-	// PASS_WITH_CONCERNS with no criticals and nits only left → accept
-	if (verdict.status === "PASS_WITH_CONCERNS" && criticals.length === 0 && warnings.length === 0) {
+	// NEEDS_REWORK or REJECT with zero parseable issues — review output was garbled,
+	// escalate rather than silently accepting
+	if ((verdict.status === "NEEDS_REWORK" || verdict.status === "REJECT") && verdict.issues.length === 0) {
+		return {
+			action: "escalate",
+			reason: `Review returned ${verdict.status} but no parseable issues — review output may be garbled.`,
+		};
+	}
+
+	// Only nits (no criticals, no warnings) → accept
+	if (criticals.length === 0 && warnings.length === 0) {
 		return { action: "accept" };
 	}
 
@@ -436,6 +445,16 @@ export async function executeWithReview(
 
 	// If review is disabled, return immediately
 	if (!config.enabled) {
+		return {
+			executeResult,
+			reviewHistory: [],
+			finalDecision: "no_review",
+		};
+	}
+
+	// If initial execution failed (timeout, crash), skip review — don't waste
+	// an opus call reviewing an incomplete/empty worktree
+	if (executeResult.exitCode !== 0) {
 		return {
 			executeResult,
 			reviewHistory: [],

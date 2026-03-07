@@ -64,11 +64,11 @@ export function resolveExecuteModel(
 	localModelAvailable: boolean,
 	getPreferredTierFn?: (skills: string[]) => ModelTier | undefined,
 ): ModelTier {
-	// 1. Local override takes precedence over everything
-	if (preferLocal && localModelAvailable) return "local";
-
-	// 2. Explicit annotation on the child plan
+	// 1. Explicit annotation on the child plan — always respected
 	if (child.executeModel) return child.executeModel;
+
+	// 2. Local override — applies when no explicit annotation
+	if (preferLocal && localModelAvailable) return "local";
 
 	// 3. Skill-based tier hint
 	if (child.skills && child.skills.length > 0 && getPreferredTierFn) {
@@ -83,7 +83,10 @@ export function resolveExecuteModel(
 /**
  * Map a model tier name to the --model flag value for the pi CLI.
  *
- * Returns undefined for "sonnet" (pi's default — no flag needed).
+ * Returns undefined for "sonnet" — pi's default model, no --model flag needed.
+ * "haiku" and "opus" are passed as bare strings; pi's model resolver does
+ * fuzzy matching (e.g. "opus" → "claude-opus-4-..."). This works with pi's
+ * built-in Anthropic models but may mismatch with custom registries.
  */
 export function mapModelTierToFlag(
 	tier: ModelTier,

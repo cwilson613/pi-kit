@@ -399,9 +399,18 @@ describe("resolveExecuteModel", () => {
 		assert.equal(result, "opus");
 	});
 
-	it("local override beats explicit executeModel", () => {
+	it("explicit executeModel beats local override", () => {
 		const result = resolveExecuteModel(
 			{ skills: [], executeModel: "opus" },
+			true,
+			true,
+		);
+		assert.equal(result, "opus");
+	});
+
+	it("local override applies when no explicit executeModel", () => {
+		const result = resolveExecuteModel(
+			{ skills: [] },
 			true,
 			true,
 		);

@@ -276,6 +276,29 @@ describe("severityGate", () => {
 		const gate = severityGate(verdict, 0, config);
 		assert.equal(gate.action, "escalate");
 	});
+
+	it("escalates when NEEDS_REWORK but zero parseable issues (garbled output)", () => {
+		const verdict: ReviewVerdict = {
+			status: "NEEDS_REWORK",
+			issues: [],
+			rawOutput: "some garbled text with no parseable issues",
+		};
+		const gate = severityGate(verdict, 0, config);
+		assert.equal(gate.action, "escalate");
+		if (gate.action === "escalate") {
+			assert.ok(gate.reason.includes("garbled"));
+		}
+	});
+
+	it("escalates when REJECT but zero parseable issues", () => {
+		const verdict: ReviewVerdict = {
+			status: "REJECT",
+			issues: [],
+			rawOutput: "",
+		};
+		const gate = severityGate(verdict, 0, config);
+		assert.equal(gate.action, "escalate");
+	});
 });
 
 // ─── detectChurn ────────────────────────────────────────────────────────────
@@ -519,6 +542,23 @@ describe("executeWithReview", () => {
 		assert.equal(result.finalDecision, "escalated");
 		assert.ok(result.escalationReason?.includes("Churn"));
 		assert.equal(result.reviewHistory.length, 2);
+	});
+
+	it("skips review when initial execution fails", async () => {
+		const executor = mockExecutor({
+			executeExitCode: 1,
+			reviewOutputs: ["VERDICT: PASS\n\nISSUES:\n"],
+		});
+		const result = await executeWithReview(
+			executor,
+			"/path/to/task.md",
+			"directive",
+			"/tmp/wt",
+			{ ...DEFAULT_REVIEW_CONFIG, enabled: true },
+		);
+		assert.equal(result.finalDecision, "no_review");
+		assert.equal(result.reviewHistory.length, 0);
+		assert.equal(result.executeResult.exitCode, 1);
 	});
 
 	it("tracks review iterations correctly", async () => {

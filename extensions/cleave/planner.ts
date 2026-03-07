@@ -145,6 +145,7 @@ export function parsePlanResponse(response: string): SplitPlan {
 
 		child.scope = child.scope ?? [];
 		child.specDomains = child.specDomains ?? [];
+		child.skills = child.skills ?? [];
 		// Accept both camelCase and snake_case from LLM output
 		const rawDeps = child.dependsOn ?? (child as any).depends_on ?? [];
 		child.dependsOn = Array.isArray(rawDeps) ? rawDeps.map(String).filter(Boolean) : [];

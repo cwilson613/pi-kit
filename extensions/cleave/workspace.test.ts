@@ -28,6 +28,7 @@ function makeChild(overrides: Partial<ChildPlan> & { label: string }): ChildPlan
 		scope: overrides.scope ?? [],
 		dependsOn: [],
 		specDomains: [],
+		skills: [],
 		...overrides,
 	};
 }

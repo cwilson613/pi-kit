@@ -507,10 +507,12 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 		},
 
 		renderResult(result, _opts, theme) {
-			if (result.isError) {
-				return new Text(theme.fg("error", result.content?.[0]?.text || "Error"), 0, 0);
+			if ((result as any).isError) {
+				const first = result.content?.[0];
+				return new Text(theme.fg("error", (first && 'text' in first ? first.text : "Error")), 0, 0);
 			}
-			const text = result.content?.[0]?.text || "Done";
+			const first = result.content?.[0];
+			const text = (first && 'text' in first ? first.text : null) || "Done";
 			return new Text(theme.fg("success", text.split("\n")[0]), 0, 0);
 		},
 	});
@@ -535,7 +537,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 
 			try {
 				const result = createChange(ctx.cwd, name, finalTitle, intent);
-				ctx.ui.notify(`Created: ${result.changePath}`, "success");
+				ctx.ui.notify(`Created: ${result.changePath}`, "info");
 
 				pi.sendMessage({
 					customType: "openspec-created",
@@ -709,7 +711,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 				}
 				ctx.ui.notify(
 					`Archived '${changeName}':\n${result.operations.map((op) => `  - ${op}`).join("\n")}`,
-					"success",
+					"info",
 				);
 			} else {
 				ctx.ui.notify(result.operations.join("\n"), "error");

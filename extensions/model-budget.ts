@@ -66,7 +66,7 @@ const THINKING_LABELS: Record<ThinkingLevelName, { icon: string; label: string }
 async function switchTo(tier: TierName, pi: ExtensionAPI, ctx: any): Promise<RegistryModel | null> {
   const model = findTierModel(ctx, tier);
   if (!model) return null;
-  const success = await pi.setModel(model);
+  const success = await pi.setModel(model as any);
   return success ? model : null;
 }
 
@@ -112,13 +112,14 @@ export default function (pi: ExtensionAPI) {
     }),
     execute: async (
       _toolCallId,
-      params: { tier: TierName; reason: string },
+      params: { tier: string; reason: string },
       _signal,
       _onUpdate,
       ctx,
     ) => {
-      const meta = TIER_META[params.tier];
-      const model = await switchTo(params.tier, pi, ctx);
+      const tier = params.tier as TierName;
+      const meta = TIER_META[tier];
+      const model = await switchTo(tier, pi, ctx);
       if (model) {
         const thinking = pi.getThinkingLevel();
         ctx.ui.notify(`${meta.icon} → ${meta.label} (thinking: ${thinking}): ${params.reason}`, "info");
@@ -129,6 +130,7 @@ export default function (pi: ExtensionAPI) {
               text: `Switched to ${meta.label} (${model.id}), thinking: ${thinking}. ${params.reason}`,
             },
           ],
+          details: undefined,
         };
       }
       return {
@@ -138,6 +140,7 @@ export default function (pi: ExtensionAPI) {
             text: `Failed to switch to ${meta.label} — no matching ${meta.prefix}-* model found or no API key`,
           },
         ],
+        details: undefined,
       };
     },
   });
@@ -170,23 +173,25 @@ export default function (pi: ExtensionAPI) {
     }),
     execute: async (
       _toolCallId,
-      params: { level: ThinkingLevelName; reason: string },
+      params: { level: string; reason: string },
       _signal,
       _onUpdate,
       ctx,
     ) => {
       const previous = pi.getThinkingLevel();
-      pi.setThinkingLevel(params.level);
-      const info = THINKING_LABELS[params.level];
+      pi.setThinkingLevel(params.level as any);
+      const level = params.level as ThinkingLevelName;
+      const info = THINKING_LABELS[level];
       const tier = currentTierName(ctx) ?? "unknown";
-      ctx.ui.notify(`${info.icon} thinking: ${previous} → ${params.level} (model: ${tier}): ${params.reason}`, "info");
+      ctx.ui.notify(`${info.icon} thinking: ${previous} → ${level} (model: ${tier}): ${params.reason}`, "info");
       return {
         content: [
           {
             type: "text" as const,
-            text: `Thinking: ${previous} → ${params.level} (${info.label}), model: ${tier}. ${params.reason}`,
+            text: `Thinking: ${previous} → ${level} (${info.label}), model: ${tier}. ${params.reason}`,
           },
         ],
+        details: undefined,
       };
     },
   });

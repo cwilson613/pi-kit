@@ -39,10 +39,9 @@ import {
 	readGitBranch,
 	sanitizeBranchName,
 	writeNodeDocument,
-	getNodeSections,
 } from "./tree.ts";
 
-import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS } from "./types.ts";
+import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS, type DesignNode } from "./types.ts";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -178,6 +177,7 @@ describe("generateFrontmatter", () => {
 			related: ["rel1"],
 			tags: ["tag1"],
 			open_questions: ["Question 1?", "Question 2?"],
+			branches: [],
 		};
 		const fm = generateFrontmatter(node);
 		const parsed = parseFrontmatter(fm + "\n# Content");

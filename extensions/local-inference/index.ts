@@ -310,7 +310,7 @@ export default function (pi: ExtensionAPI) {
     if (await waitForOllama(10)) {
       await refreshModels();
       if (ctx.hasUI) {
-        ctx.ui.notify(`Ollama started — ${cachedModels.length} chat models available`, "success");
+        ctx.ui.notify(`Ollama started — ${cachedModels.length} chat models available`, "info");
       }
     }
   });
@@ -371,13 +371,7 @@ export default function (pi: ExtensionAPI) {
     }),
     execute: async (
       _toolCallId,
-      params: {
-        prompt: string;
-        system?: string;
-        model?: string;
-        max_tokens?: number;
-        temperature?: number;
-      },
+      params,
       signal,
       onUpdate,
       ctx
@@ -395,6 +389,7 @@ export default function (pi: ExtensionAPI) {
               text: `Local inference server not available at ${baseUrl}. Is Ollama running? Start with: ollama serve`,
             },
           ],
+          details: undefined,
         };
       }
 
@@ -427,6 +422,7 @@ export default function (pi: ExtensionAPI) {
               text: "No chat models available in Ollama. Pull a model with: ollama pull nemotron-3-nano:30b",
             },
           ],
+          details: undefined,
         };
       }
 
@@ -449,6 +445,7 @@ export default function (pi: ExtensionAPI) {
                   text: `**Local model:** ${modelId} *(streaming...)*\n\n---\n\n${stripThinkTokens(accumulated)}`,
                 },
               ],
+              details: undefined,
             });
           },
         });
@@ -466,7 +463,7 @@ export default function (pi: ExtensionAPI) {
           });
         }
 
-        return { content: parts };
+        return { content: parts, details: undefined };
       } catch (err: any) {
         return {
           content: [
@@ -475,6 +472,7 @@ export default function (pi: ExtensionAPI) {
               text: `Local inference error (${modelId}): ${err.message}`,
             },
           ],
+          details: undefined,
         };
       }
     },
@@ -501,6 +499,7 @@ export default function (pi: ExtensionAPI) {
               text: `No models available at ${baseUrl}. Is Ollama running? Start with: ollama serve`,
             },
           ],
+          details: undefined,
         };
       }
 
@@ -516,6 +515,7 @@ export default function (pi: ExtensionAPI) {
             text: `**Local models at ${baseUrl}:**\n${lines.join("\n")}`,
           },
         ],
+        details: undefined,
       };
     },
   });
@@ -523,7 +523,7 @@ export default function (pi: ExtensionAPI) {
   // --- Ollama management tool (agent-callable) ---
 
   function toolResult(msg: string) {
-    return { content: [{ type: "text" as const, text: msg }] };
+    return { content: [{ type: "text" as const, text: msg }], details: undefined };
   }
 
   function modelCount(models: LocalModel[]): string {
@@ -587,7 +587,7 @@ export default function (pi: ExtensionAPI) {
         })
       ),
     }),
-    execute: async (_toolCallId, params: { action: string; model?: string }, signal) => {
+    execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
       if (!hasOllama()) {
         return toolResult("Ollama is not installed. The user should run `/bootstrap` to set up pi-kit dependencies.");
       }

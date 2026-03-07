@@ -398,7 +398,7 @@ export default function (pi: ExtensionAPI) {
         markMigrated(memoryDir);
         if (ctx.hasUI) {
           const msg = `Memory migrated to SQLite: ${result.factsImported} facts imported, ${result.archiveFactsImported} archive facts, ${result.mindsImported} minds`;
-          ctx.ui.notify(msg, "success");
+          ctx.ui.notify(msg, "info");
         }
       } else {
         store = new FactStore(memoryDir);
@@ -443,11 +443,11 @@ export default function (pi: ExtensionAPI) {
       if (fsSync.existsSync(jsonlPath)) {
         const jsonl = fsSync.readFileSync(jsonlPath, "utf8");
         if (jsonl.trim()) {
-          const result = store.importFromJsonl(jsonl);
+          const result = store!.importFromJsonl(jsonl);
           if (ctx.hasUI && (result.factsAdded > 0 || result.edgesAdded > 0)) {
             ctx.ui.notify(
               `Memory sync: +${result.factsAdded} facts, ${result.factsReinforced} reinforced, +${result.edgesAdded} edges`,
-              "success"
+              "info"
             );
           }
         }
@@ -861,7 +861,7 @@ export default function (pi: ExtensionAPI) {
             const result = store!.processExtraction(mind, actions);
             ctx.ui.notify(
               `Memory refreshed: ${result.added} added, ${result.reinforced} reinforced`,
-              "success",
+              "info",
             );
           }
         } else {
@@ -1095,7 +1095,7 @@ export default function (pi: ExtensionAPI) {
       compactionWarned = true;
     }
 
-    if (shouldExtract(triggerState, usage.tokens, config, consecutiveExtractionFailures)) {
+    if (shouldExtract(triggerState, usage.tokens ?? 0, config, consecutiveExtractionFailures)) {
       activeExtractionPromise = (async () => {
         if (!store || triggerState.isRunning) return;
         triggerState.isRunning = true;
@@ -1136,7 +1136,7 @@ export default function (pi: ExtensionAPI) {
       "Use memory_episodes(query) to retrieve session narratives for context about past work",
     ],
     parameters: Type.Object({}),
-    async execute() {
+    async execute(_toolCallId: string, _params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return { content: [{ type: "text", text: "Project memory not initialized." }] };
       }
@@ -1172,7 +1172,7 @@ export default function (pi: ExtensionAPI) {
         { description: "Optionally restrict search to a specific section" },
       )),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return { content: [{ type: "text", text: "Project memory not initialized." }], isError: true };
       }
@@ -1258,7 +1258,7 @@ export default function (pi: ExtensionAPI) {
       query: Type.String({ description: "What you're looking for in past sessions" }),
       k: Type.Optional(Type.Number({ description: "Number of results (default: 5)" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return { content: [{ type: "text", text: "Project memory not initialized." }], isError: true };
       }
@@ -1320,7 +1320,7 @@ export default function (pi: ExtensionAPI) {
         minItems: 1,
       }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       addToWorkingMemory(...params.fact_ids);
       return {
         content: [{
@@ -1338,7 +1338,7 @@ export default function (pi: ExtensionAPI) {
     description: "Clear working memory buffer, releasing all pinned facts.",
     promptSnippet: "Clear working memory — release all pinned facts",
     parameters: Type.Object({}),
-    async execute() {
+    async execute(_toolCallId: string, _params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       const released = workingMemory.size;
       workingMemory.clear();
       return {
@@ -1366,7 +1366,7 @@ export default function (pi: ExtensionAPI) {
       "Before storing, check if an existing fact covers it — use memory_supersede instead of adding duplicates",
       "After resolving a bug, archive all investigation breadcrumbs and store one decision fact about the fix",
       "Prefer pointer facts ('X does Y. See path/to/file.ts') over inlining implementation details",
-    ].join("\n"),
+    ],
     parameters: Type.Object({
       section: StringEnum(
         ["Architecture", "Decisions", "Constraints", "Known Issues", "Patterns & Conventions", "Specs"] as const,
@@ -1376,7 +1376,7 @@ export default function (pi: ExtensionAPI) {
         description: "Fact to add (single bullet point, self-contained)",
       }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return {
           content: [{ type: "text", text: "Project memory not initialized." }],
@@ -1456,7 +1456,7 @@ export default function (pi: ExtensionAPI) {
         description: "New fact content (replaces the old fact)",
       }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return {
           content: [{ type: "text", text: "Project memory not initialized." }],
@@ -1493,7 +1493,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       query: Type.String({ description: "Search terms (file paths, symbol names, concepts)" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return { content: [{ type: "text", text: "Project memory not initialized." }] };
       }
@@ -1547,7 +1547,7 @@ export default function (pi: ExtensionAPI) {
       relation: Type.String({ description: "Short verb phrase: runs_on, depends_on, contradicts, etc." }),
       description: Type.String({ description: "Human-readable description of why these facts are connected" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       // Resolve which store owns each fact — edges must connect facts in the same DB
       const sourceInProject = store?.getFact(params.source_fact_id);
       const sourceInGlobal = globalStore?.getFact(params.source_fact_id);
@@ -1622,7 +1622,7 @@ export default function (pi: ExtensionAPI) {
         description: "Why these facts are being archived (logged, not shown to user)",
       })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any): Promise<any> {
       if (!store) {
         return { content: [{ type: "text", text: "Project memory not initialized." }], isError: true };
       }
@@ -1671,13 +1671,13 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Trigger context compaction to free context window space",
     promptGuidelines: [
       "Use proactively when context is growing large, or after bulk archiving stale facts",
-    ].join("\n"),
+    ],
     parameters: Type.Object({
       instructions: Type.Optional(Type.String({
         description: "Optional focus instructions for the compaction summary (e.g., 'preserve the architecture discussion')",
       })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any): Promise<any> {
       const usage = ctx.getContextUsage();
       const pct = usage?.percent != null ? `${Math.round(usage.percent)}%` : "unknown";
       const tokens = usage?.tokens?.toLocaleString() ?? "unknown";
@@ -1830,7 +1830,7 @@ export default function (pi: ExtensionAPI) {
         store!.setActiveMind(mindName === "default" ? null : mindName);
         updateStatus(ctx);
         const count = store!.countActiveFacts(mindName);
-        ctx.ui.notify(`Switched to mind: ${mindName}`, "success");
+        ctx.ui.notify(`Switched to mind: ${mindName}`, "info");
         notifyMindSwitch(mindName, count);
         break;
       }
@@ -1861,7 +1861,7 @@ export default function (pi: ExtensionAPI) {
         }
         const desc = await ctx.ui.input("Description:", `Fork of ${mindName}`);
         store!.forkMind(mindName, newName, desc ?? `Fork of ${mindName}`);
-        ctx.ui.notify(`Forked "${mindName}" → "${newName}"`, "success");
+        ctx.ui.notify(`Forked "${mindName}" → "${newName}"`, "info");
         break;
       }
       case "ingest": {
@@ -1875,7 +1875,9 @@ export default function (pi: ExtensionAPI) {
           allMinds.map(m => `${m.name} (${m.factCount} facts)`),
         );
         if (targetIdx === undefined) return;
-        const target = allMinds[targetIdx];
+        const targetIndex = allMinds.findIndex(m => `${m.name} (${m.factCount} facts)` === targetIdx);
+        if (targetIndex < 0) return;
+        const target = allMinds[targetIndex];
 
         const sourceCount = store!.countActiveFacts(mindName);
         const sourceReadonly = store!.isMindReadonly(mindName);
@@ -1889,7 +1891,7 @@ export default function (pi: ExtensionAPI) {
         const result = store!.ingestMind(mindName, target.name);
         ctx.ui.notify(
           `Ingested ${result.factsIngested} facts into "${target.name}" (${result.duplicatesSkipped} duplicates skipped)`,
-          "success",
+          "info",
         );
 
         if (activeMind() === mindName) {
@@ -1902,8 +1904,10 @@ export default function (pi: ExtensionAPI) {
         const statuses = ["active", "refined", "retired"] as const;
         const idx = await ctx.ui.select("New status:", [...statuses]);
         if (idx === undefined) return;
-        store!.setMindStatus(mindName, statuses[idx]);
-        ctx.ui.notify(`Status of "${mindName}" → ${statuses[idx]}`, "success");
+        const statusIdx = statuses.indexOf(idx as typeof statuses[number]);
+        if (statusIdx < 0) return;
+        store!.setMindStatus(mindName, statuses[statusIdx]);
+        ctx.ui.notify(`Status of "${mindName}" → ${statuses[statusIdx]}`, "info");
         break;
       }
       case "delete": {
@@ -1915,7 +1919,7 @@ export default function (pi: ExtensionAPI) {
           store!.setActiveMind(null);
           updateStatus(ctx);
         }
-        ctx.ui.notify(`Deleted mind: ${mindName}`, "success");
+        ctx.ui.notify(`Deleted mind: ${mindName}`, "info");
         break;
       }
     }
@@ -1993,7 +1997,7 @@ export default function (pi: ExtensionAPI) {
             for (const f of facts) {
               store.archiveFact(f.id);
             }
-            ctx.ui.notify(`Archived ${count} facts`, "success");
+            ctx.ui.notify(`Archived ${count} facts`, "info");
             updateStatus(ctx);
           }
           return;
@@ -2122,7 +2126,7 @@ export default function (pi: ExtensionAPI) {
           updateStatus(ctx);
           notifyMindSwitch(name, 0);
         }
-        ctx.ui.notify(`Created mind: ${name}`, "success");
+        ctx.ui.notify(`Created mind: ${name}`, "info");
         return;
       }
 
@@ -2245,8 +2249,8 @@ export default function (pi: ExtensionAPI) {
 
       // Design tree
       const dt = sharedState.designTree;
-      if (dt && dt.totalNodes > 0) {
-        summaryLines.push(`🌳 Design: ${dt.totalNodes} nodes (${dt.decidedCount} decided, ${dt.exploringCount} exploring)`);
+      if (dt && dt.nodeCount > 0) {
+        summaryLines.push(`🌳 Design: ${dt.nodeCount} nodes (${dt.decidedCount} decided, ${dt.exploringCount} exploring)`);
       }
 
       // OpenSpec
@@ -2265,11 +2269,11 @@ export default function (pi: ExtensionAPI) {
       summaryLines.push(memLine);
 
       if (summaryLines.length > 0) {
-        ctx.ui.notify(summaryLines.join("\n"), "success");
+        ctx.ui.notify(summaryLines.join("\n"), "info");
         await new Promise(r => setTimeout(r, 300));
       }
 
-      ctx.ui.notify("Goodbye!", "success");
+      ctx.ui.notify("Goodbye!", "info");
 
       // Small delay so the notification renders
       await new Promise(r => setTimeout(r, 200));

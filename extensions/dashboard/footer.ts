@@ -80,15 +80,26 @@ export class DashboardFooter implements Component {
   render(width: number): string[] {
     debug("dashboard", "render", {
       mode: this.dashState.mode,
+      width,
       hasDT: !!sharedState.designTree,
       hasOS: !!sharedState.openspec,
       hasCL: !!sharedState.cleave,
-      osChanges: (sharedState.openspec as any)?.changes?.length ?? 0,
+      hasCtx: !!this.ctxRef,
+      hasTheme: !!this.theme,
+      themeFgType: typeof this.theme?.fg,
     });
-    if (this.dashState.mode === "raised") {
-      return this.renderRaised(width);
+    try {
+      if (this.dashState.mode === "raised") {
+        return this.renderRaised(width);
+      }
+      return this.renderCompact(width);
+    } catch (err: any) {
+      debug("dashboard", "render:ERROR", {
+        error: err?.message,
+        stack: err?.stack?.split("\n").slice(0, 5).join(" | "),
+      });
+      return [`[dashboard render error: ${err?.message}]`];
     }
-    return this.renderCompact(width);
   }
 
   // ── Compact Mode (Layer 0) ────────────────────────────────────
@@ -221,9 +232,10 @@ export class DashboardFooter implements Component {
     // Cleave section
     lines.push(...this.buildCleaveLines());
 
-    // Separator
+    // Separator — thin rule matching section header style
     if (lines.length > 0) {
-      lines.push(theme.fg("dim", "─".repeat(Math.min(width, 60))));
+      const rule = "╶" + "─".repeat(Math.min(width - 2, 58)) + "╴";
+      lines.push(theme.fg("dim", rule));
     }
 
     // Original footer data
@@ -262,9 +274,10 @@ export class DashboardFooter implements Component {
       merged.push(leftTrunc + " ".repeat(leftPad) + divider + right);
     }
 
-    // Separator spans full width
+    // Separator — thin rule matching section header style
     if (merged.length > 0) {
-      merged.push(theme.fg("dim", "─".repeat(Math.min(width, 80))));
+      const rule = "╶" + "─".repeat(Math.min(width - 2, 78)) + "╴";
+      merged.push(theme.fg("dim", rule));
     }
 
     // Footer data
@@ -455,29 +468,46 @@ export class DashboardFooter implements Component {
   // ── Original Footer Data ──────────────────────────────────────
 
   private renderFooterData(width: number): string[] {
+    debug("dashboard", "renderFooterData:enter", {
+      width,
+      hasCtx: !!this.ctxRef,
+      hasTheme: !!this.theme,
+      hasBranch: !!this.footerData?.getGitBranch?.(),
+    });
     const theme = this.theme;
     const ctx = this.ctxRef;
     const lines: string[] = [];
+    const wide = width >= 120;
 
-    // pwd + git branch + session name
+    // ── Line 1: pwd + git branch + session ──
     let pwd = process.cwd();
     const home = process.env.HOME || process.env.USERPROFILE;
     if (home && pwd.startsWith(home)) {
       pwd = `~${pwd.slice(home.length)}`;
     }
 
+    let pwdLine = theme.fg("dim", "⌂ ") + theme.fg("muted", pwd);
+
     const branch = this.footerData.getGitBranch();
-    if (branch) pwd = `${pwd} (${branch})`;
+    if (branch) {
+      // Color branch by convention: feature→accent, fix→warning, main/master→success
+      const branchColor: ThemeColor = /^(main|master)$/.test(branch) ? "success"
+        : branch.startsWith("feature/") ? "accent"
+        : branch.startsWith("fix/") || branch.startsWith("hotfix/") ? "warning"
+        : branch.startsWith("refactor/") ? "accent"
+        : "muted";
+      pwdLine += theme.fg("dim", "  ") + theme.fg(branchColor, branch);
+    }
 
     const sessionName = ctx?.sessionManager?.getSessionName?.();
-    if (sessionName) pwd = `${pwd} • ${sessionName}`;
+    if (sessionName) {
+      pwdLine += theme.fg("dim", " • ") + theme.fg("muted", sessionName);
+    }
 
-    lines.push(truncateToWidth(theme.fg("dim", pwd), width, "…"));
+    lines.push(truncateToWidth(pwdLine, width, "…"));
 
-    // Stats line: tokens + cost + context% + model
+    // ── Line 2: token stats + cost │ model + thinking ──
     if (ctx) {
-      const statsParts: string[] = [];
-
       // Incrementally update cached token stats (only scan new entries)
       try {
         const entries = ctx.sessionManager.getEntries();
@@ -500,75 +530,84 @@ export class DashboardFooter implements Component {
         this.lastEntryCount = entries.length;
       } catch { /* session may not be ready */ }
 
+      // Left side: token flow + cost + context window
       const t = this.cachedTokens;
-      if (t.input) statsParts.push(`↑${formatTokens(t.input)}`);
-      if (t.output) statsParts.push(`↓${formatTokens(t.output)}`);
-      if (t.cacheRead) statsParts.push(`R${formatTokens(t.cacheRead)}`);
-      if (t.cacheWrite) statsParts.push(`W${formatTokens(t.cacheWrite)}`);
-
-      if (t.cost) {
-        statsParts.push(`$${t.cost.toFixed(3)}`);
+      const tokenParts: string[] = [];
+      if (t.input) tokenParts.push(theme.fg("accent", "↑") + theme.fg("dim", formatTokens(t.input)));
+      if (t.output) tokenParts.push(theme.fg("success", "↓") + theme.fg("dim", formatTokens(t.output)));
+      if (wide) {
+        if (t.cacheRead) tokenParts.push(theme.fg("muted", "⟐") + theme.fg("dim", formatTokens(t.cacheRead)));
+        if (t.cacheWrite) tokenParts.push(theme.fg("muted", "⟑") + theme.fg("dim", formatTokens(t.cacheWrite)));
       }
 
-      // Context %
+      // Cost with severity coloring
+      if (t.cost) {
+        const costStr = `$${t.cost.toFixed(3)}`;
+        const costColor: ThemeColor = t.cost > 5 ? "error" : t.cost > 1 ? "warning" : "dim";
+        tokenParts.push(theme.fg(costColor, costStr));
+      }
+
+      // Context % with window size
       const usage = ctx.getContextUsage();
       const pct = usage?.percent ?? 0;
       const contextWindow = usage?.contextWindow ?? 0;
-      const pctDisplay = usage?.percent !== null
-        ? `${pct.toFixed(1)}%/${formatTokens(contextWindow)}`
-        : `?/${formatTokens(contextWindow)}`;
+      const pctColor: ThemeColor = pct > 90 ? "error" : pct > 70 ? "warning" : pct > 45 ? "muted" : "dim";
+      const pctStr = usage?.percent !== null ? `${pct.toFixed(1)}%` : "?";
+      tokenParts.push(theme.fg(pctColor, pctStr) + theme.fg("dim", `/${formatTokens(contextWindow)}`));
 
-      if (pct > 90) {
-        statsParts.push(theme.fg("error", pctDisplay));
-      } else if (pct > 70) {
-        statsParts.push(theme.fg("warning", pctDisplay));
-      } else {
-        statsParts.push(pctDisplay);
-      }
+      const statsLeft = tokenParts.join(theme.fg("dim", " "));
 
-      const statsLeft = statsParts.join(" ");
-
-      // Right side: model + thinking
+      // Right side: provider + model + thinking level badge
       const model = ctx.model;
       const modelName = model?.id || "no-model";
-      let rightSide = modelName;
-
-      // Thinking level (cached incrementally alongside token stats)
-      if (model?.reasoning) {
-        rightSide = this.cachedThinkingLevel === "off"
-          ? `${modelName} • thinking off`
-          : `${modelName} • ${this.cachedThinkingLevel}`;
-      }
+      const rightParts: string[] = [];
 
       // Multi-provider indicator
       if (this.footerData.getAvailableProviderCount() > 1 && model) {
-        rightSide = `(${model.provider}) ${rightSide}`;
+        rightParts.push(theme.fg("dim", `(${model.provider})`));
       }
 
+      rightParts.push(theme.fg("muted", modelName));
+
+      // Thinking level badge with semantic color
+      if (model?.reasoning) {
+        const thinkColor: ThemeColor = this.cachedThinkingLevel === "high" ? "accent"
+          : this.cachedThinkingLevel === "medium" ? "muted"
+          : this.cachedThinkingLevel === "low" || this.cachedThinkingLevel === "minimal" ? "dim"
+          : "dim";
+        const thinkIcon = this.cachedThinkingLevel === "off" ? "○" : "◉";
+        rightParts.push(theme.fg("dim", "•") + " " +
+          theme.fg(thinkColor, `${thinkIcon} ${this.cachedThinkingLevel}`));
+      }
+
+      const rightSide = rightParts.join(" ");
+
       // Layout: left-align stats, right-align model
-      const statsLeftPlain = statsLeft.replace(/\x1b\[[0-9;]*m/g, "");
-      const rightSidePlain = rightSide.replace(/\x1b\[[0-9;]*m/g, "");
-      const totalNeeded = statsLeftPlain.length + 2 + rightSidePlain.length;
+      const statsLeftPlain = statsLeft.replace(/\x1b\[[0-9;]*m/g, "").length;
+      const rightSidePlain = rightSide.replace(/\x1b\[[0-9;]*m/g, "").length;
 
       let statsLine: string;
-      if (totalNeeded <= width) {
-        const padding = " ".repeat(width - statsLeftPlain.length - rightSidePlain.length);
+      if (statsLeftPlain + 2 + rightSidePlain <= width) {
+        const padding = " ".repeat(width - statsLeftPlain - rightSidePlain);
         statsLine = statsLeft + padding + rightSide;
       } else {
         statsLine = statsLeft;
       }
 
-      lines.push(theme.fg("dim", statsLine));
+      lines.push(statsLine);
     }
 
-    // Extension statuses — only in raised mode (too noisy for compact)
+    // ── Extension statuses — raised mode only ──
     if (this.dashState.mode === "raised") {
       const extensionStatuses = this.footerData.getExtensionStatuses();
       if (extensionStatuses.size > 0) {
         const sortedStatuses = Array.from(extensionStatuses.entries())
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([, text]) => sanitizeStatusText(text));
-        const statusLine = sortedStatuses.join(" ");
+          .map(([name, text]) => {
+            const cleanText = sanitizeStatusText(text);
+            return theme.fg("dim", "▪ ") + theme.fg("muted", cleanText);
+          });
+        const statusLine = sortedStatuses.join(theme.fg("dim", "  "));
         lines.push(truncateToWidth(statusLine, width, "…"));
       }
     }

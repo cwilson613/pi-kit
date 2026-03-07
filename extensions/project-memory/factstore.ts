@@ -558,15 +558,15 @@ export class FactStore {
         switch (action.type) {
           case "observe": {
             // Fact observed in session — reinforce if exists, add if new
-            const hash = contentHash(action.content);
+            const hash = contentHash(action.content ?? "");
             const existing = this.db.prepare(
               `SELECT id FROM facts WHERE mind = ? AND content_hash = ? AND status = 'active'`
             ).get(mind, hash);
 
             if (existing) {
-              this.reinforceFact(existing.id);
+              this.reinforceFact((existing as { id: string }).id);
               reinforced++;
-            } else {
+            } else if (action.section && action.content) {
               const result = this.storeFact({
                 mind,
                 section: action.section,

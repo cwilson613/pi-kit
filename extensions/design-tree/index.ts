@@ -344,10 +344,11 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		},
 
 		renderResult(result, { expanded }, theme) {
-			if (result.isError) {
-				return new Text(theme.fg("error", result.content?.[0]?.text || "Error"), 0, 0);
+			if ((result as any).isError) {
+				const first = result.content?.[0];
+				return new Text(theme.fg("error", (first && 'text' in first ? first.text : "Error")), 0, 0);
 			}
-			const details = result.details || {};
+			const details = (result.details || {}) as Record<string, any>;
 			let text = "";
 
 			if (details.nodes) {
@@ -372,7 +373,8 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 				const total = Object.values(q).flat().length;
 				text = theme.fg("warning", `${total} open questions`);
 			} else {
-				text = result.content?.[0]?.text?.slice(0, 100) || "Done";
+				const first = result.content?.[0];
+				text = (first && 'text' in first ? first.text?.slice(0, 100) : null) || "Done";
 			}
 
 			return new Text(text, 0, 0);
@@ -789,10 +791,12 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		},
 
 		renderResult(result, _opts, theme) {
-			if (result.isError) {
-				return new Text(theme.fg("error", result.content?.[0]?.text || "Error"), 0, 0);
+			if ((result as any).isError) {
+				const first = result.content?.[0];
+				return new Text(theme.fg("error", (first && 'text' in first ? first.text : "Error")), 0, 0);
 			}
-			const text = result.content?.[0]?.text || "Done";
+			const first = result.content?.[0];
+			const text = (first && 'text' in first ? first.text : null) || "Done";
 			// Show first line only in collapsed view
 			const firstLine = text.split("\n")[0];
 			return new Text(theme.fg("success", firstLine), 0, 0);
@@ -948,7 +952,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					if (subcommand === "explore") focusedNode = id;
 					reload(ctx.cwd);
 					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-					ctx.ui.notify(`${STATUS_ICONS[newStatus]} '${node.title}' → ${newStatus}`, "success");
+					ctx.ui.notify(`${STATUS_ICONS[newStatus]} '${node.title}' → ${newStatus}`, "info");
 					break;
 				}
 
@@ -1014,7 +1018,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					reload(ctx.cwd);
 					focusedNode = newId;
 					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-					ctx.ui.notify(`Created ${newId}.md — branched from ${node.title}`, "success");
+					ctx.ui.notify(`Created ${newId}.md — branched from ${node.title}`, "info");
 					break;
 				}
 
@@ -1034,7 +1038,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					reload(ctx.cwd);
 					focusedNode = id;
 					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-					ctx.ui.notify(`Created ${id}.md`, "success");
+					ctx.ui.notify(`Created ${id}.md`, "info");
 					break;
 				}
 
@@ -1064,7 +1068,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						addOpenQuestion(node, question);
 						reload(ctx.cwd);
 						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-						ctx.ui.notify(`Added question to ${node.title}`, "success");
+						ctx.ui.notify(`Added question to ${node.title}`, "info");
 					} else if (action === "Remove open question") {
 						if (node.open_questions.length === 0) {
 							ctx.ui.notify("No open questions to remove", "info");
@@ -1075,7 +1079,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						removeOpenQuestion(node, toRemove);
 						reload(ctx.cwd);
 						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-						ctx.ui.notify(`Removed question from ${node.title}`, "success");
+						ctx.ui.notify(`Removed question from ${node.title}`, "info");
 					} else if (action === "Add dependency") {
 						const otherNodes = Array.from(tree.nodes.keys()).filter(
 							(nid) => nid !== id && !node.dependencies.includes(nid),
@@ -1093,7 +1097,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						addDependency(node, choice.split(" — ")[0]);
 						reload(ctx.cwd);
 						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-						ctx.ui.notify(`Added dependency: ${choice.split(" — ")[0]}`, "success");
+						ctx.ui.notify(`Added dependency: ${choice.split(" — ")[0]}`, "info");
 					} else if (action === "Add related node") {
 						const otherNodes = Array.from(tree.nodes.keys()).filter(
 							(nid) => nid !== id && !node.related.includes(nid),
@@ -1113,7 +1117,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						addRelated(node, relatedId, targetNode);
 						reload(ctx.cwd);
 						emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-						ctx.ui.notify(`Added related: ${relatedId} (bidirectional)`, "success");
+						ctx.ui.notify(`Added related: ${relatedId} (bidirectional)`, "info");
 					}
 					break;
 				}
@@ -1140,7 +1144,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					const implResult = executeImplement(ctx.cwd, node);
 					reload(ctx.cwd);
 					emitDesignTreeState(ctx, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
-					ctx.ui.notify(implResult.message, implResult.ok ? "success" : "error");
+					ctx.ui.notify(implResult.message, implResult.ok ? "info" : "error");
 					break;
 				}
 

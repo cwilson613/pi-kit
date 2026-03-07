@@ -321,6 +321,7 @@ export default function (pi: ExtensionAPI) {
             text: `${result.success ? "✅" : "❌"} ${result.message}${result.success ? ` (reason: ${params.reason})` : ""}`,
           },
         ],
+        details: undefined,
       };
     },
   });

@@ -1,6 +1,11 @@
 ---
 name: typescript
 description: TypeScript development conventions for pi-kit. Covers strict typing, async patterns, error handling, Node.js API usage, and testing with node:test. Use when creating or modifying TypeScript code.
+guardrails:
+  - name: typecheck
+    cmd: npx tsc --noEmit
+    timeout: 30
+    condition: file_exists(tsconfig.json)
 ---
 
 # TypeScript Development Skill
@@ -192,3 +197,29 @@ import { checkAll } from "./deps.js";
 - **Types first**: define interfaces at the top or in a `types.ts` file.
 - **Pure functions in separate modules**: domain logic (`auth.ts`, `spec.ts`) separate from extension wiring (`index.ts`).
 - **Avoid God objects**: don't accumulate state in a single closure. Extract helper functions.
+
+## Type Checking
+
+Projects using runtime transpilation (jiti, tsx, esbuild, etc.) **must** run `tsc --noEmit` as a separate type-checking gate. Runtime transpilers strip types without checking them — type errors compile and run but silently produce incorrect behavior.
+
+```bash
+# Add to package.json scripts
+"typecheck": "tsc --noEmit"
+"check": "tsc --noEmit && npm test"
+```
+
+### The Shadow Interface Anti-Pattern
+
+**Never redefine types that exist in an upstream SDK.** When you copy-paste an interface instead of importing it, your local "shadow" drifts from the real type as the SDK evolves. The compiler can't catch the mismatch because it doesn't know they're supposed to be the same type.
+
+```typescript
+// ❌ Shadow interface — drifts silently
+interface ToolResult {
+  content: { type: string; text: string }[];
+}
+
+// ✅ Import from SDK
+import type { AgentToolResult } from "@mariozechner/pi-coding-agent";
+```
+
+**Directive:** Always import SDK types. Never redefine them locally. If an SDK type is not exported, file an issue or use module augmentation — don't copy the shape.

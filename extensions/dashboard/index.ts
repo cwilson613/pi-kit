@@ -18,6 +18,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { GuardrailResult } from "../cleave/guardrails.ts";
 import { DASHBOARD_UPDATE_EVENT } from "../shared-state.ts";
 import { DashboardFooter } from "./footer.ts";
 import { showDashboardOverlay } from "./overlay.ts";
@@ -53,9 +54,9 @@ export default function (pi: ExtensionAPI) {
   /**
    * Persist the current mode to the session.
    */
-  function persistMode(ctx: ExtensionContext): void {
+  function persistMode(_ctx: ExtensionContext): void {
     try {
-      ctx.appendEntry("dashboard-state", { mode: state.mode });
+      pi.appendEntry("dashboard-state", { mode: state.mode });
     } catch { /* session may not support it */ }
   }
 
@@ -72,6 +73,11 @@ export default function (pi: ExtensionAPI) {
    * Update footer context and trigger re-render.
    */
   function refresh(ctx: ExtensionContext): void {
+    debug("dashboard", "refresh", {
+      hasFooter: !!footer,
+      hasTui: !!tui,
+      footerType: footer?.constructor?.name,
+    });
     if (footer) {
       footer.setContext(ctx);
     }
@@ -95,21 +101,53 @@ export default function (pi: ExtensionAPI) {
   // ── Session start: set up the custom footer ──────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    if (!ctx.hasUI) return;
-
-    debug("dashboard", "session_start", { hasUI: ctx.hasUI, cwd: ctx.cwd });
+    debug("dashboard", "session_start:enter", {
+      hasUI: ctx.hasUI,
+      cwd: ctx.cwd,
+      hasSetFooter: typeof ctx.ui?.setFooter === "function",
+    });
+    if (!ctx.hasUI) {
+      debug("dashboard", "session_start:bail", { reason: "no UI" });
+      return;
+    }
 
     state.turns = 0;
     restoreMode(ctx);
+    debug("dashboard", "session_start:mode", { mode: state.mode });
 
     // Set the custom footer
-    ctx.ui.setFooter((tuiRef, theme, footerData) => {
-      tui = tuiRef;
-      footer = new DashboardFooter(tuiRef, theme, footerData, state);
-      footer.setContext(ctx);
-      debug("dashboard", "footer:factory", { tuiSet: !!tui });
-      return footer;
-    });
+    try {
+      ctx.ui.setFooter((tuiRef, theme, footerData) => {
+        debug("dashboard", "footer:factory:enter", {
+          hasTui: !!tuiRef,
+          hasTheme: !!theme,
+          hasFooterData: !!footerData,
+          themeFgType: typeof theme?.fg,
+        });
+        try {
+          tui = tuiRef;
+          footer = new DashboardFooter(tuiRef, theme, footerData, state);
+          footer.setContext(ctx);
+          debug("dashboard", "footer:factory:ok", {
+            footerType: footer?.constructor?.name,
+            hasRender: typeof footer?.render === "function",
+          });
+          return footer;
+        } catch (factoryErr: any) {
+          debug("dashboard", "footer:factory:ERROR", {
+            error: factoryErr?.message,
+            stack: factoryErr?.stack?.split("\n").slice(0, 5).join(" | "),
+          });
+          throw factoryErr;
+        }
+      });
+      debug("dashboard", "session_start:setFooter:ok");
+    } catch (err: any) {
+      debug("dashboard", "session_start:setFooter:ERROR", {
+        error: err?.message,
+        stack: err?.stack?.split("\n").slice(0, 5).join(" | "),
+      });
+    }
 
     // Subscribe to dashboard:update events from producer extensions.
     // Don't setContext here — ctx from session_start would overwrite
@@ -121,17 +159,36 @@ export default function (pi: ExtensionAPI) {
       tui?.requestRender();
     });
 
-    // Deferred initial render — design-tree emits synchronously during
-    // its session_start handler (which fires before ours per extension
-    // load order), so sharedState.designTree is already populated.
-    // We just need to trigger a render after setFooter has installed.
-    // Use queueMicrotask to run after the current event loop tick
-    // completes (all sync session_start work is done) but before any
-    // setTimeout-based async work.
+    // Deferred initial render
     queueMicrotask(() => {
-      debug("dashboard", "microtask:render", { tuiSet: !!tui });
+      debug("dashboard", "microtask:render", {
+        tuiSet: !!tui,
+        footerSet: !!footer,
+        footerType: footer?.constructor?.name,
+      });
       tui?.requestRender();
     });
+
+    // Non-blocking guardrail health check
+    setTimeout(async () => {
+      try {
+        const { discoverGuardrails, runGuardrails } = await import("../cleave/guardrails.ts");
+        const checks = discoverGuardrails(ctx.cwd);
+        if (checks.length === 0) return;
+        const suite = runGuardrails(ctx.cwd, checks);
+        if (!suite.allPassed) {
+          const failures = suite.results.filter((r: GuardrailResult) => !r.passed);
+          const msg = failures
+            .map((f: GuardrailResult) =>
+              `${f.check.name}: ${f.exitCode !== 0 ? f.output.split("\n").length + " errors" : "failed"}`,
+            )
+            .join(", ");
+          ctx.ui.notify(`⚠ Guardrail check failed: ${msg}`, "warning");
+        }
+      } catch {
+        /* non-fatal */
+      }
+    }, 2000);
   });
 
   // ── Session shutdown: cleanup ─────────────────────────────────

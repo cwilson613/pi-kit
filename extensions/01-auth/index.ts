@@ -86,10 +86,11 @@ export default function authExtension(pi: ExtensionAPI) {
 		},
 
 		renderResult(result, _options, theme) {
-			if (result.isError) {
-				return new Text(theme.fg("error", result.content?.[0]?.text || "Error"), 0, 0);
+			if ((result as any).isError) {
+				const first = result.content?.[0];
+				return new Text(theme.fg("error", (first && 'text' in first ? first.text : "Error")), 0, 0);
 			}
-			const checks = (result.details?.checks || []) as Array<{ provider: string; status: string; detail: string }>;
+			const checks = ((result.details as any)?.checks || []) as Array<{ provider: string; status: string; detail: string }>;
 			const parts = checks.map(c => {
 				const icon = STATUS_ICONS[c.status as AuthStatus] || "?";
 				const color = c.status === "ok" ? "success"

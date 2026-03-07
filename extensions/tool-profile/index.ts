@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI) {
   let currentConfig: ProfileConfig = {};
   let allToolNames: string[] = [];
 
-  function applyProfile(ctx: { ui: { notify: (msg: string, type?: string) => void } } | null): void {
+  function applyProfile(ctx: { ui: { notify: (msg: string, type?: "info" | "warning" | "error") => void } } | null): void {
     const activeTools = resolveActiveTools(allToolNames, currentDetected, currentConfig);
     pi.setActiveTools(activeTools);
     if (ctx) {
@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI) {
       const options = [...PROFILES.map((p) => p.id), "reset", "status"];
       return options
         .filter((o) => o.startsWith(prefix))
-        .map((o) => ({ value: o, description: PROFILES.find((p) => p.id === o)?.description ?? o }));
+        .map((o) => ({ value: o, label: o, description: PROFILES.find((p) => p.id === o)?.description ?? o }));
     },
   });
 
@@ -167,12 +167,12 @@ export default function (pi: ExtensionAPI) {
               lines.push(`  ○ ${t.name} — ${t.description?.slice(0, 80) ?? ""}`);
             }
           }
-          return { content: [{ type: "text", text: lines.join("\n") }] };
+          return { content: [{ type: "text", text: lines.join("\n") }], details: undefined };
         }
 
         case "enable": {
           if (!params.tools?.length) {
-            return { content: [{ type: "text", text: "Error: provide tool names to enable" }], isError: true };
+            return { content: [{ type: "text", text: "Error: provide tool names to enable" }], details: undefined } as any;
           }
           const currentActive = new Set(pi.getActiveTools());
           const allNames = new Set(allTools.map((t) => t.name));
@@ -206,12 +206,12 @@ export default function (pi: ExtensionAPI) {
           const parts: string[] = [];
           if (added.length) parts.push(`Enabled: ${added.join(", ")}`);
           if (notFound.length) parts.push(`Not found: ${notFound.join(", ")}`);
-          return { content: [{ type: "text", text: parts.join(". ") || "No changes" }] };
+          return { content: [{ type: "text", text: parts.join(". ") || "No changes" }], details: undefined };
         }
 
         case "disable": {
           if (!params.tools?.length) {
-            return { content: [{ type: "text", text: "Error: provide tool names to disable" }], isError: true };
+            return { content: [{ type: "text", text: "Error: provide tool names to disable" }], details: undefined } as any;
           }
           const currentActive = new Set(pi.getActiveTools());
           const removed: string[] = [];
@@ -237,23 +237,23 @@ export default function (pi: ExtensionAPI) {
             }
           }
 
-          return { content: [{ type: "text", text: removed.length ? `Disabled: ${removed.join(", ")}` : "No changes" }] };
+          return { content: [{ type: "text", text: removed.length ? `Disabled: ${removed.join(", ")}` : "No changes" }], details: undefined };
         }
 
         case "profiles": {
           const fullNames = allTools.map((t) => t.name);
           const summary = formatProfileSummary(currentDetected, currentConfig, fullNames);
-          return { content: [{ type: "text", text: summary }] };
+          return { content: [{ type: "text", text: summary }], details: undefined };
         }
 
         case "apply_profile": {
           if (!params.profile) {
-            return { content: [{ type: "text", text: "Error: provide a profile id" }], isError: true };
+            return { content: [{ type: "text", text: "Error: provide a profile id" }], details: undefined } as any;
           }
           const profile = PROFILES.find((p) => p.id === params.profile);
           if (!profile) {
             const available = PROFILES.map((p) => p.id).join(", ");
-            return { content: [{ type: "text", text: `Unknown profile: ${params.profile}. Available: ${available}` }], isError: true };
+            return { content: [{ type: "text", text: `Unknown profile: ${params.profile}. Available: ${available}` }], details: undefined } as any;
           }
 
           // Toggle the profile
@@ -280,11 +280,11 @@ export default function (pi: ExtensionAPI) {
           applyProfile(null);
           const activeCount = pi.getActiveTools().length;
           const action = (isIncluded && !isExcluded) ? "disabled" : "enabled";
-          return { content: [{ type: "text", text: `Profile '${profile.label}' ${action}. ${activeCount}/${allToolNames.length} tools now active.` }] };
+          return { content: [{ type: "text", text: `Profile '${profile.label}' ${action}. ${activeCount}/${allToolNames.length} tools now active.` }], details: undefined };
         }
 
         default:
-          return { content: [{ type: "text", text: `Unknown action: ${params.action}` }], isError: true };
+          return { content: [{ type: "text", text: `Unknown action: ${params.action}` }], details: undefined } as any;
       }
     },
   });

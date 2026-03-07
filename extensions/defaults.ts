@@ -52,7 +52,7 @@ export default function (pi: ExtensionAPI) {
       if (changed) {
         fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf8");
         if (ctx.hasUI) {
-          ctx.ui.notify("pi-kit: set theme to default (restart to apply)", "success");
+          ctx.ui.notify("pi-kit: set theme to default (restart to apply)", "info");
         }
       }
     } catch {
@@ -106,7 +106,7 @@ export default function (pi: ExtensionAPI) {
         fs.writeFileSync(GLOBAL_AGENTS_PATH, deployContent, "utf8");
         fs.writeFileSync(HASH_PATH, contentHash(deployContent), "utf8");
         if (ctx.hasUI) {
-          ctx.ui.notify("pi-kit: deployed global directives to ~/.pi/agent/AGENTS.md", "success");
+          ctx.ui.notify("pi-kit: deployed global directives to ~/.pi/agent/AGENTS.md", "info");
         }
       }
     } catch {

@@ -214,7 +214,7 @@ describe("parseTasksFile", () => {
 
 describe("taskGroupsToChildPlans", () => {
 	it("returns null for fewer than 2 groups", () => {
-		const groups = [{ number: 1, title: "Solo", tasks: [{ id: "1.1", text: "do thing", done: false }] }];
+		const groups = [{ number: 1, title: "Solo", tasks: [{ id: "1.1", text: "do thing", done: false }], specDomains: [], skills: [] }];
 		assert.equal(taskGroupsToChildPlans(groups), null);
 	});
 
@@ -223,10 +223,10 @@ describe("taskGroupsToChildPlans", () => {
 			{ number: 1, title: "Database Layer", tasks: [
 				{ id: "1.1", text: "Create migration", done: false },
 				{ id: "1.2", text: "Add indexes", done: false },
-			]},
+			], specDomains: [], skills: [] },
 			{ number: 2, title: "API Layer", tasks: [
 				{ id: "2.1", text: "Implement endpoints", done: false },
-			]},
+			], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups);
 		assert.ok(plans);
@@ -241,10 +241,10 @@ describe("taskGroupsToChildPlans", () => {
 			{ number: 1, title: "Setup", tasks: [
 				{ id: "1.1", text: "Install deps", done: true },
 				{ id: "1.2", text: "Configure env", done: false },
-			]},
+			], specDomains: [], skills: [] },
 			{ number: 2, title: "Build", tasks: [
 				{ id: "2.1", text: "Implement feature", done: false },
-			]},
+			], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.ok(!plans[0].description.includes("Install deps"));
@@ -256,6 +256,7 @@ describe("taskGroupsToChildPlans", () => {
 			number: i + 1,
 			title: `Group ${i + 1}`,
 			tasks: [{ id: `${i + 1}.1`, text: `Task ${i + 1}`, done: false }],
+			specDomains: [] as string[], skills: [] as string[],
 		}));
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.ok(plans);
@@ -266,13 +267,13 @@ describe("taskGroupsToChildPlans", () => {
 		const groups = [
 			{ number: 1, title: "Done Group", tasks: [
 				{ id: "1.1", text: "Already done", done: true },
-			]},
+			], specDomains: [], skills: [] },
 			{ number: 2, title: "Active A", tasks: [
 				{ id: "2.1", text: "Do this", done: false },
-			]},
+			], specDomains: [], skills: [] },
 			{ number: 3, title: "Active B", tasks: [
 				{ id: "3.1", text: "Do that", done: false },
-			]},
+			], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.ok(plans);
@@ -283,16 +284,16 @@ describe("taskGroupsToChildPlans", () => {
 
 	it("returns null when all groups are done except one", () => {
 		const groups = [
-			{ number: 1, title: "Done", tasks: [{ id: "1.1", text: "x", done: true }] },
-			{ number: 2, title: "Active", tasks: [{ id: "2.1", text: "y", done: false }] },
+			{ number: 1, title: "Done", tasks: [{ id: "1.1", text: "x", done: true }], specDomains: [], skills: [] },
+			{ number: 2, title: "Active", tasks: [{ id: "2.1", text: "y", done: false }], specDomains: [], skills: [] },
 		];
 		assert.equal(taskGroupsToChildPlans(groups), null);
 	});
 
 	it("infers dependencies from 'after' markers", () => {
 		const groups = [
-			{ number: 1, title: "Database", tasks: [{ id: "1.1", text: "Create tables", done: false }] },
-			{ number: 2, title: "API", tasks: [{ id: "2.1", text: "Build endpoints after database", done: false }] },
+			{ number: 1, title: "Database", tasks: [{ id: "1.1", text: "Create tables", done: false }], specDomains: [], skills: [] },
+			{ number: 2, title: "API", tasks: [{ id: "2.1", text: "Build endpoints after database", done: false }], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.ok(plans);
@@ -301,8 +302,8 @@ describe("taskGroupsToChildPlans", () => {
 
 	it("infers dependencies from 'requires' markers", () => {
 		const groups = [
-			{ number: 1, title: "Auth Layer", tasks: [{ id: "1.1", text: "Add JWT", done: false }] },
-			{ number: 2, title: "Protected Routes", tasks: [{ id: "2.1", text: "Requires auth layer middleware", done: false }] },
+			{ number: 1, title: "Auth Layer", tasks: [{ id: "1.1", text: "Add JWT", done: false }], specDomains: [], skills: [] },
+			{ number: 2, title: "Protected Routes", tasks: [{ id: "2.1", text: "Requires auth layer middleware", done: false }], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.ok(plans);
@@ -311,8 +312,8 @@ describe("taskGroupsToChildPlans", () => {
 
 	it("does not infer self-dependencies", () => {
 		const groups = [
-			{ number: 1, title: "Setup", tasks: [{ id: "1.1", text: "Setup requires setup tools", done: false }] },
-			{ number: 2, title: "Build", tasks: [{ id: "2.1", text: "Build it", done: false }] },
+			{ number: 1, title: "Setup", tasks: [{ id: "1.1", text: "Setup requires setup tools", done: false }], specDomains: [], skills: [] },
+			{ number: 2, title: "Build", tasks: [{ id: "2.1", text: "Build it", done: false }], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.deepEqual(plans[0].dependsOn, []);
@@ -320,8 +321,8 @@ describe("taskGroupsToChildPlans", () => {
 
 	it("normalizes labels to kebab-case", () => {
 		const groups = [
-			{ number: 1, title: "My Cool Feature!", tasks: [{ id: "1.1", text: "a", done: false }] },
-			{ number: 2, title: "Another Thing", tasks: [{ id: "2.1", text: "b", done: false }] },
+			{ number: 1, title: "My Cool Feature!", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: [], skills: [] },
+			{ number: 2, title: "Another Thing", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.equal(plans[0].label, "my-cool-feature");
@@ -333,18 +334,18 @@ describe("taskGroupsToChildPlans", () => {
 			{ number: 1, title: "Auth", tasks: [
 				{ id: "1.1", text: "Update `src/auth/login.ts` for OAuth", done: false },
 				{ id: "1.2", text: "Modify `src/auth/session.ts`", done: false },
-			]},
+			], specDomains: [], skills: [] },
 			{ number: 2, title: "Tests", tasks: [
 				{ id: "2.1", text: "Add tests for auth", done: false },
-			]},
+			], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.ok(plans[0].scope.some((s) => s.includes("src/auth")));
 	});
 	it("carries specDomains from TaskGroup to ChildPlan", () => {
 		const groups = [
-			{ number: 1, title: "RBAC", tasks: [{ id: "1.1", text: "Add caps", done: false }], specDomains: ["relay/rbac"] },
-			{ number: 2, title: "Limits", tasks: [{ id: "2.1", text: "Add limits", done: false }], specDomains: ["relay/limits"] },
+			{ number: 1, title: "RBAC", tasks: [{ id: "1.1", text: "Add caps", done: false }], specDomains: ["relay/rbac"], skills: [] },
+			{ number: 2, title: "Limits", tasks: [{ id: "2.1", text: "Add limits", done: false }], specDomains: ["relay/limits"], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.deepEqual(plans[0].specDomains, ["relay/rbac"]);
@@ -353,8 +354,8 @@ describe("taskGroupsToChildPlans", () => {
 
 	it("sets empty specDomains when TaskGroup has none", () => {
 		const groups = [
-			{ number: 1, title: "A", tasks: [{ id: "1.1", text: "a", done: false }] },
-			{ number: 2, title: "B", tasks: [{ id: "2.1", text: "b", done: false }] },
+			{ number: 1, title: "A", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: [], skills: [] },
+			{ number: 2, title: "B", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: [], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.deepEqual(plans[0].specDomains, []);

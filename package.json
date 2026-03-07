@@ -2,7 +2,9 @@
   "name": "pi-kit",
   "version": "0.1.2",
   "scripts": {
-    "test": "npx tsx --test extensions/*.test.ts extensions/**/*.test.ts"
+    "test": "npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts"
   },
   "description": "Pi package — extensions, prompts, skills, and themes for the pi coding agent",
   "keywords": [
@@ -37,7 +39,7 @@
       "./extensions/dashboard",
       "./extensions/tool-profile",
       "./extensions/vault",
-    "./extensions/version-check.ts"
+      "./extensions/version-check.ts"
     ],
     "skills": [
       "./skills"
@@ -52,5 +54,8 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@sinclair/typebox": "^0.34.48",
     "better-sqlite3": "^12.6.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

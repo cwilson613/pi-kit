@@ -48,6 +48,23 @@ describe("buildReviewPrompt", () => {
 		const prompt = buildReviewPrompt("task", "directive", "/tmp");
 		assert.ok(prompt.includes("Spec scenario"));
 	});
+
+	it("includes Deterministic Findings section when guardrailOutput provided", () => {
+		const prompt = buildReviewPrompt("task", "directive", "/tmp", "❌ typecheck failed\nerror TS2345");
+		assert.ok(prompt.includes("### Deterministic Findings"), "Should contain findings header");
+		assert.ok(prompt.includes("error TS2345"), "Should contain guardrail output");
+		assert.ok(prompt.includes("confirmed issues, not opinions"), "Should contain framing");
+	});
+
+	it("omits Deterministic Findings section when no guardrailOutput", () => {
+		const prompt = buildReviewPrompt("task", "directive", "/tmp");
+		assert.ok(!prompt.includes("Deterministic Findings"), "Should not contain findings header");
+	});
+
+	it("omits Deterministic Findings section when guardrailOutput is undefined", () => {
+		const prompt = buildReviewPrompt("task", "directive", "/tmp", undefined);
+		assert.ok(!prompt.includes("Deterministic Findings"), "Should not contain findings header");
+	});
 });
 
 // ─── buildFixPrompt ─────────────────────────────────────────────────────────

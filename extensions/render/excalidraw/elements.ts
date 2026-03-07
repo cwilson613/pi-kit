@@ -195,7 +195,7 @@ function textColorForBackground(bg: string, stroke?: string): string {
  * keys (label, semantic, labelFontSize, etc.) into the returned partial.
  */
 function applySemanticColors(
-	options: Partial<ElementBase> & Record<string, unknown>,
+	options: ShapeOptions,
 	semantic?: SemanticPurpose,
 ): { backgroundColor?: string; strokeColor?: string } {
 	const colors = semantic ? SEMANTIC_COLORS[semantic] : undefined;

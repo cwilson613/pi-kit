@@ -44,9 +44,9 @@ function markDone(): void {
 
 interface CommandContext {
 	say: (msg: string) => void;
-	hasUI?: boolean;
-	ui?: {
-		notify: (msg: string, level: string) => void;
+	hasUI: boolean;
+	ui: {
+		notify: (msg: string, level?: string) => void;
 		confirm: (title: string, message: string) => Promise<boolean>;
 	};
 }
@@ -88,7 +88,7 @@ export default function (pi: ExtensionAPI) {
 				say: (msg: string) => ctx.ui.notify(msg, "info"),
 				hasUI: true,
 				ui: {
-					notify: (msg: string, level: string) => ctx.ui.notify(msg, level as "info"),
+					notify: (msg: string, level?: string) => ctx.ui.notify(msg, (level ?? "info") as "info"),
 					confirm: (title: string, message: string) => ctx.ui.confirm(title, message),
 				},
 			};
@@ -125,7 +125,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			ctx.ui.notify(cleared > 0
 				? `Cleared ${cleared} cached transpilations. Reloading…`
-				: "No transpilation cache found. Reloading…");
+				: "No transpilation cache found. Reloading…", "info");
 			await ctx.reload();
 		},
 	});

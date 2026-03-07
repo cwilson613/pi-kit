@@ -49,6 +49,8 @@ export interface ChildPlan {
 	dependsOn: string[];
 	/** Spec domains this child owns (from <!-- specs: ... --> annotation). Empty if none. */
 	specDomains: string[];
+	/** Skill names matched to this child (from <!-- skills: ... --> annotation or auto-matched from scope). Empty if none. */
+	skills: string[];
 }
 
 export interface SplitPlan {

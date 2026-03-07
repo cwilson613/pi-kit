@@ -148,6 +148,66 @@ describe("parseTasksFile", () => {
 		assert.deepEqual(groups[0].specDomains, []);
 		assert.equal(groups[0].tasks.length, 2);
 	});
+
+	it("parses skills annotation from group header", () => {
+		const content = `## 1. Backend Logic
+<!-- skills: python, k8s-operations -->
+- [ ] Implement API handler
+`;
+		const groups = parseTasksFile(content);
+		assert.equal(groups.length, 1);
+		assert.deepEqual(groups[0].skills, ["python", "k8s-operations"]);
+	});
+
+	it("parses single skill annotation", () => {
+		const content = `## 1. Rust Module
+<!-- skills: rust -->
+- [ ] Implement parser
+`;
+		const groups = parseTasksFile(content);
+		assert.deepEqual(groups[0].skills, ["rust"]);
+	});
+
+	it("sets empty skills when no annotation present", () => {
+		const content = `## 1. Database Layer
+- [ ] Create migration
+`;
+		const groups = parseTasksFile(content);
+		assert.deepEqual(groups[0].skills, []);
+	});
+
+	it("ignores skills annotation after tasks have started", () => {
+		const content = `## 1. Models
+- [ ] Add field
+<!-- skills: python -->
+- [ ] Another task
+`;
+		const groups = parseTasksFile(content);
+		assert.deepEqual(groups[0].skills, []);
+		assert.equal(groups[0].tasks.length, 2);
+	});
+
+	it("parses both specs and skills annotations", () => {
+		const content = `## 1. Auth Service
+<!-- specs: relay/rbac -->
+<!-- skills: python, oci -->
+- [ ] Implement auth checks
+`;
+		const groups = parseTasksFile(content);
+		assert.deepEqual(groups[0].specDomains, ["relay/rbac"]);
+		assert.deepEqual(groups[0].skills, ["python", "oci"]);
+	});
+
+	it("parses skills before specs annotation", () => {
+		const content = `## 1. Auth Service
+<!-- skills: python -->
+<!-- specs: relay/rbac -->
+- [ ] Implement auth checks
+`;
+		const groups = parseTasksFile(content);
+		assert.deepEqual(groups[0].skills, ["python"]);
+		assert.deepEqual(groups[0].specDomains, ["relay/rbac"]);
+	});
 });
 
 // ─── taskGroupsToChildPlans ─────────────────────────────────────────────────
@@ -303,17 +363,60 @@ describe("taskGroupsToChildPlans", () => {
 
 	it("merges specDomains when merging small groups (>4)", () => {
 		const groups = [
-			{ number: 1, title: "A", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: ["d/a"] },
-			{ number: 2, title: "B", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: ["d/b"] },
-			{ number: 3, title: "C", tasks: [{ id: "3.1", text: "c", done: false }], specDomains: ["d/c"] },
-			{ number: 4, title: "D", tasks: [{ id: "4.1", text: "d", done: false }], specDomains: ["d/d"] },
-			{ number: 5, title: "E", tasks: [{ id: "5.1", text: "e", done: false }], specDomains: ["d/e"] },
+			{ number: 1, title: "A", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: ["d/a"], skills: [] },
+			{ number: 2, title: "B", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: ["d/b"], skills: [] },
+			{ number: 3, title: "C", tasks: [{ id: "3.1", text: "c", done: false }], specDomains: ["d/c"], skills: [] },
+			{ number: 4, title: "D", tasks: [{ id: "4.1", text: "d", done: false }], specDomains: ["d/d"], skills: [] },
+			{ number: 5, title: "E", tasks: [{ id: "5.1", text: "e", done: false }], specDomains: ["d/e"], skills: [] },
 		];
 		const plans = taskGroupsToChildPlans(groups)!;
 		assert.equal(plans.length, 4);
 		// All 5 domains should survive in the 4 plans
 		const allDomains = plans.flatMap((p) => p.specDomains);
 		assert.deepEqual(allDomains.sort(), ["d/a", "d/b", "d/c", "d/d", "d/e"]);
+	});
+
+	it("carries skills from TaskGroup to ChildPlan", () => {
+		const groups = [
+			{ number: 1, title: "Backend", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: [], skills: ["python", "oci"] },
+			{ number: 2, title: "Frontend", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: [], skills: ["style"] },
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.deepEqual(plans[0].skills, ["python", "oci"]);
+		assert.deepEqual(plans[1].skills, ["style"]);
+	});
+
+	it("sets empty skills when TaskGroup has none", () => {
+		const groups = [
+			{ number: 1, title: "A", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: [], skills: [] },
+			{ number: 2, title: "B", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: [], skills: [] },
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.deepEqual(plans[0].skills, []);
+		assert.deepEqual(plans[1].skills, []);
+	});
+
+	it("merges and deduplicates skills when merging small groups (>4)", () => {
+		const groups = [
+			{ number: 1, title: "A", tasks: [{ id: "1.1", text: "a", done: false }], specDomains: [], skills: ["python"] },
+			{ number: 2, title: "B", tasks: [{ id: "2.1", text: "b", done: false }], specDomains: [], skills: ["python", "oci"] },
+			{ number: 3, title: "C", tasks: [{ id: "3.1", text: "c", done: false }], specDomains: [], skills: ["rust"] },
+			{ number: 4, title: "D", tasks: [{ id: "4.1", text: "d", done: false }], specDomains: [], skills: ["k8s-operations"] },
+			{ number: 5, title: "E", tasks: [{ id: "5.1", text: "e", done: false }], specDomains: [], skills: ["oci"] },
+		];
+		const plans = taskGroupsToChildPlans(groups)!;
+		assert.equal(plans.length, 4);
+		// All unique skills should survive after merging
+		const allSkills = plans.flatMap((p) => p.skills);
+		assert.ok(allSkills.includes("python"));
+		assert.ok(allSkills.includes("oci"));
+		assert.ok(allSkills.includes("rust"));
+		assert.ok(allSkills.includes("k8s-operations"));
+		// No duplicates within any single merged plan
+		for (const plan of plans) {
+			const unique = new Set(plan.skills);
+			assert.equal(unique.size, plan.skills.length, `Duplicate skills in plan ${plan.label}: ${plan.skills}`);
+		}
 	});
 });
 

@@ -49,6 +49,8 @@ export interface TaskGroup {
 	}>;
 	/** Spec domains declared via <!-- specs: domain/name, ... --> annotation */
 	specDomains: string[];
+	/** Skill names declared via <!-- skills: skill1, skill2 --> annotation */
+	skills: string[];
 }
 
 /**
@@ -145,6 +147,7 @@ export function parseTasksFile(content: string): TaskGroup[] {
 				title: groupMatch[2].trim(),
 				tasks: [],
 				specDomains: [],
+				skills: [],
 			};
 			continue;
 		}
@@ -153,6 +156,16 @@ export function parseTasksFile(content: string): TaskGroup[] {
 		const specMatch = line.match(/^\s*<!--\s*specs:\s*(.+?)\s*-->\s*$/);
 		if (specMatch && currentGroup && currentGroup.tasks.length === 0) {
 			currentGroup.specDomains = specMatch[1]
+				.split(",")
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0);
+			continue;
+		}
+
+		// Match skills annotation: <!-- skills: python, k8s-operations -->
+		const skillsMatch = line.match(/^\s*<!--\s*skills:\s*(.+?)\s*-->\s*$/);
+		if (skillsMatch && currentGroup && currentGroup.tasks.length === 0) {
+			currentGroup.skills = skillsMatch[1]
 				.split(",")
 				.map((s) => s.trim())
 				.filter((s) => s.length > 0);
@@ -235,6 +248,7 @@ export function taskGroupsToChildPlans(groups: TaskGroup[]): ChildPlan[] | null 
 			scope,
 			dependsOn: [] as string[],
 			specDomains: [...(group.specDomains ?? [])],
+			skills: [...(group.skills ?? [])],
 		};
 	});
 
@@ -595,6 +609,12 @@ function mergeSmallGroups(groups: TaskGroup[], maxGroups: number): TaskGroup[] {
 			specDomains: [
 				...(result[smallestIdx].specDomains ?? []),
 				...(result[smallestIdx + 1].specDomains ?? []),
+			],
+			skills: [
+				...new Set([
+					...(result[smallestIdx].skills ?? []),
+					...(result[smallestIdx + 1].skills ?? []),
+				]),
 			],
 		};
 		result.splice(smallestIdx, 2, merged);

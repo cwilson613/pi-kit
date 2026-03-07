@@ -316,7 +316,9 @@ async function runExtractionDirect(
           { role: "user", content: userMessage },
         ],
       }),
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)]),
+      signal: typeof AbortSignal.any === "function"
+        ? AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)])
+        : controller.signal,  // Node <20.3: external abort works, timeout relies on Ollama's own
     });
 
     if (!resp.ok) return null;

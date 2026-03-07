@@ -20,6 +20,49 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "./lib/typebox-helpers";
+import { sharedState } from "./shared-state.ts";
+import { tierConfig } from "./effort/tiers.ts";
+import type { EffortLevel } from "./effort/types.ts";
+
+/** Model tier ordering for effort cap comparison. */
+export const TIER_ORDER: Record<string, number> = { local: 0, haiku: 1, sonnet: 2, opus: 3 };
+
+/**
+ * Check whether an effort cap blocks a model tier switch.
+ *
+ * Derives the ceiling from capLevel (the level at which the cap was set),
+ * NOT from effort.driver (which reflects the current tier and changes
+ * when the operator switches tiers mid-session).
+ *
+ * If sharedState.effort is capped and the requested tier is higher than the
+ * cap ceiling's driver, returns { blocked: true, message: "..." }.
+ * Otherwise returns { blocked: false }.
+ *
+ * Exported for testing (extensions/effort/model-budget-cap.test.ts).
+ */
+export function checkEffortCap(requestedTier: string): { blocked: boolean; message?: string } {
+  const effort = (sharedState as any).effort as
+    | { capped?: boolean; capLevel?: number; driver?: string; name?: string; level?: number }
+    | undefined;
+  if (!effort?.capped || effort.capLevel == null) return { blocked: false };
+
+  // Derive the ceiling driver from the capLevel, not the current tier's driver.
+  const capConfig = tierConfig(effort.capLevel as EffortLevel);
+  const capDriver = capConfig.driver;
+
+  const requestedOrder = TIER_ORDER[requestedTier] ?? -1;
+  const capOrder = TIER_ORDER[capDriver] ?? -1;
+
+  if (requestedOrder > capOrder) {
+    return {
+      blocked: true,
+      message:
+        `Effort cap active: ${capConfig.name} (level ${effort.capLevel}) limits driver to ${capDriver}. ` +
+        `Cannot upgrade to ${requestedTier}. Use /effort uncap to remove the ceiling.`,
+    };
+  }
+  return { blocked: false };
+}
 
 /** Static tier metadata — model IDs resolved dynamically at runtime */
 const TIER_META = {
@@ -80,10 +123,8 @@ function currentTierName(ctx: ExtensionContext): TierName | null {
 }
 
 export default function (pi: ExtensionAPI) {
-  // Default to Opus on session start
-  pi.on("session_start", async (_event, ctx) => {
-    await switchTo("opus", pi, ctx);
-  });
+  // session_start model selection is handled by the effort extension.
+  // model-budget only provides the set_model_tier / set_thinking_level tools.
 
   // --- Model Tier Tool ---
   pi.registerTool({
@@ -119,6 +160,16 @@ export default function (pi: ExtensionAPI) {
     ) => {
       const tier = params.tier as TierName;
       const meta = TIER_META[tier];
+
+      // Enforce effort cap — block upgrades past the ceiling
+      const capCheck = checkEffortCap(tier);
+      if (capCheck.blocked) {
+        return {
+          content: [{ type: "text" as const, text: capCheck.message! }],
+          details: undefined,
+        };
+      }
+
       const model = await switchTo(tier, pi, ctx);
       if (model) {
         const thinking = pi.getThinkingLevel();
@@ -201,6 +252,12 @@ export default function (pi: ExtensionAPI) {
     pi.registerCommand(name, {
       description: `Switch to ${meta.label} (${meta.icon})`,
       handler: async (_args, ctx) => {
+        // Enforce effort cap — same check as the tool
+        const capCheck = checkEffortCap(name);
+        if (capCheck.blocked) {
+          ctx.ui.notify(`⛔ ${capCheck.message}`, "warning");
+          return;
+        }
         const model = await switchTo(name as TierName, pi, ctx);
         if (!model) {
           ctx.ui.notify(`Failed to switch to ${meta.label}`, "error");

@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { matchScenariosToChildren, generateTaskFile, buildSkillSection, buildGuardrailSection } from "./workspace.ts";
 import type { SkillDirective } from "./workspace.ts";
-import { buildChildPrompt, resolveExecuteModel, classifyByScope, mapModelTierToFlag } from "./dispatcher.ts";
+import { buildChildPrompt, resolveExecuteModel, classifyByScope, mapModelTierToFlag, applyEffortFloor } from "./dispatcher.ts";
 import type { ChildPlan, ModelTier } from "./types.ts";
 import type { OpenSpecContext } from "./openspec.ts";
 
@@ -660,5 +660,168 @@ describe("mapModelTierToFlag", () => {
 
 	it("maps opus to 'opus'", () => {
 		assert.equal(mapModelTierToFlag("opus"), "opus");
+	});
+});
+
+// ─── applyEffortFloor — effort tier integration ─────────────────────────────
+
+describe("applyEffortFloor", () => {
+	const SHARED_KEY = Symbol.for("pi-kit-shared-state");
+
+	function setEffort(effort: any) {
+		(globalThis as any)[SHARED_KEY].effort = effort;
+	}
+
+	function clearEffort() {
+		delete (globalThis as any)[SHARED_KEY].effort;
+	}
+
+	it("returns classified unchanged when effort is undefined", () => {
+		clearEffort();
+		assert.equal(applyEffortFloor("sonnet"), "sonnet");
+		assert.equal(applyEffortFloor("local"), "local");
+		assert.equal(applyEffortFloor("opus"), "opus");
+	});
+
+	it("forces local when cleavePreferLocal is true", () => {
+		setEffort({ cleavePreferLocal: true, cleaveFloor: "local" });
+		try {
+			assert.equal(applyEffortFloor("sonnet"), "local");
+			assert.equal(applyEffortFloor("opus"), "local");
+			// Already local stays local
+			assert.equal(applyEffortFloor("local"), "local");
+		} finally {
+			clearEffort();
+		}
+	});
+
+	it("raises tier to floor when classified is below", () => {
+		setEffort({ cleavePreferLocal: false, cleaveFloor: "sonnet" });
+		try {
+			// local → sonnet (raised to floor)
+			assert.equal(applyEffortFloor("local"), "sonnet");
+			// sonnet stays sonnet (at floor)
+			assert.equal(applyEffortFloor("sonnet"), "sonnet");
+			// opus stays opus (above floor)
+			assert.equal(applyEffortFloor("opus"), "opus");
+		} finally {
+			clearEffort();
+		}
+	});
+
+	it("opus floor raises everything to opus", () => {
+		setEffort({ cleavePreferLocal: false, cleaveFloor: "opus" });
+		try {
+			assert.equal(applyEffortFloor("local"), "opus");
+			assert.equal(applyEffortFloor("sonnet"), "opus");
+			assert.equal(applyEffortFloor("opus"), "opus");
+		} finally {
+			clearEffort();
+		}
+	});
+});
+
+// ─── resolveExecuteModel — effort integration ──────────────────────────────
+
+describe("resolveExecuteModel — effort integration", () => {
+	const SHARED_KEY = Symbol.for("pi-kit-shared-state");
+
+	function setEffort(effort: any) {
+		(globalThis as any)[SHARED_KEY].effort = effort;
+	}
+
+	function clearEffort() {
+		delete (globalThis as any)[SHARED_KEY].effort;
+	}
+
+	it("Servitor tier forces all children local regardless of scope", () => {
+		setEffort({
+			level: 1,
+			name: "Servitor",
+			cleavePreferLocal: true,
+			cleaveFloor: "local",
+		});
+		try {
+			// 5-file scope would normally classify as sonnet
+			const result = resolveExecuteModel(
+				{ scope: Array.from({ length: 5 }, (_, i) => `src/file${i}.ts`), skills: [] },
+				false,
+				true,
+			);
+			assert.equal(result, "local");
+		} finally {
+			clearEffort();
+		}
+	});
+
+	it("Absolute tier raises floor to sonnet for small-scope children", () => {
+		setEffort({
+			level: 6,
+			name: "Absolute",
+			cleavePreferLocal: false,
+			cleaveFloor: "sonnet",
+		});
+		try {
+			// 2-file scope would normally classify as local
+			const result = resolveExecuteModel(
+				{ scope: ["src/a.ts", "src/b.ts"], skills: [] },
+				false,
+				true,
+			);
+			assert.equal(result, "sonnet");
+		} finally {
+			clearEffort();
+		}
+	});
+
+	it("undefined effort falls back to normal scope-based behavior", () => {
+		clearEffort();
+		// 2-file child → local (normal scope-based classification)
+		const result = resolveExecuteModel(
+			{ scope: ["src/a.ts", "src/b.ts"], skills: [] },
+			false,
+			true,
+		);
+		assert.equal(result, "local");
+	});
+
+	it("explicit annotation bypasses effort floor", () => {
+		setEffort({
+			level: 1,
+			name: "Servitor",
+			cleavePreferLocal: true,
+			cleaveFloor: "local",
+		});
+		try {
+			// Explicit opus annotation should NOT be forced to local
+			const result = resolveExecuteModel(
+				{ scope: ["src/a.ts"], skills: [], executeModel: "opus" },
+				false,
+				true,
+			);
+			assert.equal(result, "opus");
+		} finally {
+			clearEffort();
+		}
+	});
+
+	it("effort cleavePreferLocal overrides caller preferLocal=false", () => {
+		setEffort({
+			level: 2,
+			name: "Average",
+			cleavePreferLocal: true,
+			cleaveFloor: "local",
+		});
+		try {
+			// preferLocal=false but effort says cleavePreferLocal=true
+			const result = resolveExecuteModel(
+				{ scope: Array.from({ length: 6 }, (_, i) => `src/f${i}.ts`), skills: [] },
+				false, // caller says no prefer-local
+				true,
+			);
+			assert.equal(result, "local");
+		} finally {
+			clearEffort();
+		}
 	});
 });

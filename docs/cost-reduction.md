@@ -118,6 +118,20 @@ Assuming current weekly spend breakdown (estimated from usage patterns):
 
 **Adding tier discipline and tool profiles gets us over 50%**.
 
+### Local model ranking for this harness (M1 Max 64GB)
+
+Key harness requirements that thin out local candidates: reliable structured JSON tool calls (24+ schemas), multi-step orchestration, 16-32K effective context with memory injection, strict instruction following, Rust+TS code quality.
+
+Role-specific recommendations (fit in 64GB unified memory):
+- **Daily driver / sonnet-tier orchestration**: Qwen3 32B Q8 (~35GB) — community #1 for agentic tool use, 128K ctx, thinking-mode toggle
+- **Deep reasoning / opus-tier**: Qwen2.5 72B Q5_K_M (~48GB) — more capacity, but ~10-15 tok/s on M1, noticeable latency on multi-call loops
+- **Leaf/child tasks in cleave**: Qwen2.5-Coder 32B Q8 (~35GB) — purpose-built for code + function calling, better Rust/TS output, weaker as root orchestrator
+
+Even Tier 1 local is ~60-70% of Sonnet on complex orchestration. Failure modes: malformed tool JSON (occasional even with Qwen3), missed system-prompt directives, repetitive tool loops, speed.
+
+Models that don't fit: Mistral Large 2 123B Q4 (~65-70GB, too tight with KV cache), Llama 3.3 70B Q8 (~75GB).
+Models already wired (offline-driver): nemotron-3-nano:30b, devstral-small-2:24b, qwen3:30b — all functional for leaf tasks, insufficient for complex orchestration.
+
 ## Decisions
 
 ### Decision: Switch extractionModel to local immediately
@@ -134,6 +148,11 @@ Assuming current weekly spend breakdown (estimated from usage patterns):
 
 **Status:** decided
 **Rationale:** Summarization is a well-suited local model task. nemotron-3-nano with 1M context is ideal. Flip the order: try local first, fall back to cloud only if Ollama is unreachable.
+
+### Decision: Role-split local model preferences: Qwen3 32B driver, Qwen2.5-Coder 32B leaf, Qwen2.5 72B reasoning
+
+**Status:** decided
+**Rationale:** Different tasks have different local model needs. Qwen3 32B Q8 (~35GB) is the best all-round driver: top tool-call JSON reliability, 128K ctx, thinking-mode toggle, leaves 29GB for KV cache. Qwen2.5-Coder 32B is purpose-built for Rust/TS code tasks and leads for cleave leaf children. Qwen2.5 72B is listed for deep reasoning but is slow (~10-15 tok/s on M1) so not the default. Previous flat list (nemotron/devstral/qwen3:30b) is retained as fallback chain — users who haven't pulled the new models get graceful degradation.
 
 ## Open Questions
 

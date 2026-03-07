@@ -13,6 +13,8 @@ import type {
   CleaveState,
 } from "./dashboard/types.ts";
 
+import type { EffortState } from "./effort/types.ts";
+
 // Re-export dashboard types for consumer convenience
 export type {
   DesignTreeDashboardState,
@@ -25,6 +27,16 @@ export type {
   DashboardMode,
   DashboardState,
 } from "./dashboard/types.ts";
+
+// Re-export effort types for consumer convenience
+export type {
+  EffortState,
+  EffortConfig,
+  EffortLevel,
+  EffortModelTier,
+  EffortName,
+  ThinkingLevel,
+} from "./effort/types.ts";
 
 /** Event channel fired by producers after writing dashboard state. */
 export const DASHBOARD_UPDATE_EVENT = "dashboard:update" as const;
@@ -44,6 +56,9 @@ interface SharedState {
 
   /** Cleave execution state. Written by cleave extension. */
   cleave?: CleaveState;
+
+  /** Effort tier state. Written by effort extension, read by model-budget and cleave. */
+  effort?: EffortState;
 }
 
 // Initialize once on first import, reuse thereafter via global symbol.

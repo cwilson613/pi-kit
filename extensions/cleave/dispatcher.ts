@@ -62,6 +62,17 @@ const LOCAL_SCOPE_THRESHOLD = 3;      // ≤ this many files → local
 const SONNET_SCOPE_THRESHOLD = 8;     // ≤ this many files → sonnet, > → opus
 
 /**
+ * Tier ordering for floor comparison. Higher number = higher tier.
+ * Used by applyEffortFloor to determine "higher of the two".
+ */
+const TIER_ORDER: Record<ModelTier, number> = {
+	local: 0,
+	haiku: 1,
+	sonnet: 2,
+	opus: 3,
+};
+
+/**
  * Classify a child's execution tier based on scope analysis.
  *
  * Returns a tier suggestion or undefined if scope doesn't give a clear signal.
@@ -79,6 +90,37 @@ export function classifyByScope(
 	if (effectiveSize <= LOCAL_SCOPE_THRESHOLD) return "local";
 	if (effectiveSize <= SONNET_SCOPE_THRESHOLD) return "sonnet";
 	return "opus";
+}
+
+/**
+ * Apply effort-tier floor to a classified model tier.
+ *
+ * Reads sharedState.effort (written by the effort extension) and:
+ * 1. If effort is undefined → return classified unchanged (backward compat)
+ * 2. If effort.cleavePreferLocal is true → force "local" (Low/Average tiers)
+ * 3. Otherwise → return the higher of classified vs effort.cleaveFloor
+ *
+ * This is called at the end of resolveExecuteModel (after scope/skill
+ * classification) to enforce the operator's global effort policy.
+ * Explicit executeModel annotations bypass this — they are checked
+ * before applyEffortFloor is reached.
+ */
+export function applyEffortFloor(classified: ModelTier): ModelTier {
+	const effort = (sharedState as any).effort as
+		| { cleavePreferLocal: boolean; cleaveFloor: ModelTier }
+		| undefined;
+
+	// (1) No effort state — backward compatible passthrough
+	if (!effort) return classified;
+
+	// (2) Effort forces all-local (Low/Average tiers)
+	if (effort.cleavePreferLocal && classified !== "local") return "local";
+
+	// (3) Floor enforcement — return the higher of classified vs floor
+	const floor = effort.cleaveFloor;
+	if (floor && TIER_ORDER[floor] > TIER_ORDER[classified]) return floor;
+
+	return classified;
 }
 
 /**
@@ -102,29 +144,40 @@ export function resolveExecuteModel(
 	getPreferredTierFn?: (skills: string[]) => ModelTier | undefined,
 ): ModelTier {
 	// 1. Explicit annotation on the child plan — always respected
+	//    Bypasses effort floor — explicit annotations are deliberate overrides.
 	if (child.executeModel) return child.executeModel;
+
+	// Effort-based preferLocal override: if the effort tier says cleavePreferLocal,
+	// treat this dispatch as prefer-local regardless of the caller's flag.
+	const effectivePreferLocal = preferLocal || !!(sharedState as any).effort?.cleavePreferLocal;
+
+	let classified: ModelTier | undefined;
 
 	// 2. Scope-based autoclassification (when local is available)
 	if (localModelAvailable && child.scope && child.scope.length > 0) {
 		const scopeTier = classifyByScope(child.scope);
 		if (scopeTier) {
 			// preferLocal mode: cap at local (never auto-classify UP to cloud)
-			if (preferLocal && scopeTier !== "local") return "local";
-			return scopeTier;
+			classified = (effectivePreferLocal && scopeTier !== "local") ? "local" : scopeTier;
 		}
 	}
 
 	// 2b. Global prefer_local flag (no scope info but local requested)
-	if (preferLocal && localModelAvailable) return "local";
+	if (!classified && effectivePreferLocal && localModelAvailable) {
+		classified = "local";
+	}
 
 	// 3. Skill-based tier hint
-	if (child.skills && child.skills.length > 0 && getPreferredTierFn) {
+	if (!classified && child.skills && child.skills.length > 0 && getPreferredTierFn) {
 		const tier = getPreferredTierFn(child.skills);
-		if (tier) return tier;
+		if (tier) classified = tier;
 	}
 
 	// 4. Default
-	return "sonnet";
+	if (!classified) classified = "sonnet";
+
+	// 5. Apply effort floor (raises tier if below minimum, or forces local)
+	return applyEffortFloor(classified);
 }
 
 /**

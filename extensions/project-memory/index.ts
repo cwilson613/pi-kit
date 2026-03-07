@@ -61,6 +61,12 @@ import { SECTIONS } from "./template.ts";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
 import { sharedState } from "../shared-state.ts";
 
+/** Map abstract effort model tiers to concrete cloud model IDs for extraction. */
+const EFFORT_EXTRACTION_MODELS: Record<string, string> = {
+  opus: "claude-opus-4-6",
+  sonnet: "claude-sonnet-4-6",
+};
+
 // ---------------------------------------------------------------------------
 // Compaction prompt constants (mirrors pi's internal prompts for local-model fallback)
 // ---------------------------------------------------------------------------
@@ -133,8 +139,8 @@ const EMBEDDING_MODEL_PATTERN = /embed|embedding/i;
 
 /** Preferred models for summarization, in priority order */
 const PREFERRED_CHAT_MODELS = [
-  "devstral-small-2:24b", "qwen3:30b", "nemotron-3-nano:30b",
-  "devstral-small", "qwen3", "nemotron",
+  "qwen3:32b", "devstral-small-2:24b", "qwen3:30b", "nemotron-3-nano:30b",
+  "qwen3", "devstral-small", "nemotron",
 ];
 
 /**
@@ -299,6 +305,21 @@ export default function (pi: ExtensionAPI) {
   const WORKING_MEMORY_CAP = 25;
 
   /** Get the active mind name (null = default) */
+  /**
+   * Apply the current effort tier's extraction override to a MemoryConfig.
+   * Called at extraction call-time so mid-session /effort switches take effect
+   * immediately without requiring a session restart.
+   * Returns a new config object (does not mutate).
+   */
+  function applyEffortToCfg(cfg: MemoryConfig): MemoryConfig {
+    const effort = sharedState.effort;
+    if (!effort) return cfg;
+    if (effort.extraction === "local") return cfg;
+    const model = EFFORT_EXTRACTION_MODELS[effort.extraction];
+    if (!model) return cfg;
+    return { ...cfg, extractionModel: model };
+  }
+
   function activeMind(): string {
     return store?.getActiveMind() ?? "default";
   }
@@ -490,6 +511,23 @@ export default function (pi: ExtensionAPI) {
     autoCompacted = false;
     workingMemory.clear();
 
+    // Apply effort-tier overrides to extraction and compaction config.
+    // sharedState.effort is written by the effort extension's session_start,
+    // which fires before ours (effort is registered earlier in package.json).
+    config = { ...DEFAULT_CONFIG };
+    const effort = sharedState.effort;
+    if (effort) {
+      // Extraction: tiers 1-5 use local (devstral default), tiers 6-7 use cloud
+      if (effort.extraction !== "local") {
+        const model = EFFORT_EXTRACTION_MODELS[effort.extraction];
+        if (model) config.extractionModel = model;
+      }
+      // Compaction: tiers 1-5 stay local-first, tiers 6-7 defer to cloud
+      if (effort.compaction !== "local") {
+        config.compactionLocalFirst = false;
+      }
+    }
+
     // Detect embedding availability and start background indexing
     try {
       const embedStatus = await isEmbeddingAvailable();
@@ -596,7 +634,11 @@ export default function (pi: ExtensionAPI) {
   // 2. compactionLocalFirst=false: only intercept when useLocalCompaction flag is set
   //    (after cloud failure). Cloud gets first attempt; local is the safety net.
   pi.on("session_before_compact", async (event, ctx) => {
-    const shouldIntercept = config.compactionLocalFirst || useLocalCompaction;
+    // Re-read effort state at intercept time so mid-session /effort switches take effect.
+    const liveCompactionLocal = sharedState.effort
+      ? sharedState.effort.compaction === "local"
+      : config.compactionLocalFirst;
+    const shouldIntercept = liveCompactionLocal || useLocalCompaction;
     if (!shouldIntercept || !config.compactionLocalFallback) return;
     useLocalCompaction = false; // consume the flag if it was set
 
@@ -780,8 +822,12 @@ export default function (pi: ExtensionAPI) {
     const recentMessages = messages.slice(-30);
     if (recentMessages.length === 0) return;
 
+    // Re-apply effort override at call-time so mid-session /effort switches take effect
+    // without requiring a session restart.
+    const activeCfg = applyEffortToCfg(cfg);
+
     const serialized = serializeConversation(convertToLlm(recentMessages));
-    const rawOutput = await runExtractionV2(ctx.cwd, currentFacts, serialized, cfg);
+    const rawOutput = await runExtractionV2(ctx.cwd, currentFacts, serialized, activeCfg);
 
     if (!rawOutput.trim()) return;
 
@@ -809,7 +855,7 @@ export default function (pi: ExtensionAPI) {
             const globalEdges = globalStore.getActiveEdges();
 
             const globalRawOutput = await runGlobalExtraction(
-              ctx.cwd, newFacts, globalFacts, globalEdges, cfg,
+              ctx.cwd, newFacts, globalFacts, globalEdges, activeCfg,
             );
 
             if (globalRawOutput.trim()) {
@@ -862,7 +908,7 @@ export default function (pi: ExtensionAPI) {
           ctx.cwd,
           currentFacts,
           `[Memory refresh requested. Review existing facts for accuracy and relevance. Archive stale or redundant facts. No new conversation context.]`,
-          config,
+          applyEffortToCfg(config),
         );
         if (rawOutput.trim()) {
           const actions = parseExtractionOutput(rawOutput);

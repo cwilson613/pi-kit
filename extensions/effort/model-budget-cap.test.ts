@@ -15,13 +15,17 @@ import { sharedState } from "../shared-state.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────
 
-/** Set effort cap state for testing. */
-function setEffortCap(driver: string, name: string, level: number) {
+/** Set effort cap state for testing.
+ *  capLevel determines the ceiling; driver reflects the CURRENT tier
+ *  (which may differ if the operator switched tiers after capping).
+ */
+function setEffortCap(driver: string, name: string, level: number, capLevel?: number) {
   (sharedState as any).effort = {
     capped: true,
     driver,
     name,
     level,
+    capLevel: capLevel ?? level,
   };
 }
 
@@ -139,6 +143,31 @@ describe("checkEffortCap", () => {
       setEffortCap("opus", "Absolute", 6);
       const result = checkEffortCap("sonnet");
       assert.equal(result.blocked, false);
+    });
+  });
+
+  // Spec: Cap survives tier switching (C1 regression)
+  describe("cap derives ceiling from capLevel, not current driver", () => {
+    it("blocks opus when capped at Ruthless even after switching to Omnissiah", () => {
+      // Operator capped at Ruthless (level 4, driver=sonnet), then switched to Omnissiah
+      // Current driver is now "opus", but capLevel is still 4 (sonnet ceiling)
+      setEffortCap("opus", "Omnissiah", 7, 4);
+      const result = checkEffortCap("opus");
+      assert.equal(result.blocked, true);
+      assert.ok(result.message!.includes("Ruthless"));
+      assert.ok(result.message!.includes("level 4"));
+    });
+
+    it("allows sonnet when capped at Ruthless even after switching to Omnissiah", () => {
+      setEffortCap("opus", "Omnissiah", 7, 4);
+      const result = checkEffortCap("sonnet");
+      assert.equal(result.blocked, false);
+    });
+
+    it("blocks sonnet when capped at Servitor even after switching to Absolute", () => {
+      setEffortCap("opus", "Absolute", 6, 1);
+      const result = checkEffortCap("sonnet");
+      assert.equal(result.blocked, true);
     });
   });
 

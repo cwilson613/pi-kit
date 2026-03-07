@@ -21,6 +21,8 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "./lib/typebox-helpers";
 import { sharedState } from "./shared-state.ts";
+import { tierConfig } from "./effort/tiers.ts";
+import type { EffortLevel } from "./effort/types.ts";
 
 /** Model tier ordering for effort cap comparison. */
 export const TIER_ORDER: Record<string, number> = { local: 0, haiku: 1, sonnet: 2, opus: 3 };
@@ -28,26 +30,34 @@ export const TIER_ORDER: Record<string, number> = { local: 0, haiku: 1, sonnet: 
 /**
  * Check whether an effort cap blocks a model tier switch.
  *
+ * Derives the ceiling from capLevel (the level at which the cap was set),
+ * NOT from effort.driver (which reflects the current tier and changes
+ * when the operator switches tiers mid-session).
+ *
  * If sharedState.effort is capped and the requested tier is higher than the
- * cap's driver model, returns { blocked: true, message: "..." }.
+ * cap ceiling's driver, returns { blocked: true, message: "..." }.
  * Otherwise returns { blocked: false }.
  *
  * Exported for testing (extensions/effort/model-budget-cap.test.ts).
  */
 export function checkEffortCap(requestedTier: string): { blocked: boolean; message?: string } {
   const effort = (sharedState as any).effort as
-    | { capped?: boolean; driver?: string; name?: string; level?: number }
+    | { capped?: boolean; capLevel?: number; driver?: string; name?: string; level?: number }
     | undefined;
-  if (!effort?.capped) return { blocked: false };
+  if (!effort?.capped || effort.capLevel == null) return { blocked: false };
+
+  // Derive the ceiling driver from the capLevel, not the current tier's driver.
+  const capConfig = tierConfig(effort.capLevel as EffortLevel);
+  const capDriver = capConfig.driver;
 
   const requestedOrder = TIER_ORDER[requestedTier] ?? -1;
-  const capOrder = TIER_ORDER[effort.driver ?? ""] ?? -1;
+  const capOrder = TIER_ORDER[capDriver] ?? -1;
 
   if (requestedOrder > capOrder) {
     return {
       blocked: true,
       message:
-        `Effort cap active: ${effort.name} (level ${effort.level}) limits driver to ${effort.driver}. ` +
+        `Effort cap active: ${capConfig.name} (level ${effort.capLevel}) limits driver to ${capDriver}. ` +
         `Cannot upgrade to ${requestedTier}. Use /effort uncap to remove the ceiling.`,
     };
   }
@@ -242,6 +252,12 @@ export default function (pi: ExtensionAPI) {
     pi.registerCommand(name, {
       description: `Switch to ${meta.label} (${meta.icon})`,
       handler: async (_args, ctx) => {
+        // Enforce effort cap — same check as the tool
+        const capCheck = checkEffortCap(name);
+        if (capCheck.blocked) {
+          ctx.ui.notify(`⛔ ${capCheck.message}`, "warning");
+          return;
+        }
         const model = await switchTo(name as TierName, pi, ctx);
         if (!model) {
           ctx.ui.notify(`Failed to switch to ${meta.label}`, "error");

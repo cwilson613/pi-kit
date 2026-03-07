@@ -24,17 +24,25 @@ describe("tierConfig", () => {
     assert.equal(c.reviewModel, "local");
   });
 
-  it("Average tier (2) is local driver with local background", () => {
+  it("Average tier (2) is local driver with scope-based cleave (local bias)", () => {
     const c = tierConfig(2);
     assert.equal(c.level, 2);
     assert.equal(c.name, "Average");
     assert.equal(c.driver, "local");
-    assert.equal(c.thinking, "off");
+    assert.equal(c.thinking, "minimal");
     assert.equal(c.extraction, "local");
     assert.equal(c.compaction, "local");
-    assert.equal(c.cleavePreferLocal, true);
+    assert.equal(c.cleavePreferLocal, false);
     assert.equal(c.cleaveFloor, "local");
     assert.equal(c.reviewModel, "local");
+  });
+
+  it("Servitor and Average differ behaviorally", () => {
+    const s = tierConfig(1);
+    const a = tierConfig(2);
+    // Average has scope-based cleave (not forced-local) and minimal thinking
+    assert.notEqual(s.thinking, a.thinking, "thinking should differ");
+    assert.notEqual(s.cleavePreferLocal, a.cleavePreferLocal, "cleavePreferLocal should differ");
   });
 
   it("Substantial tier (3) is the daily driver", () => {
@@ -50,27 +58,27 @@ describe("tierConfig", () => {
     assert.equal(c.reviewModel, "sonnet");
   });
 
-  it("Ruthless tier (4) has sonnet + medium thinking", () => {
+  it("Ruthless tier (4) has sonnet + medium thinking, local background", () => {
     const c = tierConfig(4);
     assert.equal(c.level, 4);
     assert.equal(c.name, "Ruthless");
     assert.equal(c.driver, "sonnet");
     assert.equal(c.thinking, "medium");
-    assert.equal(c.extraction, "sonnet");
+    assert.equal(c.extraction, "local");
     assert.equal(c.compaction, "local");
     assert.equal(c.cleavePreferLocal, false);
-    assert.equal(c.cleaveFloor, "sonnet");
+    assert.equal(c.cleaveFloor, "local");
     assert.equal(c.reviewModel, "sonnet");
   });
 
-  it("Lethal tier (5) has sonnet + high thinking, opus review", () => {
+  it("Lethal tier (5) has sonnet + high thinking, local extraction, opus review", () => {
     const c = tierConfig(5);
     assert.equal(c.level, 5);
     assert.equal(c.name, "Lethal");
     assert.equal(c.driver, "sonnet");
     assert.equal(c.thinking, "high");
-    assert.equal(c.extraction, "sonnet");
-    assert.equal(c.compaction, "sonnet");
+    assert.equal(c.extraction, "local");
+    assert.equal(c.compaction, "local");
     assert.equal(c.cleavePreferLocal, false);
     assert.equal(c.cleaveFloor, "sonnet");
     assert.equal(c.reviewModel, "opus");

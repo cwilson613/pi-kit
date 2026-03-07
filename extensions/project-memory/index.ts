@@ -61,6 +61,12 @@ import { SECTIONS } from "./template.ts";
 import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
 import { sharedState } from "../shared-state.ts";
 
+/** Map abstract effort model tiers to concrete cloud model IDs for extraction. */
+const EFFORT_EXTRACTION_MODELS: Record<string, string> = {
+  opus: "claude-opus-4-6",
+  sonnet: "claude-sonnet-4-6",
+};
+
 // ---------------------------------------------------------------------------
 // Compaction prompt constants (mirrors pi's internal prompts for local-model fallback)
 // ---------------------------------------------------------------------------
@@ -309,11 +315,9 @@ export default function (pi: ExtensionAPI) {
     const effort = sharedState.effort;
     if (!effort) return cfg;
     if (effort.extraction === "local") return cfg;
-    return {
-      ...cfg,
-      extractionModel:
-        effort.extraction === "opus" ? "claude-opus-4-6" : "claude-sonnet-4-6",
-    };
+    const model = EFFORT_EXTRACTION_MODELS[effort.extraction];
+    if (!model) return cfg;
+    return { ...cfg, extractionModel: model };
   }
 
   function activeMind(): string {
@@ -515,9 +519,8 @@ export default function (pi: ExtensionAPI) {
     if (effort) {
       // Extraction: tiers 1-5 use local (devstral default), tiers 6-7 use cloud
       if (effort.extraction !== "local") {
-        // Map abstract tier to a concrete cloud model name
-        config.extractionModel =
-          effort.extraction === "opus" ? "claude-opus-4-6" : "claude-sonnet-4-6";
+        const model = EFFORT_EXTRACTION_MODELS[effort.extraction];
+        if (model) config.extractionModel = model;
       }
       // Compaction: tiers 1-5 stay local-first, tiers 6-7 defer to cloud
       if (effort.compaction !== "local") {

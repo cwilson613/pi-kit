@@ -38,11 +38,10 @@ const TIER_ICONS: Record<EffortLevel, string> = {
   7: "⚙️",
 };
 
-/** Anthropic model prefix for each cloud model tier. */
+/** Anthropic model prefix for each cloud driver tier. */
 const MODEL_PREFIX: Record<string, string> = {
   sonnet: "claude-sonnet",
   opus: "claude-opus",
-  haiku: "claude-haiku",
 };
 
 /** Ollama inference server URL. */
@@ -208,8 +207,8 @@ function buildEffortState(
 
 function formatTierInfo(state: EffortState): string {
   const icon = TIER_ICONS[state.level];
-  const capIndicator = state.capped
-    ? ` [CAPPED at ${EFFORT_NAMES[state.capLevel!]}]`
+  const capIndicator = state.capped && state.capLevel
+    ? ` [CAPPED at ${EFFORT_NAMES[state.capLevel]}]`
     : "";
   const lines = [
     `${icon} **${state.name}** (level ${state.level}/7)${capIndicator}`,

@@ -35,10 +35,10 @@ const TIERS: Record<EffortLevel, EffortConfig> = {
     level: 2,
     name: "Average",
     driver: "local",
-    thinking: "off",
+    thinking: "minimal",
     extraction: "local",
     compaction: "local",
-    cleavePreferLocal: true,
+    cleavePreferLocal: false,
     cleaveFloor: "local",
     reviewModel: "local",
   },
@@ -58,10 +58,10 @@ const TIERS: Record<EffortLevel, EffortConfig> = {
     name: "Ruthless",
     driver: "sonnet",
     thinking: "medium",
-    extraction: "sonnet",
+    extraction: "local",
     compaction: "local",
     cleavePreferLocal: false,
-    cleaveFloor: "sonnet",
+    cleaveFloor: "local",
     reviewModel: "sonnet",
   },
   5: {
@@ -69,8 +69,8 @@ const TIERS: Record<EffortLevel, EffortConfig> = {
     name: "Lethal",
     driver: "sonnet",
     thinking: "high",
-    extraction: "sonnet",
-    compaction: "sonnet",
+    extraction: "local",
+    compaction: "local",
     cleavePreferLocal: false,
     cleaveFloor: "sonnet",
     reviewModel: "opus",
@@ -103,7 +103,7 @@ const TIERS: Record<EffortLevel, EffortConfig> = {
  * Get the EffortConfig for a given numeric level.
  *
  * @param level - Effort level 1-7
- * @returns Frozen EffortConfig for the requested level
+ * @returns EffortConfig for the requested level (shared reference — do not mutate)
  * @throws RangeError if level is outside 1-7
  */
 export function tierConfig(level: number): EffortConfig {

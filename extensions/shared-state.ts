@@ -23,7 +23,7 @@ export type {
   CleaveChildState,
   CleaveStatus,
   DashboardMode,
-  FooterState,
+  DashboardState,
 } from "./dashboard/types.ts";
 
 /** Event channel fired by producers after writing dashboard state. */

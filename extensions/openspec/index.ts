@@ -39,7 +39,7 @@ import {
 	summarizeSpecs,
 	generateSpecFile,
 } from "./spec.js";
-import { sharedState } from "../shared-state.js";
+import { sharedState, DASHBOARD_UPDATE_EVENT } from "../shared-state.js";
 
 // ─── Dashboard State Emitter ─────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ function emitOpenSpecState(cwd: string, pi: ExtensionAPI): void {
 			tasksTotal: c.totalTasks,
 		}));
 		(sharedState as any).openspec = { changes: mapped };
-		pi.events.emit("dashboard:update", { source: "openspec" });
+		pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "openspec" });
 	} catch {
 		// Non-fatal — don't break the extension if openspec dir is missing
 	}

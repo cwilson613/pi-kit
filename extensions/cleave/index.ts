@@ -18,7 +18,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { sharedState } from "../shared-state.js";
+import { sharedState, DASHBOARD_UPDATE_EVENT } from "../shared-state.js";
 import { assessDirective, PATTERNS } from "./assessment.js";
 import { detectConflicts, parseTaskResult } from "./conflicts.js";
 import { dispatchChildren, resolveExecuteModel } from "./dispatcher.js";
@@ -61,12 +61,14 @@ function mapChildStatus(status: string): "pending" | "running" | "done" | "faile
 }
 
 /**
- * Emit cleave dashboard state to sharedState.cleave.
+ * Emit cleave dashboard state to sharedState.cleave and fire the
+ * dashboard update event so the footer re-renders immediately.
  *
  * Called at lifecycle transitions so the unified dashboard can
  * render live progress without polling.
  */
 function emitCleaveState(
+	pi: ExtensionAPI,
 	status: string,
 	runId?: string,
 	children?: Array<{ label: string; status: string; durationSec?: number }>,
@@ -80,6 +82,7 @@ function emitCleaveState(
 			elapsed: c.durationSec,
 		})),
 	};
+	pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "cleave" });
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -168,7 +171,7 @@ function formatSpecVerification(ctx: OpenSpecContext): string {
 
 export default function cleaveExtension(pi: ExtensionAPI) {
 	// ── Initialize dashboard state ──────────────────────────────────
-	emitCleaveState("idle");
+	emitCleaveState(pi, "idle");
 
 	// ── Agent start: inject OpenSpec status into context ─────────────
 	// Uses before_agent_start (not session_start) so the status message
@@ -1039,13 +1042,13 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			// Parse the plan
-			emitCleaveState("assessing");
+			emitCleaveState(pi, "assessing");
 
 			let plan: SplitPlan;
 			try {
 				plan = parsePlanResponse(params.plan_json);
 			} catch (e: any) {
-				emitCleaveState("failed");
+				emitCleaveState(pi, "failed");
 				throw new Error(`Invalid split plan: ${e.message}`);
 			}
 
@@ -1053,7 +1056,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			const maxParallel = params.max_parallel ?? DEFAULT_CONFIG.maxParallel;
 			const preferLocal = params.prefer_local ?? DEFAULT_CONFIG.preferLocal;
 
-			emitCleaveState("planning");
+			emitCleaveState(pi, "planning");
 
 			// ── OPENSPEC CONTEXT ───────────────────────────────────────
 			let openspecCtx: OpenSpecContext | null = null;
@@ -1174,7 +1177,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			// ── DISPATCH ───────────────────────────────────────────────
 			// localModel was already resolved in MODEL RESOLUTION section above
 
-			emitCleaveState("dispatching", state.runId, state.children);
+			emitCleaveState(pi, "dispatching", state.runId, state.children);
 
 			onUpdate?.({
 				content: [{ type: "text", text: `Dispatching ${state.children.length} children...` }],
@@ -1206,7 +1209,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			);
 
 			// ── HARVEST + CONFLICTS ────────────────────────────────────
-			emitCleaveState("merging", state.runId, state.children);
+			emitCleaveState(pi, "merging", state.runId, state.children);
 
 			state.phase = "harvest";
 			saveState(state);
@@ -1288,7 +1291,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 				conflicts.length === 0;
 
 			if (!allOk) state.phase = "failed";
-			emitCleaveState(allOk ? "done" : "failed", state.runId, state.children);
+			emitCleaveState(pi, allOk ? "done" : "failed", state.runId, state.children);
 			saveState(state);
 
 			// Build report

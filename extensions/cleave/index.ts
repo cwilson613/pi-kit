@@ -18,6 +18,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
+import { sharedState } from "../shared-state.js";
 import { assessDirective, PATTERNS } from "./assessment.js";
 import { detectConflicts, parseTaskResult } from "./conflicts.js";
 import { dispatchChildren, resolveExecuteModel } from "./dispatcher.js";
@@ -49,6 +50,37 @@ import {
 	mergeBranch,
 	pruneWorktreeDirs,
 } from "./worktree.js";
+
+// ─── Dashboard state emitter ────────────────────────────────────────────────
+
+/** Map internal ChildStatus to the dashboard's simplified status. */
+function mapChildStatus(status: string): "pending" | "running" | "done" | "failed" {
+	if (status === "completed") return "done";
+	if (status === "running" || status === "failed") return status;
+	return "pending"; // pending, needs_decomposition → pending
+}
+
+/**
+ * Emit cleave dashboard state to sharedState.cleave.
+ *
+ * Called at lifecycle transitions so the unified dashboard can
+ * render live progress without polling.
+ */
+function emitCleaveState(
+	status: string,
+	runId?: string,
+	children?: Array<{ label: string; status: string; durationSec?: number }>,
+): void {
+	(sharedState as any).cleave = {
+		status,
+		runId,
+		children: children?.map((c) => ({
+			label: c.label,
+			status: mapChildStatus(c.status),
+			elapsed: c.durationSec,
+		})),
+	};
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -135,6 +167,9 @@ function formatSpecVerification(ctx: OpenSpecContext): string {
 // ─── Extension ──────────────────────────────────────────────────────────────
 
 export default function cleaveExtension(pi: ExtensionAPI) {
+	// ── Initialize dashboard state ──────────────────────────────────
+	emitCleaveState("idle");
+
 	// ── Agent start: inject OpenSpec status into context ─────────────
 	// Uses before_agent_start (not session_start) so the status message
 	// enters the agent's conversation context, not just the TUI display.
@@ -1004,16 +1039,21 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			// Parse the plan
+			emitCleaveState("assessing");
+
 			let plan: SplitPlan;
 			try {
 				plan = parsePlanResponse(params.plan_json);
 			} catch (e: any) {
+				emitCleaveState("failed");
 				throw new Error(`Invalid split plan: ${e.message}`);
 			}
 
 			const repoPath = ctx.cwd;
 			const maxParallel = params.max_parallel ?? DEFAULT_CONFIG.maxParallel;
 			const preferLocal = params.prefer_local ?? DEFAULT_CONFIG.preferLocal;
+
+			emitCleaveState("planning");
 
 			// ── OPENSPEC CONTEXT ───────────────────────────────────────
 			let openspecCtx: OpenSpecContext | null = null;
@@ -1134,6 +1174,8 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			// ── DISPATCH ───────────────────────────────────────────────
 			// localModel was already resolved in MODEL RESOLUTION section above
 
+			emitCleaveState("dispatching", state.runId, state.children);
+
 			onUpdate?.({
 				content: [{ type: "text", text: `Dispatching ${state.children.length} children...` }],
 				details: { phase: "dispatch", children: state.children },
@@ -1164,6 +1206,8 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			);
 
 			// ── HARVEST + CONFLICTS ────────────────────────────────────
+			emitCleaveState("merging", state.runId, state.children);
+
 			state.phase = "harvest";
 			saveState(state);
 
@@ -1244,6 +1288,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 				conflicts.length === 0;
 
 			if (!allOk) state.phase = "failed";
+			emitCleaveState(allOk ? "done" : "failed", state.runId, state.children);
 			saveState(state);
 
 			// Build report

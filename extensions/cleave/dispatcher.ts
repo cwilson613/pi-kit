@@ -20,6 +20,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { sharedState } from "../shared-state.js";
 import type { ChildState, CleaveState, ModelTier } from "./types.js";
 import { computeDispatchWaves } from "./planner.js";
 import { executeWithReview, type ReviewConfig, type ReviewExecutor, DEFAULT_REVIEW_CONFIG } from "./review.js";
@@ -367,6 +368,12 @@ async function dispatchSingleChild(
 	child.status = "running";
 	child.startedAt = new Date().toISOString();
 
+	// Mirror to sharedState for live dashboard updates
+	const cleaveState = (sharedState as any).cleave;
+	if (cleaveState?.children?.[child.childId]) {
+		cleaveState.children[child.childId].status = "running";
+	}
+
 	// Resolve the actual --model flag from the child's tier
 	const modelFlag = mapModelTierToFlag(
 		(child.executeModel as ModelTier) ?? "sonnet",
@@ -476,5 +483,12 @@ async function dispatchSingleChild(
 		}
 	} catch {
 		// Task file not readable — keep whatever status we have
+	}
+
+	// Mirror final status to sharedState for live dashboard updates
+	if (cleaveState?.children?.[child.childId]) {
+		cleaveState.children[child.childId].status =
+			child.status === "completed" ? "done" : child.status === "failed" ? "failed" : "pending";
+		cleaveState.children[child.childId].elapsed = child.durationSec;
 	}
 }

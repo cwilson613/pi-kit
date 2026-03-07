@@ -109,8 +109,16 @@ export default function (pi: ExtensionAPI) {
 
     // Subscribe to dashboard:update events from producer extensions
     unsubscribeEvents = pi.events.on(DASHBOARD_UPDATE_EVENT, () => {
+      if (footer) footer.setContext(ctx);
       tui?.requestRender();
     });
+
+    // Deferred initial render — lets other extensions populate sharedState
+    // during their session_start handlers before we first draw
+    setTimeout(() => {
+      if (footer) footer.setContext(ctx);
+      tui?.requestRender();
+    }, 100);
   });
 
   // ── Session shutdown: cleanup ─────────────────────────────────

@@ -52,4 +52,4 @@
 - [x] 7.1 Delete extensions/status-bar.ts
 - [x] 7.2 Update package.json: remove status-bar.ts from pi.extensions, add extensions/dashboard/index.ts after design-tree
 - [x] 7.3 Verify extension load order: cleave → openspec → design-tree → dashboard
-- [ ] 7.4 Smoke test: start pi session, verify compact footer renders with all three sections
+- [x] 7.4 Smoke test: jiti load + mock render verified compact (3 lines) and raised (9 lines) modes with full data

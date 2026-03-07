@@ -92,6 +92,7 @@ export class DashboardFooter implements Component {
       if (this.dashState.mode === "raised") {
         return this.renderRaised(width);
       }
+      // compact, panel, focused — all use compact footer (panel/focused show detail in overlay)
       return this.renderCompact(width);
     } catch (err: any) {
       debug("dashboard", "render:ERROR", {
@@ -201,8 +202,14 @@ export class DashboardFooter implements Component {
       dashParts.push(gauge);
     }
 
+    // Add /dashboard hint — right-aligned on the summary line
+    const dashHint = theme.fg("dim", "/dashboard");
+
     if (dashParts.length > 0) {
-      lines.push(truncateToWidth(dashParts.join("  "), width, "…"));
+      const joined = dashParts.join("  ");
+      lines.push(truncateToWidth(joined + "  " + dashHint, width, "…"));
+    } else {
+      lines.push(truncateToWidth(dashHint, width, "…"));
     }
 
     // Line 2-3: Original footer data (pwd + stats)

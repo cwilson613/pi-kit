@@ -76,7 +76,7 @@ export interface CleaveState {
 
 // ── Dashboard UI ─────────────────────────────────────────────
 
-export type DashboardMode = "compact" | "raised";
+export type DashboardMode = "compact" | "raised" | "panel" | "focused";
 
 /** Mutable state held by the dashboard extension, read by the footer component. */
 export interface DashboardState {

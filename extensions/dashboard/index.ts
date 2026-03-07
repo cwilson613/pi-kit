@@ -1,29 +1,29 @@
 /**
  * dashboard — Unified live dashboard for Design Tree + OpenSpec + Cleave
  *
- * Renders a custom footer via setFooter() that supports two modes:
- *   Layer 0 (compact): Dashboard summary + context gauge + original footer data
- *   Layer 1 (raised):  Section details for design tree, openspec, cleave + footer data
+ * Renders a custom footer via setFooter() that supports modes:
+ *   compact:  Dashboard summary + context gauge + original footer data
+ *   raised:   Section details for design tree, openspec, cleave + footer data
+ *   panel:    Non-capturing overlay (visible but doesn't steal input)
+ *   focused:  Interactive overlay with keyboard navigation
  *
- * Layer 2 (interactive overlay) opened via /dashboard open or Ctrl+Shift+B from raised.
+ * Toggle: ctrl+` or /dashboard command.
+ * Cycle: compact → raised → panel → focused → compact
  *
  * Reads sharedState written by producer extensions (design-tree, openspec, cleave).
  * Subscribes to "dashboard:update" events for live re-rendering.
- *
- * Absorbs status-bar.ts — the context gauge (turn counter + memory bar + %)
- * is rendered directly in the compact footer line.
- *
- * Toggle: Ctrl+Shift+B or /dashboard command.
- * Persistence: raised/lowered state saved via appendEntry("dashboard-state").
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { GuardrailResult } from "../cleave/guardrails.ts";
 import { DASHBOARD_UPDATE_EVENT } from "../shared-state.ts";
 import { DashboardFooter } from "./footer.ts";
-import { showDashboardOverlay } from "./overlay.ts";
+import { DashboardOverlay, showDashboardOverlay } from "./overlay.ts";
 import type { DashboardState, DashboardMode } from "./types.ts";
 import { debug } from "../debug.ts";
+
+/** Mode cycle order for ctrl+` toggling */
+const MODE_CYCLE: DashboardMode[] = ["compact", "raised", "panel", "focused"];
 
 export default function (pi: ExtensionAPI) {
   const state: DashboardState = {
@@ -35,8 +35,17 @@ export default function (pi: ExtensionAPI) {
   let tui: any = null; // TUI reference for requestRender
   let unsubscribeEvents: (() => void) | null = null;
 
+  // ── Non-capturing overlay state ─────────────────────────────
+  /** Overlay handle from ctx.ui.custom() for non-capturing panel */
+  let overlayHandle: { hide(): void; setHidden(h: boolean): void; isHidden(): boolean; focus(): void; unfocus(): void; isFocused(): boolean } | null = null;
+  /** The done() callback to resolve the custom() promise when permanently closing */
+  let overlayDone: ((result: void) => void) | null = null;
+  /** Track whether we've created the non-capturing overlay this session */
+  let overlayCreated = false;
+
   /**
    * Restore persisted dashboard mode from session entries.
+   * Panel/focused modes restore to raised (overlay is session-transient).
    */
   function restoreMode(ctx: ExtensionContext): void {
     try {
@@ -44,7 +53,9 @@ export default function (pi: ExtensionAPI) {
       for (let i = entries.length - 1; i >= 0; i--) {
         const entry = entries[i] as any;
         if (entry.type === "dashboard-state" && entry.data?.mode) {
-          state.mode = entry.data.mode as DashboardMode;
+          const saved = entry.data.mode as DashboardMode;
+          // Overlay modes don't persist — fall back to raised
+          state.mode = (saved === "panel" || saved === "focused") ? "raised" : saved;
           return;
         }
       }
@@ -56,17 +67,10 @@ export default function (pi: ExtensionAPI) {
    */
   function persistMode(_ctx: ExtensionContext): void {
     try {
-      pi.appendEntry("dashboard-state", { mode: state.mode });
+      // Persist the base mode (panel/focused stored as raised)
+      const persistable = (state.mode === "panel" || state.mode === "focused") ? "raised" : state.mode;
+      pi.appendEntry("dashboard-state", { mode: persistable });
     } catch { /* session may not support it */ }
-  }
-
-  /**
-   * Toggle between compact and raised modes.
-   */
-  function toggle(ctx: ExtensionContext): void {
-    state.mode = state.mode === "compact" ? "raised" : "compact";
-    persistMode(ctx);
-    tui?.requestRender();
   }
 
   /**
@@ -85,17 +89,121 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
-   * Open overlay with error handling.
+   * Show the non-capturing overlay panel.
+   * Creates it on first call, then toggles visibility.
    */
-  function openOverlay(ctx: ExtensionContext): void {
-    if (!ctx.isIdle()) {
-      ctx.ui.notify("Dashboard overlay unavailable while agent is streaming", "warning");
+  function showPanel(ctx: ExtensionContext): void {
+    if (overlayHandle && !overlayHandle.isHidden()) {
+      // Already visible — nothing to do
       return;
     }
-    showDashboardOverlay(ctx, pi).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[dashboard] overlay error: ${msg}`);
-    });
+
+    if (overlayHandle) {
+      // Was hidden — show it
+      overlayHandle.setHidden(false);
+      tui?.requestRender();
+      return;
+    }
+
+    if (overlayCreated) {
+      // Was permanently closed — don't recreate in same session
+      return;
+    }
+
+    // Create the non-capturing overlay (fire-and-forget — don't await)
+    overlayCreated = true;
+    void ctx.ui.custom<void>(
+      (tuiRef, theme, _kb, done) => {
+        overlayDone = done;
+        const overlay = new DashboardOverlay(tuiRef, theme, () => {
+          // Esc from focused mode → unfocus, stay visible
+          if (overlayHandle?.isFocused()) {
+            overlayHandle.unfocus();
+            state.mode = "panel";
+            tui?.requestRender();
+          } else {
+            // Esc from panel → hide
+            hidePanel();
+          }
+        });
+        overlay.setEventBus(pi.events);
+        return overlay;
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: "right-center" as any,
+          width: "40%",
+          minWidth: 40,
+          maxHeight: "80%",
+          margin: { top: 1, right: 1, bottom: 1 },
+          visible: (termWidth: number) => termWidth >= 80,
+          nonCapturing: true,
+        },
+        onHandle: (handle) => {
+          overlayHandle = handle;
+        },
+      },
+    );
+  }
+
+  /**
+   * Hide the non-capturing overlay without destroying it.
+   */
+  function hidePanel(): void {
+    if (overlayHandle) {
+      if (overlayHandle.isFocused()) {
+        overlayHandle.unfocus();
+      }
+      overlayHandle.setHidden(true);
+    }
+    state.mode = "compact";
+    tui?.requestRender();
+  }
+
+  /**
+   * Focus the non-capturing overlay for interactive keyboard navigation.
+   */
+  function focusPanel(): void {
+    if (overlayHandle && !overlayHandle.isHidden()) {
+      overlayHandle.focus();
+    }
+  }
+
+  /**
+   * Cycle through dashboard modes: compact → raised → panel → focused → compact
+   */
+  function cycleTo(ctx: ExtensionContext, targetMode: DashboardMode): void {
+    state.mode = targetMode;
+
+    switch (targetMode) {
+      case "compact":
+        hidePanel();
+        break;
+      case "raised":
+        hidePanel();
+        break;
+      case "panel":
+        showPanel(ctx);
+        break;
+      case "focused":
+        showPanel(ctx);
+        // Small delay to ensure overlay is created before focusing
+        setTimeout(() => focusPanel(), 50);
+        break;
+    }
+
+    persistMode(ctx);
+    tui?.requestRender();
+  }
+
+  /**
+   * Advance to the next mode in the cycle.
+   */
+  function cycleNext(ctx: ExtensionContext): void {
+    const currentIdx = MODE_CYCLE.indexOf(state.mode);
+    const nextIdx = (currentIdx + 1) % MODE_CYCLE.length;
+    cycleTo(ctx, MODE_CYCLE[nextIdx]!);
   }
 
   // ── Session start: set up the custom footer ──────────────────
@@ -112,6 +220,9 @@ export default function (pi: ExtensionAPI) {
     }
 
     state.turns = 0;
+    overlayHandle = null;
+    overlayDone = null;
+    overlayCreated = false;
     restoreMode(ctx);
     debug("dashboard", "session_start:mode", { mode: state.mode });
 
@@ -150,10 +261,6 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Subscribe to dashboard:update events from producer extensions.
-    // Don't setContext here — ctx from session_start would overwrite
-    // the fresher ctx set by turn_end/message_end. The footer reads
-    // sharedState directly at render time; ctx is only needed for
-    // token stats which the per-turn handlers keep current.
     unsubscribeEvents = pi.events.on(DASHBOARD_UPDATE_EVENT, (_data) => {
       debug("dashboard", "update-event", _data as Record<string, unknown>);
       tui?.requestRender();
@@ -198,6 +305,16 @@ export default function (pi: ExtensionAPI) {
       unsubscribeEvents();
       unsubscribeEvents = null;
     }
+    // Permanently close the non-capturing overlay
+    if (overlayHandle) {
+      overlayHandle.hide();
+      overlayHandle = null;
+    }
+    if (overlayDone) {
+      overlayDone();
+      overlayDone = null;
+    }
+    overlayCreated = false;
     footer = null;
     tui = null;
   });
@@ -217,29 +334,25 @@ export default function (pi: ExtensionAPI) {
     refresh(ctx);
   });
 
-  // ── Keyboard shortcut: Ctrl+Shift+B ──────────────────────────
-  // First press: compact → raised. Second press from raised: open overlay.
-  // From overlay return or compact: cycles normally.
+  // ── Keyboard shortcut: ctrl+` ────────────────────────────────
+  // Cycles through: compact → raised → panel → focused → compact
 
-  pi.registerShortcut("ctrl+shift+b", {
-    description: "Toggle dashboard (compact → raised → overlay)",
+  pi.registerShortcut("ctrl+`", {
+    description: "Cycle dashboard mode (compact → raised → panel → focused)",
     handler: (ctx) => {
-      if (state.mode === "raised") {
-        openOverlay(ctx);
-      } else {
-        toggle(ctx);
-      }
+      cycleNext(ctx);
     },
   });
 
-  // ── Slash command: /dashboard [open|compact|raised] ─────────
+  // ── Slash command: /dashboard [open|compact|raised|panel|focus] ─
 
   pi.registerCommand("dashboard", {
-    description: "Toggle dashboard view, or /dashboard open for interactive overlay",
+    description: "Toggle dashboard mode. Subcommands: compact, raised, panel, focus, open (legacy modal)",
     handler: async (args, ctx) => {
       const arg = (args ?? "").trim().toLowerCase();
 
       if (arg === "open") {
+        // Legacy modal overlay (capturing, blocks until Esc)
         state.mode = "raised";
         persistMode(ctx);
         tui?.requestRender();
@@ -248,25 +361,32 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (arg === "compact") {
-        state.mode = "compact";
-        persistMode(ctx);
-        tui?.requestRender();
+        cycleTo(ctx, "compact");
         ctx.ui.notify("Dashboard: compact", "info");
         return;
       }
 
       if (arg === "raised") {
-        state.mode = "raised";
-        persistMode(ctx);
-        tui?.requestRender();
+        cycleTo(ctx, "raised");
         ctx.ui.notify("Dashboard: raised", "info");
         return;
       }
 
-      // Default: toggle
-      toggle(ctx);
-      const modeLabel = state.mode === "raised" ? "raised" : "compact";
-      ctx.ui.notify(`Dashboard: ${modeLabel}`, "info");
+      if (arg === "panel") {
+        cycleTo(ctx, "panel");
+        ctx.ui.notify("Dashboard: panel (non-capturing)", "info");
+        return;
+      }
+
+      if (arg === "focus") {
+        cycleTo(ctx, "focused");
+        ctx.ui.notify("Dashboard: focused (interactive)", "info");
+        return;
+      }
+
+      // Default: cycle to next mode
+      cycleNext(ctx);
+      ctx.ui.notify(`Dashboard: ${state.mode}`, "info");
     },
   });
 }

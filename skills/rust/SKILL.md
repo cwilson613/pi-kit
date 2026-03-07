@@ -1,6 +1,15 @@
 ---
 name: rust
 description: Rust development guidance including Zellij WASM plugin development. Covers project setup (Cargo.toml), testing, clippy, rustfmt, CI/CD patterns, and the zellij-tile plugin API. Use when creating, modifying, or debugging Rust code or Zellij plugins.
+guardrails:
+  - name: clippy
+    cmd: cargo clippy -- -D warnings
+    timeout: 120
+    condition: file_exists(Cargo.toml)
+  - name: test
+    cmd: cargo test
+    timeout: 120
+    condition: file_exists(Cargo.toml)
 ---
 
 # Rust Development Skill

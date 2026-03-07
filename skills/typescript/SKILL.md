@@ -1,6 +1,11 @@
 ---
 name: typescript
 description: TypeScript development conventions for pi-kit. Covers strict typing, async patterns, error handling, Node.js API usage, and testing with node:test. Use when creating or modifying TypeScript code.
+guardrails:
+  - name: typecheck
+    cmd: npx tsc --noEmit
+    timeout: 30
+    condition: file_exists(tsconfig.json)
 ---
 
 # TypeScript Development Skill

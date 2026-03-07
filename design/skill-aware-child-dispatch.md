@@ -8,7 +8,9 @@ open_questions:
   - Q3: Can a child request additional skills mid-execution (self-select)?
   - Q4: Should skills be composable (child gets multiple skills) or singular?
   - Q5: How do project-local skills vs pi-kit skills interact?
-  - Q6: Should skill matching extend to model tier selection (e.g., TUI tasks → opus)?
+  - Q6: How many review iterations before giving up? Fixed cap or adaptive?
+  - Q7: Should the review agent run in the same worktree (seeing full state) or get only the diff?
+  - Q8: Can the review phase be parallelized across children, or must it be sequential?
 ---
 
 # Skill-Aware Child Dispatch
@@ -174,11 +176,128 @@ const DEFAULT_MAPPINGS: SkillMapping[] = [
 
 **Status:** proposed
 
-### D4: Defer model tier routing (Approach E)
+### D4: Tiered execution loop — think/execute/review cycle
 
-Model tier routing is interesting but orthogonal. The `preferredTier` hint in the mapping exists as a future hook, but the dispatcher won't act on it yet. Current backend selection (local vs cloud) remains based on `prefer_local` flag.
+**Status:** proposed — promoted from deferred. This is the highest-leverage decision.
 
-**Status:** deferred
+The insight: **planning and review require reasoning; execution mostly doesn't.** The current architecture already separates plan (orchestrator) from execute (children), but:
+- Children all run at the same tier
+- Review is manual (`/assess`)
+- There's no iteration loop
+
+#### The Execution Tiers
+
+| Phase | Model | Purpose | Token Profile |
+|-------|-------|---------|---------------|
+| **Plan** | opus/thinking | Decompose task, assign skills, set acceptance criteria | High reasoning, low output |
+| **Execute** | sonnet/haiku/local | Implement the code, run commands, write files | Low reasoning, high output |
+| **Review** | opus/thinking | Assess results against spec scenarios, find defects | High reasoning, moderate output |
+| **Fix** | sonnet/local | Apply targeted corrections from review | Low reasoning, moderate output |
+
+#### The Loop
+
+```
+Plan (opus) → Execute (cheap) → Review (opus) → [pass? → done : Fix (cheap) → Review (opus)]
+```
+
+- **Max iterations:** configurable, default 2 (execute → review → fix → review)
+- **Exit conditions:** all scenarios pass, max iterations hit, or child reports NEEDS_DECOMPOSITION
+- **Cost model:** 1 opus plan + N×(cheap execute + opus review). Even with 2 iterations, total opus tokens < running opus for execution
+
+#### Implementation Shape
+
+The dispatcher currently calls `spawnChild` once per child. The loop wraps this:
+
+```typescript
+async function executeWithReview(
+  pi: ExtensionAPI,
+  child: ChildState,
+  plan: ChildPlan,
+  maxIterations: number,
+  reviewModel: string,    // e.g., "claude-opus-4-6"
+  executeModel: string,   // e.g., "claude-sonnet-4-5" or local model
+): Promise<void> {
+  for (let i = 0; i < maxIterations; i++) {
+    // Execute phase — cheap model
+    const execResult = await spawnChild(prompt, cwd, timeout, signal, executeModel);
+
+    // Harvest result from task file
+    const taskResult = parseTaskResult(child.taskFilePath);
+    if (taskResult.status === "NEEDS_DECOMPOSITION") break;
+
+    // Review phase — thinking model
+    const reviewPrompt = buildReviewPrompt(taskResult, plan, specScenarios);
+    const reviewResult = await spawnChild(reviewPrompt, cwd, reviewTimeout, signal, reviewModel);
+
+    const review = parseReviewResult(reviewResult);
+    if (review.verdict === "pass") {
+      child.status = "completed";
+      return;
+    }
+
+    // Fix phase — cheap model with review feedback
+    const fixPrompt = buildFixPrompt(review.issues, taskResult);
+    // Next iteration uses fixPrompt as the execute prompt
+    prompt = fixPrompt;
+  }
+}
+```
+
+#### Model Selection per Child
+
+Extend `ChildPlan` (or `ChildState`) with execution tier:
+
+```typescript
+interface ChildPlan {
+  // ... existing fields ...
+  skills: string[];
+  /** Model to use for execution. Resolved from skill hints + scope analysis. */
+  executeModel?: "local" | "haiku" | "sonnet" | "opus";
+}
+```
+
+Default tier assignment:
+- **local/haiku**: Config files, boilerplate, templates, docs. Skill hint: `complexity: "trivial"`
+- **sonnet**: Most code tasks. Default tier. Skill hint: `complexity: "standard"`
+- **opus**: Architecture, TUI layout, complex algorithms, security-sensitive. Skill hint: `complexity: "elevated"`
+
+The review model is always the highest available (opus or orchestrator's own model).
+
+#### Cost Comparison
+
+For a 4-child decomposition:
+
+| Strategy | Opus tokens | Sonnet tokens | Cost ratio |
+|----------|------------|---------------|------------|
+| All opus (current cloud) | 4 × full execution | 0 | 1.0× |
+| Tiered, no review | 0 | 4 × full execution | ~0.13× |
+| Tiered + 1 review cycle | 4 × review (~30% of exec) | 4 × full + 4 × fix | ~0.30× |
+| Tiered + 2 review cycles | 4 × 2 reviews | 4 × full + 4 × 2 fixes | ~0.47× |
+
+Even with 2 review iterations, tiered execution costs ~half of all-opus. And the review catches defects that no-review misses.
+
+#### What the Review Agent Sees
+
+The review prompt includes:
+1. The original task file (scope, description, spec scenarios)
+2. The git diff of changes made by the execute phase
+3. Test output (if any)
+4. The spec scenarios as acceptance criteria
+
+The review agent outputs a structured verdict:
+```markdown
+## Verdict: PASS | FAIL
+
+## Issues (if FAIL)
+1. [severity: high] Description of issue
+   - File: path/to/file.ts:42
+   - Expected: ...
+   - Actual: ...
+
+2. [severity: low] ...
+```
+
+The fix agent gets this issue list as its prompt, scoped to the same worktree.
 
 ## Implementation Sketch
 
@@ -257,15 +376,19 @@ if (skillMatch) {
 
 ## What This Does NOT Do
 
-- **Does not create new agent profiles** — children are still generic pi agents
+- **Does not create new agent profiles** — children are still generic pi agents with skill directives
 - **Does not restrict skills** — children can still read any skill file they want
-- **Does not change pi-core** — works entirely within the extension layer
+- **Does not change pi-core** — works entirely within the extension layer via `--model` flag
 - **Does not guarantee skill usage** — the child may ignore the directive
+- **Does not replace `/assess`** — the automated review loop handles per-child quality; `/assess spec` still validates the merged result
 
 ## Open Threads
 
 - Should `matchSkillsToChild` also scan the task *description* for skill signals? ("Set up pytest fixtures" → python skill even if scope is empty)
 - How to handle skills that are project-local vs pi-kit-global? The skill paths differ.
 - Should the orchestrator report which skills were matched per child in the progress output?
+- How does the review agent access test results? Does the execute agent run tests, or does the review agent trigger them?
+- Should review feedback accumulate across iterations (review 2 sees review 1's feedback + fix diff)?
+- Is there a minimum diff size below which review is skipped (trivial changes)?
 </content>
 </invoke>

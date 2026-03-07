@@ -3,12 +3,16 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { scanDesignDocs, setNodeStatus } from "../design-tree/tree.js";
+import { scanDesignDocs, writeNodeDocument, getNodeSections } from "../design-tree/tree.js";
 
 /**
  * Scan the design tree for nodes whose openspec_change matches the archived
- * change name. Transition any node in "implementing" status to "implemented".
- * Returns the list of transitioned node IDs.
+ * change name. Transition any node in "implementing" status to "implemented"
+ * using a single writeNodeDocument call (consistent with executeImplement).
+ *
+ * @param cwd     Project root (parent of the docs/ directory)
+ * @param changeName  OpenSpec change name to match against openspec_change field
+ * @returns IDs of nodes transitioned to implemented
  */
 export function transitionDesignNodesOnArchive(cwd: string, changeName: string): string[] {
 	const docsDir = path.join(cwd, "docs");
@@ -19,7 +23,8 @@ export function transitionDesignNodesOnArchive(cwd: string, changeName: string):
 
 	for (const node of tree.nodes.values()) {
 		if (node.openspec_change === changeName && node.status === "implementing") {
-			setNodeStatus(node, "implemented");
+			const sections = getNodeSections(node);
+			writeNodeDocument({ ...node, status: "implemented" }, sections);
 			transitioned.push(node.id);
 		}
 	}

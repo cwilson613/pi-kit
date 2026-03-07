@@ -16,12 +16,12 @@
  *   - Never auto-installs anything — always asks or requires explicit command
  */
 
-import { execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { checkAll, checkTier, formatReport, formatStatus, DEPS, type DepStatus, type DepTier } from "./deps.js";
+import { checkAll, formatReport, bestInstallCmd, sortByRequires, type DepStatus, type DepTier } from "./deps.js";
 
 const AGENT_DIR = join(homedir(), ".pi", "agent");
 const MARKER_PATH = join(AGENT_DIR, "pi-kit-bootstrap-done");
@@ -42,6 +42,15 @@ function markDone(): void {
 	writeFileSync(MARKER_PATH, MARKER_VERSION + "\n", "utf8");
 }
 
+interface CommandContext {
+	say: (msg: string) => void;
+	hasUI?: boolean;
+	ui?: {
+		notify: (msg: string, level: string) => void;
+		confirm: (msg: string) => Promise<boolean>;
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	// --- First-run detection on session start ---
 	pi.on("session_start", async (_event, ctx) => {
@@ -52,7 +61,6 @@ export default function (pi: ExtensionAPI) {
 		const missing = statuses.filter((s) => !s.available);
 
 		if (missing.length === 0) {
-			// Everything's already installed — mark done silently
 			markDone();
 			return;
 		}
@@ -85,18 +93,16 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (sub === "install") {
-				// Non-interactive: install all missing core + recommended
-				await installMissing(ctx, ["core", "recommended"]);
+				await installMissing(ctx as unknown as CommandContext, ["core", "recommended"]);
 				return;
 			}
 
-			// Default: interactive setup
-			await interactiveSetup(ctx);
+			await interactiveSetup(ctx as unknown as CommandContext);
 		},
 	});
 }
 
-async function interactiveSetup(ctx: any): Promise<void> {
+async function interactiveSetup(ctx: CommandContext): Promise<void> {
 	const statuses = checkAll();
 	const missing = statuses.filter((s) => !s.available);
 
@@ -107,47 +113,42 @@ async function interactiveSetup(ctx: any): Promise<void> {
 		return;
 	}
 
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI || !ctx.ui) {
 		ctx.say("\nRun individual install commands above, or use `/bootstrap install` to install all core + recommended deps.");
 		return;
 	}
 
-	// Group missing by tier for interactive selection
 	const coreMissing = missing.filter((s) => s.dep.tier === "core");
 	const recMissing = missing.filter((s) => s.dep.tier === "recommended");
 	const optMissing = missing.filter((s) => s.dep.tier === "optional");
 
-	// Install core deps first
 	if (coreMissing.length > 0) {
 		const proceed = await ctx.ui.confirm(
-			`Install ${coreMissing.length} missing core dep${coreMissing.length > 1 ? "s" : ""}? (${coreMissing.map((s: DepStatus) => s.dep.name).join(", ")})`,
+			`Install ${coreMissing.length} missing core dep${coreMissing.length > 1 ? "s" : ""}? (${coreMissing.map((s) => s.dep.name).join(", ")})`,
 		);
 		if (proceed) {
 			await installDeps(ctx, coreMissing);
 		}
 	}
 
-	// Then recommended
 	if (recMissing.length > 0) {
 		const proceed = await ctx.ui.confirm(
-			`Install ${recMissing.length} recommended dep${recMissing.length > 1 ? "s" : ""}? (${recMissing.map((s: DepStatus) => s.dep.name).join(", ")})`,
+			`Install ${recMissing.length} recommended dep${recMissing.length > 1 ? "s" : ""}? (${recMissing.map((s) => s.dep.name).join(", ")})`,
 		);
 		if (proceed) {
 			await installDeps(ctx, recMissing);
 		}
 	}
 
-	// Mention optional but don't push
 	if (optMissing.length > 0) {
 		ctx.say(
-			`\n${optMissing.length} optional dep${optMissing.length > 1 ? "s" : ""} not installed: ${optMissing.map((s: DepStatus) => s.dep.name).join(", ")}.\n` +
+			`\n${optMissing.length} optional dep${optMissing.length > 1 ? "s" : ""} not installed: ${optMissing.map((s) => s.dep.name).join(", ")}.\n` +
 			`Install individually when needed — see \`/bootstrap status\` for commands.`,
 		);
 	}
 
-	// Re-check and report final state
-	const final = checkAll();
-	const stillMissing = final.filter((s) => !s.available && (s.dep.tier === "core" || s.dep.tier === "recommended"));
+	const recheck = checkAll();
+	const stillMissing = recheck.filter((s) => !s.available && (s.dep.tier === "core" || s.dep.tier === "recommended"));
 
 	if (stillMissing.length === 0) {
 		ctx.say("\n🎉 Setup complete! All core and recommended dependencies are available.");
@@ -160,7 +161,7 @@ async function interactiveSetup(ctx: any): Promise<void> {
 	}
 }
 
-async function installMissing(ctx: any, tiers: DepTier[]): Promise<void> {
+async function installMissing(ctx: CommandContext, tiers: DepTier[]): Promise<void> {
 	const statuses = checkAll();
 	const toInstall = statuses.filter(
 		(s) => !s.available && tiers.includes(s.dep.tier),
@@ -174,8 +175,8 @@ async function installMissing(ctx: any, tiers: DepTier[]): Promise<void> {
 
 	await installDeps(ctx, toInstall);
 
-	const final = checkAll();
-	const stillMissing = final.filter(
+	const recheck = checkAll();
+	const stillMissing = recheck.filter(
 		(s) => !s.available && tiers.includes(s.dep.tier),
 	);
 	if (stillMissing.length === 0) {
@@ -186,34 +187,82 @@ async function installMissing(ctx: any, tiers: DepTier[]): Promise<void> {
 			`\n⚠️  ${stillMissing.length} dep${stillMissing.length > 1 ? "s" : ""} failed to install:`,
 		);
 		for (const s of stillMissing) {
-			ctx.say(`  ❌ ${s.dep.name}: try manually → ${s.dep.install[0]}`);
+			const cmd = bestInstallCmd(s.dep);
+			ctx.say(`  ❌ ${s.dep.name}: try manually → \`${cmd}\``);
 		}
 	}
 }
 
-async function installDeps(ctx: any, deps: DepStatus[]): Promise<void> {
-	for (const { dep } of deps) {
-		const cmd = dep.install[0]; // Use preferred install method
+/** Run a shell command asynchronously with streaming output, returning exit code */
+function runAsync(cmd: string, timeoutMs: number = 300_000): Promise<number> {
+	return new Promise((resolve) => {
+		const child = spawn("sh", ["-c", cmd], {
+			stdio: "inherit",
+			env: { ...process.env, NONINTERACTIVE: "1", HOMEBREW_NO_AUTO_UPDATE: "1" },
+		});
+
+		const timer = setTimeout(() => {
+			child.kill("SIGTERM");
+			resolve(124); // timeout exit code
+		}, timeoutMs);
+
+		child.on("exit", (code) => {
+			clearTimeout(timer);
+			resolve(code ?? 1);
+		});
+
+		child.on("error", () => {
+			clearTimeout(timer);
+			resolve(1);
+		});
+	});
+}
+
+async function installDeps(ctx: CommandContext, deps: DepStatus[]): Promise<void> {
+	// Sort so prerequisites come first (e.g., cargo before mdserve)
+	const sorted = sortByRequires(deps);
+
+	for (const { dep } of sorted) {
+		// Check prerequisites
+		if (dep.requires?.length) {
+			const unmet = dep.requires.filter((reqId) => {
+				const reqDep = deps.find((s) => s.dep.id === reqId);
+				// If it wasn't in our install list, check if it's globally available
+				if (!reqDep) {
+					const { DEPS } = require("./deps.js");
+					const globalDep = DEPS.find((d: any) => d.id === reqId);
+					return globalDep && !globalDep.check();
+				}
+				return false;
+			});
+			if (unmet.length > 0) {
+				ctx.say(`\n⚠️  Skipping ${dep.name} — requires ${unmet.join(", ")} (not available)`);
+				continue;
+			}
+		}
+
+		const cmd = bestInstallCmd(dep);
+		if (!cmd) {
+			ctx.say(`\n⚠️  No install command available for ${dep.name} on this platform`);
+			continue;
+		}
+
 		ctx.say(`\n📦 Installing ${dep.name}...`);
 		ctx.say(`   → \`${cmd}\``);
 
-		try {
-			execSync(cmd, {
-				stdio: "inherit",
-				timeout: 300_000, // 5 min per dep
-				env: { ...process.env, NONINTERACTIVE: "1", HOMEBREW_NO_AUTO_UPDATE: "1" },
-			});
+		const exitCode = await runAsync(cmd);
 
-			// Verify it worked
-			if (dep.check()) {
-				ctx.say(`   ✅ ${dep.name} installed successfully`);
-			} else {
-				ctx.say(`   ⚠️  Command succeeded but ${dep.name} not found on PATH. You may need to restart your shell.`);
-			}
-		} catch (e: any) {
-			ctx.say(`   ❌ Failed to install ${dep.name}`);
-			if (dep.install.length > 1) {
-				ctx.say(`   Alternative: \`${dep.install[1]}\``);
+		if (exitCode === 0 && dep.check()) {
+			ctx.say(`   ✅ ${dep.name} installed successfully`);
+		} else if (exitCode === 124) {
+			ctx.say(`   ❌ ${dep.name} install timed out (5 min limit)`);
+		} else if (exitCode === 0) {
+			ctx.say(`   ⚠️  Command succeeded but ${dep.name} not found on PATH. You may need to restart your shell.`);
+		} else {
+			ctx.say(`   ❌ Failed to install ${dep.name} (exit code ${exitCode})`);
+			const hints = dep.install.filter((o) => o.cmd !== cmd);
+			if (hints.length > 0) {
+				ctx.say(`   Alternative: \`${hints[0].cmd}\``);
 			}
 			if (dep.url) {
 				ctx.say(`   Manual install: ${dep.url}`);

@@ -2192,10 +2192,46 @@ export default function (pi: ExtensionAPI) {
 
       const factsAfter = store.countActiveFacts(mind);
       const delta = factsAfter - factsBefore;
-      const msg = delta > 0
-        ? `Memory saved (${factsAfter} facts, +${delta} new). Goodbye!`
-        : `Memory saved (${factsAfter} facts). Goodbye!`;
-      ctx.ui.notify(msg, "success");
+
+      // Build session-end summary from shared state
+      const summaryLines: string[] = [];
+
+      // Git state
+      try {
+        const branchResult = await pi.exec("git", ["branch", "--show-current"], { timeout: 3_000, cwd: ctx.cwd });
+        const statusResult = await pi.exec("git", ["status", "--short"], { timeout: 3_000, cwd: ctx.cwd });
+        const branch = branchResult.stdout.trim();
+        const dirtyCount = statusResult.stdout.trim().split("\n").filter(Boolean).length;
+        summaryLines.push(`🔀 ${branch}${dirtyCount > 0 ? ` · ${dirtyCount} dirty` : " · clean"}`);
+      } catch { /* ignore */ }
+
+      // Design tree
+      const dt = sharedState.designTree;
+      if (dt && dt.totalNodes > 0) {
+        summaryLines.push(`🌳 Design: ${dt.totalNodes} nodes (${dt.decidedCount} decided, ${dt.exploringCount} exploring)`);
+      }
+
+      // OpenSpec
+      const os = sharedState.openspec;
+      if (os && os.changes.length > 0) {
+        const active = os.changes.filter(c => c.stage !== "archived");
+        if (active.length > 0) {
+          summaryLines.push(`📋 OpenSpec: ${active.length} active — ${active.map(c => c.name).join(", ")}`);
+        }
+      }
+
+      // Memory
+      const memLine = delta > 0
+        ? `🧠 ${factsAfter} facts (+${delta} new)`
+        : `🧠 ${factsAfter} facts`;
+      summaryLines.push(memLine);
+
+      if (summaryLines.length > 0) {
+        ctx.ui.notify(summaryLines.join("\n"), "success");
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      ctx.ui.notify("Goodbye!", "success");
 
       // Small delay so the notification renders
       await new Promise(r => setTimeout(r, 200));

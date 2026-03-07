@@ -137,10 +137,13 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		// Write all frontmatter fields in one pass to avoid partial state on failure.
 		// setNodeStatus and appendBranch each do a full file rewrite; we consolidate
 		// by writing the final intended state directly.
+		const existingBranches = node.branches ?? [];
 		const updatedNode: DesignNode = {
 			...node,
 			status: "implementing",
-			branches: [...(node.branches ?? []), ...(node.branches?.includes(safeBranch) ? [] : [safeBranch])],
+			branches: existingBranches.includes(safeBranch)
+				? existingBranches
+				: [...existingBranches, safeBranch],
 			openspec_change: node.id,
 		};
 		// Use writeNodeDocument to emit all fields in one write

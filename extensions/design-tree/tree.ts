@@ -412,6 +412,19 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 			const fmQuestions = (fm.open_questions as string[]) || [];
 			const mergedQuestions = mergeQuestions(bodyQuestions, fmQuestions);
 
+			// Validate optional branch override — discard and warn if invalid
+			const rawBranch = fm.branch as string | undefined;
+			let validatedBranch: string | undefined;
+			if (rawBranch !== undefined) {
+				validatedBranch = sanitizeBranchName(rawBranch) ?? undefined;
+				if (validatedBranch === undefined) {
+					console.warn(
+						`[design-tree] Node '${fm.id}': invalid 'branch' value '${rawBranch}' — ` +
+						`contains disallowed characters. Field ignored; fix the frontmatter.`,
+					);
+				}
+			}
+
 			const node: DesignNode = {
 				id: fm.id as string,
 				title: (fm.title as string) || file.replace(".md", ""),
@@ -421,7 +434,7 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 				related: (fm.related as string[]) || [],
 				tags: (fm.tags as string[]) || [],
 				open_questions: mergedQuestions,
-				branch: fm.branch as string | undefined,
+				branch: validatedBranch,
 				branches: (fm.branches as string[]) || [],
 				openspec_change: fm.openspec_change as string | undefined,
 				filePath,
@@ -789,11 +802,10 @@ export function branchFromQuestion(
 const VALID_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
- * Validate a node ID. Rejects path traversal attempts, dots, slashes,
- * uppercase, spaces, and empty strings.
- * Returns null if valid, or an error message string if invalid.
+ * Validate a git branch name — reject shell metacharacters and invalid git ref chars.
+ * Minimum length 2 (single-char names rejected by the allowlist regex).
+ * Returns the name if valid, null if rejected.
  */
-/** Validate a git branch name — reject shell metacharacters and invalid git ref chars */
 export function sanitizeBranchName(name: string): string | null {
 	if (!name || name.length > 200) return null;
 	// Only allow: alphanumeric, hyphens, underscores, dots, forward slashes
@@ -805,6 +817,11 @@ export function sanitizeBranchName(name: string): string | null {
 	return name;
 }
 
+/**
+ * Validate a node ID. Rejects path traversal attempts, dots, slashes,
+ * uppercase, spaces, and empty strings.
+ * Returns null if valid, or an error message string if invalid.
+ */
 export function validateNodeId(id: string): string | null {
 	if (!id) return "Node ID cannot be empty";
 	if (id.length > 80) return "Node ID too long (max 80 characters)";
@@ -835,8 +852,8 @@ export function toSlug(text: string, maxLen: number = 40): string {
  *      when both are split on hyphens (segment-aware prefix match)
  *   3. Longest matching node ID wins (prevents "auth" matching when "auth-strategy" exists)
  *
- * Matches nodes with status "implementing" or "implemented" (a branch may still
- * reference a node after it transitions to implemented).
+ * Only matches nodes with status "implementing" — association stops once a node
+ * transitions to "implemented".
  *
  * @returns The matched DesignNode, or null if no match.
  */

@@ -6,9 +6,6 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 
 export type DepTier = "core" | "recommended" | "optional";
 
@@ -25,10 +22,19 @@ export interface Dep {
 	tier: DepTier;
 	/** Check if the dep is available */
 	check: () => boolean;
-	/** Shell command(s) to install, in preference order */
-	install: string[];
+	/** Shell command(s) to install, in preference order per platform */
+	install: InstallOption[];
 	/** URL for manual install instructions */
 	url?: string;
+	/** Dep IDs that must be installed first */
+	requires?: string[];
+}
+
+export interface InstallOption {
+	/** Platform: "darwin", "linux", or "any" */
+	platform: "darwin" | "linux" | "any";
+	/** Shell command */
+	cmd: string;
 }
 
 function hasCmd(cmd: string): boolean {
@@ -40,16 +46,21 @@ function hasCmd(cmd: string): boolean {
 	}
 }
 
-function ollamaReachable(): boolean {
-	try {
-		execSync("curl -sf http://localhost:11434/api/tags > /dev/null", {
-			stdio: "ignore",
-			timeout: 2000,
-		});
-		return true;
-	} catch {
-		return false;
-	}
+/** Get the best install command for the current platform */
+export function bestInstallCmd(dep: Dep): string | undefined {
+	const plat = process.platform === "darwin" ? "darwin" : "linux";
+	return (
+		dep.install.find((o) => o.platform === plat)?.cmd ??
+		dep.install.find((o) => o.platform === "any")?.cmd ??
+		dep.install[0]?.cmd
+	);
+}
+
+/** Get all install options formatted for display */
+export function installHints(dep: Dep): string[] {
+	return dep.install.map((o) =>
+		o.platform === "any" ? o.cmd : `${o.cmd}  (${o.platform})`,
+	);
 }
 
 /**
@@ -68,8 +79,8 @@ export const DEPS: Dep[] = [
 		tier: "core",
 		check: () => hasCmd("ollama"),
 		install: [
-			"brew install ollama",
-			"curl -fsSL https://ollama.com/install.sh | sh",
+			{ platform: "darwin", cmd: "brew install ollama" },
+			{ platform: "linux", cmd: "curl -fsSL https://ollama.com/install.sh | sh" },
 		],
 		url: "https://ollama.com",
 	},
@@ -81,8 +92,8 @@ export const DEPS: Dep[] = [
 		tier: "core",
 		check: () => hasCmd("d2"),
 		install: [
-			"brew install d2",
-			"curl -fsSL https://d2lang.com/install.sh | sh",
+			{ platform: "darwin", cmd: "brew install d2" },
+			{ platform: "linux", cmd: "curl -fsSL https://d2lang.com/install.sh | sh" },
 		],
 		url: "https://d2lang.com",
 	},
@@ -95,7 +106,10 @@ export const DEPS: Dep[] = [
 		usedBy: ["01-auth"],
 		tier: "recommended",
 		check: () => hasCmd("gh"),
-		install: ["brew install gh"],
+		install: [
+			{ platform: "darwin", cmd: "brew install gh" },
+			{ platform: "linux", cmd: "sudo apt install gh || sudo dnf install gh" },
+		],
 		url: "https://cli.github.com",
 	},
 	{
@@ -105,8 +119,23 @@ export const DEPS: Dep[] = [
 		usedBy: ["view"],
 		tier: "recommended",
 		check: () => hasCmd("pandoc"),
-		install: ["brew install pandoc"],
+		install: [
+			{ platform: "darwin", cmd: "brew install pandoc" },
+			{ platform: "linux", cmd: "sudo apt install pandoc || sudo dnf install pandoc" },
+		],
 		url: "https://pandoc.org",
+	},
+	{
+		id: "cargo",
+		name: "Rust toolchain",
+		purpose: "Required to build mdserve from source",
+		usedBy: ["vault (build dep)"],
+		tier: "recommended",
+		check: () => hasCmd("cargo"),
+		install: [
+			{ platform: "any", cmd: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" },
+		],
+		url: "https://rustup.rs",
 	},
 	{
 		id: "mdserve",
@@ -115,23 +144,14 @@ export const DEPS: Dep[] = [
 		usedBy: ["vault"],
 		tier: "recommended",
 		check: () => hasCmd("mdserve"),
+		requires: ["cargo"],
 		install: [
-			"cargo install --git https://github.com/cwilson613/mdserve --branch feature/wikilinks-graph",
+			{ platform: "any", cmd: "cargo install --git https://github.com/cwilson613/mdserve --branch feature/wikilinks-graph" },
 		],
 		url: "https://github.com/cwilson613/mdserve",
 	},
 
 	// --- Optional: niche or platform-specific ---
-	{
-		id: "cargo",
-		name: "Rust toolchain",
-		purpose: "Required to build mdserve from source",
-		usedBy: ["vault (build dep)"],
-		tier: "optional",
-		check: () => hasCmd("cargo"),
-		install: ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"],
-		url: "https://rustup.rs",
-	},
 	{
 		id: "rsvg-convert",
 		name: "librsvg",
@@ -139,7 +159,10 @@ export const DEPS: Dep[] = [
 		usedBy: ["view"],
 		tier: "optional",
 		check: () => hasCmd("rsvg-convert"),
-		install: ["brew install librsvg"],
+		install: [
+			{ platform: "darwin", cmd: "brew install librsvg" },
+			{ platform: "linux", cmd: "sudo apt install librsvg2-bin" },
+		],
 	},
 	{
 		id: "pdftoppm",
@@ -148,7 +171,10 @@ export const DEPS: Dep[] = [
 		usedBy: ["view"],
 		tier: "optional",
 		check: () => hasCmd("pdftoppm"),
-		install: ["brew install poppler"],
+		install: [
+			{ platform: "darwin", cmd: "brew install poppler" },
+			{ platform: "linux", cmd: "sudo apt install poppler-utils" },
+		],
 	},
 	{
 		id: "uv",
@@ -157,7 +183,10 @@ export const DEPS: Dep[] = [
 		usedBy: ["render"],
 		tier: "optional",
 		check: () => hasCmd("uv"),
-		install: ["brew install uv", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+		install: [
+			{ platform: "darwin", cmd: "brew install uv" },
+			{ platform: "any", cmd: "curl -LsSf https://astral.sh/uv/install.sh | sh" },
+		],
 		url: "https://docs.astral.sh/uv/",
 	},
 	{
@@ -167,7 +196,10 @@ export const DEPS: Dep[] = [
 		usedBy: ["01-auth"],
 		tier: "optional",
 		check: () => hasCmd("aws"),
-		install: ["brew install awscli"],
+		install: [
+			{ platform: "darwin", cmd: "brew install awscli" },
+			{ platform: "linux", cmd: "sudo apt install awscli" },
+		],
 	},
 	{
 		id: "kubectl",
@@ -176,7 +208,10 @@ export const DEPS: Dep[] = [
 		usedBy: ["01-auth"],
 		tier: "optional",
 		check: () => hasCmd("kubectl"),
-		install: ["brew install kubectl"],
+		install: [
+			{ platform: "darwin", cmd: "brew install kubectl" },
+			{ platform: "linux", cmd: "sudo apt install kubectl" },
+		],
 	},
 ];
 
@@ -190,18 +225,15 @@ export function checkAll(): DepStatus[] {
 	}));
 }
 
-/** Check deps for a specific tier */
-export function checkTier(tier: DepTier): DepStatus[] {
-	return DEPS.filter((d) => d.tier === tier).map((dep) => ({
-		dep,
-		available: dep.check(),
-	}));
-}
-
-/** Format a single dep status as a line */
-export function formatStatus(s: DepStatus): string {
+/** Format a single dep status as a line, with install hint if missing */
+function formatStatus(s: DepStatus): string {
 	const icon = s.available ? "✅" : "❌";
-	return `${icon}  ${s.dep.name} — ${s.dep.purpose}`;
+	let line = `${icon}  ${s.dep.name} — ${s.dep.purpose}`;
+	if (!s.available) {
+		const cmd = bestInstallCmd(s.dep);
+		if (cmd) line += `\n      → \`${cmd}\``;
+	}
+	return line;
 }
 
 /** Format full report grouped by tier */
@@ -234,4 +266,24 @@ export function formatReport(statuses: DepStatus[]): string {
 	}
 
 	return lines.join("\n");
+}
+
+/** Topological sort: deps with `requires` come after their prerequisites */
+export function sortByRequires(deps: DepStatus[]): DepStatus[] {
+	const byId = new Map(deps.map((s) => [s.dep.id, s]));
+	const sorted: DepStatus[] = [];
+	const visited = new Set<string>();
+
+	function visit(s: DepStatus) {
+		if (visited.has(s.dep.id)) return;
+		visited.add(s.dep.id);
+		for (const reqId of s.dep.requires ?? []) {
+			const req = byId.get(reqId);
+			if (req && !req.available) visit(req);
+		}
+		sorted.push(s);
+	}
+
+	for (const s of deps) visit(s);
+	return sorted;
 }

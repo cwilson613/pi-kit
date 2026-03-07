@@ -1296,6 +1296,29 @@ describe("implement flow: status transition + frontmatter update", () => {
 		assert.equal(reloaded.branch, "refactor/auth-overhaul");
 	});
 
+	it("invalid branch field in frontmatter is discarded at parse time", () => {
+		// Write a node doc with a poisoned branch field directly
+		const doc = [
+			"---",
+			"id: poisoned-branch",
+			"title: Poisoned Branch",
+			"status: decided",
+			"branch: feature/foo; rm -rf /",
+			"open_questions: []",
+			"---",
+			"# Poisoned Branch",
+			"## Overview",
+			"Test.",
+		].join("\n");
+		fs.writeFileSync(path.join(tmpDir, "poisoned-branch.md"), doc);
+
+		const tree = scanDesignDocs(tmpDir);
+		const node = tree.nodes.get("poisoned-branch")!;
+		assert.ok(node, "node should load despite bad branch field");
+		// Poisoned field must be discarded — branch should be undefined, not the injected value
+		assert.equal(node.branch, undefined);
+	});
+
 	it("rejects non-decided nodes for implementing transition", () => {
 		const node = createNode(tmpDir, { id: "exploring-node", title: "Exploring", status: "exploring" });
 		// The implement action checks status === "decided" before proceeding

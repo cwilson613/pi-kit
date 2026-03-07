@@ -421,4 +421,228 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+
+  // --- Ollama lifecycle management ---
+
+  let ollamaChild: ChildProcess | null = null;
+
+  function hasOllama(): boolean {
+    try {
+      execSync("which ollama", { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function isOllamaReachable(): Promise<boolean> {
+    try {
+      const resp = await fetch(`${getBaseUrl()}/api/tags`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      return resp.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Try brew services first (persists across reboots), fall back to ollama serve */
+  function startOllamaProcess(): { method: string } {
+    // Check if brew services is available (macOS)
+    if (process.platform === "darwin") {
+      try {
+        execSync("brew services start ollama", { stdio: "ignore", timeout: 10_000 });
+        return { method: "brew services" };
+      } catch {
+        // fall through to manual serve
+      }
+    }
+
+    // Fall back to spawning ollama serve as a background process
+    const child = spawn("ollama", ["serve"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    child.unref();
+    ollamaChild = child;
+
+    child.on("exit", () => {
+      if (ollamaChild === child) ollamaChild = null;
+    });
+
+    return { method: "ollama serve (background)" };
+  }
+
+  pi.addCommand({
+    name: "ollama",
+    description: "Manage Ollama — start, stop, status, pull models",
+    execute: async (ctx, args) => {
+      const parts = args.trim().split(/\s+/);
+      const sub = parts[0]?.toLowerCase() || "";
+
+      if (!hasOllama()) {
+        ctx.say("`ollama` is not installed. Run `/bootstrap` to set up pi-kit dependencies.");
+        return;
+      }
+
+      switch (sub) {
+        case "start": {
+          if (await isOllamaReachable()) {
+            const models = await refreshModels();
+            ctx.say(`Ollama is already running at ${getBaseUrl()} — ${models.length} chat model${models.length !== 1 ? "s" : ""} available.`);
+            return;
+          }
+
+          ctx.say("Starting Ollama...");
+          const { method } = startOllamaProcess();
+
+          // Wait for it to come up
+          let ready = false;
+          for (let i = 0; i < 15; i++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            if (await isOllamaReachable()) {
+              ready = true;
+              break;
+            }
+          }
+
+          if (ready) {
+            const models = await refreshModels();
+            ctx.say(`✅ Ollama started via ${method} — ${models.length} chat model${models.length !== 1 ? "s" : ""} available.`);
+            if (models.length === 0) {
+              ctx.say("No models installed yet. Try `/ollama pull qwen3:30b` or `/ollama pull devstral-small:24b`.");
+            }
+          } else {
+            ctx.say("⚠️  Ollama process started but server not responding after 15s. Check `ollama serve` manually.");
+          }
+          return;
+        }
+
+        case "stop": {
+          if (process.platform === "darwin") {
+            try {
+              execSync("brew services stop ollama", { stdio: "ignore", timeout: 10_000 });
+              serverOnline = false;
+              cachedModels = [];
+              ctx.say("Stopped Ollama (brew services).");
+              return;
+            } catch { /* fall through */ }
+          }
+
+          if (ollamaChild) {
+            ollamaChild.kill("SIGTERM");
+            ollamaChild = null;
+            serverOnline = false;
+            cachedModels = [];
+            ctx.say("Stopped Ollama background process.");
+          } else {
+            // Try pkill as last resort
+            try {
+              execSync("pkill -f 'ollama serve'", { stdio: "ignore" });
+              serverOnline = false;
+              cachedModels = [];
+              ctx.say("Stopped Ollama process.");
+            } catch {
+              ctx.say("Ollama doesn't appear to be running (or not managed by this session).");
+            }
+          }
+          return;
+        }
+
+        case "pull": {
+          const modelName = parts[1];
+          if (!modelName) {
+            ctx.say("Usage: `/ollama pull <model>`\n\nPopular models:\n" +
+              "- `qwen3:30b` — general purpose, 256K context\n" +
+              "- `devstral-small:24b` — code-focused, 128K context\n" +
+              "- `qwen3-embedding` — embeddings for semantic memory\n" +
+              "- `nemotron-3-nano:30b` — NVIDIA, 1M context");
+            return;
+          }
+
+          if (!(await isOllamaReachable())) {
+            ctx.say("Ollama is not running. Start it first with `/ollama start`.");
+            return;
+          }
+
+          ctx.say(`Pulling ${modelName}... (this may take a while for large models)`);
+
+          return new Promise<void>((resolve) => {
+            const child = spawn("ollama", ["pull", modelName], { stdio: "inherit" });
+            child.on("exit", async (code) => {
+              if (code === 0) {
+                await refreshModels();
+                ctx.say(`✅ ${modelName} pulled successfully.`);
+              } else {
+                ctx.say(`❌ Failed to pull ${modelName} (exit code ${code}).`);
+              }
+              resolve();
+            });
+            child.on("error", (err) => {
+              ctx.say(`❌ Failed to pull: ${err.message}`);
+              resolve();
+            });
+          });
+        }
+
+        case "status":
+        case "": {
+          const reachable = await isOllamaReachable();
+          if (!reachable) {
+            ctx.say(`Ollama is **not running** at ${getBaseUrl()}.\n\nRun \`/ollama start\` to start it.`);
+            return;
+          }
+
+          const models = await refreshModels();
+          const all = await listAllModels(getBaseUrl());
+          const chatModels = all.filter((m) => !m.id.includes("embed"));
+          const embedModels = all.filter((m) => m.id.includes("embed"));
+
+          let status = `Ollama is **running** at ${getBaseUrl()}\n\n`;
+          if (chatModels.length > 0) {
+            status += `**Chat models (${chatModels.length}):**\n${chatModels.map((m) => `- \`${m.id}\``).join("\n")}\n\n`;
+          }
+          if (embedModels.length > 0) {
+            status += `**Embedding models (${embedModels.length}):**\n${embedModels.map((m) => `- \`${m.id}\``).join("\n")}\n\n`;
+          }
+          if (all.length === 0) {
+            status += "No models installed. Try `/ollama pull qwen3:30b`.";
+          }
+          ctx.say(status);
+          return;
+        }
+
+        default:
+          ctx.say("Usage: `/ollama [start|stop|status|pull <model>]`");
+          return;
+      }
+    },
+  });
+
+  // Auto-start on session start if ollama binary exists but server isn't running
+  pi.on("session_start", async (_event, ctx) => {
+    if (!hasOllama()) return;
+    if (await isOllamaReachable()) return;
+
+    // Only auto-start if user hasn't explicitly configured a different URL
+    if (process.env.LOCAL_INFERENCE_URL) return;
+
+    if (ctx.hasUI) {
+      ctx.ui.notify("Ollama installed but not running — starting...", "info");
+    }
+
+    startOllamaProcess();
+
+    // Wait briefly for startup
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (await isOllamaReachable()) {
+        await refreshModels();
+        if (ctx.hasUI) {
+          ctx.ui.notify(`Ollama started — ${cachedModels.length} chat models available`, "success");
+        }
+        return;
+      }
+    }
+  });
 }

@@ -27,6 +27,7 @@ import { basename, extname, resolve, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { resolveUri, loadConfig, osc8Link } from "./uri-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Format classification
@@ -142,10 +143,12 @@ function modifiedAgo(mtime: Date): string {
 	return mtime.toLocaleDateString();
 }
 
-function fileHeader(filePath: string, icon: string, extra?: string): string {
+function fileHeader(filePath: string, icon: string, extra?: string, uri?: string): string {
 	const stat = statSync(filePath);
+	const name = basename(filePath);
+	const label = uri ? osc8Link(uri, `${icon} ${name}`) : `${icon} ${name}`;
 	const parts = [
-		`${icon} ${basename(filePath)}`,
+		label,
 		fileSizeStr(stat.size),
 		`modified ${modifiedAgo(stat.mtime)}`,
 	];
@@ -189,21 +192,21 @@ function getImageDims(filePath: string): string | undefined {
 // Renderers
 // ---------------------------------------------------------------------------
 
-function viewImage(filePath: string): ViewResult {
+function viewImage(filePath: string, uri?: string): ViewResult {
 	const data = readFileSync(filePath).toString("base64");
 	const ext = extname(filePath).toLowerCase();
 	const mime = mimeFromExt(ext);
 	const dims = getImageDims(filePath);
 	return {
 		content: [
-			{ type: "text", text: fileHeader(filePath, "📷", dims) },
+			{ type: "text", text: fileHeader(filePath, "📷", dims, uri) },
 			{ type: "image", data, mimeType: mime },
 		],
 		details: { kind: "image", path: filePath, dimensions: dims },
 	};
 }
 
-function viewSvg(filePath: string): ViewResult {
+function viewSvg(filePath: string, uri?: string): ViewResult {
 	const tmp = mkdtempSync(join(tmpdir(), "pi-view-"));
 	const outPng = join(tmp, "out.png");
 	let converted = false;
@@ -222,7 +225,7 @@ function viewSvg(filePath: string): ViewResult {
 		const data = readFileSync(outPng).toString("base64");
 		return {
 			content: [
-				{ type: "text", text: fileHeader(filePath, "🎨", "SVG → PNG") },
+				{ type: "text", text: fileHeader(filePath, "🎨", "SVG → PNG", uri) },
 				{ type: "image", data, mimeType: "image/png" },
 			],
 			details: { kind: "svg", path: filePath, rendered: true },
@@ -233,12 +236,12 @@ function viewSvg(filePath: string): ViewResult {
 	const src = readFileSync(filePath, "utf-8");
 	const preview = src.length > 5000 ? src.slice(0, 5000) + "\n… (truncated)" : src;
 	return {
-		content: [{ type: "text", text: `${fileHeader(filePath, "🎨", "SVG source")}\n\n\`\`\`xml\n${preview}\n\`\`\`` }],
+		content: [{ type: "text", text: `${fileHeader(filePath, "🎨", "SVG source", uri)}\n\n\`\`\`xml\n${preview}\n\`\`\`` }],
 		details: { kind: "svg", path: filePath, rendered: false },
 	};
 }
 
-function viewPdf(filePath: string, page?: number): ViewResult {
+function viewPdf(filePath: string, page?: number, uri?: string): ViewResult {
 	const content: ContentPart[] = [];
 
 	// Page count
@@ -250,7 +253,7 @@ function viewPdf(filePath: string, page?: number): ViewResult {
 	} catch {}
 
 	const extra = pageCount > 0 ? `${pageCount} pages` : undefined;
-	content.push({ type: "text", text: fileHeader(filePath, "📄", extra) });
+	content.push({ type: "text", text: fileHeader(filePath, "📄", extra, uri) });
 
 	if (hasCmd("pdftoppm")) {
 		const tmp = mkdtempSync(join(tmpdir(), "pi-view-pdf-"));
@@ -293,14 +296,14 @@ function appendPdfText(filePath: string, content: ContentPart[]) {
 	}
 }
 
-function viewPandoc(filePath: string): ViewResult {
+function viewPandoc(filePath: string, uri?: string): ViewResult {
 	const name = basename(filePath);
 
 	if (!hasCmd("pandoc")) {
 		const raw = readFileSync(filePath, "utf-8");
 		const preview = raw.length > 5000 ? raw.slice(0, 5000) + "\n… (truncated)" : raw;
 		return {
-			content: [{ type: "text", text: `${fileHeader(filePath, "📝")}\n⚠️  Install pandoc for rich rendering\n\n${preview}` }],
+			content: [{ type: "text", text: `${fileHeader(filePath, "📝", undefined, uri)}\n⚠️  Install pandoc for rich rendering\n\n${preview}` }],
 			details: { kind: "pandoc", path: filePath, converted: false },
 		};
 	}
@@ -319,18 +322,18 @@ function viewPandoc(filePath: string): ViewResult {
 		const md = runSafe("pandoc", ["-f", fmt, "-t", "gfm", "--wrap=none", filePath], { timeout: 15_000 });
 		const preview = md.length > 10000 ? md.slice(0, 10000) + "\n\n… (truncated)" : md;
 		return {
-			content: [{ type: "text", text: `${fileHeader(filePath, "📝", fmt.toUpperCase())}\n\n${preview}` }],
+			content: [{ type: "text", text: `${fileHeader(filePath, "📝", fmt.toUpperCase(), uri)}\n\n${preview}` }],
 			details: { kind: "pandoc", path: filePath, converted: true, format: fmt },
 		};
 	} catch (e: any) {
 		return {
-			content: [{ type: "text", text: `${fileHeader(filePath, "📝")}  — conversion failed: ${e.message?.slice(0, 200)}` }],
+			content: [{ type: "text", text: `${fileHeader(filePath, "📝", undefined, uri)}  — conversion failed: ${e.message?.slice(0, 200)}` }],
 			details: { kind: "pandoc", path: filePath, converted: false, error: e.message },
 		};
 	}
 }
 
-function viewDiagram(filePath: string): ViewResult {
+function viewDiagram(filePath: string, uri?: string): ViewResult {
 	const src = readFileSync(filePath, "utf-8");
 
 	if (hasCmd("d2")) {
@@ -342,7 +345,7 @@ function viewDiagram(filePath: string): ViewResult {
 				const data = readFileSync(outPng).toString("base64");
 				return {
 					content: [
-						{ type: "text", text: fileHeader(filePath, "📊", "D2") },
+						{ type: "text", text: fileHeader(filePath, "📊", "D2", uri) },
 						{ type: "image", data, mimeType: "image/png" },
 					],
 					details: { kind: "diagram", path: filePath, rendered: true },
@@ -352,12 +355,12 @@ function viewDiagram(filePath: string): ViewResult {
 	}
 
 	return {
-		content: [{ type: "text", text: `${fileHeader(filePath, "📊", "D2 source")}\n\n\`\`\`d2\n${src}\n\`\`\`` }],
+		content: [{ type: "text", text: `${fileHeader(filePath, "📊", "D2 source", uri)}\n\n\`\`\`d2\n${src}\n\`\`\`` }],
 		details: { kind: "diagram", path: filePath, rendered: false },
 	};
 }
 
-function viewText(filePath: string, lang?: string): ViewResult {
+function viewText(filePath: string, lang?: string, uri?: string): ViewResult {
 	const ext = extname(filePath).toLowerCase();
 	const raw = readFileSync(filePath, "utf-8");
 	const lineCount = raw.split("\n").length;
@@ -367,23 +370,23 @@ function viewText(filePath: string, lang?: string): ViewResult {
 	const fence = language ? `\`\`\`${language}` : "```";
 
 	return {
-		content: [{ type: "text", text: `${fileHeader(filePath, "📄", `${lineCount} lines · ${language || "text"}`)}\n\n${fence}\n${preview}\n\`\`\`` }],
+		content: [{ type: "text", text: `${fileHeader(filePath, "📄", `${lineCount} lines · ${language || "text"}`, uri)}\n\n${fence}\n${preview}\n\`\`\`` }],
 		details: { kind: "text", path: filePath, language: language || undefined, lines: lineCount },
 	};
 }
 
-function viewMarkdown(filePath: string): ViewResult {
+function viewMarkdown(filePath: string, uri?: string): ViewResult {
 	const raw = readFileSync(filePath, "utf-8");
 	const lineCount = raw.split("\n").length;
 	const preview = raw.length > 15000 ? raw.slice(0, 15000) + "\n\n… (truncated)" : raw;
 
 	return {
-		content: [{ type: "text", text: `${fileHeader(filePath, "📝", `${lineCount} lines · markdown`)}\n\n${preview}` }],
+		content: [{ type: "text", text: `${fileHeader(filePath, "📝", `${lineCount} lines · markdown`, uri)}\n\n${preview}` }],
 		details: { kind: "markdown", path: filePath, lines: lineCount },
 	};
 }
 
-function viewBinary(filePath: string): ViewResult {
+function viewBinary(filePath: string, uri?: string): ViewResult {
 	const stat = statSync(filePath);
 	let fileType = "binary";
 	try {
@@ -391,7 +394,7 @@ function viewBinary(filePath: string): ViewResult {
 	} catch {}
 
 	return {
-		content: [{ type: "text", text: `${fileHeader(filePath, "📦", fileType)}\n\n(Binary file — cannot display inline)` }],
+		content: [{ type: "text", text: `${fileHeader(filePath, "📦", fileType, uri)}\n\n(Binary file — cannot display inline)` }],
 		details: { kind: "binary", path: filePath, fileType },
 	};
 }
@@ -495,7 +498,7 @@ function guessLang(filePath: string): string {
 // Main dispatcher
 // ---------------------------------------------------------------------------
 
-function viewFile(filePath: string, page?: number): ViewResult {
+function viewFile(filePath: string, page?: number, options?: { mdservePort?: number }): ViewResult {
 	const absPath = resolve(filePath);
 	if (!existsSync(absPath)) {
 		return {
@@ -506,17 +509,20 @@ function viewFile(filePath: string, page?: number): ViewResult {
 
 	if (statSync(absPath).isDirectory()) return viewDirectory(absPath);
 
+	const config = loadConfig();
+	const uri = resolveUri(absPath, { mdservePort: options?.mdservePort, config });
+
 	const kind = classifyFile(absPath);
 	switch (kind) {
-		case "image": return viewImage(absPath);
-		case "svg": return viewSvg(absPath);
-		case "pdf": return viewPdf(absPath, page);
-		case "pandoc": return viewPandoc(absPath);
-		case "diagram": return viewDiagram(absPath);
-		case "data": return viewText(absPath);
-		case "markdown": return viewMarkdown(absPath);
-		case "binary": return viewBinary(absPath);
-		case "text": return viewText(absPath);
+		case "image": return viewImage(absPath, uri);
+		case "svg": return viewSvg(absPath, uri);
+		case "pdf": return viewPdf(absPath, page, uri);
+		case "pandoc": return viewPandoc(absPath, uri);
+		case "diagram": return viewDiagram(absPath, uri);
+		case "data": return viewText(absPath, undefined, uri);
+		case "markdown": return viewMarkdown(absPath, uri);
+		case "binary": return viewBinary(absPath, uri);
+		case "text": return viewText(absPath, undefined, uri);
 	}
 }
 
@@ -541,7 +547,8 @@ export default function (pi: ExtensionAPI) {
 			const filePath = parts[0];
 			const page = parts[1] ? parseInt(parts[1], 10) : undefined;
 
-			const result = viewFile(filePath, page);
+			const mdservePort = (pi as any).sharedState?.get?.("mdserve.port") as number | undefined;
+			const result = viewFile(filePath, page, { mdservePort });
 			const textParts = result.content.filter(c => c.type === "text").map(c => (c as any).text).join("\n");
 			const imageParts = result.content.filter(c => c.type === "image");
 
@@ -672,7 +679,8 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const filePath = params.path.startsWith("@") ? params.path.slice(1) : params.path;
-			return viewFile(filePath, params.page);
+			const mdservePort = (pi as any).sharedState?.get?.("mdserve.port") as number | undefined;
+			return viewFile(filePath, params.page, { mdservePort });
 		},
 	});
 }

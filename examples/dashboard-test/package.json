@@ -1,0 +1,12 @@
+{
+  "name": "dashboard-test",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example project for testing the pi-kit unified dashboard",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": [
+      "extensions/seed-cleave-state.ts"
+    ]
+  }
+}

@@ -1,35 +1,45 @@
 # Dashboard Test Fixture
 
-A self-contained test harness for the unified dashboard extension. Populates
-`sharedState` with realistic seed data and renders the `DashboardFooter` at
-multiple widths and in both modes (compact / raised), printing ANSI output
-to stdout.
+A self-contained example project that populates all three dashboard data
+sources with realistic seed data. Run `pi` from this directory to see the
+unified dashboard footer in action.
 
 ## Usage
 
 ```bash
-# From pi-kit root:
-npx tsx examples/dashboard-test/render.ts
-
-# With specific width:
-COLUMNS=80 npx tsx examples/dashboard-test/render.ts
-
-# Compact only:
-npx tsx examples/dashboard-test/render.ts compact
-
-# Raised only:
-npx tsx examples/dashboard-test/render.ts raised
+cd examples/dashboard-test
+pi
 ```
 
-## What it exercises
+Then press **Ctrl+Shift+B** to toggle between compact and raised modes, or
+type `/dashboard` as a slash command.
 
-- **Design Tree state**: 7 nodes across all statuses (decided, exploring,
-  implementing, implemented, blocked), focused node with open questions,
-  implementing nodes with branch associations.
-- **OpenSpec state**: 4 changes at different lifecycle stages (active with
-  partial progress, complete, spec-only, archived).
-- **Cleave state**: cycles through idle → assessing → dispatching (with
-  children in mixed states) → done → failed.
-- **Context gauge**: simulated token stats and memory estimate.
-- **Width breakpoints**: renders at 80, 120, and 160 columns to hit narrow,
-  wide, and ultra-wide code paths.
+## What you'll see
+
+### Design Tree (from `design/*.md`)
+- **api-redesign** — exploring, 3 open questions
+- **auth-migration** — decided, all questions resolved
+- **rbac-model** — implementing, linked to `feature/rbac-model` branch
+- **cache-layer** — seed, 2 open questions
+
+### OpenSpec (from `openspec/changes/`)
+- **auth-migration** — tasks stage, 9/12 done (partial progress)
+- **api-redesign** — specs stage, no tasks yet
+- **cache-layer** — specs stage, proposal + specs only
+
+### Cleave (from `extensions/seed-cleave-state.ts`)
+- Active dispatch with 5 children: 1 done, 2 running, 2 pending
+- Simulates a mid-flight `auth-migration` execution
+
+## Standalone renderer
+
+For offline testing without pi:
+
+```bash
+npx tsx examples/dashboard-test/render.ts          # both modes
+npx tsx examples/dashboard-test/render.ts compact   # compact only
+npx tsx examples/dashboard-test/render.ts raised     # raised only
+```
+
+This runs 7 scenarios × 2 modes × 3 widths = 42 renders exercising all
+display code paths including width-responsive breakpoints (80/120/160 cols).

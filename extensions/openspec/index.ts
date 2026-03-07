@@ -39,10 +39,43 @@ import {
 	summarizeSpecs,
 	generateSpecFile,
 } from "./spec.js";
+import { sharedState } from "../shared-state.js";
+
+// ─── Dashboard State Emitter ─────────────────────────────────────────────────
+
+/**
+ * Emit OpenSpec state to sharedState for the unified dashboard.
+ * Reads all active changes, maps to the dashboard shape, and fires
+ * the dashboard:update event for re-render.
+ */
+function emitOpenSpecState(cwd: string, pi: ExtensionAPI): void {
+	try {
+		const changes = listChanges(cwd);
+		const mapped = changes.map((c) => ({
+			name: c.name,
+			stage: c.stage || "proposal",
+			tasksDone: c.doneTasks,
+			tasksTotal: c.totalTasks,
+		}));
+		(sharedState as any).openspec = { changes: mapped };
+		pi.events.emit("dashboard:update", { source: "openspec" });
+	} catch {
+		// Non-fatal — don't break the extension if openspec dir is missing
+	}
+}
 
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function openspecExtension(pi: ExtensionAPI): void {
+
+	// ─── Dashboard: emit on first turn ──────────────────────────────
+
+	let dashboardFirstTurn = true;
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (!dashboardFirstTurn) return;
+		dashboardFirstTurn = false;
+		emitOpenSpecState(ctx.cwd, pi);
+	});
 
 	// ─── Helpers ─────────────────────────────────────────────────────
 
@@ -230,6 +263,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 					}
 					try {
 						const result = createChange(cwd, params.name, params.title, params.intent);
+						emitOpenSpecState(cwd, pi);
 						return {
 							content: [{
 								type: "text",
@@ -261,6 +295,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						(s) => s.requirements.flatMap((r) => r.scenarios),
 					).length;
 
+					emitOpenSpecState(cwd, pi);
 					return {
 						content: [{
 							type: "text",
@@ -297,6 +332,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 
 					const specPath = addSpec(change.path, params.domain, specContent);
 
+					emitOpenSpecState(cwd, pi);
 					return {
 						content: [{
 							type: "text",
@@ -403,6 +439,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						};
 					}
 
+					emitOpenSpecState(cwd, pi);
 					return {
 						content: [{
 							type: "text",
@@ -427,6 +464,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						};
 					}
 
+					emitOpenSpecState(cwd, pi);
 					return {
 						content: [{
 							type: "text",

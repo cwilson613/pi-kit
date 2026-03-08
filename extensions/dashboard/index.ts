@@ -389,6 +389,21 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── Keyboard shortcut: ctrl+escape ───────────────────────────
+  // Always hides the overlay panel (regardless of focus state).
+  // Solves the stuck-panel UX: after unfocusing via Esc, the panel stays
+  // visible with no way to dismiss it — ctrl+esc is the escape hatch.
+
+  pi.registerShortcut("ctrl+escape", {
+    description: "Hide dashboard panel (dismiss overlay without cycling)",
+    handler: (ctx) => {
+      if (state.mode === "panel" || state.mode === "focused") {
+        hidePanel();
+        ctx.ui.notify("Dashboard: compact", "info");
+      }
+    },
+  });
+
   // ── Slash command: /dashboard [open|compact|raised|panel|focus] ─
 
   pi.registerCommand("dashboard", {

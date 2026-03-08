@@ -168,7 +168,7 @@ export class DashboardOverlay {
 
     // Footer with key hints
     lines.push(border("├" + "─".repeat(innerW) + "┤"));
-    lines.push(border("│") + pad(th.fg("dim", " ↑↓ navigate  ←→/↵ expand  Tab switch  Esc close")) + border("│"));
+    lines.push(border("│") + pad(th.fg("dim", " ↑↓ navigate  ←→/↵ expand  Tab switch  Esc unfocus  ^⎋ dismiss")) + border("│"));
     lines.push(border("╰" + "─".repeat(innerW) + "╯"));
 
     return lines;

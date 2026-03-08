@@ -7,8 +7,12 @@
 
 // ─── Model Tiers ─────────────────────────────────────────────
 
-/** Model tier for effort configuration — which model class to use. */
-export type EffortModelTier = "local" | "sonnet" | "opus";
+/**
+ * Model tier for effort configuration — which model class to use.
+ * Includes "haiku" so that policy-upgraded extraction tiers (local→haiku) are
+ * representable without casts. Aligns with the shared ModelTier in model-routing.ts.
+ */
+export type EffortModelTier = "local" | "haiku" | "sonnet" | "opus";
 
 /** Thinking level passed to the driver model. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -71,11 +75,17 @@ export interface EffortConfig {
 
 /**
  * Runtime effort state stored in SharedState.
- * Extends EffortConfig with cap tracking.
+ * Extends EffortConfig with cap tracking and resolved model IDs.
  */
 export interface EffortState extends EffortConfig {
   /** Whether the effort level is capped (ceiling-locked by operator). */
   capped: boolean;
   /** If capped, the level at which the cap is set. */
   capLevel?: EffortLevel;
+  /**
+   * Concrete model ID resolved for extraction work under the current routing policy.
+   * May differ from `extraction` when cheapCloudPreferredOverLocal upgrades local→haiku.
+   * Populated by resolveExtractionTier() on session_start and tier switches.
+   */
+  resolvedExtractionModelId?: string;
 }

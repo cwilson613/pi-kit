@@ -51,19 +51,25 @@ const TIER_ICONS: Record<EffortLevel, string> = {
  * Switch the driver model to match the effort tier's driver setting.
  * Uses the shared resolveTier() resolver with the current session policy.
  * Returns true if the switch succeeded.
+ *
+ * C3: `all` is fetched once and indexed as a Map so the post-resolution lookup
+ * is O(1) with no second linear scan. Both resolveTier and the model lookup
+ * operate on the same snapshot.
  */
 async function switchDriverModel(
   pi: ExtensionAPI,
-  ctx: any,
+  ctx: ExtensionContext,
   driver: EffortModelTier,
 ): Promise<boolean> {
-  // "local" is always resolved locally — policy cannot redirect to cloud
-  const tier = driver as ModelTier;
-  const all: RegistryModel[] = ctx.modelRegistry.getAll();
+  // Snapshot the registry once; both resolveTier and the model lookup use it
+  const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
+  // Build O(1) index over the same snapshot — no second linear scan (C3)
+  const byKey = new Map(all.map((m) => [`${m.provider}/${m.id}`, m]));
   const policy = sharedState.routingPolicy ?? getDefaultPolicy();
-  const resolved = resolveTier(tier, all, policy);
+  const resolved = resolveTier(driver, all, policy);
   if (!resolved) return false;
-  const model = all.find((m) => m.id === resolved.modelId && m.provider === resolved.provider);
+  // Direct map lookup — no second linear scan of `all`
+  const model = byKey.get(`${resolved.provider}/${resolved.modelId}`);
   if (!model) return false;
   return pi.setModel(model as any);
 }
@@ -81,18 +87,23 @@ async function switchDriverModel(
  */
 function resolveExtractionTier(
   extraction: EffortModelTier,
-  ctx: any,
+  ctx: ExtensionContext,
 ): { displayTier: string; resolvedModelId?: string } {
   const policy = sharedState.routingPolicy ?? getDefaultPolicy();
-  const all: RegistryModel[] = ctx.modelRegistry.getAll();
+  const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
 
   // Determine effective tier: upgrade local→haiku when policy prefers cheap cloud
   const effectiveTier: ModelTier =
-    policy.cheapCloudPreferredOverLocal && extraction === "local" ? "haiku" : (extraction as ModelTier);
+    policy.cheapCloudPreferredOverLocal && extraction === "local" ? "haiku" : extraction;
 
   const resolved = resolveTier(effectiveTier, all, policy);
 
-  // If cloud preferred but nothing resolved, fall back to local explicitly
+  // If cloud preferred but no cloud model matched, fall back to local.
+  // We call resolveTier("local") rather than matchLocalTier() directly because
+  // resolveTier is the public API. The cloud-preferring policy is passed through
+  // intentionally — resolveTier's "local" path ignores policy entirely and goes
+  // straight to matchLocalTier(), so the policy has no effect here. This is
+  // safe and avoids importing the private matchLocalTier function.
   const final =
     resolved ?? (effectiveTier !== "local" ? resolveTier("local", all, policy) : undefined);
 
@@ -169,11 +180,11 @@ function formatTierInfo(state: EffortState): string {
   const capIndicator = state.capped && state.capLevel
     ? ` [CAPPED at ${EFFORT_NAMES[state.capLevel]}]`
     : "";
-  const driverLabel = getTierDisplayLabel(state.driver as ModelTier);
-  const extractionLabel = getTierDisplayLabel(state.extraction as ModelTier);
-  const compactionLabel = getTierDisplayLabel(state.compaction as ModelTier);
-  const reviewLabel = getTierDisplayLabel(state.reviewModel as ModelTier);
-  const floorLabel = getTierDisplayLabel(state.cleaveFloor as ModelTier);
+  const driverLabel = getTierDisplayLabel(state.driver);
+  const extractionLabel = getTierDisplayLabel(state.extraction);
+  const compactionLabel = getTierDisplayLabel(state.compaction);
+  const reviewLabel = getTierDisplayLabel(state.reviewModel);
+  const floorLabel = getTierDisplayLabel(state.cleaveFloor);
   const lines = [
     `${icon} **${state.name}** (level ${state.level}/7)${capIndicator}`,
     `  Driver: ${driverLabel} (${state.driver}) | Thinking: ${state.thinking}`,
@@ -192,6 +203,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const level = resolveInitialLevel(ctx.cwd);
     const state = buildEffortState(level);
+
+    // Resolve extraction tier under current routing policy (C1: spec compliance).
+    // When cheapCloudPreferredOverLocal is true this upgrades local→haiku and
+    // falls back to local if no cloud model is available.
+    const extractionResolution = resolveExtractionTier(state.extraction, ctx);
+    state.resolvedExtractionModelId = extractionResolution.resolvedModelId;
 
     // Write to shared state
     sharedState.effort = state;
@@ -296,8 +313,12 @@ export default function (pi: ExtensionAPI) {
       sharedState.effort = state;
       pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "effort" });
 
+      // Resolve extraction tier under current routing policy (C1: spec compliance)
+      const extractionResolution = resolveExtractionTier(state.extraction, ctx);
+      state.resolvedExtractionModelId = extractionResolution.resolvedModelId;
+
       // Switch driver model
-      const modelSwitched = await switchDriverModel(pi, ctx as any, state.driver);
+      const modelSwitched = await switchDriverModel(pi, ctx, state.driver);
 
       // Set thinking level
       pi.setThinkingLevel(state.thinking as any);

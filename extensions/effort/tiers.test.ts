@@ -244,7 +244,7 @@ describe("effort constants", () => {
 // ─── Tier progression invariants ────────────────────────────────────────────
 
 describe("tier progression invariants", () => {
-  const MODEL_ORDER = { local: 0, sonnet: 1, opus: 2 } as const;
+  const MODEL_ORDER = { local: 0, haiku: 1, sonnet: 2, opus: 3 } as const;
   const THINKING_ORDER = { off: 0, minimal: 1, low: 2, medium: 3, high: 4 } as const;
 
   it("driver model tier never decreases as level increases", () => {

@@ -144,6 +144,32 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function buildReconciliationNextSteps(
+		changeName: string,
+		assessmentKind: "spec" | "cleave",
+		outcome: "pass" | "reopen" | "ambiguous",
+	): string[] {
+		switch (outcome) {
+			case "pass":
+				return [
+					`Run /opsx:archive ${changeName} if lifecycle artifacts are current`,
+					`Optionally run /opsx:verify ${changeName} for an operator-facing verification pass`,
+				];
+			case "reopen":
+				return [
+					`Resume implementation for ${changeName} and reconcile any new follow-up task(s) in tasks.md`,
+					`Re-run /assess ${assessmentKind} ${changeName} after fixes`,
+				];
+			case "ambiguous":
+				return [
+					`Review the assessment summary for ${changeName} and decide whether to reopen work or restate findings structurally`,
+					`If changes were made, re-run /assess ${assessmentKind} ${changeName} before archive`,
+				];
+			default:
+				return [];
+		}
+	}
+
 	// ─── Tool: openspec_manage ───────────────────────────────────────
 
 	pi.registerTool({
@@ -505,12 +531,38 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 					const tree = scanDesignDocs(path.join(cwd, "docs"));
 					emitDesignTreeState(pi, tree, null);
 
+					const lifecycleStatus = evaluateLifecycleReconciliation(cwd, params.change_name);
+					const nextSteps = buildReconciliationNextSteps(params.change_name, params.assessment_kind, params.outcome);
+					const lifecycleSignals = {
+						assessmentKind: params.assessment_kind,
+						outcome: params.outcome,
+						reopened: result.reopened,
+						archiveReady: params.outcome === "pass" && lifecycleStatus.issues.length === 0,
+						requiresOpenSpecReconciliation: result.updatedTaskState || result.outcome !== "pass",
+						requiresDesignTreeRefresh: result.updatedNodeIds.length > 0,
+						boundNodeIds: lifecycleStatus.boundNodeIds,
+						issues: lifecycleStatus.issues,
+					};
+					const observedEffects = {
+						filesChanged: [
+							...(result.updatedTaskState ? [`openspec/changes/${params.change_name}/tasks.md`] : []),
+							...result.updatedNodeIds.map((nodeId) => `docs/${nodeId}.md`),
+						],
+						lifecycleTouched: [
+							"openspec",
+							...(result.updatedNodeIds.length > 0 ? ["design-tree"] : []),
+						],
+						sideEffectClass: "workspace-write",
+					};
+
 					const lines = [
 						`Post-assess reconciliation applied to '${params.change_name}'.`,
 						"",
+						`Assessment kind: ${params.assessment_kind}`,
 						`Outcome: ${result.outcome}`,
 						`Lifecycle reopened: ${result.reopened ? "yes" : "no"}`,
 						`Task state updated: ${result.updatedTaskState ? "yes" : "no"}`,
+						`Archive ready: ${lifecycleSignals.archiveReady ? "yes" : "no"}`,
 					];
 					if (result.updatedNodeIds.length > 0) {
 						lines.push(`Updated design nodes: ${result.updatedNodeIds.join(", ")}`);
@@ -521,13 +573,25 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 					if (result.appendedConstraints.length > 0) {
 						lines.push(`Appended constraints: ${result.appendedConstraints.join(" | ")}`);
 					}
+					if (lifecycleStatus.issues.length > 0) {
+						lines.push("", "Remaining lifecycle issues:", formatReconciliationIssues(lifecycleStatus.issues));
+					}
 					if (result.warning) {
 						lines.push("", `Warning: ${result.warning}`);
+					}
+					if (nextSteps.length > 0) {
+						lines.push("", "Next steps:", ...nextSteps.map((step) => `- ${step}`));
 					}
 
 					return {
 						content: [{ type: "text", text: lines.join("\n") }],
-						details: result,
+						details: {
+							...result,
+							lifecycleSignals,
+							observedEffects,
+							nextSteps,
+							reconcileCandidatesEmitted: reconcileCandidates.length,
+						},
 					};
 				}
 

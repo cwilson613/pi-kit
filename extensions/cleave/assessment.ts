@@ -7,6 +7,36 @@
 
 import type { AssessmentFlags, AssessmentResult, PatternDefinition, PatternMatch } from "./types.ts";
 
+export type AssessStructuredSubcommand = "cleave" | "diff" | "spec" | "complexity" | "session" | "freeform";
+export type AssessEffect =
+	| { type: "view"; content: string; display?: boolean }
+	| { type: "follow_up"; content: string }
+	| {
+		type: "reconcile_hint";
+		changeName: string;
+		assessmentKind: "spec" | "cleave";
+		outcomes: readonly ("pass" | "reopen" | "ambiguous")[];
+	  };
+
+export interface AssessLifecycleHint {
+	changeName: string;
+	assessmentKind: "spec" | "cleave";
+	outcomes: readonly ("pass" | "reopen" | "ambiguous")[];
+}
+
+export interface AssessStructuredResult<TData = unknown> {
+	command: "assess";
+	subcommand: AssessStructuredSubcommand;
+	args: string;
+	ok: boolean;
+	summary: string;
+	humanText: string;
+	data: TData;
+	effects: AssessEffect[];
+	nextSteps: string[];
+	lifecycle?: AssessLifecycleHint;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PATTERN LIBRARY — 12 domain patterns for fast-path assessment
 // ═══════════════════════════════════════════════════════════════════════════

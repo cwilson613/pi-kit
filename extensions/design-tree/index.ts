@@ -213,6 +213,12 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						tags: n.tags,
 						open_questions: n.open_questions.length,
 						dependencies: n.dependencies,
+						branches: n.branches,
+						openspec_change: n.openspec_change ?? null,
+						lifecycle: {
+							boundToOpenSpec: Boolean(n.openspec_change),
+							implementationPhase: n.status === "implementing" || n.status === "implemented",
+						},
 					}));
 					return {
 						content: [{ type: "text", text: JSON.stringify(nodes, null, 2) }],
@@ -239,6 +245,8 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						dependencies: node.dependencies,
 						related: node.related,
 						tags: node.tags,
+						branches: node.branches,
+						openspecChange: node.openspec_change ?? null,
 						children,
 						sections: {
 							overview: sections.overview,
@@ -250,6 +258,16 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 								constraints: sections.implementationNotes.constraints,
 							},
 							extraSections: sections.extraSections.map((s) => s.heading),
+						},
+						lifecycle: {
+							boundToOpenSpec: Boolean(node.openspec_change),
+							canImplement: node.status === "decided",
+							isImplementationPhase: node.status === "implementing" || node.status === "implemented",
+							reopenSignalTarget: node.openspec_change ?? node.id,
+							implementationNoteCounts: {
+								fileScope: sections.implementationNotes.fileScope.length,
+								constraints: sections.implementationNotes.constraints.length,
+							},
 						},
 					};
 

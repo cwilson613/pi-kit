@@ -131,8 +131,8 @@ export default function (pi: ExtensionAPI) {
         overlay: true,
         overlayOptions: {
           anchor: "right-center",
-          width: "40%",
-          minWidth: 40,
+          width: "42%",
+          minWidth: 42,
           maxHeight: "80%",
           margin: { top: 1, right: 1, bottom: 1 },
           visible: (termWidth: number) => termWidth >= 80,

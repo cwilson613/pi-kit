@@ -31,6 +31,15 @@ import {
   type ListItem,
 } from "./overlay-data.ts";
 
+export const INSPECTION_OVERLAY_OPTIONS = {
+  anchor: "center",
+  width: "88%",
+  minWidth: 80,
+  maxHeight: "88%",
+  margin: 1,
+  visible: (termWidth: number) => termWidth >= 100,
+} as const;
+
 // ── Overlay Component ───────────────────────────────────────────
 
 export class DashboardOverlay {
@@ -247,12 +256,13 @@ export class DashboardOverlay {
           : th.fg("dim", "▸ ");
       }
 
-      const itemLines = item.lines(thFn, innerW - 4 - item.depth * 2);
+      const contentWidth = Math.max(1, innerW - 4 - item.depth * 2);
+      const itemLines = item.lines(thFn, contentWidth);
       const openMarker = item.openUri ? th.fg("accent", "↗ ") : "";
       if (itemLines.length > 0) {
-        lines.push(`${cursor}${indent}${expandIcon}${openMarker}${itemLines[0]}`);
+        lines.push(`${cursor}${indent}${expandIcon}${openMarker}${truncateToWidth(itemLines[0], contentWidth, "…")}`);
         for (let j = 1; j < itemLines.length; j++) {
-          lines.push(`  ${indent}  ${itemLines[j]}`);
+          lines.push(`  ${indent}  ${truncateToWidth(itemLines[j], contentWidth, "…")}`);
         }
       }
     }
@@ -299,14 +309,7 @@ export async function showDashboardOverlay(ctx: ExtensionContext, pi?: { events:
     },
     {
       overlay: true,
-      overlayOptions: {
-        anchor: "right-center",
-        width: "40%",
-        minWidth: 40,
-        maxHeight: "80%",
-        margin: { top: 1, right: 1, bottom: 1 },
-        visible: (termWidth: number) => termWidth >= 80,
-      },
+      overlayOptions: INSPECTION_OVERLAY_OPTIONS,
     },
   );
 }

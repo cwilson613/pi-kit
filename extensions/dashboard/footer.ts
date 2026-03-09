@@ -15,7 +15,7 @@ import type { Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
 import type { ReadonlyFooterDataProvider } from "@mariozechner/pi-coding-agent";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { DashboardState } from "./types.ts";
 import { sharedState } from "../shared-state.ts";
 import { debug } from "../debug.ts";
@@ -45,6 +45,55 @@ function sanitizeStatusText(text: string): string {
 }
 
 const CLEAVE_STALE_MS = 30_000;
+
+type PrioritySegment = {
+  text: string;
+  priority?: "high" | "low";
+};
+
+function joinPrioritySegments(width: number, segments: PrioritySegment[], separator = "  "): string {
+  if (width <= 0) return "";
+
+  const high = segments.filter((s) => s.text && s.priority !== "low");
+  const low = segments.filter((s) => s.text && s.priority === "low");
+  const ordered = [...high, ...low];
+  if (ordered.length === 0) return "";
+
+  const fitted: string[] = [];
+  for (const segment of ordered) {
+    const candidate = fitted.length === 0 ? segment.text : `${fitted.join(separator)}${separator}${segment.text}`;
+    if (visibleWidth(candidate) <= width) {
+      fitted.push(segment.text);
+      continue;
+    }
+
+    if (segment.priority === "low") {
+      continue;
+    }
+
+    const prefix = fitted.length === 0 ? "" : `${fitted.join(separator)}${separator}`;
+    const remaining = Math.max(1, width - visibleWidth(prefix));
+    if (remaining > 0) {
+      fitted.push(truncateToWidth(segment.text, remaining, "…"));
+    }
+    break;
+  }
+
+  const joined = fitted.join(separator);
+  return visibleWidth(joined) <= width ? joined : truncateToWidth(joined, width, "…");
+}
+
+function composePrimaryMetaLine(
+  width: number,
+  primary: string,
+  metadata: string[],
+  separator = " · ",
+): string {
+  return joinPrioritySegments(width, [
+    { text: primary, priority: "high" },
+    ...metadata.filter(Boolean).map((text) => ({ text, priority: "low" as const })),
+  ], separator);
+}
 
 export class DashboardFooter implements Component {
   private tui: TUI;
@@ -119,7 +168,7 @@ export class DashboardFooter implements Component {
     const ultraWide = width >= 160;
 
     // Line 1: Dashboard summary + context gauge
-    const dashParts: string[] = [];
+    const dashParts: PrioritySegment[] = [];
 
     // Design tree summary — responsive expansion
     const dt = sharedState.designTree;
@@ -133,22 +182,24 @@ export class DashboardFooter implements Component {
         const qSuffix = dt.focusedNode.questions.length > 0
           ? theme.fg("dim", ` (${dt.focusedNode.questions.length}?)`)
           : "";
-        dashParts.push(theme.fg("accent", `◈ ${dt.decidedCount}/${dt.nodeCount}`) +
-          ` ${statusIcon} ${dt.focusedNode.title}${qSuffix}`);
+        dashParts.push({
+          text: theme.fg("accent", `◈ ${dt.decidedCount}/${dt.nodeCount}`) +
+            ` ${statusIcon} ${dt.focusedNode.title}${qSuffix}`,
+        });
       } else if (wide) {
         // Wide: spell out counts, no node IDs (visible in raised mode)
         const parts = [`${dt.decidedCount} decided`];
         if (dt.exploringCount > 0) parts.push(`${dt.exploringCount} exploring`);
         if (dt.implementingCount > 0) parts.push(`${dt.implementingCount} impl`);
         if (dt.openQuestionCount > 0) parts.push(`${dt.openQuestionCount}?`);
-        dashParts.push(theme.fg("accent", `◈ Design`) + theme.fg("dim", ` ${parts.join(", ")}`));
+        dashParts.push({ text: theme.fg("accent", `◈ Design`) + theme.fg("dim", ` ${parts.join(", ")}`) });
       } else {
         // Narrow: terse
         let dtSummary = `◈ D:${dt.decidedCount}`;
         if (dt.implementingCount > 0) dtSummary += ` I:${dt.implementingCount}`;
         if (dt.implementedCount > 0) dtSummary += ` ✓:${dt.implementedCount}`;
         dtSummary += `/${dt.nodeCount}`;
-        dashParts.push(theme.fg("accent", dtSummary));
+        dashParts.push({ text: theme.fg("accent", dtSummary) });
       }
     }
 
@@ -166,11 +217,13 @@ export class DashboardFooter implements Component {
             ? theme.fg(allDone ? "success" : "dim", ` ${totalDone}/${totalAll}`)
             : "";
           const icon = allDone ? theme.fg("success", " ✓") : "";
-          dashParts.push(theme.fg("accent", `◎ Spec`) +
-            theme.fg("dim", ` ${active.length} change${active.length > 1 ? "s" : ""}`) +
-            progress + icon);
+          dashParts.push({
+            text: theme.fg("accent", `◎ Spec`) +
+              theme.fg("dim", ` ${active.length} change${active.length > 1 ? "s" : ""}`) +
+              progress + icon,
+          });
         } else {
-          dashParts.push(theme.fg("accent", `◎ OS:${active.length}`));
+          dashParts.push({ text: theme.fg("accent", `◎ OS:${active.length}`) });
         }
       }
     }
@@ -179,23 +232,25 @@ export class DashboardFooter implements Component {
     const cl = sharedState.cleave;
     if (cl) {
       if (cl.status === "idle") {
-        dashParts.push(theme.fg("dim", "⚡ idle"));
+        dashParts.push({ text: theme.fg("dim", "⚡ idle") });
       } else if (cl.status === "done") {
         const childInfo = wide && cl.children
           ? ` ${cl.children.filter(c => c.status === "done").length}/${cl.children.length}`
           : "";
-        dashParts.push(theme.fg("success", `⚡ done${childInfo}`));
+        dashParts.push({ text: theme.fg("success", `⚡ done${childInfo}`) });
       } else if (cl.status === "failed") {
-        dashParts.push(theme.fg("error", "⚡ fail"));
+        dashParts.push({ text: theme.fg("error", "⚡ fail") });
       } else {
         // Active dispatch — show child progress at wide widths
         if (wide && cl.children && cl.children.length > 0) {
           const done = cl.children.filter(c => c.status === "done").length;
           const running = cl.children.filter(c => c.status === "running").length;
-          dashParts.push(theme.fg("warning", `⚡ ${cl.status}`) +
-            theme.fg("dim", ` ${done}✓ ${running}⟳ /${cl.children.length}`));
+          dashParts.push({
+            text: theme.fg("warning", `⚡ ${cl.status}`) +
+              theme.fg("dim", ` ${done}✓ ${running}⟳ /${cl.children.length}`),
+          });
         } else {
-          dashParts.push(theme.fg("warning", `⚡ ${cl.status}`));
+          dashParts.push({ text: theme.fg("warning", `⚡ ${cl.status}`) });
         }
       }
     }
@@ -204,7 +259,7 @@ export class DashboardFooter implements Component {
     const barWidth = ultraWide ? 24 : wide ? 20 : 16;
     const gauge = this.buildContextGauge(barWidth);
     if (gauge) {
-      dashParts.push(gauge);
+      dashParts.push({ text: gauge });
     }
 
     // Compact mode should stay dashboard-first, but still expose the active
@@ -212,10 +267,13 @@ export class DashboardFooter implements Component {
     const ctx = this.ctxRef;
     const model = ctx?.model;
     if (model && wide) {
-      const modelLabel = this.footerData.getAvailableProviderCount() > 1
-        ? `${model.provider}/${model.id}`
-        : model.id;
-      dashParts.push(theme.fg("dim", modelLabel));
+      const multiProvider = this.footerData.getAvailableProviderCount() > 1;
+      const driverLabel = multiProvider ? model.provider : "default";
+      const modelLabel = multiProvider ? `${driverLabel}/${model.id}` : model.id;
+      dashParts.push({
+        text: theme.fg("dim", "Model ") + theme.fg("muted", modelLabel),
+        priority: "low",
+      });
     }
 
     // Append /dash hint for discoverability (varies by mode)
@@ -223,12 +281,11 @@ export class DashboardFooter implements Component {
       ? theme.fg("dim", "/dashboard to close")
       : theme.fg("dim", "/dash to expand");
 
-    if (dashParts.length > 0) {
-      const joined = dashParts.join("  ");
-      lines.push(truncateToWidth(joined + "  " + dashHint, width, "…"));
-    } else {
-      lines.push(truncateToWidth(dashHint, width, "…"));
-    }
+    const compactLine = joinPrioritySegments(width, [
+      ...dashParts,
+      { text: dashHint, priority: "low" },
+    ]);
+    lines.push(compactLine || truncateToWidth(dashHint, width, "…"));
 
     // Compact mode is intentionally dashboard-only. Detailed footer metadata
     // stays in raised mode so the compact footer does not look like the built-in
@@ -255,7 +312,7 @@ export class DashboardFooter implements Component {
     lines.push(...this.buildOpenSpecLines(width));
 
     // Cleave section
-    lines.push(...this.buildCleaveLines());
+    lines.push(...this.buildCleaveLines(width));
 
     const raisedMeta = this.buildRaisedMetaLine(width);
     if (raisedMeta) {
@@ -288,13 +345,13 @@ export class DashboardFooter implements Component {
     const theme = this.theme;
     const gutter = "  ";
 
-    // Build left column (Design Tree + Cleave) and right column (OpenSpec)
-    const leftLines = this.buildDesignTreeLines(width);
-    leftLines.push(...this.buildCleaveLines());
-    const rightLines = this.buildOpenSpecLines(width);
-
     // Calculate column widths — give each half, minus a soft gutter.
     const colWidth = Math.floor((width - gutter.length) / 2);
+
+    // Build left column (Design Tree + Cleave) and right column (OpenSpec)
+    const leftLines = this.buildDesignTreeLines(colWidth);
+    leftLines.push(...this.buildCleaveLines(colWidth));
+    const rightLines = this.buildOpenSpecLines(colWidth);
 
     // Merge columns side by side without a literal divider. The spacing is
     // enough to separate sections and looks cleaner than an ASCII fence.
@@ -336,7 +393,7 @@ export class DashboardFooter implements Component {
 
   // ── Section builders (shared by stacked + column layouts) ─────
 
-  private buildDesignTreeLines(_width: number): string[] {
+  private buildDesignTreeLines(width: number): string[] {
     const theme = this.theme;
     const lines: string[] = [];
     const dt = sharedState.designTree;
@@ -365,7 +422,11 @@ export class DashboardFooter implements Component {
         ? theme.fg("dim", ` · ${dt.focusedNode.branch}`) + branchExtra
         : "";
       const linkedTitle = linkDashboardFile(dt.focusedNode.title, dt.focusedNode.filePath);
-      lines.push(`  ${statusIcon} ${linkedTitle}${branchInfo}${qCount}`);
+      lines.push(composePrimaryMetaLine(
+        width,
+        `  ${statusIcon} ${linkedTitle}`,
+        [branchInfo, qCount],
+      ));
     }
 
     // Implementing nodes (if no focused node)
@@ -373,7 +434,11 @@ export class DashboardFooter implements Component {
       for (const n of dt.implementingNodes.slice(0, 3)) {
         const branchSuffix = n.branch ? theme.fg("dim", ` · ${n.branch}`) : "";
         const linkedTitle = linkDashboardFile(n.title, n.filePath);
-        lines.push(`  ${theme.fg("accent", "⚙")} ${linkedTitle}${branchSuffix}`);
+        lines.push(composePrimaryMetaLine(
+          width,
+          `  ${theme.fg("accent", "⚙")} ${linkedTitle}`,
+          [branchSuffix],
+        ));
       }
     }
 
@@ -384,7 +449,11 @@ export class DashboardFooter implements Component {
         const icon = this.nodeStatusIcon(n.status);
         const linkedId = linkDashboardFile(theme.fg("dim", n.id), n.filePath);
         const qSuffix = n.questionCount > 0 ? theme.fg("dim", ` (${n.questionCount}?)`) : "";
-        lines.push(`  ${icon} ${linkedId}${qSuffix}`);
+        lines.push(composePrimaryMetaLine(
+          width,
+          `  ${icon} ${linkedId}`,
+          [qSuffix],
+        ));
       }
       if (dt.nodes.length > maxShow) {
         lines.push(theme.fg("dim", `  +${dt.nodes.length - maxShow} more`));
@@ -407,7 +476,7 @@ export class DashboardFooter implements Component {
     }
   }
 
-  private buildOpenSpecLines(_width: number): string[] {
+  private buildOpenSpecLines(width: number): string[] {
     const theme = this.theme;
     const lines: string[] = [];
     const os = sharedState.openspec;
@@ -444,13 +513,17 @@ export class DashboardFooter implements Component {
       const stage = stageLabel ? theme.fg(stageColor, ` · ${stageLabel}`) : "";
 
       const linkedName = linkOpenSpecChange(c.name, c.path);
-      lines.push(`  ${icon} ${linkedName}${progress}${stage}`);
+      lines.push(composePrimaryMetaLine(
+        width,
+        `  ${icon} ${linkedName}`,
+        [progress, stage],
+      ));
     }
 
     return lines;
   }
 
-  private buildCleaveLines(): string[] {
+  private buildCleaveLines(width: number): string[] {
     const theme = this.theme;
     const lines: string[] = [];
     const cl = sharedState.cleave;
@@ -464,7 +537,11 @@ export class DashboardFooter implements Component {
     const statusColor: ThemeColor = cl.status === "done" ? "success"
       : cl.status === "failed" ? "error"
       : "warning";
-    lines.push(theme.fg("accent", "⚡ Cleave") + "  " + theme.fg(statusColor, cl.status));
+    lines.push(composePrimaryMetaLine(
+      width,
+      theme.fg("accent", "⚡ Cleave"),
+      [theme.fg(statusColor, cl.status)],
+    ));
 
     if (cl.children && cl.children.length > 0) {
       const doneCount = cl.children.filter(c => c.status === "done").length;
@@ -482,8 +559,30 @@ export class DashboardFooter implements Component {
     const wide = width >= 120;
     const barWidth = wide ? 20 : 16;
     const gauge = this.buildContextGauge(barWidth);
-    if (!gauge) return "";
-    return truncateToWidth(theme.fg("dim", "Context ") + gauge, width, "…");
+    const parts: string[] = [];
+
+    if (gauge) {
+      parts.push(theme.fg("dim", "Context ") + gauge);
+    }
+
+    const model = this.ctxRef?.model;
+    if (model) {
+      const multiProvider = this.footerData.getAvailableProviderCount() > 1;
+      const driverLabel = multiProvider ? model.provider : "default";
+      parts.push(theme.fg("dim", "Driver ") + theme.fg("muted", driverLabel));
+      parts.push(theme.fg("dim", "Model ") + theme.fg("muted", model.id));
+
+      if (model.reasoning) {
+        const thinkColor: ThemeColor = this.cachedThinkingLevel === "high" ? "accent"
+          : this.cachedThinkingLevel === "medium" ? "muted"
+          : this.cachedThinkingLevel === "low" || this.cachedThinkingLevel === "minimal" ? "dim"
+          : "dim";
+        const thinkIcon = this.cachedThinkingLevel === "off" ? "○" : "◉";
+        parts.push(theme.fg("dim", "Think ") + theme.fg(thinkColor, `${thinkIcon} ${this.cachedThinkingLevel}`));
+      }
+    }
+
+    return parts.length > 0 ? truncateToWidth(parts.join(theme.fg("dim", "  ·  ")), width, "…") : "";
   }
 
   private buildMemoryAuditLine(width: number): string {

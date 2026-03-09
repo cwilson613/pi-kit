@@ -80,4 +80,45 @@ describe("DashboardFooter compact mode", () => {
     const lines = footer.render(160);
     assert.match(lines[0], /openai-codex\/gpt-5\.4/);
   });
+
+  it("preserves primary dashboard summaries before truncating low-priority metadata", () => {
+    (sharedState as any).designTree = {
+      nodeCount: 4,
+      decidedCount: 4,
+      exploringCount: 0,
+      implementingCount: 0,
+      implementedCount: 15,
+      blockedCount: 0,
+      openQuestionCount: 0,
+      focusedNode: {
+        id: "very-long-node",
+        title: "Extremely Long Focused Design Node Title That Should Not Displace Core Summaries",
+        status: "decided",
+        questions: [],
+      },
+      implementingNodes: [],
+    };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "compact", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext({
+      ...makeContext(),
+      model: {
+        provider: "provider-with-a-very-long-name",
+        id: "model-with-a-very-long-identifier-that-should-be-truncated-last",
+        reasoning: true,
+      },
+    } as any);
+
+    const [line] = footer.render(95);
+    assert.ok(line.includes("◈"), line);
+    assert.ok(line.includes("◎"), line);
+    assert.ok(line.includes("⚡ idle"), line);
+    assert.ok(!line.includes("provider-with-a-very-long-name"), line);
+    assert.ok(!line.includes("model-with-a-very-long-identifier"), line);
+  });
 });

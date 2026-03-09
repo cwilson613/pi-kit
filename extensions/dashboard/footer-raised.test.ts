@@ -123,4 +123,52 @@ describe("DashboardFooter raised mode polish", () => {
     assert.ok(!memoryLine?.includes("chars:"));
     assert.ok(!memoryLine?.includes("hits:"));
   });
+
+  it("truncates raised rows by dropping metadata before the primary label", () => {
+    (sharedState as any).designTree = {
+      nodeCount: 1,
+      decidedCount: 0,
+      exploringCount: 0,
+      implementingCount: 1,
+      implementedCount: 0,
+      blockedCount: 0,
+      openQuestionCount: 4,
+      focusedNode: {
+        id: "long-node",
+        title: "I2P Integration With An Extremely Verbose Title That Must Stay Recognizable",
+        status: "implementing",
+        questions: ["one", "two", "three", "four"],
+        branch: "feature/i2p-integration-with-a-very-very-long-branch-name",
+        filePath: "docs/unified-dashboard.md",
+      },
+      implementingNodes: [],
+      nodes: [],
+    };
+    (sharedState as any).openspec = {
+      changes: [{
+        name: "very-long-openspec-change-name-that-should-still-show-before-progress-metadata",
+        stage: "implementing",
+        tasksDone: 25,
+        tasksTotal: 27,
+        path: `${process.cwd()}/openspec/changes/dashboard-wide-truncation`,
+      }],
+    };
+    (sharedState as any).cleave = { status: "idle", updatedAt: Date.now(), children: [] };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(110);
+    const designLine = lines.find((line) => line.includes("I2P Integration"));
+    const specLine = lines.find((line) => line.includes("very-long-openspec-change-name"));
+    assert.ok(designLine, lines.join("\n"));
+    assert.ok(specLine, lines.join("\n"));
+    assert.ok(designLine!.includes("⚙"), designLine);
+    assert.ok(specLine!.includes("◦"), specLine);
+  });
 });

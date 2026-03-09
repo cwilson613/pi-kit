@@ -17,6 +17,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { createHash } from "node:crypto";
 
 import { sharedState, DASHBOARD_UPDATE_EVENT } from "../shared-state.ts";
 import { debug } from "../debug.ts";
@@ -27,6 +28,8 @@ import {
 	PATTERNS,
 	type AssessEffect,
 	type AssessLifecycleHint,
+	type AssessLifecycleOutcome,
+	type AssessLifecycleRecord,
 	type AssessStructuredResult,
 } from "./assessment.ts";
 import { detectConflicts, parseTaskResult } from "./conflicts.ts";
@@ -201,6 +204,7 @@ function makeAssessResult<TData>(input: {
 	effects?: AssessEffect[];
 	nextSteps?: string[];
 	lifecycle?: AssessLifecycleHint;
+	lifecycleRecord?: AssessLifecycleRecord;
 }): AssessStructuredResult<TData> {
 	return {
 		command: "assess",
@@ -213,6 +217,62 @@ function makeAssessResult<TData>(input: {
 		effects: input.effects ?? [],
 		nextSteps: input.nextSteps ?? [],
 		lifecycle: input.lifecycle,
+		lifecycleRecord: input.lifecycleRecord,
+	};
+}
+
+async function collectAssessmentSnapshot(pi: ExtensionAPI, cwd: string): Promise<{ gitHead: string | null; fingerprint: string }> {
+	let gitHead: string | null = null;
+	let status = "";
+
+	try {
+		const head = await pi.exec("git", ["rev-parse", "--short", "HEAD"], { cwd, timeout: 5_000 });
+		if (head.code === 0) gitHead = head.stdout.trim() || null;
+	} catch {
+		/* proceed with null gitHead */
+	}
+
+	try {
+		const diff = await pi.exec("git", ["status", "--short", "--untracked-files=all"], { cwd, timeout: 5_000 });
+		if (diff.code === 0) status = diff.stdout.trim();
+	} catch {
+		/* proceed with empty status */
+	}
+
+	const fingerprint = createHash("sha256")
+		.update(gitHead ?? "nogit")
+		.update("\n")
+		.update(status)
+		.digest("hex");
+
+	return { gitHead, fingerprint };
+}
+
+async function buildLifecycleRecord(
+	pi: ExtensionAPI,
+	cwd: string,
+	options: {
+		changeName: string;
+		assessmentKind: "spec" | "cleave";
+		outcome: AssessLifecycleOutcome;
+		recommendedAction: string | null;
+		changedFiles?: string[];
+		constraints?: string[];
+	},
+): Promise<AssessLifecycleRecord> {
+	const snapshot = await collectAssessmentSnapshot(pi, cwd);
+	return {
+		changeName: options.changeName,
+		assessmentKind: options.assessmentKind,
+		outcome: options.outcome,
+		timestamp: new Date().toISOString(),
+		snapshot,
+		reconciliation: {
+			reopen: options.outcome === "reopen",
+			changedFiles: [...new Set((options.changedFiles ?? []).map((file) => file.trim()).filter(Boolean))],
+			constraints: [...new Set((options.constraints ?? []).map((constraint) => constraint.trim()).filter(Boolean))],
+			recommendedAction: options.recommendedAction,
+		},
 	};
 }
 
@@ -387,6 +447,14 @@ async function executeAssessCleave(
 		"Then commit with a conventional commit message summarizing all fixes.",
 		...postAssessInstruction,
 	].join("\n");
+	const lifecycleRecord = targetChange
+		? await buildLifecycleRecord(pi, ctx.cwd, {
+			changeName: targetChange,
+			assessmentKind: "cleave",
+			outcome: "ambiguous",
+			recommendedAction: `Run openspec_manage reconcile_after_assess ${targetChange} with outcome pass, reopen, or ambiguous after review completes.`,
+		})
+		: undefined;
 	const humanText = [
 		"**Assess → Cleave pipeline starting...**",
 		"",
@@ -408,6 +476,7 @@ async function executeAssessCleave(
 			recentLog: diffContext.recentLog,
 			hasGuardrails: Boolean(guardrailPreamble),
 			reconcileChange: targetChange ?? null,
+			snapshot: lifecycleRecord?.snapshot ?? null,
 		},
 		effects: [
 			{ type: "view", content: humanText },
@@ -416,6 +485,7 @@ async function executeAssessCleave(
 		],
 		nextSteps,
 		lifecycle,
+		lifecycleRecord,
 	});
 }
 
@@ -614,6 +684,12 @@ async function executeAssessSpec(
 		assessmentKind: "spec",
 		outcomes: ["pass", "reopen", "ambiguous"],
 	};
+	const lifecycleRecord = await buildLifecycleRecord(pi, ctx.cwd, {
+		changeName: target.name,
+		assessmentKind: "spec",
+		outcome: "ambiguous",
+		recommendedAction: `Run openspec_manage reconcile_after_assess ${target.name} with outcome pass, reopen, or ambiguous after scenario evaluation completes.`,
+	});
 	const humanText = [
 		`**Spec Assessment: \`${target.name}\`**`,
 		"",
@@ -660,6 +736,7 @@ async function executeAssessSpec(
 			scenarioCount: specCtx.specScenarios.length,
 			decisionCount: specCtx.decisions.length,
 			hasApiContract: Boolean(specCtx.apiContract),
+			snapshot: lifecycleRecord.snapshot,
 		},
 		effects: [
 			{ type: "view", content: humanText },
@@ -668,6 +745,7 @@ async function executeAssessSpec(
 		],
 		nextSteps: ["Assess each scenario", "Reconcile lifecycle state based on the assessment outcome"],
 		lifecycle,
+		lifecycleRecord,
 	});
 }
 
@@ -831,11 +909,12 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			data: {
 				subcommand: result.subcommand,
 				data: result.data,
-				lifecycle: result.lifecycle,
+				lifecycleHint: result.lifecycle,
 			},
+			lifecycle: result.lifecycleRecord,
 			effects: {
 				sideEffectClass: result.subcommand === "cleave" ? "workspace-write" : "read",
-				lifecycleTouched: result.lifecycle ? [result.lifecycle.changeName] : undefined,
+				lifecycleTouched: result.lifecycleRecord ? [result.lifecycleRecord.changeName] : undefined,
 			},
 			nextSteps: result.nextSteps.map((step) => ({ label: step })),
 		});
@@ -932,7 +1011,8 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 				data: (result.data as any)?.data,
 				effects: [],
 				nextSteps: (result.nextSteps ?? []).map((step) => step.label),
-				lifecycle: (result.data as any)?.lifecycle,
+				lifecycle: (result.data as any)?.lifecycleHint,
+				lifecycleRecord: result.lifecycle as AssessLifecycleRecord | undefined,
 			};
 			applyAssessEffects(pi, assessResult);
 		},

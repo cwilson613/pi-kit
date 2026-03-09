@@ -52,6 +52,33 @@ import { emitDesignTreeState } from "../design-tree/dashboard-state.ts";
 import { emitArchiveCandidates, emitReconcileCandidates } from "./lifecycle-emitter.ts";
 import { sharedState } from "../shared-state.ts";
 
+interface AssessmentSnapshot {
+	gitHead: string | null;
+	fingerprint: string;
+}
+
+interface PersistedAssessmentRecord {
+	changeName: string;
+	assessmentKind: "spec" | "cleave";
+	outcome: "pass" | "reopen" | "ambiguous";
+	timestamp: string;
+	summary?: string;
+	snapshot: AssessmentSnapshot;
+	reconciliation: {
+		reopen: boolean;
+		changedFiles: string[];
+		constraints: string[];
+		recommendedAction: "reconcile_after_assess" | null;
+	};
+}
+
+interface AssessmentState {
+	record: PersistedAssessmentRecord | null;
+	currentSnapshot: AssessmentSnapshot | null;
+	status: "missing" | "current" | "stale";
+	reason: string;
+}
+
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function openspecExtension(pi: ExtensionAPI): void {
@@ -168,6 +195,148 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 			default:
 				return [];
 		}
+	}
+
+	function getAssessmentPath(changePath: string): string {
+		return path.join(changePath, "assessment.json");
+	}
+
+	function stableJson(value: unknown): string {
+		return JSON.stringify(value, null, 2) + "\n";
+	}
+
+	async function readGitHead(cwd: string): Promise<string | null> {
+		try {
+			const result = await pi.exec("git", ["rev-parse", "--short", "HEAD"], { cwd, timeout: 5_000 });
+			return result.code === 0 ? result.stdout.trim() || null : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function collectSnapshotFingerprint(changePath: string): string {
+		const targets = ["design.md", "tasks.md", "proposal.md", "specs", "assessment.json"];
+		const stamps: string[] = [];
+		const walk = (basePath: string): void => {
+			for (const entry of fs.readdirSync(basePath, { withFileTypes: true })) {
+				const entryPath = path.join(basePath, entry.name);
+				if (entry.isDirectory()) {
+					walk(entryPath);
+					continue;
+				}
+				if (!entry.isFile()) continue;
+				const entryStat = fs.statSync(entryPath);
+				stamps.push(`${path.relative(changePath, entryPath)}:${entryStat.mtimeMs}`);
+			}
+		};
+		for (const target of targets) {
+			const targetPath = path.join(changePath, target);
+			if (!fs.existsSync(targetPath)) continue;
+			const stat = fs.statSync(targetPath);
+			if (stat.isDirectory()) {
+				walk(targetPath);
+				continue;
+			}
+			stamps.push(`${target}:${stat.mtimeMs}`);
+		}
+		return stamps.sort().join("|");
+	}
+
+	async function computeAssessmentSnapshot(changePath: string, cwd: string): Promise<AssessmentSnapshot> {
+		return {
+			gitHead: await readGitHead(cwd),
+			fingerprint: collectSnapshotFingerprint(changePath),
+		};
+	}
+
+	function readAssessmentRecord(changePath: string): PersistedAssessmentRecord | null {
+		const assessmentPath = getAssessmentPath(changePath);
+		if (!fs.existsSync(assessmentPath)) return null;
+		try {
+			const parsed = JSON.parse(fs.readFileSync(assessmentPath, "utf-8")) as PersistedAssessmentRecord;
+			return parsed.changeName && parsed.snapshot ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function writeAssessmentRecord(changePath: string, record: PersistedAssessmentRecord): string {
+		const assessmentPath = getAssessmentPath(changePath);
+		fs.writeFileSync(assessmentPath, stableJson(record), "utf-8");
+		return assessmentPath;
+	}
+
+	function snapshotsMatch(left: AssessmentSnapshot, right: AssessmentSnapshot): boolean {
+		return left.gitHead === right.gitHead && left.fingerprint === right.fingerprint;
+	}
+
+	async function getAssessmentState(cwd: string, change: ChangeInfo): Promise<AssessmentState> {
+		const record = readAssessmentRecord(change.path);
+		const currentSnapshot = await computeAssessmentSnapshot(change.path, cwd);
+		if (!record) {
+			return {
+				record: null,
+				currentSnapshot,
+				status: "missing",
+				reason: "No persisted assessment record found for this change.",
+			};
+		}
+		if (!snapshotsMatch(record.snapshot, currentSnapshot)) {
+			return {
+				record,
+				currentSnapshot,
+				status: "stale",
+				reason: "The persisted assessment does not match the current implementation snapshot.",
+			};
+		}
+		return {
+			record,
+			currentSnapshot,
+			status: "current",
+			reason: "The persisted assessment matches the current implementation snapshot.",
+		};
+	}
+
+	function buildArchiveAssessmentGate(
+		state: AssessmentState,
+		changeName: string,
+	): { ok: boolean; message: string } {
+		if (!state.record) {
+			return {
+				ok: false,
+				message: `Archive refused for '${changeName}' because no persisted assessment record exists. Run /opsx:verify ${changeName} first.`,
+			};
+		}
+		if (state.status === "stale") {
+			return {
+				ok: false,
+				message: `Archive refused for '${changeName}' because the latest assessment is stale for the current implementation snapshot. Run /opsx:verify ${changeName} to refresh it.`,
+			};
+		}
+		if (state.record.outcome === "ambiguous") {
+			return {
+				ok: false,
+				message: `Archive refused for '${changeName}' because the latest structured assessment is ambiguous. Re-run verification and reconcile the result before archive.`,
+			};
+		}
+		if (state.record.outcome === "reopen") {
+			return {
+				ok: false,
+				message: `Archive refused for '${changeName}' because the latest structured assessment reopened work. Finish the follow-up work, then verify again.`,
+			};
+		}
+		return { ok: true, message: "Assessment gate satisfied." };
+	}
+
+	function formatAssessmentSummary(record: PersistedAssessmentRecord): string[] {
+		return [
+			`Assessment kind: ${record.assessmentKind}`,
+			`Outcome: ${record.outcome}`,
+			`Timestamp: ${record.timestamp}`,
+			`Snapshot: git=${record.snapshot.gitHead ?? "detached"} fingerprint=${record.snapshot.fingerprint ? "present" : "missing"}`,
+			`Recommended action: ${record.reconciliation.recommendedAction ?? "none"}`,
+			...(record.summary ? [`Summary: ${record.summary}`] : []),
+		];
 	}
 
 	// ─── Tool: openspec_manage ───────────────────────────────────────
@@ -289,6 +458,14 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 							const reqs = spec.sections.flatMap((s) => s.requirements);
 							const scenarios = reqs.flatMap((r) => r.scenarios);
 							lines.push(`  - ${spec.domain}: ${reqs.length} requirements, ${scenarios.length} scenarios`);
+						}
+					}
+
+					const assessmentRecord = readAssessmentRecord(change.path);
+					if (assessmentRecord) {
+						lines.push("", "**Assessment:**");
+						for (const line of formatAssessmentSummary(assessmentRecord)) {
+							lines.push(`  - ${line}`);
 						}
 					}
 
@@ -510,6 +687,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						};
 					}
 
+					const change = getChange(cwd, params.change_name);
 					const result = applyPostAssessReconciliation(cwd, params.change_name, {
 						assessmentKind: params.assessment_kind,
 						outcome: params.outcome,
@@ -517,6 +695,23 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						changedFiles: params.changed_files,
 						constraints: params.constraints,
 					});
+					const snapshot = change ? await computeAssessmentSnapshot(change.path, cwd) : null;
+					const assessmentPath = change && snapshot
+						? writeAssessmentRecord(change.path, {
+							changeName: params.change_name,
+							assessmentKind: params.assessment_kind,
+							outcome: params.outcome,
+							timestamp: new Date().toISOString(),
+							summary: params.summary,
+							snapshot,
+							reconciliation: {
+								reopen: params.outcome === "reopen",
+								changedFiles: params.changed_files ?? [],
+								constraints: params.constraints ?? [],
+								recommendedAction: params.outcome === "pass" ? null : "reconcile_after_assess",
+							},
+						})
+						: null;
 
 					const reconcileCandidates = emitReconcileCandidates(params.change_name, params.summary, params.constraints);
 					if (reconcileCandidates.length > 0) {
@@ -563,6 +758,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						`Lifecycle reopened: ${result.reopened ? "yes" : "no"}`,
 						`Task state updated: ${result.updatedTaskState ? "yes" : "no"}`,
 						`Archive ready: ${lifecycleSignals.archiveReady ? "yes" : "no"}`,
+						...(assessmentPath ? [`Assessment record: ${assessmentPath}`] : []),
 					];
 					if (result.updatedNodeIds.length > 0) {
 						lines.push(`Updated design nodes: ${result.updatedNodeIds.join(", ")}`);
@@ -587,6 +783,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						content: [{ type: "text", text: lines.join("\n") }],
 						details: {
 							...result,
+							assessmentPath,
 							lifecycleSignals,
 							observedEffects,
 							nextSteps,
@@ -601,6 +798,30 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						return { content: [{ type: "text", text: "Error: change_name required" }], details: {}, isError: true };
 					}
 
+					const changeInfo = getChange(cwd, params.change_name);
+					if (!changeInfo) {
+						return {
+							content: [{ type: "text", text: `Change '${params.change_name}' not found` }],
+							details: {},
+							isError: true,
+						};
+					}
+					const assessmentState = await getAssessmentState(cwd, changeInfo);
+					const assessmentGate = buildArchiveAssessmentGate(assessmentState, params.change_name);
+					if (!assessmentGate.ok) {
+						return {
+							content: [{
+								type: "text",
+								text: [
+									assessmentGate.message,
+									...(assessmentState.record ? ["", ...formatAssessmentSummary(assessmentState.record)] : []),
+								].join("\n"),
+							}],
+							details: { assessmentState },
+							isError: true,
+						};
+					}
+
 					const reconciliation = evaluateLifecycleReconciliation(cwd, params.change_name);
 					if (reconciliation.issues.length > 0) {
 						return {
@@ -612,12 +833,11 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 									formatReconciliationIssues(reconciliation.issues),
 								].join("\n"),
 							}],
-							details: reconciliation,
+							details: { reconciliation, assessmentState },
 							isError: true,
 						};
 					}
 
-					const changeInfo = getChange(cwd, params.change_name);
 					const result = archiveChange(cwd, params.change_name);
 					if (!result.archived) {
 						return {
@@ -826,15 +1046,30 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			// Delegate to /assess spec which already handles spec verification
+			const assessmentState = await getAssessmentState(ctx.cwd, change);
+			if (assessmentState.status === "current" && assessmentState.record) {
+				ctx.ui.notify([
+					`Verification state for '${changeName}' is current:`,
+					...formatAssessmentSummary(assessmentState.record),
+				].join("\n"), assessmentState.record.outcome === "pass" ? "info" : "warning");
+				return;
+			}
+
+			const refreshReason = assessmentState.status === "missing"
+				? "No persisted assessment exists yet."
+				: assessmentState.reason;
 			pi.sendMessage({
 				customType: "openspec-verify",
 				content: [
 					`[OpenSpec: Verify \`${changeName}\`]`,
 					"",
-					`Run \`/assess spec ${changeName}\` to verify the implementation against spec scenarios.`,
+					`${refreshReason}`,
 					"",
-					`If all scenarios pass, the change is ready for \`/opsx:archive ${changeName}\`.`,
+					`Run \`/assess spec ${changeName}\` now and persist the resulting structured lifecycle state by calling \`openspec_manage\` with action \`reconcile_after_assess\`, change_name \`${changeName}\`, assessment_kind \`spec\`, and the appropriate outcome.`,
+					"",
+					"If the assessment passes cleanly, persist outcome `pass`. If it reopens work, persist `reopen`. If the reviewer cannot determine status safely, persist `ambiguous`.",
+					"",
+					`After persistence, archive remains gated until the current assessment for \`${changeName}\` explicitly passes.`,
 				].join("\n"),
 				display: true,
 			}, { triggerTurn: true });
@@ -853,6 +1088,16 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 			const change = getChange(ctx.cwd, changeName);
 			if (!change) {
 				ctx.ui.notify(`Change '${changeName}' not found`, "error");
+				return;
+			}
+
+			const assessmentState = await getAssessmentState(ctx.cwd, change);
+			const assessmentGate = buildArchiveAssessmentGate(assessmentState, changeName);
+			if (!assessmentGate.ok) {
+				ctx.ui.notify([
+					assessmentGate.message,
+					...(assessmentState.record ? ["", ...formatAssessmentSummary(assessmentState.record)] : []),
+				].join("\n"), "warning");
 				return;
 			}
 

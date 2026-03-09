@@ -32,13 +32,14 @@ export interface SlashCommandBridgeNextStep {
   rationale?: string;
 }
 
-export interface SlashCommandBridgeResult<TData = unknown> {
+export interface SlashCommandBridgeResult<TData = unknown, TLifecycle = unknown> {
   command: string;
   args: string[];
   ok: boolean;
   summary: string;
   humanText: string;
   data?: TData;
+  lifecycle?: TLifecycle;
   effects: SlashCommandBridgeEffects;
   nextSteps?: SlashCommandBridgeNextStep[];
   confirmationRequired?: boolean;
@@ -46,14 +47,14 @@ export interface SlashCommandBridgeResult<TData = unknown> {
 
 export type SlashCommandExecutionContext = ExtensionContext | ExtensionCommandContext;
 
-export interface SlashCommandStructuredExecutor<TData = unknown> {
-  (args: string, ctx: SlashCommandExecutionContext): Promise<SlashCommandBridgeResult<TData>>;
+export interface SlashCommandStructuredExecutor<TData = unknown, TLifecycle = unknown> {
+  (args: string, ctx: SlashCommandExecutionContext): Promise<SlashCommandBridgeResult<TData, TLifecycle>>;
 }
 
-export interface BridgedSlashCommand<TData = unknown> extends Omit<RegisteredCommand, "handler"> {
-  structuredExecutor: SlashCommandStructuredExecutor<TData>;
+export interface BridgedSlashCommand<TData = unknown, TLifecycle = unknown> extends Omit<RegisteredCommand, "handler"> {
+  structuredExecutor: SlashCommandStructuredExecutor<TData, TLifecycle>;
   bridge: SlashCommandBridgeMetadata;
-  interactiveHandler?: (result: SlashCommandBridgeResult<TData>, args: string, ctx: ExtensionCommandContext) => Promise<void>;
+  interactiveHandler?: (result: SlashCommandBridgeResult<TData, TLifecycle>, args: string, ctx: ExtensionCommandContext) => Promise<void>;
 }
 
 export interface SlashCommandBridgeExecuteRequest {
@@ -200,11 +201,11 @@ export function createSlashCommandBridge(): SlashCommandBridge {
   return new SlashCommandBridge();
 }
 
-export function buildSlashCommandResult<TData = unknown>(
+export function buildSlashCommandResult<TData = unknown, TLifecycle = unknown>(
   command: string,
   args: readonly string[] | undefined,
-  options: Omit<SlashCommandBridgeResult<TData>, "command" | "args">,
-): SlashCommandBridgeResult<TData> {
+  options: Omit<SlashCommandBridgeResult<TData, TLifecycle>, "command" | "args">,
+): SlashCommandBridgeResult<TData, TLifecycle> {
   return {
     command,
     args: [...(args ?? [])],

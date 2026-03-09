@@ -18,10 +18,33 @@ export type AssessEffect =
 		outcomes: readonly ("pass" | "reopen" | "ambiguous")[];
 	  };
 
+export type AssessLifecycleOutcome = "pass" | "reopen" | "ambiguous";
+
 export interface AssessLifecycleHint {
 	changeName: string;
 	assessmentKind: "spec" | "cleave";
-	outcomes: readonly ("pass" | "reopen" | "ambiguous")[];
+	outcomes: readonly AssessLifecycleOutcome[];
+}
+
+export interface AssessSnapshotIdentity {
+	gitHead: string | null;
+	fingerprint: string;
+}
+
+export interface AssessReconciliationHints {
+	reopen: boolean;
+	changedFiles: string[];
+	constraints: string[];
+	recommendedAction: string | null;
+}
+
+export interface AssessLifecycleRecord {
+	changeName: string;
+	assessmentKind: "spec" | "cleave";
+	outcome: AssessLifecycleOutcome;
+	timestamp: string;
+	snapshot: AssessSnapshotIdentity;
+	reconciliation: AssessReconciliationHints;
 }
 
 export interface AssessStructuredResult<TData = unknown> {
@@ -35,6 +58,7 @@ export interface AssessStructuredResult<TData = unknown> {
 	effects: AssessEffect[];
 	nextSteps: string[];
 	lifecycle?: AssessLifecycleHint;
+	lifecycleRecord?: AssessLifecycleRecord;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

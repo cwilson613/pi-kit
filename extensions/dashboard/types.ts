@@ -17,6 +17,7 @@ export interface DesignTreeFocusedNode {
   questions: string[];
   branch?: string;
   branchCount?: number;
+  filePath?: string;
 }
 
 export interface DesignTreeDashboardState {
@@ -29,9 +30,9 @@ export interface DesignTreeDashboardState {
   openQuestionCount: number;
   focusedNode: DesignTreeFocusedNode | null;
   /** All nodes for overlay list view */
-  nodes?: Array<{ id: string; title: string; status: string; questionCount: number }>;
+  nodes?: Array<{ id: string; title: string; status: string; questionCount: number; filePath?: string }>;
   /** Implementing nodes shown in raised mode with branch associations */
-  implementingNodes?: Array<{ id: string; title: string; branch?: string }>;
+  implementingNodes?: Array<{ id: string; title: string; branch?: string; filePath?: string }>;
 }
 
 // ── OpenSpec ─────────────────────────────────────────────────
@@ -45,6 +46,8 @@ export interface OpenSpecChangeEntry {
   artifacts?: ("proposal" | "design" | "specs" | "tasks")[];
   /** Spec domain names (e.g. ["auth", "api/tokens"]) */
   specDomains?: string[];
+  /** Absolute path to the change directory */
+  path?: string;
 }
 
 export interface OpenSpecDashboardState {

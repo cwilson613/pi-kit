@@ -19,6 +19,7 @@ import { truncateToWidth } from "@mariozechner/pi-tui";
 import type { DashboardState } from "./types.ts";
 import { sharedState } from "../shared-state.ts";
 import { debug } from "../debug.ts";
+import { linkDashboardFile, linkOpenSpecArtifact, linkOpenSpecChange } from "./uri-helper.ts";
 
 /**
  * Format token counts to compact display (e.g. 1.2k, 45k, 1.3M)
@@ -241,6 +242,11 @@ export class DashboardFooter implements Component {
     // Cleave section
     lines.push(...this.buildCleaveLines());
 
+    const raisedMeta = this.buildRaisedMetaLine(width);
+    if (raisedMeta) {
+      lines.push(raisedMeta);
+    }
+
     // Separator — thin rule matching section header style
     if (lines.length > 0) {
       const rule = "╶" + "─".repeat(Math.min(width - 2, 58)) + "╴";
@@ -284,6 +290,11 @@ export class DashboardFooter implements Component {
       const leftVisLen = leftTrunc.replace(/\x1b\[[0-9;]*m/g, "").length;
       const leftPad = Math.max(0, colWidth - leftVisLen);
       merged.push(leftTrunc + " ".repeat(leftPad) + divider + right);
+    }
+
+    const raisedMeta = this.buildRaisedMetaLine(width);
+    if (raisedMeta) {
+      merged.push(raisedMeta);
     }
 
     // Separator — thin rule matching section header style
@@ -331,14 +342,16 @@ export class DashboardFooter implements Component {
       const branchInfo = dt.focusedNode.status === "implementing" && dt.focusedNode.branch
         ? theme.fg("dim", ` → ${dt.focusedNode.branch}`) + branchExtra
         : "";
-      lines.push(`  ${statusIcon} ${dt.focusedNode.title}${branchInfo}${qCount}`);
+      const linkedTitle = linkDashboardFile(dt.focusedNode.title, dt.focusedNode.filePath);
+      lines.push(`  ${statusIcon} ${linkedTitle}${branchInfo}${qCount}`);
     }
 
     // Implementing nodes (if no focused node)
     if (dt.implementingNodes && dt.implementingNodes.length > 0 && !dt.focusedNode) {
       for (const n of dt.implementingNodes.slice(0, 3)) {
         const branchSuffix = n.branch ? theme.fg("dim", ` → ${n.branch}`) : "";
-        lines.push(`  ${theme.fg("accent", "⚙")} ${n.title}${branchSuffix}`);
+        const linkedTitle = linkDashboardFile(n.title, n.filePath);
+        lines.push(`  ${theme.fg("accent", "⚙")} ${linkedTitle}${branchSuffix}`);
       }
     }
 
@@ -347,8 +360,9 @@ export class DashboardFooter implements Component {
       const maxShow = 4;
       for (const n of dt.nodes.slice(0, maxShow)) {
         const icon = this.nodeStatusIcon(n.status);
+        const linkedId = linkDashboardFile(theme.fg("dim", n.id), n.filePath);
         const qSuffix = n.questionCount > 0 ? theme.fg("dim", ` (${n.questionCount}?)`) : "";
-        lines.push(`  ${icon} ${theme.fg("dim", n.id)}${qSuffix}`);
+        lines.push(`  ${icon} ${linkedId}${qSuffix}`);
       }
       if (dt.nodes.length > maxShow) {
         lines.push(theme.fg("dim", `  +${dt.nodes.length - maxShow} more`));
@@ -404,10 +418,14 @@ export class DashboardFooter implements Component {
 
       // Artifact badges — show which lifecycle files exist
       const artifacts = c.artifacts && c.artifacts.length > 0
-        ? " " + theme.fg("dim", c.artifacts.map(a => a[0]).join(""))
+        ? " " + c.artifacts
+          .filter((a): a is "proposal" | "design" | "tasks" => a === "proposal" || a === "design" || a === "tasks")
+          .map((a) => linkOpenSpecArtifact(theme.fg("dim", a[0]), c.path, a))
+          .join("")
         : "";
 
-      lines.push(`  ${icon} ${c.name}${progress}${stage}${artifacts}`);
+      const linkedName = linkOpenSpecChange(c.name, c.path);
+      lines.push(`  ${icon} ${linkedName}${progress}${stage}${artifacts}`);
     }
 
     // Hint for actionable next steps
@@ -438,6 +456,15 @@ export class DashboardFooter implements Component {
     }
 
     return lines;
+  }
+
+  private buildRaisedMetaLine(width: number): string {
+    const theme = this.theme;
+    const wide = width >= 120;
+    const barWidth = wide ? 20 : 16;
+    const gauge = this.buildContextGauge(barWidth);
+    if (!gauge) return "";
+    return truncateToWidth(theme.fg("dim", "Context ") + gauge, width, "…");
   }
 
   // ── Context Gauge (from status-bar) ───────────────────────────
@@ -476,8 +503,9 @@ export class DashboardFooter implements Component {
     const pctColored = pct > 70 ? theme.fg("error", pctStr)
       : pct > 45 ? theme.fg("warning", pctStr)
       : theme.fg("dim", pctStr);
+    const windowStr = contextWindow > 0 ? theme.fg("dim", `/${formatTokens(contextWindow)}`) : "";
 
-    return `${theme.fg("dim", `T${turns}`)} ${bar} ${pctColored}`;
+    return `${theme.fg("dim", `T${turns}`)} ${bar} ${pctColored}${windowStr}`;
   }
 
   // ── Original Footer Data ──────────────────────────────────────
@@ -561,14 +589,6 @@ export class DashboardFooter implements Component {
         const costColor: ThemeColor = t.cost > 5 ? "error" : t.cost > 1 ? "warning" : "dim";
         tokenParts.push(theme.fg(costColor, costStr));
       }
-
-      // Context % with window size
-      const usage = ctx.getContextUsage();
-      const pct = usage?.percent ?? 0;
-      const contextWindow = usage?.contextWindow ?? 0;
-      const pctColor: ThemeColor = pct > 90 ? "error" : pct > 70 ? "warning" : pct > 45 ? "muted" : "dim";
-      const pctStr = usage?.percent !== null ? `${pct.toFixed(1)}%` : "?";
-      tokenParts.push(theme.fg(pctColor, pctStr) + theme.fg("dim", `/${formatTokens(contextWindow)}`));
 
       const statsLeft = tokenParts.join(theme.fg("dim", " "));
 

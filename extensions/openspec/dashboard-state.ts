@@ -26,6 +26,7 @@ export function emitOpenSpecState(cwd: string, pi: ExtensionAPI): void {
 				tasksTotal: c.totalTasks,
 				artifacts,
 				specDomains,
+				path: c.path,
 			};
 		});
 		sharedState.openspec = { changes: mapped };

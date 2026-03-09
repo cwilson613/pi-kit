@@ -24,6 +24,7 @@ export function emitDesignTreeState(pi: ExtensionAPI, dt: DesignTree, focused: D
 					questions: [...focused.open_questions],
 					branch: focused.branches?.[0],
 					branchCount: focused.branches?.length ?? 0,
+					filePath: focused.filePath,
 				}
 			: null,
 		nodes: nodes.map((n) => ({
@@ -31,10 +32,11 @@ export function emitDesignTreeState(pi: ExtensionAPI, dt: DesignTree, focused: D
 			title: n.title,
 			status: n.status,
 			questionCount: n.open_questions.length,
+			filePath: n.filePath,
 		})),
 		implementingNodes: nodes
 			.filter((n) => n.status === "implementing")
-			.map((n) => ({ id: n.id, title: n.title, branch: n.branches?.[0] })),
+			.map((n) => ({ id: n.id, title: n.title, branch: n.branches?.[0], filePath: n.filePath })),
 	};
 
 	sharedState.designTree = state;

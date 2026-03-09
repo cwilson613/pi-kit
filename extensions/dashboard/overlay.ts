@@ -16,6 +16,7 @@
  * Reads sharedState for all data. Subscribes to dashboard:update for live refresh.
  */
 
+import { spawn } from "node:child_process";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
@@ -58,6 +59,23 @@ export class DashboardOverlay {
       this.rebuild();
       this.tui.requestRender();
     });
+  }
+
+  private openSelectedItem(): void {
+    const item = this.flatItems[this.selectedIndex];
+    if (!item?.openUri) return;
+
+    try {
+      if (process.platform === "darwin") {
+        spawn("open", [item.openUri], { stdio: "ignore", detached: true }).unref();
+      } else if (process.platform === "win32") {
+        spawn("cmd", ["/c", "start", "", item.openUri], { stdio: "ignore", detached: true }).unref();
+      } else {
+        spawn("xdg-open", [item.openUri], { stdio: "ignore", detached: true }).unref();
+      }
+    } catch {
+      // Best effort only; clickable OSC 8 links remain the primary path.
+    }
   }
 
   // ── Keyboard handling ───────────────────────────────────────────
@@ -126,6 +144,11 @@ export class DashboardOverlay {
       }
       return;
     }
+
+    if (data === "o" || data === "O") {
+      this.openSelectedItem();
+      return;
+    }
   }
 
   // ── Rendering ─────────────────────────────────────────────────
@@ -168,7 +191,8 @@ export class DashboardOverlay {
 
     // Footer with key hints
     lines.push(border("├" + "─".repeat(innerW) + "┤"));
-    lines.push(border("│") + pad(th.fg("dim", " ↑↓ navigate  ←→/↵ expand  Tab switch  Esc close")) + border("│"));
+    lines.push(border("│") + pad(th.fg("dim", " click links or press o to open  ↑↓ navigate  ←→/↵ expand")) + border("│"));
+    lines.push(border("│") + pad(th.fg("dim", " Tab switch  Esc close")) + border("│"));
     lines.push(border("╰" + "─".repeat(innerW) + "╯"));
 
     return lines;

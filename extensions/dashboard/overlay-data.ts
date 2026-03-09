@@ -7,6 +7,13 @@
 
 import { sharedState } from "../shared-state.ts";
 import type { CleaveState, DesignTreeDashboardState, OpenSpecDashboardState } from "./types.ts";
+import {
+  getDashboardFileUri,
+  getOpenSpecArtifactUri,
+  linkDashboardFile,
+  linkOpenSpecArtifact,
+  linkOpenSpecChange,
+} from "./uri-helper.ts";
 
 // ── Tab definitions ─────────────────────────────────────────────
 
@@ -33,6 +40,7 @@ export interface ListItem {
   key: string;
   depth: number;
   expandable: boolean;
+  openUri?: string;
   lines: (th: ThemeFn, width: number) => string[];
 }
 
@@ -91,10 +99,12 @@ export function buildDesignItems(
       key: focusedKey,
       depth: 0,
       expandable: hasQuestions,
+      openUri: getDashboardFileUri(focused.filePath),
       lines: (th) => {
         const icon = statusIcon(focused.status, th);
+        const linkedTitle = linkDashboardFile(focused.title, focused.filePath);
         const label = th("accent", " (focused)");
-        return [`${icon} ${focused.title}${label}`];
+        return [`${icon} ${linkedTitle}${label}`];
       },
     });
 
@@ -120,12 +130,14 @@ export function buildDesignItems(
         key: `dt-node-${node.id}`,
         depth: 0,
         expandable: false,
+        openUri: getDashboardFileUri(node.filePath),
         lines: (th) => {
           const icon = statusIcon(node.status, th);
+          const linkedTitle = linkDashboardFile(node.title, node.filePath);
           const qLabel = node.questionCount > 0
             ? th("warning", ` (${node.questionCount}?)`)
             : "";
-          return [`${icon} ${node.title}${qLabel}`];
+          return [`${icon} ${linkedTitle}${qLabel}`];
         },
       });
     }
@@ -166,12 +178,14 @@ export function buildOpenSpecItems(
       key,
       depth: 0,
       expandable: hasDetails,
+      openUri: getOpenSpecArtifactUri(change.path, "proposal"),
       lines: (th) => {
         const icon = done ? th("success", "✓") : th("dim", "◦");
+        const linkedName = linkOpenSpecChange(change.name, change.path);
         const progress = change.tasksTotal > 0
           ? th(done ? "success" : "dim", ` ${change.tasksDone}/${change.tasksTotal}`)
           : "";
-        return [`${icon} ${change.name}${progress}`];
+        return [`${icon} ${linkedName}${progress}`];
       },
     });
 
@@ -184,6 +198,22 @@ export function buildOpenSpecItems(
           lines: (th) => [th("dim", `stage: ${change.stage}`)],
         });
       }
+
+      const artifactOrder: Array<"proposal" | "design" | "tasks"> = ["proposal", "design", "tasks"];
+      for (const artifact of artifactOrder) {
+        if (!change.artifacts?.includes(artifact)) continue;
+        items.push({
+          key: `os-artifact-${change.name}-${artifact}`,
+          depth: 1,
+          expandable: false,
+          openUri: getOpenSpecArtifactUri(change.path, artifact),
+          lines: (th) => {
+            const linked = linkOpenSpecArtifact(artifact, change.path, artifact);
+            return [th("dim", "file: ") + linked];
+          },
+        });
+      }
+
       if (change.tasksTotal > 0) {
         const pct = Math.round((change.tasksDone / change.tasksTotal) * 100);
         items.push({

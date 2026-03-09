@@ -109,9 +109,28 @@ describe("buildDesignItems", () => {
 
     const focused = items.find(i => i.key === "dt-focused-n1");
     assert.ok(focused);
+    assert.equal(focused.openUri, undefined, "focused item without filePath should not have openUri");
     const text = renderItem(focused);
     assert.ok(text.includes("Auth Design"));
     assert.ok(text.includes("(focused)"));
+  });
+
+  it("emits openUri for linkable design items", () => {
+    const items = buildDesignItems({
+      nodeCount: 1, decidedCount: 1, exploringCount: 0, blockedCount: 0, implementingCount: 0, implementedCount: 0,
+      openQuestionCount: 0,
+      focusedNode: {
+        id: "n1",
+        title: "Clickable Node",
+        status: "decided",
+        questions: [],
+        filePath: `${process.cwd()}/docs/clickable-dashboard.md`,
+      },
+    }, new Set());
+
+    const focused = items.find(i => i.key === "dt-focused-n1");
+    assert.ok(focused?.openUri);
+    assert.match(focused!.openUri!, /file:\/\/|http:\/\/localhost:/);
   });
 
   it("shows questions when expanded", () => {
@@ -259,15 +278,32 @@ describe("buildOpenSpecItems", () => {
     assert.ok(renderItem(change).includes("✓"));
   });
 
-  it("shows stage and progress bar when expanded", () => {
+  it("shows stage, artifact rows, and progress bar when expanded", () => {
     const expanded = new Set(["os-change-auth-flow"]);
     const items = buildOpenSpecItems({
-      changes: [{ name: "auth-flow", stage: "spec", tasksDone: 2, tasksTotal: 5 }],
+      changes: [{
+        name: "auth-flow",
+        stage: "spec",
+        tasksDone: 2,
+        tasksTotal: 5,
+        path: "openspec/changes/clickable-dashboard-items",
+        artifacts: ["proposal", "design", "tasks"],
+      }],
     }, expanded);
 
     const stageItem = items.find(i => i.key === "os-stage-auth-flow");
     assert.ok(stageItem, "should have stage item");
     assert.ok(renderItem(stageItem).includes("stage: spec"));
+
+    const proposalItem = items.find(i => i.key === "os-artifact-auth-flow-proposal");
+    const designItem = items.find(i => i.key === "os-artifact-auth-flow-design");
+    const tasksItem = items.find(i => i.key === "os-artifact-auth-flow-tasks");
+    assert.ok(proposalItem, "should have proposal artifact row");
+    assert.ok(designItem, "should have design artifact row");
+    assert.ok(tasksItem, "should have tasks artifact row");
+    assert.ok(renderItem(proposalItem).includes("proposal"));
+    assert.ok(renderItem(designItem).includes("design"));
+    assert.ok(renderItem(tasksItem).includes("tasks"));
 
     const progressItem = items.find(i => i.key === "os-progress-auth-flow");
     assert.ok(progressItem, "should have progress item");

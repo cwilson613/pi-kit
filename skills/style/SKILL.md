@@ -16,6 +16,7 @@ Principles:
 2. **Contrast over subtlety** — dark backgrounds demand bright, readable foregrounds
 3. **Consistency across mediums** — same palette whether it's a TUI, an Excalidraw diagram, or a D2 chart
 4. **Hierarchy through scale and weight** — not through color proliferation
+5. **Document survivability matters** — technical diagrams are often embedded in documents and scaled down, so composition must preserve text and relationship legibility at page-fit sizes
 
 ---
 
@@ -73,7 +74,14 @@ For diagram elements. Maps purpose → fill/stroke pairs. Defined in `extensions
 
 ### D2 Diagram Styling
 
-When using `render_diagram` (D2), apply Verdant colors via `style` blocks:
+When using `render_diagram` (D2), apply Verdant colors via `style` blocks.
+
+**Document-fit guidance for technical capability diagrams:**
+- Assume the diagram may be embedded in a document and scaled down to fit a page column or page width.
+- Prefer balanced aspect ratios that survive downscaling; avoid long, thin banners and tall skinny towers unless the document format explicitly demands them.
+- Preserve legibility of both node text and relationship labels/arrows after reduction.
+- If a layout becomes hard to read when scaled down, restructure it into a more compact cluster, multi-row arrangement, or grouped composition instead of relying on zoom.
+- For capability maps, favor compact grouping and short labeled edges over sprawling left-to-right chains.
 
 ```d2
 component: API Server {
@@ -181,7 +189,11 @@ group: Infrastructure {
 - `--layout elk` — ELK layered algorithm (cleaner than dagre for most diagrams)
 - `--pad 40` — comfortable padding
 - Apply Verdant colors via style blocks (see D2 Diagram Styling above)
-- D2 is the primary diagram tool — use for all structural diagrams
+- D2 is the default tool for straightforward structural diagrams with regular graph layout
+- When the target is a document, prefer compact page-friendly compositions over panoramic or skyscraper aspect ratios
+- Treat readability at reduced size as a first-class constraint for node labels and edge relationships
+- Prefer the native SVG backend for document-bound technical diagrams that fit canonical motifs such as pipeline, fanout, or panel-split and need deterministic SVG/PNG output
+- Switch to Excalidraw when the diagram needs explicit whitespace lanes, trust-boundary placement, phased panels, control-plane vs data-plane separation, or other layout-sensitive spatial composition beyond the native motif set
 
 ### Excalidraw
 
@@ -191,7 +203,9 @@ group: Infrastructure {
 - `roundness: { type: 3 }` — adaptive corners on rectangles
 - `fontFamily: 3` — Cascadia (monospace)
 - `viewBackgroundColor: "#ffffff"` — white canvas (prints well; dark theme elements still pop)
-- Use for freeform visual arguments where spatial layout matters — not for structural diagrams
+- Prefer Excalidraw for layout-sensitive capability maps, trust boundaries, phased flows, and other diagrams where local spacing and connector routing matter more than pure graph regularity
+- When generating Excalidraw programmatically, prefer constrained composition tooling over hand-authoring raw scene JSON
+- Use canonical layouts (`pipeline`, `fanout`, `converge`, `grid`) as the starting grammar for repeated architecture diagrams
 
 ### FLUX.1 (Image Generation)
 

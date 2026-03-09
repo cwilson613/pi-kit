@@ -591,24 +591,11 @@ export class DashboardFooter implements Component {
         this.lastEntryCount = entries.length;
       } catch { /* session may not be ready */ }
 
-      // Left side: token flow + cost + context window
-      const t = this.cachedTokens;
-      const tokenParts: string[] = [];
-      if (t.input) tokenParts.push(theme.fg("accent", "↑") + theme.fg("dim", formatTokens(t.input)));
-      if (t.output) tokenParts.push(theme.fg("success", "↓") + theme.fg("dim", formatTokens(t.output)));
-      if (wide) {
-        if (t.cacheRead) tokenParts.push(theme.fg("muted", "⟐") + theme.fg("dim", formatTokens(t.cacheRead)));
-        if (t.cacheWrite) tokenParts.push(theme.fg("muted", "⟑") + theme.fg("dim", formatTokens(t.cacheWrite)));
-      }
-
-      // Cost with severity coloring
-      if (t.cost) {
-        const costStr = `$${t.cost.toFixed(3)}`;
-        const costColor: ThemeColor = t.cost > 5 ? "error" : t.cost > 1 ? "warning" : "dim";
-        tokenParts.push(theme.fg(costColor, costStr));
-      }
-
-      const statsLeft = tokenParts.join(theme.fg("dim", " "));
+      // Left side: simplified context usage as requested (X%/tokens)
+      const usage = ctx.getContextUsage();
+      const statsLeft = usage
+        ? theme.fg("dim", `${Math.round(usage.percent ?? 0)}%/${formatTokens(usage.contextWindow ?? 0)}`)
+        : theme.fg("dim", "0%");
 
       // Right side: provider + model + thinking level badge
       const model = ctx.model;

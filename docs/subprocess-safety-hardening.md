@@ -43,6 +43,7 @@ The parent repo-consolidation-hardening topic is still proposal-only and spans a
 - `extensions/bootstrap/index.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 - `extensions/bootstrap/index.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 - `openspec/changes/subprocess-safety-hardening/tasks.md` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `docs/subprocess-safety-hardening.md` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 
 ### Constraints
 

@@ -3,11 +3,11 @@
   "changeName": "subprocess-safety-hardening",
   "assessmentKind": "spec",
   "outcome": "pass",
-  "timestamp": "2026-03-10T21:27:37.622Z",
-  "summary": "Validated subprocess-safety-hardening for the current implementation snapshot: web-ui browser launch now uses explicit argv-based spawning instead of shell-string exec, local-inference shutdown no longer uses broad pkill matching and stays scoped to managed Ollama state, bootstrap helper dispatch prefers explicit executable plus argv parsing with constrained shell fallback, and both npm run typecheck and npm test pass.",
+  "timestamp": "2026-03-10T21:28:09.964Z",
+  "summary": "Refreshed subprocess-safety-hardening lifecycle state after reconciling task completion and marking the design node implemented. The current snapshot still satisfies the subprocess hardening change: web-ui browser launch uses explicit argv-based spawn, local-inference shutdown avoids broad pkill behavior, bootstrap helper dispatch is constrained around explicit executable plus argv parsing, and typecheck/tests pass.",
   "snapshot": {
-    "gitHead": "d455e12f04845c085ced338e3857ac91a16d4fc7",
-    "fingerprint": "7971d03e24f0d8fbfcb0fe8352b6883ec61c2c95773d0a97c8bc55c717af3a2e",
+    "gitHead": "207601d48ae5ddf4ea2b90b7ee7862e766f41f82",
+    "fingerprint": "ad3bcf4d60b3a9c4ffcf773a2b09085a8f5a69388930fda37cec76d32dcc1486",
     "dirty": true,
     "scopedPaths": [
       "docs/subprocess-safety-hardening.md",
@@ -22,8 +22,8 @@
       {
         "path": "docs/subprocess-safety-hardening.md",
         "exists": true,
-        "size": 2620,
-        "sha256": "4ff5ac0dbd7906d41b8c5a85da419e99d818df91571dea6f74b88d80039e96bb"
+        "size": 2742,
+        "sha256": "4b69a431323d567cadae6c11b56cc7d315ec12ad24881616c63c9dce1db827c8"
       },
       {
         "path": "extensions/bootstrap/*.test.ts",
@@ -90,18 +90,10 @@
   "reconciliation": {
     "reopen": false,
     "changedFiles": [
-      "extensions/web-ui/index.ts",
-      "extensions/web-ui/index.test.ts",
-      "extensions/local-inference/index.ts",
-      "extensions/local-inference/index.test.ts",
-      "extensions/bootstrap/index.ts",
-      "extensions/bootstrap/index.test.ts",
+      "docs/subprocess-safety-hardening.md",
       "openspec/changes/subprocess-safety-hardening/tasks.md"
     ],
-    "constraints": [
-      "Prefer explicit executable plus argv subprocess dispatch over shell-string command construction in helper flows.",
-      "Do not terminate unrelated Ollama processes when no managed child is tracked by pi-kit."
-    ],
+    "constraints": [],
     "recommendedAction": null
   }
 }

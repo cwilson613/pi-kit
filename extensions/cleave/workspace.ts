@@ -537,6 +537,286 @@ function buildDesignSection(
 	return "\n## Design Context\n\n" + sections.join("\n") + "\n\n";
 }
 
+export type DirtyPathClass = "related" | "unrelated" | "unknown" | "volatile";
+export type DirtyPathConfidence = "high" | "medium" | "low";
+
+export interface ClassifiedDirtyPath {
+	path: string;
+	classification: DirtyPathClass;
+	confidence: DirtyPathConfidence;
+	reason: string;
+	includedInCheckpoint: boolean;
+}
+
+export interface DirtyTreeClassification {
+	files: ClassifiedDirtyPath[];
+	related: ClassifiedDirtyPath[];
+	unrelated: ClassifiedDirtyPath[];
+	unknown: ClassifiedDirtyPath[];
+	volatile: ClassifiedDirtyPath[];
+	checkpointFiles: string[];
+}
+
+export interface CheckpointPlanPreview {
+	files: string[];
+	message: string | null;
+	requiresApproval: true;
+	excluded: ClassifiedDirtyPath[];
+}
+
+export interface DirtyTreeClassificationOptions {
+	changeName?: string | null;
+	openspecContext?: OpenSpecContext | null;
+	volatileAllowlist?: string[];
+}
+
+export const DEFAULT_VOLATILE_ALLOWLIST = [".pi/memory/facts.jsonl"];
+
+/**
+ * Classify dirty-tree paths for preflight UX.
+ *
+ * Confidence is intentionally conservative:
+ * - volatile allowlist and OpenSpec lifecycle artifacts → high
+ * - design.md file scope matches → medium
+ * - everything else defaults to unrelated/unknown and is excluded from checkpoint
+ */
+export function classifyDirtyPaths(
+	paths: string[],
+	options: DirtyTreeClassificationOptions = {},
+): DirtyTreeClassification {
+	const knownRelated = collectKnownRelatedPaths(options.openspecContext);
+	const volatileAllowlist = (options.volatileAllowlist ?? DEFAULT_VOLATILE_ALLOWLIST)
+		.map(normalizePath);
+
+	const files = dedupePaths(paths).map((rawPath) => {
+		const path = normalizePath(rawPath);
+
+		if (matchesAnyPath(path, volatileAllowlist)) {
+			return {
+				path,
+				classification: "volatile" as const,
+				confidence: "high" as const,
+				reason: "matches volatile allowlist",
+				includedInCheckpoint: false,
+			};
+		}
+
+		if (matchesKnownRelatedPath(path, knownRelated.exact, knownRelated.prefixes)) {
+			return {
+				path,
+				classification: "related" as const,
+				confidence: "high" as const,
+				reason: "matches active OpenSpec change artifacts or design file scope",
+				includedInCheckpoint: true,
+			};
+		}
+
+		const scopedMatch = matchDesignScopedPath(path, options.openspecContext);
+		if (scopedMatch.matched) {
+			return {
+				path,
+				classification: "related" as const,
+				confidence: scopedMatch.confidence,
+				reason: scopedMatch.reason,
+				includedInCheckpoint: scopedMatch.confidence !== "low",
+			};
+		}
+
+		if (options.openspecContext) {
+			const unrelatedReason = findUnrelatedReason(path, options.openspecContext);
+			if (unrelatedReason) {
+				return {
+					path,
+					classification: "unrelated" as const,
+					confidence: "medium" as const,
+					reason: unrelatedReason,
+					includedInCheckpoint: false,
+				};
+			}
+
+			return {
+				path,
+				classification: "unknown" as const,
+				confidence: "low" as const,
+				reason: "outside active change scope and not on volatile allowlist",
+				includedInCheckpoint: false,
+			};
+		}
+
+		return {
+			path,
+			classification: "unknown" as const,
+			confidence: "low" as const,
+			reason: "generic preflight fallback without OpenSpec context",
+			includedInCheckpoint: false,
+		};
+	});
+
+	return {
+		files,
+		related: files.filter((f) => f.classification === "related"),
+		unrelated: files.filter((f) => f.classification === "unrelated"),
+		unknown: files.filter((f) => f.classification === "unknown"),
+		volatile: files.filter((f) => f.classification === "volatile"),
+		checkpointFiles: files.filter((f) => f.includedInCheckpoint).map((f) => f.path),
+	};
+}
+
+/**
+ * Prepare an operator-approved checkpoint plan without mutating git state.
+ */
+export function buildCheckpointPlan(
+	classification: DirtyTreeClassification,
+	options: DirtyTreeClassificationOptions = {},
+): CheckpointPlanPreview {
+	const files = classification.checkpointFiles;
+	return {
+		files,
+		message: files.length > 0 ? suggestCheckpointCommitMessage(files, options.changeName, options.openspecContext) : null,
+		requiresApproval: true,
+		excluded: classification.files.filter((f) => !f.includedInCheckpoint),
+	};
+}
+
+/**
+ * Suggest a conventional checkpoint commit message scoped to the active change.
+ */
+export function suggestCheckpointCommitMessage(
+	relatedFiles: string[],
+	changeName?: string | null,
+	openspecContext?: OpenSpecContext | null,
+): string {
+	const scope = deriveCheckpointScope(relatedFiles, changeName, openspecContext);
+	const summary = deriveCheckpointSummary(relatedFiles, changeName, openspecContext);
+	return `chore(${scope}): checkpoint ${summary}`;
+}
+
+function collectKnownRelatedPaths(ctx?: OpenSpecContext | null): { exact: Set<string>; prefixes: string[] } {
+	const exact = new Set<string>();
+	const prefixes: string[] = [];
+	if (!ctx) return { exact, prefixes };
+
+	for (const fileChange of ctx.fileChanges) {
+		exact.add(normalizePath(fileChange.path));
+	}
+
+	const normalizedChangePath = normalizePath(ctx.changePath);
+	const openspecIdx = normalizedChangePath.indexOf("openspec/changes/");
+	if (openspecIdx >= 0) {
+		prefixes.push(normalizedChangePath.slice(openspecIdx));
+	}
+
+	const changeSlug = openspecIdx >= 0
+		? normalizedChangePath.slice(openspecIdx + "openspec/changes/".length).split("/")[0]
+		: normalizedChangePath.split("/").pop() ?? "";
+	if (changeSlug) {
+		prefixes.push(`openspec/changes/${changeSlug}`);
+	}
+
+	return { exact, prefixes: dedupePaths(prefixes) };
+}
+
+function matchDesignScopedPath(
+	path: string,
+	ctx?: OpenSpecContext | null,
+): { matched: boolean; confidence: DirtyPathConfidence; reason: string } {
+	if (!ctx) return { matched: false, confidence: "low", reason: "" };
+
+	for (const fileChange of ctx.fileChanges) {
+		const target = normalizePath(fileChange.path);
+		if (path === target) {
+			return {
+				matched: true,
+				confidence: "high",
+				reason: "exact match for design.md file scope entry",
+			};
+		}
+
+		const prefix = stripGlob(target);
+		if (prefix.length > 0 && (path === prefix || path.startsWith(prefix + "/"))) {
+			return {
+				matched: true,
+				confidence: prefix === target ? "medium" : "low",
+				reason: prefix === target
+					? "matches design.md file scope path"
+					: "falls under a broad design.md file scope prefix",
+			};
+		}
+	}
+
+	return { matched: false, confidence: "low", reason: "" };
+}
+
+function findUnrelatedReason(path: string, ctx: OpenSpecContext): string | null {
+	const knownRelated = collectKnownRelatedPaths(ctx);
+	if (path.startsWith("openspec/changes/") && !matchesKnownRelatedPath(path, knownRelated.exact, knownRelated.prefixes)) {
+		return "belongs to a different OpenSpec change than the active checkpoint scope";
+	}
+	return null;
+}
+
+function deriveCheckpointScope(
+	relatedFiles: string[],
+	changeName?: string | null,
+	openspecContext?: OpenSpecContext | null,
+): string {
+	const rawScope = changeName
+		?? normalizePath(openspecContext?.changePath ?? "").split("/").pop()
+		?? relatedFiles[0]?.split("/")[0]
+		?? "cleave";
+	const cleaned = rawScope
+		.toLowerCase()
+		.replace(/^cleave-/, "")
+		.replace(/^feature-/, "")
+		.replace(/[^\x00-\x7F]/g, "")
+		.replace(/[^a-z0-9/-]+/g, "-")
+		.replace(/\//g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+	return cleaned || "cleave";
+}
+
+function deriveCheckpointSummary(
+	relatedFiles: string[],
+	changeName?: string | null,
+	openspecContext?: OpenSpecContext | null,
+): string {
+	const source = changeName
+		?? normalizePath(openspecContext?.changePath ?? "").split("/").pop()
+		?? relatedFiles[0]?.split("/").pop()
+		?? "work";
+	return source
+		.toLowerCase()
+		.replace(/^cleave-/, "")
+		.replace(/\.[a-z0-9]+$/i, "")
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim() || "work";
+}
+
+function matchesKnownRelatedPath(path: string, exact: Set<string>, prefixes: string[]): boolean {
+	if (exact.has(path)) return true;
+	return prefixes.some((prefix) => path === prefix || path.startsWith(prefix + "/"));
+}
+
+function matchesAnyPath(path: string, candidates: string[]): boolean {
+	return candidates.some((candidate) => path === candidate || path.startsWith(candidate + "/"));
+}
+
+function stripGlob(path: string): string {
+	return path
+		.replace(/\*\*?/g, "")
+		.replace(/\/+/g, "/")
+		.replace(/\/$/, "");
+}
+
+function normalizePath(path: string): string {
+	return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "");
+}
+
+function dedupePaths(paths: string[]): string[] {
+	return [...new Set(paths.map(normalizePath).filter(Boolean))];
+}
+
 /**
  * Read all task files from a workspace and return their contents.
  */

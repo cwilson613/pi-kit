@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>pi-kit dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 1.25rem;
+      line-height: 1.5;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid #30363d;
+      padding-bottom: 0.75rem;
+    }
+    header h1 { font-size: 1.1rem; color: #58a6ff; letter-spacing: 0.03em; }
+    #status { font-size: 0.75rem; color: #8b949e; }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .badge-ok  { background: #0d4429; color: #3fb950; }
+    .badge-err { background: #3d1c1c; color: #f85149; }
+
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 0.5rem 0.75rem;
+      background: #21262d;
+      border-bottom: 1px solid #30363d;
+      font-size: 0.8rem;
+      color: #79c0ff;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .card pre {
+      padding: 0.75rem;
+      font-size: 0.72rem;
+      color: #c9d1d9;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+
+    /* Scrollbar styling */
+    pre::-webkit-scrollbar { width: 4px; }
+    pre::-webkit-scrollbar-track { background: #161b22; }
+    pre::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚡ pi-kit dashboard</h1>
+    <div id="status">Connecting…</div>
+  </header>
+  <div id="grid"></div>
+
+  <script>
+    'use strict';
+
+    const POLL_MS = 3000;
+
+    const SECTIONS = [
+      { key: 'session',    label: 'Session' },
+      { key: 'dashboard',  label: 'Dashboard' },
+      { key: 'designTree', label: 'Design Tree' },
+      { key: 'openspec',   label: 'OpenSpec' },
+      { key: 'cleave',     label: 'Cleave' },
+      { key: 'models',     label: 'Models' },
+      { key: 'memory',     label: 'Memory' },
+      { key: 'health',     label: 'Health' },
+    ];
+
+    // Build cards once, update pre content on each poll
+    const grid = document.getElementById('grid');
+    const pres = {};
+
+    for (const { key, label } of SECTIONS) {
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const header = document.createElement('div');
+      header.className = 'card-header';
+      header.textContent = label;
+
+      const pre = document.createElement('pre');
+      pre.id = 'pre-' + key;
+      pre.textContent = '…';
+      pres[key] = pre;
+
+      card.appendChild(header);
+      card.appendChild(pre);
+      grid.appendChild(card);
+    }
+
+    const statusEl = document.getElementById('status');
+
+    async function poll() {
+      try {
+        const res = await fetch('/api/state');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const state = await res.json();
+
+        for (const { key } of SECTIONS) {
+          if (key in state) {
+            pres[key].textContent = JSON.stringify(state[key], null, 2);
+          }
+        }
+
+        const now = new Date().toLocaleTimeString();
+        statusEl.innerHTML =
+          '<span class="badge badge-ok">live</span>&nbsp;' +
+          'Updated ' + now + ' &mdash; schema v' + state.schemaVersion;
+      } catch (err) {
+        statusEl.innerHTML =
+          '<span class="badge badge-err">error</span>&nbsp;' + err.message;
+      }
+    }
+
+    poll();
+    setInterval(poll, POLL_MS);
+  </script>
+</body>
+</html>

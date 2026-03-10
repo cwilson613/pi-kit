@@ -30,7 +30,7 @@ export interface DesignTreeDashboardState {
   openQuestionCount: number;
   focusedNode: DesignTreeFocusedNode | null;
   /** All nodes for overlay list view */
-  nodes?: Array<{ id: string; title: string; status: string; questionCount: number; filePath?: string }>;
+  nodes?: Array<{ id: string; title: string; status: string; questionCount: number; filePath?: string; branches?: string[] }>;
   /** Implementing nodes shown in raised mode with branch associations */
   implementingNodes?: Array<{ id: string; title: string; branch?: string; filePath?: string }>;
 }

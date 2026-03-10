@@ -36,6 +36,7 @@ export function emitDesignTreeState(pi: ExtensionAPI, dt: DesignTree, focused: D
 			status: n.status,
 			questionCount: n.open_questions.length,
 			filePath: n.filePath,
+			branches: n.branches ?? [],
 		})),
 		implementingNodes: nodes
 			.filter((n) => n.status === "implementing")

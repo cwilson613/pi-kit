@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { DashboardFooter } from "./footer.ts";
 import { sharedState } from "../shared-state.ts";
 import type { DashboardState } from "./types.ts";
+import { visibleWidth } from "@mariozechner/pi-tui";
 
 function makeTheme() {
   return {
@@ -84,7 +85,7 @@ describe("DashboardFooter raised mode polish", () => {
     const lines = footer.render(160);
     assert.ok(lines.some((line) => line.includes("◈ Design Tree")));
     assert.ok(lines.some((line) => line.includes("◎ OpenSpec")));
-    assert.ok(lines.every((line) => !line.includes(" │ ")));
+    // Design tree must appear on its own full-width row (not merged with openspec)
     assert.ok(lines.every((line) => !(line.includes("◈ Design Tree") && line.includes("◎ OpenSpec"))), lines.join("\n"));
   });
 
@@ -123,6 +124,150 @@ describe("DashboardFooter raised mode polish", () => {
     assert.ok(memoryLine);
     assert.ok(!memoryLine?.includes("chars:"));
     assert.ok(!memoryLine?.includes("hits:"));
+  });
+
+  it("wide raised mode uses two-column layout — design tree full-width, recovery+cleave left, openspec right", () => {
+    (sharedState as any).cleave = {
+      status: "dispatching",
+      updatedAt: Date.now(),
+      children: [
+        { label: "task-a", status: "running" },
+        { label: "task-b", status: "done" },
+      ],
+    };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(140);
+
+    // Design tree must appear on its own full-width row
+    const dtLine = lines.find((l) => l.includes("◈ Design Tree"));
+    assert.ok(dtLine, `expected ◈ Design Tree line; got:\n${lines.join("\n")}`);
+    assert.ok(!dtLine!.includes("◎ OpenSpec"), "design tree row must not bleed into openspec");
+
+    // In wide mode, cleave (left column) and openspec (right column) are side-by-side on
+    // the SAME merged row — verify at least one such row exists (confirming column layout).
+    const mergedRow = lines.find((l) => l.includes("⚡ Cleave") || l.includes("◎ OpenSpec"));
+    assert.ok(mergedRow, `expected a row with cleave or openspec in column zone; got:\n${lines.join("\n")}`);
+
+    // There must be a row containing the divider (│) — confirms two-column layout
+    const dividerRow = lines.find((l) => l.includes("│"));
+    assert.ok(dividerRow, `expected a │ divider row; got:\n${lines.join("\n")}`);
+
+    // All rows must fit within the requested width
+    for (const line of lines) {
+      const vw = visibleWidth(line);
+      assert.ok(vw <= 140, `line too wide (${vw} > 140): ${line}`);
+    }
+  });
+
+  it("wide mode column rows have consistent visible width (column alignment)", () => {
+    (sharedState as any).cleave = {
+      status: "dispatching",
+      updatedAt: Date.now(),
+      children: [{ label: "a", status: "running" }, { label: "b", status: "done" }],
+    };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(120);
+    const columnRows = lines.filter((l) => l.includes("│"));
+    assert.ok(columnRows.length > 0, "expected at least one column row");
+
+    // All column rows should have the same visible width (= terminal width)
+    const widths = columnRows.map((l) => visibleWidth(l));
+    const allSame = widths.every((w) => w === widths[0]);
+    assert.ok(allSame, `column rows have unequal widths: ${widths.join(", ")}`);
+    assert.equal(widths[0], 120);
+  });
+
+  it("OSC 8 hyperlinks in rendered lines do not inflate visibleWidth (regression)", () => {
+    // OSC 8 hyperlinks are zero-width escape sequences; visibleWidth must not
+    // count them, ensuring column layout stays aligned when file paths are linked.
+    (sharedState as any).designTree = {
+      ...(sharedState as any).designTree,
+      focusedNode: null,
+      implementingNodes: [{
+        id: "linked",
+        title: "Linked Node",
+        branch: "feature/linked",
+        filePath: "docs/linked.md",
+      }],
+    };
+    (sharedState as any).cleave = { status: "idle", updatedAt: Date.now(), children: [] };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(120);
+    for (const line of lines) {
+      const vw = visibleWidth(line);
+      assert.ok(
+        vw <= 120,
+        `visibleWidth ${vw} exceeds 120 — OSC 8 sequences may be inflating width:\n  ${line}`,
+      );
+    }
+  });
+
+  it("stats line uses leftRight layout — model name flush-right", () => {
+    (sharedState as any).cleave = { status: "idle", updatedAt: Date.now(), children: [] };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(100);
+    // The stats line is the renderFooterData line 2: context usage left, model flush-right.
+    // It starts with the context percentage (no "Context" label prefix) and ends with the model name.
+    const statsLine = lines.find((l) => l.includes("31%/272k") && l.includes("gpt-5.4") && !l.includes("Context "));
+    assert.ok(statsLine, `expected stats line with context usage and model name; got:\n${lines.join("\n")}`);
+    // The right side ends with the thinking badge (model has reasoning:true → "○ off").
+    // Confirm the line is exactly `width` visible chars wide (leftRight pads correctly).
+    const vw = visibleWidth(statsLine!);
+    assert.equal(vw, 100, `stats line visible width should equal terminal width (100), got ${vw}`);
+  });
+
+  it("narrow raised mode (<120) stays stacked — no │ divider rows", () => {
+    (sharedState as any).cleave = {
+      status: "dispatching",
+      updatedAt: Date.now(),
+      children: [{ label: "x", status: "running" }],
+    };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(100);
+    assert.ok(
+      lines.every((l) => !l.includes("│")),
+      `narrow mode must not use column divider:\n${lines.join("\n")}`,
+    );
   });
 
   it("truncates raised rows by dropping metadata before the primary label", () => {

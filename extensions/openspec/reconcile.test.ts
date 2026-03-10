@@ -61,6 +61,18 @@ describe("evaluateLifecycleReconciliation", () => {
 		assert.equal(result.issues.length, 0);
 	});
 
+	it("accepts fallback id-based design bindings", () => {
+		writeDesignDoc(docsDir, "my-change", "implementing");
+		fs.writeFileSync(path.join(changeDir, "tasks.md"), [
+			"## 1. A",
+			"- [x] 1.1 Done",
+		].join("\n"));
+
+		const result = evaluateLifecycleReconciliation(tmpDir, "my-change");
+		assert.deepStrictEqual(result.boundNodeIds, ["my-change"]);
+		assert.equal(result.issues.length, 0);
+	});
+
 	it("reports incomplete tasks as stale lifecycle state", () => {
 		writeDesignDoc(docsDir, "my-change", "implementing", "my-change");
 		fs.writeFileSync(path.join(changeDir, "tasks.md"), [

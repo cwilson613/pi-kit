@@ -262,6 +262,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 			freshness: assessment.freshness,
 			archiveBlocked: reconciliation.issues.length > 0,
 			archiveBlockedReason,
+			archiveBlockedIssueCodes: reconciliation.issues.map((issue) => issue.code),
 			changeName: change.name,
 		});
 	}
@@ -1017,7 +1018,7 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 				].join("\n"), "info");
 				return;
 			}
-			if ((effectiveSubstate === "reopened-work" || effectiveSubstate === "awaiting-reconciliation") && assessmentState.record) {
+			if ((effectiveSubstate === "reopened-work" || effectiveSubstate === "missing-binding" || effectiveSubstate === "awaiting-reconciliation") && assessmentState.record) {
 				ctx.ui.notify([
 					`Verification state for '${changeName}': ${effectiveSubstate}`,
 					...(effectiveReason ? [`Why: ${effectiveReason}`] : []),

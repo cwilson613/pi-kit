@@ -77,6 +77,7 @@ export type VerificationSubstate =
 	| "missing-assessment"
 	| "stale-assessment"
 	| "reopened-work"
+	| "missing-binding"
 	| "archive-ready"
 	| "awaiting-reconciliation";
 
@@ -541,6 +542,7 @@ export function resolveVerificationStatus(input: {
 	freshness: AssessmentFreshness;
 	archiveBlocked?: boolean;
 	archiveBlockedReason?: string | null;
+	archiveBlockedIssueCodes?: readonly string[];
 	changeName: string;
 }): VerificationStatus {
 	if (input.stage !== "verifying") {
@@ -581,6 +583,15 @@ export function resolveVerificationStatus(input: {
 		};
 	}
 
+	if (input.archiveBlockedIssueCodes?.includes("missing_design_binding")) {
+		return {
+			coarseStage: input.stage,
+			substate: "missing-binding",
+			nextAction: input.archiveBlockedReason ?? `Bind ${input.changeName} to a design-tree node before archive`,
+			reason: input.archiveBlockedReason ?? "No valid design-tree binding can be established for this change.",
+		};
+	}
+
 	if (input.archiveBlocked) {
 		return {
 			coarseStage: input.stage,
@@ -588,7 +599,7 @@ export function resolveVerificationStatus(input: {
 			nextAction: input.archiveBlockedReason ?? `Reconcile lifecycle artifacts for ${input.changeName} before archive`,
 			reason: input.archiveBlockedReason ?? "Lifecycle reconciliation is still blocking archive.",
 		};
-		}
+	}
 
 	return {
 		coarseStage: input.stage,

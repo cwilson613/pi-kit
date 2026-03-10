@@ -1420,6 +1420,8 @@ describe("transitionDesignNodesOnArchive", () => {
 
 	it("transitions implementing node with matching openspec_change", () => {
 		const docsDir = path.join(tmpDir, "docs");
+		fs.mkdirSync(path.join(tmpDir, "openspec", "changes", "gate-test"), { recursive: true });
+		fs.writeFileSync(path.join(tmpDir, "openspec", "changes", "gate-test", "proposal.md"), "# Proposal\n");
 		const node = createNode(docsDir, { id: "gate-test", title: "Gate Test", status: "implementing" });
 		let content = fs.readFileSync(node.filePath, "utf-8");
 		content = content.replace(/^(---\n[\s\S]*?)(---\n)/m, `$1openspec_change: gate-test\n$2`);
@@ -1434,6 +1436,8 @@ describe("transitionDesignNodesOnArchive", () => {
 
 	it("transitions decided nodes with matching change (OpenSpec-first workflow)", () => {
 		const docsDir = path.join(tmpDir, "docs");
+		fs.mkdirSync(path.join(tmpDir, "openspec", "changes", "decided-gate"), { recursive: true });
+		fs.writeFileSync(path.join(tmpDir, "openspec", "changes", "decided-gate", "proposal.md"), "# Proposal\n");
 		const node = createNode(docsDir, { id: "decided-gate", title: "Decided Gate", status: "decided" });
 		let content = fs.readFileSync(node.filePath, "utf-8");
 		content = content.replace(/^(---\n[\s\S]*?)(---\n)/m, `$1openspec_change: decided-gate\n$2`);

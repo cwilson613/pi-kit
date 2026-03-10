@@ -211,19 +211,19 @@ describe("openspec lifecycle integration", () => {
     assert.equal(result.notifications[0].level, "warning");
   });
 
-  it("keeps /opsx:verify blocked on awaiting-reconciliation when lifecycle bindings are stale", async () => {
+  it("surfaces missing-binding when lifecycle bindings are stale", async () => {
     await persistAssessment("pass");
     fs.rmSync(path.join(tmpDir, "docs", "my-change.md"));
 
     const status = await runTool({ action: "status" });
     const statusText = status.content[0].text as string;
-    assert.match(statusText, /Verification: awaiting-reconciliation/);
+    assert.match(statusText, /Verification: missing-binding/);
 
     pi.sentMessages.length = 0;
     const result = await runCommand("opsx:verify", "my-change");
     assert.equal(result.sentMessages.length, 0);
     assert.equal(result.notifications.length, 1);
-    assert.match(result.notifications[0].text, /Verification state for 'my-change': awaiting-reconciliation/);
+    assert.match(result.notifications[0].text, /Verification state for 'my-change': missing-binding/);
     assert.match(result.notifications[0].text, /Bind the change to a decided\/implementing design node before archive/);
     assert.equal(result.notifications[0].level, "warning");
   });

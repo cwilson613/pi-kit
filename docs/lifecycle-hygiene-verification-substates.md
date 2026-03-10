@@ -1,7 +1,7 @@
 ---
 id: lifecycle-hygiene-verification-substates
 title: Lifecycle hygiene — verification substates and binding normalization
-status: decided
+status: implementing
 parent: openspec-assess-lifecycle-integration
 tags: [openspec, design-tree, lifecycle, verification, status]
 open_questions: []
@@ -48,8 +48,11 @@ Archive gating currently accepts either an explicit `openspec_change` binding or
 - `extensions/openspec/archive-gate.ts` (modified) — binding normalization and shared lifecycle gate predicates
 - `extensions/design-tree/index.ts` (modified) — lifecycle metadata should agree with OpenSpec binding truth
 - `extensions/openspec/*.test.ts` (modified) — regression coverage for missing-assessment, missing-binding, stale-assessment, and archive-ready status surfaces
+- `extensions/design-tree/index.test.ts` (new) — Tool-level regression coverage for fallback OpenSpec binding metadata in design-tree status surfaces
+- `extensions/design-tree/tree.test.ts` (modified) — Archive transition regression coverage aligned with normalized OpenSpec binding truth
 
 ### Constraints
 
 - Status surfaces must distinguish archive blockers instead of collapsing them into a generic verifying state.
 - Binding truth must be computed once and reused by OpenSpec status, archive gate, and design-tree lifecycle metadata.
+- Fallback ID-based OpenSpec bindings must remain visible in design-tree lifecycle metadata and archive transitions.

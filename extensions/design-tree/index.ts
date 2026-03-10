@@ -29,6 +29,7 @@ import { sharedState } from "../shared-state.ts";
 
 import { emitDesignTreeState } from "./dashboard-state.ts";
 import { emitConstraintCandidates, emitDecisionCandidates } from "./lifecycle-emitter.ts";
+import { resolveNodeOpenSpecBinding } from "../openspec/archive-gate.ts";
 
 import type { DesignNode, DesignTree, NodeStatus } from "./types.ts";
 import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS } from "./types.ts";
@@ -205,21 +206,24 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 			switch (params.action) {
 				case "list": {
-					const nodes = Array.from(tree.nodes.values()).map((n) => ({
-						id: n.id,
-						title: n.title,
-						status: n.status,
-						parent: n.parent || null,
-						tags: n.tags,
-						open_questions: n.open_questions.length,
-						dependencies: n.dependencies,
-						branches: n.branches,
-						openspec_change: n.openspec_change ?? null,
-						lifecycle: {
-							boundToOpenSpec: Boolean(n.openspec_change),
-							implementationPhase: n.status === "implementing" || n.status === "implemented",
-						},
-					}));
+					const nodes = Array.from(tree.nodes.values()).map((n) => {
+						const binding = resolveNodeOpenSpecBinding(ctx.cwd, n);
+						return {
+							id: n.id,
+							title: n.title,
+							status: n.status,
+							parent: n.parent || null,
+							tags: n.tags,
+							open_questions: n.open_questions.length,
+							dependencies: n.dependencies,
+							branches: n.branches,
+							openspec_change: n.openspec_change ?? null,
+							lifecycle: {
+								boundToOpenSpec: binding.bound,
+								implementationPhase: n.status === "implementing" || n.status === "implemented",
+							},
+						};
+					});
 					return {
 						content: [{ type: "text", text: JSON.stringify(nodes, null, 2) }],
 						details: { nodes },
@@ -237,6 +241,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					const sections = getNodeSections(node);
 					const children = getChildren(tree, node.id).map((c) => ({ id: c.id, title: c.title, status: c.status }));
 
+					const binding = resolveNodeOpenSpecBinding(ctx.cwd, node);
 					const result = {
 						id: node.id,
 						title: node.title,
@@ -260,10 +265,10 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							extraSections: sections.extraSections.map((s) => s.heading),
 						},
 						lifecycle: {
-							boundToOpenSpec: Boolean(node.openspec_change),
+							boundToOpenSpec: binding.bound,
 							canImplement: node.status === "decided",
 							isImplementationPhase: node.status === "implementing" || node.status === "implemented",
-							reopenSignalTarget: node.openspec_change ?? node.id,
+							reopenSignalTarget: binding.changeName ?? node.openspec_change ?? node.id,
 							implementationNoteCounts: {
 								fileScope: sections.implementationNotes.fileScope.length,
 								constraints: sections.implementationNotes.constraints.length,

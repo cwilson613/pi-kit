@@ -2,11 +2,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
-	scanDesignDocs,
 	getNodeSections,
 	writeNodeDocument,
 } from "../design-tree/tree.ts";
 import type { DesignNode, FileScope } from "../design-tree/types.ts";
+import { resolveBoundDesignNodes } from "./archive-gate.ts";
 import { getChange } from "./spec.ts";
 
 export type ReconciliationIssueCode = "incomplete_tasks" | "missing_design_binding";
@@ -45,11 +45,7 @@ export interface PostAssessReconciliationResult {
 }
 
 function findBoundNodes(cwd: string, changeName: string): DesignNode[] {
-	const docsDir = path.join(cwd, "docs");
-	const tree = scanDesignDocs(docsDir);
-	return Array.from(tree.nodes.values()).filter((node) =>
-		node.openspec_change === changeName || node.id === changeName,
-	);
+	return resolveBoundDesignNodes(cwd, changeName);
 }
 
 export function evaluateLifecycleReconciliation(cwd: string, changeName: string): LifecycleReconciliationStatus {

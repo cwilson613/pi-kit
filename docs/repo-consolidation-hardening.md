@@ -1,7 +1,7 @@
 ---
 id: repo-consolidation-hardening
 title: Repo Consolidation, Security Hardening, and Lifecycle Normalization
-status: exploring
+status: implemented
 tags: [architecture, security, lifecycle, consolidation, pi-kit]
 open_questions: []
 ---
@@ -18,6 +18,32 @@ Reduce internal sprawl across major extensions, tighten process safety around su
 
 Top opportunities: (1) break up oversized extension entrypoints such as project-memory/index.ts, cleave/index.ts, openspec/index.ts, and design-tree/index.ts into thinner registration files over explicit domain/store/ui/bridge layers; (2) consolidate repeated dashboard and lifecycle-emitter plumbing into shared publishers; (3) harden subprocess management by replacing broad pkill patterns and shell-string execution; (4) normalize lifecycle state so design-tree, OpenSpec, dashboard, and memory derive from one canonical resolver; (5) unify model-control responsibilities currently split across effort, model-budget, offline-driver, local-inference, and lib/model-routing.
 
+### Program wrap-up
+
+The initially identified highest-leverage consolidation and hardening slices are now implemented as bounded child efforts: cleave checkpoint parity / volatile hygiene, localhost web UI hosting, subprocess safety hardening, lifecycle state normalization, and dashboard publisher consolidation. The remaining ideas from the original assessment — especially oversized entrypoint decomposition and model-control consolidation — remain valid future work, but they are no longer part of the current hardening wrap-up.
+
+## Decisions
+
+### Decision: Conclude repo-consolidation-hardening after the bounded child slices
+
+**Status:** decided
+**Rationale:** The concrete risk-reduction and consistency slices identified at the start of the effort have been delivered as separate archived changes. Remaining opportunities are broader architectural improvements that should be tracked as future initiatives rather than keeping this umbrella effort open indefinitely.
+
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `docs/cleave-checkpoint-parity.md` (modified) — Implemented child slice for dirty-tree/checkpoint parity and volatile memory hygiene.
+- `docs/pikit-web-ui-hosting.md` (modified) — Implemented localhost-only, read-only web UI child slice.
+- `docs/subprocess-safety-hardening.md` (modified) — Implemented subprocess/process safety child slice.
+- `docs/lifecycle-state-normalization.md` (modified) — Implemented canonical lifecycle resolver adoption child slice.
+- `docs/dashboard-lifecycle-publisher-consolidation.md` (modified) — Implemented dashboard publisher consolidation child slice.
+
+### Constraints
+
+- Treat future oversized entrypoint decomposition and model-control consolidation as separate follow-on initiatives rather than extending this closed umbrella slice.
+- Prefer bounded, spec-backed child slices for future architecture hardening instead of one large umbrella implementation change.

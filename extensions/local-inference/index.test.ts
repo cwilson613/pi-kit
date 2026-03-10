@@ -16,19 +16,40 @@ import { EventEmitter } from "node:events";
 // regressions in the real file are caught by these tests.
 // ---------------------------------------------------------------------------
 
-function makeStopOllama(platform: string) {
-  let ollamaChild: ChildProcess | null = null;
-  let serverOnline = true;
-  let cachedModels: string[] = ["gemma:7b"];
+interface MakeStopOllamaOpts {
+  /** Simulate `execSync("brew services stop ollama")` throwing */
+  simulateBrewStopFails?: boolean;
+}
 
-  /** Returns the child for test setup */
+function makeStopOllama(platform: string, opts: MakeStopOllamaOpts = {}) {
+  let ollamaChild: ChildProcess | null = null;
+  // W3: match real extension's initial state (serverOnline=false, cachedModels=[])
+  let serverOnline = false;
+  let cachedModels: string[] = [];
+  // W2/W4: mirrors the brewServicesManaged flag in index.ts
+  let brewServicesManaged = false;
+
+  /** Set the tracked child (mirrors ollamaChild after startOllamaProcess spawn path) */
   function setChild(child: ChildProcess | null) {
     ollamaChild = child;
   }
 
+  /** Simulate brew services having started Ollama this session */
+  function setBrewManaged(managed: boolean) {
+    brewServicesManaged = managed;
+    // Starting brew also sets cachedModels/serverOnline eventually, but initial state is still empty
+  }
+
   function stopOllama(): string {
-    if (platform === "darwin") {
-      // brew services path not exercised here; tests focus on the spawn path
+    // Only attempt brew services stop if WE started via brew services (W2: flag-gated, not platform-gated)
+    if (brewServicesManaged) {
+      if (!opts.simulateBrewStopFails) {
+        brewServicesManaged = false;
+        serverOnline = false;
+        cachedModels = [];
+        return "Stopped Ollama (brew services).";
+      }
+      // brew stop threw — fall through to child/safe-fallback
     }
 
     if (ollamaChild) {
@@ -43,7 +64,16 @@ function makeStopOllama(platform: string) {
     return "No managed Ollama server is running. If you started Ollama externally, stop it manually.";
   }
 
-  return { stopOllama, setChild, state: { get serverOnline() { return serverOnline; }, get cachedModels() { return cachedModels; } } };
+  return {
+    stopOllama,
+    setChild,
+    setBrewManaged,
+    state: {
+      get serverOnline() { return serverOnline; },
+      get cachedModels() { return cachedModels; },
+      get brewServicesManaged() { return brewServicesManaged; },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +127,79 @@ describe("stopOllama — no managed child (safe fallback)", () => {
     const { stopOllama } = makeStopOllama("darwin");
 
     assert.doesNotThrow(() => stopOllama());
+  });
+
+  it("does not attempt brew services stop when brewServicesManaged is false (no false positive on darwin)", () => {
+    // W1: ensure non-managed darwin sessions don't call brew stop
+    const { stopOllama } = makeStopOllama("darwin");
+    // brewServicesManaged defaults to false — no setBrewManaged() call
+
+    const result = stopOllama();
+
+    assert.match(result, /No managed Ollama server/,
+      "must not attempt brew stop if this session did not start via brew");
+  });
+});
+
+describe("stopOllama — brew services managed path (darwin)", () => {
+  it("reports success when brew services stop succeeds", () => {
+    const { stopOllama, setBrewManaged } = makeStopOllama("darwin");
+    setBrewManaged(true);
+
+    const result = stopOllama();
+
+    assert.match(result, /Stopped Ollama \(brew services\)/,
+      "must report brew services stop success");
+  });
+
+  it("clears brewServicesManaged and state after brew stop", () => {
+    const { stopOllama, setBrewManaged, state } = makeStopOllama("darwin");
+    setBrewManaged(true);
+
+    stopOllama();
+
+    assert.equal(state.brewServicesManaged, false, "brewServicesManaged cleared after stop");
+    assert.equal(state.serverOnline, false, "serverOnline cleared");
+    assert.equal(state.cachedModels.length, 0, "cachedModels cleared");
+  });
+
+  it("falls through to safe-fallback when brew stop throws and no child exists", () => {
+    // W2: if brew stop throws and ollamaChild is also null, give the safe message (not a crash)
+    const { stopOllama, setBrewManaged } = makeStopOllama("darwin", { simulateBrewStopFails: true });
+    setBrewManaged(true);
+
+    const result = stopOllama();
+
+    assert.match(result, /No managed Ollama server/,
+      "must fall through to safe-fallback message, not throw");
+  });
+
+  it("falls through to child termination when brew stop throws but a child exists", () => {
+    // W2: if brew stop throws but we also have a spawned child, kill the child
+    const { stopOllama, setChild, setBrewManaged } = makeStopOllama("darwin", { simulateBrewStopFails: true });
+    setBrewManaged(true);
+
+    let receivedSignal: string | undefined;
+    const fakeChild = new EventEmitter() as unknown as ChildProcess;
+    fakeChild.kill = (sig?: NodeJS.Signals | number) => { receivedSignal = String(sig); return true; };
+    setChild(fakeChild);
+
+    const result = stopOllama();
+
+    assert.equal(receivedSignal, "SIGTERM", "child must be SIGTERM'd when brew stop throws");
+    assert.match(result, /Stopped Ollama background process/);
+  });
+
+  it("does not duplicate-stop an unrelated external Ollama on darwin when not brew-managed", () => {
+    // W4 regression: a new ollamaStart() call while brew services is still starting
+    // must not try brew stop on the unrelated process
+    const { stopOllama } = makeStopOllama("darwin");
+    // brewServicesManaged remains false — simulates race where second call found no child
+
+    const result = stopOllama();
+
+    assert.match(result, /No managed Ollama server/,
+      "must not reach brew stop path without brewServicesManaged flag");
   });
 });
 

@@ -191,6 +191,8 @@ export default function (pi: ExtensionAPI) {
   // --- Ollama lifecycle management ---
 
   let ollamaChild: ChildProcess | null = null;
+  /** True when THIS session started Ollama via `brew services start`. */
+  let brewServicesManaged = false;
   let ollamaBinaryAvailable: boolean | null = null; // cached after first check
 
   function hasOllama(): boolean {
@@ -220,6 +222,7 @@ export default function (pi: ExtensionAPI) {
     if (process.platform === "darwin") {
       try {
         execSync("brew services start ollama", { stdio: "ignore", timeout: 10_000 });
+        brewServicesManaged = true;
         return { method: "brew services" };
       } catch {
         // fall through to manual serve
@@ -241,9 +244,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   function stopOllama(): string {
-    if (process.platform === "darwin") {
+    // Only attempt brew services stop if WE started via brew services (W2: flag-gated, not platform-gated).
+    if (brewServicesManaged) {
       try {
         execSync("brew services stop ollama", { stdio: "ignore", timeout: 10_000 });
+        brewServicesManaged = false;
         serverOnline = false;
         cachedModels = [];
         return "Stopped Ollama (brew services).";
@@ -542,6 +547,12 @@ export default function (pi: ExtensionAPI) {
     if (await isOllamaReachable()) {
       const models = await refreshModels();
       return `Ollama is already running at ${getBaseUrl()} — ${modelCount(models)} available.`;
+    }
+
+    // W4: if brew services already launched it this session, don't spawn a second process.
+    // (Ollama may still be binding; a second start would create competing processes.)
+    if (brewServicesManaged) {
+      return "Ollama was started via brew services and may still be initializing. Check status in a moment.";
     }
 
     startOllamaProcess();

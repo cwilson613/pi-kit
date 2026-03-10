@@ -11,6 +11,7 @@ import type {
   DesignTreeDashboardState,
   OpenSpecDashboardState,
   CleaveState,
+  RecoveryDashboardState,
 } from "./dashboard/types.ts";
 
 import type { EffortState } from "./effort/types.ts";
@@ -115,7 +116,10 @@ interface SharedState {
   /** Latest upstream recovery event for dashboard/harness visibility. */
   latestRecoveryEvent?: RecoveryEvent;
 
-  /** Per-turn retry ledger for bounded recovery decisions. */
+  /** Dashboard-friendly recovery summary derived from the latest recovery event. */
+  recovery?: RecoveryDashboardState;
+
+  /** Per-request retry ledger for bounded recovery decisions across core and extension-driven retries. */
   recoveryRetryCounts?: Record<string, number>;
 }
 

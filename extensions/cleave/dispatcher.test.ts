@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import {
 	AsyncSemaphore,
+	emitCleaveChildProgress,
 	extractResultSection,
 	resolveModelIdForTier,
 	LARGE_RUN_THRESHOLD,
@@ -376,6 +377,44 @@ describe("resolveModelIdForTier", () => {
 		// Should resolve to OpenAI opus (avoid Anthropic in first pass)
 		const result = resolveModelIdForTier("opus", mockModels, lowBudgetPolicy);
 		assert.equal(result, "gpt-5.4");
+	});
+});
+
+describe("emitCleaveChildProgress", () => {
+	it("updates shared cleave child progress and emits a dashboard event", () => {
+		const previous = (sharedState as any).cleave;
+		try {
+			(sharedState as any).cleave = {
+				status: "dispatching",
+				runId: "test-run",
+				updatedAt: 0,
+				children: [
+					{ label: "child-0", status: "pending" },
+					{ label: "child-1", status: "pending" },
+				],
+			};
+			const events: Array<{ channel: string; data: unknown }> = [];
+			const pi = {
+				events: {
+					emit: (channel: string, data: unknown) => {
+						events.push({ channel, data });
+					},
+				},
+			} as any;
+
+			emitCleaveChildProgress(pi, 1, { status: "running" });
+			assert.equal((sharedState as any).cleave.children[1].status, "running");
+			assert.ok((sharedState as any).cleave.updatedAt > 0);
+			assert.equal(events.length, 1);
+			assert.equal(events[0]?.channel, "dashboard:update");
+
+			emitCleaveChildProgress(pi, 1, { status: "done", elapsed: 42 });
+			assert.equal((sharedState as any).cleave.children[1].status, "done");
+			assert.equal((sharedState as any).cleave.children[1].elapsed, 42);
+			assert.equal(events.length, 2);
+		} finally {
+			(sharedState as any).cleave = previous;
+		}
 	});
 });
 

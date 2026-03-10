@@ -267,10 +267,18 @@ describe("upstream failure classification", () => {
     assert.equal(classification.retryable, false);
   });
 
+  it("classifies Codex JSON server_error payloads as retryable flakes", () => {
+    const classification = classifyUpstreamFailure(new Error('Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request."}}'));
+    assert.equal(classification.class, "retryable-flake");
+    assert.equal(classification.recoveryAction, "retry-same-model");
+    assert.equal(classification.retryable, true);
+  });
+
   it("keeps auth, quota, tool-output, and context overflow out of generic transient retry", () => {
     assert.equal(classifyUpstreamFailure(new Error("invalid api key")).class, "auth");
     assert.equal(classifyUpstreamFailure(new Error("insufficient_quota")).class, "quota");
     assert.equal(classifyUpstreamFailure(new Error("malformed tool output from helper")).class, "tool-output");
+    assert.equal(classifyUpstreamFailure(new Error("schema validation failed: malformed json")).class, "tool-output");
     assert.equal(classifyUpstreamFailure(new Error("maximum context length exceeded")).class, "context-overflow");
 
     assert.equal(classifyTransientFailure(new Error("invalid api key")), false);

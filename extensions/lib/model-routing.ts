@@ -390,7 +390,7 @@ function classifyFailureMessage(message: string): UpstreamFailureClassification 
       },
     },
     {
-      match: ["malformed tool output", "invalid tool output", "tool result schema", "tool output parse", "tool call parse"].some((needle) => normalized.includes(needle)),
+      match: ["malformed tool output", "invalid tool output", "tool result schema", "tool output parse", "tool call parse", "schema validation", "malformed json", "invalid json", "structured output"].some((needle) => normalized.includes(needle)),
       classification: {
         class: "tool-output",
         recoveryAction: "surface",

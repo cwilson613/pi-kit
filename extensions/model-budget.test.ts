@@ -6,6 +6,8 @@ import {
   buildSetModelTierDescription,
   buildTierCommandDescription,
   classifyRecoveryFailure,
+  piCoreAutoRetryLikelyHandles,
+  shouldUseExtensionRetryFallback,
 } from "./model-budget.ts";
 import { clampThinkingLevel } from "./lib/model-routing.ts";
 
@@ -48,6 +50,12 @@ describe("classifyRecoveryFailure", () => {
     assert.match(classified.guidance, /alternate candidate|blind retry/i);
   });
 
+  it("classifies Codex JSON server_error payloads as retryable transient flakiness", () => {
+    const classified = classifyRecoveryFailure('Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request."}}');
+    assert.equal(classified.classification, "transient_server_error");
+    assert.equal(classified.retryable, true);
+  });
+
   it("preserves classification-specific guidance for non-retryable failures", () => {
     const auth = classifyRecoveryFailure("invalid api key");
     const malformed = classifyRecoveryFailure("schema validation failed: malformed json");
@@ -59,6 +67,23 @@ describe("classifyRecoveryFailure", () => {
     assert.match(malformed.guidance, /prompt\/schema/i);
     assert.equal(overflow.classification, "context_overflow");
     assert.match(overflow.guidance, /compact context/i);
+  });
+});
+
+describe("retry coverage helpers", () => {
+  it("detects that pi core misses Codex JSON server_error payloads", () => {
+    const error = 'Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request."}}';
+
+    assert.equal(piCoreAutoRetryLikelyHandles(error), false);
+    assert.equal(shouldUseExtensionRetryFallback(error, true), true);
+  });
+
+  it("keeps extension retry fallback disabled when pi core already covers the failure", () => {
+    const error = "server error: upstream 503 overloaded";
+
+    assert.equal(piCoreAutoRetryLikelyHandles(error), true);
+    assert.equal(shouldUseExtensionRetryFallback(error, true), false);
+    assert.equal(shouldUseExtensionRetryFallback(error, false), false);
   });
 });
 

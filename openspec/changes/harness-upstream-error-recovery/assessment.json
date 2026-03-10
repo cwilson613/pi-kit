@@ -1,0 +1,26 @@
+{
+  "changeName": "harness-upstream-error-recovery",
+  "assessmentKind": "spec",
+  "outcome": "ambiguous",
+  "timestamp": "2026-03-10T13:54:49.983Z",
+  "summary": "Post-implementation verification remains blocked by upstream Codex server_error envelopes. Reconciled follow-up fixes for retryable structured provider errors so same-model recovery now handles Codex JSON server_error payloads even when pi core auto-retry regex misses them.",
+  "snapshot": {
+    "gitHead": "e69d65f",
+    "fingerprint": "design.md:1773146011955.355|proposal.md:1773145858858.0442|specs/harness/upstream-error-recovery.md:1773145912965.927|tasks.md:1773147930038.3057"
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/model-budget.ts",
+      "extensions/model-budget.test.ts",
+      "extensions/lib/model-routing.test.ts",
+      "extensions/shared-state.ts",
+      "docs/harness-upstream-error-recovery.md"
+    ],
+    "constraints": [
+      "pi-kit now schedules one extension-driven same-message retry when a retryable upstream failure is encoded only as a structured code string such as Codex JSON server_error and therefore does not match pi core's built-in textual retry regex.",
+      "Bounded same-model retries are ledgered per request fingerprint plus provider/model and the retry ledger is cleared after the next successful assistant turn to avoid indefinite loops across extension-driven retries."
+    ],
+    "recommendedAction": "reconcile_after_assess"
+  }
+}

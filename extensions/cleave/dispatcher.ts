@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { sharedState } from "../shared-state.ts";
+import { DASHBOARD_UPDATE_EVENT, sharedState } from "../shared-state.ts";
 import type { ChildState, CleaveState, ModelTier } from "./types.ts";
 import { computeDispatchWaves } from "./planner.ts";
 import { executeWithReview, type ReviewConfig, type ReviewExecutor, DEFAULT_REVIEW_CONFIG } from "./review.ts";
@@ -76,6 +76,23 @@ export function resolveModelIdForTier(
 	// a bare tier alias — that violates the spec decision "Prefer explicit model IDs
 	// over fuzzy tier aliases at execution time."
 	return undefined;
+}
+
+export function emitCleaveChildProgress(
+	pi: Pick<ExtensionAPI, "events">,
+	childId: number,
+	patch: { status?: "pending" | "running" | "done" | "failed"; elapsed?: number },
+): void {
+	const cleaveState = (sharedState as any).cleave;
+	if (!cleaveState?.children?.[childId]) return;
+	if (patch.status !== undefined) {
+		cleaveState.children[childId].status = patch.status;
+	}
+	if (patch.elapsed !== undefined) {
+		cleaveState.children[childId].elapsed = patch.elapsed;
+	}
+	cleaveState.updatedAt = Date.now();
+	pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "cleave", childId, patch });
 }
 
 // ─── Result section parsing ─────────────────────────────────────────────────
@@ -560,10 +577,7 @@ async function dispatchSingleChild(
 	child.startedAt = new Date().toISOString();
 
 	// Mirror to sharedState for live dashboard updates
-	const cleaveState = (sharedState as any).cleave;
-	if (cleaveState?.children?.[child.childId]) {
-		cleaveState.children[child.childId].status = "running";
-	}
+	emitCleaveChildProgress(pi, child.childId, { status: "running" });
 
 	// Resolve an explicit model ID for this child using the shared resolver.
 	// This replaces the old mapModelTierToFlag() fuzzy-alias approach.
@@ -691,9 +705,8 @@ async function dispatchSingleChild(
 	}
 
 	// Mirror final status to sharedState for live dashboard updates
-	if (cleaveState?.children?.[child.childId]) {
-		cleaveState.children[child.childId].status =
-			child.status === "completed" ? "done" : child.status === "failed" ? "failed" : "pending";
-		cleaveState.children[child.childId].elapsed = child.durationSec;
-	}
+	emitCleaveChildProgress(pi, child.childId, {
+		status: child.status === "completed" ? "done" : child.status === "failed" ? "failed" : "pending",
+		elapsed: child.durationSec,
+	});
 }

@@ -53,6 +53,9 @@ extensions/lib/model-routing.ts already classifies transient failures with patte
 - `extensions/dashboard/types.ts` (modified) — define dashboard-facing recovery event and cooldown summary interfaces for shared-state consumers
 - `extensions/dashboard/footer.ts` (modified) — surface latest recovery action plus nearest cooldown guidance in compact and raised footer modes
 - `extensions/dashboard/footer-dashboard.test.ts` (modified) — verify recovery state shapes and footer rendering expectations
+- `extensions/model-budget.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/lib/model-routing.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `docs/harness-upstream-error-recovery.md` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 
 ### Constraints
 
@@ -62,3 +65,8 @@ extensions/lib/model-routing.ts already classifies transient failures with patte
 - Dashboard-facing recovery state must tolerate partial producer rollout: footer rendering should safely read an optional shared-state payload while sibling recovery-controller work lands.
 - Automatic offline handoff must return structured target metadata (provider/model/automatic flag) so the controller and dashboard can describe what changed without scraping human-facing status text.
 - Authentication, quota exhaustion, malformed tool results, and context-overflow paths must not be treated as generic transient retry cases.
+- The recovery controller usually piggybacks on pi core auto-retry: rate-limit/backoff recovery switches the selected model during `turn_end`, then core `agent_end` retry continues on the newly selected route.
+- When a provider surfaces a retryable upstream failure only through a structured code string such as `server_error` (for example Codex JSON error envelopes that do not match pi core's textual retry regex), pi-kit schedules one extension-driven same-message retry so recovery still occurs.
+- Recovery state is stored in both `sharedState.latestRecoveryEvent` (raw harness event) and `sharedState.recovery` (dashboard projection) so status surfaces do not need to derive UI state from prose.
+- pi-kit now schedules one extension-driven same-message retry when a retryable upstream failure is encoded only as a structured code string such as Codex JSON server_error and therefore does not match pi core's built-in textual retry regex.
+- Bounded same-model retries are ledgered per request fingerprint plus provider/model and the retry ledger is cleared after the next successful assistant turn to avoid indefinite loops across extension-driven retries.

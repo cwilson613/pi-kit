@@ -17,17 +17,19 @@
  *   /opus, /sonnet, /haiku — Direct model switch
  */
 
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { Model } from "@mariozechner/pi-ai";
+import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import { DASHBOARD_UPDATE_EVENT, sharedState } from "./shared-state.ts";
 import type { RecoveryEvent, RecoveryFailureClassification } from "./shared-state.ts";
+import type { RecoveryAction, RecoveryCooldownSummary, RecoveryDashboardState, RecoveryTarget } from "./dashboard/types.ts";
 import { tierConfig } from "./effort/tiers.ts";
 import type { EffortLevel } from "./effort/types.ts";
-import { resolveTier, getTierDisplayLabel, getDefaultPolicy, clampThinkingLevel } from "./lib/model-routing.ts";
-import type { ModelTier, RegistryModel } from "./lib/model-routing.ts";
+import { clampThinkingLevel, classifyUpstreamFailure, getDefaultPolicy, getTierDisplayLabel, resolveTier, type CapabilityRuntimeState, type ModelTier, type RegistryModel, type UpstreamFailureClassification } from "./lib/model-routing.ts";
 import { writeLastUsedModel } from "./lib/model-preferences.ts";
-import { readOperatorProfile, loadOperatorRuntimeState, toCapabilityProfile, toCapabilityRuntimeState } from "./lib/operator-profile.ts";
-import { buildFallbackGuidance, explainTierResolutionFailure, recordTransientFailureForModel } from "./lib/operator-fallback.ts";
+import { loadOperatorRuntimeState, readOperatorProfile, toCapabilityProfile, toCapabilityRuntimeState } from "./lib/operator-profile.ts";
+import { buildFallbackGuidance, explainTierResolutionFailure, planRecoveryForModel, recordTransientFailureForModel, type RecoveryPlan } from "./lib/operator-fallback.ts";
+import { switchToOfflineDriver } from "./offline-driver.ts";
 
 /** Model tier ordering for effort cap comparison. */
 export const TIER_ORDER: Record<string, number> = { local: 0, haiku: 1, sonnet: 2, opus: 3 };
@@ -130,70 +132,93 @@ function summarizeErrorMessage(errorMessage: string): string {
   return errorMessage.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
+function mapRecoveryFailureClassification(classification: UpstreamFailureClassification): {
+  classification: RecoveryFailureClassification;
+  retryable: boolean;
+  guidance: string;
+} {
+  switch (classification.class) {
+    case "retryable-flake":
+      return {
+        classification: "transient_server_error",
+        retryable: true,
+        guidance: "Obvious upstream flakiness can retry once on the same provider/model before escalation.",
+      };
+    case "rate-limit":
+    case "backoff":
+      return {
+        classification: "rate_limited",
+        retryable: false,
+        guidance: "Rate limiting/backoff should cool down the failing route and prefer an alternate candidate instead of blind retry.",
+      };
+    case "auth":
+      return {
+        classification: "authentication_failed",
+        retryable: false,
+        guidance: "Authentication failed; refresh credentials or switch to a provider with a valid session.",
+      };
+    case "quota":
+      return {
+        classification: "quota_exhausted",
+        retryable: false,
+        guidance: "Quota exhaustion is not retryable; switch models/providers or restore quota before retrying.",
+      };
+    case "tool-output":
+      return {
+        classification: "malformed_output",
+        retryable: false,
+        guidance: "Malformed output should not use generic retry; adjust the prompt/schema or switch models explicitly.",
+      };
+    case "context-overflow":
+      return {
+        classification: "context_overflow",
+        retryable: false,
+        guidance: "Context overflow is handled separately; compact context or reduce prompt size before retrying.",
+      };
+    default:
+      return {
+        classification: "unknown_upstream",
+        retryable: false,
+        guidance: "Upstream failure was not safely classified for automatic retry; surface it and ask the operator to choose the next route.",
+      };
+  }
+}
+
 export function classifyRecoveryFailure(errorMessage: string): {
   classification: RecoveryFailureClassification;
   retryable: boolean;
   guidance: string;
 } {
-  const message = errorMessage.toLowerCase();
-
-  if (["context window", "context length", "too long", "maximum context", "prompt is too long"].some((needle) => message.includes(needle))) {
-    return {
-      classification: "context_overflow",
-      retryable: false,
-      guidance: "Context overflow is handled separately; compact context or reduce prompt size before retrying.",
-    };
-  }
-
-  if (["invalid api key", "authentication", "unauthorized", "forbidden", "permission denied", "auth"].some((needle) => message.includes(needle))) {
-    return {
-      classification: "authentication_failed",
-      retryable: false,
-      guidance: "Authentication failed; refresh credentials or switch to a provider with a valid session.",
-    };
-  }
-
-  if (["quota", "insufficient credits", "billing", "usage limit", "credit balance"].some((needle) => message.includes(needle))) {
-    return {
-      classification: "quota_exhausted",
-      retryable: false,
-      guidance: "Quota exhaustion is not retryable; switch models/providers or restore quota before retrying.",
-    };
-  }
-
-  if (["schema", "json", "malformed", "invalid tool", "parse", "structured output"].some((needle) => message.includes(needle))) {
-    return {
-      classification: "malformed_output",
-      retryable: false,
-      guidance: "Malformed output should not use generic retry; adjust the prompt/schema or switch models explicitly.",
-    };
-  }
-
-  if (["429", "rate limit", "rate-limit", "too many requests", "session limit", "try again later", "backoff"].some((needle) => message.includes(needle))) {
-    return {
-      classification: "rate_limited",
-      retryable: false,
-      guidance: "Rate limiting/backoff should cool down the failing route and prefer an alternate candidate instead of blind retry.",
-    };
-  }
-
-  if (["server_error", "server error", " 500", " 502", " 503", " 504", "overloaded", "temporarily unavailable", "timeout", "timed out", "connection reset", "econnreset", "socket hang up"].some((needle) => message.includes(needle))) {
-    return {
-      classification: "transient_server_error",
-      retryable: true,
-      guidance: "Obvious upstream flakiness can retry once on the same provider/model before escalation.",
-    };
-  }
-
-  return {
-    classification: "unknown_upstream",
-    retryable: false,
-    guidance: "Upstream failure was not safely classified for automatic retry; surface it and ask the operator to choose the next route.",
-  };
+  return mapRecoveryFailureClassification(classifyUpstreamFailure(errorMessage));
 }
 
-function getRetryLedgerKey(provider: string, model: string, turnIndex: number): string {
-  return `${turnIndex}:${provider}/${model}`;
+function hashRecoveryRequestContent(content: string | (TextContent | ImageContent)[]): string {
+  return createHash("sha1").update(JSON.stringify(content)).digest("hex").slice(0, 12);
+}
+
+function getRetryLedgerKey(provider: string, model: string, requestFingerprint: string): string {
+  return `${provider}/${model}:${requestFingerprint}`;
+}
+
+function getLatestUserRecoveryRequest(ctx: ExtensionContext): {
+  content: string | (TextContent | ImageContent)[];
+  fingerprint: string;
+} | undefined {
+  const entries = ctx.sessionManager.getEntries();
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    const content = entry.message.content as string | (TextContent | ImageContent)[];
+    return {
+      content,
+      fingerprint: hashRecoveryRequestContent(content),
+    };
+  }
+  return undefined;
+}
+
+export function piCoreAutoRetryLikelyHandles(errorMessage: string): boolean {
+  return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server error|internal error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|terminated|retry delay/i.test(errorMessage);
 }
 
 export function buildRecoveryEvent(params: {
@@ -236,6 +261,152 @@ export function buildRecoveryEvent(params: {
   };
 }
 
+function buildRecoveryCooldowns(runtimeState: CapabilityRuntimeState | undefined): RecoveryCooldownSummary[] | undefined {
+  if (!runtimeState) return undefined;
+  const cooldowns: RecoveryCooldownSummary[] = [];
+
+  for (const [provider, entry] of Object.entries(runtimeState.providerCooldowns ?? {})) {
+    if (!entry) continue;
+    cooldowns.push({
+      scope: "provider",
+      key: provider,
+      provider,
+      until: entry.until,
+      reason: entry.reason,
+    });
+  }
+
+  for (const [key, entry] of Object.entries(runtimeState.candidateCooldowns ?? {})) {
+    const [provider, modelId] = key.split("/");
+    cooldowns.push({
+      scope: "candidate",
+      key,
+      provider,
+      modelId,
+      until: entry.until,
+      reason: entry.reason,
+    });
+  }
+
+  return cooldowns.length > 0 ? cooldowns.sort((a, b) => a.until - b.until) : undefined;
+}
+
+function mapRecoveryAction(plan: RecoveryPlan, escalated = false): RecoveryAction {
+  if (escalated) return "escalate";
+  switch (plan.action) {
+    case "retry-same-model": return "retry";
+    case "switch-model": return "switch_candidate";
+    case "handoff-local": return "switch_offline";
+    case "handled-elsewhere": return "observe";
+    case "surface":
+      return plan.classification.cooldownProvider || plan.classification.cooldownCandidate ? "cooldown" : "observe";
+    default:
+      return "observe";
+  }
+}
+
+function buildRecoverySummary(plan: RecoveryPlan, target: RecoveryTarget | undefined, escalated = false): string {
+  if (escalated) {
+    return `Escalated ${plan.classification.summary} after recovery could not switch away from the failing route.`;
+  }
+  switch (plan.action) {
+    case "retry-same-model":
+      return `Retrying once on the same model after ${plan.classification.summary}.`;
+    case "switch-model":
+      return target?.modelId
+        ? `Switching recovery to ${target.provider}/${target.modelId} after ${plan.classification.summary}.`
+        : `Switching to an alternate candidate after ${plan.classification.summary}.`;
+    case "handoff-local":
+      return target?.label
+        ? `Switching recovery to local driver ${target.label} after ${plan.classification.summary}.`
+        : `Switching recovery to the local driver after ${plan.classification.summary}.`;
+    case "handled-elsewhere":
+      return `Observed ${plan.classification.summary}; recovery is handled by explicit compaction/context management logic.`;
+    default:
+      return `Observed ${plan.classification.summary}; ${plan.reason}`;
+  }
+}
+
+export function buildRecoveryDashboardState(params: {
+  recoveryEvent: RecoveryEvent;
+  plan: RecoveryPlan;
+  runtimeState?: CapabilityRuntimeState;
+  target?: RecoveryTarget;
+  escalated?: boolean;
+}): RecoveryDashboardState {
+  return {
+    provider: params.recoveryEvent.provider,
+    modelId: params.recoveryEvent.model,
+    classification: params.recoveryEvent.classification,
+    summary: buildRecoverySummary(params.plan, params.target, params.escalated ?? false),
+    action: mapRecoveryAction(params.plan, params.escalated ?? false),
+    retryCount: params.recoveryEvent.retryCount,
+    maxRetries: params.recoveryEvent.maxRetries,
+    attemptId: `${params.recoveryEvent.turnIndex}:${params.recoveryEvent.provider}/${params.recoveryEvent.model}`,
+    timestamp: params.recoveryEvent.timestamp,
+    escalated: params.escalated,
+    target: params.target,
+    cooldowns: buildRecoveryCooldowns(params.runtimeState),
+  };
+}
+
+function buildRecoveryNotice(recoveryEvent: RecoveryEvent, dashboardState: RecoveryDashboardState): string {
+  const target = dashboardState.target?.modelId
+    ? `${dashboardState.target.provider}/${dashboardState.target.modelId}`
+    : dashboardState.target?.provider;
+  const retry = recoveryEvent.maxRetries > 0 ? `retry ${recoveryEvent.retryCount}/${recoveryEvent.maxRetries}` : undefined;
+  return [
+    `Recovery observed ${recoveryEvent.classification} for ${recoveryEvent.provider}/${recoveryEvent.model}.`,
+    dashboardState.summary,
+    retry,
+    target ? `target ${target}` : undefined,
+  ].filter(Boolean).join(" ");
+}
+
+export function shouldUseExtensionRetryFallback(errorMessage: string, retryAttempted: boolean): boolean {
+  return retryAttempted && !piCoreAutoRetryLikelyHandles(errorMessage);
+}
+
+function scheduleExtensionRetry(
+  pi: ExtensionAPI,
+  request: { content: string | (TextContent | ImageContent)[]; fingerprint: string },
+): void {
+  setTimeout(() => {
+    try {
+      pi.sendUserMessage(request.content);
+    } catch {
+      // If the retry prompt itself fails to queue, the original recovery notice remains in-session.
+    }
+  }, 0);
+}
+
+async function applyRecoveryPlan(
+  plan: RecoveryPlan,
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+): Promise<{ target?: RecoveryTarget; escalated?: boolean }> {
+  if (plan.action === "switch-model" && plan.alternateCandidate) {
+    const targetModel = ctx.modelRegistry.find(plan.alternateCandidate.provider, plan.alternateCandidate.id);
+    if (!targetModel) return { escalated: true };
+    const success = await pi.setModel(targetModel as Model<any>);
+    return success
+      ? { target: { provider: plan.alternateCandidate.provider, modelId: plan.alternateCandidate.id, label: `${plan.alternateCandidate.provider}/${plan.alternateCandidate.id}` } }
+      : { escalated: true };
+  }
+
+  if (plan.action === "handoff-local") {
+    const offline = await switchToOfflineDriver(pi, ctx as any, {
+      preferredModel: plan.alternateCandidate?.id,
+      automatic: true,
+    });
+    return offline.success
+      ? { target: { provider: offline.provider, modelId: offline.modelId, label: offline.label } }
+      : { escalated: true };
+  }
+
+  return {};
+}
+
 async function switchTo(tier: TierName, pi: ExtensionAPI, ctx: ExtensionContext): Promise<RegistryModel | null> {
   const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
   const { policy, profile, runtimeState } = getResolverInputs(ctx);
@@ -275,67 +446,101 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("turn_end", async (event, ctx) => {
     const errorMessage = getAssistantErrorMessage(event.message);
-    if (!errorMessage || !ctx.model) return;
+    if (!errorMessage) {
+      if (sharedState.recoveryRetryCounts && Object.keys(sharedState.recoveryRetryCounts).length > 0) {
+        sharedState.recoveryRetryCounts = {};
+      }
+      return;
+    }
+    if (!ctx.model) return;
 
     const provider = ctx.model.provider;
-    const ledgerKey = getRetryLedgerKey(provider, ctx.model.id, event.turnIndex);
+    const recoveryRequest = getLatestUserRecoveryRequest(ctx);
+    const ledgerKey = getRetryLedgerKey(
+      provider,
+      ctx.model.id,
+      recoveryRequest?.fingerprint ?? `turn-${event.turnIndex}`,
+    );
     const retryCounts = sharedState.recoveryRetryCounts ?? {};
     const priorRetryCount = retryCounts[ledgerKey] ?? 0;
 
-    const runtimeState = recordTransientFailureForModel(ctx.cwd, ctx.model, errorMessage);
+    const persistedRuntimeState = recordTransientFailureForModel(ctx.cwd, ctx.model, errorMessage);
     const { policy, profile } = getResolverInputs(ctx);
     const models = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
-    const guidance = runtimeState
-      ? buildFallbackGuidance(ctx.model, models, policy, profile, runtimeState)
-      : undefined;
-
+    const runtimeState = persistedRuntimeState ?? toCapabilityRuntimeState(loadOperatorRuntimeState(ctx.cwd));
+    const plan = planRecoveryForModel(ctx.model, errorMessage, models, policy, profile, runtimeState ?? {}, Date.now());
+    const guidance = buildFallbackGuidance(ctx.model, models, policy, profile, runtimeState ?? {}, Date.now());
+    const applied = await applyRecoveryPlan(plan, pi, ctx);
+    const classified = mapRecoveryFailureClassification(classifyUpstreamFailure(errorMessage));
     const recoveryEvent = buildRecoveryEvent({
       provider,
       model: ctx.model.id,
       turnIndex: event.turnIndex,
       errorMessage,
       retryCount: priorRetryCount,
-      guidance: guidance?.reason
-        ?? (guidance?.ok && guidance.alternateCandidate
-          ? `Fail over to ${guidance.alternateCandidate.provider}/${guidance.alternateCandidate.id} for ${guidance.role}.`
-          : classifyRecoveryFailure(errorMessage).guidance),
-      alternateCandidate: guidance?.ok ? guidance.alternateCandidate : undefined,
-      cooldownApplied: Boolean(runtimeState),
+      guidance: plan.reason || guidance?.reason || classified.guidance,
+      alternateCandidate: plan.alternateCandidate,
+      cooldownApplied: Boolean(persistedRuntimeState),
     });
+    const dashboardState = buildRecoveryDashboardState({
+      recoveryEvent,
+      plan,
+      runtimeState,
+      target: applied.target,
+      escalated: applied.escalated,
+    });
+    const useExtensionRetryFallback = shouldUseExtensionRetryFallback(errorMessage, recoveryEvent.retryAttempted);
 
     sharedState.latestRecoveryEvent = recoveryEvent;
+    sharedState.recovery = dashboardState;
     sharedState.recoveryRetryCounts = {
       ...retryCounts,
       [ledgerKey]: recoveryEvent.retryCount,
     };
-    pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "model-budget", recoveryEvent });
+    pi.sendMessage({
+      customType: "recovery-event",
+      content: buildRecoveryNotice(recoveryEvent, dashboardState),
+      display: true,
+      details: {
+        recoveryEvent,
+        recovery: dashboardState,
+        plan: {
+          action: plan.action,
+          sameModelRetry: plan.sameModelRetry,
+          reason: plan.reason,
+          classification: plan.classification.class,
+          role: plan.role,
+          alternateCandidate: plan.alternateCandidate,
+          retryStrategy: useExtensionRetryFallback ? "extension-sendUserMessage" : "core-auto-retry",
+        },
+      },
+    }, { triggerTurn: false });
+    pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "model-budget", recoveryEvent, recovery: dashboardState });
+
+    if (useExtensionRetryFallback && recoveryRequest) {
+      scheduleExtensionRetry(pi, recoveryRequest);
+    }
 
     if (!ctx.hasUI) return;
 
-    if (recoveryEvent.disposition === "retry_same_model") {
-      ctx.ui.notify(
-        `${provider}/${ctx.model.id} failed with ${recoveryEvent.classification}; recovery marked a single same-model retry opportunity for turn ${event.turnIndex}.`,
-        "warning",
-      );
+    if (dashboardState.action === "retry") {
+      ctx.ui.notify(dashboardState.summary, "warning");
       return;
     }
 
-    if (guidance?.ok && guidance.alternateCandidate) {
-      ctx.ui.notify(
-        `${provider} hit ${recoveryEvent.classification} and is cooled down for 5 minutes. Future resolution will prefer ${guidance.alternateCandidate.provider}/${guidance.alternateCandidate.id} for ${guidance.role}.`,
-        "warning",
-      );
+    if (dashboardState.action === "switch_candidate" || dashboardState.action === "switch_offline") {
+      ctx.ui.notify(dashboardState.summary, applied.escalated ? "warning" : "info");
       return;
     }
 
     const level = recoveryEvent.disposition === "handled_elsewhere"
       ? "info"
-      : guidance?.requiresConfirmation
+      : guidance?.requiresConfirmation || applied.escalated
         ? "warning"
         : recoveryEvent.retryable
           ? "warning"
           : "error";
-    ctx.ui.notify(recoveryEvent.guidance, level);
+    ctx.ui.notify(dashboardState.summary, level);
   });
 
   const modelTierParameters = {

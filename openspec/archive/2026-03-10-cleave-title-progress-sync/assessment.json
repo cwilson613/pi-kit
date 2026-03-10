@@ -1,0 +1,22 @@
+{
+  "changeName": "cleave-title-progress-sync",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-10T14:11:24.534Z",
+  "summary": "Verified the terminal-title progress sync change against its OpenSpec scenario: per-child dispatcher progress transitions now emit dashboard update events, and terminal-title consumers refresh immediately from shared cleave state. Targeted regression tests for dispatcher emission and dashboard rendering passed.",
+  "snapshot": {
+    "gitHead": "e69d65f",
+    "fingerprint": "design.md:1773151438915.7783|proposal.md:1773151289011.47|specs/dashboard/terminal-title.md:1773151300434.0747|tasks.md:1773151430671.2249"
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/cleave/dispatcher.ts",
+      "extensions/cleave/dispatcher.test.ts"
+    ],
+    "constraints": [
+      "Terminal-title refresh remains event-driven: live cleave counts update when dispatcher child-progress mutations emit dashboard:update, rather than relying on polling or phase-only refreshes."
+    ],
+    "recommendedAction": null
+  }
+}

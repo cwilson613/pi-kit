@@ -35,6 +35,15 @@ Use `memory_query` to check if project memory already exists.
 
 Use `design_tree` action `list` to see if any design explorations exist.
 
+Check for design doc migration needs:
+```bash
+# If design docs with frontmatter (id/status) exist in docs/ instead of docs/design/,
+# suggest running /migrate to archive completed explorations
+ls docs/design/ 2>/dev/null || echo "NO_DESIGN_ARCHIVE"
+```
+
+If `docs/design/` doesn't exist but `docs/` has markdown files with design-tree frontmatter, note that `/migrate` is available to archive completed design docs.
+
 Check for OpenSpec changes:
 ```bash
 ls openspec/changes/ 2>/dev/null
@@ -58,6 +67,7 @@ Give the operator a **brief, scannable summary** (not a wall of text):
 📋 OpenSpec: <N active changes | none>
 🔀 Branch: <current branch>
 
+<If migration available: "📦 /migrate available — N design docs can be archived to docs/design/">
 <If first session: "Ready to explore. What are we building?">
 <If returning: "Welcome back. Pick up where we left off?">
 ```

@@ -389,7 +389,15 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 	const tree: DesignTree = { nodes: new Map(), docsDir };
 	if (!fs.existsSync(docsDir)) return tree;
 
-	const files = fs.readdirSync(docsDir).filter((f) => f.endsWith(".md"));
+	// Scan both docs/ and docs/design/ for design documents
+	let files = fs.readdirSync(docsDir).filter((f) => f.endsWith(".md"));
+	const designSubdir = path.join(docsDir, "design");
+	if (fs.existsSync(designSubdir)) {
+		const archiveFiles = fs.readdirSync(designSubdir)
+			.filter((f) => f.endsWith(".md"))
+			.map((f) => path.join("design", f));
+		files = files.concat(archiveFiles);
+	}
 
 	for (const file of files) {
 		const filePath = path.join(docsDir, file);

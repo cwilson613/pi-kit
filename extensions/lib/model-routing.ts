@@ -138,7 +138,7 @@ const ROLE_DISPLAY_LABELS: Record<CapabilityRole, string> = {
   magos: "Magos",
   adept: "Adept",
   servitor: "Servitor",
-  servoskull: "Servo-skull",
+  servoskull: "Servoskull",
 };
 
 // ---------------------------------------------------------------------------

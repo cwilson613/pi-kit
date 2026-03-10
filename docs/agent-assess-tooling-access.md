@@ -1,7 +1,7 @@
 ---
 id: agent-assess-tooling-access
 title: "Agent harness access to /assess tooling"
-status: implementing
+status: implemented
 parent: cleave-dirty-tree-checkpointing
 tags: [harness, assess, tooling, openspec, workflow]
 open_questions: []
@@ -140,6 +140,11 @@ The bridge should not stop at making `/assess` invokable. OpenSpec and cleave wo
 - `extensions/design-tree/index.ts` (modified) — remains available for structured implementation-note updates when reconciliation expands file scope or constraints
 - `extensions/lib/slash-command-bridge.test.ts` (new) — regression coverage for allowlist refusal, confirmation gating, tool wrapper metadata, and shared executor parity
 - `docs/agent-assess-tooling-access.md` (modified) — documents bridge architecture, safety boundaries, result envelope, and rollout constraints
+- `extensions/cleave/bridge.ts` (new) — pure adapter that preserves full bridged slash-command args while mapping structured /assess results into the generic bridge envelope
+- `extensions/cleave/bridge.test.ts` (new) — regression coverage for preserving full bridged args in the /assess result contract
+- `extensions/openspec/spec.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/openspec/lifecycle-integration.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/openspec/reconcile.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 
 ### Constraints
 
@@ -161,3 +166,5 @@ The bridge should not stop at making `/assess` invokable. OpenSpec and cleave wo
 - The bridge must refuse commands that are not explicitly allowlisted as agent-callable.
 - Commands with destructive or external side effects must surface confirmation requirements through structured metadata rather than silently executing.
 - OpenSpec and cleave lifecycle commands should consume structured assess outputs directly instead of reparsing human-readable assessment text.
+- Bridged slash-command result args must preserve the original tokenized invocation; subcommand-specific fields in data are supplemental and cannot silently replace args.
+- Bridged slash-command results must preserve original tokenized args; command-specific metadata in data is supplemental.

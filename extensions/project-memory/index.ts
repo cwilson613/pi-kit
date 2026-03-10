@@ -50,6 +50,7 @@ import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-t
 import { FactStore, parseExtractionOutput, GLOBAL_DECAY, type MindRecord, type Fact } from "./factstore.ts";
 import { embed, isEmbeddingAvailable, MODEL_DIMS, type EmbeddingProvider } from "./embeddings.ts";
 import { DEFAULT_CONFIG, type MemoryConfig, type LifecycleMemoryCandidate } from "./types.ts";
+import { sanitizeCompactionText, shouldInterceptCompaction } from "./compaction-policy.ts";
 import {
   createMemoryInjectionMetrics,
   estimateTokensFromChars,
@@ -622,10 +623,9 @@ export default function (pi: ExtensionAPI) {
         const model = EFFORT_EXTRACTION_MODELS[effort.extraction];
         if (model) config.extractionModel = model;
       }
-      // Compaction: tiers 1-5 stay local-first, tiers 6-7 defer to cloud
-      if (effort.compaction !== "local") {
-        config.compactionLocalFirst = false;
-      }
+      // Compaction: only explicitly local tiers intercept before pi core.
+      // Normal day-to-day cloud-backed tiers defer to provider-routed compaction first.
+      config.compactionLocalFirst = effort.compaction === "local";
     }
 
     // Detect embedding availability and start background indexing
@@ -673,7 +673,7 @@ export default function (pi: ExtensionAPI) {
   ): Promise<{ summary: string; details: any } | null> {
     // Build summarization prompt (same as existing logic)
     const llmMessages = convertToLlm(prep.messagesToSummarize);
-    let conversationText = serializeConversation(llmMessages);
+    let conversationText = sanitizeCompactionText(serializeConversation(llmMessages));
 
     // Truncate to ~60k chars (~15k tokens) to fit local model context windows
     const MAX_CONVERSATION_CHARS = 60_000;
@@ -705,7 +705,7 @@ export default function (pi: ExtensionAPI) {
     let turnPrefixSummary = "";
     if (prep.isSplitTurn && prep.turnPrefixMessages.length > 0) {
       const prefixMessages = convertToLlm(prep.turnPrefixMessages);
-      let prefixText = serializeConversation(prefixMessages);
+      let prefixText = sanitizeCompactionText(serializeConversation(prefixMessages));
       if (prefixText.length > MAX_CONVERSATION_CHARS) {
         prefixText = "...[truncated]...\n\n" + prefixText.slice(-MAX_CONVERSATION_CHARS);
       }
@@ -887,17 +887,11 @@ export default function (pi: ExtensionAPI) {
 
   // --- Local-model compaction ---
   // Two modes:
-  // 1. compactionLocalFirst=true (default): intercept ALL compactions, try local first.
-  //    Cloud is only used if local model is unavailable (Ollama not running).
-  // 2. compactionLocalFirst=false: only intercept when useLocalCompaction flag is set
-  //    (after cloud failure). Cloud gets first attempt; local is the safety net.
+  // 1. compactionLocalFirst=true: intercept ALL compactions, try local first.
+  // 2. compactionLocalFirst=false (default): only intercept when useLocalCompaction is set
+  //    after a cloud failure or explicit local policy choice.
   pi.on("session_before_compact", async (event, ctx) => {
-    // Check if we should intercept compaction at all
-    const liveCompactionLocal = sharedState.effort
-      ? sharedState.effort.compaction === "local"
-      : config.compactionLocalFirst;
-    const shouldIntercept = liveCompactionLocal || useLocalCompaction;
-    if (!shouldIntercept || !config.compactionLocalFallback) return;
+    if (!shouldInterceptCompaction(sharedState.effort?.compaction, config, useLocalCompaction)) return;
     useLocalCompaction = false; // consume the flag if it was set
 
     const prep = event.preparation;

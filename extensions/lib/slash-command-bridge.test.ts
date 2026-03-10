@@ -161,6 +161,7 @@ describe("slash-command-bridge", () => {
   it("tool wrapper returns structured results and available command metadata", async () => {
     const bridge = createSlashCommandBridge();
     const pi = makeFakePi();
+    const agentCalls: string[] = [];
 
     bridge.register(pi as any, {
       name: "inspect",
@@ -178,6 +179,9 @@ describe("slash-command-bridge", () => {
         data: { ok: true },
         effects: { sideEffectClass: "read" },
       }),
+      agentHandler: async (result) => {
+        agentCalls.push(result.summary);
+      },
     } satisfies BridgedSlashCommand);
 
     const tool = bridge.createToolDefinition();
@@ -188,6 +192,7 @@ describe("slash-command-bridge", () => {
     assert.equal(response.details.availableCommands.length, 1);
     assert.equal(response.details.availableCommands[0].bridge.resultContract, "demo.inspect.v1");
     assert.equal(response.content[0].type, "text");
+    assert.deepEqual(agentCalls, ["Inspection complete"]);
   });
 
   it("preserves nested lifecycle assessment metadata through bridged execution", async () => {

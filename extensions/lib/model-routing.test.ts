@@ -258,7 +258,7 @@ describe("display labels and defaults", () => {
   });
 
   it("maps public roles to labels", () => {
-    assert.equal(getRoleDisplayLabel("servoskull"), "Servo-skull");
+    assert.equal(getRoleDisplayLabel("servoskull"), "Servoskull");
   });
 
   it("default profile includes the full public role ladder", () => {

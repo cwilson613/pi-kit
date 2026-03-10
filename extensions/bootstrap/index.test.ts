@@ -8,6 +8,7 @@ import {
 	buildGuidedProfile,
 	loadOperatorProfile,
 	needsOperatorProfileSetup,
+	routingPolicyFromProfile,
 	saveOperatorProfile,
 	summarizeProviderReadiness,
 	synthesizeSafeDefaultProfile,
@@ -76,13 +77,11 @@ describe("bootstrap operator profile helpers", () => {
 			{ provider: "aws", status: "ok", detail: "ready" },
 		]);
 		assert.equal(profile.setupComplete, false);
-		assert.equal(profile.setupState, "skipped-default");
-		assert.deepEqual(profile.providerOrder, ["anthropic", "openai", "local"]);
-		assert.equal(profile.providerPreferences.local, "avoid");
-		assert.equal(profile.fallbackPolicy.sameRoleCrossProvider, "allow");
-		assert.equal(profile.fallbackPolicy.crossSource, "ask");
-		assert.equal(profile.fallbackPolicy.heavyLocal, "ask");
-		assert.equal(profile.fallbackPolicy.unknownLocalPerformance, "ask");
+		assert.equal(profile.roles.archmagos[0]?.provider, "anthropic");
+		assert.equal(profile.fallback.sameRoleCrossProvider, "allow");
+		assert.equal(profile.fallback.crossSource, "ask");
+		assert.equal(profile.fallback.heavyLocal, "ask");
+		assert.equal(profile.fallback.unknownLocalPerformance, "ask");
 	});
 
 	it("builds guided profile from qualitative setup answers", () => {
@@ -93,14 +92,27 @@ describe("bootstrap operator profile helpers", () => {
 			heavyLocalFallback: "deny",
 		});
 		assert.equal(profile.setupComplete, true);
-		assert.equal(profile.setupState, "guided");
-		assert.deepEqual(profile.providerOrder, ["openai", "anthropic", "local"]);
-		assert.equal(profile.providerPreferences.openai, "prefer");
-		assert.equal(profile.providerPreferences.local, "allow");
-		assert.equal(profile.fallbackPolicy.sameRoleCrossProvider, "ask");
-		assert.equal(profile.fallbackPolicy.crossSource, "ask");
-		assert.equal(profile.fallbackPolicy.heavyLocal, "deny");
-		assert.equal(profile.fallbackPolicy.unknownLocalPerformance, "ask");
+		assert.equal(profile.roles.archmagos[0]?.provider, "openai");
+		assert.equal(profile.roles.magos[0]?.provider, "openai");
+		assert.ok(profile.roles.servitor.some((candidate) => candidate.source === "local"));
+		assert.equal(profile.fallback.sameRoleCrossProvider, "ask");
+		assert.equal(profile.fallback.crossSource, "ask");
+		assert.equal(profile.fallback.heavyLocal, "deny");
+		assert.equal(profile.fallback.unknownLocalPerformance, "ask");
+	});
+
+	it("derives routing policy from operator profile preferences", () => {
+		const profile = buildGuidedProfile({
+			primaryProvider: "openai",
+			allowCloudCrossProviderFallback: true,
+			automaticLightLocalFallback: false,
+			heavyLocalFallback: "deny",
+		});
+		const policy = routingPolicyFromProfile(profile);
+		assert.deepEqual(policy.providerOrder, ["openai", "anthropic", "local"]);
+		assert.deepEqual(policy.avoidProviders, ["local"]);
+		assert.equal(policy.cheapCloudPreferredOverLocal, true);
+		assert.match(policy.notes ?? "", /operator capability profile/i);
 	});
 
 	it("ignores invalid operator profile payloads", () => {

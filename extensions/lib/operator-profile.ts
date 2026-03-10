@@ -1,6 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type {
+  CapabilityProfile,
+  CapabilityRuntimeState,
+  CapabilityCandidate,
+  ProviderName,
+  CooldownEntry,
+} from "./model-routing.ts";
 import { loadPiConfig, savePiConfig, type PiConfig } from "./model-preferences.ts";
 
 export const CAPABILITY_ROLES = ["archmagos", "magos", "adept", "servitor", "servoskull"] as const;
@@ -46,6 +53,17 @@ export interface CandidateCooldownState {
 export interface OperatorRuntimeState {
   providers?: Record<string, CandidateCooldownState>;
   candidates?: Record<string, CandidateCooldownState>;
+}
+
+export interface RuntimeFallbackGuidance {
+  role: CapabilityRole;
+  ok: boolean;
+  requiresConfirmation?: boolean;
+  reason?: string;
+  alternateCandidate?: {
+    provider: ProviderName;
+    id: string;
+  };
 }
 
 const DEFAULT_FALLBACK_POLICY: OperatorFallbackPolicy = {
@@ -116,6 +134,34 @@ function parseCandidate(value: unknown): OperatorProfileCandidate | undefined {
 
 function parseFallbackValue(value: unknown, fallback: FallbackPolicyValue): FallbackPolicyValue {
   return value === "allow" || value === "ask" || value === "deny" ? value : fallback;
+}
+
+function normalizeProviderName(provider: string | undefined): ProviderName | undefined {
+  if (provider === "anthropic" || provider === "openai") return provider;
+  if (provider === "local" || provider === "ollama") return "local";
+  return undefined;
+}
+
+function normalizeCandidate(candidate: OperatorProfileCandidate): CapabilityCandidate | undefined {
+  if (!candidate.id) return undefined;
+  const provider = normalizeProviderName(candidate.provider);
+  if (!provider) return undefined;
+  return {
+    id: candidate.id,
+    provider,
+    source: candidate.source ?? (provider === "local" ? "local" : "upstream"),
+    weight: candidate.weight ?? "normal",
+    maxThinking: candidate.maxThinking ?? "medium",
+  };
+}
+
+function normalizeCooldownEntry(value: CandidateCooldownState): CooldownEntry | undefined {
+  const until = Date.parse(value.until);
+  if (!Number.isFinite(until)) return undefined;
+  return {
+    until,
+    reason: value.reason,
+  };
 }
 
 export function getDefaultOperatorProfile(): OperatorCapabilityProfile {
@@ -218,4 +264,97 @@ export function resolveRoleAlias(role: CapabilityRole | CapabilityRoleAlias): Ca
     default:
       return role;
   }
+}
+
+export function toCapabilityProfile(profile: OperatorCapabilityProfile): CapabilityProfile {
+  return {
+    roles: {
+      archmagos: { candidates: profile.roles.archmagos.map(normalizeCandidate).filter((c): c is CapabilityCandidate => !!c) },
+      magos: { candidates: profile.roles.magos.map(normalizeCandidate).filter((c): c is CapabilityCandidate => !!c) },
+      adept: { candidates: profile.roles.adept.map(normalizeCandidate).filter((c): c is CapabilityCandidate => !!c) },
+      servitor: { candidates: profile.roles.servitor.map(normalizeCandidate).filter((c): c is CapabilityCandidate => !!c) },
+      servoskull: { candidates: profile.roles.servoskull.map(normalizeCandidate).filter((c): c is CapabilityCandidate => !!c) },
+    },
+    internalAliases: {
+      opus: "archmagos",
+      sonnet: "magos",
+      haiku: "adept",
+      local: "servitor",
+      review: "archmagos",
+      planning: "archmagos",
+      compaction: "servitor",
+      extraction: "servitor",
+      "cleave.leaf": "adept",
+      summary: "servoskull",
+      background: "servoskull",
+    },
+    policy: {
+      sameRoleCrossProvider: profile.fallback.sameRoleCrossProvider,
+      crossSource: profile.fallback.crossSource,
+      heavyLocal: profile.fallback.heavyLocal,
+      unknownLocalPerformance: profile.fallback.unknownLocalPerformance,
+    },
+  };
+}
+
+export function toCapabilityRuntimeState(state: OperatorRuntimeState): CapabilityRuntimeState {
+  const providerCooldowns = state.providers
+    ? Object.fromEntries(
+        Object.entries(state.providers)
+          .map(([provider, value]) => {
+            const normalizedProvider = normalizeProviderName(provider);
+            const entry = normalizeCooldownEntry(value);
+            return normalizedProvider && entry ? [normalizedProvider, entry] : null;
+          })
+          .filter((entry): entry is [ProviderName, CooldownEntry] => !!entry),
+      )
+    : undefined;
+
+  const candidateCooldowns = state.candidates
+    ? Object.fromEntries(
+        Object.entries(state.candidates)
+          .map(([key, value]) => {
+            const entry = normalizeCooldownEntry(value);
+            if (!entry) return null;
+            const normalizedKey = key.replace(/^([^:/]+):/, "$1/");
+            return [normalizedKey, entry] as const;
+          })
+          .filter((entry): entry is readonly [string, CooldownEntry] => !!entry),
+      )
+    : undefined;
+
+  return {
+    providerCooldowns: providerCooldowns && Object.keys(providerCooldowns).length > 0 ? providerCooldowns : undefined,
+    candidateCooldowns: candidateCooldowns && Object.keys(candidateCooldowns).length > 0 ? candidateCooldowns : undefined,
+  };
+}
+
+export function fromCapabilityRuntimeState(state: CapabilityRuntimeState): OperatorRuntimeState {
+  const providerEntries: Array<[string, CandidateCooldownState]> = [];
+  for (const [provider, entry] of Object.entries(state.providerCooldowns ?? {})) {
+    if (!entry) continue;
+    providerEntries.push([
+      provider,
+      {
+        until: new Date(entry.until).toISOString(),
+        reason: entry.reason,
+      },
+    ]);
+  }
+
+  const candidateEntries: Array<[string, CandidateCooldownState]> = [];
+  for (const [key, entry] of Object.entries(state.candidateCooldowns ?? {})) {
+    candidateEntries.push([
+      key,
+      {
+        until: new Date(entry.until).toISOString(),
+        reason: entry.reason,
+      },
+    ]);
+  }
+
+  return {
+    providers: providerEntries.length > 0 ? Object.fromEntries(providerEntries) : undefined,
+    candidates: candidateEntries.length > 0 ? Object.fromEntries(candidateEntries) : undefined,
+  };
 }

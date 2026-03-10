@@ -1,0 +1,30 @@
+{
+  "changeName": "agent-assess-tooling-access",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-10T00:14:45.049Z",
+  "summary": "Validated agent-assess-tooling-access via bridged /assess smoke tests plus slash-command bridge, lifecycle integration, reconciliation, and assessment artifact regression tests.",
+  "snapshot": {
+    "gitHead": "e3019ee",
+    "fingerprint": "design.md:1773070710248.7324|proposal.md:1773070710248.8115|specs/harness/slash-commands.md:1773070710248.9722|tasks.md:1773070710249.2686"
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/lib/slash-command-bridge.ts",
+      "extensions/lib/slash-command-bridge.test.ts",
+      "extensions/cleave/index.ts",
+      "extensions/cleave/assessment.ts",
+      "extensions/openspec/index.ts",
+      "extensions/openspec/spec.ts",
+      "extensions/openspec/lifecycle-integration.test.ts",
+      "extensions/openspec/reconcile.test.ts",
+      "extensions/cleave/bridge.ts",
+      "extensions/cleave/bridge.test.ts"
+    ],
+    "constraints": [
+      "Bridged slash-command results must preserve original tokenized args; command-specific metadata in data is supplemental."
+    ],
+    "recommendedAction": null
+  }
+}

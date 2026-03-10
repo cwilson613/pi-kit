@@ -52,20 +52,20 @@ describe("tierConfig", () => {
     assert.equal(c.driver, "sonnet");
     assert.equal(c.thinking, "low");
     assert.equal(c.extraction, "local");
-    assert.equal(c.compaction, "local");
+    assert.equal(c.compaction, "sonnet");
     assert.equal(c.cleavePreferLocal, false);
     assert.equal(c.cleaveFloor, "local");
     assert.equal(c.reviewModel, "sonnet");
   });
 
-  it("Ruthless tier (4) has sonnet + medium thinking, local background", () => {
+  it("Ruthless tier (4) has sonnet + medium thinking, local extraction, cloud-first compaction", () => {
     const c = tierConfig(4);
     assert.equal(c.level, 4);
     assert.equal(c.name, "Ruthless");
     assert.equal(c.driver, "sonnet");
     assert.equal(c.thinking, "medium");
     assert.equal(c.extraction, "local");
-    assert.equal(c.compaction, "local");
+    assert.equal(c.compaction, "sonnet");
     assert.equal(c.cleavePreferLocal, false);
     assert.equal(c.cleaveFloor, "local");
     assert.equal(c.reviewModel, "sonnet");
@@ -78,7 +78,7 @@ describe("tierConfig", () => {
     assert.equal(c.driver, "sonnet");
     assert.equal(c.thinking, "high");
     assert.equal(c.extraction, "local");
-    assert.equal(c.compaction, "local");
+    assert.equal(c.compaction, "sonnet");
     assert.equal(c.cleavePreferLocal, false);
     assert.equal(c.cleaveFloor, "sonnet");
     assert.equal(c.reviewModel, "opus");

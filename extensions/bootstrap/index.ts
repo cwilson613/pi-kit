@@ -23,34 +23,24 @@ import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { checkAllProviders, type AuthResult } from "../01-auth/auth.ts";
-import { loadPiConfig, savePiConfig } from "../lib/model-preferences.ts";
+import { loadPiConfig } from "../lib/model-preferences.ts";
+import {
+	getDefaultOperatorProfile,
+	parseOperatorProfile as parseCapabilityProfile,
+	writeOperatorProfile as persistOperatorProfile,
+	type OperatorCapabilityProfile,
+	type OperatorProfileCandidate,
+} from "../lib/operator-profile.ts";
+import { sharedState } from "../shared-state.ts";
+import { getDefaultPolicy, type ProviderRoutingPolicy } from "../lib/model-routing.ts";
 import { DEPS, checkAll, formatReport, bestInstallCmd, sortByRequires, type DepStatus, type DepTier } from "./deps.ts";
 
 const AGENT_DIR = join(homedir(), ".pi", "agent");
 const MARKER_PATH = join(AGENT_DIR, "pi-kit-bootstrap-done");
 const MARKER_VERSION = "2"; // bump to re-trigger bootstrap after adding operator profile capture
-const OPERATOR_PROFILE_VERSION = 1;
 
-export type ProviderPreference = "prefer" | "allow" | "avoid";
+export type { OperatorCapabilityProfile } from "../lib/operator-profile.ts";
 export type LocalFallbackPolicy = "allow" | "ask" | "deny";
-
-export interface OperatorCapabilityProfile {
-	version: number;
-	setupComplete: boolean;
-	setupState: "guided" | "skipped-default";
-	providerOrder: Array<"anthropic" | "openai" | "local">;
-	providerPreferences: {
-		anthropic: ProviderPreference;
-		openai: ProviderPreference;
-		local: ProviderPreference;
-	};
-	fallbackPolicy: {
-		sameRoleCrossProvider: "allow" | "ask" | "deny";
-		crossSource: "allow" | "ask" | "deny";
-		heavyLocal: LocalFallbackPolicy;
-		unknownLocalPerformance: LocalFallbackPolicy;
-	};
-}
 
 interface PiConfigWithProfile {
 	operatorProfile?: unknown;
@@ -97,39 +87,55 @@ function markDone(): void {
 	writeFileSync(MARKER_PATH, MARKER_VERSION + "\n", "utf8");
 }
 
-function parseOperatorProfile(value: unknown): OperatorCapabilityProfile | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const record = value as Record<string, unknown>;
-	if (record.version !== OPERATOR_PROFILE_VERSION) return undefined;
-	if (typeof record.setupComplete !== "boolean") return undefined;
-	if (record.setupState !== "guided" && record.setupState !== "skipped-default") return undefined;
-	if (!Array.isArray(record.providerOrder) || record.providerOrder.some((item) => item !== "anthropic" && item !== "openai" && item !== "local")) {
-		return undefined;
+function reorderCandidates(
+	candidates: OperatorProfileCandidate[],
+	primaryProvider: "anthropic" | "openai" | "no-preference",
+): OperatorProfileCandidate[] {
+	if (primaryProvider === "no-preference") return [...candidates];
+	const rank = (candidate: OperatorProfileCandidate): number => {
+		if (candidate.provider === primaryProvider) return 0;
+		if (candidate.provider === "local") return 2;
+		return 1;
+	};
+	return [...candidates].sort((a, b) => rank(a) - rank(b));
+}
+
+function applyPreferredProviderOrder(
+	profile: OperatorCapabilityProfile,
+	primaryProvider: "anthropic" | "openai" | "no-preference",
+): void {
+	for (const role of ["archmagos", "magos", "adept", "servitor", "servoskull"] as const) {
+		profile.roles[role] = reorderCandidates(profile.roles[role], primaryProvider);
 	}
-	const providerPreferences = record.providerPreferences;
-	const fallbackPolicy = record.fallbackPolicy;
-	if (!providerPreferences || typeof providerPreferences !== "object" || Array.isArray(providerPreferences)) return undefined;
-	if (!fallbackPolicy || typeof fallbackPolicy !== "object" || Array.isArray(fallbackPolicy)) return undefined;
+}
 
-	const prefs = providerPreferences as Record<string, unknown>;
-	const fallback = fallbackPolicy as Record<string, unknown>;
-	const validPreference = (valueToCheck: unknown): valueToCheck is ProviderPreference => valueToCheck === "prefer" || valueToCheck === "allow" || valueToCheck === "avoid";
-	const validPolicy = (valueToCheck: unknown): valueToCheck is LocalFallbackPolicy => valueToCheck === "allow" || valueToCheck === "ask" || valueToCheck === "deny";
-	if (!validPreference(prefs.anthropic) || !validPreference(prefs.openai) || !validPreference(prefs.local)) return undefined;
-	if (!validPolicy(fallback.sameRoleCrossProvider) || !validPolicy(fallback.crossSource)
-		|| !validPolicy(fallback.heavyLocal) || !validPolicy(fallback.unknownLocalPerformance)) return undefined;
-
-	return record as unknown as OperatorCapabilityProfile;
+function ensureAutomaticLightLocalFallback(profile: OperatorCapabilityProfile): void {
+	const localSeed = profile.roles.servoskull.find((candidate) => candidate.source === "local");
+	if (!localSeed) return;
+	const servitorHasLocal = profile.roles.servitor.some((candidate) => candidate.source === "local");
+	if (!servitorHasLocal) {
+		profile.roles.servitor.push({
+			id: localSeed.id,
+			provider: localSeed.provider,
+			source: "local",
+			weight: "light",
+			maxThinking: "minimal",
+		});
+	}
 }
 
 export function loadOperatorProfile(root: string): OperatorCapabilityProfile | undefined {
 	const config = loadPiConfig(root) as PiConfigWithProfile;
-	return parseOperatorProfile(config.operatorProfile);
+	const raw = config.operatorProfile;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	if (!Object.prototype.hasOwnProperty.call(raw, "roles") && !Object.prototype.hasOwnProperty.call(raw, "fallback")) {
+		return undefined;
+	}
+	return parseCapabilityProfile(raw);
 }
 
 export function needsOperatorProfileSetup(root: string): boolean {
-	const profile = loadOperatorProfile(root);
-	return !profile;
+	return !loadOperatorProfile(root);
 }
 
 export function summarizeProviderReadiness(results: AuthResult[]): ProviderReadinessSummary {
@@ -145,63 +151,68 @@ export function summarizeProviderReadiness(results: AuthResult[]): ProviderReadi
 
 export function synthesizeSafeDefaultProfile(readiness?: AuthResult[]): OperatorCapabilityProfile {
 	const summary = readiness ? summarizeProviderReadiness(readiness) : { ready: [], authAttention: [], missing: [] };
-	const preferredCloud: Array<"anthropic" | "openai"> = [];
-	if (summary.ready.includes("github")) preferredCloud.push("anthropic");
-	if (summary.ready.includes("aws") || summary.ready.includes("gitlab")) preferredCloud.push("openai");
-	for (const provider of ["anthropic", "openai"] as const) {
-		if (!preferredCloud.includes(provider)) preferredCloud.push(provider);
-	}
+	const profile = getDefaultOperatorProfile();
+	profile.setupComplete = false;
 
-	return {
-		version: OPERATOR_PROFILE_VERSION,
-		setupComplete: false,
-		setupState: "skipped-default",
-		providerOrder: [...preferredCloud, "local"],
-		providerPreferences: {
-			anthropic: preferredCloud[0] === "anthropic" ? "prefer" : "allow",
-			openai: preferredCloud[0] === "openai" ? "prefer" : "allow",
-			local: "avoid",
-		},
-		fallbackPolicy: {
-			sameRoleCrossProvider: "allow",
-			crossSource: "ask",
-			heavyLocal: "ask",
-			unknownLocalPerformance: "ask",
-		},
-	};
+	const primaryProvider = summary.ready.includes("github")
+		? "anthropic"
+		: summary.ready.includes("aws") || summary.ready.includes("gitlab")
+			? "openai"
+			: "no-preference";
+	applyPreferredProviderOrder(profile, primaryProvider);
+	profile.fallback.sameRoleCrossProvider = "allow";
+	profile.fallback.crossSource = "ask";
+	profile.fallback.heavyLocal = "ask";
+	profile.fallback.unknownLocalPerformance = "ask";
+	return profile;
 }
 
 export function buildGuidedProfile(answers: SetupAnswers): OperatorCapabilityProfile {
-	const providerOrder: Array<"anthropic" | "openai" | "local"> =
-		answers.primaryProvider === "anthropic"
-			? ["anthropic", "openai", "local"]
-			: answers.primaryProvider === "openai"
-				? ["openai", "anthropic", "local"]
-				: ["anthropic", "openai", "local"];
-
-	return {
-		version: OPERATOR_PROFILE_VERSION,
-		setupComplete: true,
-		setupState: "guided",
-		providerOrder,
-		providerPreferences: {
-			anthropic: answers.primaryProvider === "anthropic" ? "prefer" : "allow",
-			openai: answers.primaryProvider === "openai" ? "prefer" : "allow",
-			local: answers.automaticLightLocalFallback ? "allow" : "avoid",
-		},
-		fallbackPolicy: {
-			sameRoleCrossProvider: answers.allowCloudCrossProviderFallback ? "allow" : "ask",
-			crossSource: answers.automaticLightLocalFallback ? "ask" : "deny",
-			heavyLocal: answers.heavyLocalFallback,
-			unknownLocalPerformance: "ask",
-		},
-	};
+	const profile = getDefaultOperatorProfile();
+	profile.setupComplete = true;
+	applyPreferredProviderOrder(profile, answers.primaryProvider);
+	profile.fallback.sameRoleCrossProvider = answers.allowCloudCrossProviderFallback ? "allow" : "ask";
+	profile.fallback.crossSource = answers.automaticLightLocalFallback ? "ask" : "deny";
+	profile.fallback.heavyLocal = answers.heavyLocalFallback;
+	profile.fallback.unknownLocalPerformance = "ask";
+	if (answers.automaticLightLocalFallback) ensureAutomaticLightLocalFallback(profile);
+	return profile;
 }
 
 export function saveOperatorProfile(root: string, profile: OperatorCapabilityProfile): void {
-	const config = loadPiConfig(root) as PiConfigWithProfile;
-	config.operatorProfile = profile;
-	savePiConfig(root, config);
+	persistOperatorProfile(root, profile);
+}
+
+export function routingPolicyFromProfile(profile: OperatorCapabilityProfile | undefined): ProviderRoutingPolicy {
+	const policy = getDefaultPolicy();
+	if (!profile) return policy;
+
+	const providerOrder: Array<"anthropic" | "openai" | "local"> = [];
+	for (const role of ["archmagos", "magos", "adept", "servitor", "servoskull"] as const) {
+		for (const candidate of profile.roles[role]) {
+			const provider = candidate.provider === "ollama" ? "local" : candidate.provider;
+			if ((provider === "anthropic" || provider === "openai" || provider === "local") && !providerOrder.includes(provider)) {
+				providerOrder.push(provider);
+			}
+		}
+	}
+	for (const provider of ["anthropic", "openai", "local"] as const) {
+		if (!providerOrder.includes(provider)) providerOrder.push(provider);
+	}
+
+	const automaticLocalFallback = profile.roles.servitor.some((candidate) => candidate.source === "local");
+	const avoidProviders = new Set(policy.avoidProviders);
+	if (!automaticLocalFallback) avoidProviders.add("local");
+
+	return {
+		...policy,
+		providerOrder,
+		avoidProviders: [...avoidProviders],
+		cheapCloudPreferredOverLocal: !automaticLocalFallback,
+		notes: profile.setupComplete
+			? "routing policy sourced from operator capability profile"
+			: "routing policy sourced from default operator capability profile",
+	};
 }
 
 function formatProviderSetupSummary(results: AuthResult[]): string {
@@ -290,6 +301,8 @@ async function ensureOperatorProfile(pi: ExtensionAPI, ctx: CommandContext): Pro
 export default function (pi: ExtensionAPI) {
 	// --- First-run detection on session start ---
 	pi.on("session_start", async (_event, ctx) => {
+		sharedState.routingPolicy = routingPolicyFromProfile(loadOperatorProfile(getConfigRoot(ctx)));
+
 		if (!isFirstRun()) return;
 		if (!ctx.hasUI) return;
 

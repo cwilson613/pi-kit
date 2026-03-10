@@ -1,0 +1,31 @@
+{
+  "changeName": "operator-capability-profile",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-10T00:17:10.818Z",
+  "summary": "Validated operator-capability-profile via bootstrap setup, resolver fallback semantics, operator profile persistence/runtime cooldowns, and tier-routing regression tests.",
+  "snapshot": {
+    "gitHead": "e3019ee",
+    "fingerprint": "design.md:1773099130458.518|proposal.md:1773070710251.104|specs/models/profile.md:1773070710251.2515|tasks.md:1773099178212.729"
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/lib/operator-profile.ts",
+      "extensions/lib/operator-profile.test.ts",
+      "extensions/lib/operator-fallback.ts",
+      "extensions/lib/operator-fallback.test.ts",
+      "extensions/lib/model-routing.ts",
+      "extensions/lib/model-routing.test.ts",
+      "extensions/bootstrap/index.ts",
+      "extensions/bootstrap/index.test.ts",
+      "extensions/effort/tiers.ts",
+      "extensions/effort/tiers.test.ts",
+      "docs/operator-capability-profile.md"
+    ],
+    "constraints": [
+      "Silent upstream-to-heavy-local fallback is not allowed by default; operator policy must govern cross-source and heavy-local transitions."
+    ],
+    "recommendedAction": null
+  }
+}

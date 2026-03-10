@@ -82,7 +82,7 @@ export const DEFAULT_CONFIG: MemoryConfig = {
   compactionWarningPercent: 75,
   compactionAutoPercent: 85,
   compactionLocalFallback: true,
-  compactionLocalFirst: true,
+  compactionLocalFirst: false,
   compactionLocalTimeout: 45_000,
   compactionFallbackChain: true,
   compactionCodexTimeout: 60_000,

@@ -1,7 +1,7 @@
 ---
 id: openspec-assess-lifecycle-integration
 title: OpenSpec lifecycle integration with structured assessment results
-status: implementing
+status: implemented
 parent: agent-assess-tooling-access
 tags: [openspec, assess, lifecycle, workflow, harness]
 open_questions: []
@@ -36,6 +36,49 @@ OpenSpec is the workflow authority, so assessment state now lives beside the res
 - `assessment.json`
 
 That keeps lifecycle evidence co-located, inspectable, and scoped to one change.
+
+## Decisions
+
+### Decision: OpenSpec is the lifecycle authority and must own persisted assessment state
+
+**Status:** decided
+**Rationale:** Lifecycle gates need one source of truth. Putting assessment state inside each change keeps verify, reconciliation, and archive aligned.
+
+### Decision: `/opsx:verify` should execute or refresh structured assessment, not only render cached state
+
+**Status:** decided
+**Rationale:** Verification is meaningful only if it is current for the implementation snapshot being evaluated.
+
+### Decision: Archive must fail closed on missing, stale, ambiguous, or reopened assessment state
+
+**Status:** decided
+**Rationale:** Archive is the lifecycle commit point. It must reject uncertain or outdated state instead of relying on best effort.
+
+## Open Questions
+
+*No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `extensions/openspec/spec.ts` — persisted assessment artifact helpers and freshness evaluation
+- `extensions/openspec/index.ts` — verify/archive lifecycle gates and reconciliation persistence
+- `extensions/cleave/index.ts` — structured assessment payloads for OpenSpec persistence
+- `extensions/lib/slash-command-bridge.ts` — preservation of structured assessment metadata
+- `extensions/openspec/spec.test.ts` — artifact persistence and freshness regression tests
+- `extensions/openspec/lifecycle-integration.test.ts` — verify/archive lifecycle command regression tests
+- `extensions/lib/slash-command-bridge.test.ts` — structured bridge metadata regression test
+- `extensions/cleave/assessment.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/openspec/reconcile.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+
+### Constraints
+
+- Archive must fail closed unless the latest persisted assessment is a current explicit `pass`.
+- Lifecycle gating must not parse prior human-readable assessment text.
+- Persisted assessment state must remain scoped to one OpenSpec change.
+- Operator UX should remain readable even though lifecycle decisions are now driven by structured state.
+- OpenSpec-owned assessment state is authoritative for lifecycle gating and archive must fail closed unless the current persisted assessment explicitly passes.
 
 ## Persisted assessment artifact
 
@@ -156,43 +199,3 @@ Regression coverage for this integration now checks:
 - `/opsx:verify` reuse of current state vs refresh prompting for stale state
 - `/opsx:archive` refusal on missing, stale, ambiguous, and reopened assessment state
 - `/opsx:archive` success on a current explicit pass
-
-## Decisions
-
-### Decision: OpenSpec is the lifecycle authority and must own persisted assessment state
-
-**Status:** decided  
-**Rationale:** Lifecycle gates need one source of truth. Putting assessment state inside each change keeps verify, reconciliation, and archive aligned.
-
-### Decision: `/opsx:verify` should execute or refresh structured assessment, not only render cached state
-
-**Status:** decided  
-**Rationale:** Verification is meaningful only if it is current for the implementation snapshot being evaluated.
-
-### Decision: Archive must fail closed on missing, stale, ambiguous, or reopened assessment state
-
-**Status:** decided  
-**Rationale:** Archive is the lifecycle commit point. It must reject uncertain or outdated state instead of relying on best effort.
-
-## Open Questions
-
-*No open questions.*
-
-## Implementation Notes
-
-### File Scope
-
-- `extensions/openspec/spec.ts` — persisted assessment artifact helpers and freshness evaluation
-- `extensions/openspec/index.ts` — verify/archive lifecycle gates and reconciliation persistence
-- `extensions/cleave/index.ts` — structured assessment payloads for OpenSpec persistence
-- `extensions/lib/slash-command-bridge.ts` — preservation of structured assessment metadata
-- `extensions/openspec/spec.test.ts` — artifact persistence and freshness regression tests
-- `extensions/openspec/lifecycle-integration.test.ts` — verify/archive lifecycle command regression tests
-- `extensions/lib/slash-command-bridge.test.ts` — structured bridge metadata regression test
-
-### Constraints
-
-- Archive must fail closed unless the latest persisted assessment is a current explicit `pass`.
-- Lifecycle gating must not parse prior human-readable assessment text.
-- Persisted assessment state must remain scoped to one OpenSpec change.
-- Operator UX should remain readable even though lifecycle decisions are now driven by structured state.

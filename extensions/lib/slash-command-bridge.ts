@@ -55,6 +55,7 @@ export interface BridgedSlashCommand<TData = unknown, TLifecycle = unknown> exte
   structuredExecutor: SlashCommandStructuredExecutor<TData, TLifecycle>;
   bridge: SlashCommandBridgeMetadata;
   interactiveHandler?: (result: SlashCommandBridgeResult<TData, TLifecycle>, args: string, ctx: ExtensionCommandContext) => Promise<void>;
+  agentHandler?: (result: SlashCommandBridgeResult<TData, TLifecycle>, args: string, ctx: SlashCommandExecutionContext) => Promise<void>;
 }
 
 export interface SlashCommandBridgeExecuteRequest {
@@ -184,6 +185,10 @@ export class SlashCommandBridge {
       parameters: EXECUTE_PARAMS,
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = await bridge.execute(params, ctx);
+        const command = bridge.get(params.command);
+        if (command?.agentHandler) {
+          await command.agentHandler(result, toArgString(params.args), ctx);
+        }
         return {
           content: [{ type: "text", text: result.humanText || result.summary || summarize(result.command, result.args) }],
           details: {

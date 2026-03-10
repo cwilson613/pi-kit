@@ -23,6 +23,7 @@ import { sharedState, DASHBOARD_UPDATE_EVENT } from "../shared-state.ts";
 import { debug } from "../debug.ts";
 import { emitOpenSpecState } from "../openspec/dashboard-state.ts";
 import { createSlashCommandBridge, buildSlashCommandResult } from "../lib/slash-command-bridge.ts";
+import { buildAssessBridgeResult } from "./bridge.ts";
 import {
 	assessDirective,
 	PATTERNS,
@@ -901,23 +902,10 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 	];
 	const assessExecutors = createAssessStructuredExecutors(pi);
 	const slashCommandBridge = createSlashCommandBridge();
-	const toBridgeAssessResult = (result: AssessStructuredResult): ReturnType<typeof buildSlashCommandResult> =>
-		buildSlashCommandResult(result.command, result.args.split(/\s+/).filter(Boolean), {
-			ok: result.ok,
-			summary: result.summary,
-			humanText: result.humanText,
-			data: {
-				subcommand: result.subcommand,
-				data: result.data,
-				lifecycleHint: result.lifecycle,
-			},
-			lifecycle: result.lifecycleRecord,
-			effects: {
-				sideEffectClass: result.subcommand === "cleave" ? "workspace-write" : "read",
-				lifecycleTouched: result.lifecycleRecord ? [result.lifecycleRecord.changeName] : undefined,
-			},
-			nextSteps: result.nextSteps.map((step) => ({ label: step })),
-		});
+	const toBridgeAssessResult = (
+		bridgedArgs: string[],
+		result: AssessStructuredResult,
+	): ReturnType<typeof buildSlashCommandResult> => buildAssessBridgeResult(bridgedArgs, result);
 
 	slashCommandBridge.register(pi, {
 		name: "assess",
@@ -955,13 +943,13 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			const rest = parts.slice(1).join(" ");
 			switch (sub) {
 				case "cleave":
-					return toBridgeAssessResult(await assessExecutors.cleave(rest, { cwd: ctx.cwd }));
+					return toBridgeAssessResult(parts, await assessExecutors.cleave(rest, { cwd: ctx.cwd }));
 				case "diff":
-					return toBridgeAssessResult(await assessExecutors.diff(rest, { cwd: ctx.cwd }));
+					return toBridgeAssessResult(parts, await assessExecutors.diff(rest, { cwd: ctx.cwd }));
 				case "spec":
-					return toBridgeAssessResult(await assessExecutors.spec(rest, { cwd: ctx.cwd }));
+					return toBridgeAssessResult(parts, await assessExecutors.spec(rest, { cwd: ctx.cwd }));
 				case "complexity":
-					return toBridgeAssessResult(await assessExecutors.complexity(rest));
+					return toBridgeAssessResult(parts, await assessExecutors.complexity(rest));
 				default:
 					return buildSlashCommandResult("assess", parts, {
 						ok: false,
@@ -1009,7 +997,24 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 				summary: result.summary,
 				humanText: result.humanText,
 				data: (result.data as any)?.data,
-				effects: [],
+				effects: (result.data as any)?.assessEffects ?? [],
+				nextSteps: (result.nextSteps ?? []).map((step) => step.label),
+				lifecycle: (result.data as any)?.lifecycleHint,
+				lifecycleRecord: result.lifecycle as AssessLifecycleRecord | undefined,
+			};
+			applyAssessEffects(pi, assessResult);
+		},
+		agentHandler: async (result, args) => {
+			const trimmed = (args || "").trim();
+			const assessResult: AssessStructuredResult = {
+				command: "assess",
+				subcommand: (result.data as any)?.subcommand ?? "diff",
+				args: trimmed,
+				ok: result.ok,
+				summary: result.summary,
+				humanText: result.humanText,
+				data: (result.data as any)?.data,
+				effects: (result.data as any)?.assessEffects ?? [],
 				nextSteps: (result.nextSteps ?? []).map((step) => step.label),
 				lifecycle: (result.data as any)?.lifecycleHint,
 				lifecycleRecord: result.lifecycle as AssessLifecycleRecord | undefined,

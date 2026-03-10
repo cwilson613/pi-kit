@@ -1,7 +1,7 @@
 ---
 id: native-diagram-backend-mvp
 title: Native SVG diagram backend MVP
-status: implementing
+status: implemented
 tags: [render, svg, native-diagrams, mvp]
 open_questions: []
 branches: ["feature/native-diagram-backend-mvp"]
@@ -43,6 +43,12 @@ Implement a tightly scoped native diagram backend inside extensions/render that 
 - `extensions/render/index.ts` (modified) — Register a new native diagram tool alongside existing render tools and share output-path conventions.
 - `skills/style/SKILL.md` (modified) — Document when the native backend should be chosen over D2 or Excalidraw.
 - `extensions/render/native-diagrams/*.test.ts` (new) — Add tests for parsing, motif rendering, SVG output, and PNG export plumbing.
+- `extensions/render/native-diagrams/spec.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/render/native-diagrams/motifs.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/render/native-diagrams/raster.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/render/native-diagrams/index.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/render/native-diagrams/index.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `package.json` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 
 ### Constraints
 

@@ -25,6 +25,8 @@ import type { EffortLevel } from "./effort/types.ts";
 import { resolveTier, getTierDisplayLabel, getDefaultPolicy, clampThinkingLevel } from "./lib/model-routing.ts";
 import type { ModelTier, RegistryModel } from "./lib/model-routing.ts";
 import { writeLastUsedModel } from "./lib/model-preferences.ts";
+import { readOperatorProfile, loadOperatorRuntimeState, toCapabilityProfile, toCapabilityRuntimeState } from "./lib/operator-profile.ts";
+import { buildFallbackGuidance, explainTierResolutionFailure, recordTransientFailureForModel } from "./lib/operator-fallback.ts";
 
 /** Model tier ordering for effort cap comparison. */
 export const TIER_ORDER: Record<string, number> = { local: 0, haiku: 1, sonnet: 2, opus: 3 };
@@ -107,10 +109,26 @@ export function buildTierCommandDescription(tier: TierName): string {
   return `Switch to ${getTierDisplayLabel(tier)} [${tier}] — ${TIER_CAPABILITY_COPY[tier]} via provider-aware routing`;
 }
 
+function getResolverInputs(ctx: ExtensionContext) {
+  const policy = (sharedState as any).routingPolicy ?? getDefaultPolicy();
+  const profile = toCapabilityProfile(readOperatorProfile(ctx.cwd));
+  const runtimeState = toCapabilityRuntimeState(loadOperatorRuntimeState(ctx.cwd));
+  return { policy, profile, runtimeState };
+}
+
+function getAssistantErrorMessage(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const record = message as { role?: string; errorMessage?: unknown };
+  if (record.role !== "assistant" || typeof record.errorMessage !== "string" || !record.errorMessage.trim()) {
+    return undefined;
+  }
+  return record.errorMessage;
+}
+
 async function switchTo(tier: TierName, pi: ExtensionAPI, ctx: ExtensionContext): Promise<RegistryModel | null> {
   const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
-  const policy = (sharedState as any).routingPolicy ?? getDefaultPolicy();
-  const resolved = resolveTier(tier, all, policy);
+  const { policy, profile, runtimeState } = getResolverInputs(ctx);
+  const resolved = resolveTier(tier, all, policy, runtimeState, profile);
   if (!resolved) return null;
   const model = all.find((m) => m.id === resolved.modelId);
   if (!model) return null;
@@ -132,9 +150,9 @@ function currentTierName(ctx: ExtensionContext): TierName | null {
   if (!model) return null;
   // Resolve the current model against the registry using the shared resolver
   const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
-  const policy = (sharedState as any).routingPolicy ?? getDefaultPolicy();
+  const { policy, profile, runtimeState } = getResolverInputs(ctx);
   for (const tier of ["opus", "sonnet", "haiku", "local"] as TierName[]) {
-    const resolved = resolveTier(tier, all, policy);
+    const resolved = resolveTier(tier, all, policy, runtimeState, profile);
     if (resolved?.modelId === model.id) return tier;
   }
   return null;
@@ -143,6 +161,34 @@ function currentTierName(ctx: ExtensionContext): TierName | null {
 export default function (pi: ExtensionAPI) {
   // session_start model selection is handled by the effort extension.
   // model-budget only provides the set_model_tier / set_thinking_level tools.
+
+  pi.on("turn_end", async (event, ctx) => {
+    const errorMessage = getAssistantErrorMessage(event.message);
+    if (!errorMessage || !ctx.model || !ctx.hasUI) return;
+
+    const runtimeState = recordTransientFailureForModel(ctx.cwd, ctx.model, errorMessage);
+    if (!runtimeState) return;
+
+    const { policy, profile } = getResolverInputs(ctx);
+    const models = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
+    const guidance = buildFallbackGuidance(ctx.model, models, policy, profile, runtimeState);
+    const provider = ctx.model.provider;
+
+    if (guidance?.ok && guidance.alternateCandidate) {
+      ctx.ui.notify(
+        `${provider} hit a transient failure and is cooled down for 5 minutes. Future resolution will prefer ${guidance.alternateCandidate.provider}/${guidance.alternateCandidate.id} for ${guidance.role}.`,
+        "warning",
+      );
+      return;
+    }
+
+    if (guidance?.reason) {
+      ctx.ui.notify(guidance.reason, guidance.requiresConfirmation ? "warning" : "error");
+      return;
+    }
+
+    ctx.ui.notify(`${provider} hit a transient failure and is cooled down for 5 minutes.`, "warning");
+  });
 
   const modelTierParameters = {
     type: "object",
@@ -225,11 +271,19 @@ export default function (pi: ExtensionAPI) {
           details: undefined,
         };
       }
+      const { policy, profile, runtimeState } = getResolverInputs(ctx);
+      const failure = explainTierResolutionFailure(
+        tier,
+        ctx.modelRegistry.getAll() as unknown as RegistryModel[],
+        policy,
+        profile,
+        runtimeState,
+      ) ?? `Failed to switch to ${displayLabel} [${tier}] — no matching model found or no API key`;
       return {
         content: [
           {
             type: "text" as const,
-            text: `Failed to switch to ${displayLabel} [${tier}] — no matching model found or no API key`,
+            text: failure,
           },
         ],
         details: undefined,
@@ -297,7 +351,15 @@ export default function (pi: ExtensionAPI) {
         }
         const model = await switchTo(tier, pi, ctx);
         if (!model) {
-          ctx.ui.notify(`Failed to switch to ${displayLabel} [${tier}]`, "error");
+          const { policy, profile, runtimeState } = getResolverInputs(ctx);
+          const failure = explainTierResolutionFailure(
+            tier,
+            ctx.modelRegistry.getAll() as unknown as RegistryModel[],
+            policy,
+            profile,
+            runtimeState,
+          );
+          ctx.ui.notify(failure ?? `Failed to switch to ${displayLabel} [${tier}]`, "error");
         }
       },
     });

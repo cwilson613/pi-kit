@@ -33,6 +33,7 @@ import {
   type RegistryModel,
 } from "../lib/model-routing.ts";
 import { readLastUsedModel, writeLastUsedModel } from "../lib/model-preferences.ts";
+import { readOperatorProfile, loadOperatorRuntimeState, toCapabilityProfile, toCapabilityRuntimeState } from "../lib/operator-profile.ts";
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -46,6 +47,13 @@ const TIER_ICONS: Record<EffortLevel, string> = {
   6: "💀",
   7: "⚙️",
 };
+
+function getResolverInputs(ctx: ExtensionContext) {
+  const policy = sharedState.routingPolicy ?? getDefaultPolicy();
+  const profile = toCapabilityProfile(readOperatorProfile(ctx.cwd));
+  const runtimeState = toCapabilityRuntimeState(loadOperatorRuntimeState(ctx.cwd));
+  return { policy, profile, runtimeState };
+}
 
 // ─── Model Switching ─────────────────────────────────────────
 
@@ -67,8 +75,8 @@ async function switchDriverModel(
   const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
   // Build O(1) index over the same snapshot — no second linear scan (C3)
   const byKey = new Map(all.map((m) => [`${m.provider}/${m.id}`, m]));
-  const policy = sharedState.routingPolicy ?? getDefaultPolicy();
-  const resolved = resolveTier(driver, all, policy);
+  const { policy, profile, runtimeState } = getResolverInputs(ctx);
+  const resolved = resolveTier(driver, all, policy, runtimeState, profile);
   if (!resolved) return null;
   // Direct map lookup — no second linear scan of `all`
   const model = byKey.get(`${resolved.provider}/${resolved.modelId}`);
@@ -104,14 +112,14 @@ function resolveExtractionTier(
   extraction: EffortModelTier,
   ctx: ExtensionContext,
 ): { displayTier: string; resolvedModelId?: string } {
-  const policy = sharedState.routingPolicy ?? getDefaultPolicy();
+  const { policy, profile, runtimeState } = getResolverInputs(ctx);
   const all = ctx.modelRegistry.getAll() as unknown as RegistryModel[];
 
   // Determine effective tier: upgrade local→haiku when policy prefers cheap cloud
   const effectiveTier: ModelTier =
     policy.cheapCloudPreferredOverLocal && extraction === "local" ? "haiku" : extraction;
 
-  const resolved = resolveTier(effectiveTier, all, policy);
+  const resolved = resolveTier(effectiveTier, all, policy, runtimeState, profile);
 
   // If cloud preferred but no cloud model matched, fall back to local.
   // We call resolveTier("local") rather than matchLocalTier() directly because
@@ -120,7 +128,7 @@ function resolveExtractionTier(
   // straight to matchLocalTier(), so the policy has no effect here. This is
   // safe and avoids importing the private matchLocalTier function.
   const final =
-    resolved ?? (effectiveTier !== "local" ? resolveTier("local", all, policy) : undefined);
+    resolved ?? (effectiveTier !== "local" ? resolveTier("local", all, policy, runtimeState, profile) : undefined);
 
   return {
     displayTier: final ? getTierDisplayLabel(final.tier) : getTierDisplayLabel(effectiveTier),
@@ -235,15 +243,20 @@ export default function (pi: ExtensionAPI) {
 
     // Restore the operator's last explicit model choice when possible.
     // If none is persisted (or it is no longer available), fall back to the
-    // current effort tier's resolved driver.
+    // current effort tier's resolved driver. As a final guard, keep pi's
+    // current startup model rather than warning about an unusable session when
+    // a working driver is already present.
     const restoredModel = await restoreLastUsedModel(pi, ctx);
     const switchedDriver = restoredModel ? null : await switchDriverModel(pi, ctx, state.driver);
+    const retainedModel = !restoredModel && !switchedDriver && ctx.model ? ctx.model : null;
 
     // Set thinking level, respecting candidate ceilings when the effort-driven
     // model switch produced a structured resolver result.
     const effectiveThinking: ThinkingLevel = switchedDriver?.maxThinking
       ? clampThinkingLevel(state.thinking, switchedDriver.maxThinking)
-      : state.thinking;
+      : restoredModel || retainedModel
+        ? state.thinking
+        : state.thinking;
     pi.setThinkingLevel(effectiveThinking as any);
 
     // Notify operator
@@ -252,10 +265,12 @@ export default function (pi: ExtensionAPI) {
       ? ` → restored ${restoredModel.provider}/${restoredModel.id}`
       : switchedDriver
         ? ` → ${switchedDriver.model.provider}/${switchedDriver.model.id}`
-        : " (driver model unavailable)";
+        : retainedModel
+          ? ` → kept ${retainedModel.provider}/${retainedModel.id} (preferred ${state.driver} unavailable)`
+          : " (driver model unavailable)";
     ctx.ui.notify(
       `${icon} Effort: ${state.name} (${state.driver}/${effectiveThinking})${modelNote}`,
-      restoredModel || switchedDriver ? "info" : "warning",
+      restoredModel || switchedDriver || retainedModel ? "info" : "warning",
     );
   });
 

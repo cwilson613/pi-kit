@@ -1,0 +1,29 @@
+{
+  "changeName": "openspec-assess-lifecycle-integration",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-10T00:17:10.804Z",
+  "summary": "Validated openspec-assess-lifecycle-integration via lifecycle integration, reconciliation, assessment artifact persistence, and bridge metadata regression tests.",
+  "snapshot": {
+    "gitHead": "e3019ee",
+    "fingerprint": "design.md:1773070710250.3706|proposal.md:1773070710250.465|specs/openspec/assessment-lifecycle.md:1773070710250.7688|tasks.md:1773070710250.863"
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/openspec/spec.ts",
+      "extensions/openspec/index.ts",
+      "extensions/cleave/assessment.ts",
+      "extensions/cleave/index.ts",
+      "extensions/lib/slash-command-bridge.ts",
+      "extensions/openspec/spec.test.ts",
+      "extensions/openspec/lifecycle-integration.test.ts",
+      "extensions/lib/slash-command-bridge.test.ts",
+      "extensions/openspec/reconcile.test.ts"
+    ],
+    "constraints": [
+      "OpenSpec-owned assessment state is authoritative for lifecycle gating and archive must fail closed unless the current persisted assessment explicitly passes."
+    ],
+    "recommendedAction": null
+  }
+}

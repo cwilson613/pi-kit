@@ -13,6 +13,8 @@ import {
   readOperatorProfile,
   resolveRoleAlias,
   saveOperatorRuntimeState,
+  toCapabilityProfile,
+  toCapabilityRuntimeState,
   writeOperatorProfile,
 } from "./operator-profile.ts";
 import { readLastUsedModel, writeLastUsedModel } from "./model-preferences.ts";
@@ -179,5 +181,61 @@ describe("operator runtime state", () => {
 
     assert.deepEqual(Object.keys(state.providers ?? {}), ["anthropic"]);
     assert.equal(state.candidates, undefined);
+  });
+
+  it("converts persisted runtime cooldowns to resolver runtime state", () => {
+    const runtimeState = toCapabilityRuntimeState({
+      providers: {
+        anthropic: { until: "2026-03-09T14:00:00.000Z", reason: "429" },
+        ollama: { until: "2026-03-09T14:01:00.000Z", reason: "busy" },
+      },
+      candidates: {
+        "openai:gpt-5.4": { until: "2026-03-09T14:05:00.000Z" },
+      },
+    });
+
+    assert.equal(typeof runtimeState.providerCooldowns?.anthropic?.until, "number");
+    assert.equal(runtimeState.providerCooldowns?.local?.reason, "busy");
+    assert.ok(runtimeState.candidateCooldowns?.["openai/gpt-5.4"]);
+  });
+});
+
+describe("resolver profile bridge", () => {
+  it("converts operator profile roles and fallback policy into resolver profile", () => {
+    const capabilityProfile = toCapabilityProfile(parseOperatorProfile({
+      roles: {
+        magos: [
+          {
+            id: "claude-sonnet-4-6",
+            provider: "anthropic",
+            source: "upstream",
+            weight: "normal",
+            maxThinking: "medium",
+          },
+        ],
+        servoskull: [
+          {
+            id: "qwen3:8b",
+            provider: "ollama",
+            source: "local",
+            weight: "light",
+            maxThinking: "off",
+          },
+        ],
+      },
+      fallback: {
+        sameRoleCrossProvider: "allow",
+        crossSource: "ask",
+        heavyLocal: "deny",
+        unknownLocalPerformance: "ask",
+      },
+    }));
+
+    assert.equal(capabilityProfile.roles.magos.candidates[0]?.provider, "anthropic");
+    assert.equal(capabilityProfile.roles.magos.candidates[0]?.maxThinking, "medium");
+    assert.equal(capabilityProfile.roles.servoskull.candidates[0]?.provider, "local");
+    assert.equal(capabilityProfile.roles.servoskull.candidates[0]?.maxThinking, "off");
+    assert.equal(capabilityProfile.policy.heavyLocal, "deny");
+    assert.equal(capabilityProfile.internalAliases["cleave.leaf"], "adept");
   });
 });

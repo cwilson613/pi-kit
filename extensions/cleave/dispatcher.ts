@@ -524,13 +524,20 @@ export async function dispatchChildren(
 	const semaphore = new AsyncSemaphore(maxParallel);
 	const effectiveReviewConfig = reviewConfig ?? DEFAULT_REVIEW_CONFIG;
 
+	let childrenDispatched = 0;
+	const totalChildren = state.children.length;
+
 	for (let waveIdx = 0; waveIdx < waves.length; waveIdx++) {
 		const waveLabels = waves[waveIdx];
 		const waveChildren = state.children.filter((c) => waveLabels.includes(c.label));
+		const childStart = childrenDispatched + 1;
+		const childEnd = childrenDispatched + waveChildren.length;
+		const childRange = childStart === childEnd ? `${childStart}` : `${childStart}-${childEnd}`;
 
 		onProgress?.(
-			`Wave ${waveIdx + 1}/${waves.length}: dispatching ${waveChildren.map((c) => c.label).join(", ")}`,
+			`Wave ${waveIdx + 1}/${waves.length} (child ${childRange}/${totalChildren}): dispatching ${waveChildren.map((c) => c.label).join(", ")}`,
 		);
+		childrenDispatched += waveChildren.length;
 
 		const promises = waveChildren.map(async (child) => {
 			await semaphore.acquire();

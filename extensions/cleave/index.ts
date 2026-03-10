@@ -19,6 +19,7 @@ import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "
 import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { relative } from "node:path";
 
 import { sharedState, DASHBOARD_UPDATE_EVENT } from "../shared-state.ts";
 import { debug } from "../debug.ts";
@@ -186,6 +187,175 @@ function formatSpecVerification(ctx: OpenSpecContext): string {
 	);
 
 	return lines.join("\n");
+}
+
+interface DirtyPathEntry {
+	path: string;
+	status: string;
+}
+
+interface DirtyTreeClassification {
+	related: DirtyPathEntry[];
+	unrelated: DirtyPathEntry[];
+	volatile: DirtyPathEntry[];
+}
+
+interface DirtyTreePreflightOptions {
+	repoPath: string;
+	openspecChangePath?: string;
+	onUpdate?: (payload: { content: Array<{ type: "text"; text: string }>; details?: Record<string, unknown> }) => void;
+	ui?: { input?: (prompt: string, initial?: string) => Promise<string | undefined> };
+}
+
+const VOLATILE_DIRTY_PATHS = new Set([".pi/memory/facts.jsonl"]);
+
+function parsePorcelainStatus(stdout: string): DirtyPathEntry[] {
+	return stdout
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter(Boolean)
+		.map((line) => ({
+			status: line.slice(0, 2),
+			path: line.slice(3).trim().replace(/\\/g, "/"),
+		}));
+}
+
+function classifyDirtyPaths(entries: DirtyPathEntry[], repoPath: string, openspecChangePath?: string): DirtyTreeClassification {
+	const classification: DirtyTreeClassification = { related: [], unrelated: [], volatile: [] };
+	const changeRel = openspecChangePath
+		? relative(repoPath, openspecChangePath).replace(/\\/g, "/").replace(/\/$/, "")
+		: "";
+
+	for (const entry of entries) {
+		if (VOLATILE_DIRTY_PATHS.has(entry.path)) {
+			classification.volatile.push(entry);
+			continue;
+		}
+		if (changeRel && (entry.path === changeRel || entry.path.startsWith(changeRel + "/"))) {
+			classification.related.push(entry);
+			continue;
+		}
+		classification.unrelated.push(entry);
+	}
+
+	return classification;
+}
+
+function formatDirtyTreeSummary(classification: DirtyTreeClassification, suggestedMessage: string | null): string {
+	const renderGroup = (title: string, entries: DirtyPathEntry[], empty: string): string[] => [
+		title,
+		...(entries.length > 0 ? entries.map((entry) => `- [${entry.status}] \`${entry.path}\``) : [`- ${empty}`]),
+		"",
+	];
+	const lines = [
+		"### Dirty Tree Preflight",
+		"",
+		"Cleave requires an explicit preflight decision before worktree creation.",
+		"",
+		...renderGroup("**Related changes**", classification.related, "none detected"),
+		...renderGroup("**Unrelated / unknown changes**", classification.unrelated, "none detected"),
+		...renderGroup("**Volatile artifacts**", classification.volatile, "none detected"),
+		"**Actions:** `checkpoint`, `stash-unrelated`, `stash-volatile`, `proceed-without-cleave`, `cancel`",
+		...(suggestedMessage ? ["", `Suggested checkpoint commit: \`${suggestedMessage}\``] : []),
+	];
+	return lines.join("\n");
+}
+
+function buildCheckpointMessage(openspecChangePath?: string): string | null {
+	if (!openspecChangePath) return "chore(cleave): checkpoint before cleave";
+	const changeName = openspecChangePath.replace(/\\/g, "/").split("/").pop();
+	if (!changeName) return "chore(cleave): checkpoint before cleave";
+	return `feat(${changeName.replace(/^cleave-/, "")}): checkpoint before cleave`;
+}
+
+async function stashPaths(pi: ExtensionAPI, repoPath: string, label: string, entries: DirtyPathEntry[]): Promise<void> {
+	if (entries.length === 0) return;
+	const args = ["stash", "push", "-u", "-m", label, "--", ...entries.map((entry) => entry.path)];
+	const result = await pi.exec("git", args, { cwd: repoPath, timeout: 15_000 });
+	if (result.code !== 0) throw new Error(result.stderr.trim() || `Failed to stash ${label}`);
+}
+
+async function checkpointRelatedChanges(
+	pi: ExtensionAPI,
+	repoPath: string,
+	classification: DirtyTreeClassification,
+	ui?: { input?: (prompt: string, initial?: string) => Promise<string | undefined> },
+	openspecChangePath?: string,
+): Promise<void> {
+	if (classification.related.length === 0) {
+		throw new Error("Checkpoint requested, but no related files were confidently classified.");
+	}
+	if (typeof ui?.input !== "function") {
+		throw new Error("Checkpoint requires interactive approval, but input is unavailable.");
+	}
+	const suggested = buildCheckpointMessage(openspecChangePath) ?? "chore(cleave): checkpoint before cleave";
+	const commitMessage = (await ui.input("Checkpoint commit message:", suggested))?.trim() || suggested;
+	const approval = (await ui.input(
+		`Commit ${classification.related.length} related file(s) with message \`${commitMessage}\`? [y/N]`,
+	))?.trim().toLowerCase();
+	if (approval !== "y" && approval !== "yes") {
+		throw new Error("Checkpoint cancelled before commit approval.");
+	}
+	const relatedPaths = classification.related.map((entry) => entry.path);
+	const addResult = await pi.exec("git", ["add", "--", ...relatedPaths], { cwd: repoPath, timeout: 15_000 });
+	if (addResult.code !== 0) throw new Error(addResult.stderr.trim() || "Failed to stage checkpoint files.");
+	const commitResult = await pi.exec("git", ["commit", "-m", commitMessage, "--", ...relatedPaths], {
+		cwd: repoPath,
+		timeout: 20_000,
+	});
+	if (commitResult.code !== 0) throw new Error(commitResult.stderr.trim() || "Failed to create checkpoint commit.");
+}
+
+async function runDirtyTreePreflight(pi: ExtensionAPI, options: DirtyTreePreflightOptions): Promise<"continue" | "skip_cleave" | "cancelled"> {
+	const status = await pi.exec("git", ["status", "--porcelain"], {
+		cwd: options.repoPath,
+		timeout: 5_000,
+	});
+	const entries = parsePorcelainStatus(status.stdout);
+	if (entries.length === 0) return "continue";
+
+	const classification = classifyDirtyPaths(entries, options.repoPath, options.openspecChangePath);
+	const summary = formatDirtyTreeSummary(classification, buildCheckpointMessage(options.openspecChangePath));
+	options.onUpdate?.({ content: [{ type: "text", text: summary }], details: { phase: "preflight" } });
+
+	if (typeof options.ui?.input !== "function") {
+		throw new Error(summary + "\n\nInteractive input is unavailable, so cleave cannot resolve the dirty tree automatically.");
+	}
+
+	while (true) {
+		const answer = (await options.ui.input(
+			"Dirty tree action [checkpoint|stash-unrelated|stash-volatile|proceed-without-cleave|cancel]:",
+		))?.trim().toLowerCase();
+		try {
+			switch (answer) {
+				case "checkpoint":
+					await checkpointRelatedChanges(pi, options.repoPath, classification, options.ui, options.openspecChangePath);
+					return "continue";
+				case "stash-unrelated":
+					await stashPaths(pi, options.repoPath, "cleave-preflight-unrelated", classification.unrelated);
+					return "continue";
+				case "stash-volatile":
+					await stashPaths(pi, options.repoPath, "cleave-preflight-volatile", classification.volatile);
+					return "continue";
+				case "proceed-without-cleave":
+					return "skip_cleave";
+				case "cancel":
+				case "":
+					return "cancelled";
+				default:
+					options.onUpdate?.({
+						content: [{ type: "text", text: "Invalid preflight action. Choose checkpoint, stash-unrelated, stash-volatile, proceed-without-cleave, or cancel." }],
+						details: { phase: "preflight" },
+					});
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			options.onUpdate?.({
+				content: [{ type: "text", text: `Preflight action failed: ${message}` }],
+				details: { phase: "preflight" },
+			});
+		}
+	}
 }
 
 interface AssessExecutionContext {
@@ -1688,6 +1858,28 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			}
 
 			// ── PREFLIGHT ──────────────────────────────────────────────
+			const toolUi = (ctx as { ui?: { input?: (prompt: string, initial?: string) => Promise<string | undefined> } }).ui;
+			const preflightOutcome = await runDirtyTreePreflight(pi, {
+				repoPath,
+				openspecChangePath: params.openspec_change_path,
+				onUpdate,
+				ui: typeof toolUi?.input === "function" ? { input: toolUi.input.bind(toolUi) } : undefined,
+			});
+			if (preflightOutcome === "skip_cleave") {
+				const message = "Dirty-tree preflight resolved to proceed without cleave. Worktree creation and dispatch were skipped.";
+				emitCleaveState(pi, "idle");
+				return {
+					content: [{ type: "text", text: message }],
+					details: { phase: "preflight", skipped: true, reason: "proceed_without_cleave" },
+				};
+			}
+			if (preflightOutcome === "cancelled") {
+				emitCleaveState(pi, "idle");
+				return {
+					content: [{ type: "text", text: "Cleave cancelled during dirty-tree preflight." }],
+					details: { phase: "preflight", cancelled: true },
+				};
+			}
 			await ensureCleanWorktree(pi, repoPath);
 			const baseBranch = await getCurrentBranch(pi, repoPath);
 

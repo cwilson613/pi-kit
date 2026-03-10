@@ -435,6 +435,17 @@ export async function dispatchChildren(
 	onProgress?: (msg: string) => void,
 	reviewConfig?: ReviewConfig,
 ): Promise<void> {
+	const statusResult = await pi.exec("git", ["status", "--porcelain"], {
+		cwd: state.repoPath,
+		timeout: 5_000,
+	});
+	if (statusResult.stdout.trim()) {
+		throw new Error(
+			"Dispatch blocked: repository became dirty before child execution. Resolve the dirty-tree preflight before dispatching.\n" +
+			statusResult.stdout.trim(),
+		);
+	}
+
 	// ── Large-run preflight ──────────────────────────────────────────────────
 	// Before dispatching, check if this run qualifies as "large" and the session
 	// policy requires operator input before committing to a provider.

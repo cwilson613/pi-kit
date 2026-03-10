@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   classifyTransientFailure,
+  classifyUpstreamFailure,
   clampThinkingLevel,
   getDefaultCapabilityProfile,
   getDefaultPolicy,
@@ -13,7 +14,6 @@ import {
   TRANSIENT_PROVIDER_COOLDOWN_MS,
   type CapabilityCandidate,
   type CapabilityProfile,
-  type CapabilityRuntimeState,
   type ProviderRoutingPolicy,
   type RegistryModel,
   withCandidateCooldown,
@@ -241,11 +241,40 @@ describe("cooldown helpers", () => {
     const runtimeState = withProviderCooldown(undefined, "anthropic", "429", 1000);
     assert.equal(runtimeState.providerCooldowns?.anthropic?.until, 1000 + TRANSIENT_PROVIDER_COOLDOWN_MS);
   });
+});
 
-  it("classifies transient upstream failures", () => {
-    assert.equal(classifyTransientFailure(new Error("429 rate limit exceeded")), true);
-    assert.equal(classifyTransientFailure(new Error("OpenAI session limit reached")), true);
+describe("upstream failure classification", () => {
+  it("classifies retryable flakes separately from rate limits", () => {
+    const flake = classifyUpstreamFailure(new Error("server_error from upstream"));
+    const rateLimit = classifyUpstreamFailure(new Error("429 rate limit exceeded"));
+
+    assert.equal(flake.class, "retryable-flake");
+    assert.equal(flake.recoveryAction, "retry-same-model");
+    assert.equal(flake.retryable, true);
+    assert.equal(flake.cooldownProvider, false);
+
+    assert.equal(rateLimit.class, "rate-limit");
+    assert.equal(rateLimit.recoveryAction, "failover");
+    assert.equal(rateLimit.retryable, false);
+    assert.equal(rateLimit.cooldownProvider, true);
+    assert.equal(rateLimit.cooldownCandidate, true);
+  });
+
+  it("classifies explicit backoff as failover rather than same-model retry", () => {
+    const classification = classifyUpstreamFailure(new Error("provider says try again later"));
+    assert.equal(classification.class, "backoff");
+    assert.equal(classification.recoveryAction, "failover");
+    assert.equal(classification.retryable, false);
+  });
+
+  it("keeps auth, quota, tool-output, and context overflow out of generic transient retry", () => {
+    assert.equal(classifyUpstreamFailure(new Error("invalid api key")).class, "auth");
+    assert.equal(classifyUpstreamFailure(new Error("insufficient_quota")).class, "quota");
+    assert.equal(classifyUpstreamFailure(new Error("malformed tool output from helper")).class, "tool-output");
+    assert.equal(classifyUpstreamFailure(new Error("maximum context length exceeded")).class, "context-overflow");
+
     assert.equal(classifyTransientFailure(new Error("invalid api key")), false);
+    assert.equal(classifyTransientFailure(new Error("maximum context length exceeded")), false);
   });
 });
 

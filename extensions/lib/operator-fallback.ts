@@ -1,18 +1,26 @@
 import type { Model } from "@mariozechner/pi-ai";
 import {
-  classifyTransientFailure,
+  classifyUpstreamFailure,
   resolveCapabilityRole,
   getTierDisplayLabel,
   withCandidateCooldown,
   withProviderCooldown,
+  type CapabilityCandidate,
   type CapabilityProfile,
   type CapabilityRole,
   type CapabilityRuntimeState,
   type ModelTier,
   type ProviderRoutingPolicy,
   type RegistryModel,
+  type UpstreamFailureClassification,
 } from "./model-routing.ts";
-import { fromCapabilityRuntimeState, loadOperatorRuntimeState, saveOperatorRuntimeState, toCapabilityRuntimeState, type RuntimeFallbackGuidance } from "./operator-profile.ts";
+import {
+  fromCapabilityRuntimeState,
+  loadOperatorRuntimeState,
+  saveOperatorRuntimeState,
+  toCapabilityRuntimeState,
+  type RuntimeFallbackGuidance,
+} from "./operator-profile.ts";
 
 const ROLE_ORDER: CapabilityRole[] = ["archmagos", "magos", "adept", "servitor", "servoskull"];
 const TIER_ROLE_MAP: Record<Exclude<ModelTier, "local">, CapabilityRole> = {
@@ -20,6 +28,19 @@ const TIER_ROLE_MAP: Record<Exclude<ModelTier, "local">, CapabilityRole> = {
   sonnet: "magos",
   haiku: "adept",
 };
+
+export interface RecoveryPlan {
+  classification: UpstreamFailureClassification;
+  role?: CapabilityRole;
+  action: "retry-same-model" | "switch-model" | "handoff-local" | "surface" | "handled-elsewhere";
+  sameModelRetry: boolean;
+  requiresConfirmation?: boolean;
+  reason: string;
+  alternateCandidate?: {
+    provider: CapabilityCandidate["provider"];
+    id: string;
+  };
+}
 
 function normalizeProvider(provider: string): "anthropic" | "openai" | "local" | undefined {
   if (provider === "anthropic" || provider === "openai" || provider === "local") return provider;
@@ -37,6 +58,76 @@ export function inferRolesForModel(model: Pick<Model<any>, "provider" | "id">, p
   const key = currentModelKey(model);
   if (!key) return [];
   return ROLE_ORDER.filter((role) => profile.roles[role].candidates.some((candidate) => `${candidate.provider}/${candidate.id}` === key));
+}
+
+export function planRecoveryForModel(
+  model: Pick<Model<any>, "provider" | "id">,
+  failure: unknown,
+  models: RegistryModel[],
+  policy: ProviderRoutingPolicy,
+  profile: CapabilityProfile,
+  runtimeState: CapabilityRuntimeState,
+  now: number = Date.now(),
+): RecoveryPlan {
+  const classification = classifyUpstreamFailure(failure);
+  const [role] = inferRolesForModel(model, profile);
+
+  if (classification.recoveryAction === "retry-same-model") {
+    return {
+      classification,
+      role,
+      action: "retry-same-model",
+      sameModelRetry: true,
+      reason: classification.reason,
+    };
+  }
+
+  if (classification.recoveryAction === "handled-elsewhere") {
+    return {
+      classification,
+      role,
+      action: "handled-elsewhere",
+      sameModelRetry: false,
+      reason: classification.reason,
+    };
+  }
+
+  if (classification.recoveryAction === "failover" && role) {
+    const resolution = resolveCapabilityRole(role, models, policy, profile, runtimeState, now);
+    if (resolution.ok && resolution.selected) {
+      const selected = resolution.selected.candidate;
+      if (selected.id !== model.id || selected.provider !== normalizeProvider(model.provider)) {
+        return {
+          classification,
+          role,
+          action: selected.provider === "local" ? "handoff-local" : "switch-model",
+          sameModelRetry: false,
+          reason: classification.reason,
+          alternateCandidate: {
+            provider: selected.provider,
+            id: selected.id,
+          },
+        };
+      }
+    }
+
+    return {
+      classification,
+      role,
+      action: "surface",
+      sameModelRetry: false,
+      requiresConfirmation: resolution.requiresConfirmation,
+      reason: resolution.reason ?? classification.reason,
+    };
+  }
+
+  return {
+    classification,
+    role,
+    action: "surface",
+    sameModelRetry: false,
+    reason: classification.reason,
+  };
 }
 
 export function buildFallbackGuidance(
@@ -90,19 +181,25 @@ export function recordTransientFailureForModel(
   reason: string,
   now: number = Date.now(),
 ): CapabilityRuntimeState | undefined {
-  if (!classifyTransientFailure(reason)) return undefined;
+  const classification = classifyUpstreamFailure(reason);
+  if (!classification.cooldownProvider && !classification.cooldownCandidate) return undefined;
+
   const provider = normalizeProvider(model.provider);
   if (!provider || provider === "local") return undefined;
 
   let state = toCapabilityRuntimeState(loadOperatorRuntimeState(root));
-  state = withProviderCooldown(state, provider, reason, now);
-  state = withCandidateCooldown(state, {
-    id: model.id,
-    provider,
-    source: "upstream",
-    weight: "normal",
-    maxThinking: "high",
-  }, reason, now);
+  if (classification.cooldownProvider) {
+    state = withProviderCooldown(state, provider, reason, now);
+  }
+  if (classification.cooldownCandidate) {
+    state = withCandidateCooldown(state, {
+      id: model.id,
+      provider,
+      source: "upstream",
+      weight: "normal",
+      maxThinking: "high",
+    }, reason, now);
+  }
   saveOperatorRuntimeState(root, fromCapabilityRuntimeState(state));
   return state;
 }

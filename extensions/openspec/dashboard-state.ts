@@ -43,6 +43,8 @@ export function emitOpenSpecState(cwd: string, pi: ExtensionAPI): void {
 		pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "openspec" });
 	} catch (err) {
 		debug("openspec", "emitState:error", { error: err instanceof Error ? err.message : String(err), cwd });
-		// Non-fatal — don't break the extension if openspec dir is missing
+		// Non-fatal — clear stale dashboard state so consumers see an empty list rather than stale data
+		sharedState.openspec = { changes: [] };
+		pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "openspec" });
 	}
 }

@@ -27,6 +27,7 @@ export type UpstreamFailureClass =
   | "quota"
   | "tool-output"
   | "context-overflow"
+  | "invalid-request"
   | "non-retryable";
 export type UpstreamRecoveryAction = "retry-same-model" | "failover" | "surface" | "handled-elsewhere";
 
@@ -423,6 +424,30 @@ function classifyFailureMessage(message: string): UpstreamFailureClassification 
         retryable: false,
         cooldownProvider: true,
         cooldownCandidate: true,
+      },
+    },
+    {
+      match: ["image dimensions exceed", "image.source.base64.data", "image too large", "image size exceeds", "max allowed size: 8000"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "invalid-request",
+        recoveryAction: "surface",
+        summary: "image too large for API (max 8000px per dimension)",
+        reason: "An image in the conversation exceeds the API's 8000px dimension limit. Resize or remove the image before retrying.",
+        retryable: false,
+        cooldownProvider: false,
+        cooldownCandidate: false,
+      },
+    },
+    {
+      match: ["invalid_request_error", "invalid request", "malformed request", "bad request"].some((needle) => normalized.includes(needle)) && !["rate limit", "429", "quota", "authentication", "unauthorized"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "invalid-request",
+        recoveryAction: "surface",
+        summary: "invalid API request",
+        reason: "The request was rejected by the API as malformed or invalid. Check the error details and fix the request payload.",
+        retryable: false,
+        cooldownProvider: false,
+        cooldownCandidate: false,
       },
     },
     {

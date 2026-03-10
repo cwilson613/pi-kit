@@ -13,15 +13,23 @@ function runJsonScript(script: string) {
 function runAssessSpecScenario(mode: "bridged" | "interactive" | "reopen") {
 	const script = String.raw`
 (async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
   const { createAssessStructuredExecutors } = await import('./extensions/cleave/index.ts');
   const mode = ${JSON.stringify(mode)};
-  const changeName = 'harness-upstream-error-recovery';
+  const changeName = '__test-assess-fixture';
+
+  // Scaffold a temporary OpenSpec change so findExecutableChanges discovers it
+  const fixtureDir = path.join(process.cwd(), 'openspec', 'changes', changeName);
+  const specsDir = path.join(fixtureDir, 'specs', 'test');
+  fs.mkdirSync(specsDir, { recursive: true });
+  const NL = String.fromCharCode(10);
+  fs.writeFileSync(path.join(fixtureDir, 'proposal.md'), ['# Test fixture', '## Intent', 'Test', ''].join(NL));
+  fs.writeFileSync(path.join(fixtureDir, 'tasks.md'), ['# Tasks', '- [x] 1.1 Done', ''].join(NL));
+  fs.writeFileSync(path.join(specsDir, 'spec.md'), ['# test/spec', '## ADDED Requirements', '### Requirement: Test', '#### Scenario: test passes', 'Given a test', 'When it runs', 'Then it passes', ''].join(NL));
+  const cleanup = () => { try { fs.rmSync(fixtureDir, { recursive: true, force: true }); } catch {} };
   const scenarios = [
-    { domain: 'harness/upstream-error-recovery', requirement: 'Upstream driver failures are surfaced as structured recovery events', scenario: 'upstream server error becomes a structured recovery notice', status: 'PASS', evidence: ['extensions/model-budget.ts'] },
-    { domain: 'harness/upstream-error-recovery', requirement: 'Obvious upstream flakiness retries at most once on the same model', scenario: 'same-model retry is attempted once for a transient upstream failure', status: mode === 'reopen' ? 'FAIL' : 'PASS', evidence: ['extensions/model-budget.ts'], notes: mode === 'reopen' ? 'Reopened work.' : undefined },
-    { domain: 'harness/upstream-error-recovery', requirement: 'Rate limits and explicit backoff trigger failover rather than blind retry', scenario: 'rate-limited provider is cooled down and an alternate candidate is selected', status: 'PASS', evidence: ['extensions/lib/operator-fallback.ts'] },
-    { domain: 'harness/upstream-error-recovery', requirement: 'Non-transient failures are not misclassified as generic retry cases', scenario: 'non-retryable failures are surfaced without generic transient retry', status: 'PASS', evidence: ['extensions/lib/model-routing.ts'] },
-    { domain: 'harness/upstream-error-recovery', requirement: 'Recovery state is visible to dashboard consumers', scenario: 'dashboard sees latest recovery state and cooldowns', status: 'PASS', evidence: ['extensions/dashboard/footer.ts'] },
+    { domain: 'test/spec', requirement: 'Test', scenario: 'test passes', status: mode === 'reopen' ? 'FAIL' : 'PASS', evidence: ['extensions/model-budget.ts'], notes: mode === 'reopen' ? 'Reopened work.' : undefined },
   ];
   let runnerCalled = false;
   const pi = {
@@ -41,8 +49,8 @@ function runAssessSpecScenario(mode: "bridged" | "interactive" | "reopen") {
       return {
         assessed: {
           summary: mode === 'reopen'
-            ? { total: 5, pass: 4, fail: 1, unclear: 0 }
-            : { total: 5, pass: 5, fail: 0, unclear: 0 },
+            ? { total: 1, pass: 0, fail: 1, unclear: 0 }
+            : { total: 1, pass: 1, fail: 0, unclear: 0 },
           scenarios,
           changedFiles: mode === 'reopen' ? ['extensions/cleave/index.ts'] : [],
           constraints: mode === 'reopen'
@@ -67,6 +75,7 @@ function runAssessSpecScenario(mode: "bridged" | "interactive" | "reopen") {
     constraints: result.lifecycleRecord?.reconciliation.constraints,
     runnerCalled,
   }));
+  cleanup();
 })();
 `;
 

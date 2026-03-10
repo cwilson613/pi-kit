@@ -175,6 +175,12 @@ function mapRecoveryFailureClassification(classification: UpstreamFailureClassif
         retryable: false,
         guidance: "Context overflow is handled separately; compact context or reduce prompt size before retrying.",
       };
+    case "invalid-request":
+      return {
+        classification: "invalid_request",
+        retryable: false,
+        guidance: "The API rejected the request (e.g. image too large, malformed payload). Fix the request content before retrying.",
+      };
     default:
       return {
         classification: "unknown_upstream",

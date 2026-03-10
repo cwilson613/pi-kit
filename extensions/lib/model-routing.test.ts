@@ -274,6 +274,26 @@ describe("upstream failure classification", () => {
     assert.equal(classification.retryable, true);
   });
 
+  it("classifies oversized image API errors as invalid-request", () => {
+    const exact = classifyUpstreamFailure(new Error(
+      'Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.7.content.116.image.source.base64.data: At least one of the image dimensions exceed max allowed size: 8000 pixels"},"request_id":"req_011CYuajxFckkfCkUNKaaeMY"}'
+    ));
+    assert.equal(exact.class, "invalid-request");
+    assert.equal(exact.retryable, false);
+    assert.equal(exact.recoveryAction, "surface");
+    assert.ok(exact.summary.includes("image"));
+
+    // Simpler variant
+    const simple = classifyUpstreamFailure(new Error("image dimensions exceed max allowed size: 8000 pixels"));
+    assert.equal(simple.class, "invalid-request");
+  });
+
+  it("classifies generic invalid_request_error as invalid-request", () => {
+    const classification = classifyUpstreamFailure(new Error('{"type":"error","error":{"type":"invalid_request_error","message":"some other validation issue"}}'));
+    assert.equal(classification.class, "invalid-request");
+    assert.equal(classification.retryable, false);
+  });
+
   it("keeps auth, quota, tool-output, and context overflow out of generic transient retry", () => {
     assert.equal(classifyUpstreamFailure(new Error("invalid api key")).class, "auth");
     assert.equal(classifyUpstreamFailure(new Error("insufficient_quota")).class, "quota");

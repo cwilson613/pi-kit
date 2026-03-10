@@ -68,6 +68,15 @@ describe("classifyRecoveryFailure", () => {
     assert.equal(overflow.classification, "context_overflow");
     assert.match(overflow.guidance, /compact context/i);
   });
+
+  it("classifies oversized image errors as invalid_request with actionable guidance", () => {
+    const classified = classifyRecoveryFailure(
+      'Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.7.content.116.image.source.base64.data: At least one of the image dimensions exceed max allowed size: 8000 pixels"}}'
+    );
+    assert.equal(classified.classification, "invalid_request");
+    assert.equal(classified.retryable, false);
+    assert.match(classified.guidance, /image too large|malformed payload/i);
+  });
 });
 
 describe("retry coverage helpers", () => {

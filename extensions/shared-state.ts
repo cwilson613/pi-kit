@@ -27,6 +27,7 @@ export type RecoveryFailureClassification =
   | "authentication_failed"
   | "malformed_output"
   | "context_overflow"
+  | "invalid_request"
   | "unknown_upstream";
 
 export type RecoveryDisposition =

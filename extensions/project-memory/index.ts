@@ -1186,7 +1186,7 @@ export default function (pi: ExtensionAPI) {
     // If embeddings are available and we have a user message, inject only
     // relevant facts + core sections. Otherwise fall back to full dump.
     let rendered: string;
-    let injectionMode: MemoryInjectionMode = "full";
+    let injectionMode: MemoryInjectionMode = "bulk";
     let injectedProjectFactCount = 0;
     let injectedEdgeCount = 0;
     let injectedWorkingMemoryFactCount = 0;

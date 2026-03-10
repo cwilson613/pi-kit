@@ -701,7 +701,8 @@ export class DashboardFooter implements Component {
     if (model.state === "unknown") {
       const unknownBar = theme.fg("dim", "?".repeat(barWidth));
       const windowStr = contextWindow > 0 ? theme.fg("dim", `/${formatTokens(contextWindow)}`) : "";
-      return `${theme.fg("dim", `T${model.turns}`)} ${unknownBar} ${theme.fg("dim", "?")}${windowStr}`;
+      const turnLabel = model.turns > 0 ? `${theme.fg("dim", `T${model.turns}`)} ` : "";
+      return `${turnLabel}${unknownBar} ${theme.fg("dim", "?")}${windowStr}`;
     }
 
     const percent = model.percent ?? 0;
@@ -720,7 +721,8 @@ export class DashboardFooter implements Component {
       : theme.fg("dim", pctStr);
     const windowStr = contextWindow > 0 ? theme.fg("dim", `/${formatTokens(contextWindow)}`) : "";
 
-    return `${theme.fg("dim", `T${model.turns}`)} ${bar} ${pctColored}${windowStr}`;
+    const turnLabel = model.turns > 0 ? `${theme.fg("dim", `T${model.turns}`)} ` : "";
+    return `${turnLabel}${bar} ${pctColored}${windowStr}`;
   }
 
   // ── Original Footer Data ──────────────────────────────────────

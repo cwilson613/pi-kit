@@ -5,7 +5,7 @@ export function formatMemoryAuditSummary(
   opts?: { wide?: boolean },
 ): string {
   if (!metrics) {
-    return "Memory audit: no injection snapshot";
+    return "Memory · pending first injection";
   }
 
   const wide = opts?.wide ?? false;

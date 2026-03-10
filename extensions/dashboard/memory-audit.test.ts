@@ -4,7 +4,7 @@ import { formatMemoryAuditSummary } from "./memory-audit.ts";
 
 describe("formatMemoryAuditSummary", () => {
   it("returns a fallback message when no snapshot exists", () => {
-    assert.equal(formatMemoryAuditSummary(undefined), "Memory audit: no injection snapshot");
+    assert.equal(formatMemoryAuditSummary(undefined), "Memory · pending first injection");
   });
 
   it("formats compact audit text", () => {
@@ -28,7 +28,7 @@ describe("formatMemoryAuditSummary", () => {
     assert.equal(
       formatMemoryAuditSummary(
         {
-          mode: "full",
+          mode: "bulk",
           projectFactCount: 50,
           edgeCount: 20,
           workingMemoryFactCount: 0,
@@ -40,7 +40,7 @@ describe("formatMemoryAuditSummary", () => {
         },
         { wide: true },
       ),
-      "Memory audit: full · facts:50 · edges:20 · wm:0 · hits:0 · ep:2 · global:7 · chars:6000 · ~1500 tok",
+      "Memory audit: bulk · facts:50 · edges:20 · wm:0 · hits:0 · ep:2 · global:7 · chars:6000 · ~1500 tok",
     );
   });
 });

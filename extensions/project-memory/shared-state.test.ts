@@ -11,7 +11,7 @@ describe("project memory shared state", () => {
   it("stores a structured last-memory-injection snapshot", () => {
     (sharedState as any).memoryTokenEstimate = 123;
     (sharedState as any).lastMemoryInjection = {
-      mode: "full",
+      mode: "bulk",
       projectFactCount: 10,
       edgeCount: 4,
       workingMemoryFactCount: 0,
@@ -23,7 +23,7 @@ describe("project memory shared state", () => {
     };
 
     assert.equal(sharedState.memoryTokenEstimate, 123);
-    assert.equal(sharedState.lastMemoryInjection?.mode, "full");
+    assert.equal(sharedState.lastMemoryInjection?.mode, "bulk");
     assert.equal(sharedState.lastMemoryInjection?.projectFactCount, 10);
     assert.equal(sharedState.lastMemoryInjection?.estimatedTokens, 123);
   });

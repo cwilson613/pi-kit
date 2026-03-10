@@ -13,14 +13,14 @@ describe("memory injection metrics", () => {
 
   it("creates a complete metrics snapshot with defaults", () => {
     const metrics = createMemoryInjectionMetrics({
-      mode: "full",
+      mode: "bulk",
       projectFactCount: 12,
       edgeCount: 4,
       payloadChars: 400,
     });
 
     assert.deepEqual(metrics, {
-      mode: "full",
+      mode: "bulk",
       projectFactCount: 12,
       edgeCount: 4,
       workingMemoryFactCount: 0,

@@ -1,4 +1,4 @@
-export type MemoryInjectionMode = "tiny" | "full" | "semantic";
+export type MemoryInjectionMode = "tiny" | "bulk" | "semantic";
 
 export interface MemoryInjectionMetrics {
   mode: MemoryInjectionMode;

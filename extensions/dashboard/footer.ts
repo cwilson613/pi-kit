@@ -16,6 +16,7 @@ import type { ReadonlyFooterDataProvider } from "@mariozechner/pi-coding-agent";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { leftRight, mergeColumns } from "./render-utils.ts";
 import type { DashboardState, RecoveryCooldownSummary, RecoveryDashboardState } from "./types.ts";
 import { sharedState } from "../shared-state.ts";
 import { debug } from "../debug.ts";
@@ -322,101 +323,89 @@ export class DashboardFooter implements Component {
   // ── Raised Mode (Layer 1) ─────────────────────────────────────
 
   private renderRaised(width: number): string[] {
+    return width >= 120 ? this.renderRaisedWide(width) : this.renderRaisedStacked(width);
+  }
+
+  /**
+   * Stacked layout for narrow terminals (<120 cols).
+   * All sections rendered full-width, top to bottom.
+   */
+  private renderRaisedStacked(width: number): string[] {
     const theme = this.theme;
+    const lines: string[] = [];
+
+    lines.push(...this.buildDesignTreeLines(width));
+    lines.push(...this.buildOpenSpecLines(width));
+    lines.push(...this.buildRecoveryLines(width));
+    lines.push(...this.buildCleaveLines(width));
+
+    lines.push(...this.buildFooterZone(width));
+
+    return lines;
+  }
+
+  /**
+   * Wide layout (≥120 cols) — 3-zone:
+   *   Zone 1: Design tree — full width
+   *   Zone 2: mergeColumns — Recovery+Cleave left │ OpenSpec right
+   *   Zone 3: Shared footer (meta, memory audit, separator, hint, footer data)
+   */
+  private renderRaisedWide(width: number): string[] {
+    const divider = "│";
+    // Give each column roughly half the width minus one char for the divider.
+    const colWidth = Math.floor((width - divider.length) / 2);
+    const leftColWidth = colWidth;
+    const rightColWidth = width - colWidth - divider.length;
 
     const lines: string[] = [];
 
-    // Design tree section
+    // Zone 1 — design tree full-width
     lines.push(...this.buildDesignTreeLines(width));
 
-    // OpenSpec section
-    lines.push(...this.buildOpenSpecLines(width));
+    // Zone 2 — two-column split
+    const leftLines = [
+      ...this.buildRecoveryLines(leftColWidth),
+      ...this.buildCleaveLines(leftColWidth),
+    ];
+    const rightLines = this.buildOpenSpecLines(rightColWidth);
 
-    // Recovery section
-    lines.push(...this.buildRecoveryLines(width));
-
-    // Cleave section
-    lines.push(...this.buildCleaveLines(width));
-
-    const raisedMeta = this.buildRaisedMetaLine(width);
-    if (raisedMeta) {
-      lines.push(raisedMeta);
+    if (leftLines.length > 0 || rightLines.length > 0) {
+      lines.push(...mergeColumns(leftLines, rightLines, leftColWidth, rightColWidth, divider));
     }
 
-    const memoryAuditLine = this.buildMemoryAuditLine(width);
-    if (memoryAuditLine) {
-      lines.push(memoryAuditLine);
-    }
+    // Zone 3 — shared footer
+    lines.push(...this.buildFooterZone(width));
 
-    // Separator — thin rule matching section header style
-    if (lines.length > 0) {
-      const rule = "╶" + "─".repeat(Math.min(width - 2, 58)) + "╴";
-      lines.push(theme.fg("dim", rule));
-    }
-
-    // /dash to compact hint prepended to footer data
-    lines.push(truncateToWidth(theme.fg("dim", "/dash to compact"), width, "…"));
-
-    // Original footer data
-    lines.push(...this.renderFooterData(width));
-
-    // Cap at 10 lines
-    return lines.slice(0, 10);
+    return lines;
   }
 
-  /** Multi-column raised layout for wide terminals (≥120 cols) */
-  private renderRaisedColumns(width: number): string[] {
+  // ── Footer Zone (shared by stacked + wide layouts) ────────────
+
+  /**
+   * Build the shared footer zone: meta line, memory audit, separator, hint,
+   * and the original footer data lines.
+   */
+  private buildFooterZone(width: number): string[] {
     const theme = this.theme;
-    const gutter = "  ";
-
-    // Calculate column widths — give each half, minus a soft gutter.
-    const colWidth = Math.floor((width - gutter.length) / 2);
-
-    // Build left column (Design Tree + Recovery + Cleave) and right column (OpenSpec)
-    const leftLines = this.buildDesignTreeLines(colWidth);
-    leftLines.push(...this.buildRecoveryLines(colWidth));
-    leftLines.push(...this.buildCleaveLines(colWidth));
-    const rightLines = this.buildOpenSpecLines(colWidth);
-
-    // Merge columns side by side without a literal divider. The spacing is
-    // enough to separate sections and looks cleaner than an ASCII fence.
-    const merged: string[] = [];
-    const maxRows = Math.max(leftLines.length, rightLines.length);
-    for (let i = 0; i < maxRows; i++) {
-      const left = i < leftLines.length ? truncateToWidth(leftLines[i], colWidth, "…") : "";
-      const right = i < rightLines.length ? truncateToWidth(rightLines[i], colWidth, "…") : "";
-
-      const leftVisLen = left.replace(/\x1b\[[0-9;]*m/g, "").length;
-      const leftPad = Math.max(0, colWidth - leftVisLen);
-      merged.push(truncateToWidth(left + " ".repeat(leftPad) + gutter + right, width, "…"));
-    }
+    const zone: string[] = [];
 
     const raisedMeta = this.buildRaisedMetaLine(width);
-    if (raisedMeta) {
-      merged.push(raisedMeta);
-    }
+    if (raisedMeta) zone.push(raisedMeta);
 
     const memoryAuditLine = this.buildMemoryAuditLine(width);
-    if (memoryAuditLine) {
-      merged.push(memoryAuditLine);
-    }
+    if (memoryAuditLine) zone.push(memoryAuditLine);
 
-    // Separator — thin rule matching section header style
-    if (merged.length > 0) {
-      const rule = "╶" + "─".repeat(Math.min(width - 2, 78)) + "╴";
-      merged.push(theme.fg("dim", rule));
-    }
+    const ruleLen = Math.max(2, Math.min(width - 2, 78));
+    zone.push(theme.fg("dim", "╶" + "─".repeat(ruleLen) + "╴"));
 
-    // /dash to compact hint prepended to footer data
-    merged.push(truncateToWidth(theme.fg("dim", "/dash to compact"), width, "…"));
+    zone.push(truncateToWidth(theme.fg("dim", "/dash to compact"), width, "…"));
 
-    // Footer data
-    merged.push(...this.renderFooterData(width));
+    zone.push(...this.renderFooterData(width));
 
-    return merged.slice(0, 10);
+    return zone;
   }
 
-  // ── Section builders (shared by stacked + column layouts) ─────
+  // ── Section builders (shared by stacked + wide layouts) ───────
 
   private buildRecoveryCompactSummary(width: number, wide: boolean): string {
     const theme = this.theme;
@@ -821,19 +810,8 @@ export class DashboardFooter implements Component {
 
       const rightSide = rightParts.join(" ");
 
-      // Layout: left-align stats, right-align model
-      const statsLeftPlain = statsLeft.replace(/\x1b\[[0-9;]*m/g, "").length;
-      const rightSidePlain = rightSide.replace(/\x1b\[[0-9;]*m/g, "").length;
-
-      let statsLine: string;
-      if (statsLeftPlain + 2 + rightSidePlain <= width) {
-        const padding = " ".repeat(width - statsLeftPlain - rightSidePlain);
-        statsLine = statsLeft + padding + rightSide;
-      } else {
-        statsLine = statsLeft;
-      }
-
-      lines.push(statsLine);
+      // Layout: left-align stats, right-align model via leftRight()
+      lines.push(leftRight(statsLeft, rightSide, width));
     }
 
     // ── Extension statuses — raised mode only ──

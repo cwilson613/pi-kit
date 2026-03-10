@@ -2,6 +2,8 @@
  * cleave/types — Shared type definitions for the cleave extension.
  */
 
+import { BUILTIN_VOLATILE_ALLOWLIST } from "../lib/git-state.ts";
+
 // ─── Assessment ──────────────────────────────────────────────────────────────
 
 export interface PatternDefinition {
@@ -61,6 +63,69 @@ export interface ChildPlan {
 export interface SplitPlan {
 	children: ChildPlan[];
 	rationale: string;
+}
+
+// ─── Preflight ───────────────────────────────────────────────────────────────
+
+export const DEFAULT_VOLATILE_ALLOWLIST: readonly string[] = BUILTIN_VOLATILE_ALLOWLIST;
+
+export type PreflightFileClass = "related" | "unrelated" | "unknown" | "volatile";
+
+export type ClassificationConfidence = "high" | "medium" | "low";
+
+export type PreflightAction =
+	| "checkpoint"
+	| "stash_unrelated"
+	| "stash_volatile"
+	| "continue_without_cleave"
+	| "cancel";
+
+export type PreflightDisposition = "proceed" | "continue_without_cleave" | "cancel";
+
+export interface PreflightClassifiedFile {
+	path: string;
+	class: PreflightFileClass;
+	confidence: ClassificationConfidence;
+	reason: string;
+	tracked: boolean;
+	untracked: boolean;
+}
+
+export interface PreparedPreflightCheckpoint {
+	message: string;
+	paths: string[];
+	requiresApproval: true;
+}
+
+export interface PreparedPreflightStash {
+	label: string;
+	paths: string[];
+	includeUntracked: boolean;
+}
+
+export interface PreflightPlan {
+	checkpoint: PreparedPreflightCheckpoint | null;
+	stashUnrelated: PreparedPreflightStash | null;
+	stashVolatile: PreparedPreflightStash | null;
+	safeToProceedAfterVolatileOnly: boolean;
+}
+
+export interface CleavePreflightSummary {
+	hasOpenSpecContext: boolean;
+	isDirty: boolean;
+	files: PreflightClassifiedFile[];
+	related: PreflightClassifiedFile[];
+	unrelated: PreflightClassifiedFile[];
+	unknown: PreflightClassifiedFile[];
+	volatile: PreflightClassifiedFile[];
+	availableActions: PreflightAction[];
+	plan: PreflightPlan;
+}
+
+export interface CleavePreflightOutcome {
+	action: PreflightAction;
+	disposition: PreflightDisposition;
+	checkpointApproved: boolean;
 }
 
 // ─── Execution ───────────────────────────────────────────────────────────────

@@ -171,6 +171,50 @@ interface ViewResult {
 }
 
 // ---------------------------------------------------------------------------
+// Scale presets
+// ---------------------------------------------------------------------------
+
+/** Named scale presets: compact → fill the terminal width generously */
+const SCALE_PRESETS: Record<string, { widthCells: number; label: string }> = {
+	"compact": { widthCells: 60, label: "compact" },
+	"normal":  { widthCells: 120, label: "normal" },
+	"large":   { widthCells: 200, label: "large" },
+	"full":    { widthCells: 999, label: "full" },  // effectively unlimited — capped by terminal width
+};
+
+/**
+ * Parse a scale argument from user input.
+ * Accepts: "2x", "3x", "compact", "normal", "large", "full", or a raw number.
+ * Returns maxWidthCells value, or undefined if not a scale arg.
+ */
+function parseScale(arg: string): { widthCells: number; label: string } | undefined {
+	const lower = arg.toLowerCase();
+	if (SCALE_PRESETS[lower]) return SCALE_PRESETS[lower];
+
+	// Numeric multiplier: "2x", "3x", "1.5x"
+	const mMatch = lower.match(/^(\d+(?:\.\d+)?)x$/);
+	if (mMatch) {
+		const multiplier = parseFloat(mMatch[1]);
+		return { widthCells: Math.round(120 * multiplier), label: `${multiplier}x` };
+	}
+
+	// Raw number of columns
+	if (/^\d+$/.test(arg)) {
+		const cols = parseInt(arg, 10);
+		if (cols >= 20 && cols <= 2000) return { widthCells: cols, label: `${cols} cols` };
+	}
+
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Last-viewed image state (for /zoom)
+// ---------------------------------------------------------------------------
+
+/** Tracks the most recently viewed image for /zoom */
+let lastViewedImage: { data: string; mimeType: string; path: string; header: string } | undefined;
+
+// ---------------------------------------------------------------------------
 // Image dimensions (best-effort via sips on macOS or file command)
 // ---------------------------------------------------------------------------
 
@@ -198,9 +242,14 @@ function viewImage(filePath: string, uri?: string): ViewResult {
 	const ext = extname(filePath).toLowerCase();
 	const mime = mimeFromExt(ext);
 	const dims = getImageDims(filePath);
+	const header = fileHeader(filePath, "📷", dims, uri);
+
+	// Stash for /zoom
+	lastViewedImage = { data, mimeType: mime, path: filePath, header };
+
 	return {
 		content: [
-			{ type: "text", text: fileHeader(filePath, "📷", dims, uri) },
+			{ type: "text", text: header },
 			{ type: "image", data, mimeType: mime },
 		],
 		details: { kind: "image", path: filePath, dimensions: dims },
@@ -224,9 +273,11 @@ function viewSvg(filePath: string, uri?: string): ViewResult {
 
 	if (converted && existsSync(outPng)) {
 		const data = readFileSync(outPng).toString("base64");
+		const header = fileHeader(filePath, "🎨", "SVG → PNG", uri);
+		lastViewedImage = { data, mimeType: "image/png", path: filePath, header };
 		return {
 			content: [
-				{ type: "text", text: fileHeader(filePath, "🎨", "SVG → PNG", uri) },
+				{ type: "text", text: header },
 				{ type: "image", data, mimeType: "image/png" },
 			],
 			details: { kind: "svg", path: filePath, rendered: true },
@@ -270,6 +321,8 @@ function viewPdf(filePath: string, page?: number, uri?: string): ViewResult {
 				content.push({ type: "text", text: `\n── Page ${pageNum} ${"─".repeat(40)}` });
 				const data = readFileSync(join(tmp, pages[i])).toString("base64");
 				content.push({ type: "image", data, mimeType: "image/png" });
+				// Stash last page for /zoom
+				lastViewedImage = { data, mimeType: "image/png", path: filePath, header: fileHeader(filePath, "📄", `page ${pageNum}`) };
 			}
 
 			if (!page && pageCount > 3) {
@@ -344,9 +397,11 @@ function viewDiagram(filePath: string, uri?: string): ViewResult {
 			runSafe("d2", ["--theme", "200", "--layout", "elk", "--pad", "40", filePath, outPng], { timeout: 15_000 });
 			if (existsSync(outPng) && statSync(outPng).size > 0) {
 				const data = readFileSync(outPng).toString("base64");
+				const header = fileHeader(filePath, "📊", "D2", uri);
+				lastViewedImage = { data, mimeType: "image/png", path: filePath, header };
 				return {
 					content: [
-						{ type: "text", text: fileHeader(filePath, "📊", "D2", uri) },
+						{ type: "text", text: header },
 						{ type: "image", data, mimeType: "image/png" },
 					],
 					details: { kind: "diagram", path: filePath, rendered: true },
@@ -537,27 +592,54 @@ export default function (pi: ExtensionAPI) {
 	// /view command
 	// ------------------------------------------------------------------
 	pi.registerCommand("view", {
-		description: "View files inline — images, PDFs, docs, diagrams, code",
+		description: "View files inline — images, PDFs, docs, diagrams, code. Scale: /view file.png large|full|2x",
+		getArgumentCompletions: (prefix: string) => {
+			const parts = prefix.split(/\s+/);
+			if (parts.length <= 1) return null; // file path — no completions
+			// Second+ arg — offer scale presets
+			const scalePrefix = parts[parts.length - 1].toLowerCase();
+			const presets = ["compact", "normal", "large", "full", "2x", "3x"];
+			const filtered = presets.filter(p => p.startsWith(scalePrefix));
+			return filtered.length > 0
+				? filtered.map(p => ({ value: `${parts.slice(0, -1).join(" ")} ${p}`, label: p }))
+				: null;
+		},
 		handler: async (args, ctx) => {
 			if (!args?.trim()) {
-				ctx.ui.notify("Usage: /view <file> [page]", "warning");
+				ctx.ui.notify("Usage: /view <file> [page|scale]\n  Scale: compact, normal (default), large, full, 2x, 3x", "warning");
 				return;
 			}
 
 			const parts = args.trim().split(/\s+/);
 			const filePath = parts[0];
-			const page = parts[1] ? parseInt(parts[1], 10) : undefined;
+			let page: number | undefined;
+			let scale: { widthCells: number; label: string } | undefined;
+
+			// Parse remaining args — could be page number or scale
+			for (let i = 1; i < parts.length; i++) {
+				const s = parseScale(parts[i]);
+				if (s) { scale = s; continue; }
+				const n = parseInt(parts[i], 10);
+				if (!isNaN(n) && n > 0 && n < 10000) { page = n; }
+			}
 
 			const mdservePort = getMdservePort() ?? undefined;
 			const result = viewFile(filePath, page, { mdservePort });
 			const textParts = result.content.filter(c => c.type === "text").map(c => (c as any).text).join("\n");
 			const imageParts = result.content.filter(c => c.type === "image");
 
+			const scaleLabel = scale?.label;
+			const scaleWidth = scale?.widthCells;
+
 			pi.sendMessage({
 				customType: "view",
-				content: textParts,
+				content: textParts + (scaleLabel ? `\n📐 Scale: ${scaleLabel}` : ""),
 				display: true,
-				details: { ...result.details, images: imageParts.length > 0 ? imageParts : undefined },
+				details: {
+					...result.details,
+					images: imageParts.length > 0 ? imageParts : undefined,
+					...(scaleWidth ? { maxWidthCells: scaleWidth } : {}),
+				},
 			});
 		},
 	});
@@ -639,13 +721,13 @@ export default function (pi: ExtensionAPI) {
 
 		// Render images inline
 		const images = (message.details as any)?.images;
+		const maxWidth = (message.details as any)?.maxWidthCells ?? 120;
 		if (images && Array.isArray(images)) {
 			for (const img of images) {
 				try {
 					const imageTheme = { fallbackColor: (s: string) => theme.fg("warning", s) };
 					const image = new Image(img.data, img.mimeType, imageTheme, {
-						maxWidthCells: 120,
-						maxHeightCells: 40,
+						maxWidthCells: maxWidth,
 					});
 					container.addChild(image);
 				} catch {
@@ -655,9 +737,91 @@ export default function (pi: ExtensionAPI) {
 					));
 				}
 			}
+			// Hint for /zoom if there are images
+			container.addChild(new Text(
+				theme.fg("dim", "  /zoom to expand  ·  /view <file> large|full|2x to rescale"),
+				1, 0,
+			));
 		}
 
 		return container;
+	});
+
+	// ------------------------------------------------------------------
+	// /zoom command — expand last image in fullscreen overlay
+	// ------------------------------------------------------------------
+	pi.registerCommand("zoom", {
+		description: "Expand last viewed image to fill the terminal. /zoom [scale]",
+		getArgumentCompletions: (prefix: string) => {
+			const presets = ["compact", "normal", "large", "full", "2x", "3x"];
+			const filtered = presets.filter(p => p.startsWith(prefix.toLowerCase()));
+			return filtered.length > 0 ? filtered.map(p => ({ value: p, label: p })) : null;
+		},
+		handler: async (args, ctx) => {
+			if (!lastViewedImage) {
+				ctx.ui.notify("No image to zoom. Use /view <file> first.", "warning");
+				return;
+			}
+
+			const scaleArg = (args ?? "").trim();
+			const scale = scaleArg ? parseScale(scaleArg) : undefined;
+			const maxWidth = scale?.widthCells ?? 999; // Default: fill terminal
+
+			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (r: void) => void) => {
+				const piTui = require("@mariozechner/pi-tui");
+				const { Container, Text, Image: ImageComp, Spacer, DynamicBorder, getEditorKeybindings } = piTui;
+
+				const container = new Container();
+				container.addChild(new DynamicBorder());
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(
+					theme.fg("accent", `  🔍 ${lastViewedImage!.header}`),
+					1, 0,
+				));
+				container.addChild(new Spacer(1));
+
+				try {
+					const imageTheme = { fallbackColor: (s: string) => theme.fg("warning", s) };
+					const image = new ImageComp(
+						lastViewedImage!.data,
+						lastViewedImage!.mimeType,
+						imageTheme,
+						{ maxWidthCells: maxWidth },
+					);
+					container.addChild(image);
+				} catch {
+					container.addChild(new Text(
+						theme.fg("warning", "  ⚠️  Image rendering not supported"),
+						1, 0,
+					));
+				}
+
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(
+					theme.fg("dim", "  Press Escape or q to close"),
+					1, 0,
+				));
+				container.addChild(new Spacer(1));
+				container.addChild(new DynamicBorder());
+
+				(container as any).handleInput = (keyData: string) => {
+					const kb = getEditorKeybindings();
+					if (kb.matches(keyData, "selectCancel") || keyData === "q" || keyData === "Q") {
+						done(undefined as any);
+					}
+				};
+
+				return container;
+			}, {
+				overlay: true,
+				overlayOptions: {
+					width: "100%",
+					maxHeight: "100%",
+					anchor: "center",
+					margin: 0,
+				},
+			});
+		},
 	});
 
 	// ------------------------------------------------------------------
@@ -677,11 +841,19 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the file to view" }),
 			page: Type.Optional(Type.Number({ description: "Page number for PDFs (default: first 3 pages)" })),
+			scale: Type.Optional(Type.Number({ description: "Device scale factor (default: 2)" })),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const filePath = params.path.startsWith("@") ? params.path.slice(1) : params.path;
 			const mdservePort = getMdservePort() ?? undefined;
-			return viewFile(filePath, params.page, { mdservePort });
+			const result = viewFile(filePath, params.page, { mdservePort });
+
+			// Apply scale if provided (multiply the default 120 cell width)
+			if (params.scale && params.scale > 0) {
+				result.details.maxWidthCells = Math.round(120 * params.scale);
+			}
+
+			return result;
 		},
 	});
 }

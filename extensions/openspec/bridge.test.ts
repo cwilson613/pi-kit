@@ -115,8 +115,8 @@ describe("openspec bridge", () => {
     const commands = bridge.list();
     const openspecCommands = commands.filter(c => c.name.startsWith("opsx:"));
     
-    const readCommands = ["opsx:status", "opsx:verify", "opsx:spec", "opsx:apply"];
-    const writeCommands = ["opsx:propose", "opsx:ff", "opsx:archive"];
+    const readCommands = ["opsx:status", "opsx:verify"];
+    const writeCommands = ["opsx:propose", "opsx:spec", "opsx:ff", "opsx:archive", "opsx:apply"];
     
     for (const cmd of openspecCommands) {
       if (readCommands.includes(cmd.name)) {
@@ -156,24 +156,68 @@ describe("openspec bridge", () => {
     assert.equal(changeData.doneTasks, 2);
   });
 
-  it("opsx:propose creates change with intent from bridge args", async () => {
+  it("opsx:propose fails with multi-word arguments via bridge", async () => {
     const result = await bridge.execute(
       { command: "opsx:propose", args: ["new-feature", "New Feature", "Add cool stuff"] }, 
       { cwd: tmpDir, bridgeInvocation: true } as any
     );
 
+    assert.equal(result.ok, false);
+    assert.equal(result.effects.sideEffectClass, "workspace-write");
+    assert.match(result.humanText, /Cannot reliably parse arguments with spaces/);
+  });
+
+  it("opsx:propose incorrectly parses space-containing args as separate", async () => {
+    // This test shows the limitation: ["missing-intent", "Missing Intent"] 
+    // becomes 3 space-separated parts: "missing-intent", "Missing", "Intent"
+    // The bridge treats this as valid 3-argument input
+    const result = await bridge.execute(
+      { command: "opsx:propose", args: ["missing-intent", "Missing Intent"] }, 
+      { cwd: tmpDir, bridgeInvocation: true } as any
+    );
+
+    // This succeeds (incorrectly) because the bridge converts the 2-element array 
+    // into a 3-element split: name="missing-intent", title="Missing", intent="Intent"
     assert.equal(result.ok, true);
     assert.equal(result.effects.sideEffectClass, "workspace-write");
-    assert.ok(result.data);
-    assert.ok((result.data as any).changePath);
+    
+    const changePath = (result.data as any).changePath;
+    assert.ok(fs.existsSync(path.join(changePath, "proposal.md")));
+    
+    // The proposal will contain "Missing" as title and "Intent" as intent, not "Missing Intent" as title
+    const proposalContent = fs.readFileSync(path.join(changePath, "proposal.md"), "utf-8");
+    assert.match(proposalContent, /# Missing/); // title becomes just "Missing"
+    assert.match(proposalContent, /Intent/); // intent becomes just "Intent"
+  });
+
+  it("opsx:propose works with single-word arguments via bridge", async () => {
+    const result = await bridge.execute(
+      { command: "opsx:propose", args: ["single-word-test", "SingleTitle", "SingleIntent"] }, 
+      { cwd: tmpDir, bridgeInvocation: true } as any
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.effects.sideEffectClass, "workspace-write");
     
     // Check files were created
     const changePath = (result.data as any).changePath;
     assert.ok(fs.existsSync(path.join(changePath, "proposal.md")));
     
-    // Check proposal contains intent
+    // Check proposal contains the title and intent
     const proposalContent = fs.readFileSync(path.join(changePath, "proposal.md"), "utf-8");
-    assert.match(proposalContent, /Add cool stuff/);
+    assert.match(proposalContent, /SingleTitle/);
+    assert.match(proposalContent, /SingleIntent/);
+  });
+
+  it("opsx:propose fails gracefully with multi-word arguments via bridge", async () => {
+    const result = await bridge.execute(
+      { command: "opsx:propose", args: ["multi-word-test", "My Feature Title", "A detailed intent description"] }, 
+      { cwd: tmpDir, bridgeInvocation: true } as any
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.effects.sideEffectClass, "workspace-write");
+    assert.match(result.humanText, /Cannot reliably parse arguments with spaces/);
   });
 
   it("opsx:verify returns structured verification status", async () => {

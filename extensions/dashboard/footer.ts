@@ -16,7 +16,7 @@ import type { ReadonlyFooterDataProvider } from "@mariozechner/pi-coding-agent";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import type { DashboardState } from "./types.ts";
+import type { DashboardState, RecoveryCooldownSummary, RecoveryDashboardState } from "./types.ts";
 import { sharedState } from "../shared-state.ts";
 import { debug } from "../debug.ts";
 import { linkDashboardFile, linkOpenSpecArtifact, linkOpenSpecChange } from "./uri-helper.ts";
@@ -42,6 +42,28 @@ function sanitizeStatusText(text: string): string {
     .replace(/[\r\n\t]/g, " ")
     .replace(/ +/g, " ")
     .trim();
+}
+
+function getRecoveryState(): RecoveryDashboardState | undefined {
+  return (sharedState as { recovery?: RecoveryDashboardState }).recovery;
+}
+
+function formatCooldownRemaining(until: number, now: number = Date.now()): string {
+  const remainingMs = Math.max(0, until - now);
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0 ? `${minutes}m${seconds}s` : `${minutes}m`;
+}
+
+function summarizeCooldown(cooldowns: RecoveryCooldownSummary[] | undefined): string | null {
+  if (!cooldowns || cooldowns.length === 0) return null;
+  const next = [...cooldowns].sort((a, b) => a.until - b.until)[0];
+  const target = next.scope === "provider"
+    ? next.provider ?? next.key
+    : next.modelId ? `${next.provider ?? "candidate"}/${next.modelId}` : next.key;
+  return `${target} ${formatCooldownRemaining(next.until)}`;
 }
 
 const CLEAVE_STALE_MS = 30_000;
@@ -255,6 +277,11 @@ export class DashboardFooter implements Component {
       }
     }
 
+    const recoveryLine = this.buildRecoveryCompactSummary(width, wide);
+    if (recoveryLine) {
+      dashParts.push({ text: recoveryLine });
+    }
+
     // Context gauge — wider bar at wider terminals
     const barWidth = ultraWide ? 24 : wide ? 20 : 16;
     const gauge = this.buildContextGauge(barWidth);
@@ -306,6 +333,9 @@ export class DashboardFooter implements Component {
     // OpenSpec section
     lines.push(...this.buildOpenSpecLines(width));
 
+    // Recovery section
+    lines.push(...this.buildRecoveryLines(width));
+
     // Cleave section
     lines.push(...this.buildCleaveLines(width));
 
@@ -343,8 +373,9 @@ export class DashboardFooter implements Component {
     // Calculate column widths — give each half, minus a soft gutter.
     const colWidth = Math.floor((width - gutter.length) / 2);
 
-    // Build left column (Design Tree + Cleave) and right column (OpenSpec)
+    // Build left column (Design Tree + Recovery + Cleave) and right column (OpenSpec)
     const leftLines = this.buildDesignTreeLines(colWidth);
+    leftLines.push(...this.buildRecoveryLines(colWidth));
     leftLines.push(...this.buildCleaveLines(colWidth));
     const rightLines = this.buildOpenSpecLines(colWidth);
 
@@ -387,6 +418,71 @@ export class DashboardFooter implements Component {
   }
 
   // ── Section builders (shared by stacked + column layouts) ─────
+
+  private buildRecoveryCompactSummary(width: number, wide: boolean): string {
+    const theme = this.theme;
+    const recovery = getRecoveryState();
+    if (!recovery) return "";
+
+    const actionColor: ThemeColor = recovery.action === "retry" ? "warning"
+      : recovery.action === "switch_candidate" || recovery.action === "switch_offline" ? "accent"
+      : recovery.action === "cooldown" ? "warning"
+      : recovery.action === "escalate" ? "error"
+      : "dim";
+    const actionLabel = recovery.action === "retry" ? "retry"
+      : recovery.action === "switch_candidate" ? "switch"
+      : recovery.action === "switch_offline" ? "offline"
+      : recovery.action === "cooldown" ? "cooldown"
+      : recovery.action === "escalate" ? "escalate"
+      : "recovery";
+    const summary = wide
+      ? sanitizeStatusText(recovery.summary)
+      : `${recovery.provider}/${recovery.modelId}`;
+    const cooldown = summarizeCooldown(recovery.cooldowns);
+    return composePrimaryMetaLine(width,
+      theme.fg(actionColor, `↺ ${actionLabel}`),
+      [theme.fg("dim", summary), cooldown ? theme.fg("dim", cooldown) : ""],
+    );
+  }
+
+  private buildRecoveryLines(width: number): string[] {
+    const theme = this.theme;
+    const recovery = getRecoveryState();
+    if (!recovery) return [];
+
+    const actionColor: ThemeColor = recovery.action === "retry" ? "warning"
+      : recovery.action === "switch_candidate" || recovery.action === "switch_offline" ? "accent"
+      : recovery.action === "cooldown" ? "warning"
+      : recovery.action === "escalate" ? "error"
+      : "dim";
+    const actionLabel = recovery.action === "retry" ? "retrying"
+      : recovery.action === "switch_candidate" ? "switched candidate"
+      : recovery.action === "switch_offline" ? "switched offline"
+      : recovery.action === "cooldown" ? "cooldown active"
+      : recovery.action === "escalate" ? "operator escalation"
+      : "observed";
+
+    const lines = [composePrimaryMetaLine(
+      width,
+      theme.fg("accent", "↺ Recovery"),
+      [theme.fg(actionColor, actionLabel), theme.fg("dim", recovery.classification)],
+    )];
+
+    const target = recovery.target?.modelId
+      ? `${recovery.target.provider}/${recovery.target.modelId}`
+      : recovery.target?.provider;
+    const retry = recovery.retryCount != null && recovery.maxRetries != null
+      ? `${recovery.retryCount}/${recovery.maxRetries} retries`
+      : "";
+    const cooldown = summarizeCooldown(recovery.cooldowns);
+    lines.push(composePrimaryMetaLine(
+      width,
+      `  ${sanitizeStatusText(recovery.summary)}`,
+      [retry ? theme.fg("dim", retry) : "", target ? theme.fg("dim", `→ ${target}`) : "", cooldown ? theme.fg("dim", `cooldown ${cooldown}`) : ""],
+    ));
+
+    return lines;
+  }
 
   private buildDesignTreeLines(width: number): string[] {
     const theme = this.theme;

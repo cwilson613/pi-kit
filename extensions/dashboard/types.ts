@@ -79,6 +79,46 @@ export interface CleaveState {
   updatedAt?: number;
 }
 
+// ── Harness Recovery ─────────────────────────────────────────
+
+export type RecoveryAction =
+  | "retry"
+  | "switch_candidate"
+  | "switch_offline"
+  | "cooldown"
+  | "escalate"
+  | "observe";
+
+export interface RecoveryTarget {
+  provider: string;
+  modelId?: string;
+  label?: string;
+}
+
+export interface RecoveryCooldownSummary {
+  scope: "provider" | "candidate";
+  key: string;
+  provider?: string;
+  modelId?: string;
+  until: number;
+  reason?: string;
+}
+
+export interface RecoveryDashboardState {
+  provider: string;
+  modelId: string;
+  classification: string;
+  summary: string;
+  action: RecoveryAction;
+  retryCount?: number;
+  maxRetries?: number;
+  attemptId?: string;
+  timestamp: number;
+  escalated?: boolean;
+  target?: RecoveryTarget;
+  cooldowns?: RecoveryCooldownSummary[];
+}
+
 // ── Dashboard UI ─────────────────────────────────────────────
 
 export type DashboardMode = "compact" | "raised" | "panel" | "focused";

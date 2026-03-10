@@ -40,6 +40,15 @@ interface OllamaModel {
   details?: { parameter_size?: string; family?: string };
 }
 
+export interface OfflineDriverSwitchResult {
+  success: boolean;
+  message: string;
+  provider: "local" | "cloud";
+  modelId?: string;
+  label?: string;
+  automatic: boolean;
+}
+
 async function discoverOllamaModels(): Promise<OllamaModel[]> {
   try {
     const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
@@ -110,13 +119,15 @@ function registerOllamaProvider(pi: ExtensionAPI, ollamaModels: OllamaModel[]): 
   return chatModels;
 }
 
-async function goOffline(
+export async function switchToOfflineDriver(
   pi: ExtensionAPI,
   ctx: any,
-  preferredModel?: string
-): Promise<{ success: boolean; message: string }> {
+  options: { preferredModel?: string; automatic?: boolean } = {}
+): Promise<OfflineDriverSwitchResult> {
+  const preferredModel = options.preferredModel;
+  const automatic = options.automatic ?? false;
   if (isOffline) {
-    return { success: true, message: "Already in offline mode." };
+    return { success: true, message: "Already in offline mode.", provider: "local", automatic };
   }
 
   // Save current cloud model for /online restoration
@@ -132,6 +143,8 @@ async function goOffline(
     return {
       success: false,
       message: `Ollama not available at ${OLLAMA_URL}. Is it running? Start with: ollama serve`,
+      provider: "local",
+      automatic,
     };
   }
   registeredModels = registerOllamaProvider(pi, ollamaModels);
@@ -142,12 +155,17 @@ async function goOffline(
     : PREFERRED_ORDER.find((id) => registeredModels.includes(id)) || registeredModels[0];
 
   if (!targetId) {
-    return { success: false, message: "No chat models available in Ollama." };
+    return { success: false, message: "No chat models available in Ollama.", provider: "local", automatic };
   }
 
   const model = ctx.modelRegistry.find(PROVIDER_NAME, targetId);
   if (!model) {
-    return { success: false, message: `Model ${targetId} not found in registry after registration.` };
+    return {
+      success: false,
+      message: `Model ${targetId} not found in registry after registration.`,
+      provider: "local",
+      automatic,
+    };
   }
 
   const success = await pi.setModel(model);
@@ -157,18 +175,27 @@ async function goOffline(
     const icon = known?.icon || "🏠";
     const label = known?.label || targetId;
     ctx.ui.setStatus("offline-driver", `${icon} OFFLINE: ${label}`);
-    return { success: true, message: `Switched to offline driver: ${label} (${targetId})` };
+    return {
+      success: true,
+      message: `Switched to offline driver: ${label} (${targetId})`,
+      provider: "local",
+      modelId: targetId,
+      label,
+      automatic,
+    };
   }
 
-  return { success: false, message: "Failed to set offline model." };
+  return { success: false, message: "Failed to set offline model.", provider: "local", automatic };
 }
 
-async function goOnline(
+export async function restoreCloudDriver(
   pi: ExtensionAPI,
-  ctx: any
-): Promise<{ success: boolean; message: string }> {
+  ctx: any,
+  options: { automatic?: boolean } = {}
+): Promise<OfflineDriverSwitchResult> {
+  const automatic = options.automatic ?? false;
   if (!isOffline) {
-    return { success: true, message: "Already in online mode." };
+    return { success: true, message: "Already in online mode.", provider: "cloud", automatic };
   }
 
   const provider = savedCloudProvider || "anthropic";
@@ -184,7 +211,7 @@ async function goOnline(
   }
 
   if (!modelId) {
-    return { success: false, message: "No Anthropic opus model found in registry." };
+    return { success: false, message: "No Anthropic opus model found in registry.", provider: "cloud", automatic };
   }
 
   const model = ctx.modelRegistry.find(provider, modelId);
@@ -193,6 +220,8 @@ async function goOnline(
     return {
       success: false,
       message: `Cannot restore cloud model ${provider}/${modelId} — not found in registry.`,
+      provider: "cloud",
+      automatic,
     };
   }
 
@@ -201,6 +230,8 @@ async function goOnline(
     return {
       success: false,
       message: "Anthropic API still unreachable. Staying offline. Retry with /online when connectivity is restored.",
+      provider: "cloud",
+      automatic,
     };
   }
 
@@ -208,10 +239,17 @@ async function goOnline(
   if (success) {
     isOffline = false;
     ctx.ui.setStatus("offline-driver", "");
-    return { success: true, message: `Restored cloud driver: ${provider}/${modelId}` };
+    return {
+      success: true,
+      message: `Restored cloud driver: ${provider}/${modelId}`,
+      provider: "cloud",
+      modelId,
+      label: `${provider}/${modelId}`,
+      automatic,
+    };
   }
 
-  return { success: false, message: "Failed to restore cloud model." };
+  return { success: false, message: "Failed to restore cloud model.", provider: "cloud", automatic };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -265,7 +303,7 @@ export default function (pi: ExtensionAPI) {
     description: "Switch to best available local model as the driving agent",
     handler: async (args, ctx) => {
       const preferredModel = args?.trim() || undefined;
-      const result = await goOffline(pi, ctx, preferredModel);
+      const result = await switchToOfflineDriver(pi, ctx, { preferredModel });
       ctx.ui.notify(result.message, result.success ? "info" : "error");
     },
   });
@@ -274,7 +312,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("online", {
     description: "Restore the cloud (Anthropic) model as the driving agent",
     handler: async (_args, ctx) => {
-      const result = await goOnline(pi, ctx);
+      const result = await restoreCloudDriver(pi, ctx);
       ctx.ui.notify(result.message, result.success ? "info" : "error");
     },
   });
@@ -310,7 +348,10 @@ export default function (pi: ExtensionAPI) {
       _onUpdate,
       ctx
     ) => {
-      const result = await goOffline(pi, ctx, params.preferred_model);
+      const result = await switchToOfflineDriver(pi, ctx, {
+        preferredModel: params.preferred_model,
+        automatic: true,
+      });
       if (result.success) {
         ctx.ui.notify(`🔌 Offline: ${params.reason}`, "info");
       }

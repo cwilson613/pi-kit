@@ -48,13 +48,17 @@ extensions/lib/model-routing.ts already classifies transient failures with patte
 - `extensions/model-budget.ts` (modified) — replace notify-only transient failure handling with structured recovery classification and fallback planning
 - `extensions/lib/model-routing.ts` (modified) — expand failure taxonomy from boolean transient detection to structured classes and retryability metadata
 - `extensions/lib/operator-fallback.ts` (modified) — promote alternate-candidate guidance into executable recovery plans
-- `extensions/offline-driver.ts` (modified) — support automatic local-driver handoff for cloud reachability failures when policy permits
+- `extensions/offline-driver.ts` (modified) — export reusable `switchToOfflineDriver()` / `restoreCloudDriver()` helpers so the recovery controller can perform automatic local handoff without duplicating command logic
 - `extensions/shared-state.ts` (modified) — store last recovery event / retry budget for dashboard and session injection
-- `extensions/dashboard/*` (modified) — surface current recovery state and active provider cooldowns to the operator
+- `extensions/dashboard/types.ts` (modified) — define dashboard-facing recovery event and cooldown summary interfaces for shared-state consumers
+- `extensions/dashboard/footer.ts` (modified) — surface latest recovery action plus nearest cooldown guidance in compact and raised footer modes
+- `extensions/dashboard/footer-dashboard.test.ts` (modified) — verify recovery state shapes and footer rendering expectations
 
 ### Constraints
 
 - The agent must see a structured recovery notice before or with any automatic retry so upstream failures are not invisible in the harness transcript.
 - Automatic retries must be bounded and idempotent-aware: at most one same-model retry for obvious upstream flakiness before escalation or failover.
 - Provider/model switching should reuse existing capability-role routing and cooldown state instead of hardcoding Codex-specific fallbacks.
+- Dashboard-facing recovery state must tolerate partial producer rollout: footer rendering should safely read an optional shared-state payload while sibling recovery-controller work lands.
+- Automatic offline handoff must return structured target metadata (provider/model/automatic flag) so the controller and dashboard can describe what changed without scraping human-facing status text.
 - Authentication, quota exhaustion, malformed tool results, and context-overflow paths must not be treated as generic transient retry cases.

@@ -1,94 +1,134 @@
-/**
- * Tests for dashboard footer rendering of implementing/implemented statuses.
- */
-import { describe, it, beforeEach } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+
+import { DashboardFooter } from "./footer.ts";
 import { sharedState } from "../shared-state.ts";
+import type { DashboardState, RecoveryDashboardState } from "./types.ts";
 
-// We test the rendering logic indirectly by verifying sharedState shapes
-// match what the footer expects, since DashboardFooter requires TUI/Theme.
+function makeTheme() {
+  return {
+    fg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+}
 
-describe("dashboard types — implementing/implemented fields", () => {
-	beforeEach(() => {
-		(sharedState as any).designTree = null;
-		delete (sharedState as any).lastMemoryInjection;
-	});
+function makeFooterData() {
+  return {
+    getAvailableProviderCount: () => 2,
+    getGitBranch: () => "main",
+    getExtensionStatuses: () => new Map<string, string>(),
+  };
+}
 
-	it("DesignTreeDashboardState accepts implementingCount and implementedCount", () => {
-		const state = {
-			nodeCount: 5,
-			decidedCount: 2,
-			exploringCount: 1,
-			implementingCount: 1,
-			implementedCount: 1,
-			blockedCount: 0,
-			openQuestionCount: 0,
-			focusedNode: null,
-			implementingNodes: [],
-		};
-		(sharedState as any).designTree = state;
-		assert.strictEqual(sharedState.designTree?.implementingCount, 1);
-		assert.strictEqual(sharedState.designTree?.implementedCount, 1);
-	});
+function makeContext() {
+  return {
+    cwd: "/Users/cwilson/workspace/ai/pi-kit",
+    model: {
+      provider: "openai-codex",
+      id: "gpt-5.4",
+      reasoning: true,
+    },
+    getContextUsage: () => ({ percent: 31, contextWindow: 272000 }),
+    sessionManager: {
+      getEntries: () => [],
+      getSessionName: () => undefined,
+    },
+  };
+}
 
-	it("focusedNode includes branch field", () => {
-		const state = {
-			nodeCount: 1,
-			decidedCount: 0,
-			exploringCount: 0,
-			implementingCount: 1,
-			implementedCount: 0,
-			blockedCount: 0,
-			openQuestionCount: 0,
-			focusedNode: {
-				id: "my-node",
-				title: "My Node",
-				status: "implementing",
-				questions: [],
-				branch: "feature/my-node",
-			},
-			implementingNodes: [{ id: "my-node", title: "My Node", branch: "feature/my-node" }],
-		};
-		(sharedState as any).designTree = state;
-		assert.strictEqual(sharedState.designTree?.focusedNode?.branch, "feature/my-node");
-	});
+function makeRecoveryState(overrides: Partial<RecoveryDashboardState> = {}): RecoveryDashboardState {
+  return {
+    provider: "anthropic",
+    modelId: "claude-sonnet-4-5",
+    classification: "rate_limit",
+    summary: "Anthropic rate limited the last assistant turn.",
+    action: "switch_offline",
+    timestamp: Date.now(),
+    retryCount: 0,
+    maxRetries: 1,
+    target: { provider: "local", modelId: "qwen3:30b", label: "Qwen3 30B" },
+    cooldowns: [
+      {
+        scope: "provider",
+        key: "anthropic",
+        provider: "anthropic",
+        until: Date.now() + 65_000,
+        reason: "429",
+      },
+    ],
+    ...overrides,
+  };
+}
 
-	it("implementingNodes lists nodes with branch associations", () => {
-		const state = {
-			nodeCount: 3,
-			decidedCount: 1,
-			exploringCount: 0,
-			implementingCount: 2,
-			implementedCount: 0,
-			blockedCount: 0,
-			openQuestionCount: 0,
-			focusedNode: null,
-			implementingNodes: [
-				{ id: "a", title: "Node A", branch: "feature/a" },
-				{ id: "b", title: "Node B" },
-			],
-		};
-		(sharedState as any).designTree = state;
-		assert.strictEqual(sharedState.designTree?.implementingNodes?.length, 2);
-		assert.strictEqual(sharedState.designTree?.implementingNodes?.[0].branch, "feature/a");
-		assert.strictEqual(sharedState.designTree?.implementingNodes?.[1].branch, undefined);
-	});
+describe("dashboard recovery state", () => {
+  beforeEach(() => {
+    (sharedState as any).designTree = null;
+    (sharedState as any).openspec = null;
+    (sharedState as any).cleave = { status: "idle", children: [] };
+    (sharedState as any).recovery = undefined;
+    delete (sharedState as any).lastMemoryInjection;
+  });
 
-	it("sharedState can expose last memory injection metrics for dashboard audit views", () => {
-		(sharedState as any).lastMemoryInjection = {
-			mode: "semantic",
-			projectFactCount: 30,
-			edgeCount: 0,
-			workingMemoryFactCount: 4,
-			semanticHitCount: 12,
-			episodeCount: 3,
-			globalFactCount: 15,
-			payloadChars: 4800,
-			estimatedTokens: 1200,
-		};
+  it("accepts recovery state and cooldown summaries on shared state", () => {
+    (sharedState as any).recovery = makeRecoveryState();
 
-		assert.strictEqual(sharedState.lastMemoryInjection?.mode, "semantic");
-		assert.strictEqual(sharedState.lastMemoryInjection?.projectFactCount, 30);
-		assert.strictEqual(sharedState.lastMemoryInjection?.estimatedTokens, 1200);
-	});
+    assert.equal((sharedState as any).recovery?.action, "switch_offline");
+    assert.equal((sharedState as any).recovery?.target?.provider, "local");
+    assert.equal((sharedState as any).recovery?.cooldowns?.[0]?.provider, "anthropic");
+  });
+
+  it("renders compact recovery summary with cooldown guidance", () => {
+    (sharedState as any).recovery = makeRecoveryState();
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "compact", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const [line] = footer.render(160);
+    assert.match(line, /↺ offline/);
+    assert.match(line, /Anthropic rate limited the last assistant turn\./);
+    assert.match(line, /anthropic 1m/);
+  });
+
+  it("renders raised recovery section with action, target, and cooldown", () => {
+    (sharedState as any).recovery = makeRecoveryState({
+      action: "retry",
+      classification: "server_error",
+      summary: "Retrying once after upstream server_error.",
+      retryCount: 1,
+      maxRetries: 1,
+      target: { provider: "anthropic", modelId: "claude-sonnet-4-5" },
+    });
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(160);
+    assert.ok(lines.some((line) => line.includes("↺ Recovery") && line.includes("retrying") && line.includes("server_error")), lines.join("\n"));
+    assert.ok(lines.some((line) => line.includes("Retrying once after upstream server_error.")), lines.join("\n"));
+    assert.ok(lines.some((line) => line.includes("1/1 retries")), lines.join("\n"));
+    assert.ok(lines.some((line) => line.includes("→ anthropic/claude-sonnet-4-5")), lines.join("\n"));
+  });
+
+  it("omits recovery lines when no recovery state is present", () => {
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      makeFooterData() as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    const lines = footer.render(160);
+    assert.ok(lines.every((line) => !line.includes("↺ Recovery")), lines.join("\n"));
+  });
 });

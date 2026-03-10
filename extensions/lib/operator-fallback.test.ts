@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { getDefaultCapabilityProfile, getDefaultPolicy, type RegistryModel } from "./model-routing.ts";
-import { buildFallbackGuidance, explainTierResolutionFailure, inferRolesForModel, recordTransientFailureForModel } from "./operator-fallback.ts";
+import {
+  buildFallbackGuidance,
+  explainTierResolutionFailure,
+  inferRolesForModel,
+  planRecoveryForModel,
+  recordTransientFailureForModel,
+} from "./operator-fallback.ts";
 import { loadOperatorRuntimeState, toCapabilityRuntimeState } from "./operator-profile.ts";
 
 function makeTmpDir(): string {
@@ -29,7 +35,7 @@ describe("inferRolesForModel", () => {
 });
 
 describe("recordTransientFailureForModel", () => {
-  it("persists provider and candidate cooldowns for transient upstream failures", () => {
+  it("persists provider and candidate cooldowns for rate-limit failures", () => {
     const tmp = makeTmpDir();
     try {
       const state = recordTransientFailureForModel(tmp, { provider: "anthropic", id: "claude-sonnet-4-6" }, "429 rate limit", 1000);
@@ -44,14 +50,116 @@ describe("recordTransientFailureForModel", () => {
     }
   });
 
-  it("ignores non-transient and local failures", () => {
+  it("does not cooldown retryable flakes, non-transient failures, or local failures", () => {
     const tmp = makeTmpDir();
     try {
+      assert.equal(recordTransientFailureForModel(tmp, { provider: "openai", id: "gpt-5.4" }, "server_error", 1000), undefined);
       assert.equal(recordTransientFailureForModel(tmp, { provider: "openai", id: "gpt-5.4" }, "invalid api key", 1000), undefined);
-      assert.equal(recordTransientFailureForModel(tmp, { provider: "local", id: "qwen3:8b" }, "overloaded", 1000), undefined);
+      assert.equal(recordTransientFailureForModel(tmp, { provider: "local", id: "qwen3:8b" }, "429 rate limit", 1000), undefined);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("planRecoveryForModel", () => {
+  it("returns same-model retry for obvious upstream flakiness", () => {
+    const models = [makeModel("anthropic", "claude-sonnet-4-6")];
+    const profile = getDefaultCapabilityProfile(models);
+    const plan = planRecoveryForModel(
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      "server_error",
+      models,
+      getDefaultPolicy(),
+      profile,
+      {},
+      1000,
+    );
+
+    assert.equal(plan.classification.class, "retryable-flake");
+    assert.equal(plan.action, "retry-same-model");
+    assert.equal(plan.sameModelRetry, true);
+  });
+
+  it("switches to an alternate candidate after rate-limit cooldown", () => {
+    const models = [
+      makeModel("anthropic", "claude-sonnet-4-6"),
+      makeModel("openai", "gpt-5.3-codex-spark"),
+    ];
+    const profile = getDefaultCapabilityProfile(models);
+    const plan = planRecoveryForModel(
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      "429 rate limit",
+      models,
+      getDefaultPolicy(),
+      profile,
+      { providerCooldowns: { anthropic: { until: 5000, reason: "429" } } },
+      1000,
+    );
+
+    assert.equal(plan.classification.class, "rate-limit");
+    assert.equal(plan.action, "switch-model");
+    assert.equal(plan.sameModelRetry, false);
+    assert.equal(plan.alternateCandidate?.provider, "openai");
+  });
+
+  it("may hand off to local when only local remains viable", () => {
+    const models = [
+      makeModel("anthropic", "claude-haiku-3-5"),
+      makeModel("local", "qwen3:8b"),
+    ];
+    const profile = getDefaultCapabilityProfile(models);
+    profile.roles.adept.candidates = [
+      { id: "claude-haiku-3-5", provider: "anthropic", source: "upstream", weight: "light", maxThinking: "low" },
+      { id: "qwen3:8b", provider: "local", source: "local", weight: "normal", maxThinking: "medium" },
+    ];
+    profile.policy.crossSource = "allow";
+
+    const plan = planRecoveryForModel(
+      { provider: "anthropic", id: "claude-haiku-3-5" },
+      "try again later",
+      models,
+      getDefaultPolicy(),
+      profile,
+      { providerCooldowns: { anthropic: { until: 5000, reason: "backoff" } } },
+      1000,
+    );
+
+    assert.equal(plan.classification.class, "backoff");
+    assert.equal(plan.action, "handoff-local");
+    assert.equal(plan.alternateCandidate?.provider, "local");
+  });
+
+  it("surfaces non-retryable failures without generic retry guidance", () => {
+    const models = [makeModel("anthropic", "claude-haiku-3-5")];
+    const profile = getDefaultCapabilityProfile(models);
+
+    const auth = planRecoveryForModel(
+      { provider: "anthropic", id: "claude-haiku-3-5" },
+      "invalid api key",
+      models,
+      getDefaultPolicy(),
+      profile,
+      {},
+      1000,
+    );
+    const overflow = planRecoveryForModel(
+      { provider: "anthropic", id: "claude-haiku-3-5" },
+      "maximum context length exceeded",
+      models,
+      getDefaultPolicy(),
+      profile,
+      {},
+      1000,
+    );
+
+    assert.equal(auth.action, "surface");
+    assert.equal(auth.sameModelRetry, false);
+    assert.equal(auth.classification.class, "auth");
+
+    assert.equal(overflow.action, "handled-elsewhere");
+    assert.equal(overflow.sameModelRetry, false);
+    assert.equal(overflow.classification.class, "context-overflow");
   });
 });
 

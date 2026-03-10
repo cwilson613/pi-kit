@@ -19,6 +19,16 @@ export type CapabilityRole = "archmagos" | "magos" | "adept" | "servitor" | "ser
 export type CandidateSource = "upstream" | "local";
 export type CandidateWeight = "light" | "normal" | "heavy" | "unknown";
 export type FallbackDisposition = "allow" | "ask" | "deny";
+export type UpstreamFailureClass =
+  | "retryable-flake"
+  | "rate-limit"
+  | "backoff"
+  | "auth"
+  | "quota"
+  | "tool-output"
+  | "context-overflow"
+  | "non-retryable";
+export type UpstreamRecoveryAction = "retry-same-model" | "failover" | "surface" | "handled-elsewhere";
 
 /**
  * Operator-driven session routing policy.
@@ -70,6 +80,16 @@ export interface CooldownEntry {
 export interface CapabilityRuntimeState {
   candidateCooldowns?: Record<string, CooldownEntry>;
   providerCooldowns?: Partial<Record<ProviderName, CooldownEntry>>;
+}
+
+export interface UpstreamFailureClassification {
+  class: UpstreamFailureClass;
+  recoveryAction: UpstreamRecoveryAction;
+  summary: string;
+  reason: string;
+  retryable: boolean;
+  cooldownProvider: boolean;
+  cooldownCandidate: boolean;
 }
 
 /**
@@ -317,44 +337,6 @@ function explainBlockedResolution(
   return `${roleLabel} resolution blocked by policy: ${reason} via ${target} is not permitted.`;
 }
 
-function synthesizeCandidate(tier: ModelTier, models: RegistryModel[]): CapabilityCandidate | undefined {
-  if (tier === "local") {
-    const local = matchLocalTier(models);
-    if (!local) return undefined;
-    return {
-      id: local.id,
-      provider: "local",
-      source: "local",
-      weight: inferWeightFromModel(local),
-      maxThinking: "high",
-    };
-  }
-
-  const anthropic = matchAnthropicTier(models, tier);
-  if (anthropic) {
-    return {
-      id: anthropic.id,
-      provider: "anthropic",
-      source: "upstream",
-      weight: tier === "opus" ? "heavy" : "normal",
-      maxThinking: tier === "opus" ? "high" : tier === "sonnet" ? "medium" : "low",
-    };
-  }
-
-  const openai = matchOpenAITier(models, tier);
-  if (openai) {
-    return {
-      id: openai.id,
-      provider: "openai",
-      source: "upstream",
-      weight: tier === "opus" ? "heavy" : "normal",
-      maxThinking: tier === "opus" ? "high" : tier === "sonnet" ? "medium" : "low",
-    };
-  }
-
-  return undefined;
-}
-
 function inferWeightFromModel(model: RegistryModel): CandidateWeight {
   const id = model.id.toLowerCase();
   if (id.includes("70b") || id.includes("72b") || id.includes("30b") || id.includes("32b") || id.includes("24b")) {
@@ -364,22 +346,125 @@ function inferWeightFromModel(model: RegistryModel): CandidateWeight {
   return "light";
 }
 
+function classifyFailureMessage(message: string): UpstreamFailureClassification {
+  const normalized = message.toLowerCase();
+
+  const patterns: Array<{
+    match: boolean;
+    classification: UpstreamFailureClassification;
+  }> = [
+    {
+      match: ["context window", "context length", "too many tokens", "maximum context", "prompt is too long"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "context-overflow",
+        recoveryAction: "handled-elsewhere",
+        summary: "context overflow",
+        reason: "Context overflow should be handled by explicit compaction/context management logic.",
+        retryable: false,
+        cooldownProvider: false,
+        cooldownCandidate: false,
+      },
+    },
+    {
+      match: ["invalid api key", "authentication", "unauthorized", "forbidden", "permission denied", "auth failed", "401", "403"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "auth",
+        recoveryAction: "surface",
+        summary: "authentication failure",
+        reason: "Authentication and authorization failures are not generic transient retries.",
+        retryable: false,
+        cooldownProvider: false,
+        cooldownCandidate: false,
+      },
+    },
+    {
+      match: ["quota exceeded", "insufficient_quota", "hard quota", "billing", "credits", "usage limit exceeded"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "quota",
+        recoveryAction: "surface",
+        summary: "quota exhaustion",
+        reason: "Hard quota exhaustion requires explicit operator or provider action.",
+        retryable: false,
+        cooldownProvider: false,
+        cooldownCandidate: false,
+      },
+    },
+    {
+      match: ["malformed tool output", "invalid tool output", "tool result schema", "tool output parse", "tool call parse"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "tool-output",
+        recoveryAction: "surface",
+        summary: "malformed tool output",
+        reason: "Malformed tool output should be surfaced explicitly rather than retried as an upstream flake.",
+        retryable: false,
+        cooldownProvider: false,
+        cooldownCandidate: false,
+      },
+    },
+    {
+      match: ["429", "rate limit", "rate-limit", "too many requests", "session limit"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "rate-limit",
+        recoveryAction: "failover",
+        summary: "rate limited",
+        reason: "Rate limits and session limits should cool down the failing route and prefer failover.",
+        retryable: false,
+        cooldownProvider: true,
+        cooldownCandidate: true,
+      },
+    },
+    {
+      match: ["try again later", "backoff", "retry-after", "retry after", "temporarily unavailable", "temporarily blocked"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "backoff",
+        recoveryAction: "failover",
+        summary: "explicit backoff",
+        reason: "Explicit backoff guidance should avoid an immediate retry on the same provider/model.",
+        retryable: false,
+        cooldownProvider: true,
+        cooldownCandidate: true,
+      },
+    },
+    {
+      match: ["server_error", "internal server error", "bad gateway", "gateway timeout", "timed out", "timeout", "econnreset", "socket hang up", "overloaded", "5xx", "502", "503", "504"].some((needle) => normalized.includes(needle)),
+      classification: {
+        class: "retryable-flake",
+        recoveryAction: "retry-same-model",
+        summary: "transient upstream flake",
+        reason: "Obvious upstream flakiness is eligible for one bounded retry on the same model.",
+        retryable: true,
+        cooldownProvider: false,
+        cooldownCandidate: false,
+      },
+    },
+  ];
+
+  for (const entry of patterns) {
+    if (entry.match) return entry.classification;
+  }
+
+  return {
+    class: "non-retryable",
+    recoveryAction: "surface",
+    summary: "non-retryable upstream failure",
+    reason: "The failure does not match a known transient, failover, or separately handled recovery class.",
+    retryable: false,
+    cooldownProvider: false,
+    cooldownCandidate: false,
+  };
+}
+
 export function clampThinkingLevel(requested: ThinkingLevel, maxThinking: ThinkingLevel): ThinkingLevel {
   return THINKING_ORDER[requested] <= THINKING_ORDER[maxThinking] ? requested : maxThinking;
 }
 
+export function classifyUpstreamFailure(error: unknown): UpstreamFailureClassification {
+  const message = error instanceof Error ? error.message : String(error);
+  return classifyFailureMessage(message);
+}
+
 export function classifyTransientFailure(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return [
-    "429",
-    "rate limit",
-    "rate-limit",
-    "too many requests",
-    "session limit",
-    "temporarily unavailable",
-    "overloaded",
-    "try again later",
-  ].some((needle) => message.includes(needle));
+  return classifyUpstreamFailure(error).retryable || classifyUpstreamFailure(error).recoveryAction === "failover";
 }
 
 export function withProviderCooldown(

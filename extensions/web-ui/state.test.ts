@@ -14,10 +14,9 @@ import { buildControlPlaneState, buildSlice } from "./state.ts";
 import { SCHEMA_VERSION } from "./types.ts";
 
 // ── Test repo root (this workspace) ──────────────────────────────────────────
-const __dirname =
-  typeof import.meta !== "undefined" && import.meta.url
-    ? path.dirname(fileURLToPath(import.meta.url))
-    : (process.cwd() as string);
+// import.meta.url is always defined in ESM (which this project uses), so the
+// fallback branch is unreachable in practice — but we guard anyway for clarity.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const STARTED_AT = Date.now() - 5000;
 
@@ -118,6 +117,30 @@ describe("dashboard section — derived from sharedState", () => {
     sharedState.memoryTokenEstimate = 0;
     sharedState.recovery = undefined;
     sharedState.effort = undefined;
+    sharedState.dashboardMode = undefined;
+    sharedState.dashboardTurns = undefined;
+  });
+
+  it("mode defaults to 'compact' when sharedState.dashboardMode is absent", () => {
+    const { dashboard } = buildSnapshot();
+    assert.equal(dashboard.mode, "compact");
+  });
+
+  it("mode reflects sharedState.dashboardMode when set", () => {
+    sharedState.dashboardMode = "raised";
+    const { dashboard } = buildSnapshot();
+    assert.equal(dashboard.mode, "raised");
+  });
+
+  it("turns defaults to 0 when sharedState.dashboardTurns is absent", () => {
+    const { dashboard } = buildSnapshot();
+    assert.equal(dashboard.turns, 0);
+  });
+
+  it("turns reflects sharedState.dashboardTurns when set", () => {
+    sharedState.dashboardTurns = 42;
+    const { dashboard } = buildSnapshot();
+    assert.equal(dashboard.turns, 42);
   });
 
   it("memoryTokenEstimate matches sharedState", () => {

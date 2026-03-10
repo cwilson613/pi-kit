@@ -9,7 +9,6 @@
  * calls buildControlPlaneState() on every GET /api/state request.
  */
 
-import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { sharedState } from "../shared-state.ts";
@@ -69,9 +68,6 @@ function buildSession(repoRoot: string): SessionSnapshot {
 }
 
 function buildDashboard(): DashboardSnapshot {
-  const dashState = (sharedState as any).dashboard as
-    | { mode?: string; turns?: number }
-    | undefined;
 
   let recovery: RecoverySnapshot | null = null;
   const r = sharedState.recovery;
@@ -96,8 +92,8 @@ function buildDashboard(): DashboardSnapshot {
     : null;
 
   return {
-    mode: dashState?.mode ?? "compact",
-    turns: typeof dashState?.turns === "number" ? dashState.turns : 0,
+    mode: sharedState.dashboardMode ?? "compact",
+    turns: sharedState.dashboardTurns ?? 0,
     memoryTokenEstimate: sharedState.memoryTokenEstimate,
     routingPolicy,
     effortLevel,
@@ -123,6 +119,7 @@ function buildDesignTree(repoRoot: string): DesignTreeSnapshot {
   let openQuestionCount = 0;
   let focusedNode: DesignNodeSummary | null = null;
 
+  let scanSucceeded = false;
   if (fs.existsSync(docsDir)) {
     try {
       const tree = scanDesignDocs(docsDir);
@@ -146,10 +143,13 @@ function buildDesignTree(repoRoot: string): DesignTreeSnapshot {
           focusedNode = summary;
         }
       }
+      scanSucceeded = true;
     } catch {
-      // docs dir may not exist or may contain no design docs — that's fine
+      // docs dir exists but scan failed — fall through to live state fallback
     }
-  } else if (live) {
+  }
+
+  if (!scanSucceeded && live) {
     // No docs dir but we have live dashboard state — synthesise minimal summary
     openQuestionCount = live.openQuestionCount;
     statusCounts = {
@@ -292,5 +292,9 @@ export function buildSlice(
     case "models":     return buildModels();
     case "memory":     return buildMemory();
     case "health":     return buildHealth(startedAt);
+    default: {
+      const _exhaustive: never = slice;
+      throw new Error(`Unhandled slice: ${String(_exhaustive)}`);
+    }
   }
 }

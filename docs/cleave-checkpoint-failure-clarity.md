@@ -36,8 +36,5 @@ runDirtyTreePreflight() returns "continue" immediately after checkpointRelatedCh
 
 - `extensions/cleave/index.ts` — checkpoint attempts now re-run `git status --porcelain` before leaving preflight, emit explicit post-checkpoint remaining-dirty diagnosis, and surface git add/commit failures as actionable preflight errors.
 - `extensions/cleave/index.test.ts` — regression coverage now includes clean post-checkpoint continuation, remaining excluded dirt after checkpoint, git commit failure, and empty checkpoint scope handling.
-
-### Validation
-
-- `npm test -- --runInBand extensions/cleave/index.test.ts`
-- `npm run typecheck`
+- `docs/cleave-checkpoint-failure-clarity.md` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `openspec/changes/cleave-checkpoint-failure-clarity/tasks.md` (modified) — Post-assess reconciliation delta — touched during follow-up fixes

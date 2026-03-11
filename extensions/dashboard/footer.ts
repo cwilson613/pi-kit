@@ -348,9 +348,8 @@ export class DashboardFooter implements Component {
   }
 
   /**
-   * Shared boxing helper: wraps contentLines + footerLines in a corner-bounded box.
-   * Top border embeds topLineContent (first branch tree line).
-   * Bottom border embeds "/dash to compact" hint.
+   * Render content + footer lines inside a rounded box with a top border label
+   * and a `/dash to compact` hint embedded in the bottom border.
    */
   private renderBoxed(
     contentLines: string[],
@@ -359,44 +358,35 @@ export class DashboardFooter implements Component {
     width: number,
   ): string[] {
     const theme = this.theme;
+    const innerWidth = width - 4; // 2 for │ borders + 2 for padding spaces
+
     const b = (s: string) => theme.fg("border", s);
-    const innerWidth = width - 4; // 2 for │, 2 for spaces
 
-    // Top border: ╭─ <topLineContent> ─...─╮
-    const topContentWidth = visibleWidth(topLineContent);
-    const topPad = Math.max(0, width - 5 - topContentWidth);
-    const topBorder = b("╭─ ") + topLineContent + b(" " + "─".repeat(topPad) + "╮");
+    const wrapLine = (line: string) =>
+      b("│") + " " + padRight(truncateToWidth(line, innerWidth, "…"), innerWidth) + " " + b("│");
+
+    const topPad = Math.max(0, width - 5 - visibleWidth(topLineContent));
+    const topBorder = b("╭") + b("─") + " " + topLineContent + " " + b("─".repeat(topPad)) + b("╮");
+
+    const separator = b("├") + b("─".repeat(width - 2)) + b("┤");
+
+    const dashHint = " /dash to compact ";
+    const botPad = Math.max(0, width - 2 - visibleWidth(dashHint));
+    const bottomBorder = b("╰") + theme.fg("dim", dashHint) + b("─".repeat(botPad)) + b("╯");
+
     const lines: string[] = [topBorder];
-
-    // Content lines
-    for (const line of contentLines) {
-      const inner = padRight(truncateToWidth(line, innerWidth, "…"), innerWidth);
-      lines.push(b("│") + " " + inner + " " + b("│"));
+    for (const line of contentLines) lines.push(wrapLine(line));
+    if (footerLines.length > 0) {
+      lines.push(separator);
+      for (const line of footerLines) lines.push(wrapLine(line));
     }
-
-    // Section divider ├──┤
-    lines.push(b("├") + b("─".repeat(width - 2)) + b("┤"));
-
-    // Footer lines
-    for (const line of footerLines) {
-      const inner = padRight(truncateToWidth(line, innerWidth, "…"), innerWidth);
-      lines.push(b("│") + " " + inner + " " + b("│"));
-    }
-
-    // Bottom border: ╰ /dash to compact ─...─╯
-    const hintText = " /dash to compact ";
-    const hintColored = b("╰") + theme.fg("dim", hintText);
-    const hintWidth = visibleWidth(hintText);
-    const botPad = Math.max(0, width - 2 - hintWidth);
-    const bottomBorder = hintColored + b("─".repeat(botPad) + "╯");
     lines.push(bottomBorder);
-
     return lines;
   }
 
   /**
    * Stacked layout for narrow terminals (<120 cols).
-   * All sections rendered full-width, top to bottom.
+   * All sections rendered full-width inside a corner-bounded box.
    */
   private renderRaisedStacked(width: number): string[] {
     const innerWidth = width - 4;
@@ -415,12 +405,10 @@ export class DashboardFooter implements Component {
   }
 
   /**
-   * Wide layout (≥120 cols) — corner-bounded box:
-   *   Top border: branch tree first line
-   *   Content: extra branch lines + two-column (design+recovery+cleave | openspec)
-   *   Section divider ├──┤
-   *   Footer zone
-   *   Bottom border: /dash to compact hint
+   * Wide layout (≥120 cols) — two-column content inside a corner-bounded box.
+   *   Left:  Design tree + Recovery + Cleave (active work context)
+   *   Right: OpenSpec (spec/task progress)
+   *   Footer zone: shared meta, memory, footer data
    */
   private renderRaisedWide(width: number): string[] {
     const innerWidth = width - 4;
@@ -451,9 +439,8 @@ export class DashboardFooter implements Component {
   // ── Footer Zone (shared by stacked + wide layouts) ────────────
 
   /**
-   * Build the shared footer zone: meta line, consolidated memory line,
+   * Build the shared footer zone: meta line, memory audit, separator, hint,
    * and the original footer data lines.
-   * Separator and /dash hint are now handled by renderBoxed().
    */
   private buildFooterZone(width: number): string[] {
     const zone: string[] = [];
@@ -467,37 +454,6 @@ export class DashboardFooter implements Component {
     zone.push(...this.renderFooterData(width));
 
     return zone;
-  }
-
-  /**
-   * Consolidated memory line: combines total stored fact count (from extension
-   * status) with injection metrics. Replaces buildMemoryAuditLine in raised mode.
-   */
-  private buildConsolidatedMemoryLine(width: number): string {
-    const theme = this.theme;
-    const extStatuses = this.footerData.getExtensionStatuses();
-    const memStatus = extStatuses.get("memory") ?? "";
-    const totalMatch = memStatus.match(/(\d+)\s+facts/);
-    const totalFacts = totalMatch ? parseInt(totalMatch[1], 10) : null;
-
-    const metrics = sharedState.lastMemoryInjection;
-    if (!metrics && totalFacts === null) return "";
-
-    const parts: string[] = [];
-    if (totalFacts !== null) {
-      parts.push(theme.fg("accent", "⌗") + theme.fg("dim", ` ${totalFacts} total`));
-    }
-    if (metrics) {
-      parts.push(theme.fg("dim", `${metrics.projectFactCount} injected`));
-      if (metrics.workingMemoryFactCount > 0) parts.push(theme.fg("dim", `wm:${metrics.workingMemoryFactCount}`));
-      if (metrics.episodeCount > 0) parts.push(theme.fg("dim", `ep:${metrics.episodeCount}`));
-      if (metrics.globalFactCount > 0) parts.push(theme.fg("dim", `global:${metrics.globalFactCount}`));
-      parts.push(theme.fg("dim", `~${metrics.estimatedTokens} tok`));
-    } else {
-      parts.push(theme.fg("dim", "pending injection"));
-    }
-
-    return truncateToWidth(parts.join(theme.fg("dim", " · ")), width, "…");
   }
 
   // ── Section builders (shared by stacked + wide layouts) ───────
@@ -776,6 +732,38 @@ export class DashboardFooter implements Component {
     // line rather than a third content column competing with the dashboard.
     const summary = formatMemoryAuditSummary(sharedState.lastMemoryInjection, { wide: width >= 180 });
     return truncateToWidth(theme.fg("dim", summary), width, "…");
+  }
+
+  /**
+   * Consolidated memory line: combines total stored fact count (from "memory"
+   * extension status) with live injection metrics from sharedState.
+   * Format: ⌗ N total · M injected · wm:X · ep:X · global:X · ~Xtok
+   */
+  private buildConsolidatedMemoryLine(width: number): string {
+    const theme = this.theme;
+    const extStatuses = this.footerData.getExtensionStatuses();
+    const memStatus = extStatuses.get("memory") ?? "";
+    const totalMatch = memStatus.match(/(\d+)\s+facts/);
+    const totalFacts = totalMatch ? parseInt(totalMatch[1], 10) : null;
+
+    const metrics = sharedState.lastMemoryInjection;
+    if (!metrics && totalFacts === null) return "";
+
+    const parts: string[] = [];
+    if (totalFacts !== null) {
+      parts.push(theme.fg("accent", "⌗") + theme.fg("dim", ` ${totalFacts} total`));
+    }
+    if (metrics) {
+      parts.push(theme.fg("dim", `${metrics.projectFactCount} injected`));
+      if (metrics.workingMemoryFactCount > 0) parts.push(theme.fg("dim", `wm:${metrics.workingMemoryFactCount}`));
+      if (metrics.episodeCount > 0) parts.push(theme.fg("dim", `ep:${metrics.episodeCount}`));
+      if (metrics.globalFactCount > 0) parts.push(theme.fg("dim", `global:${metrics.globalFactCount}`));
+      parts.push(theme.fg("dim", `~${metrics.estimatedTokens} tok`));
+    } else {
+      parts.push(theme.fg("dim", "pending injection"));
+    }
+
+    return truncateToWidth(parts.join(theme.fg("dim", " · ")), width, "…");
   }
 
   // ── Context Gauge (from status-bar) ───────────────────────────

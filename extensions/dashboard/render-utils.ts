@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@cwilson613/pi-tui";
 
 /**
  * Pad string `s` to exactly `width` visible columns using visibleWidth().

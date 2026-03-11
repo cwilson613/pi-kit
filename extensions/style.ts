@@ -5,7 +5,7 @@
  * Subcommands: (none), palette, d2, excalidraw, check <file>
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Palette data — single source of truth

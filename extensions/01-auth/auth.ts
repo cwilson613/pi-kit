@@ -5,7 +5,7 @@
  * pi-tui/pi-coding-agent dependencies (which aren't resolvable under tsx).
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 // ─── Types ───────────────────────────────────────────────────────
 

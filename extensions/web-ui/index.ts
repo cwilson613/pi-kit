@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import { startWebUIServer, type WebUIServer } from "./server.ts";
 
 let server: WebUIServer | null = null;

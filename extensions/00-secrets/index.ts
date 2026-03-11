@@ -14,7 +14,7 @@
  * Commands: /secrets list, /secrets configure <name>, /secrets rm <name>, /secrets test <name>
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";

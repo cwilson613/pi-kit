@@ -8,7 +8,7 @@ description: Pi extension API reference and conventions. Use when creating, modi
 Extensions are TypeScript modules exporting a default function that receives `ExtensionAPI`.
 
 ```typescript
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   // register tools, commands, shortcuts, event handlers
@@ -89,7 +89,7 @@ pi.registerTool({
 
 ### StringEnum helper
 
-For enum parameters, use the local helper (NOT `@mariozechner/pi-ai`):
+For enum parameters, use the local helper (NOT `@cwilson613/pi-ai`):
 
 ```typescript
 import { StringEnum } from "../lib/typebox-helpers";

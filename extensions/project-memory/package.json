@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "commonjs",
   "dependencies": {
-    "@mariozechner/pi-tui": "^0.56.0",
+    "@cwilson613/pi-tui": "0.57.1-cwilson613.1",
     "better-sqlite3": "^12.6.2"
   }
 }

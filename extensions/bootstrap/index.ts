@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import { checkAllProviders, type AuthResult } from "../01-auth/auth.ts";
 import { loadPiConfig } from "../lib/model-preferences.ts";
 import {

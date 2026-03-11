@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, basename } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 const SESSION_LOG_HEADER = `# Session Log
 

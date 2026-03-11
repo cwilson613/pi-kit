@@ -231,7 +231,7 @@ Pre-built prompts for common workflows:
 
 ## Requirements
 
-- [pi coding agent](https://github.com/badlogic/pi-mono) (`@mariozechner/pi-coding-agent` ≥ 0.57)
+- [pi coding agent](https://github.com/badlogic/pi-mono) (`@cwilson613/pi-coding-agent` ≥ 0.57)
 - **Optional**: [Ollama](https://ollama.ai) — for local inference, offline mode, and semantic memory search
 - **Optional**: [d2](https://d2lang.com) — for diagram rendering
 - **Optional**: [mflux](https://github.com/filipstrand/mflux) — for FLUX.1 image generation on Apple Silicon

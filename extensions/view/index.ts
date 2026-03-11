@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { basename, extname, resolve, join, relative } from "node:path";
 import { tmpdir } from "node:os";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { resolveUri, loadConfig, osc8Link } from "./uri-resolver.js";
 import { getMdservePort } from "../vault/index.ts";
@@ -704,11 +704,11 @@ export default function (pi: ExtensionAPI) {
 	// Custom message renderer for /view output
 	// ------------------------------------------------------------------
 	pi.registerMessageRenderer("view", (message, options, theme) => {
-		const tui = require("@mariozechner/pi-tui");
+		const tui = require("@cwilson613/pi-tui");
 		const { Container, Text, Image, Markdown, Spacer } = tui;
 
 		let piAgent: any;
-		try { piAgent = require("@mariozechner/pi-coding-agent"); } catch { piAgent = null; }
+		try { piAgent = require("@cwilson613/pi-coding-agent"); } catch { piAgent = null; }
 
 		const container = new Container();
 
@@ -768,7 +768,7 @@ export default function (pi: ExtensionAPI) {
 			const maxWidth = scale?.widthCells ?? 999; // Default: fill terminal
 
 			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (r: void) => void) => {
-				const piTui = require("@mariozechner/pi-tui");
+				const piTui = require("@cwilson613/pi-tui");
 				const { Container, Text, Image: ImageComp, Spacer, DynamicBorder, getEditorKeybindings } = piTui;
 
 				const container = new Container();

@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 export default function distillExtension(pi: ExtensionAPI) {
 

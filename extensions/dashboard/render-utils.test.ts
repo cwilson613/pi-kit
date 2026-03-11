@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@cwilson613/pi-tui";
 import { padRight, leftRight, mergeColumns } from "./render-utils.ts";
 
 // Helpers for building test strings

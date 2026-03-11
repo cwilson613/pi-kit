@@ -25,8 +25,8 @@
  * Load order: 01-auth loads after 00-secrets, so process.env is populated.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import { Text } from "@cwilson613/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // Import domain logic from auth.ts (testable without pi-tui dependency)

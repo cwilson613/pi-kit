@@ -10,12 +10,12 @@
  * Reads ExtensionContext for token stats, model, context usage.
  */
 
-import type { Component } from "@mariozechner/pi-tui";
-import type { Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
-import type { ReadonlyFooterDataProvider } from "@mariozechner/pi-coding-agent";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { TUI } from "@mariozechner/pi-tui";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { Component } from "@cwilson613/pi-tui";
+import type { Theme, ThemeColor } from "@cwilson613/pi-coding-agent";
+import type { ReadonlyFooterDataProvider } from "@cwilson613/pi-coding-agent";
+import type { ExtensionContext } from "@cwilson613/pi-coding-agent";
+import type { TUI } from "@cwilson613/pi-tui";
+import { truncateToWidth, visibleWidth } from "@cwilson613/pi-tui";
 import { leftRight, mergeColumns, padRight } from "./render-utils.ts";
 import { buildBranchTreeLines, readLocalBranches } from "./git.ts";
 import type { DashboardState, RecoveryCooldownSummary, RecoveryDashboardState } from "./types.ts";

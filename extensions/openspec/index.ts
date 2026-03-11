@@ -18,10 +18,10 @@
  *   openspec_manage               — Agent-callable change lifecycle operations
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../lib/typebox-helpers.ts";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@cwilson613/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getSharedBridge, buildSlashCommandResult, type BridgedSlashCommand, type SlashCommandExecutionContext } from "../lib/slash-command-bridge.ts";

@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import designTreeExtension from "./index.ts";
 import { generateFrontmatter } from "./tree.ts";
 import type { DesignNode } from "./types.ts";

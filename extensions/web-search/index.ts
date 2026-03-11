@@ -2,7 +2,7 @@
 // @secret TAVILY_API_KEY "Tavily Search API key"
 // @secret SERPER_API_KEY "Serper/Google Search API key"
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../lib/typebox-helpers";
 import { getAvailableProviders, getProvider, type SearchResult } from "./providers.ts";

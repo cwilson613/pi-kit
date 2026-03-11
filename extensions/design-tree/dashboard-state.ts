@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 import type { DesignNode, DesignTree } from "./types.ts";
 import { getAllOpenQuestions } from "./tree.ts";

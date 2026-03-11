@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { DashboardFooter } from "./footer.ts";
 import { sharedState } from "../shared-state.ts";
 import type { DashboardState } from "./types.ts";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@cwilson613/pi-tui";
 
 function makeTheme() {
   return {
@@ -557,7 +557,7 @@ describe("buildBranchTreeLines", () => {
   });
 
   it("indent on continuation lines equals visibleWidth(repoName + ' ─')", () => {
-    const { visibleWidth: vw } = require("@mariozechner/pi-tui");
+    const { visibleWidth: vw } = require("@cwilson613/pi-tui");
     const repoName = "pi-kit";
     const lines = buildBranchTreeLines({
       repoName,

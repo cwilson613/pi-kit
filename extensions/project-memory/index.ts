@@ -42,11 +42,11 @@
 
 import * as path from "node:path";
 import * as os from "node:os";
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, SessionMessageEntry } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, SessionMessageEntry } from "@cwilson613/pi-coding-agent";
+import { DynamicBorder } from "@cwilson613/pi-coding-agent";
 import { StringEnum } from "../lib/typebox-helpers";
 import { Type } from "@sinclair/typebox";
-import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import { Container, type SelectItem, SelectList, Text } from "@cwilson613/pi-tui";
 import { FactStore, parseExtractionOutput, GLOBAL_DECAY, type MindRecord, type Fact } from "./factstore.ts";
 import { embed, isEmbeddingAvailable, MODEL_DIMS, type EmbeddingProvider } from "./embeddings.ts";
 import { DEFAULT_CONFIG, type MemoryConfig, type LifecycleMemoryCandidate } from "./types.ts";
@@ -67,7 +67,7 @@ import {
 import { runExtractionV2, runGlobalExtraction, killActiveExtraction, killAllSubprocesses, generateEpisode, generateEpisodeDirect } from "./extraction-v2.ts";
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.ts";
 import { SECTIONS } from "./template.ts";
-import { serializeConversation, convertToLlm } from "@mariozechner/pi-coding-agent";
+import { serializeConversation, convertToLlm } from "@cwilson613/pi-coding-agent";
 import { sharedState } from "../shared-state.ts";
 import {
   ingestLifecycleCandidate,

@@ -16,7 +16,7 @@ last_updated: 2026-03-10
 Quality guardrails provide automated checks that run during development to catch issues before they reach review:
 
 1. **TypeScript strict mode**: `npx tsc --noEmit` enforced before commits. `npm run check` runs both typecheck and test suite.
-2. **Extension type safety**: Extensions import types from `@mariozechner/pi-coding-agent` — the public API surface. No internal imports allowed.
+2. **Extension type safety**: Extensions import types from `@cwilson613/pi-coding-agent` — the public API surface. No internal imports allowed.
 3. **Dependency probing**: Bootstrap checks for required external tools (d2, pandoc, pdftoppm, Ollama, clipboard commands) and warns on missing dependencies.
 4. **Test suite**: 1298+ tests via `node:test` runner, covering all extensions.
 
@@ -32,7 +32,7 @@ Quality guardrails provide automated checks that run during development to catch
 ## Design Decisions
 
 - **Bake static analysis into lifecycle**: `npm run check` (typecheck + tests) runs before any commit. CI enforces on push/PR.
-- **Extension types from public API only**: All `@mariozechner/pi-ai` imports eliminated — `StringEnum` inlined to `extensions/lib/typebox-helpers.ts`. Runtime imports limited to public exports.
+- **Extension types from public API only**: All `@cwilson613/pi-ai` imports eliminated — `StringEnum` inlined to `extensions/lib/typebox-helpers.ts`. Runtime imports limited to public exports.
 - **Dependency probing at startup, not install**: Bootstrap checks what's available on the system at first run, not during npm install. Warnings are informational, not blocking.
 
 ## Constraints & Known Limitations

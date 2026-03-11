@@ -1,65 +1,65 @@
 {
-  "name": "pi-kit",
-  "version": "0.6.0",
-  "scripts": {
-    "test": "npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
-    "typecheck": "tsc --noEmit",
-    "check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",
-    "check": "tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts"
-  },
-  "description": "Pi package — extensions, prompts, skills, and themes for the pi coding agent",
-  "keywords": [
-    "pi-package"
-  ],
-  "author": "",
-  "license": "ISC",
-  "pi": {
-    "extensions": [
-      "./extensions/bootstrap",
-      "./extensions/auto-compact.ts",
-      "./extensions/00-secrets",
-      "./extensions/01-auth",
-      "./extensions/chronos",
-      "./extensions/cleave",
-      "./extensions/openspec",
-      "./extensions/defaults.ts",
-      "./extensions/distill.ts",
-      "./extensions/render",
-      "./extensions/local-inference",
-      "./extensions/mcp-bridge",
-      "./extensions/offline-driver.ts",
-      "./extensions/effort",
-      "./extensions/model-budget.ts",
-      "./extensions/project-memory",
-      "./extensions/session-log.ts",
-      "./extensions/spinner-verbs.ts",
-      "./extensions/style.ts",
-      "./extensions/terminal-title.ts",
-      "./extensions/view",
-      "./extensions/web-search",
-      "./extensions/design-tree",
-      "./extensions/dashboard",
-      "./extensions/tool-profile",
-      "./extensions/vault",
-      "./extensions/version-check.ts",
-      "./extensions/web-ui"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts"
-    ]
-  },
-  "dependencies": {
-    "@mariozechner/pi-ai": "^0.57.0",
-    "@mariozechner/pi-coding-agent": "^0.57.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "@resvg/resvg-js": "^2.6.2",
-    "@sinclair/typebox": "^0.34.48",
-    "better-sqlite3": "^12.6.2"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3"
-  }
+	"name": "pi-kit",
+	"version": "0.6.0",
+	"scripts": {
+		"test": "npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
+		"typecheck": "tsc --noEmit",
+		"check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",
+		"check": "tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts"
+	},
+	"description": "Pi package \u2014 extensions, prompts, skills, and themes for the pi coding agent",
+	"keywords": [
+		"pi-package"
+	],
+	"author": "",
+	"license": "ISC",
+	"pi": {
+		"extensions": [
+			"./extensions/bootstrap",
+			"./extensions/auto-compact.ts",
+			"./extensions/00-secrets",
+			"./extensions/01-auth",
+			"./extensions/chronos",
+			"./extensions/cleave",
+			"./extensions/openspec",
+			"./extensions/defaults.ts",
+			"./extensions/distill.ts",
+			"./extensions/render",
+			"./extensions/local-inference",
+			"./extensions/mcp-bridge",
+			"./extensions/offline-driver.ts",
+			"./extensions/effort",
+			"./extensions/model-budget.ts",
+			"./extensions/project-memory",
+			"./extensions/session-log.ts",
+			"./extensions/spinner-verbs.ts",
+			"./extensions/style.ts",
+			"./extensions/terminal-title.ts",
+			"./extensions/view",
+			"./extensions/web-search",
+			"./extensions/design-tree",
+			"./extensions/dashboard",
+			"./extensions/tool-profile",
+			"./extensions/vault",
+			"./extensions/version-check.ts",
+			"./extensions/web-ui"
+		],
+		"skills": [
+			"./skills"
+		],
+		"prompts": [
+			"./prompts"
+		]
+	},
+	"dependencies": {
+		"@cwilson613/pi-ai": "0.57.1-cwilson613.1",
+		"@cwilson613/pi-coding-agent": "0.57.1-cwilson613.1",
+		"@modelcontextprotocol/sdk": "^1.12.1",
+		"@resvg/resvg-js": "^2.6.2",
+		"@sinclair/typebox": "^0.34.48",
+		"better-sqlite3": "^12.6.2"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
 }

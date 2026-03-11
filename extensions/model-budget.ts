@@ -18,8 +18,8 @@
  */
 
 import { createHash } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
+import type { ImageContent, Model, TextContent } from "@cwilson613/pi-ai";
 import { DASHBOARD_UPDATE_EVENT, sharedState } from "./shared-state.ts";
 import type { RecoveryEvent, RecoveryFailureClassification } from "./shared-state.ts";
 import type { RecoveryAction, RecoveryCooldownSummary, RecoveryDashboardState, RecoveryTarget } from "./dashboard/types.ts";

@@ -13,7 +13,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum } from "../lib/typebox-helpers";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 const CHRONOS_SH = join(import.meta.dirname ?? __dirname, "chronos.sh");

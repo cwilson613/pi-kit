@@ -14,8 +14,8 @@
  * The Claude Code SDK calls are replaced with pi's extension API.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, AgentToolUpdateCallback } from "@mariozechner/pi-coding-agent";
-import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, AgentToolUpdateCallback } from "@cwilson613/pi-coding-agent";
+import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@cwilson613/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";

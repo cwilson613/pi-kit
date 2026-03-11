@@ -9,7 +9,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
 
 /** Base directory for cleave worktrees. */
 const WORKTREE_HOME = join(homedir(), ".pi", "cleave", "wt");

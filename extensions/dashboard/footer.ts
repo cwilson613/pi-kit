@@ -379,9 +379,9 @@ export class DashboardFooter implements Component {
    * Render content + footer lines inside a rounded box with a top border label
    * and a `/dash to compact` hint embedded in the bottom border.
    *
-   * @param targetHeight  If provided, content area is padded with blank lines so
-   *                      the total box height reaches targetHeight.  Pass 0 or
-   *                      omit to render exactly the content provided.
+   * @param targetHeight  Optional fixed height — pads content with blank lines
+   *                      so the total box reaches this row count.  Omit (or 0)
+   *                      to render at natural content height.
    */
   private renderBoxed(
     contentLines: string[],
@@ -452,15 +452,10 @@ export class DashboardFooter implements Component {
       ...this.buildCleaveLines(innerWidth),
     ];
 
-    // Target: fill as much of the terminal as possible, leaving ~3 rows for
-    // pi's editor/input area. Minimum = whatever the content naturally needs.
-    // Use tui.terminal.rows (authoritative, updated on SIGWINCH) rather than
-    // process.stdout.rows which lags and gives the wrong value inside multiplexers.
-    // Fall back to process.stdout.rows → 24 for test environments where tui is mocked.
-    const termRows = (this.tui as any)?.terminal?.rows || process.stdout.rows || 24;
-    const targetHeight = Math.max(0, termRows - 3);
-
-    return this.renderBoxed(contentLines, this.buildFooterZone(innerWidth), topLine, width, targetHeight);
+    // Render at natural content height — the box grows upward from the footer
+    // as branches/specs/cleave tasks are added.  Full-screen expansion lives
+    // in the /dashboard overlay (overlay.ts), not here.
+    return this.renderBoxed(contentLines, this.buildFooterZone(innerWidth), topLine, width);
   }
 
   /**
@@ -495,10 +490,8 @@ export class DashboardFooter implements Component {
         : []),
     ];
 
-    const termRows = (this.tui as any)?.terminal?.rows || process.stdout.rows || 24;
-    const targetHeight = Math.max(0, termRows - 3);
-
-    return this.renderBoxed(contentLines, this.buildFooterZone(innerWidth), topLine, width, targetHeight);
+    // Same as stacked: natural content height, grows up from footer as needed.
+    return this.renderBoxed(contentLines, this.buildFooterZone(innerWidth), topLine, width);
   }
 
   // ── Footer Zone (shared by stacked + wide layouts) ────────────

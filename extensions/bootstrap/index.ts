@@ -10,6 +10,8 @@
  *   /bootstrap          — Run interactive setup (install missing deps + profile)
  *   /bootstrap status   — Show dependency checklist without installing
  *   /bootstrap install  — Install all missing core + recommended deps
+ *   /update-pi          — Update pi binary to latest @cwilson613/pi-coding-agent release
+ *   /update-pi --dry-run — Check for update without installing
  *
  * Guards:
  *   - First-run detection via ~/.pi/agent/pi-kit-bootstrap-done marker
@@ -366,6 +368,101 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			await interactiveSetup(pi, cmdCtx);
+		},
+	});
+
+	// --- /update-pi: update the pi binary from the cwilson613 fork ---
+	// Pulls the latest @cwilson613/pi-coding-agent from npm and relaunches.
+	// Useful after a new patch is published without leaving pi.
+	pi.registerCommand("update-pi", {
+		description: "Update the pi binary to the latest @cwilson613/pi-coding-agent release",
+		handler: async (args, ctx) => {
+			const dryRun = args.trim() === "--dry-run";
+			const PKG = "@cwilson613/pi-coding-agent";
+
+			// Resolve the npm registry latest
+			ctx.ui.notify(`Checking latest version of ${PKG}…`, "info");
+			let latestVersion: string;
+			try {
+				latestVersion = await new Promise<string>((resolve, reject) => {
+					let out = "";
+					const child = spawn("npm", ["view", PKG, "version", "--json"], {
+						stdio: ["ignore", "pipe", "pipe"],
+					});
+					child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+					child.on("close", (code: number) => {
+						if (code !== 0) return reject(new Error("npm view failed"));
+						resolve(JSON.parse(out.trim()));
+					});
+				});
+			} catch {
+				ctx.ui.notify(`Failed to query npm registry. Are you online?`, "warning");
+				return;
+			}
+
+			// Determine installed version
+			let installedVersion = "unknown";
+			try {
+				installedVersion = await new Promise<string>((resolve) => {
+					let out = "";
+					const child = spawn("npm", ["list", "-g", PKG, "--json", "--depth=0"], {
+						stdio: ["ignore", "pipe", "pipe"],
+					});
+					child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+					child.on("close", () => {
+						try {
+							const data = JSON.parse(out);
+							resolve(data.dependencies?.[PKG]?.version ?? "unknown");
+						} catch {
+							resolve("unknown");
+						}
+					});
+				});
+			} catch { /* ignore */ }
+
+			if (installedVersion === latestVersion) {
+				ctx.ui.notify(`Already on latest: ${PKG}@${latestVersion} ✅`, "info");
+				return;
+			}
+
+			ctx.ui.notify(
+				`Update available: ${installedVersion} → ${latestVersion}\n` +
+				(dryRun ? "(dry run — not installing)" : "Installing…"),
+				"info"
+			);
+
+			if (dryRun) return;
+
+			const confirmed = await ctx.ui.confirm(
+				"Update pi binary?",
+				`Install ${PKG}@${latestVersion} globally via npm?\n\nThis will replace the currently running binary. Restart pi after the update completes.`
+			);
+			if (!confirmed) {
+				ctx.ui.notify("Update cancelled.", "info");
+				return;
+			}
+
+			await new Promise<void>((resolve, reject) => {
+				let stderr = "";
+				const child = spawn("npm", ["install", "-g", `${PKG}@${latestVersion}`], {
+					stdio: ["ignore", "pipe", "pipe"],
+				});
+				child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+				child.on("close", (code: number) => {
+					if (code !== 0) {
+						ctx.ui.notify(`npm install failed:\n${stderr}`, "warning");
+						reject(new Error("install failed"));
+					} else {
+						resolve();
+					}
+				});
+			}).catch(() => { /* error already notified */ return; });
+
+			ctx.ui.notify(
+				`✅ Updated to ${PKG}@${latestVersion}.\n` +
+				"Restart pi to use the new version (/exit, then pi).",
+				"info"
+			);
 		},
 	});
 

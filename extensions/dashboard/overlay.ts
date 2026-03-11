@@ -59,6 +59,8 @@ export class DashboardOverlay {
 
   /** Event unsubscribe handle for live refresh. */
   private unsubscribe: (() => void) | null = null;
+  /** Interval handle for the 1-second elapsed ticker while children are running. */
+  private tickerInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(tui: TUI, theme: Theme, done: (result: void) => void) {
     this.tui = tui;
@@ -71,8 +73,40 @@ export class DashboardOverlay {
   setEventBus(events: { on(event: string, handler: (data: unknown) => void): () => void }): void {
     this.unsubscribe = events.on(DASHBOARD_UPDATE_EVENT, () => {
       this.rebuild();
+      this.syncTicker();
       this.tui.requestRender();
     });
+  }
+
+  /**
+   * Start or stop the 1-second ticker based on whether any children are running.
+   * The ticker drives the live elapsed counter without needing a shared-state event.
+   */
+  private syncTicker(): void {
+    const { sharedState } = require("../shared-state.ts");
+    const cl = sharedState.cleave;
+    const anyRunning = cl?.children?.some((c: { status: string }) => c.status === "running") ?? false;
+
+    if (anyRunning && !this.tickerInterval) {
+      this.tickerInterval = setInterval(() => {
+        // Only re-render if we're on the cleave tab and still have running children
+        const cl2 = sharedState.cleave;
+        if (cl2?.children?.some((c: { status: string }) => c.status === "running")) {
+          this.tui.requestRender();
+        } else {
+          this.stopTicker();
+        }
+      }, 1_000);
+    } else if (!anyRunning) {
+      this.stopTicker();
+    }
+  }
+
+  private stopTicker(): void {
+    if (this.tickerInterval !== null) {
+      clearInterval(this.tickerInterval);
+      this.tickerInterval = null;
+    }
   }
 
   private selectFirstOpenableItem(): void {
@@ -305,6 +339,7 @@ export class DashboardOverlay {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    this.stopTicker();
   }
 }
 

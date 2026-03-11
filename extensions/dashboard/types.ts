@@ -70,6 +70,10 @@ export interface CleaveChildState {
   label: string;
   status: "pending" | "running" | "done" | "failed";
   elapsed?: number;
+  /** Epoch ms when the child transitioned to "running". Used for live elapsed calculation. */
+  startedAt?: number;
+  /** Last meaningful stdout line from the child process. Updated ~500ms while running. */
+  lastLine?: string;
 }
 
 export interface CleaveState {

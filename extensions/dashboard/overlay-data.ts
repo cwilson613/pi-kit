@@ -280,33 +280,51 @@ export function buildCleaveItems(
 
     for (const child of cl.children) {
       const key = `cl-child-${child.label}`;
-      const hasElapsed = child.elapsed !== undefined;
+      const isRunning = child.status === "running";
+      const hasDoneElapsed = child.elapsed !== undefined && !isRunning;
+      // Running children: compute live elapsed from startedAt; done: use stored elapsed
+      const liveElapsedSec = isRunning && child.startedAt
+        ? Math.round((Date.now() - child.startedAt) / 1000)
+        : (child.elapsed ?? 0);
+      const fmtSecs = (secs: number) => {
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+      };
 
       items.push({
         key,
         depth: 0,
-        expandable: hasElapsed,
+        expandable: hasDoneElapsed,
         lines: (th) => {
           const icon = child.status === "done" ? th("success", "✓")
             : child.status === "failed" ? th("error", "✕")
             : child.status === "running" ? th("warning", "⟳")
             : th("dim", "○");
-          return [`${icon} ${child.label}`];
+          const elapsedBadge = isRunning
+            ? th("dim", ` ${fmtSecs(liveElapsedSec)}`)
+            : "";
+          return [`${icon} ${child.label}${elapsedBadge}`];
         },
       });
 
-      if (hasElapsed && expandedKeys.has(key)) {
+      // Running: show lastLine inline (always visible, no expand needed)
+      if (isRunning && child.lastLine) {
+        items.push({
+          key: `cl-activity-${child.label}`,
+          depth: 1,
+          expandable: false,
+          lines: (th) => [th("dim", child.lastLine!.slice(0, 72))],
+        });
+      }
+
+      // Done: show elapsed when expanded
+      if (hasDoneElapsed && expandedKeys.has(key)) {
         items.push({
           key: `cl-elapsed-${child.label}`,
           depth: 1,
           expandable: false,
-          lines: (th) => {
-            const secs = child.elapsed ?? 0;
-            const m = Math.floor(secs / 60);
-            const s = Math.round(secs % 60);
-            const elapsed = m > 0 ? `${m}m ${s}s` : `${s}s`;
-            return [th("dim", `elapsed: ${elapsed}`)];
-          },
+          lines: (th) => [th("dim", `elapsed: ${fmtSecs(child.elapsed!)}`)],
         });
       }
     }

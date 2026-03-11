@@ -81,7 +81,7 @@ export function resolveModelIdForTier(
 export function emitCleaveChildProgress(
 	pi: Pick<ExtensionAPI, "events">,
 	childId: number,
-	patch: { status?: "pending" | "running" | "done" | "failed"; elapsed?: number },
+	patch: { status?: "pending" | "running" | "done" | "failed"; elapsed?: number; startedAt?: number; lastLine?: string },
 ): void {
 	const cleaveState = (sharedState as any).cleave;
 	if (!cleaveState?.children?.[childId]) return;
@@ -90,6 +90,12 @@ export function emitCleaveChildProgress(
 	}
 	if (patch.elapsed !== undefined) {
 		cleaveState.children[childId].elapsed = patch.elapsed;
+	}
+	if (patch.startedAt !== undefined) {
+		cleaveState.children[childId].startedAt = patch.startedAt;
+	}
+	if (patch.lastLine !== undefined) {
+		cleaveState.children[childId].lastLine = patch.lastLine;
 	}
 	cleaveState.updatedAt = Date.now();
 	pi.events.emit(DASHBOARD_UPDATE_EVENT, { source: "cleave", childId, patch });
@@ -318,12 +324,42 @@ interface ChildResult {
  * Uses `pi -p --no-session` for non-interactive execution.
  * The prompt is passed via stdin.
  */
+/**
+ * Decide whether a raw stdout line from a child pi process is meaningful
+ * enough to show as a live status update.
+ *
+ * pi -p --no-session output includes JSON tool-call records, blank separators,
+ * and short metadata lines — these are noisy.  We keep only lines that look
+ * like human-readable prose or file-action descriptions.
+ */
+function isChildStatusLine(raw: string): boolean {
+	const s = raw.trim();
+	if (s.length < 12) return false;
+	// JSON objects / arrays — tool call records
+	if (s.startsWith("{") || s.startsWith("[")) return false;
+	// ANSI / box-drawing heavy lines (progress bars, borders)
+	// eslint-disable-next-line no-control-regex
+	if (/\x1b\[/.test(s)) return false;
+	// Separator / divider lines
+	if (/^[-─═━=*#>|]+\s*$/.test(s)) return false;
+	// Very long lines are likely encoded / binary data
+	if (s.length > 240) return false;
+	return true;
+}
+
+/** Strip ANSI codes from a line for display in the dashboard. */
+function stripAnsiForStatus(s: string): string {
+	// eslint-disable-next-line no-control-regex
+	return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+}
+
 async function spawnChild(
 	prompt: string,
 	cwd: string,
 	timeoutMs: number,
 	signal?: AbortSignal,
 	localModel?: string,
+	onLine?: (line: string) => void,
 ): Promise<ChildResult> {
 	const args = ["-p", "--no-session"];
 	if (localModel) {
@@ -351,7 +387,21 @@ async function spawnChild(
 			proc.stdin.end();
 		}
 
-		proc.stdout?.on("data", (data) => { stdout += data.toString(); });
+		let lineBuf = "";
+		proc.stdout?.on("data", (data: Buffer) => {
+			const chunk = data.toString();
+			stdout += chunk;
+			if (onLine) {
+				// Parse line by line and forward meaningful lines
+				lineBuf += chunk;
+				const parts = lineBuf.split("\n");
+				lineBuf = parts.pop() ?? "";
+				for (const part of parts) {
+					const clean = stripAnsiForStatus(part);
+					if (isChildStatusLine(clean)) onLine(clean);
+				}
+			}
+		});
 		proc.stderr?.on("data", (data) => { stderr += data.toString(); });
 
 		// Timeout enforcement
@@ -584,9 +634,34 @@ async function dispatchSingleChild(
 
 	child.status = "running";
 	child.startedAt = new Date().toISOString();
+	const startedAtMs = Date.now();
 
-	// Mirror to sharedState for live dashboard updates
-	emitCleaveChildProgress(pi, child.childId, { status: "running" });
+	// Mirror to sharedState for live dashboard updates (include startedAt for elapsed ticker)
+	emitCleaveChildProgress(pi, child.childId, { status: "running", startedAt: startedAtMs });
+
+	// Debounced last-line emitter: buffers stdout lines and pushes to shared
+	// state at most once per 500ms to avoid flooding the event bus.
+	let pendingLine: string | undefined;
+	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	const flushLine = () => {
+		if (pendingLine !== undefined) {
+			emitCleaveChildProgress(pi, child.childId, { lastLine: pendingLine });
+			pendingLine = undefined;
+		}
+	};
+	const onChildLine = (line: string) => {
+		pendingLine = line;
+		if (!debounceTimer) {
+			debounceTimer = setTimeout(() => {
+				debounceTimer = undefined;
+				flushLine();
+			}, 500);
+		}
+	};
+	const stopDebounce = () => {
+		clearTimeout(debounceTimer);
+		debounceTimer = undefined;
+	};
 
 	// Resolve an explicit model ID for this child using the shared resolver.
 	// This replaces the old mapModelTierToFlag() fuzzy-alias approach.
@@ -628,11 +703,13 @@ async function dispatchSingleChild(
 	// Build executor adapter for the review loop
 	const executor: ReviewExecutor = {
 		execute: async (execPrompt: string, execCwd: string, execModelFlag?: string) => {
-			return spawnChild(execPrompt, execCwd, timeoutMs, signal, execModelFlag);
+			return spawnChild(execPrompt, execCwd, timeoutMs, signal, execModelFlag, onChildLine);
 		},
 		review: async (reviewPrompt: string, reviewCwd: string) => {
 			// Reviews always use opus (D4: highest available tier) — resolve to explicit ID
 			const reviewModelId = resolveModelIdForTier("opus", registryModels, activePolicy, localModel);
+			// Review runs don't stream lastLine — they're short and we don't want
+			// review commentary to overwrite the last execution status line.
 			return spawnChild(reviewPrompt, reviewCwd, timeoutMs, signal, reviewModelId);
 		},
 		readFile: (path: string) => readFileSync(path, "utf-8"),
@@ -649,6 +726,9 @@ async function dispatchSingleChild(
 		effectiveReviewConfig,
 		modelFlag,
 	);
+
+	// Stop the debounce timer — child process is done
+	stopDebounce();
 
 	// Use the initial execution result for status determination
 	const result = reviewResult.executeResult;

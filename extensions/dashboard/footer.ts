@@ -266,13 +266,19 @@ export class DashboardFooter implements Component {
       } else if (cl.status === "failed") {
         dashParts.push({ text: theme.fg("error", "⚡ fail") });
       } else {
-        // Active dispatch — show child progress at wide widths
+        // Active dispatch — show child progress + lastLine activity hint
         if (wide && cl.children && cl.children.length > 0) {
           const done = cl.children.filter(c => c.status === "done").length;
           const running = cl.children.filter(c => c.status === "running").length;
+          // Show the last active line from whichever running child has one
+          const activeChild = cl.children.find(c => c.status === "running" && c.lastLine);
+          const activityHint = activeChild?.lastLine
+            ? theme.fg("dim", `  ${activeChild.lastLine.slice(0, 40)}…`)
+            : "";
           dashParts.push({
             text: theme.fg("warning", `⚡ ${cl.status}`) +
-              theme.fg("dim", ` ${done}✓ ${running}⟳ /${cl.children.length}`),
+              theme.fg("dim", ` ${done}✓ ${running}⟳ /${cl.children.length}`) +
+              activityHint,
           });
         } else {
           dashParts.push({ text: theme.fg("warning", `⚡ ${cl.status}`) });

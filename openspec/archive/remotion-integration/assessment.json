@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "changeName": "remotion-integration",
+  "assessmentKind": "cleave",
+  "outcome": "pass",
+  "timestamp": "2026-03-12T02:18:42.292Z",
+  "summary": "All tasks complete. Lifecycle artifacts current. Ready to archive.",
+  "snapshot": {
+    "gitHead": "2541f6916a86383c9fd5d9e3e29c982008b2fc23",
+    "fingerprint": "b628f6b2e35210094a09c499d7c760fc18ef84a518221373b5bfd1b806d77f01",
+    "dirty": false,
+    "scopedPaths": [
+      "extensions/render/composition/fonts/Inter-Bold.ttf",
+      "extensions/render/composition/fonts/Inter-Regular.ttf",
+      "extensions/render/composition/fonts/Tomorrow-Bold.ttf",
+      "extensions/render/composition/fonts/Tomorrow-Regular.ttf",
+      "extensions/render/composition/package.json",
+      "extensions/render/composition/render.mjs",
+      "extensions/render/composition/tsconfig.json",
+      "extensions/render/composition/types.ts",
+      "extensions/render/index.ts",
+      "extensions/render/remotion/package.json",
+      "extensions/render/remotion/render.mjs"
+    ],
+    "files": [
+      {
+        "path": "extensions/render/composition/fonts/Inter-Bold.ttf",
+        "exists": true,
+        "size": 415072,
+        "sha256": "0cb1bc1335372d9e3a0cf6f5311c7cce87af90d2a777fdeec18be605a2a70bc1"
+      },
+      {
+        "path": "extensions/render/composition/fonts/Inter-Regular.ttf",
+        "exists": true,
+        "size": 407056,
+        "sha256": "64f8be6e55c37e32ef03da99714bf3aa58b8f2099bfe4f759a7578e3b8291123"
+      },
+      {
+        "path": "extensions/render/composition/fonts/Tomorrow-Bold.ttf",
+        "exists": true,
+        "size": 20892,
+        "sha256": "396d103f84d1b172c117442551c7e37cc77062286e5a7447b975fb044482c048"
+      },
+      {
+        "path": "extensions/render/composition/fonts/Tomorrow-Regular.ttf",
+        "exists": true,
+        "size": 21240,
+        "sha256": "4e927331af38c77d84f7769a6674c44600c02a8048cde89d5f48af2799f226b8"
+      },
+      {
+        "path": "extensions/render/composition/package.json",
+        "exists": true,
+        "size": 584,
+        "sha256": "d6d4197970bda45b5a98222e88bc8b0aa0e2a19e57be883f9e02c2339a44ed95"
+      },
+      {
+        "path": "extensions/render/composition/render.mjs",
+        "exists": true,
+        "size": 8815,
+        "sha256": "681e96ff24fdbd82d8279e04cf488dc8784d9c06eed176da3c2f3339e879a6ac"
+      },
+      {
+        "path": "extensions/render/composition/tsconfig.json",
+        "exists": false,
+        "size": 0,
+        "sha256": null
+      },
+      {
+        "path": "extensions/render/composition/types.ts",
+        "exists": true,
+        "size": 723,
+        "sha256": "42d68bd8091e8cb3bc4e99f311dfbaec8bd7340555b24de707852f3d2e505f76"
+      },
+      {
+        "path": "extensions/render/index.ts",
+        "exists": true,
+        "size": 35522,
+        "sha256": "9c917849a54dd878731b2f0c338993f275934c5500a6bd0959f48b4eb15e5671"
+      },
+      {
+        "path": "extensions/render/remotion/package.json",
+        "exists": false,
+        "size": 0,
+        "sha256": null
+      },
+      {
+        "path": "extensions/render/remotion/render.mjs",
+        "exists": false,
+        "size": 0,
+        "sha256": null
+      },
+      {
+        "path": "openspec/changes/remotion-integration/design.md",
+        "exists": true,
+        "size": 11306,
+        "sha256": "b275316b87085d1ceaecf1a879ea76333b7aa4d8cf8602e0af091a7a6e53781a"
+      },
+      {
+        "path": "openspec/changes/remotion-integration/proposal.md",
+        "exists": true,
+        "size": 443,
+        "sha256": "c0aad7696753c71aeacabf1b5dbf1b52b774a1690d9f418f4380329e1f72ceeb"
+      },
+      {
+        "path": "openspec/changes/remotion-integration/tasks.md",
+        "exists": true,
+        "size": 4053,
+        "sha256": "d26459939a2b5ae0c097b45ddf85282ef54ba692e2ba60d6ce42dd5cca8f8d97"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "openspec/changes/remotion-integration/proposal.md"
+    ],
+    "constraints": [],
+    "recommendedAction": null
+  }
+}

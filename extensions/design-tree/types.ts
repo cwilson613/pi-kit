@@ -50,6 +50,34 @@ export interface FileScope {
 	action?: "new" | "modified" | "deleted";
 }
 
+// ─── Acceptance Criteria ─────────────────────────────────────────────────────
+
+/** A Given/When/Then scenario from ## Acceptance Criteria → ### Scenarios */
+export interface AcceptanceCriteriaScenario {
+	title: string;
+	given: string;
+	when: string;
+	then: string;
+}
+
+/** A falsifiability condition from ## Acceptance Criteria → ### Falsifiability */
+export interface AcceptanceCriteriaFalsifiability {
+	condition: string;
+}
+
+/** A checkbox constraint from ## Acceptance Criteria → ### Constraints */
+export interface AcceptanceCriteriaConstraint {
+	text: string;
+	checked: boolean;
+}
+
+/** Parsed ## Acceptance Criteria section */
+export interface AcceptanceCriteria {
+	scenarios: AcceptanceCriteriaScenario[];
+	falsifiability: AcceptanceCriteriaFalsifiability[];
+	constraints: AcceptanceCriteriaConstraint[];
+}
+
 /** Parsed structured sections from the document body */
 export interface DocumentSections {
 	overview: string;
@@ -61,6 +89,7 @@ export interface DocumentSections {
 		constraints: string[];
 		rawContent: string;
 	};
+	acceptanceCriteria: AcceptanceCriteria;
 	/** Any content not in a recognized section */
 	extraSections: Array<{ heading: string; content: string }>;
 }
@@ -130,4 +159,5 @@ export const SECTION_HEADINGS = {
 	decisions: "## Decisions",
 	openQuestions: "## Open Questions",
 	implementationNotes: "## Implementation Notes",
+	acceptanceCriteria: "## Acceptance Criteria",
 } as const;

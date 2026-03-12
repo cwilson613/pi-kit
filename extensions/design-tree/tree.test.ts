@@ -787,6 +787,7 @@ describe("file scope action parsing", () => {
 					constraints: [],
 					rawContent: "",
 				},
+				acceptanceCriteria: { scenarios: [], falsifiability: [], constraints: [] },
 				extraSections: [],
 			}),
 		);
@@ -1626,5 +1627,138 @@ describe("priority and issue_type frontmatter round-trip", () => {
 		const node = tree.nodes.get("rt-8")!;
 		assert.equal(node.priority, 2, "priority should be 2 (not NaN from inline comment)");
 		assert.equal(node.issue_type, "feature");
+	});
+});
+
+// ─── Acceptance Criteria Tests ────────────────────────────────────────────────
+
+describe("parseSections — acceptanceCriteria", () => {
+	it("parses ### Scenarios with Given/When/Then blocks", () => {
+		const body = `# Node
+
+## Overview
+
+Some overview.
+
+## Acceptance Criteria
+
+### Scenarios
+
+**Given** the user is authenticated
+**When** they call design_tree with action='node'
+**Then** acceptanceCriteria is returned in the sections field
+`;
+		const sections = parseSections(body);
+		assert.equal(sections.acceptanceCriteria.scenarios.length, 1);
+		const s = sections.acceptanceCriteria.scenarios[0];
+		assert.equal(s.given, "the user is authenticated");
+		assert.equal(s.when, "they call design_tree with action='node'");
+		assert.equal(s.then, "acceptanceCriteria is returned in the sections field");
+	});
+
+	it("parses multiple scenarios with #### headings", () => {
+		const body = `# Node
+
+## Acceptance Criteria
+
+### Scenarios
+
+#### Happy path
+**Given** a decided node with acceptance criteria
+**When** design_tree action=list is called
+**Then** acceptance_criteria_summary is non-null
+
+#### Missing section
+**Given** a node without acceptance criteria
+**When** design_tree action=list is called
+**Then** acceptance_criteria_summary is null
+`;
+		const sections = parseSections(body);
+		assert.equal(sections.acceptanceCriteria.scenarios.length, 2);
+		assert.equal(sections.acceptanceCriteria.scenarios[0].title, "Happy path");
+		assert.equal(sections.acceptanceCriteria.scenarios[1].title, "Missing section");
+		assert.equal(sections.acceptanceCriteria.scenarios[1].given, "a node without acceptance criteria");
+	});
+
+	it("parses ### Falsifiability bullet list stripping prefix", () => {
+		const body = `# Node
+
+## Acceptance Criteria
+
+### Falsifiability
+
+- This decision is wrong if: parser returns empty scenarios for valid GWT blocks
+- This decision is wrong if: constraints are lost on round-trip
+- bare condition without prefix
+`;
+		const sections = parseSections(body);
+		const f = sections.acceptanceCriteria.falsifiability;
+		assert.equal(f.length, 3);
+		assert.equal(f[0].condition, "parser returns empty scenarios for valid GWT blocks");
+		assert.equal(f[1].condition, "constraints are lost on round-trip");
+		assert.equal(f[2].condition, "bare condition without prefix");
+	});
+
+	it("parses ### Constraints GFM checkboxes", () => {
+		const body = `# Node
+
+## Acceptance Criteria
+
+### Constraints
+
+- [ ] Must not break existing parseSections callers
+- [x] acceptanceCriteria field added to DocumentSections
+- [ ] generateBody round-trips acceptanceCriteria without data loss
+`;
+		const sections = parseSections(body);
+		const c = sections.acceptanceCriteria.constraints;
+		assert.equal(c.length, 3);
+		assert.equal(c[0].checked, false);
+		assert.equal(c[0].text, "Must not break existing parseSections callers");
+		assert.equal(c[1].checked, true);
+		assert.equal(c[1].text, "acceptanceCriteria field added to DocumentSections");
+		assert.equal(c[2].checked, false);
+	});
+
+	it("returns empty acceptanceCriteria when section is absent", () => {
+		const body = `# Node
+
+## Overview
+
+No acceptance criteria here.
+`;
+		const sections = parseSections(body);
+		assert.equal(sections.acceptanceCriteria.scenarios.length, 0);
+		assert.equal(sections.acceptanceCriteria.falsifiability.length, 0);
+		assert.equal(sections.acceptanceCriteria.constraints.length, 0);
+	});
+
+	it("round-trips acceptanceCriteria through generateBody → parseSections", () => {
+		const original: import("./types.ts").DocumentSections = {
+			overview: "Test node",
+			research: [],
+			decisions: [],
+			openQuestions: [],
+			implementationNotes: { fileScope: [], constraints: [], rawContent: "" },
+			acceptanceCriteria: {
+				scenarios: [{ title: "Basic flow", given: "a node", when: "queried", then: "criteria returned" }],
+				falsifiability: [{ condition: "criteria are dropped" }],
+				constraints: [
+					{ checked: false, text: "Type checks pass" },
+					{ checked: true, text: "Tests added" },
+				],
+			},
+			extraSections: [],
+		};
+		const body = generateBody("Round-trip Test", original);
+		const parsed = parseSections(body);
+
+		assert.equal(parsed.acceptanceCriteria.scenarios.length, 1);
+		assert.equal(parsed.acceptanceCriteria.scenarios[0].given, "a node");
+		assert.equal(parsed.acceptanceCriteria.falsifiability.length, 1);
+		assert.equal(parsed.acceptanceCriteria.falsifiability[0].condition, "criteria are dropped");
+		assert.equal(parsed.acceptanceCriteria.constraints.length, 2);
+		assert.equal(parsed.acceptanceCriteria.constraints[0].checked, false);
+		assert.equal(parsed.acceptanceCriteria.constraints[1].checked, true);
 	});
 });

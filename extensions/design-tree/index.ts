@@ -268,6 +268,21 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							openspec_change: n.openspec_change ?? null,
 							priority: n.priority ?? null,
 							issue_type: n.issue_type ?? null,
+							acceptance_criteria_summary: (() => {
+								try {
+									const s = getNodeSections(n);
+									const ac = s.acceptanceCriteria;
+									const total = ac.scenarios.length + ac.falsifiability.length + ac.constraints.length;
+									if (total === 0) return null;
+									return {
+										scenarios: ac.scenarios.length,
+										falsifiability: ac.falsifiability.length,
+										constraints: ac.constraints.length,
+									};
+								} catch {
+									return null;
+								}
+							})(),
 							lifecycle: {
 								// Normalized binding status from canonical resolver when available.
 								// The fallback (binding.bound ? "bound" : "unbound") is an explicit safety
@@ -323,6 +338,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 								fileScope: sections.implementationNotes.fileScope,
 								constraints: sections.implementationNotes.constraints,
 							},
+							acceptanceCriteria: sections.acceptanceCriteria,
 							extraSections: sections.extraSections.map((s) => s.heading),
 						},
 						lifecycle: {

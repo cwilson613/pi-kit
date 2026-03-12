@@ -72,7 +72,11 @@ export function parseFrontmatter(content: string): Record<string, unknown> | nul
 					.map((s) => s.trim().replace(/^["']|["']$/g, ""))
 					.filter(Boolean);
 			} else {
-				result[key] = value.replace(/^["'](.*)["']$/, "$1");
+				// Strip inline YAML comments (# ...) unless value is quoted
+				const stripped = /^["']/.test(value)
+					? value.replace(/^["'](.*)["']$/, "$1")
+					: value.replace(/\s+#.*$/, "").trim();
+				result[key] = stripped;
 			}
 		}
 	}
@@ -447,7 +451,8 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 					? (rawIssueType as IssueType)
 					: undefined;
 
-			const rawPriority = fm.priority !== undefined ? Number(fm.priority) : undefined;
+			// parseInt handles both numeric strings ("3") and quoted strings — explicit radix avoids octal ambiguity
+			const rawPriority = fm.priority !== undefined ? parseInt(String(fm.priority), 10) : undefined;
 			const priority: Priority | undefined =
 				rawPriority !== undefined && rawPriority >= 1 && rawPriority <= 5
 					? (rawPriority as Priority)

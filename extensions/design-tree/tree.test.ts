@@ -41,7 +41,14 @@ import {
 	writeNodeDocument,
 } from "./tree.ts";
 
-import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS, type DesignNode } from "./types.ts";
+import {
+	VALID_STATUSES,
+	STATUS_ICONS,
+	STATUS_COLORS,
+	ISSUE_TYPE_ICONS,
+	PRIORITY_LABELS,
+	type DesignNode,
+} from "./types.ts";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -1557,12 +1564,67 @@ describe("priority and issue_type frontmatter round-trip", () => {
 		assert.ok(content.includes("priority: 3"));
 	});
 
-	it("ISSUE_TYPE_ICONS and PRIORITY_LABELS are exported from types", async () => {
-		const types = await import("./types.ts");
-		assert.ok(types.ISSUE_TYPE_ICONS, "ISSUE_TYPE_ICONS should be exported");
-		assert.ok(types.PRIORITY_LABELS, "PRIORITY_LABELS should be exported");
-		assert.equal(types.ISSUE_TYPE_ICONS["epic"], "⬡");
-		assert.equal(types.PRIORITY_LABELS[1], "critical");
-		assert.equal(types.PRIORITY_LABELS[5], "trivial");
+	it("ISSUE_TYPE_ICONS and PRIORITY_LABELS are exported from types with expected values", () => {
+		assert.ok(ISSUE_TYPE_ICONS, "ISSUE_TYPE_ICONS should be exported");
+		assert.ok(PRIORITY_LABELS, "PRIORITY_LABELS should be exported");
+		assert.equal(ISSUE_TYPE_ICONS["epic"], "⬡");
+		assert.equal(PRIORITY_LABELS[1], "critical");
+		assert.equal(PRIORITY_LABELS[5], "trivial");
+	});
+
+	it("parseFrontmatter strips inline YAML comments from priority and issue_type", () => {
+		// W3: a line like `priority: 3 # comment` must not produce NaN
+		const content = [
+			"---",
+			"id: rt-7",
+			"title: Comment Test",
+			"status: seed",
+			"dependencies: []",
+			"related: []",
+			"tags: []",
+			"open_questions: []",
+			"branches: []",
+			"priority: 3 # high-ish",
+			"issue_type: bug # tracked in jira",
+			"---",
+			"# Comment Test",
+			"",
+			"## Overview",
+			"",
+			"test.",
+		].join("\n");
+		const fm = parseFrontmatter(content);
+		assert.ok(fm, "should parse frontmatter");
+		assert.equal(fm!.priority, "3", "priority should be the bare string '3', not '3 # high-ish'");
+		assert.equal(fm!.issue_type, "bug", "issue_type should be bare 'bug'");
+	});
+
+	it("scanDesignDocs correctly parses priority with inline comment", () => {
+		const docsDir = path.join(tmpDir, "docs-inline-comment");
+		fs.mkdirSync(docsDir, { recursive: true });
+		const content = [
+			"---",
+			"id: rt-8",
+			"title: Inline Comment Node",
+			"status: seed",
+			"dependencies: []",
+			"related: []",
+			"tags: []",
+			"open_questions: []",
+			"branches: []",
+			"priority: 2 # medium",
+			"issue_type: feature # new feature",
+			"---",
+			"# Inline Comment Node",
+			"",
+			"## Overview",
+			"",
+			"test.",
+		].join("\n");
+		fs.writeFileSync(path.join(docsDir, "rt-8.md"), content);
+		const tree = scanDesignDocs(docsDir);
+		const node = tree.nodes.get("rt-8")!;
+		assert.equal(node.priority, 2, "priority should be 2 (not NaN from inline comment)");
+		assert.equal(node.issue_type, "feature");
 	});
 });

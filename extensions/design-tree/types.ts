@@ -65,6 +65,32 @@ export interface DocumentSections {
 	extraSections: Array<{ heading: string; content: string }>;
 }
 
+// ─── Issue Type ──────────────────────────────────────────────────────────────
+
+export type IssueType = "epic" | "feature" | "task" | "bug" | "chore";
+
+export const VALID_ISSUE_TYPES: IssueType[] = ["epic", "feature", "task", "bug", "chore"];
+
+export const ISSUE_TYPE_ICONS: Record<IssueType, string> = {
+	epic: "⬡",
+	feature: "★",
+	task: "◻",
+	bug: "✖",
+	chore: "⟳",
+};
+
+// ─── Priority ────────────────────────────────────────────────────────────────
+
+export type Priority = 1 | 2 | 3 | 4 | 5;
+
+export const PRIORITY_LABELS: Record<Priority, string> = {
+	1: "critical",
+	2: "high",
+	3: "medium",
+	4: "low",
+	5: "trivial",
+};
+
 // ─── Design Node ─────────────────────────────────────────────────────────────
 
 export interface DesignNode {
@@ -83,6 +109,10 @@ export interface DesignNode {
 	branches: string[];
 	/** OpenSpec change name linked to this node */
 	openspec_change?: string;
+	/** Issue type classification (epic/feature/task/bug/chore) */
+	issue_type?: IssueType;
+	/** Priority from 1 (critical) to 5 (trivial) */
+	priority?: Priority;
 	filePath: string;
 	lastModified: number;
 }

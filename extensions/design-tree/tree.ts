@@ -13,10 +13,12 @@ import type {
 	DesignDecision,
 	DocumentSections,
 	FileScope,
+	IssueType,
 	NodeStatus,
+	Priority,
 	ResearchEntry,
 } from "./types.ts";
-import { VALID_STATUSES, SECTION_HEADINGS } from "./types.ts";
+import { VALID_ISSUE_TYPES, VALID_STATUSES, SECTION_HEADINGS } from "./types.ts";
 
 // ─── Frontmatter Parsing ─────────────────────────────────────────────────────
 
@@ -123,6 +125,12 @@ export function generateFrontmatter(node: Omit<DesignNode, "filePath" | "lastMod
 	}
 	if (node.openspec_change) {
 		fm += `openspec_change: ${node.openspec_change}\n`;
+	}
+	if (node.issue_type) {
+		fm += `issue_type: ${node.issue_type}\n`;
+	}
+	if (node.priority !== undefined) {
+		fm += `priority: ${node.priority}\n`;
 	}
 	fm += "---\n";
 	return fm;
@@ -433,6 +441,18 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 				}
 			}
 
+			const rawIssueType = fm.issue_type as string | undefined;
+			const issue_type: IssueType | undefined =
+				rawIssueType && VALID_ISSUE_TYPES.includes(rawIssueType as IssueType)
+					? (rawIssueType as IssueType)
+					: undefined;
+
+			const rawPriority = fm.priority !== undefined ? Number(fm.priority) : undefined;
+			const priority: Priority | undefined =
+				rawPriority !== undefined && rawPriority >= 1 && rawPriority <= 5
+					? (rawPriority as Priority)
+					: undefined;
+
 			const node: DesignNode = {
 				id: fm.id as string,
 				title: (fm.title as string) || file.replace(".md", ""),
@@ -445,6 +465,8 @@ export function scanDesignDocs(docsDir: string): DesignTree {
 				branch: validatedBranch,
 				branches: (fm.branches as string[]) || [],
 				openspec_change: fm.openspec_change as string | undefined,
+				issue_type,
+				priority,
 				filePath,
 				lastModified: fs.statSync(filePath).mtimeMs,
 			};
@@ -519,6 +541,8 @@ export function createNode(
 		status?: NodeStatus;
 		tags?: string[];
 		overview?: string;
+		issue_type?: IssueType;
+		priority?: Priority;
 		spawnedFrom?: { parentTitle: string; parentFile: string; question: string };
 	},
 ): DesignNode {
@@ -540,6 +564,8 @@ export function createNode(
 		open_questions: [],
 		branch: undefined,
 		branches: [],
+		issue_type: opts.issue_type,
+		priority: opts.priority,
 	};
 
 	const sections: DocumentSections = {

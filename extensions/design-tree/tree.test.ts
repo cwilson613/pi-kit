@@ -1462,3 +1462,107 @@ describe("transitionDesignNodesOnArchive", () => {
 		fs.rmSync(emptyDir, { recursive: true, force: true });
 	});
 });
+
+// ─── priority + issue_type round-trip tests ───────────────────────────────────
+
+describe("priority and issue_type frontmatter round-trip", () => {
+	let tmpDir: string;
+	before(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-priority-"));
+	});
+	after(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("generateFrontmatter serializes issue_type and priority", () => {
+		const node = {
+			id: "rt-1",
+			title: "Round Trip One",
+			status: "seed" as const,
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+			issue_type: "feature" as const,
+			priority: 2 as const,
+		};
+		const fm = generateFrontmatter(node);
+		assert.ok(fm.includes("issue_type: feature"), "should include issue_type");
+		assert.ok(fm.includes("priority: 2"), "should include priority");
+	});
+
+	it("generateFrontmatter omits issue_type and priority when not set", () => {
+		const node = {
+			id: "rt-2",
+			title: "Round Trip Two",
+			status: "seed" as const,
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+		};
+		const fm = generateFrontmatter(node);
+		assert.ok(!fm.includes("issue_type"), "should not include issue_type");
+		assert.ok(!fm.includes("priority"), "should not include priority");
+	});
+
+	it("scanDesignDocs parses issue_type and priority from frontmatter", () => {
+		const docsDir = path.join(tmpDir, "docs-scan");
+		const node = createNode(docsDir, {
+			id: "rt-3",
+			title: "Scan Test",
+			issue_type: "bug",
+			priority: 1,
+		});
+		// The file was written by createNode; verify scan reads it back
+		const tree = scanDesignDocs(docsDir);
+		const scanned = tree.nodes.get("rt-3")!;
+		assert.equal(scanned.issue_type, "bug");
+		assert.equal(scanned.priority, 1);
+	});
+
+	it("scanDesignDocs ignores invalid issue_type values", () => {
+		const docsDir = path.join(tmpDir, "docs-invalid");
+		fs.mkdirSync(docsDir, { recursive: true });
+		const content = `---\nid: rt-4\ntitle: Invalid Type\nstatus: seed\ndependencies: []\nrelated: []\ntags: []\nopen_questions: []\nbranches: []\nissue_type: invalid-type\n---\n# Invalid Type\n\n## Overview\n\ntest.\n`;
+		fs.writeFileSync(path.join(docsDir, "rt-4.md"), content);
+		const tree = scanDesignDocs(docsDir);
+		assert.equal(tree.nodes.get("rt-4")!.issue_type, undefined);
+	});
+
+	it("scanDesignDocs ignores out-of-range priority values", () => {
+		const docsDir = path.join(tmpDir, "docs-badpriority");
+		fs.mkdirSync(docsDir, { recursive: true });
+		const content = `---\nid: rt-5\ntitle: Bad Priority\nstatus: seed\ndependencies: []\nrelated: []\ntags: []\nopen_questions: []\nbranches: []\npriority: 9\n---\n# Bad Priority\n\n## Overview\n\ntest.\n`;
+		fs.writeFileSync(path.join(docsDir, "rt-5.md"), content);
+		const tree = scanDesignDocs(docsDir);
+		assert.equal(tree.nodes.get("rt-5")!.priority, undefined);
+	});
+
+	it("createNode accepts issue_type and priority opts", () => {
+		const docsDir = path.join(tmpDir, "docs-create");
+		const node = createNode(docsDir, {
+			id: "rt-6",
+			title: "Create With Fields",
+			issue_type: "epic",
+			priority: 3,
+		});
+		assert.equal(node.issue_type, "epic");
+		assert.equal(node.priority, 3);
+		// Verify persisted to disk
+		const content = fs.readFileSync(node.filePath, "utf-8");
+		assert.ok(content.includes("issue_type: epic"));
+		assert.ok(content.includes("priority: 3"));
+	});
+
+	it("ISSUE_TYPE_ICONS and PRIORITY_LABELS are exported from types", async () => {
+		const types = await import("./types.ts");
+		assert.ok(types.ISSUE_TYPE_ICONS, "ISSUE_TYPE_ICONS should be exported");
+		assert.ok(types.PRIORITY_LABELS, "PRIORITY_LABELS should be exported");
+		assert.equal(types.ISSUE_TYPE_ICONS["epic"], "⬡");
+		assert.equal(types.PRIORITY_LABELS[1], "critical");
+		assert.equal(types.PRIORITY_LABELS[5], "trivial");
+	});
+});

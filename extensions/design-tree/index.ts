@@ -89,6 +89,22 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		emitDesignTreeState(pi, tree, focusedNode ? tree.nodes.get(focusedNode) ?? null : null);
 	}
 
+	/**
+	 * Check whether a node's design OpenSpec is unarchived (blocking decided/implement).
+	 * Returns an error message string if blocked, or null if the gate passes.
+	 */
+	function checkDesignSpecArchiveGate(cwd: string, nodeId: string): string | null {
+		const designChangePath = path.join(cwd, "openspec", "design", nodeId);
+		const designArchivePath = path.join(cwd, "openspec", "design-archive", nodeId);
+		const designChangeExists = fs.existsSync(designChangePath) &&
+			fs.readdirSync(designChangePath).filter((f) => f.endsWith(".md")).length > 0;
+		const designArchived = fs.existsSync(designArchivePath);
+		if (designChangeExists && !designArchived) {
+			return `design OpenSpec at openspec/design/${nodeId}/ is not archived`;
+		}
+		return null;
+	}
+
 	function scheduleDocsRefresh(filePath?: string): void {
 		if (filePath && !shouldRefreshDesignTreeForPath(filePath, tree.docsDir || docsDir(process.cwd()))) {
 			return;
@@ -679,8 +695,20 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					focusedNode = params.node_id;
 					emitCurrentState();
 
+					let createText = `Created design node '${node.title}' (${node.status}) at ${node.filePath}`;
+
+					// C2: If created directly in exploring state, scaffold design OpenSpec (idempotent)
+					if (node.status === "exploring") {
+						const scaffoldResult = scaffoldDesignOpenSpecChange(ctx.cwd, node);
+						if (scaffoldResult.created) {
+							createText += `\n\nScaffolded design spec at openspec/design/${node.id}/\n` +
+								`  - proposal.md, spec.md, tasks.md\n\n` +
+								`Fill in spec.md with Given/When/Then scenarios that must be true before deciding.`;
+						}
+					}
+
 					return {
-						content: [{ type: "text", text: `Created design node '${node.title}' (${node.status}) at ${node.filePath}` }],
+						content: [{ type: "text", text: createText }],
 						details: { node: { id: node.id, title: node.title, status: node.status, filePath: node.filePath } },
 					};
 				}
@@ -699,6 +727,24 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						return { content: [{ type: "text", text: `Invalid status '${params.status}'. Valid: ${VALID_STATUSES.join(", ")}` }], details: {}, isError: true };
 					}
 					const oldStatus = node.status;
+
+					// W3: Check decided gate BEFORE writing to disk so no rollback needed
+					if (newStatus === "decided") {
+						const gateError = checkDesignSpecArchiveGate(ctx.cwd, node.id);
+						if (gateError) {
+							return {
+								content: [{
+									type: "text",
+									text: `Cannot set '${node.title}' to decided: ${gateError}.\n` +
+										`Archive the design spec first (move acceptance criteria to done, then /opsx:archive), ` +
+										`then retry set_status(decided).`,
+								}],
+								details: { id: node.id, blockedBy: "design-openspec-not-archived" },
+								isError: true,
+							};
+						}
+					}
+
 					const updated = setNodeStatus(node, newStatus);
 					tree.nodes.set(updated.id, updated);
 					emitCurrentState();
@@ -707,27 +753,11 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 
 					// If transitioning to exploring, scaffold design OpenSpec change (idempotent)
 					if (newStatus === "exploring") {
-						const result = scaffoldDesignOpenSpecChange(ctx.cwd, node);
+						const result = scaffoldDesignOpenSpecChange(ctx.cwd, updated);
 						if (result.created) {
 							text += `\n\nScaffolded design spec at openspec/design/${node.id}/\n` +
 								`  - proposal.md, spec.md, tasks.md\n\n` +
 								`Fill in spec.md with Given/When/Then scenarios that must be true before deciding.`;
-						}
-					}
-
-					// If transitioning to decided, check for OpenSpec bridge opportunity
-					if (newStatus === "decided") {
-						const sections = getNodeSections(node);
-						const hasDecisions = sections.decisions.length > 0;
-						const hasImplNotes = sections.implementationNotes.fileScope.length > 0 ||
-							sections.implementationNotes.constraints.length > 0;
-
-						if (hasDecisions || hasImplNotes) {
-							text += "\n\nThis node has decisions and/or implementation notes. " +
-								"Use design_tree_update with action 'implement' to scaffold an OpenSpec change, " +
-								"then `/cleave` to parallelize the implementation.";
-						} else {
-							text += "\n\nConsider adding decisions and implementation notes before implementing.";
 						}
 					}
 
@@ -947,6 +977,8 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					if (node.status === "seed") {
 						const updated = setNodeStatus(node, "exploring");
 						tree.nodes.set(updated.id, updated);
+						// C1: scaffold design OpenSpec on auto-transition via focus (same as set_status)
+						scaffoldDesignOpenSpecChange(ctx.cwd, updated);
 					}
 
 					emitCurrentState();
@@ -984,6 +1016,22 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							details: {},
 							isError: true,
 						};
+					}
+
+					// C3: Hard gate — design OpenSpec must be in archived state before implement
+					{
+						const gateError = checkDesignSpecArchiveGate(ctx.cwd, node.id);
+						if (gateError) {
+							return {
+								content: [{
+									type: "text",
+									text: `Cannot implement '${node.title}': ${gateError}.\n` +
+										`Archive the design spec first (/opsx:archive on the design change), then retry implement.`,
+								}],
+								details: { id: node.id, blockedBy: "design-openspec-not-archived" },
+								isError: true,
+							};
+						}
 					}
 
 					const implResult = executeImplement(ctx.cwd, node);
@@ -1413,6 +1461,18 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							"warning",
 						);
 						return;
+					}
+
+					// C3: Hard gate — design OpenSpec must be archived before implement (shared gate)
+					{
+						const gateError = checkDesignSpecArchiveGate(ctx.cwd, node.id);
+						if (gateError) {
+							ctx.ui.notify(
+								`Cannot implement '${node.title}': ${gateError}. Archive it first.`,
+								"error",
+							);
+							return;
+						}
 					}
 
 					const implResult = executeImplement(ctx.cwd, node);

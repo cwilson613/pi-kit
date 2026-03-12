@@ -501,6 +501,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     drainLifecycleCandidateQueue(ctx);
+    drainFactArchiveQueue();
     memoryDir = path.join(ctx.cwd, ".pi", "memory");
 
     // Initialize project store
@@ -1143,6 +1144,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     drainLifecycleCandidateQueue(ctx);
+    drainFactArchiveQueue();
     if (!store) return;
     if (!firstTurn && !postCompaction) return;
 
@@ -1534,6 +1536,29 @@ export default function (pi: ExtensionAPI) {
     }
 
     updateStatus(ctx);
+  }
+
+  function drainFactArchiveQueue(): void {
+    if (!store) return;
+    const queue = sharedState.factArchiveQueue ?? [];
+    if (queue.length === 0) return;
+
+    sharedState.factArchiveQueue = [];
+
+    const mind = activeMind();
+    for (const contentPrefix of queue) {
+      try {
+        // Search for facts whose content starts with this prefix and archive them
+        const results = store.searchFacts(contentPrefix, mind);
+        for (const fact of results) {
+          if (fact.content.startsWith(contentPrefix)) {
+            store.archiveFact(fact.id);
+          }
+        }
+      } catch (error) {
+        console.error("[project-memory] Failed to archive fact by prefix:", error);
+      }
+    }
   }
 
   // --- Tools ---

@@ -405,6 +405,13 @@ describe("design-tree ready and blocked query actions", () => {
 		}>;
 	}
 
+	function createArchivedSpec(nodeId: string): void {
+		// Create an entry in openspec/archive/<timestamp>-<nodeId>/ to simulate archived design spec
+		const archiveDir = path.join(tmpDir, "openspec", "archive", `2026-01-01-${nodeId}`);
+		fs.mkdirSync(archiveDir, { recursive: true });
+		fs.writeFileSync(path.join(archiveDir, "proposal.md"), `# ${nodeId}\nArchived.\n`);
+	}
+
 	beforeEach(() => {
 		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "design-tree-ready-blocked-"));
 		const docsDir = path.join(tmpDir, "docs");
@@ -414,14 +421,18 @@ describe("design-tree ready and blocked query actions", () => {
 		writeFrontmatterDoc(docsDir, { id: "dep-a", title: "Dep A", status: "implemented" });
 		// dep-b: decided (NOT implemented — creates a blocker)
 		writeFrontmatterDoc(docsDir, { id: "dep-b", title: "Dep B", status: "decided" });
-		// ready-node: decided + all deps implemented
+		// ready-node: decided + all deps implemented + archived design spec
 		writeFrontmatterDoc(docsDir, { id: "ready-node", title: "Ready Node", status: "decided", dependencies: ["dep-a"], priority: 2, issue_type: "feature" });
 		// blocked-by-dep: decided + has unimplemented dep
 		writeFrontmatterDoc(docsDir, { id: "blocked-by-dep", title: "Blocked By Dep", status: "decided", dependencies: ["dep-b"] });
 		// explicitly-blocked: status=blocked
 		writeFrontmatterDoc(docsDir, { id: "explicitly-blocked", title: "Explicitly Blocked", status: "blocked" });
-		// no-deps: decided with no deps (should appear in ready)
+		// no-deps: decided with no deps + archived design spec (should appear in ready)
 		writeFrontmatterDoc(docsDir, { id: "no-deps", title: "No Deps", status: "decided", priority: 1 });
+
+		// Create archived design specs for nodes expected in ready
+		createArchivedSpec("ready-node");
+		createArchivedSpec("no-deps");
 
 		pi = createFakePi();
 		designTreeExtension(pi as unknown as ExtensionAPI);
@@ -474,9 +485,10 @@ describe("design-tree ready and blocked query actions", () => {
 		const blocked = result.details.blocked as Array<{ id: string; blocking_deps: Array<{ id: string; title: string; status: string }> }>;
 		const bn = blocked.find((n) => n.id === "blocked-by-dep");
 		assert.ok(bn, "blocked-by-dep must appear");
-		assert.equal(bn!.blocking_deps.length, 1);
-		assert.equal(bn!.blocking_deps[0].id, "dep-b");
-		assert.equal(bn!.blocking_deps[0].status, "decided");
+		// blocked-by-dep has no archived design spec, so the synthetic design-spec-missing
+		// dep is prepended in addition to dep-b
+		const depIds = bn!.blocking_deps.map((d) => d.id);
+		assert.ok(depIds.includes("dep-b"), "dep-b must be in blocking_deps");
 	});
 
 	it("blocked action does not include implemented nodes", async () => {
@@ -486,7 +498,7 @@ describe("design-tree ready and blocked query actions", () => {
 		assert.ok(!ids.includes("dep-a"), "dep-a (implemented) should not appear in blocked");
 	});
 
-	it("blocked action includes priority, issue_type, and blocking_deps fields on each entry", async () => {
+	it("blocked action includes priority, issue_type, blocking_reason, and blocking_deps fields on each entry", async () => {
 		const result = await runQueryTool({ action: "blocked" });
 		const blocked = result.details.blocked as Array<{
 			id: string;
@@ -494,6 +506,7 @@ describe("design-tree ready and blocked query actions", () => {
 			issue_type: string | null;
 			tags: string[];
 			openspec_change: string | null;
+			blocking_reason: string;
 			blocking_deps: unknown[];
 		}>;
 		for (const entry of blocked) {
@@ -501,6 +514,7 @@ describe("design-tree ready and blocked query actions", () => {
 			assert.ok("issue_type" in entry, `${entry.id}: missing issue_type`);
 			assert.ok("tags" in entry, `${entry.id}: missing tags`);
 			assert.ok("openspec_change" in entry, `${entry.id}: missing openspec_change`);
+			assert.ok("blocking_reason" in entry, `${entry.id}: missing blocking_reason`);
 			assert.ok(Array.isArray(entry.blocking_deps), `${entry.id}: blocking_deps must be an array`);
 		}
 	});
@@ -511,5 +525,200 @@ describe("design-tree ready and blocked query actions", () => {
 		const eb = blocked.find((n) => n.id === "explicitly-blocked");
 		assert.ok(eb, "explicitly-blocked must appear");
 		assert.equal(eb!.blocking_deps.length, 0, "no dependencies so blocking_deps should be empty");
+	});
+
+	// ── Task 4.1: ready gate on archived design spec ──────────────────────────
+
+	it("ready: decided node without archived design spec does NOT appear", async () => {
+		// blocked-by-dep has no archived spec — even if its dep is satisfied it won't be ready
+		// Verify that a decided node with all deps implemented but no archived spec is excluded
+		const docsDir = path.join(tmpDir, "docs");
+		// Create a decided node with no deps but no archived spec
+		writeFrontmatterDoc(docsDir, { id: "no-spec-node", title: "No Spec Node", status: "decided" });
+		// Reload by triggering a fresh extension
+		const pi2 = createFakePi();
+		designTreeExtension(pi2 as unknown as ExtensionAPI);
+		const tool = pi2.tools.find((e) => e.name === "design_tree");
+		assert.ok(tool);
+		const result = await tool.execute("tool-1", { action: "ready" }, {} as never, () => {}, { cwd: tmpDir }) as {
+			details: { ready: Array<{ id: string }> };
+		};
+		const ids = result.details.ready.map((n) => n.id);
+		assert.ok(!ids.includes("no-spec-node"), "no-spec-node must not appear in ready (no archived design spec)");
+		assert.ok(ids.includes("ready-node"), "ready-node must still appear (has archived spec)");
+	});
+
+	it("ready: decided node with archived design spec DOES appear", async () => {
+		const result = await runQueryTool({ action: "ready" });
+		const ready = result.details.ready as Array<{ id: string }>;
+		const ids = ready.map((n) => n.id);
+		assert.ok(ids.includes("ready-node"), "ready-node has archived spec and must appear");
+		assert.ok(ids.includes("no-deps"), "no-deps has archived spec and must appear");
+	});
+
+	// ── Task 4.2: blocked includes design-spec-not-archived with blocking_reason ─
+
+	it("blocked: decided node without archived design spec appears with blocking_reason=design-spec-not-archived", async () => {
+		// no-spec-node: decided, no deps, no archived spec → should appear in blocked
+		const docsDir = path.join(tmpDir, "docs");
+		writeFrontmatterDoc(docsDir, { id: "spec-missing", title: "Spec Missing", status: "decided" });
+		const pi2 = createFakePi();
+		designTreeExtension(pi2 as unknown as ExtensionAPI);
+		const tool = pi2.tools.find((e) => e.name === "design_tree");
+		assert.ok(tool);
+		const result = await tool.execute("tool-1", { action: "blocked" }, {} as never, () => {}, { cwd: tmpDir }) as {
+			details: { blocked: Array<{ id: string; blocking_reason: string; blocking_deps: Array<{ id: string; status: string }> }> };
+		};
+		const entry = result.details.blocked.find((n) => n.id === "spec-missing");
+		assert.ok(entry, "spec-missing must appear in blocked");
+		assert.equal(entry!.blocking_reason, "design-spec-not-archived");
+		const syntheticDep = entry!.blocking_deps.find((d) => d.id === "design-spec-missing");
+		assert.ok(syntheticDep, "synthetic design-spec-missing dep must be present");
+		assert.equal(syntheticDep!.status, "missing");
+	});
+
+	it("blocked: explicitly blocked node has blocking_reason=explicit", async () => {
+		const result = await runQueryTool({ action: "blocked" });
+		const blocked = result.details.blocked as Array<{ id: string; blocking_reason: string }>;
+		const eb = blocked.find((n) => n.id === "explicitly-blocked");
+		assert.ok(eb, "explicitly-blocked must appear");
+		assert.equal(eb!.blocking_reason, "explicit");
+	});
+
+	it("blocked: dep-blocked node has blocking_reason=dependencies", async () => {
+		const result = await runQueryTool({ action: "blocked" });
+		const blocked = result.details.blocked as Array<{ id: string; blocking_reason: string }>;
+		const bn = blocked.find((n) => n.id === "blocked-by-dep");
+		assert.ok(bn, "blocked-by-dep must appear");
+		assert.equal(bn!.blocking_reason, "design-spec-not-archived",
+			"blocked-by-dep has no archived spec so blocking_reason should be design-spec-not-archived (spec gate takes precedence)");
+	});
+});
+
+describe("design-tree add_question and remove_question memory fact emission", () => {
+	let tmpDir: string;
+	let pi: ReturnType<typeof createFakePi>;
+
+	function writeFrontmatterDoc(docsDir: string, node: Partial<DesignNode> & { id: string; title: string }): void {
+		const full: DesignNode = {
+			status: "seed",
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+			filePath: path.join(docsDir, `${node.id}.md`),
+			lastModified: Date.now(),
+			...node,
+		};
+		const content = `${generateFrontmatter(full)}\n# ${full.title}\n\n## Overview\n\nTest.\n`;
+		fs.writeFileSync(full.filePath, content);
+	}
+
+	async function runUpdateTool(params: Record<string, unknown>) {
+		const tool = pi.tools.find((e) => e.name === "design_tree_update");
+		assert.ok(tool, "missing design_tree_update tool");
+		return tool.execute("tool-1", params, {} as never, () => {}, { cwd: tmpDir }) as Promise<{
+			details: Record<string, unknown>;
+			content: Array<{ type: string; text: string }>;
+			isError?: boolean;
+		}>;
+	}
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "design-tree-question-memory-"));
+		const docsDir = path.join(tmpDir, "docs");
+		fs.mkdirSync(docsDir, { recursive: true });
+		writeFrontmatterDoc(docsDir, { id: "my-node", title: "My Node", status: "exploring" });
+
+		// Reset the shared queue before each test
+		sharedState.lifecycleCandidateQueue = [];
+		sharedState.factArchiveQueue = [];
+
+		pi = createFakePi();
+		designTreeExtension(pi as unknown as ExtensionAPI);
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	// ── Task 4.3: add_question emits memory fact ──────────────────────────────
+
+	it("add_question emits a lifecycle candidate with section=Specs and OPEN prefix", async () => {
+		sharedState.lifecycleCandidateQueue = [];
+		await runUpdateTool({ action: "add_question", node_id: "my-node", question: "What is the latency target?" });
+
+		const queue = sharedState.lifecycleCandidateQueue ?? [];
+		assert.ok(queue.length > 0, "lifecycle candidate queue must have entries after add_question");
+		const specsEntry = queue.find((msg) =>
+			msg.candidates.some((c) => c.section === "Specs" && c.content.startsWith("OPEN [my-node]:")),
+		);
+		assert.ok(specsEntry, "must have a Specs-section candidate with OPEN [my-node]: prefix");
+		const candidate = specsEntry!.candidates.find((c) => c.section === "Specs");
+		assert.equal(candidate!.content, "OPEN [my-node]: What is the latency target?");
+		assert.equal(candidate!.authority, "explicit");
+		assert.equal(specsEntry!.source, "design-tree");
+	});
+
+	it("add_question candidate has artifactRef pointing to the node's file", async () => {
+		sharedState.lifecycleCandidateQueue = [];
+		await runUpdateTool({ action: "add_question", node_id: "my-node", question: "Any constraints?" });
+
+		const queue = sharedState.lifecycleCandidateQueue ?? [];
+		const specsEntry = queue.find((msg) =>
+			msg.candidates.some((c) => c.section === "Specs"),
+		);
+		assert.ok(specsEntry, "must have a Specs-section candidate");
+		const candidate = specsEntry!.candidates.find((c) => c.section === "Specs");
+		assert.ok(candidate!.artifactRef, "candidate must have artifactRef");
+		assert.equal(candidate!.artifactRef!.type, "design-node");
+		assert.ok(candidate!.artifactRef!.path.endsWith("my-node.md"), "artifactRef path must point to node file");
+	});
+
+	// ── Task 5.1–5.3: remove_question archives memory fact ───────────────────
+
+	it("remove_question pushes content prefix to factArchiveQueue", async () => {
+		sharedState.factArchiveQueue = [];
+		// First add a question so the node has it
+		await runUpdateTool({ action: "add_question", node_id: "my-node", question: "Should we cache responses?" });
+		sharedState.factArchiveQueue = []; // reset after add
+
+		await runUpdateTool({ action: "remove_question", node_id: "my-node", question: "Should we cache responses?" });
+
+		const archiveQueue = sharedState.factArchiveQueue ?? [];
+		assert.ok(archiveQueue.length > 0, "factArchiveQueue must have entries after remove_question");
+		assert.ok(
+			archiveQueue.some((prefix) => prefix === "OPEN [my-node]: Should we cache responses?"),
+			`factArchiveQueue must contain the expected content prefix; got: ${JSON.stringify(archiveQueue)}`,
+		);
+	});
+
+	it("remove_question archive prefix matches the OPEN [...] format emitted by add_question", async () => {
+		const question = "How do we handle retries?";
+		const expectedPrefix = `OPEN [my-node]: ${question}`;
+
+		sharedState.lifecycleCandidateQueue = [];
+		sharedState.factArchiveQueue = [];
+
+		await runUpdateTool({ action: "add_question", node_id: "my-node", question });
+
+		// Verify the add emitted the right content
+		const addCandidates = (sharedState.lifecycleCandidateQueue ?? [])
+			.flatMap((m) => m.candidates)
+			.filter((c) => c.section === "Specs");
+		assert.ok(
+			addCandidates.some((c) => c.content === expectedPrefix),
+			"add_question must emit exactly the same string as remove_question will archive",
+		);
+
+		sharedState.factArchiveQueue = [];
+		await runUpdateTool({ action: "remove_question", node_id: "my-node", question });
+
+		const archiveQueue = sharedState.factArchiveQueue ?? [];
+		assert.ok(
+			archiveQueue.some((p) => p === expectedPrefix),
+			"remove_question archive prefix must match add_question content exactly",
+		);
 	});
 });

@@ -114,6 +114,9 @@ interface SharedState {
   /** Pending structured lifecycle candidates waiting for project-memory ingestion. */
   lifecycleCandidateQueue?: LifecycleMemoryMessage[];
 
+  /** Content prefixes of memory facts to archive (e.g. resolved open questions). */
+  factArchiveQueue?: string[];
+
   /** Latest upstream recovery event for dashboard/harness visibility. */
   latestRecoveryEvent?: RecoveryEvent;
 

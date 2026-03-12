@@ -831,6 +831,8 @@ export class DashboardFooter implements Component {
     const dt = sharedState.designTree;
     if (!dt || dt.nodeCount === 0) return lines;
 
+    lines.push(theme.fg("accent", "◈ Design Tree"));
+
     const statusParts: string[] = [];
     if (dt.decidedCount > 0) statusParts.push(theme.fg("success", `${dt.decidedCount} decided`));
     if (dt.implementingCount > 0) statusParts.push(theme.fg("accent", `${dt.implementingCount} implementing`));
@@ -839,9 +841,11 @@ export class DashboardFooter implements Component {
     if (dt.deferredCount > 0) statusParts.push(theme.fg("dim", `${dt.deferredCount} deferred`));
     if (dt.openQuestionCount > 0) statusParts.push(theme.fg("dim", `${dt.openQuestionCount}?`));
 
-    lines.push(theme.fg("accent", "◈ Design Tree") + "  " + statusParts.join(" · "));
+    if (statusParts.length > 0) {
+      lines.push("  " + statusParts.join(" · "));
+    }
 
-    // Pipeline funnel row
+    // Pipeline funnel row (after the status-counts line)
     if (dt.designPipeline) {
       const p = dt.designPipeline;
       const funnelParts: string[] = [];
@@ -870,6 +874,8 @@ export class DashboardFooter implements Component {
         ? theme.fg("dim", dt.focusedNode.branch) + branchExtra
         : "";
       const linkedTitle = linkDashboardFile(dt.focusedNode.title, dt.focusedNode.filePath);
+      // TODO(types-and-emission): DesignTreeFocusedNode lacks designSpec/assessmentResult fields.
+      // Once the sibling task adds those fields, call designSpecBadge here and append to the line.
       lines.push(composePrimaryMetaLine(
         width,
         `  ${statusIcon} ${linkedTitle}`,

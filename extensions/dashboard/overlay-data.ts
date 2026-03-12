@@ -107,24 +107,52 @@ export function buildDesignItems(
 
   const items: ListItem[] = [];
 
-  // Pipeline funnel row (collapsed by default, shows counts at top level)
+  // Pipeline funnel row (collapsible — expand to see per-bucket detail lines)
   if (dt.designPipeline) {
     const p = dt.designPipeline;
     const pKey = "dt-pipeline";
+    const isExpanded = expandedKeys.has(pKey);
     items.push({
       key: pKey,
       depth: 0,
-      expandable: false,
+      expandable: true,
       lines: (th) => {
         const parts: string[] = [];
         if (p.designing > 0)    parts.push(th("accent", `${p.designing} designing`));
         if (p.decided > 0)      parts.push(th("success", `${p.decided} decided`));
         if (p.implementing > 0) parts.push(th("warning", `${p.implementing} implementing`));
         if (p.done > 0)         parts.push(th("success", `${p.done} done`));
-        if (p.needsSpec > 0)    parts.push(th("warning", `✦ ${p.needsSpec} need spec`));
-        return [th("dim", "→ ") + (parts.join(th("dim", " · ")) || th("dim", "empty pipeline"))];
+        const expandHint = isExpanded ? th("dim", " ▾") : th("dim", " ▸");
+        return [th("dim", "→ ") + (parts.join(th("dim", " · ")) || th("dim", "empty pipeline")) + expandHint];
       },
     });
+
+    if (isExpanded) {
+      // Detail sub-rows for each non-zero bucket
+      const buckets: Array<{ label: string; count: number; color: string }> = [
+        { label: "designing",    count: p.designing,    color: "accent"  },
+        { label: "decided",      count: p.decided,      color: "success" },
+        { label: "implementing", count: p.implementing, color: "warning" },
+        { label: "done",         count: p.done,         color: "success" },
+      ];
+      for (const b of buckets) {
+        if (b.count === 0) continue;
+        items.push({
+          key: `dt-pipeline-${b.label}`,
+          depth: 1,
+          expandable: false,
+          lines: (th) => [th(b.color, `${b.count} ${b.label}`)],
+        });
+      }
+      if (p.needsSpec > 0) {
+        items.push({
+          key: "dt-pipeline-needs-spec",
+          depth: 1,
+          expandable: false,
+          lines: (th) => [th("warning", `✦ ${p.needsSpec} need spec`)],
+        });
+      }
+    }
   }
 
   // Summary
@@ -156,7 +184,8 @@ export function buildDesignItems(
         const icon = statusIcon(focused.status, th);
         const linkedTitle = linkDashboardFile(focused.title, focused.filePath);
         const label = th("accent", " (focused)");
-        // focused node from DesignTreeFocusedNode — no designSpec/assessmentResult fields
+        // TODO(types-and-emission): DesignTreeFocusedNode lacks designSpec/assessmentResult fields.
+        // Once the sibling task adds those fields, call designSpecBadge here for the focused node.
         return [`${icon} ${linkedTitle}${label}`];
       },
     });
@@ -187,7 +216,8 @@ export function buildDesignItems(
         lines: (th) => {
           const icon = statusIcon(node.status, th);
           const badge = designSpecBadge(node.designSpec, node.assessmentResult, th);
-          const badgeSep = badge ? " " : "";
+          // spacer: "icon badge title" when badge present, "icon title" when absent
+          const spacer = badge ? ` ${badge} ` : " ";
           const linkedTitle = linkDashboardFile(node.title, node.filePath);
           const qLabel = node.questionCount > 0
             ? th("warning", ` (${node.questionCount}?)`)
@@ -195,7 +225,7 @@ export function buildDesignItems(
           const linkSuffix = node.openspecChange
             ? th("dim", " &")
             : "";
-          return [`${icon}${badgeSep}${badge} ${linkedTitle}${qLabel}${linkSuffix}`];
+          return [`${icon}${spacer}${linkedTitle}${qLabel}${linkSuffix}`];
         },
       });
     }

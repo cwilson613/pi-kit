@@ -1,7 +1,7 @@
 ---
 id: archive-branch-cleanup
 title: Auto-delete merged feature branches on OpenSpec archive
-status: implementing
+status: implemented
 tags: [openspec, git, lifecycle, cleanup]
 open_questions: []
 branches: ["feature/archive-branch-cleanup"]
@@ -24,6 +24,8 @@ After /opsx:archive completes, the archive handler already transitions design no
 
 - `extensions/openspec/index.ts` (modified) — In case 'archive': after transitionDesignNodesOnArchive(), collect branches[] from all transitioned design nodes, verify each is fully merged (git merge-base --is-ancestor <branch> HEAD), delete local branch via git branch -d. Append deleted/skipped counts to result.operations. Handle the /opsx:archive slash-command path at line ~1678 identically.
 - `extensions/openspec/index.test.ts` (modified) — Add tests: branch deleted when fully merged; branch skipped when not merged (--is-ancestor fails); no branches field on node (graceful no-op); empty branches array (no-op).
+- `extensions/openspec/branch-cleanup.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/openspec/branch-cleanup.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 
 ### Constraints
 

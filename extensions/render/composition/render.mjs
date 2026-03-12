@@ -112,7 +112,7 @@ function loadFonts() {
 
 async function loadComposition(path) {
   const { createJiti } = await import('jiti');
-  const jiti = createJiti(import.meta.url);
+  const jiti = createJiti(import.meta.url, { jsx: true });
   const absPath = resolve(process.cwd(), path);
   const mod = await jiti.import(absPath);
   // Support both default export and named Component export
@@ -177,7 +177,9 @@ async function main() {
   // GIF mode
   // -------------------------------------------------------------------------
   else if (mode === 'gif') {
-    const { GIFEncoder, quantize, applyPalette } = await import('gifenc');
+    const gifencMod = await import('gifenc');
+    const gifencExports = gifencMod.default ?? gifencMod['module.exports'] ?? gifencMod;
+    const { GIFEncoder, quantize, applyPalette } = gifencExports;
 
     const gif      = GIFEncoder();
     const delayMs  = Math.round(1000 / fps);

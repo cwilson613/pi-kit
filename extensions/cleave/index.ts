@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, AgentToolUpdateCallback } from "@cwilson613/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@cwilson613/pi-coding-agent";
+import { Text } from "@cwilson613/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1737,21 +1738,42 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			threshold: Type.Optional(Type.Number({ description: "Complexity threshold (default: 2.0)" })),
 		}),
 
-		renderCall(params) {
-			const dir = params.directive.length > 60
-				? params.directive.slice(0, 57) + "…"
-				: params.directive;
-			return `◊ assess ${dir}`;
+		renderCall(args, theme) {
+			const dir = args.directive.length > 55
+				? args.directive.slice(0, 52) + "…"
+				: args.directive;
+			let text = theme.fg("toolTitle", "◊ assess  ");
+			text += theme.fg("dim", dir);
+			return new Text(text, 0, 0);
 		},
 
-		renderResult(_params, result) {
-			if (!result?.details) return undefined;
-			const d = result.details as { complexity?: number; decision?: string };
-			const decisionIcon =
-				d.decision === "execute" ? "✓ execute"
-				: d.decision === "cleave" ? "⚡ cleave"
-				: "? needs_assessment";
-			return `◊ assess complexity=${d.complexity?.toFixed(2) ?? "?"} → ${decisionIcon}`;
+		renderResult(result, { expanded }, theme) {
+			const d = result.details as { score?: number; complexity?: number; decision?: string } | undefined;
+			const score = d?.score ?? d?.complexity;
+			const decision = d?.decision;
+
+			if (expanded) {
+				const full = result.content?.[0];
+				return new Text((full && "text" in full ? full.text : null) ?? "", 0, 0);
+			}
+
+			if (!decision) {
+				const first = result.content?.[0];
+				const line = (first && "text" in first ? first.text : null) ?? "";
+				return new Text(theme.fg("toolTitle", "◊ ") + theme.fg("dim", line.split("\n")[0].slice(0, 80)), 0, 0);
+			}
+
+			const icon = "◊ ";
+			const scoreStr = score != null ? theme.fg("dim", `complexity ${score.toFixed(1)}  `) : "";
+			let decisionStr: string;
+			if (decision === "execute") {
+				decisionStr = theme.fg("success", "→ execute");
+			} else if (decision === "cleave") {
+				decisionStr = theme.fg("warning", "→ cleave");
+			} else {
+				decisionStr = theme.fg("muted", "→ " + decision);
+			}
+			return new Text(theme.fg("toolTitle", icon) + scoreStr + decisionStr, 0, 0);
 		},
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -2313,18 +2335,26 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			),
 		}),
 
-		renderCall(params) {
+		renderCall(args, theme) {
 			const plan = (() => {
-				try { return JSON.parse(params.plan_json); } catch { return null; }
+				try { return JSON.parse(args.plan_json); } catch { return null; }
 			})();
 			const n = Array.isArray(plan?.children) ? plan.children.length : "?";
-			const dir = params.directive.length > 50
-				? params.directive.slice(0, 47) + "…"
-				: params.directive;
-			return `⚡ cleave ${n} children — ${dir}`;
+			const dir = args.directive.length > 50
+				? args.directive.slice(0, 47) + "…"
+				: args.directive;
+			let text = theme.fg("toolTitle", "⚡ cleave  ");
+			text += theme.fg("accent", String(n) + " children  ");
+			text += theme.fg("dim", dir);
+			return new Text(text, 0, 0);
 		},
 
-		renderResult(params, result, isPartial) {
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (expanded) {
+				const first = result.content?.[0];
+				return new Text((first && "text" in first ? first.text : null) ?? "", 0, 0);
+			}
+
 			if (isPartial) {
 				// Phase-aware child table from details
 				const d = result?.details as {
@@ -2332,37 +2362,53 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 					phase?: string;
 				} | undefined;
 				const children = d?.children ?? [];
-				if (children.length === 0) return undefined;
+				if (children.length === 0) {
+					const msg = result.content?.[0];
+					const txt = (msg && "text" in msg ? msg.text : null) ?? "running…";
+					return new Text(theme.fg("toolTitle", "⚡ cleave  ") + theme.fg("dim", txt.split("\n")[0].slice(0, 70)), 0, 0);
+				}
 				const done = children.filter((c) => c.status === "completed").length;
-				const running = children.filter((c) => c.status === "running").length;
 				const failed = children.filter((c) => c.status === "failed").length;
 				const total = children.length;
-				const rows = children.map((c) => {
+				const statusColor = failed > 0 ? "error" : done === total ? "success" : "warning";
+				let summary = theme.fg("toolTitle", "⚡ cleave  ");
+				summary += theme.fg(statusColor, `${done}/${total} done`);
+				if (failed > 0) summary += theme.fg("error", `  ${failed} failed`);
+
+				const visible = children.slice(0, 8);
+				const rows = visible.map((c) => {
 					const icon =
-						c.status === "completed" ? "✓"
-						: c.status === "running" ? "⟳"
-						: c.status === "failed" ? "✕"
-						: "○";
-					return `  ${icon} ${c.label}`;
+						c.status === "completed" ? theme.fg("success", "✓")
+						: c.status === "running" ? theme.fg("warning", "⟳")
+						: c.status === "failed" ? theme.fg("error", "✕")
+						: theme.fg("muted", "○");
+					const label = c.status === "running"
+						? theme.fg("accent", c.label)
+						: theme.fg("dim", c.label);
+					return `  ${icon} ${label}`;
 				});
-				const summary = `⚡ cleave ${done + running}/${total} active · ${failed} failed`;
-				return [summary, ...rows].join("\n");
+				if (children.length > 8) {
+					rows.push(theme.fg("muted", `  … ${children.length - 8} more`));
+				}
+				return new Text([summary, ...rows].join("\n"), 0, 0);
 			}
-			// Final result
-			const d = result?.details as {
-				success?: boolean;
-				childrenCompleted?: number;
-				childrenFailed?: number;
-			} | undefined;
-			const n = (d?.childrenCompleted ?? 0) + (d?.childrenFailed ?? 0);
-			const total = n;
-			const dir = params.directive.length > 40
-				? params.directive.slice(0, 37) + "…"
-				: params.directive;
-			if (d?.success) {
-				return `⚡ cleave ✓ done ${d.childrenCompleted}/${total} merged — ${dir}`;
+
+			// Final result — read from content text
+			const first = result.content?.[0];
+			const text = (first && "text" in first ? first.text : null) ?? "";
+			const firstLine = text.split("\n")[0];
+			const hasConflicts = text.toLowerCase().includes("conflict");
+			const isError = (result as any).isError;
+
+			let line: string;
+			if (isError) {
+				line = theme.fg("toolTitle", "⚡ cleave  ") + theme.fg("error", "✕ " + firstLine.slice(0, 70));
+			} else if (hasConflicts) {
+				line = theme.fg("toolTitle", "⚡ cleave  ") + theme.fg("warning", "⚠ " + firstLine.slice(0, 70));
+			} else {
+				line = theme.fg("toolTitle", "⚡ cleave  ") + theme.fg("success", "✓ ") + theme.fg("dim", firstLine.slice(0, 70));
 			}
-			return `⚡ cleave ✗ ${d?.childrenFailed ?? "?"} failed of ${total} — ${dir}`;
+			return new Text(line, 0, 0);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {

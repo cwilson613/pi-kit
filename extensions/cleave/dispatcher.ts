@@ -580,10 +580,6 @@ export async function dispatchChildren(
 	for (let waveIdx = 0; waveIdx < waves.length; waveIdx++) {
 		const waveLabels = waves[waveIdx];
 		const waveChildren = state.children.filter((c) => waveLabels.includes(c.label));
-		const childStart = childrenDispatched + 1;
-		const childEnd = childrenDispatched + waveChildren.length;
-		const childRange = childStart === childEnd ? `${childStart}` : `${childStart}-${childEnd}`;
-
 		onProgress?.(
 			`dispatching ${waveChildren.map((c) => c.label).join(", ")}`,
 		);

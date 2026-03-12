@@ -429,8 +429,10 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							});
 						})
 						.sort((a, b) => {
-							// Lower priority number = higher urgency (1=critical, 5=trivial)
-							// Nodes without priority sort last (treated as 5)
+							// Sort by urgency descending: priority 1 (critical) first, 5 (trivial) last.
+							// "priority desc" in the spec means "most-urgent first", which is
+							// ascending numeric order because 1 = highest urgency.
+							// Nodes without priority sort last (treated as 5).
 							const pa = a.priority ?? 5;
 							const pb = b.priority ?? 5;
 							return pa - pb;
@@ -457,7 +459,11 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 						.filter((n) => {
 							if (n.status === "implemented") return false;
 							if (n.status === "blocked") return true;
-							// Non-implemented nodes that have at least one non-implemented dependency
+							// Only surface dep-blocked signal for actively-worked nodes.
+							// seed/deferred nodes are intentionally parked — flagging them as
+							// blocked would be misleading noise.
+							if (n.status === "seed" || n.status === "deferred") return false;
+							// deciding/exploring nodes with at least one non-implemented dependency
 							return n.dependencies.some((depId) => {
 								const dep = tree.nodes.get(depId);
 								return !dep || dep.status !== "implemented";

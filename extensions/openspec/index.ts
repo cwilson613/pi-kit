@@ -229,10 +229,10 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "openspec_manage",
-		label: "OpenSpec",
+		label: "Implementation",
 		description:
-			"Manage OpenSpec changes: create proposals, add specs, generate plans, check status, archive. " +
-			"OpenSpec is the specification layer for spec-driven development.\n\n" +
+			"Manage Implementation (OpenSpec) changes: create proposals, add specs, generate plans, check status, archive. " +
+			"The Implementation layer drives spec-driven development. For tracked changes, use design_tree_update(implement) from a decided node — this tool is for untracked/throwaway changes only.\n\n" +
 			"Actions:\n" +
 			"- status: List all active changes with lifecycle stage\n" +
 			"- get: Get details of a specific change\n" +

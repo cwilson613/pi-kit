@@ -28,7 +28,7 @@ export interface Tab {
 
 export const TABS: Tab[] = [
   { id: "design",   label: "Design Tree", shortcut: "1" },
-  { id: "openspec", label: "OpenSpec",    shortcut: "2" },
+  { id: "openspec", label: "Implementation", shortcut: "2" },
   { id: "cleave",   label: "Cleave",      shortcut: "3" },
   { id: "system",   label: "System",      shortcut: "4" },
 ];

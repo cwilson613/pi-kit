@@ -91,23 +91,6 @@ export interface OperatorMetadataSnapshot {
 
 // ── Design Tree ───────────────────────────────────────────────────────────────
 
-/**
- * Design pipeline funnel counts — mirrors DesignPipelineCounts in dashboard/types.ts
- * but lives here so the web-UI contract is self-contained.
- */
-export interface DesignPipelineSnapshot {
-  /** Nodes with no design-phase spec change yet. */
-  needsSpec: number;
-  /** Nodes actively being designed (spec change exists but not decided). */
-  designing: number;
-  /** Nodes whose design is decided but implementation has not started. */
-  decided: number;
-  /** Nodes currently being implemented. */
-  implementing: number;
-  /** Nodes fully implemented and archived. */
-  done: number;
-}
-
 export interface DesignTreeSnapshot {
   /** Total node count. */
   nodeCount: number;

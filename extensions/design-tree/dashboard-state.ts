@@ -120,6 +120,7 @@ export function emitDesignTreeState(pi: ExtensionAPI, dt: DesignTree, focused: D
 			questionCount: n.open_questions.length,
 			filePath: n.filePath,
 			branches: n.branches ?? [],
+			openspecChange: n.openspec_change ?? null,
 			designSpec,
 			acSummary,
 			assessmentResult,

@@ -153,21 +153,6 @@ export function listChanges(repoPath: string): ChangeInfo[] {
 	return changes;
 }
 
-/**
- * List all design-phase changes in openspec/design/ (non-archived).
- * Returns change names for binding resolution and badge display.
- */
-export function listDesignChanges(repoPath: string): string[] {
-	const designDir = path.join(repoPath, OPENSPEC_DIR, "design");
-	if (!fs.existsSync(designDir)) return [];
-	try {
-		return fs.readdirSync(designDir, { withFileTypes: true })
-			.filter((e) => e.isDirectory())
-			.map((e) => e.name);
-	} catch {
-		return [];
-	}
-}
 
 /**
  * Get a specific change by name.

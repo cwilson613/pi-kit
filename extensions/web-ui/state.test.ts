@@ -32,7 +32,7 @@ describe("buildControlPlaneState — top-level shape", () => {
   it("contains schemaVersion", () => {
     const snap = buildSnapshot();
     assert.equal(snap.schemaVersion, SCHEMA_VERSION);
-    assert.equal(snap.schemaVersion, 1);
+    assert.equal(snap.schemaVersion, 2);
   });
 
   it("contains all required top-level sections", () => {
@@ -347,5 +347,41 @@ describe("buildSlice", () => {
         `slice '${slice}' is not JSON-serialisable`
       );
     }
+  });
+});
+
+describe("designPipeline section", () => {
+  it("designPipeline is present in ControlPlaneState", () => {
+    const snap = buildControlPlaneState(process.cwd(), Date.now());
+    assert.ok(snap.designPipeline !== undefined, "designPipeline should be present");
+  });
+
+  it("designPipeline.capturedAt is an ISO string", () => {
+    const snap = buildControlPlaneState(process.cwd(), Date.now());
+    assert.ok(typeof snap.designPipeline.capturedAt === "string");
+    assert.ok(!isNaN(Date.parse(snap.designPipeline.capturedAt)));
+  });
+
+  it("designPipeline.changes is an array", () => {
+    const snap = buildControlPlaneState(process.cwd(), Date.now());
+    assert.ok(Array.isArray(snap.designPipeline.changes));
+  });
+
+  it("designPipeline.funnelCounts has numeric fields", () => {
+    const snap = buildControlPlaneState(process.cwd(), Date.now());
+    const { funnelCounts } = snap.designPipeline;
+    assert.ok(typeof funnelCounts.total === "number");
+    assert.ok(typeof funnelCounts.bound === "number");
+    assert.ok(typeof funnelCounts.tasksComplete === "number");
+    assert.ok(typeof funnelCounts.assessed === "number");
+    assert.ok(typeof funnelCounts.archived === "number");
+  });
+
+  it("buildSlice('designPipeline') returns the same shape", () => {
+    const slice = buildSlice("designPipeline", process.cwd(), Date.now());
+    assert.ok(slice !== null && typeof slice === "object");
+    const dp = slice as ReturnType<typeof buildControlPlaneState>["designPipeline"];
+    assert.ok(typeof dp.capturedAt === "string");
+    assert.ok(Array.isArray(dp.changes));
   });
 });

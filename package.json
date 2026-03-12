@@ -7,7 +7,7 @@
 		"check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",
 		"check": "tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts"
 	},
-	"description": "Pi package \u2014 extensions, prompts, skills, and themes for the pi coding agent",
+	"description": "Pi package — extensions, prompts, skills, and themes for the pi coding agent",
 	"keywords": [
 		"pi-package"
 	],
@@ -52,8 +52,8 @@
 		]
 	},
 	"dependencies": {
-		"@cwilson613/pi-ai": "0.57.1-cwilson613.1",
-		"@cwilson613/pi-coding-agent": "0.57.1-cwilson613.1",
+		"@cwilson613/pi-ai": "^0.57.1-cwilson613.2",
+		"@cwilson613/pi-coding-agent": "^0.57.1-cwilson613.2",
 		"@modelcontextprotocol/sdk": "^1.12.1",
 		"@resvg/resvg-js": "^2.6.2",
 		"@sinclair/typebox": "^0.34.48",

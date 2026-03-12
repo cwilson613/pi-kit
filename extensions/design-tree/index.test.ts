@@ -513,3 +513,152 @@ describe("design-tree ready and blocked query actions", () => {
 		assert.equal(eb!.blocking_deps.length, 0, "no dependencies so blocking_deps should be empty");
 	});
 });
+
+// ─── Acceptance Criteria — list and node surface ─────────────────────────────
+
+describe("acceptance criteria in list and node responses", () => {
+	let tmpDir: string;
+	let pi: ReturnType<typeof createFakePi>;
+
+	function writeNodeWithAC(docsDir: string, id: string, acContent: string): void {
+		const node: DesignNode = {
+			id,
+			title: `AC Node ${id}`,
+			status: "decided",
+			dependencies: [],
+			related: [],
+			tags: [],
+			open_questions: [],
+			branches: [],
+			filePath: path.join(docsDir, `${id}.md`),
+			lastModified: Date.now(),
+		};
+		const fm = generateFrontmatter(node);
+		const content = `${fm}\n# ${node.title}\n\n## Overview\n\nTest.\n\n## Acceptance Criteria\n\n${acContent}\n`;
+		fs.writeFileSync(node.filePath, content);
+	}
+
+	async function runTool(params: Record<string, unknown>) {
+		const tool = pi.tools.find((t) => t.name === "design_tree");
+		assert.ok(tool, "missing design_tree tool");
+		return tool.execute("tool-1", params, {} as never, () => {}, { cwd: tmpDir }) as Promise<{
+			details: Record<string, unknown>;
+		}>;
+	}
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "design-tree-ac-"));
+		const docsDir = path.join(tmpDir, "docs");
+		fs.mkdirSync(docsDir, { recursive: true });
+
+		// Node with full acceptance criteria (1 scenario, 1 falsifiability, 1 constraint)
+		writeNodeWithAC(
+			docsDir,
+			"ac-full",
+			[
+				"### Scenarios",
+				"",
+				"**Given** a user with access",
+				"**When** they call the API",
+				"**Then** a 200 response is returned",
+				"",
+				"### Falsifiability",
+				"",
+				"- This decision is wrong if: performance degrades by >10%",
+				"",
+				"### Constraints",
+				"",
+				"- [x] Must not break existing tests",
+			].join("\n"),
+		);
+
+		// Node with preamble before first Given (W1 regression case)
+		writeNodeWithAC(
+			docsDir,
+			"ac-preamble",
+			[
+				"### Scenarios",
+				"",
+				"This section describes integration scenarios.",
+				"",
+				"**Given** the system is running",
+				"**When** a request arrives",
+				"**Then** it is processed",
+				"",
+				"**Given** the system is idle",
+				"**When** no request arrives",
+				"**Then** nothing happens",
+			].join("\n"),
+		);
+
+		// Node with no acceptance criteria
+		writeDesignDoc(docsDir, "no-ac");
+
+		pi = createFakePi();
+		designTreeExtension(pi as unknown as ExtensionAPI);
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("list response includes acceptance_criteria_summary for nodes that have AC", async () => {
+		const result = await runTool({ action: "list" });
+		const nodes = result.details.nodes as Array<{
+			id: string;
+			acceptance_criteria_summary: { scenarios: number; falsifiability: number; constraints: number } | null;
+		}>;
+		const full = nodes.find((n) => n.id === "ac-full");
+		assert.ok(full, "ac-full node missing from list");
+		assert.ok(full.acceptance_criteria_summary !== null, "ac-full should have a non-null summary");
+		assert.equal(full.acceptance_criteria_summary!.scenarios, 1, "expected 1 scenario");
+		assert.equal(full.acceptance_criteria_summary!.falsifiability, 1, "expected 1 falsifiability item");
+		assert.equal(full.acceptance_criteria_summary!.constraints, 1, "expected 1 constraint");
+	});
+
+	it("list response returns null acceptance_criteria_summary for nodes without AC", async () => {
+		const result = await runTool({ action: "list" });
+		const nodes = result.details.nodes as Array<{
+			id: string;
+			acceptance_criteria_summary: unknown;
+		}>;
+		const plain = nodes.find((n) => n.id === "no-ac");
+		assert.ok(plain, "no-ac node missing from list");
+		assert.equal(plain.acceptance_criteria_summary, null, "no-ac should return null summary");
+	});
+
+	it("node response includes full acceptanceCriteria for a node with AC", async () => {
+		const result = await runTool({ action: "node", node_id: "ac-full" });
+		const node = (result.details as { node: { sections: { acceptanceCriteria?: {
+			scenarios: Array<{ title: string; given: string; when: string; then: string }>;
+			falsifiability: Array<{ condition: string }>;
+			constraints: Array<{ text: string; checked: boolean }>;
+		} } } }).node;
+		const ac = node.sections.acceptanceCriteria;
+		assert.ok(ac, "acceptanceCriteria missing from node response");
+		assert.equal(ac!.scenarios.length, 1);
+		assert.equal(ac!.falsifiability.length, 1);
+		assert.equal(ac!.constraints.length, 1);
+		assert.equal(ac!.constraints[0].checked, true);
+	});
+
+	it("node response returns empty acceptanceCriteria arrays for a node without AC", async () => {
+		const result = await runTool({ action: "node", node_id: "no-ac" });
+		const node = (result.details as { node: { sections: { acceptanceCriteria?: { scenarios: unknown[]; falsifiability: unknown[]; constraints: unknown[] } } } }).node;
+		const ac = node.sections.acceptanceCriteria;
+		assert.ok(ac, "acceptanceCriteria field should always be present");
+		assert.equal(ac!.scenarios.length, 0);
+		assert.equal(ac!.falsifiability.length, 0);
+		assert.equal(ac!.constraints.length, 0);
+	});
+
+	it("W1 regression: preamble before first Given does not cause off-by-one in scenario titles", async () => {
+		const result = await runTool({ action: "node", node_id: "ac-preamble" });
+		const node = (result.details as { node: { sections: { acceptanceCriteria?: { scenarios: Array<{ title: string }> } } } }).node;
+		const ac = node.sections.acceptanceCriteria;
+		assert.ok(ac, "acceptanceCriteria missing");
+		assert.equal(ac!.scenarios.length, 2, "expected 2 scenarios");
+		assert.equal(ac!.scenarios[0].title, "Scenario 1", "first scenario should be Scenario 1");
+		assert.equal(ac!.scenarios[1].title, "Scenario 2", "second scenario should be Scenario 2");
+	});
+});

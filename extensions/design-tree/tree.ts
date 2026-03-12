@@ -396,7 +396,10 @@ function parseScenariosBlock(content: string): AcceptanceCriteriaScenario[] {
 		} else {
 			for (const part of parts) {
 				const trimmed = part.trim();
-				if (trimmed) blocks.push({ title: "", content: trimmed });
+				// Skip preamble segments that don't start with **Given** (e.g. intro text)
+				if (trimmed && /^\*\*Given\*\*/.test(trimmed)) {
+					blocks.push({ title: "", content: trimmed });
+				}
 			}
 		}
 	}
@@ -705,6 +708,66 @@ export function getNodeSections(node: DesignNode): DocumentSections {
 	const content = fs.readFileSync(node.filePath, "utf-8");
 	const body = extractBody(content);
 	return parseSections(body);
+}
+
+/**
+ * Lightweight acceptance-criteria counter for the `list` hot path.
+ * Avoids full section parse by scanning for the AC section and counting
+ * structural markers (Given blocks, bullet items, checkboxes) with regex.
+ * Returns null when no Acceptance Criteria section exists.
+ */
+export function countAcceptanceCriteria(
+	node: DesignNode,
+): { scenarios: number; falsifiability: number; constraints: number } | null {
+	let content: string;
+	try {
+		content = fs.readFileSync(node.filePath, "utf-8");
+	} catch {
+		return null;
+	}
+
+	// Find the ## Acceptance Criteria section via string search (regex lookahead
+	// for end-of-string is unreliable across JS engines with multiline mode).
+	const ACH = "\n## Acceptance Criteria\n";
+	const acStart = content.indexOf(ACH);
+	if (acStart === -1) return null;
+	const acBodyStart = acStart + ACH.length;
+	const nextH2 = content.indexOf("\n## ", acBodyStart);
+	const acBody = nextH2 >= 0 ? content.slice(acBodyStart, nextH2) : content.slice(acBodyStart);
+
+	// Count **Given** occurrences for scenarios
+	const scenarioCount = (acBody.match(/^\*\*Given\*\*/gm) ?? []).length;
+
+	// Find the ### Falsifiability sub-section and count list items
+	const falsifiabilityCount = (() => {
+		const h = "\n### Falsifiability\n";
+		const start = acBody.indexOf(h);
+		if (start === -1) return 0;
+		const bodyStart = start + h.length;
+		const nextH3 = acBody.indexOf("\n### ", bodyStart);
+		const sub = nextH3 >= 0 ? acBody.slice(bodyStart, nextH3) : acBody.slice(bodyStart);
+		return (sub.match(/^\s*-\s+\S/gm) ?? []).length;
+	})();
+
+	// Find the ### Constraints sub-section and count checkboxes
+	const constraintCount = (() => {
+		const h = "\n### Constraints\n";
+		const start = acBody.indexOf(h);
+		if (start === -1) return 0;
+		const bodyStart = start + h.length;
+		const nextH3 = acBody.indexOf("\n### ", bodyStart);
+		const sub = nextH3 >= 0 ? acBody.slice(bodyStart, nextH3) : acBody.slice(bodyStart);
+		return (sub.match(/^\s*-\s+\[[ xX]\]/gm) ?? []).length;
+	})();
+
+	const total = scenarioCount + falsifiabilityCount + constraintCount;
+	if (total === 0) return null;
+
+	return {
+		scenarios: scenarioCount,
+		falsifiability: falsifiabilityCount,
+		constraints: constraintCount,
+	};
 }
 
 // ─── Tree Mutations ──────────────────────────────────────────────────────────

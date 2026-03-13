@@ -6,7 +6,8 @@
  *   npx tsx scripts/export-kitty-theme.ts
  *
  * The generated file can be included in kitty.conf:
- *   include /path/to/omegon/themes/alpharius.conf
+ *   cp themes/alpharius.conf ~/.config/kitty/themes/alpharius.conf
+ *   # then in kitty.conf: include themes/alpharius.conf
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -64,8 +65,8 @@ const lines: string[] = [
   `# Do not edit manually — re-run the script after palette changes.`,
   `#`,
   `# Usage:`,
-  `#   include /path/to/omegon/themes/alpharius.conf`,
-  `# or copy into ~/.config/kitty/current-theme.conf`,
+  `#   cp themes/alpharius.conf ~/.config/kitty/themes/alpharius.conf`,
+  `#   then in kitty.conf: include themes/alpharius.conf`,
   ``,
   `# ── Core palette ─────────────────────────────────────────────────────────`,
   `background            ${v.bg}`,

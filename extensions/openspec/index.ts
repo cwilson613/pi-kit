@@ -22,6 +22,8 @@ import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../lib/typebox-helpers.ts";
 import { Text } from "@cwilson613/pi-tui";
+import { sciCall, sciLoading, sciOk, sciErr, sciExpanded } from "../sci-ui.ts";
+import { sciBanner } from "../sci-ui.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getSharedBridge, buildSlashCommandResult, type BridgedSlashCommand, type SlashCommandExecutionContext } from "../lib/slash-command-bridge.ts";
@@ -792,54 +794,54 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 		},
 
 		renderCall(args, theme) {
-			const icon = theme.fg("accent", "◎");
-			const action = theme.fg("toolTitle", theme.bold(args.action));
-			let extra = "";
+			let summary = args.action as string;
 			switch (args.action) {
 				case "propose":
-					extra = args.name ? " " + theme.fg("dim", args.name) : "";
+					summary = args.name ? `propose:${args.name}` : "propose";
 					break;
 				case "add_spec":
-					if (args.change_name && args.domain)
-						extra = " " + theme.fg("dim", `${args.change_name}/${args.domain}`);
-					else if (args.change_name)
-						extra = " " + theme.fg("dim", args.change_name);
+					summary = args.change_name
+						? `add_spec:${args.change_name}${args.domain ? `/${args.domain}` : ""}`
+						: "add_spec";
 					break;
 				case "generate_spec":
-					if (args.change_name && args.domain)
-						extra = " " + theme.fg("dim", `${args.change_name}/${args.domain}`);
-					else if (args.change_name)
-						extra = " " + theme.fg("dim", args.change_name);
+					summary = args.change_name
+						? `generate_spec:${args.change_name}${args.domain ? `/${args.domain}` : ""}`
+						: "generate_spec";
 					break;
 				case "fast_forward":
 				case "get":
 				case "archive":
 				case "reconcile_after_assess":
-					extra = args.change_name ? " " + theme.fg("dim", args.change_name) : "";
+					summary = args.change_name ? `${args.action}:${args.change_name}` : args.action;
 					break;
 				case "status":
-					extra = "";
+					summary = "status";
 					break;
 			}
-			return new Text(`${icon} ${action}${extra}`, 0, 0);
+			return sciCall("openspec_manage", summary, theme);
 		},
 
-		renderResult(result, { expanded }, theme) {
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return sciLoading("openspec_manage", theme);
+			}
+
 			if ((result as any).isError) {
 				const first = result.content?.[0];
 				const msg = (first && "text" in first ? first.text : "Error").split("\n")[0];
-				return new Text(theme.fg("accent", "◎") + " " + theme.fg("error", `✕ ${msg}`), 0, 0);
+				return sciErr(msg, theme);
 			}
 
 			if (expanded) {
 				const first = result.content?.[0];
 				const full = (first && "text" in first ? first.text : null) || "Done";
-				return new Text(theme.fg("success", full), 0, 0);
+				const lines = full.split("\n");
+				return sciExpanded(lines.slice(0, -1), lines[lines.length - 1] ?? "done", theme);
 			}
 
 			// Collapsed: action-specific one-liner
 			const details = (result.details || {}) as Record<string, any>;
-			const icon = theme.fg("accent", "◎");
 			let summary = "";
 
 			if (details.changePath) {
@@ -847,23 +849,23 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 				const name = typeof details.changePath === "string"
 					? details.changePath.split("/").pop() ?? details.changePath
 					: "";
-				summary = theme.fg("success", `✓ proposed ${name}`);
+				summary = `✓ proposed ${name}`;
 			} else if (details.specPath !== undefined && details.sections !== undefined) {
 				// add_spec
 				const specName = typeof details.specPath === "string"
 					? details.specPath.split("/").slice(-2).join("/")
 					: "spec";
-				summary = theme.fg("success", `✓ spec added ${specName}`);
+				summary = `✓ spec added ${specName}`;
 			} else if (details.specPath !== undefined && details.generated) {
 				// generate_spec
 				const specName = typeof details.specPath === "string"
 					? details.specPath.split("/").slice(-2).join("/")
 					: "spec";
-				summary = theme.fg("success", `✓ spec generated ${specName}`);
+				summary = `✓ spec generated ${specName}`;
 			} else if (details.files && !details.operations) {
 				// fast_forward
 				const files = Array.isArray(details.files) ? details.files.join(", ") : "files";
-				summary = theme.fg("success", `✓ fast-forwarded (${files})`);
+				summary = `✓ fast-forwarded (${files})`;
 			} else if (details.operations) {
 				// archive
 				const name = details.transitionedNodes !== undefined
@@ -871,18 +873,16 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						? result.content[0].text.match(/Archived '([^']+)'/)?.[1] ?? "change"
 						: "change")
 					: "change";
-				summary = theme.fg("success", `✓ archived ${name}`);
+				summary = `✓ archived ${name}`;
 			} else if (details.changes) {
 				// status
 				const count = Array.isArray(details.changes) ? details.changes.length : 0;
-				summary = count === 0
-					? theme.fg("muted", "no active changes")
-					: theme.fg("success", `${count} change${count !== 1 ? "s" : ""}`);
+				summary = count === 0 ? "no active changes" : `${count} change${count !== 1 ? "s" : ""}`;
 			} else if (details.change) {
 				// get
 				const name = details.change?.name ?? "";
 				const stage = details.change?.stage ?? "";
-				summary = theme.fg("accent", `${name}`) + theme.fg("muted", ` (${stage})`);
+				summary = `${name} (${stage})`;
 			} else if (details.reconcileCandidatesEmitted !== undefined) {
 				// reconcile_after_assess
 				const changeName = details.changeName
@@ -891,13 +891,13 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 						: null)
 					?? "change";
 				const outcome = details.lifecycleSignals?.outcome ?? "";
-				summary = theme.fg("success", `✓ reconciled ${changeName}`) + theme.fg("muted", ` (${outcome})`);
+				summary = `✓ reconciled ${changeName}${outcome ? ` (${outcome})` : ""}`;
 			} else {
 				const first = result.content?.[0];
-				summary = theme.fg("success", (first && "text" in first ? first.text?.split("\n")[0] : null) || "done");
+				summary = (first && "text" in first ? first.text?.split("\n")[0] : null) || "done";
 			}
 
-			return new Text(`${icon} ${summary}`, 0, 0);
+			return sciOk(summary, theme);
 		},
 	});
 
@@ -1853,23 +1853,21 @@ export default function openspecExtension(pi: ExtensionAPI): void {
 	// ─── Message Renderers ───────────────────────────────────────────
 
 	pi.registerMessageRenderer("openspec-created", (message, _options, theme) => {
-		const text = theme.fg("success", theme.bold("◈ OpenSpec")) + " " +
-			theme.fg("muted", (message.content as string).split("\n")[0]);
-		return new Text(text, 0, 0);
+		const content = (message.content as string) || "";
+		return sciBanner("◎", "openspec:created", [content.split("\n")[0]], theme);
 	});
 
 	pi.registerMessageRenderer("openspec-status", (message, _options, theme) => {
-		const text = theme.fg("accent", theme.bold("◈ OpenSpec Status\n")) +
-			theme.fg("muted", (message.content as string));
-		return new Text(text, 0, 0);
+		const content = (message.content as string) || "";
+		const lines = content.split("\n").filter(Boolean).slice(0, 6);
+		return sciBanner("◎", "openspec:status", lines, theme);
 	});
 
 	for (const type of ["openspec-spec-request", "openspec-ff-request", "openspec-verify", "openspec-apply"]) {
 		pi.registerMessageRenderer(type, (message, _options, theme) => {
 			const lines = ((message.content as string) || "").split("\n");
 			const title = lines[0] || "";
-			const text = theme.fg("warning", theme.bold(title));
-			return new Text(text, 0, 0);
+			return sciBanner("◎", type.replace("openspec-", "openspec:"), [title], theme);
 		});
 	}
 }

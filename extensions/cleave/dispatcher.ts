@@ -378,6 +378,8 @@ async function spawnChild(
 				...process.env,
 				// Prevent nested detection issues
 				PI_CHILD: "1",
+				// https://warhammer40k.fandom.com/wiki/Alpha_Legion
+				I_AM: "alpharius",
 			},
 		});
 

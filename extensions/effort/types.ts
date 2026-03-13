@@ -33,6 +33,20 @@ export const EFFORT_NAMES = {
   7: "Omnissiah",
 } as const satisfies Record<EffortLevel, string>;
 
+/**
+ * Greek letter glyphs for each effort level — α through ζ, then ω for Omnissiah.
+ * α = origin (Servitor), ω = complete arc (Omnissiah). Display alongside tier names.
+ */
+export const EFFORT_GLYPHS = {
+	1: "α",
+	2: "β",
+	3: "γ",
+	4: "δ",
+	5: "ε",
+	6: "ζ",
+	7: "ω",
+} as const satisfies Record<EffortLevel, string>;
+
 /** Union of valid tier name strings. */
 export type EffortName = (typeof EFFORT_NAMES)[EffortLevel];
 

@@ -1,7 +1,7 @@
 ---
 id: alpha-omega-visual-language
 title: α→ω Visual Language — Lifecycle Symbol System
-status: exploring
+status: implemented
 tags: [theming, ux, symbols, lifecycle, 40k, dashboard, design-tree, openspec]
 open_questions: []
 ---
@@ -111,6 +111,27 @@ Capital `Ω` (U+03A9) renders larger than lowercase `α` (U+03B1) in monospace t
 
 Updated terminal glyph: `ω` replaces `ω` everywhere in the system. The arc reads `α → ω`.
 
+### Scope correction — don't replace functional icons
+
+The original proposed mapping was overzealous. Most existing icons carry immediate semantic meaning that Greek letters would destroy:
+
+- ⚙ = "mechanical/in motion" — ξ carries none of this
+- ✓ = universal done — ω is less legible, not more
+- ⟳ = spinning/in progress — universally understood
+- ▸ = ready to execute (play arrow) — immediately clear
+- ✕ = blocked/stopped — universal, keep
+- ◉ = targeted/quality gate — fine as-is
+
+**Actual scope — only where Greek adds value not present in existing icons:**
+
+1. **Effort tier compact badges** — currently just text (Servitor/Adept/Magos/Omnissiah). α/β/γ/ω as tight footer badges is genuinely additive — compact, consistent with the system's mathematical identity, meaningful as tier shorthand.
+
+2. **`seed` status** — marginal. ◌ (hollow circle) is the weakest existing icon. α would more explicitly mark "origin of the arc." Debatable — not a clear win.
+
+3. **Conceptual/documentation framing** — α→ω lives in titles, diagrams, naming conventions. It doesn't need to colonize every UI surface to be present in the system.
+
+Everything else stays exactly as it is.
+
 ## Decisions
 
 ### Decision: Use lowercase ω (U+03C9) not capital Ω throughout
@@ -118,6 +139,23 @@ Updated terminal glyph: `ω` replaces `ω` everywhere in the system. The arc rea
 **Status:** decided
 **Rationale:** Consistent visual weight with α. α→ω is the mathematical convention for full scalar range. Capital Α would be indistinguishable from Latin A. ω is unambiguous, same size, and mathematically more precise.
 
+### Decision: Preserve all functional icons — apply Greek only to effort tiers
+
+**Status:** decided
+**Rationale:** ⚙ ✓ ⟳ ▸ ✕ ◉ all carry immediate universal meaning. Replacing them with Greek letters trades legibility for thematic consistency — bad trade. The α→ω language is real as a conceptual frame and in documentation, but the only UI surface where Greek letters are genuinely additive over the status quo is effort tier compact badges, where no strong existing icon exists and shorthand is needed.
+
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `extensions/effort/types.ts` (modified) — Added EFFORT_GLYPHS — α β γ δ ε ζ ω indexed by EffortLevel 1-7
+- `extensions/dashboard/overlay-data.ts` (modified) — effortItems() — prepend Greek glyph badge to effort tier name display
+
+### Constraints
+
+- All other icons (⚙ ✓ ⟳ ▸ ✕ ◐ ◌ ◉) preserved unchanged
+- Glyph map inlined in overlay-data.ts display logic — no import needed, effort.level is already typed

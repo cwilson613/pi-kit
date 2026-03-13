@@ -517,7 +517,9 @@ function effortItems(effort: any | undefined, expandedKeys: Set<string>): ListIt
     expandable: true,
     lines: (th) => {
       const name = effort.name ?? `Level ${effort.level ?? "?"}`;
-      return [th("accent", "Effort Tier") + th("dim", ": ") + th("muted", name)];
+      const glyphs: Record<number, string> = { 1:"α", 2:"β", 3:"γ", 4:"δ", 5:"ε", 6:"ζ", 7:"ω" };
+      const glyph = glyphs[effort.level as number] ?? "·";
+      return [th("accent", "Effort Tier") + th("dim", ": ") + th("accent", glyph) + th("dim", " ") + th("muted", name)];
     },
   });
 

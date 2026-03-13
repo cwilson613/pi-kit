@@ -413,8 +413,14 @@ export class DashboardFooter implements Component {
     const wrapLine = (line: string) =>
       b(BOX.v) + " " + padRight(truncateToWidth(line, innerWidth, "…"), innerWidth) + " " + b(BOX.v);
 
-    const topPad = Math.max(0, width - 5 - visibleWidth(topLineContent));
-    const topBorder = b(BOX.tl) + b(BOX.h) + " " + topLineContent + " " + b(BOX.h.repeat(topPad)) + b(BOX.tr);
+    // Top border overhead is 5 chars (╭─·space·╮), one more than content lines (│·space·│ = 4).
+    // Truncate topLineContent to width-5 so the border never exceeds terminal width.
+    const topMaxWidth = width - 5;
+    const safeTopLine = visibleWidth(topLineContent) > topMaxWidth
+      ? truncateToWidth(topLineContent, topMaxWidth, "…")
+      : topLineContent;
+    const topPad = Math.max(0, topMaxWidth - visibleWidth(safeTopLine));
+    const topBorder = b(BOX.tl) + b(BOX.h) + " " + safeTopLine + " " + b(BOX.h.repeat(topPad)) + b(BOX.tr);
 
     const separator = b(BOX.vr) + b(BOX.h.repeat(width - 2)) + b(BOX.vl);
 

@@ -229,6 +229,46 @@ describe("DashboardFooter raised mode polish", () => {
     }
   });
 
+  it("top border never exceeds terminal width when branch annotation makes first line wider than innerWidth (regression)", () => {
+    // Reproduces the pi-crash.log line 1924 overflow: branch tree lines were
+    // truncated to innerWidth (width-4) but the top border places the first line
+    // inside ╭─ … ─╮ which has 5 fixed chars, causing a +1 overflow.
+    (sharedState as any).designTree = {
+      ...(sharedState as any).designTree,
+      nodes: [
+        {
+          id: "memory-task-completion-facts",
+          title: "Memory: Task-Completion Facts — Mid-term \"what happened\" context for agent continuity",
+          status: "implementing",
+          branches: ["feature/memory-task-completion-facts"],
+          filePath: "docs/memory-task-completion-facts.md",
+        },
+      ],
+      implementingNodes: [],
+      focusedNode: null,
+    };
+    (sharedState as any).cleave = { status: "idle", updatedAt: Date.now(), children: [] };
+
+    const footer = new DashboardFooter(
+      {} as any,
+      makeTheme() as any,
+      // Report the long branch as current
+      { ...makeFooterData(), getGitBranch: () => "feature/memory-task-completion-facts" } as any,
+      { mode: "raised", turns: 0 } satisfies DashboardState,
+    );
+    footer.setContext(makeContext() as any);
+
+    // 167-wide terminal — the exact width from the crash log
+    const lines = footer.render(167);
+    for (const line of lines) {
+      const vw = visibleWidth(line);
+      assert.ok(
+        vw <= 167,
+        `top border overflow — visibleWidth ${vw} > 167: ${JSON.stringify(line)}`,
+      );
+    }
+  });
+
   it("raised mode meta line includes context gauge, model, and thinking (not a duplicate stats row)", () => {
     // In raised mode the context/model/thinking info lives in the pinned meta line
     // (buildRaisedMetaLine), not in a separate leftRight stats row. The meta line

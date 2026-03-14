@@ -19,13 +19,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check npm version
+        run: npm --version
 
       - name: Check if version changed or publish needed
         id: check
@@ -35,7 +38,6 @@ jobs:
           echo "local=$LOCAL_VER" >> $GITHUB_OUTPUT
           echo "npm=$NPM_VER" >> $GITHUB_OUTPUT
           if [ "$LOCAL_VER" = "$NPM_VER" ]; then
-            # Auto-bump patch for continuous delivery
             NEW_VER=$(npx semver "$LOCAL_VER" -i patch)
             echo "version=$NEW_VER" >> $GITHUB_OUTPUT
             echo "bump=true" >> $GITHUB_OUTPUT

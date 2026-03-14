@@ -1,8 +1,9 @@
 {
 	"name": "omegon",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"description": "Omegon — agent-native software engineering platform: lifecycle management, memory, orchestration, and visualization for the pi coding agent",
 	"bin": {
+		"omegon": "bin/pi.mjs",
 		"pi": "bin/pi.mjs"
 	},
 	"type": "module",

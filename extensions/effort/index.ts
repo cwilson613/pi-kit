@@ -37,6 +37,7 @@ import {
 } from "../lib/model-routing.ts";
 import { readLastUsedModel, writeLastUsedModel } from "../lib/model-preferences.ts";
 import { readOperatorProfile, loadOperatorRuntimeState, toCapabilityProfile, toCapabilityRuntimeState } from "../lib/operator-profile.ts";
+import { PROVIDER_ENV_VARS, getProviderRemediationHint } from "../lib/provider-env.ts";
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -284,7 +285,7 @@ export default function (pi: ExtensionAPI) {
       const summary = buildProviderSummary(allModels, viable, policy);
 
       if (summary.level === 0) {
-        ctx.ui.notify("⚠ No providers configured. Run /bootstrap to set up API keys.", "warning");
+        ctx.ui.notify("⚠ No providers configured. Run /bootstrap or /providers for setup hints.", "warning");
       } else if (summary.level < 3) {
         const parts: string[] = [];
         for (const t of summary.tiers) {
@@ -345,7 +346,24 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      lines.push("");
+      // Remediation hints for unconfigured providers that could fill empty tiers
+      const emptyTiers = summary.tiers.filter(t => t.status === "unavailable");
+      if (emptyTiers.length > 0 && summary.unauthProviders.length > 0) {
+        lines.push("**To configure providers:**");
+        const shown = new Set<string>();
+        for (const provider of summary.unauthProviders) {
+          if (shown.size >= 5) break;
+          const hint = getProviderRemediationHint(provider);
+          if (hint && !shown.has(provider)) {
+            shown.add(provider);
+            const entry = PROVIDER_ENV_VARS[provider];
+            const desc = entry?.description ?? provider;
+            lines.push(`  ${provider} (${desc}): ${hint}`);
+          }
+        }
+        lines.push("");
+      }
+
       lines.push(`**Headline:** ${summary.headline}`);
 
       pi.sendMessage({

@@ -3435,15 +3435,11 @@ export default function (pi: ExtensionAPI) {
         : `🧠 ${factsAfter} facts${embeddingInfo}`;
       summaryLines.push(memLine);
 
-      if (summaryLines.length > 0) {
-        ctx.ui.notify(summaryLines.join("\n"), "info");
-        await new Promise(r => setTimeout(r, 300));
-      }
+      summaryLines.push("👋 Goodbye!");
+      ctx.ui.notify(summaryLines.join("\n"), "info");
 
-      ctx.ui.notify("Goodbye!", "info");
-
-      // Small delay so the notification renders
-      await new Promise(r => setTimeout(r, 200));
+      // Let the notification render before shutdown tears down the TUI
+      await new Promise(r => setTimeout(r, 500));
 
       // ctx.shutdown() is fire-and-forget internally (sets shutdownRequested flag
       // and calls void this.shutdown() in interactive mode). We must keep this

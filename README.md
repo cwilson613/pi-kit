@@ -1,24 +1,23 @@
 # Omegon
 
-A batteries-included extension package for the pi coding agent. Adds persistent project memory, spec-driven development, local LLM inference, image generation, web search, parallel task decomposition, a live dashboard, and quality-of-life tools — all loadable with a single install.
+An opinionated distribution of [**pi**](https://github.com/badlogic/pi) — the coding agent by [Mario Zechner](https://github.com/badlogic). Omegon bundles pi core with extensions for persistent project memory, spec-driven development, local LLM inference, image generation, web search, parallel task decomposition, a live dashboard, and quality-of-life tools.
+
+> **Relationship to pi:** Omegon is not a fork or replacement. It packages pi as a dependency and layers extensions on top. All credit for the pi coding agent goes to Mario Zechner and the pi contributors. The core pi packages (`@cwilson613/pi-coding-agent`) track [upstream `badlogic/pi-mono`](https://github.com/badlogic/pi-mono) daily, adding targeted fixes for OAuth login reliability and bracketed-paste input handling. If you want standalone pi without Omegon's extensions, install `@mariozechner/pi-coding-agent` directly.
 
 ## Installation
 
-Omegon runs on top of a patched fork of the pi coding agent (`@cwilson613/pi-coding-agent`). The fork is published to npm and tracks upstream [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono) daily, adding targeted fixes for OAuth login reliability and bracketed-paste input handling.
-
-**Step 1 — Install the pi binary from the patched fork:**
-
 ```bash
-npm install -g @cwilson613/pi-coding-agent
+npm install -g omegon
 ```
 
-**Step 2 — Install Omegon extensions:**
+This installs the `pi` command globally. If a standalone pi package is already installed, omegon will transparently replace it (the same `pi` command, with extensions included). To switch back to standalone pi at any time:
 
 ```bash
-pi install https://github.com/cwilson613/omegon
+npm uninstall -g omegon
+npm install -g @mariozechner/pi-coding-agent
 ```
 
-**Step 3 — First-time setup:**
+**First-time setup:**
 
 ```bash
 pi          # start pi in any project directory

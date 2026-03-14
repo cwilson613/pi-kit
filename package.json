@@ -1,13 +1,14 @@
 {
 	"name": "omegon",
-	"version": "0.6.1",
-	"description": "Omegon — agent-native software engineering platform: lifecycle management, memory, orchestration, and visualization for the pi coding agent",
+	"version": "0.6.2",
+	"description": "Omegon — an opinionated distribution of pi (by Mario Zechner) with extensions for lifecycle management, memory, orchestration, and visualization",
 	"bin": {
 		"omegon": "bin/pi.mjs",
 		"pi": "bin/pi.mjs"
 	},
 	"type": "module",
 	"scripts": {
+		"preinstall": "sh ./scripts/preinstall.sh",
 		"test": "npx tsx --test tests/*.test.ts extensions/**/*.test.ts",
 		"typecheck": "tsc --noEmit",
 		"check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",

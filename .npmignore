@@ -6,7 +6,9 @@ tests/
 # Root-level openspec change tracking (not the extension)
 /openspec/
 examples/
-scripts/
+scripts/install-pi.sh
+scripts/deploy-pi-dev.sh
+scripts/export-kitty-theme.ts
 config/
 .git/
 .github/

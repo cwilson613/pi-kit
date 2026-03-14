@@ -15,7 +15,7 @@
  */
 
 import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
@@ -52,25 +52,33 @@ function scanAnnotations(): {
   const secretPattern = /^\/\/\s*@secret\s+([A-Z_][A-Z0-9_]*)\s+"([^"]+)"/;
   const configPattern = /^\/\/\s*@config\s+([A-Z_][A-Z0-9_]*)\s+"([^"]+)"(?:\s+\[default:\s*([^\]]*)\])?/;
 
-  // Extension directories to scan
-  const extensionDirs = [
-    join(homedir(), ".pi", "agent", "extensions"),
-    join(homedir(), ".pi", "agent", "git"),  // Omegon and other git packages
-  ];
+  // Extension directories to scan (deduplicated by realpath to avoid
+  // double-walking when dev checkout overlaps with git-installed package)
+  const seen = new Set<string>();
+  const extensionDirs: string[] = [];
+  function addDir(dir: string) {
+    try {
+      const real = realpathSync(dir);
+      if (!seen.has(real)) { seen.add(real); extensionDirs.push(dir); }
+    } catch {
+      // realpathSync fails if dir doesn't exist — skip silently
+    }
+  }
+
+  addDir(join(homedir(), ".pi", "agent", "extensions"));
+  addDir(join(homedir(), ".pi", "agent", "git"));  // Omegon and other git packages
 
   // Scan the package's own extensions/ directory (where this file lives).
   // Covers both dev (repo checkout) and npm-installed modes.
   try {
     const thisDir = dirname(fileURLToPath(import.meta.url));
-    const pkgExtDir = resolve(thisDir, "..");  // 00-secrets/ → extensions/
-    if (existsSync(pkgExtDir)) extensionDirs.push(pkgExtDir);
+    addDir(resolve(thisDir, ".."));  // 00-secrets/ → extensions/
   } catch {}
 
   // Also scan project-local extensions
   try {
     const cwd = process.cwd();
-    const projectDir = join(cwd, ".pi", "extensions");
-    if (existsSync(projectDir)) extensionDirs.push(projectDir);
+    addDir(join(cwd, ".pi", "extensions"));
   } catch {}
 
   function scanFile(filePath: string) {

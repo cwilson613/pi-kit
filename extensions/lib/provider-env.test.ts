@@ -105,4 +105,52 @@ describe("isProviderEnvConfigured", () => {
       else delete process.env.GROQ_API_KEY;
     }
   });
+
+  it("google-vertex returns false with only ADC credentials (needs project+location too)", () => {
+    const savedCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const savedProject = process.env.GOOGLE_CLOUD_PROJECT;
+    const savedLocation = process.env.GOOGLE_CLOUD_LOCATION;
+    const savedKey = process.env.GOOGLE_CLOUD_API_KEY;
+    delete process.env.GOOGLE_CLOUD_API_KEY;
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/creds.json";
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+    delete process.env.GOOGLE_CLOUD_LOCATION;
+    try {
+      assert.equal(isProviderEnvConfigured("google-vertex"), false);
+    } finally {
+      if (savedCreds !== undefined) process.env.GOOGLE_APPLICATION_CREDENTIALS = savedCreds; else delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      if (savedProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = savedProject; else delete process.env.GOOGLE_CLOUD_PROJECT;
+      if (savedLocation !== undefined) process.env.GOOGLE_CLOUD_LOCATION = savedLocation; else delete process.env.GOOGLE_CLOUD_LOCATION;
+      if (savedKey !== undefined) process.env.GOOGLE_CLOUD_API_KEY = savedKey; else delete process.env.GOOGLE_CLOUD_API_KEY;
+    }
+  });
+
+  it("google-vertex returns true with full ADC conjunction", () => {
+    const savedCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const savedProject = process.env.GOOGLE_CLOUD_PROJECT;
+    const savedLocation = process.env.GOOGLE_CLOUD_LOCATION;
+    const savedKey = process.env.GOOGLE_CLOUD_API_KEY;
+    delete process.env.GOOGLE_CLOUD_API_KEY;
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/creds.json";
+    process.env.GOOGLE_CLOUD_PROJECT = "my-project";
+    process.env.GOOGLE_CLOUD_LOCATION = "us-central1";
+    try {
+      assert.equal(isProviderEnvConfigured("google-vertex"), true);
+    } finally {
+      if (savedCreds !== undefined) process.env.GOOGLE_APPLICATION_CREDENTIALS = savedCreds; else delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      if (savedProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = savedProject; else delete process.env.GOOGLE_CLOUD_PROJECT;
+      if (savedLocation !== undefined) process.env.GOOGLE_CLOUD_LOCATION = savedLocation; else delete process.env.GOOGLE_CLOUD_LOCATION;
+      if (savedKey !== undefined) process.env.GOOGLE_CLOUD_API_KEY = savedKey; else delete process.env.GOOGLE_CLOUD_API_KEY;
+    }
+  });
+
+  it("google-vertex returns true with just API key", () => {
+    const savedKey = process.env.GOOGLE_CLOUD_API_KEY;
+    process.env.GOOGLE_CLOUD_API_KEY = "test-key";
+    try {
+      assert.equal(isProviderEnvConfigured("google-vertex"), true);
+    } finally {
+      if (savedKey !== undefined) process.env.GOOGLE_CLOUD_API_KEY = savedKey; else delete process.env.GOOGLE_CLOUD_API_KEY;
+    }
+  });
 });

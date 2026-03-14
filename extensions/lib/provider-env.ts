@@ -2,6 +2,7 @@
 // @secret ANTHROPIC_OAUTH_TOKEN "Anthropic OAuth token (takes precedence over API key)"
 // @secret OPENAI_API_KEY "OpenAI API key for GPT models"
 // @secret COPILOT_GITHUB_TOKEN "GitHub Copilot token (primary, set by Copilot extension)"
+// @secret GH_TOKEN "GitHub CLI token (also used as Copilot fallback)"
 // @secret GEMINI_API_KEY "Google Gemini API key"
 // @secret XAI_API_KEY "xAI API key for Grok models"
 // @secret GROQ_API_KEY "Groq API key for fast inference"
@@ -14,12 +15,12 @@
 /**
  * Mapping from pi model provider names to their env var API keys.
  *
- * Mirrors the envMap in pi-ai's env-api-keys.js — must stay in sync.
- * Used by /providers to show remediation hints, and by bootstrap to
- * detect which providers are configured.
+ * Covers common providers from pi-ai's env-api-keys.js. Niche providers
+ * (vercel-ai-gateway, zai, minimax, opencode, kimi-coding) are omitted —
+ * add them here if they gain routing relevance.
  *
  * SYNC CHECK: compare against vendor/pi-mono/packages/ai/dist/env-api-keys.js
- * when updating. If that file adds a new provider, add it here too.
+ * when updating.
  */
 export interface ProviderEnvEntry {
   /** Primary env var name (the one users should configure) */
@@ -32,6 +33,9 @@ export interface ProviderEnvEntry {
 
 export const PROVIDER_ENV_VARS: Record<string, ProviderEnvEntry> = {
   anthropic: {
+    // envVar is ANTHROPIC_API_KEY (what users should configure via /secrets),
+    // but allEnvVars lists ANTHROPIC_OAUTH_TOKEN first because pi checks it
+    // with higher priority at runtime (OAuth login takes precedence over key).
     envVar: "ANTHROPIC_API_KEY",
     allEnvVars: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     description: "Claude models (opus, sonnet, haiku)",
@@ -52,9 +56,12 @@ export const PROVIDER_ENV_VARS: Record<string, ProviderEnvEntry> = {
     description: "Google Gemini models",
   },
   "google-vertex": {
+    // ADC auth requires credentials file + project + location (all three).
+    // GOOGLE_CLOUD_API_KEY is the simple path; ADC is complex — see
+    // isProviderEnvConfigured() special case below.
     envVar: "GOOGLE_CLOUD_API_KEY",
-    allEnvVars: ["GOOGLE_CLOUD_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"],
-    description: "Google Vertex AI (or ADC credentials)",
+    allEnvVars: ["GOOGLE_CLOUD_API_KEY"],
+    description: "Google Vertex AI (or gcloud ADC credentials)",
   },
   xai: {
     envVar: "XAI_API_KEY",
@@ -128,5 +135,15 @@ export function getProviderRemediationHint(provider: string): string | undefined
 export function isProviderEnvConfigured(provider: string): boolean {
   const entry = PROVIDER_ENV_VARS[provider];
   if (!entry) return false;
+
+  // google-vertex ADC requires credentials + project + location (conjunction)
+  if (provider === "google-vertex") {
+    if (process.env.GOOGLE_CLOUD_API_KEY) return true;
+    const hasAdc = !!(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    const hasProject = !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT);
+    const hasLocation = !!(process.env.GOOGLE_CLOUD_LOCATION);
+    return hasAdc && hasProject && hasLocation;
+  }
+
   return entry.allEnvVars.some(v => !!process.env[v]);
 }

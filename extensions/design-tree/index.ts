@@ -29,6 +29,8 @@ import { sharedState } from "../shared-state.ts";
 
 import { emitDesignTreeState } from "./dashboard-state.ts";
 import { sciCall, sciLoading, sciOk, sciErr, sciExpanded, sciBanner } from "../sci-ui.ts";
+import { SciDesignCard, buildCardDetails } from "./design-card.ts";
+import type { DesignCardDetails } from "./design-card.ts";
 import { emitConstraintCandidates, emitDecisionCandidates } from "./lifecycle-emitter.ts";
 import { resolveNodeOpenSpecBinding, resolveDesignSpecBinding } from "../openspec/archive-gate.ts";
 import { resolveLifecycleSummary, getAssessmentStatus, getChange, getOpenSpecDir } from "../openspec/spec.ts";
@@ -36,7 +38,7 @@ import { evaluateLifecycleReconciliation } from "../openspec/reconcile.ts";
 import type { LifecycleSummary } from "../openspec/spec.ts";
 
 import type { DesignNode, DesignTree, NodeStatus, IssueType, Priority } from "./types.ts";
-import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS, VALID_ISSUE_TYPES } from "./types.ts";
+import { VALID_STATUSES, STATUS_ICONS, STATUS_COLORS, VALID_ISSUE_TYPES, PRIORITY_LABELS } from "./types.ts";
 import {
 	scanDesignDocs,
 	getChildren,
@@ -599,6 +601,33 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 				return sciErr(errLine.split("\n")[0].slice(0, 80), theme);
 			}
 
+			const details = (result.details || {}) as Record<string, any>;
+
+			// Rich card for single node results (expanded)
+			if (expanded && details.node) {
+				const n = details.node as Record<string, any>;
+				const cardDetails: DesignCardDetails = {
+					id: n.id ?? "",
+					title: n.title ?? "",
+					status: n.status ?? "seed",
+					priority: n.priority ?? undefined,
+					issue_type: n.issue_type ?? undefined,
+					overview: n.sections?.overview ?? "",
+					decisions: n.sections?.decisions?.map((d: any) => ({ title: d.title, status: d.status })) ?? [],
+					openQuestions: n.sections?.openQuestions ?? [],
+					dependencies: (n.dependencies ?? []).map((id: string) => {
+						const dep = tree.nodes.get(id);
+						return dep ? { id: dep.id, title: dep.title, status: dep.status } : { id, title: id, status: "seed" as NodeStatus };
+					}),
+					children: n.children ?? [],
+					fileScope: n.sections?.implementationNotes?.fileScope ?? [],
+					constraints: n.sections?.implementationNotes?.constraints ?? [],
+					openspec_change: n.openspecChange ?? undefined,
+					branches: n.branches ?? [],
+				};
+				return new SciDesignCard(`design_tree:node → ${cardDetails.id}`, cardDetails, theme);
+			}
+
 			if (expanded) {
 				const first = result.content?.[0];
 				const fullText = (first && 'text' in first ? first.text : null) ?? "";
@@ -606,7 +635,6 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 				return sciExpanded(lines, `${lines.length} lines`, theme);
 			}
 
-			const details = (result.details || {}) as Record<string, any>;
 			let summary = "";
 
 			if (details.nodes) {
@@ -1401,6 +1429,9 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 					emitCurrentState();
 
 					const node = tree.nodes.get(focusedNode!)!;
+					const sections = getNodeSections(node);
+					const cardDetails = buildCardDetails(node, sections, tree);
+
 					const openQ = node.open_questions.length > 0
 						? `\n\nOpen questions:\n${node.open_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
 						: "";
@@ -1410,6 +1441,7 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 							customType: "design-focus",
 							content: `[Design Focus: ${node.title} (${node.status})]${openQ}\n\nLet's explore this design space.`,
 							display: true,
+							details: cardDetails,
 						},
 						{ triggerTurn: false },
 					);
@@ -1664,33 +1696,68 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 			const node = tree.nodes.get(focusedNode);
 			if (node) {
 				const sections = getNodeSections(node);
-				const openQ = node.open_questions.length > 0
-					? `\n\nOpen questions:\n${node.open_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
-					: "";
-				const deps = node.dependencies
-					.map((id) => {
-						const d = tree.nodes.get(id);
-						return d ? `- ${d.title} (${d.status})` : null;
-					})
-					.filter(Boolean)
-					.join("\n");
-				const depsText = deps ? `\nDependencies:\n${deps}` : "";
+				const cardDetails = buildCardDetails(node, sections, tree);
 
-				const decisionsSummary = sections.decisions.length > 0
-					? `\n\nDecisions:\n${sections.decisions.map((d) => `- ${d.title} (${d.status})`).join("\n")}`
-					: "";
+				// Build structured content for the model
+				const contentParts: string[] = [];
+				contentParts.push(`[Design Tree — Focused on: ${node.title} (${node.status})]`);
+
+				if (node.priority != null || node.issue_type) {
+					const meta: string[] = [];
+					if (node.priority != null) meta.push(`P${node.priority} ${PRIORITY_LABELS[node.priority as Priority] ?? ""}`);
+					if (node.issue_type) meta.push(node.issue_type);
+					contentParts.push(`Type: ${meta.join(" · ")}`);
+				}
+
+				if (sections.overview?.trim()) {
+					contentParts.push(`\nOverview: ${sections.overview.trim().slice(0, 300)}`);
+				}
+
+				if (node.dependencies.length > 0) {
+					const deps = node.dependencies
+						.map((id) => { const d = tree.nodes.get(id); return d ? `- ${d.title} (${d.status})` : null; })
+						.filter(Boolean);
+					if (deps.length > 0) contentParts.push(`\nDependencies:\n${deps.join("\n")}`);
+				}
+
+				// Children
+				const children = Array.from(tree.nodes.values()).filter((n) => n.parent === node.id);
+				if (children.length > 0) {
+					contentParts.push(`\nChildren:\n${children.map((c) => `- ${c.title} (${c.status})`).join("\n")}`);
+				}
+
+				if (sections.decisions.length > 0) {
+					contentParts.push(`\nDecisions:\n${sections.decisions.map((d) => `- ${d.title} (${d.status})`).join("\n")}`);
+				}
+
+				if (node.open_questions.length > 0) {
+					contentParts.push(`\nOpen questions:\n${node.open_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`);
+				}
+
+				if (sections.implementationNotes.fileScope.length > 0) {
+					const scope = sections.implementationNotes.fileScope
+						.map((f) => `- ${f.action ? `[${f.action}] ` : ""}${f.path}`)
+						.join("\n");
+					contentParts.push(`\nFile scope:\n${scope}`);
+				}
+
+				if (sections.implementationNotes.constraints.length > 0) {
+					contentParts.push(`\nConstraints:\n${sections.implementationNotes.constraints.map((c) => `- ${c}`).join("\n")}`);
+				}
+
+				contentParts.push(
+					`\nUse design_tree(action='node', node_id='${node.id}') to read the full document including research sections. ` +
+					`Use design_tree_update to modify it. ` +
+					`When this discussion reaches a conclusion, use design_tree_update to set_status to 'decided'. ` +
+					`If new sub-topics emerge, use design_tree_update to branch child nodes.`,
+				);
 
 				return {
 					message: {
 						customType: "design-context",
-						content:
-							`[Design Tree — Focused on: ${node.title} (${node.status})]` +
-							depsText + decisionsSummary + openQ +
-							`\n\nUse design_tree(action='node', node_id='${node.id}') to read the full document including research sections. ` +
-							`Use design_tree_update to modify it. ` +
-							`When this discussion reaches a conclusion, use design_tree_update to set_status to 'decided'. ` +
-							`If new sub-topics emerge, use design_tree_update to branch child nodes.`,
+						content: contentParts.join("\n"),
 						display: false,
+						details: cardDetails,
 					},
 				};
 			}
@@ -1752,6 +1819,14 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 	// ─── Message Renderers ───────────────────────────────────────────────
 
 	pi.registerMessageRenderer("design-focus", (message, _options, theme) => {
+		const details = message.details as DesignCardDetails | undefined;
+
+		// Rich card when details are available
+		if (details?.id) {
+			return new SciDesignCard(`design:focus → ${details.id}`, details, theme);
+		}
+
+		// Fallback for legacy messages without details
 		const titleMatch = (message.content as string).match(/\[Design Focus: (.+?)\]/);
 		const title = titleMatch ? titleMatch[1] : "Unknown";
 
@@ -1767,6 +1842,20 @@ export default function designTreeExtension(pi: ExtensionAPI): void {
 		const questionMatch = (message.content as string).match(/Question: (.+)/);
 		const question = questionMatch ? questionMatch[1] : "Unknown";
 		return sciBanner("◈", "design:frontier", [question], theme);
+	});
+
+	pi.registerMessageRenderer("design-context", (message, _options, theme) => {
+		const details = message.details as DesignCardDetails | undefined;
+
+		// Rich card when details are available (focused node context)
+		if (details?.id) {
+			return new SciDesignCard(`design:context → ${details.id}`, details, theme);
+		}
+
+		// Summary context (no focused node) — show as a thin banner
+		const content = (message.content as string) || "";
+		const firstLine = content.split("\n")[0] || "";
+		return sciBanner("◈", "design:context", [firstLine], theme);
 	});
 
 	// ─── Branch Auto-Association ─────────────────────────────────────────

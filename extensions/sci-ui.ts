@@ -61,6 +61,15 @@ export const TOOL_GLYPHS: Record<string, string> = {
 	render_composition_video: "⬡",
 	generate_image_local: "⬡",
 	view: "⬡",
+	// Inference / model tools
+	set_model_tier: "◆",
+	set_thinking_level: "◆",
+	ask_local_model: "◆",
+	list_local_models: "◆",
+	manage_ollama: "◆",
+	switch_to_offline_driver: "◆",
+	// Profile / misc
+	manage_tools: "⊞",
 };
 
 export function glyphFor(toolName: string): string {

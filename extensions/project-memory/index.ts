@@ -67,7 +67,7 @@ import {
   createTriggerState,
   shouldExtract,
 } from "./triggers.ts";
-import { runExtractionV2, runGlobalExtraction, killActiveExtraction, killAllSubprocesses, generateEpisode, generateEpisodeDirect, generateEpisodeWithFallback, buildTemplateEpisode, runSectionPruningPass, type SessionTelemetry } from "./extraction-v2.ts";
+import { runExtractionV2, runGlobalExtraction, killActiveExtraction, killAllSubprocesses, generateEpisodeDirect, generateEpisodeWithFallback, buildTemplateEpisode, runSectionPruningPass, type SessionTelemetry } from "./extraction-v2.ts";
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.ts";
 import { SECTIONS } from "./template.ts";
 import { serializeConversation, convertToLlm } from "@styrene-lab/pi-coding-agent";
@@ -156,23 +156,17 @@ Summarize the prefix to provide context for the retained suffix:
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
 // ---------------------------------------------------------------------------
-// Ollama helpers for local-model compaction fallback
+// Local model discovery for compaction fallback
 // ---------------------------------------------------------------------------
 
-const OLLAMA_URL = () => process.env.OLLAMA_HOST || process.env.LOCAL_INFERENCE_URL || "http://localhost:11434";
-
-/** Embedding model names that must not be used for chat completions */
-const EMBEDDING_MODEL_PATTERN = /embed|embedding/i;
-
-/** Preferred models for summarization, in priority order */
-// Canonical preference list + family prefix catch-alls from shared registry.
-// Specific tags first (largest/best wins via startsWith); families catch any
-// installed variant not explicitly listed (e.g. qwen3:14b-q4_k_m).
-// Edit extensions/lib/local-models.ts to update model preferences.
 import {
   PREFERRED_ORDER as LOCAL_MODELS_ORDER,
   PREFERRED_FAMILIES,
 } from "../lib/local-models.ts";
+import { chatDirect } from "./llm-direct.ts";
+
+const OLLAMA_URL = () => process.env.OLLAMA_HOST || process.env.LOCAL_INFERENCE_URL || "http://localhost:11434";
+const EMBEDDING_MODEL_PATTERN = /embed|embedding/i;
 const PREFERRED_CHAT_MODELS = [...LOCAL_MODELS_ORDER, ...PREFERRED_FAMILIES];
 
 /**
@@ -187,47 +181,14 @@ async function discoverLocalChatModel(): Promise<string | null> {
     const available = (data.data?.map((m: { id: string }) => m.id) ?? [])
       .filter((id: string) => !EMBEDDING_MODEL_PATTERN.test(id));
     if (available.length === 0) return null;
-
-    // Try preferred models first (startsWith for exact matching)
     for (const pref of PREFERRED_CHAT_MODELS) {
       const found = available.find((id: string) => id.startsWith(pref));
       if (found) return found;
     }
-    return available[0]; // Any non-embedding model
+    return available[0];
   } catch {
     return null;
   }
-}
-
-/**
- * Send a chat completion to Ollama. Returns trimmed content or null.
- */
-async function ollamaChat(
-  model: string,
-  systemPrompt: string,
-  userPrompt: string,
-  opts: { maxTokens?: number; signal?: AbortSignal },
-): Promise<string | null> {
-  const resp = await fetch(`${OLLAMA_URL()}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      max_tokens: opts.maxTokens ?? 4096,
-      temperature: 0.3,
-      // Request a reasonable context window for the local model
-      num_ctx: 32768,
-    }),
-    signal: opts.signal,
-  });
-  if (!resp.ok) return null;
-  const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content?.trim();
-  return content || null;
 }
 
 /**
@@ -362,6 +323,8 @@ export default function (pi: ExtensionAPI) {
   let exitEpisodeDone = false;
   /** Pending embed promises — tracked so shutdown can await them before DB close */
   const pendingEmbeds = new Set<Promise<unknown>>();
+  /** Concurrency guard — prevents pruning, indexing, and extraction from overlapping */
+  let backgroundTaskRunning = false;
   let consecutiveExtractionFailures = 0;
   let memoryDir = "";
 
@@ -770,14 +733,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     // --- Decay sweep + per-section pruning (background, non-blocking) ---
-    // 1. Archive facts that have decayed below their profile's minimum confidence.
-    //    Converts passive decay (lower score on read) into active archival.
-    //    Without this, decayed facts accumulate forever as active but invisible.
-    // 2. When any section exceeds 60 facts, run a targeted LLM archival pass
-    //    to bring it back under the ceiling. This prevents monotonic accumulation.
-    // Runs fire-and-forget so it doesn't block session startup.
+    // Guarded by backgroundTaskRunning to prevent overlap with indexing/extraction.
     if (store) {
       (async () => {
+        if (backgroundTaskRunning) return;
+        backgroundTaskRunning = true;
         try {
           const mind = activeMind();
 
@@ -792,38 +752,28 @@ export default function (pi: ExtensionAPI) {
           const sectionCounts = store!.getSectionCounts(mind);
           for (const [section, count] of sectionCounts) {
             if (count <= SECTION_CEILING) continue;
-            // Skip Recent Work — decay sweep handles it (fast decay, no LLM needed)
             if (section === "Recent Work") continue;
 
-            // Single query — all subsequent phases operate on this in-memory list.
-            // getFactsBySection already computes confidence via computeConfidence
-            // (canonical formula from core.ts), so sorted.confidence is correct.
             const facts = store!.getFactsBySection(mind, section);
             const excess = count - SECTION_CEILING;
             let archived = 0;
             const archivedIds = new Set<string>();
 
-            // Phase 2a: Deterministic cull — archive only facts with confidence
-            // below a hard floor. This protects semantically important facts that
-            // happen to have low confidence purely due to age. Facts above the
-            // floor are sent to the LLM for judgment (phase 2b).
+            // Phase 2a: Deterministic cull — below confidence floor
             const CONFIDENCE_FLOOR = 0.25;
             const sorted = [...facts].sort((a, b) => a.confidence - b.confidence);
             for (const f of sorted) {
-              if (archived >= excess) break;        // enough culled
-              if (f.confidence > CONFIDENCE_FLOOR) break; // above floor → LLM decides
+              if (archived >= excess) break;
+              if (f.confidence > CONFIDENCE_FLOOR) break;
               store!.archiveFact(f.id);
               archivedIds.add(f.id);
               archived++;
             }
 
-            // Phase 2b: LLM-assisted pruning for the remaining excess.
-            // Filter the in-memory array (no re-query) and send a manageable
-            // batch (up to 80 facts) to the LLM for nuanced review.
+            // Phase 2b: LLM-assisted pruning for remaining excess
             const remaining = facts.filter(f => !archivedIds.has(f.id));
             const stillExcess = remaining.length - SECTION_CEILING;
             if (stillExcess > 0) {
-              // Send the bottom 80 by confidence for LLM review
               const batch = [...remaining]
                 .sort((a, b) => a.confidence - b.confidence)
                 .slice(0, Math.min(80, remaining.length));
@@ -845,96 +795,14 @@ export default function (pi: ExtensionAPI) {
           }
         } catch {
           // Best effort — don't interrupt session
+        } finally {
+          backgroundTaskRunning = false;
         }
       })();
     }
 
-    // --- Proactive startup injection (session-continuity) ---
-    // Inject three layers before the user's first message so continuation
-    // questions work without waiting for semantic retrieval.
-    // Layer 1: last 1 session episode (most recent — use memory_episodes for more)
-    // Layer 2: top-15 recently-reinforced facts (recency window, cross-section)
-    // Layer 3: Decisions + Constraints + Known Issues always; Architecture capped at 10
-    //
-    // Architecture is the largest section by fact count. Loading all Architecture
-    // facts unconditionally blows context on large projects. The top-10 by recency
-    // covers active concerns; older facts are retrievable via memory_recall.
-    //
-    // This runs asynchronously so it doesn't block the TUI from appearing.
-    // The payload is injected as a pre-prompt system message on the first turn.
-    if (store) {
-      try {
-        const mind = activeMind();
-        const recentEpisodes = store.getEpisodes(mind, 1);
-        const allFacts = store.getActiveFacts(mind);
-
-        // Recency window: top 15 by last_reinforced (any section)
-        const recentFacts = [...allFacts]
-          .sort((a, b) => new Date(b.last_reinforced).getTime() - new Date(a.last_reinforced).getTime())
-          .slice(0, 15);
-
-        // Core structural facts: Decisions + Constraints + Known Issues always loaded.
-        // Architecture capped at 10 most-recently-reinforced (largest section by volume).
-        const coreFacts = allFacts.filter(f =>
-          f.section === "Decisions" || f.section === "Constraints" || f.section === "Known Issues"
-        );
-        const archFacts = [...allFacts]
-          .filter(f => f.section === "Architecture")
-          .sort((a, b) => new Date(b.last_reinforced).getTime() - new Date(a.last_reinforced).getTime())
-          .slice(0, 10);
-
-        // Merge: recent episodes + recency window + core sections (deduplicated)
-        // Budget-capped to prevent context overflow on large fact stores.
-        const STARTUP_MAX_CHARS = 12_000; // ~3K tokens — leaves room for system prompt + design-tree
-        let startupChars = 0;
-        const startupFactIds = new Set<string>();
-        const startupFacts: typeof allFacts = [];
-        for (const f of [...coreFacts, ...archFacts, ...recentFacts]) {
-          if (startupFactIds.has(f.id)) continue;
-          const cost = f.content.length + 20;
-          if (startupChars + cost > STARTUP_MAX_CHARS) break;
-          startupFacts.push(f);
-          startupFactIds.add(f.id);
-          startupChars += cost;
-        }
-
-        if (recentEpisodes.length > 0 || startupFacts.length > 0) {
-          const lines: string[] = ["<!-- Startup Context — recent sessions and structural memory -->", ""];
-
-          if (recentEpisodes.length > 0) {
-            lines.push("## Recent Sessions");
-            lines.push("_Episodic memory — what happened and why_");
-            lines.push("");
-            for (const ep of recentEpisodes) {
-              lines.push(`### ${ep.date}: ${ep.title}`);
-              lines.push(ep.narrative);
-              lines.push("");
-            }
-          }
-
-          if (startupFacts.length > 0) {
-            const factsBySection = new Map<string, typeof startupFacts>();
-            for (const f of startupFacts) {
-              const sec = factsBySection.get(f.section) ?? [];
-              sec.push(f);
-              factsBySection.set(f.section, sec);
-            }
-            for (const [section, facts] of factsBySection) {
-              lines.push(`## ${section}`);
-              lines.push("");
-              for (const f of facts) {
-                lines.push(`- ${f.content}`);
-              }
-              lines.push("");
-            }
-          }
-
-          startupInjectionPayload = lines.join("\n");
-        }
-      } catch {
-        // Best effort — don't block startup
-      }
-    }
+    // Startup injection payload is built lazily in before_agent_start (first turn)
+    // to avoid loading all facts twice (once here, once in the injection pipeline).
 
     updateStatus(ctx);
   });
@@ -952,11 +820,9 @@ export default function (pi: ExtensionAPI) {
     customInstructions: string | undefined,
     signal: AbortSignal
   ): Promise<{ summary: string; details: any } | null> {
-    // Build summarization prompt (same as existing logic)
     const llmMessages = convertToLlm(prep.messagesToSummarize);
     let conversationText = sanitizeCompactionText(serializeConversation(llmMessages));
 
-    // Truncate to ~60k chars (~15k tokens) to fit local model context windows
     const MAX_CONVERSATION_CHARS = 60_000;
     if (conversationText.length > MAX_CONVERSATION_CHARS) {
       conversationText = "...[earlier conversation truncated]...\n\n"
@@ -968,7 +834,6 @@ export default function (pi: ExtensionAPI) {
       promptText += `<previous-summary>\n${prep.previousSummary}\n</previous-summary>\n\n`;
     }
 
-    // Inject project memory context for richer summaries
     if (store) {
       const mind = activeMind();
       const facts = store.getActiveFacts(mind);
@@ -982,7 +847,7 @@ export default function (pi: ExtensionAPI) {
     const basePrompt = prep.previousSummary ? COMPACTION_UPDATE_PROMPT : COMPACTION_INITIAL_PROMPT;
     promptText += customInstructions ? `${basePrompt}\n\nAdditional focus: ${customInstructions}` : basePrompt;
 
-    // Handle split turn prefix if needed
+    // Handle split turn prefix
     let turnPrefixSummary = "";
     if (prep.isSplitTurn && prep.turnPrefixMessages.length > 0) {
       const prefixMessages = convertToLlm(prep.turnPrefixMessages);
@@ -991,36 +856,45 @@ export default function (pi: ExtensionAPI) {
         prefixText = "...[truncated]...\n\n" + prefixText.slice(-MAX_CONVERSATION_CHARS);
       }
       const prefixPrompt = `<conversation>\n${prefixText}\n</conversation>\n\n${COMPACTION_TURN_PREFIX_PROMPT}`;
-
       try {
-        const prefixResp = await ollamaChat(localModel, COMPACTION_SYSTEM_PROMPT, prefixPrompt, {
-          maxTokens: 2048, signal,
+        const result = await chatDirect({
+          model: localModel,
+          systemPrompt: COMPACTION_SYSTEM_PROMPT,
+          userMessage: prefixPrompt,
+          maxTokens: 2048,
+          timeout: 30_000,
+          signal,
         });
-        if (prefixResp) turnPrefixSummary = prefixResp;
+        turnPrefixSummary = result.content;
       } catch {
         // If turn prefix fails, continue without it
       }
     }
 
-    // Generate main summary
-    const summary = await ollamaChat(localModel, COMPACTION_SYSTEM_PROMPT, promptText, {
-      maxTokens: 4096, signal,
-    });
+    // Generate main summary via direct HTTP (no subprocess)
+    try {
+      const result = await chatDirect({
+        model: localModel,
+        systemPrompt: COMPACTION_SYSTEM_PROMPT,
+        userMessage: promptText,
+        maxTokens: 4096,
+        timeout: 45_000,
+        signal,
+      });
 
-    if (!summary) return null;
+      let fullSummary = result.content;
+      if (turnPrefixSummary) {
+        fullSummary += `\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
+      }
+      fullSummary += formatFileOps(prep.fileOps);
 
-    let fullSummary = summary;
-    if (turnPrefixSummary) {
-      fullSummary += `\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
+      return {
+        summary: fullSummary,
+        details: buildFileDetails(prep.fileOps),
+      };
+    } catch {
+      return null;
     }
-
-    // Append file operations
-    fullSummary += formatFileOps(prep.fileOps);
-
-    return {
-      summary: fullSummary,
-      details: buildFileDetails(prep.fileOps),
-    };
   }
 
   /**
@@ -1671,11 +1545,42 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // Proactive startup payload — prepend on firstTurn if available.
-    const startupSection = startupInjectionPayload
-      ? `\n\n${startupInjectionPayload}`
-      : "";
-    startupInjectionPayload = null; // consume once
+    // Proactive startup payload — built lazily on firstTurn from allFacts (already loaded above).
+    // Avoids the old pattern of loading all facts in session_start AND again here.
+    let startupSection = "";
+    if (startupInjectionPayload) {
+      startupSection = `\n\n${startupInjectionPayload}`;
+      startupInjectionPayload = null;
+    } else if (!postCompaction) {
+      // First turn: build startup context from allFacts + episodes (already in memory)
+      try {
+        const recentEpisodes = store.getEpisodes(mind, 1);
+        const lines: string[] = ["<!-- Startup Context — recent sessions and structural memory -->", ""];
+        if (recentEpisodes.length > 0) {
+          lines.push("## Recent Sessions");
+          lines.push("_Episodic memory — what happened and why_");
+          lines.push("");
+          for (const ep of recentEpisodes) {
+            lines.push(`### ${ep.date}: ${ep.title}`);
+            lines.push(ep.narrative);
+            lines.push("");
+          }
+        }
+        // Decisions section from allFacts (already sorted/injected above — add any not yet included)
+        const decisionsList = allFacts.filter(f => f.section === "Decisions" && !injectedIds.has(f.id)).slice(0, 5);
+        if (decisionsList.length > 0) {
+          lines.push("## Decisions");
+          lines.push("");
+          for (const f of decisionsList) lines.push(`- ${f.content}`);
+          lines.push("");
+        }
+        if (lines.length > 2) {
+          startupSection = `\n\n${lines.join("\n")}`;
+        }
+      } catch {
+        // Best effort
+      }
+    }
 
     const budgetNote = currentChars >= MAX_MEMORY_CHARS
       ? ` (budget-capped at ~${Math.round(MAX_MEMORY_CHARS / 1000)}K chars)`
@@ -1855,8 +1760,9 @@ export default function (pi: ExtensionAPI) {
 
     if (shouldExtract(triggerState, usage.tokens ?? 0, config, consecutiveExtractionFailures)) {
       activeExtractionPromise = (async () => {
-        if (!store || triggerState.isRunning) return;
+        if (!store || triggerState.isRunning || backgroundTaskRunning) return;
         triggerState.isRunning = true;
+        backgroundTaskRunning = true;
         try {
           await runExtractionCycle(ctx, config);
           const usage = ctx.getContextUsage();
@@ -1869,6 +1775,7 @@ export default function (pi: ExtensionAPI) {
           consecutiveExtractionFailures++;
         } finally {
           triggerState.isRunning = false;
+          backgroundTaskRunning = false;
         }
       })();
       activeExtractionPromise.catch(() => {}).finally(() => { activeExtractionPromise = null; });

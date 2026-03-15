@@ -10,163 +10,116 @@
  *   supersede — "This new fact replaces that old one" (by ID + new content)
  *   archive   — "This fact appears stale/wrong" (by ID)
  *   connect   — "These two facts are related" (global extraction only)
+ *
+ * All LLM calls use direct HTTP (llm-direct.ts) — zero subprocess overhead.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
 import type { MemoryConfig } from "./types.ts";
 import type { Fact, Edge } from "./factstore.ts";
-import { resolveOmegonSubprocess } from "../lib/omegon-subprocess.ts";
+import { chatDirect, cleanModelOutput, isCloudModel, getBudgetCloudModel } from "./llm-direct.ts";
 
 // ---------------------------------------------------------------------------
-// Shared subprocess runner
+// Cancellation support
 // ---------------------------------------------------------------------------
 
-/** Track the currently running extraction process for cancellation */
-let activeProc: ChildProcess | null = null;
-
-/** Track all spawned processes for cleanup on module unload */
-const allProcs = new Set<ChildProcess>();
-
-/** Track the active direct-HTTP extraction AbortController for cancellation */
-let activeDirectAbort: AbortController | null = null;
-
-function killProc(proc: ChildProcess): void {
-  try {
-    if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-  } catch {
-    try { proc.kill("SIGTERM"); } catch { /* already dead */ }
-  }
-}
+/** Active AbortController for the current extraction — killable externally */
+let activeAbort: AbortController | null = null;
 
 /**
- * Kill the active extraction — subprocess OR direct HTTP fetch.
- * Returns true if something was killed/aborted.
+ * Kill the active extraction (abort in-flight HTTP request).
+ * Returns true if something was aborted.
  */
 export function killActiveExtraction(): boolean {
-  let killed = false;
-  if (activeProc) {
-    killProc(activeProc);
-    activeProc = null;
-    killed = true;
+  if (activeAbort) {
+    activeAbort.abort();
+    activeAbort = null;
+    return true;
   }
-  if (activeDirectAbort) {
-    activeDirectAbort.abort();
-    activeDirectAbort = null;
-    killed = true;
-  }
-  return killed;
+  return false;
 }
 
 /**
- * Kill ALL tracked subprocesses AND abort any direct HTTP extraction.
- * Use during shutdown/reload to prevent orphaned processes and hanging fetches.
+ * Kill all active operations. Alias for killActiveExtraction since we no
+ * longer spawn subprocesses — kept for API compatibility with index.ts.
  */
 export function killAllSubprocesses(): void {
-  for (const proc of allProcs) {
-    killProc(proc);
-  }
-  allProcs.clear();
-  activeProc = null;
-  if (activeDirectAbort) {
-    activeDirectAbort.abort();
-    activeDirectAbort = null;
-  }
+  killActiveExtraction();
 }
 
 /** Check if an extraction is currently in progress */
 export function isExtractionRunning(): boolean {
-  return activeProc !== null || activeDirectAbort !== null;
+  return activeAbort !== null;
 }
 
+// ---------------------------------------------------------------------------
+// Shared LLM call with abort tracking
+// ---------------------------------------------------------------------------
+
 /**
- * Spawn a pi subprocess with a system prompt and user message.
- * Returns the raw stdout output. Handles timeout, cleanup, code fence stripping.
+ * Run a tracked LLM call — sets activeAbort for external cancellation.
+ * Only one tracked call at a time (new call aborts previous).
  */
-function spawnExtraction(opts: {
-  cwd: string;
+async function trackedChat(opts: {
   model: string;
   systemPrompt: string;
   userMessage: string;
   timeout: number;
+  maxTokens?: number;
   label: string;
 }): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    if (activeProc) {
-      reject(new Error(`${opts.label}: extraction already in progress`));
-      return;
-    }
+  // Cancel any previous tracked call
+  if (activeAbort) activeAbort.abort();
+  const controller = new AbortController();
+  activeAbort = controller;
 
-    const omegon = resolveOmegonSubprocess();
-    const args = [
-      ...omegon.argvPrefix,
-      "--model", opts.model,
-      "--no-session", "--no-tools", "--no-extensions",
-      "--no-skills", "--no-themes", "--thinking", "off",
-      "--system-prompt", opts.systemPrompt,
-      "-p", opts.userMessage,
-    ];
-
-    const proc = spawn(omegon.command, args, {
-      cwd: opts.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      // Detach into new session so child has no controlling terminal.
-      // Prevents child pi from opening /dev/tty and setting kitty keyboard
-      // protocol, which corrupts parent terminal state if child is killed.
-      detached: true,
-      env: { ...process.env, TERM: "dumb" },
+  try {
+    const result = await chatDirect({
+      model: opts.model,
+      systemPrompt: opts.systemPrompt,
+      userMessage: opts.userMessage,
+      maxTokens: opts.maxTokens ?? 2048,
+      timeout: opts.timeout,
+      signal: controller.signal,
     });
-    activeProc = proc;
-    allProcs.add(proc);
+    return result.content;
+  } finally {
+    if (activeAbort === controller) activeAbort = null;
+  }
+}
 
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-
-    let escalationTimer: ReturnType<typeof setTimeout> | null = null;
-    const killThisProc = (signal: NodeJS.Signals) => {
-      try {
-        if (proc.pid) process.kill(-proc.pid, signal);
-      } catch {
-        try { proc.kill(signal); } catch { /* already dead */ }
-      }
-    };
-    const timeoutHandle = setTimeout(() => {
-      killThisProc("SIGTERM");
-      escalationTimer = setTimeout(() => {
-        if (!proc.killed) killThisProc("SIGKILL");
-      }, 5000);
-      reject(new Error(`${opts.label} timed out`));
-    }, opts.timeout);
-
-    proc.on("close", (code) => {
-      clearTimeout(timeoutHandle);
-      if (escalationTimer) clearTimeout(escalationTimer);
-      activeProc = null;
-      allProcs.delete(proc);
-
-      const output = stdout.trim();
-      if (code === 0 && output) {
-        // Strip code fences if the model wraps output
-        const cleaned = output
-          .replace(/^```(?:jsonl?|json)?\n?/, "")
-          .replace(/\n?```\s*$/, "");
-        resolve(cleaned);
-      } else if (code === 0 && !output) {
-        resolve("");
-      } else {
-        reject(new Error(`${opts.label} failed (exit ${code}): ${stderr.slice(0, 500)}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timeoutHandle);
-      activeProc = null;
-      allProcs.delete(proc);
-      reject(err);
-    });
+/**
+ * Run an untracked LLM call — does NOT set activeAbort.
+ * Used for secondary calls (pruning, episodes) that shouldn't cancel extraction.
+ */
+async function untrackedChat(opts: {
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  timeout: number;
+  maxTokens?: number;
+}): Promise<string> {
+  const result = await chatDirect({
+    model: opts.model,
+    systemPrompt: opts.systemPrompt,
+    userMessage: opts.userMessage,
+    maxTokens: opts.maxTokens ?? 2048,
+    timeout: opts.timeout,
   });
+  return result.content;
+}
+
+// ---------------------------------------------------------------------------
+// Cloud fallback model — cheapest available for budget tasks
+// ---------------------------------------------------------------------------
+
+const CLOUD_FALLBACK_MODEL = "claude-haiku-4-5";
+
+function resolveModel(configModel: string): string {
+  // If the configured model is a cloud model with a key, use it directly
+  if (isCloudModel(configModel)) return configModel;
+  // If it's a local model, try it (chatDirect handles Ollama)
+  // If Ollama is down, chatDirect will throw and caller handles fallback
+  return configModel;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,115 +199,13 @@ export function formatFactsForExtraction(facts: Fact[]): string {
   return lines.join("\n");
 }
 
-// ---------------------------------------------------------------------------
-// Direct Ollama extraction (no pi subprocess overhead)
-// ---------------------------------------------------------------------------
-
-/**
- * Known cloud model prefixes. If a model starts with any of these, it's cloud.
- * Everything else is assumed local (Ollama).
- *
- * This is an allowlist approach — new cloud providers must be added here.
- * The alternative (detecting local by "name:tag" pattern) is too fragile
- * since Ollama accepts bare names without tags.
- */
-const CLOUD_MODEL_PREFIXES = [
-  "claude-",      // Anthropic
-  "gpt-",         // OpenAI
-  "o1-", "o3-", "o4-",  // OpenAI reasoning
-  "gemini-",      // Google
-  "mistral-",     // Mistral cloud (not devstral which is local)
-  "command-",     // Cohere
-];
-
-/**
- * Check if extraction model is a local Ollama model.
- * Uses an explicit cloud-prefix allowlist. Models with a "/" are assumed
- * to be provider-qualified cloud models (e.g., "openai/gpt-4").
- */
-function isLocalModel(model: string): boolean {
-  if (model.includes("/")) return false;
-  for (const prefix of CLOUD_MODEL_PREFIXES) {
-    if (model.startsWith(prefix)) return false;
-  }
-  return true;
-}
-
-/** Fallback cloud model when local extraction fails and Ollama is unreachable. */
-const CLOUD_FALLBACK_MODEL = "claude-sonnet-4-6";
-
-/**
- * Run extraction directly via Ollama HTTP API.
- * ~10x faster than spawning a pi subprocess — no process startup overhead.
- * Returns null if Ollama is unreachable (caller should fall back to subprocess).
- */
-async function runExtractionDirect(
-  systemPrompt: string,
-  userMessage: string,
-  config: MemoryConfig,
-  opts?: { ollamaUrl?: string },
-): Promise<string | null> {
-  const baseUrl = opts?.ollamaUrl ?? process.env.LOCAL_INFERENCE_URL ?? "http://localhost:11434";
-  const timeout = config.extractionTimeout;
-
-  // Create an AbortController that can be killed externally via killActiveExtraction().
-  // Combines our controller with a timeout signal so either trigger aborts the fetch.
-  const controller = new AbortController();
-  activeDirectAbort = controller;
-
-  try {
-    const resp = await fetch(`${baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.extractionModel,
-        stream: false,
-        options: {
-          temperature: 0.2,
-          num_predict: 2048,
-          num_ctx: 32768,
-        },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
-        ],
-      }),
-      signal: typeof AbortSignal.any === "function"
-        ? AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)])
-        : controller.signal,  // Node <20.3: external abort works, timeout relies on Ollama's own
-    });
-
-    if (!resp.ok) return null;
-
-    const data = await resp.json() as { message?: { content?: string } };
-    const raw = data.message?.content?.trim();
-    if (!raw) return null;
-
-    // Strip code fences and <think> blocks from reasoning models
-    return raw
-      .replace(/^```(?:jsonl?|json)?\n?/, "")
-      .replace(/\n?```\s*$/, "")
-      .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
-      .trim();
-  } catch {
-    return null;
-  } finally {
-    if (activeDirectAbort === controller) {
-      activeDirectAbort = null;
-    }
-  }
-}
-
 /**
  * Run project extraction (Phase 1).
  * Returns raw JSONL output from the extraction agent.
- *
- * When extractionModel is a local model, talks directly to Ollama HTTP API
- * (no subprocess overhead). Falls back to pi subprocess for cloud models
- * or if Ollama is unreachable.
+ * Uses direct HTTP — no subprocess spawning.
  */
 export async function runExtractionV2(
-  cwd: string,
+  _cwd: string,
   currentFacts: Fact[],
   recentConversation: string,
   config: MemoryConfig,
@@ -370,21 +221,32 @@ export async function runExtractionV2(
     "\n\nOutput JSONL actions based on what you observe.",
   ].join("");
 
-  // Try direct Ollama path for local models (bypasses pi subprocess entirely)
-  if (isLocalModel(config.extractionModel)) {
-    const result = await runExtractionDirect(prompt, userMessage, config);
-    if (result !== null) return result;
-    // Ollama unreachable — fall through to subprocess with cloud fallback
-  }
+  const model = resolveModel(config.extractionModel);
 
-  return spawnExtraction({
-    cwd,
-    model: isLocalModel(config.extractionModel) ? CLOUD_FALLBACK_MODEL : config.extractionModel,
-    systemPrompt: prompt,
-    userMessage,
-    timeout: config.extractionTimeout,
-    label: "Project extraction",
-  });
+  try {
+    return await trackedChat({
+      model,
+      systemPrompt: prompt,
+      userMessage,
+      timeout: config.extractionTimeout,
+      label: "Project extraction",
+    });
+  } catch (err) {
+    // If configured model failed (e.g., Ollama down), try cloud fallback
+    if (!isCloudModel(model)) {
+      const fallback = getBudgetCloudModel();
+      if (fallback) {
+        return await trackedChat({
+          model: fallback,
+          systemPrompt: prompt,
+          userMessage,
+          timeout: config.extractionTimeout,
+          label: "Project extraction (cloud fallback)",
+        });
+      }
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,10 +348,10 @@ export function formatGlobalExtractionInput(
 /**
  * Run global extraction (Phase 2).
  * Only called when Phase 1 produced new facts.
- * Uses direct Ollama path for local models, falls back to pi subprocess.
+ * Uses direct HTTP — no subprocess spawning.
  */
 export async function runGlobalExtraction(
-  cwd: string,
+  _cwd: string,
   newProjectFacts: Fact[],
   globalFacts: Fact[],
   globalEdges: Edge[],
@@ -502,22 +364,31 @@ export async function runGlobalExtraction(
     "\n\nOutput JSONL actions: promote generalizable facts and identify connections between GLOBAL facts.",
   ].join("");
 
-  const systemPrompt = buildGlobalExtractionPrompt();
+  const model = resolveModel(config.extractionModel);
 
-  // Try direct Ollama path for local models
-  if (isLocalModel(config.extractionModel)) {
-    const result = await runExtractionDirect(systemPrompt, userMessage, config);
-    if (result !== null) return result;
+  try {
+    return await trackedChat({
+      model,
+      systemPrompt: buildGlobalExtractionPrompt(),
+      userMessage,
+      timeout: config.extractionTimeout,
+      label: "Global extraction",
+    });
+  } catch (err) {
+    if (!isCloudModel(model)) {
+      const fallback = getBudgetCloudModel();
+      if (fallback) {
+        return await trackedChat({
+          model: fallback,
+          systemPrompt: buildGlobalExtractionPrompt(),
+          userMessage,
+          timeout: config.extractionTimeout,
+          label: "Global extraction (cloud fallback)",
+        });
+      }
+    }
+    throw err;
   }
-
-  return spawnExtraction({
-    cwd,
-    model: isLocalModel(config.extractionModel) ? CLOUD_FALLBACK_MODEL : config.extractionModel,
-    systemPrompt,
-    userMessage,
-    timeout: config.extractionTimeout,
-    label: "Global extraction",
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -558,96 +429,60 @@ export interface SessionTelemetry {
 }
 
 /**
- * Generate a session episode via direct Ollama HTTP API call.
- * ~10x faster than spawning a pi subprocess — no process startup overhead.
- * Falls back to subprocess-based generation if Ollama is unreachable.
+ * Generate a session episode via direct LLM call.
+ * Uses chatDirect — no subprocess. Tries configured model, falls back to budget cloud.
  */
 export async function generateEpisodeDirect(
   recentConversation: string,
   config: MemoryConfig,
-  opts?: { ollamaUrl?: string; model?: string },
 ): Promise<EpisodeOutput | null> {
-  const baseUrl = opts?.ollamaUrl ?? process.env.LOCAL_INFERENCE_URL ?? "http://localhost:11434";
-  const model = opts?.model ?? process.env.LOCAL_EPISODE_MODEL ?? "qwen3:30b";
+  const userMessage = `Session conversation:\n\n${recentConversation}\n\nOutput the episode JSON.`;
   const timeout = Math.min(config.shutdownExtractionTimeout, 10_000);
 
+  // Try configured extraction model first
   try {
-    const resp = await fetch(`${baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        options: { temperature: 0.3, num_predict: 512 },
-        messages: [
-          { role: "system", content: EPISODE_PROMPT },
-          { role: "user", content: `Session conversation:\n\n${recentConversation}\n\nOutput the episode JSON.` },
-        ],
-      }),
-      signal: AbortSignal.timeout(timeout),
-    });
-
-    if (!resp.ok) return null;
-
-    const data = await resp.json() as { message?: { content?: string } };
-    const raw = data.message?.content?.trim();
-    if (!raw) return null;
-
-    const cleaned = raw
-      .replace(/^```(?:json)?\n?/, "")
-      .replace(/\n?```\s*$/, "")
-      // Strip <think>...</think> blocks from reasoning models
-      .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
-      .trim();
-    const parsed = JSON.parse(cleaned);
-
-    if (parsed.title && parsed.narrative) {
-      return { title: parsed.title, narrative: parsed.narrative };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Generate a session episode summary from recent conversation.
- * Uses pi subprocess (slower fallback). Prefer generateEpisodeDirect().
- */
-export async function generateEpisode(
-  cwd: string,
-  recentConversation: string,
-  config: MemoryConfig,
-): Promise<EpisodeOutput | null> {
-  try {
-    const raw = await spawnExtraction({
-      cwd,
-      model: config.extractionModel,
+    const raw = await untrackedChat({
+      model: resolveModel(config.extractionModel),
       systemPrompt: EPISODE_PROMPT,
-      userMessage: `Session conversation:\n\n${recentConversation}\n\nOutput the episode JSON.`,
-      timeout: config.shutdownExtractionTimeout,
-      label: "Episode generation",
+      userMessage,
+      timeout,
+      maxTokens: 512,
     });
-
-    if (!raw.trim()) return null;
-
-    // Strip any markdown code fences
-    const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "").trim();
-    const parsed = JSON.parse(cleaned);
-
-    if (parsed.title && parsed.narrative) {
-      return { title: parsed.title, narrative: parsed.narrative };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.title && parsed.narrative) return parsed as EpisodeOutput;
     }
-    return null;
   } catch {
-    return null;
+    // Fall through
   }
+
+  // Try budget cloud model
+  const budgetModel = getBudgetCloudModel();
+  if (budgetModel && budgetModel !== config.extractionModel) {
+    try {
+      const raw = await untrackedChat({
+        model: budgetModel,
+        systemPrompt: EPISODE_PROMPT,
+        userMessage,
+        timeout,
+        maxTokens: 512,
+      });
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.title && parsed.narrative) return parsed as EpisodeOutput;
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  return null;
 }
 
 /**
  * Build a minimum viable episode from raw session telemetry.
  * Zero I/O — assembled deterministically from already-collected data.
- * This is the guaranteed floor: always emitted when every model in the fallback chain fails.
+ * This is the guaranteed floor: always emitted when every model fails.
  */
 export function buildTemplateEpisode(telemetry: SessionTelemetry): EpisodeOutput {
   const allModified = [...new Set([...telemetry.filesWritten, ...telemetry.filesEdited])];
@@ -684,102 +519,20 @@ export function buildTemplateEpisode(telemetry: SessionTelemetry): EpisodeOutput
 }
 
 /**
- * Generate a session episode with a reliability-ordered fallback chain:
- *   1. Cloud primary (config.episodeModel — codex-spark by default)
- *   2. Cloud retribution tier (haiku — fast, cheap, always available)
- *   3. Ollama (direct HTTP — only if user has LOCAL_EPISODE_MODEL configured)
- *   4. Template episode (deterministic, zero I/O) — always succeeds
+ * Generate a session episode with fallback chain:
+ *   1. Direct LLM call (configured model → budget cloud)
+ *   2. Template episode (deterministic, zero I/O) — always succeeds
  *
- * Cloud is first because: (1) it's always available if pi is configured at all,
- * (2) retribution-tier cost is negligible (~$0.0001/call), (3) model quality
- * is substantially better than typical local models for narrative generation.
- * Ollama is tried last as an optional local preference, not a dependency.
- *
- * Step timeouts are taken from config.episodeStepTimeout, capped so the total
- * chain fits within config.shutdownExtractionTimeout.
+ * No subprocess spawning. Total time bounded by config timeouts.
  */
 export async function generateEpisodeWithFallback(
   recentConversation: string,
   telemetry: SessionTelemetry,
   config: MemoryConfig,
-  cwd: string,
+  _cwd: string,
 ): Promise<EpisodeOutput> {
-  const stepTimeout = Math.min(
-    config.episodeStepTimeout,
-    Math.floor(config.shutdownExtractionTimeout / 3),
-  );
-
-  if (config.episodeFallbackChain) {
-    // Step 1: Cloud primary (episodeModel — codex-spark by default)
-    // Always available if the user has a provider configured.
-    try {
-      const raw = await spawnExtraction({
-        cwd,
-        model: config.episodeModel,
-        systemPrompt: EPISODE_PROMPT,
-        userMessage: `Session conversation:\n\n${recentConversation}\n\nOutput the episode JSON.`,
-        timeout: stepTimeout,
-        label: "Episode generation (primary)",
-      });
-      if (raw.trim()) {
-        const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "").trim();
-        const parsed = JSON.parse(cleaned);
-        if (parsed.title && parsed.narrative) return parsed as EpisodeOutput;
-      }
-    } catch {
-      // Fall through
-    }
-
-    // Step 2: Cloud retribution tier (haiku — fast, cheap, independent model)
-    try {
-      const raw = await spawnExtraction({
-        cwd,
-        model: "claude-haiku-4-5",
-        systemPrompt: EPISODE_PROMPT,
-        userMessage: `Session conversation:\n\n${recentConversation}\n\nOutput the episode JSON.`,
-        timeout: stepTimeout,
-        label: "Episode generation (retribution fallback)",
-      });
-      if (raw.trim()) {
-        const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "").trim();
-        const parsed = JSON.parse(cleaned);
-        if (parsed.title && parsed.narrative) return parsed as EpisodeOutput;
-      }
-    } catch {
-      // Fall through
-    }
-
-    // Step 3: Ollama (optional — only meaningful if user has a local model running)
-    if (process.env.LOCAL_EPISODE_MODEL || process.env.LOCAL_INFERENCE_URL) {
-      try {
-        const result = await generateEpisodeDirect(recentConversation, config);
-        if (result) return result;
-      } catch {
-        // Fall through to template
-      }
-    }
-  } else {
-    // Chain disabled — try cloud primary only, no Ollama
-    try {
-      const raw = await spawnExtraction({
-        cwd,
-        model: config.episodeModel,
-        systemPrompt: EPISODE_PROMPT,
-        userMessage: `Session conversation:\n\n${recentConversation}\n\nOutput the episode JSON.`,
-        timeout: stepTimeout,
-        label: "Episode generation",
-      });
-      if (raw.trim()) {
-        const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "").trim();
-        const parsed = JSON.parse(cleaned);
-        if (parsed.title && parsed.narrative) return parsed as EpisodeOutput;
-      }
-    } catch {
-      // Fall through
-    }
-  }
-
-  // Step 4: Template episode — guaranteed floor, zero I/O
+  const result = await generateEpisodeDirect(recentConversation, config);
+  if (result) return result;
   return buildTemplateEpisode(telemetry);
 }
 
@@ -803,6 +556,7 @@ Rules:
 /**
  * Run a targeted LLM archival pass over a single section when it exceeds the ceiling.
  * Returns the list of fact IDs recommended for archival.
+ * Uses direct HTTP — no subprocess spawning.
  */
 export async function runSectionPruningPass(
   section: string,
@@ -827,38 +581,56 @@ export async function runSectionPruningPass(
     `Return a JSON array of fact IDs to archive. Archive at least ${excessCount} to bring the section under ${targetCount + 1}.`,
   ].join("\n");
 
-  // Try direct Ollama path for local models
-  if (isLocalModel(config.extractionModel)) {
-    try {
-      const raw = await runExtractionDirect(SECTION_PRUNING_PROMPT, userMessage, config);
-      if (raw) {
-        const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "").trim();
-        const parsed = JSON.parse(cleaned);
-        if (Array.isArray(parsed)) return parsed.filter((id: unknown) => typeof id === "string");
-      }
-    } catch {
-      // Fall through to cloud
-    }
-  }
+  const model = resolveModel(config.extractionModel);
 
-  // Cloud fallback: use episodeModel (cloud tier, always available)
   try {
-    const raw = await spawnExtraction({
-      cwd: process.cwd(),
-      model: config.episodeModel,
+    const raw = await untrackedChat({
+      model,
       systemPrompt: SECTION_PRUNING_PROMPT,
       userMessage,
       timeout: 30_000,
-      label: `Section pruning (${section})`,
+      maxTokens: 1024,
     });
-    if (raw.trim()) {
-      const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "").trim();
-      const parsed = JSON.parse(cleaned);
+    if (raw) {
+      const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed.filter((id: unknown) => typeof id === "string");
     }
   } catch {
-    // Best effort — return empty (no archival) rather than corrupt state
+    // Try budget cloud fallback
+    const fallback = getBudgetCloudModel();
+    if (fallback && fallback !== model) {
+      try {
+        const raw = await untrackedChat({
+          model: fallback,
+          systemPrompt: SECTION_PRUNING_PROMPT,
+          userMessage,
+          timeout: 30_000,
+          maxTokens: 1024,
+        });
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed.filter((id: unknown) => typeof id === "string");
+        }
+      } catch {
+        // Best effort
+      }
+    }
   }
 
   return [];
+}
+
+// ---------------------------------------------------------------------------
+// Legacy API shim — generateEpisode (subprocess-based) now delegates to direct
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated Use generateEpisodeDirect instead. Kept for API compatibility.
+ */
+export async function generateEpisode(
+  _cwd: string,
+  recentConversation: string,
+  config: MemoryConfig,
+): Promise<EpisodeOutput | null> {
+  return generateEpisodeDirect(recentConversation, config);
 }

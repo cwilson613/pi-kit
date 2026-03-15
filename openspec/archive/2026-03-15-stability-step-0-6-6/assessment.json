@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "changeName": "stability-step-0-6-6",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-15T19:41:39.715Z",
+  "summary": "Refreshed 0.6.6 stability-step verification after final task reconciliation: typecheck passed, project-memory factstore regression tests passed, internal subprocess helper paths still re-enter Omegon explicitly, and memory search now preserves apostrophe/path-like query behavior while surfacing non-query operational failures.",
+  "snapshot": {
+    "gitHead": "8bfc9b6c3b6c3bfdef2420c0c1d4eb94223f259e",
+    "fingerprint": "63c9545d150e09fe0b34882d99d934a782030c61f48911a57e4f5e6948178762",
+    "dirty": true,
+    "scopedPaths": [
+      "extensions/lib/omegon-subprocess.ts",
+      "extensions/project-memory/factstore.test.ts",
+      "extensions/project-memory/factstore.ts",
+      "package.json"
+    ],
+    "files": [
+      {
+        "path": "extensions/lib/omegon-subprocess.ts",
+        "exists": true,
+        "size": 848,
+        "sha256": "b63c58a68e350cc19e33c23b8d049475de99aa38ca87c5288268250413946775"
+      },
+      {
+        "path": "extensions/project-memory/factstore.test.ts",
+        "exists": true,
+        "size": 40871,
+        "sha256": "92c812015d9954600b77c5524efbf9efb70214b9d393b38230ae7adb1ce356a5"
+      },
+      {
+        "path": "extensions/project-memory/factstore.ts",
+        "exists": true,
+        "size": 78368,
+        "sha256": "447ef2c247ab89d89365a52dae0d96f43353b4424e75344adfb3ba669be8e934"
+      },
+      {
+        "path": "openspec/changes/stability-step-0-6-6/design.md",
+        "exists": true,
+        "size": 2343,
+        "sha256": "49c40de45d457e3b56cfa254422eb41377f197368f8f4653688a3e77fbeee250"
+      },
+      {
+        "path": "openspec/changes/stability-step-0-6-6/proposal.md",
+        "exists": true,
+        "size": 297,
+        "sha256": "9470e54fd23eb381daaad7eb73e33a1c8c0f4574e14a4738e664448fbaebb285"
+      },
+      {
+        "path": "openspec/changes/stability-step-0-6-6/specs/memory/search-stability.md",
+        "exists": true,
+        "size": 1471,
+        "sha256": "b0c83b699607b5cf5240e48e4849d51ed7862150f254b68c8896805bb8492f08"
+      },
+      {
+        "path": "openspec/changes/stability-step-0-6-6/tasks.md",
+        "exists": true,
+        "size": 1452,
+        "sha256": "4cacfa89409ad71753594f7473bcd5ba67e1c9e896e8fb4a5c6f0b7bbc2091e4"
+      },
+      {
+        "path": "package.json",
+        "exists": true,
+        "size": 2739,
+        "sha256": "e756425ae8f4a234d0c8780ebf8146bd4df00b4119c027308a1d5c6e696949dc"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "openspec/changes/stability-step-0-6-6/tasks.md",
+      "extensions/lib/omegon-subprocess.ts",
+      "extensions/cleave/dispatcher.ts",
+      "extensions/cleave/index.ts",
+      "extensions/project-memory/extraction-v2.ts",
+      "extensions/project-memory/factstore.ts",
+      "extensions/project-memory/factstore.test.ts",
+      "package.json",
+      "CHANGELOG.md",
+      "docs/stability-step-0-6-6.md",
+      "openspec/changes/stability-step-0-6-6/specs/memory/search-stability.md"
+    ],
+    "constraints": [
+      "Malformed FTS input should not crash memory search, but operational/storage failures must remain observable rather than being silently converted to empty results.",
+      "FTS sanitization must preserve useful recall for technical identifier and path-shaped queries common in Omegon's codebase."
+    ],
+    "recommendedAction": null
+  }
+}

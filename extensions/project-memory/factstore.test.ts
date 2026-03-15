@@ -189,6 +189,51 @@ describe("FactStore", () => {
     assert.equal(archived[0].status, "archived");
   });
 
+  it("searchFacts handles apostrophes and quote-like user text without FTS syntax errors", () => {
+    store.storeFact({ section: "Architecture", content: "User's auth token is reused by Omegon" });
+    store.storeFact({ section: "Decisions", content: "Dont prompt for login again" });
+
+    const results = store.searchFacts("user's auth");
+    assert.equal(results.length, 1);
+    assert.match(results[0].content, /User's auth token/);
+  });
+
+  it("searchArchive handles apostrophes without FTS syntax errors", () => {
+    const { id } = store.storeFact({ section: "Known Issues", content: "Don't store mutable auth in install roots" });
+    store.archiveFact(id);
+
+    const archived = store.searchArchive("don't store");
+    assert.equal(archived.length, 1);
+    assert.equal(archived[0].status, "archived");
+  });
+
+  it("searchFacts preserves useful recall for technical identifier and path-like queries", () => {
+    store.storeFact({ section: "Architecture", content: "Canonical file is extensions/project-memory/factstore.ts" });
+    store.storeFact({ section: "Decisions", content: "Prefer openai-codex over weaker defaults when available" });
+
+    const pathResults = store.searchFacts("extensions/project-memory/factstore.ts");
+    assert.equal(pathResults.length, 1);
+    assert.match(pathResults[0].content, /extensions\/project-memory\/factstore\.ts/);
+
+    const modelResults = store.searchFacts("openai-codex");
+    assert.equal(modelResults.length, 1);
+    assert.match(modelResults[0].content, /openai-codex/);
+  });
+
+  it("searchFacts surfaces non-query operational failures instead of silently returning empty results", () => {
+    const db = (store as any).db;
+    const originalPrepare = db.prepare.bind(db);
+    try {
+      db.prepare = () => {
+        throw new Error("database disk image is malformed");
+      };
+
+      assert.throws(() => store.searchFacts("auth token"), /database disk image is malformed/);
+    } finally {
+      db.prepare = originalPrepare;
+    }
+  });
+
   // --- findFactsByContentPrefix ---
 
   it("findFactsByContentPrefix returns facts starting with given prefix", () => {

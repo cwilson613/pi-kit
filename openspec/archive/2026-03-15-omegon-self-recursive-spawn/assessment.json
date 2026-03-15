@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "changeName": "omegon-self-recursive-spawn",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-15T19:33:47.438Z",
+  "summary": "No delta spec scenarios existed for direct /assess spec review, so this change was verified via targeted implementation checks: internal subprocess spawn sites now resolve the Omegon-owned executable explicitly through extensions/lib/omegon-subprocess.ts, no audited extension paths still spawn bare `pi`, npm run typecheck passed, and targeted cleave/project-memory test suites passed.",
+  "snapshot": {
+    "gitHead": "8bfc9b6c3b6c3bfdef2420c0c1d4eb94223f259e",
+    "fingerprint": "f8e351fe98806635e00260ec411a427be81adfc6dea429a278858c5e7ba6d8d1",
+    "dirty": true,
+    "scopedPaths": [
+      "extensions/cleave/dispatcher.ts",
+      "extensions/cleave/index.ts",
+      "extensions/lib",
+      "extensions/project-memory/extraction-v2.ts"
+    ],
+    "files": [
+      {
+        "path": "extensions/cleave/dispatcher.ts",
+        "exists": true,
+        "size": 29748,
+        "sha256": "e0a6aac0513865e2b9986b07404ad876c113e56b8e8094405d212e89cd7a54c3"
+      },
+      {
+        "path": "extensions/cleave/index.ts",
+        "exists": true,
+        "size": 120083,
+        "sha256": "1c3fd0a044eccdff8da802aae858e0e9b70ba07645c6c6da1e3b27813b689562"
+      },
+      {
+        "path": "extensions/lib",
+        "exists": false,
+        "size": 0,
+        "sha256": null
+      },
+      {
+        "path": "extensions/project-memory/extraction-v2.ts",
+        "exists": true,
+        "size": 31947,
+        "sha256": "4f5ec0fbcde301a6121e633dc8e935a39619432eee9b4cef36435f043db8c48c"
+      },
+      {
+        "path": "openspec/changes/omegon-self-recursive-spawn/design.md",
+        "exists": true,
+        "size": 2148,
+        "sha256": "3481a9b3938c876bbf88098b9cae8bf5b7e8222a4cc40e13bf631d93a3d3b94d"
+      },
+      {
+        "path": "openspec/changes/omegon-self-recursive-spawn/proposal.md",
+        "exists": true,
+        "size": 457,
+        "sha256": "b921fa95916a6c7fc0422a4aa7478c75fa21fc9f07e775f5aed3f1f4f939e96a"
+      },
+      {
+        "path": "openspec/changes/omegon-self-recursive-spawn/specs/runtime/subprocess-entrypoint.md",
+        "exists": true,
+        "size": 1917,
+        "sha256": "cec39aa9a700a43a854cb3187d7b3373ea9233783458e26d6c13177d8328ad61"
+      },
+      {
+        "path": "openspec/changes/omegon-self-recursive-spawn/tasks.md",
+        "exists": true,
+        "size": 1785,
+        "sha256": "6f0e8ce8277a3ad8ba35f4d2a5b4d5b84c1b1e0e66e5df7fcd949afa5e4486a8"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/lib/omegon-subprocess.ts",
+      "extensions/cleave/dispatcher.ts",
+      "extensions/cleave/index.ts",
+      "extensions/project-memory/extraction-v2.ts",
+      "docs/omegon-self-recursive-spawn.md",
+      "openspec/changes/omegon-self-recursive-spawn/specs/runtime/subprocess-entrypoint.md",
+      "openspec/changes/omegon-self-recursive-spawn/tasks.md"
+    ],
+    "constraints": [
+      "Internal recursive subprocesses must resolve the Omegon-owned entrypoint explicitly rather than relying on PATH to select the `pi` compatibility alias.",
+      "Subprocess flag behavior and non-interactive semantics must remain unchanged while executable resolution changes."
+    ],
+    "recommendedAction": null
+  }
+}

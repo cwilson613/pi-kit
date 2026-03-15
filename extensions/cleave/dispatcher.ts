@@ -1,13 +1,13 @@
 /**
  * cleave/dispatcher — Child process dispatch and monitoring.
  *
- * Spawns `pi` subprocesses for each child task, using the same
+ * Spawns Omegon-owned subprocesses for each child task, using the same
  * subagent pattern as pi's example extension. Each child runs in
  * its own git worktree with an isolated context.
  *
  * Supports two backends:
- * - "cloud": spawns a full `pi` process (uses cloud API)
- * - "local": spawns `pi` with --model pointing to a local Ollama model
+ * - "cloud": spawns a full Omegon child process (uses cloud API)
+ * - "local": spawns Omegon with --model pointing to a local Ollama model
  *
  * The dispatcher handles:
  * - Dependency-ordered wave execution
@@ -26,6 +26,7 @@ import { computeDispatchWaves } from "./planner.ts";
 import { executeWithReview, type ReviewConfig, type ReviewExecutor, DEFAULT_REVIEW_CONFIG } from "./review.ts";
 import { saveState } from "./workspace.ts";
 import { resolveTier, getDefaultPolicy, getViableModels, type ProviderRoutingPolicy, type RegistryModel } from "../lib/model-routing.ts";
+import { resolveOmegonSubprocess } from "../lib/omegon-subprocess.ts";
 
 // ─── Large-run threshold ────────────────────────────────────────────────────
 
@@ -370,7 +371,8 @@ async function spawnChild(
 	localModel?: string,
 	onLine?: (line: string) => void,
 ): Promise<ChildResult> {
-	const args = ["-p", "--no-session"];
+	const omegon = resolveOmegonSubprocess();
+	const args = [...omegon.argvPrefix, "-p", "--no-session"];
 	if (localModel) {
 		args.push("--model", localModel);
 	}
@@ -380,7 +382,7 @@ async function spawnChild(
 		let stderr = "";
 		let killed = false;
 
-		const proc = spawn("pi", args, {
+		const proc = spawn(omegon.command, args, {
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			env: {

@@ -91,6 +91,30 @@ function loadDatabase(): any {
 
 const Database = loadDatabase();
 
+function buildSafeFtsQuery(query: string, joiner: "AND" | "OR" = "AND"): string {
+  const tokens = query
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token.length > 0)
+    .map(token => token.replace(/"/g, '""'))
+    .filter(token => /[\p{L}\p{N}]/u.test(token))
+    .map(token => `"${token}"`);
+
+  return tokens.join(` ${joiner} `);
+}
+
+function isIgnorableFtsQueryError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("fts5")
+    || message.includes("malformed match expression")
+    || message.includes("syntax error")
+    || message.includes("unterminated string")
+    || message.includes("no such column")
+  );
+}
+
 /** Generate a short unique ID */
 function nanoid(size = 12): string {
   const bytes = crypto.randomBytes(size);
@@ -234,6 +258,7 @@ export class FactStore {
     fs.mkdirSync(memoryDir, { recursive: true });
     this.db = new Database(this.dbPath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db.pragma("foreign_keys = ON");
     this.initSchema();
     this.runMigrations();
@@ -1027,47 +1052,56 @@ export class FactStore {
 
   /** Full-text search across all facts (all minds, all statuses) */
   searchFacts(query: string, mind?: string): Fact[] {
-    // FTS5 match syntax
-    const ftsQuery = query.split(/\s+/).filter(t => t.length > 0).join(" AND ");
+    const ftsQuery = buildSafeFtsQuery(query, "AND");
     if (!ftsQuery) return [];
 
-    if (mind) {
+    try {
+      if (mind) {
+        return this.db.prepare(`
+          SELECT f.* FROM facts f
+          JOIN facts_fts fts ON f.rowid = fts.rowid
+          WHERE facts_fts MATCH ? AND f.mind = ?
+          ORDER BY rank
+        `).all(ftsQuery, mind) as Fact[];
+      }
+
       return this.db.prepare(`
         SELECT f.* FROM facts f
         JOIN facts_fts fts ON f.rowid = fts.rowid
-        WHERE facts_fts MATCH ? AND f.mind = ?
+        WHERE facts_fts MATCH ?
         ORDER BY rank
-      `).all(ftsQuery, mind) as Fact[];
+      `).all(ftsQuery) as Fact[];
+    } catch (error) {
+      if (isIgnorableFtsQueryError(error)) return [];
+      throw error;
     }
-
-    return this.db.prepare(`
-      SELECT f.* FROM facts f
-      JOIN facts_fts fts ON f.rowid = fts.rowid
-      WHERE facts_fts MATCH ?
-      ORDER BY rank
-    `).all(ftsQuery) as Fact[];
   }
 
   /** Search archived/superseded facts (replaces searchArchive) */
   searchArchive(query: string, mind?: string): Fact[] {
-    const ftsQuery = query.split(/\s+/).filter(t => t.length > 0).join(" AND ");
+    const ftsQuery = buildSafeFtsQuery(query, "AND");
     if (!ftsQuery) return [];
 
-    if (mind) {
+    try {
+      if (mind) {
+        return this.db.prepare(`
+          SELECT f.* FROM facts f
+          JOIN facts_fts fts ON f.rowid = fts.rowid
+          WHERE facts_fts MATCH ? AND f.mind = ? AND f.status IN ('archived', 'superseded')
+          ORDER BY f.created_at DESC
+        `).all(ftsQuery, mind) as Fact[];
+      }
+
       return this.db.prepare(`
         SELECT f.* FROM facts f
         JOIN facts_fts fts ON f.rowid = fts.rowid
-        WHERE facts_fts MATCH ? AND f.mind = ? AND f.status IN ('archived', 'superseded')
+        WHERE facts_fts MATCH ? AND f.status IN ('archived', 'superseded')
         ORDER BY f.created_at DESC
-      `).all(ftsQuery, mind) as Fact[];
+      `).all(ftsQuery) as Fact[];
+    } catch (error) {
+      if (isIgnorableFtsQueryError(error)) return [];
+      throw error;
     }
-
-    return this.db.prepare(`
-      SELECT f.* FROM facts f
-      JOIN facts_fts fts ON f.rowid = fts.rowid
-      WHERE facts_fts MATCH ? AND f.status IN ('archived', 'superseded')
-      ORDER BY f.created_at DESC
-    `).all(ftsQuery) as Fact[];
   }
 
   /** Get a single fact by ID */
@@ -1850,9 +1884,8 @@ export class FactStore {
     const ftsRanked: Map<string, number> = new Map(); // fact.id → rank (0-indexed)
     if (queryText.length > 2) {
       // Use OR mode for broader recall — AND is too restrictive for injection
-      const tokens = queryText.split(/\s+/).filter(t => t.length > 1);
-      if (tokens.length > 0) {
-        const ftsQuery = tokens.join(" OR ");
+      const ftsQuery = buildSafeFtsQuery(queryText, "OR");
+      if (ftsQuery) {
         try {
           let query = `
             SELECT f.* FROM facts f

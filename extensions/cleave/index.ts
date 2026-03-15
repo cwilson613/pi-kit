@@ -29,6 +29,7 @@ import { debug } from "../lib/debug.ts";
 import { emitOpenSpecState } from "../openspec/dashboard-state.ts";
 import { getSharedBridge, buildSlashCommandResult } from "../lib/slash-command-bridge.ts";
 import { buildAssessBridgeResult } from "./bridge.ts";
+import { resolveOmegonSubprocess } from "../lib/omegon-subprocess.ts";
 import {
 	assessDirective,
 	PATTERNS,
@@ -755,11 +756,12 @@ async function runSpecAssessmentSubprocess(
 		...(input.diffContent ? ["### Recent Changes", "", "```diff", input.diffContent, "```", ""] : []),
 	].join("\n");
 
-	const args = ["--mode", "json", "--plan", "-p", "--no-session"];
+	const omegon = resolveOmegonSubprocess();
+	const args = [...omegon.argvPrefix, "--mode", "json", "--plan", "-p", "--no-session"];
 	if (input.modelId) args.push("--model", input.modelId);
 
 	return await new Promise<SpecAssessmentRunnerOutput>((resolve, reject) => {
-		const proc = spawn("pi", args, {
+		const proc = spawn(omegon.command, args, {
 			cwd: input.repoPath,
 			shell: false,
 			stdio: ["pipe", "pipe", "pipe"],
@@ -1454,12 +1456,13 @@ async function runDesignAssessmentSubprocess(
 		"}",
 	].join("\n");
 
-	const args = ["--mode", "json", "--plan", "-p", "--no-session"];
+	const omegon = resolveOmegonSubprocess();
+	const args = [...omegon.argvPrefix, "--mode", "json", "--plan", "-p", "--no-session"];
 	if (modelId) args.push("--model", modelId);
 
 	return await new Promise<{ findings: DesignAssessmentFinding[]; nodeTitle: string; structuralPass: boolean }>(
 		(resolve, reject) => {
-			const proc = spawn("pi", args, {
+			const proc = spawn(omegon.command, args, {
 				cwd: repoPath,
 				shell: false,
 				stdio: ["pipe", "pipe", "pipe"],

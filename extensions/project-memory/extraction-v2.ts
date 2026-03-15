@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { MemoryConfig } from "./types.ts";
 import type { Fact, Edge } from "./factstore.ts";
+import { resolveOmegonSubprocess } from "../lib/omegon-subprocess.ts";
 
 // ---------------------------------------------------------------------------
 // Shared subprocess runner
@@ -95,7 +96,9 @@ function spawnExtraction(opts: {
       return;
     }
 
+    const omegon = resolveOmegonSubprocess();
     const args = [
+      ...omegon.argvPrefix,
       "--model", opts.model,
       "--no-session", "--no-tools", "--no-extensions",
       "--no-skills", "--no-themes", "--thinking", "off",
@@ -103,7 +106,7 @@ function spawnExtraction(opts: {
       "-p", opts.userMessage,
     ];
 
-    const proc = spawn("pi", args, {
+    const proc = spawn(omegon.command, args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       // Detach into new session so child has no controlling terminal.

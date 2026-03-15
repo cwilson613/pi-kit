@@ -442,6 +442,7 @@ export interface PiResolutionInfo {
 	cli: string;
 	resolutionMode: "vendor" | "npm";
 	agentDir: string;
+	stateDir?: string;
 }
 
 export interface OmegonBinaryVerification {

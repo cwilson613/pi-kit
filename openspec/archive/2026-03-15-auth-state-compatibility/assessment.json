@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "changeName": "auth-state-compatibility",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-15T18:38:35.830Z",
+  "summary": "Implemented shared-state auth compatibility in bin/omegon.mjs, updated verification metadata, and added regression coverage for default shared state, explicit overrides, and legacy package-root migration.",
+  "snapshot": {
+    "gitHead": "a3f6c08c222f562a31c34c3ee336a7f27cc02600",
+    "fingerprint": "a07eda7db13f6d9abdb9c9e3f47a439b111af377b9de1872c655b0a01748544d",
+    "dirty": true,
+    "scopedPaths": [
+      "bin/omegon.mjs",
+      "extensions/bootstrap/index.ts",
+      "tests/bin-where.test.ts",
+      "vendor/pi-mono/packages/coding-agent/src/core/package-manager.ts",
+      "vendor/pi-mono/packages/coding-agent/src/core/resource-loader.ts"
+    ],
+    "files": [
+      {
+        "path": "bin/omegon.mjs",
+        "exists": true,
+        "size": 2583,
+        "sha256": "884a678731264fc58bf5a5264453ac44dcd5d1acd9688bc727ff0a49da98aa1c"
+      },
+      {
+        "path": "extensions/bootstrap/index.ts",
+        "exists": true,
+        "size": 38673,
+        "sha256": "16af182a49969888d45cb5b357375bdbc2d5a624c48c576c581072fd38a8433f"
+      },
+      {
+        "path": "openspec/changes/auth-state-compatibility/design.md",
+        "exists": true,
+        "size": 2489,
+        "sha256": "fb3e81077f512bca90442441964f3f301fa00b6e967489b65674433aab51257a"
+      },
+      {
+        "path": "openspec/changes/auth-state-compatibility/proposal.md",
+        "exists": true,
+        "size": 296,
+        "sha256": "100f3d38c530b0ff9343a7ef4032c0dd4d19bbfb64f0345d2697e0d76c1bcf70"
+      },
+      {
+        "path": "openspec/changes/auth-state-compatibility/specs/runtime/auth-state.md",
+        "exists": true,
+        "size": 2341,
+        "sha256": "19c53827a63d38692c1d2534533570f397c4fedba8c5ceffa7a7d35324e0b5a4"
+      },
+      {
+        "path": "openspec/changes/auth-state-compatibility/tasks.md",
+        "exists": true,
+        "size": 1617,
+        "sha256": "35a1c8735f47d4daf15794901d4493094e9e524e2029f01b0c3f670bba3e2354"
+      },
+      {
+        "path": "tests/bin-where.test.ts",
+        "exists": true,
+        "size": 6501,
+        "sha256": "b767d0a731c6a2802fc19190de295258cdbe70b0d0d02a99c3105758d468e9df"
+      },
+      {
+        "path": "vendor/pi-mono/packages/coding-agent/src/core/package-manager.ts",
+        "exists": true,
+        "size": 55978,
+        "sha256": "322eeb9b579eb43e90784a05bc80e6731130d0c93f9f62d0b7db7b52a13bfc64"
+      },
+      {
+        "path": "vendor/pi-mono/packages/coding-agent/src/core/resource-loader.ts",
+        "exists": true,
+        "size": 29404,
+        "sha256": "583cdbf9dfe8b6f259ee73aab76bcc7c3eefe4a3bba9eb6123efb3f42e4cac69"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "bin/omegon.mjs",
+      "extensions/bootstrap/index.ts",
+      "extensions/bootstrap/index.test.ts",
+      "tests/bin-where.test.ts",
+      "openspec/changes/auth-state-compatibility/specs/runtime/auth-state.md",
+      "openspec/changes/auth-state-compatibility/tasks.md",
+      "docs/auth-state-compatibility.md"
+    ],
+    "constraints": [
+      "Installing or updating Omegon preserves existing ~/.pi/agent/auth.json login state from Claude Code/pi.",
+      "Installed Omegon still loads bundled Omegon resources without requiring settings edits.",
+      "Legacy package-root auth/settings/session state migrates forward safely when shared state is absent."
+    ],
+    "recommendedAction": null
+  }
+}

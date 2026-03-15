@@ -140,7 +140,8 @@ describe("bootstrap omegon binary verification helpers", () => {
 		omegonRoot: "/opt/homebrew/lib/node_modules/omegon",
 		cli: "/opt/homebrew/lib/node_modules/omegon/node_modules/@styrene-lab/pi-coding-agent/dist/cli.js",
 		resolutionMode: "npm",
-		agentDir: "/opt/homebrew/lib/node_modules/omegon",
+		agentDir: "/Users/test/.pi/agent",
+		stateDir: "/Users/test/.pi/agent",
 	};
 
 	it("accepts an active omegon binary owned by omegon", () => {
@@ -151,6 +152,7 @@ describe("bootstrap omegon binary verification helpers", () => {
 			resolution,
 		);
 		assert.equal(result.ok, true);
+		assert.equal(result.resolution?.stateDir, "/Users/test/.pi/agent");
 	});
 
 	it("rejects binaries whose resolved omegon root is not omegon", () => {

@@ -1,0 +1,28 @@
+# Auth state compatibility — preserve existing pi/Claude Code logins in Omegon — Design
+
+## Architecture Decisions
+
+### Decision: Omegon must keep user state in ~/.pi/agent while loading package resources from the installed Omegon root
+
+**Status:** decided
+**Rationale:** Provider auth, settings, sessions, and caches are durable user state and must survive install location changes, updates, and migration from Claude Code/pi. Omegon-specific extensions, skills, prompts, and themes should still load from the installed package root, but that resource discovery must be decoupled from the agent state directory.
+
+## Research Context
+
+### Current regression cause
+
+Installed Omegon currently sets PI_CODING_AGENT_DIR to omegonRoot in bin/omegon.mjs. In vendored pi-coding-agent, getAgentDir() controls auth.json, settings.json, sessions/, packages/, and global AGENTS.md lookup. That means auth/settings/session persistence move into the installed package directory instead of stable ~/.pi/agent state, so users who already logged into providers in Claude Code/pi do not inherit that auth when launching Omegon.
+
+## File Changes
+
+- `bin/omegon.mjs` (modified) — Stop forcing PI_CODING_AGENT_DIR to omegonRoot for normal installed execution; instead bootstrap Omegon package resources into stable user settings and migrate legacy package-root auth/settings if needed.
+- `extensions/bootstrap/index.ts` (modified) — Align binary verification and any lifecycle/update assumptions with the new split between package resources and user state.
+- `tests/bin-where.test.ts` (modified) — Cover state-dir vs package-resource behavior and legacy migration expectations.
+- `vendor/pi-mono/packages/coding-agent/src/core/resource-loader.ts` (modified) — If necessary, support loading global context/system prompt resources from explicit package roots while keeping agentDir as durable state root.
+- `vendor/pi-mono/packages/coding-agent/src/core/package-manager.ts` (modified) — If necessary, support package-root resource registration via settings/packages without mutating durable user state layout.
+
+## Constraints
+
+- Installing or updating Omegon must preserve existing ~/.pi/agent/auth.json login state from Claude Code/pi.
+- Installed Omegon must still load its own bundled extensions, skills, prompts, and themes without requiring users to hand-edit settings.
+- Migration must safely absorb users who already ran affected versions that stored auth/settings under the package root.

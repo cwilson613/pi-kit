@@ -21,7 +21,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@^11.5.1
@@ -77,14 +76,10 @@ jobs:
           npm install --ignore-scripts
 
       - name: Publish pi-mono fork packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash scripts/publish-pi-mono.sh
 
       - name: Install Omegon publish dependencies
         run: npm install --ignore-scripts
 
       - name: Publish omegon
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance

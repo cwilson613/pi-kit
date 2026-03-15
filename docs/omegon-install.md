@@ -22,8 +22,8 @@ Engineers should be able to install omegon with a single command — no git clon
 - Extensions import types/utilities from `@cwilson613/pi-{coding-agent,tui,ai}`
 
 **What omegon adds on top:**
-- ~1700 source files: extensions/, themes/, skills/, docs/, bin/pi entrypoint
-- `bin/pi` sets `PI_CODING_AGENT_DIR` to omegon root and imports `vendor/pi-mono/.../dist/cli.js`
+- ~1700 source files: extensions/, themes/, skills/, docs/, canonical `bin/omegon.mjs` entrypoint, and a legacy `bin/pi.mjs` compatibility shim
+- `bin/omegon.mjs` sets `PI_CODING_AGENT_DIR` to omegon root and imports `vendor/pi-mono/.../dist/cli.js`
 
 **The blocker for `npm install -g omegon`:**
 - npm packages don't include git submodules — `vendor/pi-mono/` would be empty
@@ -36,7 +36,7 @@ Engineers should be able to install omegon with a single command — no git clon
 
 **Option A: npm install -g omegon (registry-first)**
 - Declare `@cwilson613/pi-coding-agent` as a regular dependency in omegon's package.json
-- `bin/pi` resolves cli.js from `node_modules/@cwilson613/pi-coding-agent/dist/cli.js` instead of `vendor/`
+- `bin/omegon.mjs` resolves cli.js from `node_modules/@cwilson613/pi-coding-agent/dist/cli.js` instead of `vendor/`
 - Extensions already import from `@cwilson613/*` — they'd resolve from omegon's own node_modules
 - vendor/pi-mono stays as a devDependency / optional for contributors
 - Pros: standard npm install, auto-updates via npm, zero friction
@@ -60,7 +60,7 @@ Engineers should be able to install omegon with a single command — no git clon
 - Pros: npm install works, no submodule
 - Cons: fragile postinstall, enterprise proxy issues
 
-**Recommendation: Option A** — simplest, most standard. The @cwilson613 packages are already published. `bin/pi.mjs` uses `vendor/` only in a source checkout (dev mode) and otherwise falls back to `node_modules/` in the installed product.
+**Recommendation: Option A** — simplest, most standard. The @cwilson613 packages are already published. `bin/omegon.mjs` uses `vendor/` only in a source checkout (dev mode) and otherwise falls back to `node_modules/` in the installed product. The legacy `pi` alias, if present, immediately re-enters that same Omegon-owned entrypoint.
 
 ## Update contract
 
@@ -68,8 +68,8 @@ Omegon is the single installed product boundary. `vendor/pi-mono` is a contribut
 
 The authoritative update path therefore must:
 - mutate the package/runtime surface (`git pull` + submodule sync + build + dependency refresh + `npm link --force` in dev mode, or `npm install -g omegon@latest` in installed mode)
-- verify the active `pi` binary still resolves to Omegon
-- stop at a deliberate restart handoff
+- verify the active `omegon` executable still resolves to Omegon
+- stop at a deliberate restart handoff that tells the operator to relaunch `omegon`
 
 `/refresh` is intentionally narrower: it only clears transient caches and reloads extensions. It is not equivalent to `/update` after package/runtime mutation.
 
@@ -80,10 +80,10 @@ The authoritative update path therefore must:
 **Status:** decided
 **Rationale:** User chose unscoped `omegon`. Simpler install command: `npm i -g omegon`.
 
-### Decision: vendor/ preference with node_modules/ fallback in bin/pi
+### Decision: vendor/ preference with node_modules/ fallback in the Omegon entrypoint
 
 **Status:** decided
-**Rationale:** Dev mode uses vendor/pi-mono (git submodule, latest patches). Installed mode falls back to node_modules/@cwilson613/pi-coding-agent (npm registry). Same bin/pi for both paths.
+**Rationale:** Dev mode uses vendor/pi-mono (git submodule, latest patches). Installed mode falls back to node_modules/@cwilson613/pi-coding-agent (npm registry). `bin/omegon.mjs` is the canonical entrypoint for both paths; any `pi` alias must immediately re-enter that same Omegon-owned boundary.
 
 ### Decision: CI auto-publish on push to main
 
@@ -103,7 +103,7 @@ The authoritative update path therefore must:
 ### Decision: Preinstall script removes conflicting pi packages
 
 **Status:** decided
-**Rationale:** scripts/preinstall.sh auto-removes @cwilson613/pi-coding-agent and @mariozechner/pi-coding-agent during global install to prevent EEXIST on the `pi` bin link. Clear messaging about what it does and how to revert. Also registers `omegon` as a conflict-free bin alias.
+**Rationale:** scripts/preinstall.sh auto-removes @cwilson613/pi-coding-agent and @mariozechner/pi-coding-agent during global install to prevent EEXIST on the legacy `pi` bin link while Omegon takes ownership of the canonical `omegon` entrypoint. Clear messaging about what it does and how to revert.
 
 ## Open Questions
 
@@ -113,8 +113,9 @@ The authoritative update path therefore must:
 
 ### File Scope
 
-- `bin/pi` (modified) — Add existsSync check — vendor/ first, node_modules/ fallback
-- `package.json` (modified) — Add @cwilson613/pi-coding-agent + pi-tui + pi-ai as dependencies; add .files or .npmignore
+- `bin/omegon.mjs` (modified) — Canonical Omegon entrypoint with vendor/ first, node_modules/ fallback
+- `bin/pi.mjs` (modified) — Legacy compatibility shim that re-enters the Omegon entrypoint
+- `package.json` (modified) — Canonical `omegon` bin plus optional compatibility `pi` alias; add @cwilson613/pi-coding-agent + pi-tui + pi-ai as dependencies; add .files or .npmignore
 - `.npmignore` (new) — Exclude vendor/, docs/, tests/, .git, .github, design/
 - `.github/workflows/publish.yml` (new) — CI: auto-publish omegon to npm on push to main
 

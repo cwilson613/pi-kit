@@ -444,68 +444,71 @@ export interface PiResolutionInfo {
 	agentDir: string;
 }
 
-export interface PiBinaryVerification {
+export interface OmegonBinaryVerification {
 	ok: boolean;
-	piPath: string;
-	realPiPath: string;
+	executableName: string;
+	executablePath: string;
+	realExecutablePath: string;
 	resolution?: PiResolutionInfo;
 	reason?: string;
 }
 
-export function normalizePiPath(piPath: string): string {
-	if (!piPath) return "";
+export function normalizeExecutablePath(executablePath: string): string {
+	if (!executablePath) return "";
 	try {
-		return realpathSync(piPath);
+		return realpathSync(executablePath);
 	} catch {
-		return piPath;
+		return executablePath;
 	}
 }
 
-async function getActivePiPath(): Promise<string> {
-	const which = await run("which", ["pi"]);
+async function getActiveExecutablePath(executableName = "omegon"): Promise<string> {
+	const which = await run("which", [executableName]);
 	return which.code === 0 ? which.stdout.trim() : "";
 }
 
-export function validatePiBinaryVerification(
-	piPath: string,
-	realPiPath: string,
+export function validateOmegonBinaryVerification(
+	executableName: string,
+	executablePath: string,
+	realExecutablePath: string,
 	resolution: PiResolutionInfo,
-): PiBinaryVerification {
-	const binaryLooksOwnedByOmegon = /[\\/]omegon[\\/]/.test(realPiPath) || /[\\/]omegon[\\/]bin[\\/]pi(?:\.mjs)?$/.test(realPiPath);
+): OmegonBinaryVerification {
+	const binaryLooksOwnedByOmegon = /[\\/]omegon[\\/]/.test(realExecutablePath) || /[\\/]omegon[\\/]bin[\\/](?:omegon|pi)(?:\.mjs)?$/.test(realExecutablePath);
 	if (!/omegon(?:[\\/]|$)/.test(resolution.omegonRoot)) {
-		return { ok: false, piPath, realPiPath, resolution, reason: `active pi resolved to non-Omegon root: ${resolution.omegonRoot}` };
+		return { ok: false, executableName, executablePath, realExecutablePath, resolution, reason: `active ${executableName} resolved to non-Omegon root: ${resolution.omegonRoot}` };
 	}
 	if (!binaryLooksOwnedByOmegon) {
-		return { ok: false, piPath, realPiPath, resolution, reason: `active pi symlink target does not appear to point at Omegon: ${realPiPath}` };
+		return { ok: false, executableName, executablePath, realExecutablePath, resolution, reason: `active ${executableName} symlink target does not appear to point at Omegon: ${realExecutablePath}` };
 	}
-	return { ok: true, piPath, realPiPath, resolution };
+	return { ok: true, executableName, executablePath, realExecutablePath, resolution };
 }
 
-async function inspectActivePiBinary(): Promise<PiBinaryVerification> {
-	const piPath = await getActivePiPath();
-	if (!piPath) {
-		return { ok: false, piPath: "", realPiPath: "", reason: "`pi` command not found on PATH" };
+async function inspectActiveOmegonBinary(): Promise<OmegonBinaryVerification> {
+	const executableName = "omegon";
+	const executablePath = await getActiveExecutablePath(executableName);
+	if (!executablePath) {
+		return { ok: false, executableName, executablePath: "", realExecutablePath: "", reason: "`omegon` command not found on PATH" };
 	}
-	const realPiPath = normalizePiPath(piPath);
-	const probe = await run(piPath, ["--where"]);
+	const realExecutablePath = normalizeExecutablePath(executablePath);
+	const probe = await run(executablePath, ["--where"]);
 	if (probe.code !== 0) {
-		return { ok: false, piPath, realPiPath, reason: "active pi binary did not return Omegon resolution metadata" };
+		return { ok: false, executableName, executablePath, realExecutablePath, reason: "active omegon binary did not return Omegon resolution metadata" };
 	}
 	try {
 		const resolution = JSON.parse(probe.stdout.trim()) as PiResolutionInfo;
-		return validatePiBinaryVerification(piPath, realPiPath, resolution);
+		return validateOmegonBinaryVerification(executableName, executablePath, realExecutablePath, resolution);
 	} catch {
-		return { ok: false, piPath, realPiPath, reason: "active pi returned invalid verification metadata" };
+		return { ok: false, executableName, executablePath, realExecutablePath, reason: "active omegon returned invalid verification metadata" };
 	}
 }
 
-function formatVerification(verification: PiBinaryVerification): string {
+function formatVerification(verification: OmegonBinaryVerification): string {
 	if (!verification.ok || !verification.resolution) {
-		return `✗ pi target verification failed${verification.reason ? `: ${verification.reason}` : ""}`;
+		return `✗ omegon target verification failed${verification.reason ? `: ${verification.reason}` : ""}`;
 	}
 	return [
-		`✓ active pi: ${verification.piPath}`,
-		`✓ binary target: ${verification.realPiPath}`,
+		`✓ active ${verification.executableName}: ${verification.executablePath}`,
+		`✓ binary target: ${verification.realExecutablePath}`,
 		`✓ runtime root: ${verification.resolution.omegonRoot}`,
 		`✓ core resolution: ${verification.resolution.resolutionMode} (${verification.resolution.cli})`,
 	].join("\n");
@@ -591,11 +594,11 @@ async function updateDevMode(
 
 	// ── Step 6: verify active binary target ──────────────────────────
 	if (dryRun) {
-		steps.push("· pi target verification: skipped (dry run)");
+		steps.push("· omegon target verification: skipped (dry run)");
 		ctx.ui.notify(`Dry run:\n${steps.join("\n")}`, "info");
 		return;
 	}
-	const verification = await inspectActivePiBinary();
+	const verification = await inspectActiveOmegonBinary();
 	if (!verification.ok) {
 		steps.push(formatVerification(verification));
 		ctx.ui.notify(`Update incomplete:\n${steps.join("\n")}`, "warning");
@@ -606,7 +609,7 @@ async function updateDevMode(
 	// ── Step 7: clear cache + explicit restart handoff ───────────────
 	const cleared = clearJitiCache(ctx);
 	if (cleared > 0) steps.push(`✓ cleared ${cleared} cached transpilations`);
-	steps.push("✓ update complete — restart pi now (/exit, then `pi`) to load the rebuilt runtime");
+	steps.push("✓ update complete — restart Omegon now (/exit, then `omegon`) to load the rebuilt runtime");
 	ctx.ui.notify(steps.join("\n"), "info");
 }
 
@@ -653,7 +656,7 @@ async function updateInstalledMode(
 
 	const confirmed = await ctx.ui.confirm(
 		"Update omegon?",
-		`Install ${PKG}@${latestVersion} globally via npm?\n\nThis will update pi core, extensions, themes, and skills.\nRestart pi after the update completes.`,
+		`Install ${PKG}@${latestVersion} globally via npm?\n\nThis will update Omegon, its bundled agent core, extensions, themes, and skills.\nRestart Omegon after the update completes.`,
 	);
 	if (!confirmed) {
 		ctx.ui.notify("Update cancelled.", "info");
@@ -667,10 +670,10 @@ async function updateInstalledMode(
 		return;
 	}
 
-	const verification = await inspectActivePiBinary();
+	const verification = await inspectActiveOmegonBinary();
 	if (!verification.ok) {
 		ctx.ui.notify(
-			`Updated to ${PKG}@${latestVersion}, but post-install verification failed.\n${formatVerification(verification)}\nResolve the binary target before restarting pi.`,
+			`Updated to ${PKG}@${latestVersion}, but post-install verification failed.\n${formatVerification(verification)}\nResolve the Omegon binary target before restarting Omegon.`,
 			"warning",
 		);
 		return;
@@ -681,7 +684,7 @@ async function updateInstalledMode(
 		`✅ Updated to ${PKG}@${latestVersion}.` +
 		`\n${formatVerification(verification)}` +
 		(cleared > 0 ? `\nCleared ${cleared} cached transpilations.` : "") +
-		"\nRestart pi to use the new version (/exit, then pi).",
+		"\nRestart Omegon to use the new version (/exit, then omegon).",
 		"info"
 	);
 }

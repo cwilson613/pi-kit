@@ -10,7 +10,7 @@ An opinionated distribution of [**pi**](https://github.com/badlogic/pi) — the 
 npm install -g omegon
 ```
 
-This installs the `pi` command globally. If a standalone pi package is already installed, omegon will transparently replace it (the same `pi` command, with extensions included). To switch back to standalone pi at any time:
+This installs the canonical `omegon` command globally. A legacy `pi` alias may remain available for compatibility, but the supported lifecycle entrypoint is `omegon`. If a standalone pi package is already installed, omegon transparently takes ownership of the lifecycle boundary so startup, update, verification, and restart all stay inside Omegon control. To switch back to standalone pi at any time:
 
 ```bash
 npm uninstall -g omegon
@@ -20,7 +20,7 @@ npm install -g @mariozechner/pi-coding-agent
 **First-time setup:**
 
 ```bash
-pi          # start pi in any project directory
+omegon      # start Omegon in any project directory
 /bootstrap  # check deps, install missing tools, configure preferences
 ```
 
@@ -28,8 +28,8 @@ pi          # start pi in any project directory
 
 | Context | How |
 |--------|-----|
-| **Installed Omegon (`npm install -g omegon`)** | Run `/update` from inside pi. Omegon installs the latest package, verifies the active `pi` command still resolves to Omegon, clears caches, then asks you to restart. |
-| **Dev checkout / contributor workflow** | Run `/update` or `./scripts/install-pi.sh`. Both follow the same lifecycle contract: pull/sync, build, refresh dependencies, `npm link --force`, verify the active `pi` target, then stop at an explicit restart handoff. |
+| **Installed Omegon (`npm install -g omegon`)** | Run `/update` from inside Omegon. Omegon installs the latest package, verifies the active `omegon` command still resolves to Omegon, clears caches, then asks you to restart Omegon. |
+| **Dev checkout / contributor workflow** | Run `/update` or `./scripts/install-pi.sh`. Both follow the same lifecycle contract: pull/sync, build, refresh dependencies, `npm link --force`, verify the active `omegon` target, then stop at an explicit restart handoff. |
 | **Lightweight cache refresh only** | Run `/refresh`. This clears transient caches and reloads extensions, but it is not equivalent to package/runtime replacement. |
 
 > The patched fork syncs from upstream daily via GitHub Actions. Bug fixes and new AI provider support land automatically. If a sync PR has conflicts, they are surfaced for manual review before merging — upstream changes are never silently dropped.
@@ -264,7 +264,8 @@ Pre-built prompts for common workflows:
 ## Requirements
 
 **Required:**
-- `@cwilson613/pi-coding-agent` ≥ 0.57 — patched fork of [badlogic/pi-mono](https://github.com/badlogic/pi-mono). Install via `npm install -g @cwilson613/pi-coding-agent`. Fork source: [cwilson613/pi-mono](https://github.com/cwilson613/pi-mono)
+- `omegon` — install via `npm install -g omegon`; launch via `omegon`
+- `@cwilson613/pi-coding-agent` ≥ 0.57 underpins Omegon's bundled agent core and tracks a patched fork of [badlogic/pi-mono](https://github.com/badlogic/pi-mono). Fork source: [cwilson613/pi-mono](https://github.com/cwilson613/pi-mono)
 
 **Optional (installed by `/bootstrap`):**
 - [Ollama](https://ollama.ai) — local inference, offline mode, semantic memory search

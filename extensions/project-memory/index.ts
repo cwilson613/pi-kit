@@ -42,13 +42,13 @@
 
 import * as path from "node:path";
 import * as os from "node:os";
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, SessionMessageEntry } from "@cwilson613/pi-coding-agent";
-import { DynamicBorder } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, SessionMessageEntry } from "@styrene-lab/pi-coding-agent";
+import { DynamicBorder } from "@styrene-lab/pi-coding-agent";
 import { sciCall, sciOk, sciErr, sciExpanded, sciLoading } from "./sci-renderers.ts";
 import { sciExitCard, type ExitCardData } from "../lib/sci-ui.ts";
 import { StringEnum } from "../lib/typebox-helpers";
 import { Type } from "@sinclair/typebox";
-import { Container, type SelectItem, SelectList, Text } from "@cwilson613/pi-tui";
+import { Container, type SelectItem, SelectList, Text } from "@styrene-lab/pi-tui";
 import { FactStore, parseExtractionOutput, GLOBAL_DECAY, type MindRecord, type Fact } from "./factstore.ts";
 import { embed, isEmbeddingAvailable, resolveEmbeddingProvider, MODEL_DIMS, type EmbeddingProvider } from "./embeddings.ts";
 import { DEFAULT_CONFIG, type MemoryConfig, type LifecycleMemoryCandidate } from "./types.ts";
@@ -69,7 +69,7 @@ import {
 import { runExtractionV2, runGlobalExtraction, killActiveExtraction, killAllSubprocesses, generateEpisode, generateEpisodeDirect, generateEpisodeWithFallback, buildTemplateEpisode, runSectionPruningPass, type SessionTelemetry } from "./extraction-v2.ts";
 import { migrateToFactStore, needsMigration, markMigrated } from "./migration.ts";
 import { SECTIONS } from "./template.ts";
-import { serializeConversation, convertToLlm } from "@cwilson613/pi-coding-agent";
+import { serializeConversation, convertToLlm } from "@styrene-lab/pi-coding-agent";
 import { sharedState } from "../lib/shared-state.ts";
 import {
   ingestLifecycleCandidate,

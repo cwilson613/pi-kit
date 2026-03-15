@@ -9,7 +9,7 @@
  * a JSON split strategy with 2-4 children.
  */
 
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import type { ChildPlan, SplitPlan } from "./types.ts";
 
 /**

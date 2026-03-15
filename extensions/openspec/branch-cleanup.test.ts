@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { deleteMergedBranches } from "./branch-cleanup.ts";
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 
 // ─── Mock pi factory ─────────────────────────────────────────────────────────
 

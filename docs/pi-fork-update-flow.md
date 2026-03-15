@@ -40,7 +40,7 @@ Replace `/opt/homebrew/.../pi-coding-agent/dist/` with a symlink to `pi-mono/pac
 - Mitigation: always build before restarting pi (builds are atomic: build writes to dist atomically via tsgo)
 
 **Option 2: `npm link` from pi-mono**
-`cd pi-mono/packages/coding-agent && npm link` + `cd homebrew-dir && npm link @cwilson613/pi-coding-agent`
+`cd pi-mono/packages/coding-agent && npm link` + `cd homebrew-dir && npm link @styrene-lab/pi-coding-agent`
 - Elegant in theory; in practice npm link sets up a symlink in the global node_modules — but the pi binary is already a manual homebrew install, not an npm global, so the link target would be wrong.
 - Could work if we re-install pi via `npm install -g pi-mono/packages/coding-agent` but that changes the binary path.
 

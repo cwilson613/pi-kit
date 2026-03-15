@@ -2,7 +2,7 @@
 
 An opinionated distribution of [**pi**](https://github.com/badlogic/pi) — the coding agent by [Mario Zechner](https://github.com/badlogic). Omegon bundles pi core with extensions for persistent project memory, spec-driven development, local LLM inference, image generation, web search, parallel task decomposition, a live dashboard, and quality-of-life tools.
 
-> **Relationship to pi:** Omegon is not a fork or replacement. It packages pi as a dependency and layers extensions on top. All credit for the pi coding agent goes to Mario Zechner and the pi contributors. The core pi packages (`@cwilson613/pi-coding-agent`) track [upstream `badlogic/pi-mono`](https://github.com/badlogic/pi-mono) daily, adding targeted fixes for OAuth login reliability and bracketed-paste input handling. If you want standalone pi without Omegon's extensions, install `@mariozechner/pi-coding-agent` directly.
+> **Relationship to pi:** Omegon is not a fork or replacement. It packages pi as a dependency and layers extensions on top. All credit for the pi coding agent goes to Mario Zechner and the pi contributors. The core pi packages are migrating to the styrene-lab-owned npm scope (`@styrene-lab/pi-coding-agent` and related packages) so package ownership matches the `styrene-lab/omegon` product boundary. Older `@cwilson613/*` package names are compatibility debt during the transition, not the long-term release boundary. If you want standalone pi without Omegon's extensions, install `@mariozechner/pi-coding-agent` directly.
 
 ## Installation
 
@@ -40,7 +40,7 @@ omegon      # start Omegon in any project directory
 
 ![Omegon Architecture](docs/img/architecture.png)
 
-Omegon extends `@cwilson613/pi-coding-agent` with **27 extensions**, **12 skills**, and **4 prompt templates** — loaded automatically on session start.
+Omegon extends `@styrene-lab/pi-coding-agent` with **27 extensions**, **12 skills**, and **4 prompt templates** — loaded automatically on session start.
 
 ### Development Methodology
 
@@ -265,7 +265,7 @@ Pre-built prompts for common workflows:
 
 **Required:**
 - `omegon` — install via `npm install -g omegon`; launch via `omegon`
-- `@cwilson613/pi-coding-agent` ≥ 0.57 underpins Omegon's bundled agent core and tracks a patched fork of [badlogic/pi-mono](https://github.com/badlogic/pi-mono). Fork source: [cwilson613/pi-mono](https://github.com/cwilson613/pi-mono)
+- `@styrene-lab/pi-coding-agent` ≥ 0.57 underpins Omegon's bundled agent core and tracks a patched fork of [badlogic/pi-mono](https://github.com/badlogic/pi-mono). Fork source: [cwilson613/pi-mono](https://github.com/cwilson613/pi-mono)
 
 **Optional (installed by `/bootstrap`):**
 - [Ollama](https://ollama.ai) — local inference, offline mode, semantic memory search

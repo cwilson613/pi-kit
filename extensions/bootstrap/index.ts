@@ -10,7 +10,7 @@
  *   /bootstrap          — Run interactive setup (install missing deps + profile)
  *   /bootstrap status   — Show dependency checklist without installing
  *   /bootstrap install  — Install all missing core + recommended deps
- *   /update-pi          — Update pi binary to latest @cwilson613/pi-coding-agent release
+ *   /update-pi          — Update pi binary to latest @styrene-lab/pi-coding-agent release
  *   /update-pi --dry-run — Check for update without installing
  *
  * Guards:
@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { checkAllProviders, type AuthResult } from "../01-auth/auth.ts";
 import { loadPiConfig } from "../lib/model-preferences.ts";
 import {

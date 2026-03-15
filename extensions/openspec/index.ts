@@ -18,10 +18,10 @@
  *   openspec_manage               — Agent-callable change lifecycle operations
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@styrene-lab/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../lib/typebox-helpers.ts";
-import { Text } from "@cwilson613/pi-tui";
+import { Text } from "@styrene-lab/pi-tui";
 import { sciCall, sciLoading, sciOk, sciErr, sciExpanded } from "../lib/sci-ui.ts";
 import { sciBanner } from "../lib/sci-ui.ts";
 import * as fs from "node:fs";

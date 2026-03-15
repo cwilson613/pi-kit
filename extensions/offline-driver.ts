@@ -1,7 +1,7 @@
 // @config LOCAL_INFERENCE_URL "Ollama / OpenAI-compatible inference server URL" [default: http://localhost:11434]
 
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
-import { Text } from "@cwilson613/pi-tui";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
+import { Text } from "@styrene-lab/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
   KNOWN_MODELS,

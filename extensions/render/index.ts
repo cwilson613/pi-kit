@@ -45,7 +45,7 @@ import {
 	composeNativeDiagram,
 	rasterizeSvgToPng,
 } from "./native-diagrams/index.ts";
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 // ---------------------------------------------------------------------------

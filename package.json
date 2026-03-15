@@ -10,9 +10,9 @@
 	"scripts": {
 		"preinstall": "sh ./scripts/preinstall.sh",
 		"test": "npx tsx --test tests/*.test.ts extensions/**/*.test.ts",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "npx tsc --noEmit",
 		"check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",
-		"check": "tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
+		"check": "npx tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
 		"build:pi": "cd vendor/pi-mono && npm run build",
 		"update:pi": "git -C vendor/pi-mono pull --ff-only origin main && npm run build:pi",
 		"setup": "git submodule update --init --recursive && cd vendor/pi-mono && npm install && npm run build && cd ../.. && npm link --force"
@@ -72,10 +72,10 @@
 		]
 	},
 	"dependencies": {
-		"@cwilson613/pi-coding-agent": "file:./vendor/pi-mono/packages/coding-agent",
-		"@cwilson613/pi-agent-core": "file:./vendor/pi-mono/packages/agent",
-		"@cwilson613/pi-ai": "file:./vendor/pi-mono/packages/ai",
-		"@cwilson613/pi-tui": "file:./vendor/pi-mono/packages/tui",
+		"@styrene-lab/pi-coding-agent": "file:./vendor/pi-mono/packages/coding-agent",
+		"@styrene-lab/pi-agent-core": "file:./vendor/pi-mono/packages/agent",
+		"@styrene-lab/pi-ai": "file:./vendor/pi-mono/packages/ai",
+		"@styrene-lab/pi-tui": "file:./vendor/pi-mono/packages/tui",
 		"@modelcontextprotocol/sdk": "^1.12.1",
 		"@resvg/resvg-js": "^2.6.2",
 		"@sinclair/typebox": "^0.34.48",

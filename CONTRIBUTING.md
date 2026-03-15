@@ -176,7 +176,7 @@ npm run deploy:pi-dev
 
 This is idempotent — safe to re-run. After this, `npm run build:pi` is the entire update step for any pi-mono change. No manual file copying.
 
-**How the symlink works:** Node resolves `@cwilson613/pi-ai`, `@cwilson613/pi-tui`, etc. by walking up from the real path of the symlink target — which lands in `pi-mono/node_modules/` where all workspace packages are built. The global pi binary at `/opt/homebrew/bin/pi` continues to work normally.
+**How the symlink works:** Node resolves `@styrene-lab/pi-ai`, `@styrene-lab/pi-tui`, etc. by walking up from the real path of the symlink target — which lands in `pi-mono/node_modules/` where all workspace packages are built. The global pi binary at `/opt/homebrew/bin/pi` continues to work normally.
 
 ### Iterative Pi-Mono Dev Loop
 

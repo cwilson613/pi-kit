@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 
 import type { DesignNode, DesignTree } from "./types.ts";
 import { getAllOpenQuestions, countAcceptanceCriteria } from "./tree.ts";

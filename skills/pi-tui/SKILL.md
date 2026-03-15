@@ -14,14 +14,14 @@ This skill covers the TUI layer for pi extensions. Read alongside `pi-extensions
 ## Package Geography
 
 ```
-@cwilson613/pi-coding-agent     — ExtensionAPI, Theme, DynamicBorder, BorderedLoader, CustomEditor, etc.
-@cwilson613/pi-tui              — Component, Container, TUI, Text, Box, SelectList, etc.
+@styrene-lab/pi-coding-agent     — ExtensionAPI, Theme, DynamicBorder, BorderedLoader, CustomEditor, etc.
+@styrene-lab/pi-tui              — Component, Container, TUI, Text, Box, SelectList, etc.
 @sinclair/typebox                 — Type schema for tool parameters
 ```
 
 All three are available via pi's jiti loader at runtime. **Do NOT `npm install` them** — they resolve through the alias map in the extension loader.
 
-> ⚠️ Value imports from `@cwilson613/pi-tui` (e.g. `truncateToWidth`, `matchesKey`, `visibleWidth`) work inside pi but **fail under `tsx` or `node` directly** because pi-tui is a nested dependency of pi-coding-agent. Tests that need these must either mock them or run through pi.
+> ⚠️ Value imports from `@styrene-lab/pi-tui` (e.g. `truncateToWidth`, `matchesKey`, `visibleWidth`) work inside pi but **fail under `tsx` or `node` directly** because pi-tui is a nested dependency of pi-coding-agent. Tests that need these must either mock them or run through pi.
 
 ## Component Interface
 
@@ -45,18 +45,18 @@ interface Component {
 
 ```typescript
 // Types (compile-time only — safe everywhere)
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@cwilson613/pi-coding-agent";
-import type { Component, OverlayHandle, OverlayOptions, TUI } from "@cwilson613/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@styrene-lab/pi-coding-agent";
+import type { Component, OverlayHandle, OverlayOptions, TUI } from "@styrene-lab/pi-tui";
 
 // Values from pi-coding-agent (re-exported, always available)
-import { DynamicBorder, BorderedLoader, CustomEditor } from "@cwilson613/pi-coding-agent";
-import { getMarkdownTheme, getSelectListTheme, getSettingsListTheme, highlightCode } from "@cwilson613/pi-coding-agent";
+import { DynamicBorder, BorderedLoader, CustomEditor } from "@styrene-lab/pi-coding-agent";
+import { getMarkdownTheme, getSelectListTheme, getSettingsListTheme, highlightCode } from "@styrene-lab/pi-coding-agent";
 
 // Values from pi-tui (work via jiti at runtime only)
-import { matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@cwilson613/pi-tui";
-import { Container, Text, Box, Spacer, Markdown, Image } from "@cwilson613/pi-tui";
-import { SelectList, SettingsList } from "@cwilson613/pi-tui";
-import type { SelectItem, SelectListTheme, SettingItem } from "@cwilson613/pi-tui";
+import { matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@styrene-lab/pi-tui";
+import { Container, Text, Box, Spacer, Markdown, Image } from "@styrene-lab/pi-tui";
+import { SelectList, SettingsList } from "@styrene-lab/pi-tui";
+import type { SelectItem, SelectListTheme, SettingItem } from "@styrene-lab/pi-tui";
 
 // TypeBox for tool parameter schemas
 import { Type } from "@sinclair/typebox";
@@ -175,7 +175,7 @@ overlayOptions: {
 ## Keyboard Handling
 
 ```typescript
-import { matchesKey, Key } from "@cwilson613/pi-tui";
+import { matchesKey, Key } from "@styrene-lab/pi-tui";
 
 handleInput(data: string): void {
   if (matchesKey(data, Key.escape))     { /* ... */ }
@@ -210,8 +210,8 @@ After handling input, call `tui.requestRender()` to trigger a redraw.
 ### SelectList
 
 ```typescript
-import { SelectList } from "@cwilson613/pi-tui";
-import type { SelectItem } from "@cwilson613/pi-tui";
+import { SelectList } from "@styrene-lab/pi-tui";
+import type { SelectItem } from "@styrene-lab/pi-tui";
 
 const items: SelectItem[] = [
   { value: "a", label: "Option A", description: "Details" },
@@ -411,7 +411,7 @@ export function renderStatusLine(state: MyState, thFn: ThemeFn, width: number): 
 }
 
 // overlay.ts (pi-tui bridge, not unit-tested)
-import type { Theme } from "@cwilson613/pi-coding-agent";
+import type { Theme } from "@styrene-lab/pi-coding-agent";
 const thFn: ThemeFn = (color, text) => theme.fg(color as any, text);
 const line = renderStatusLine(state, thFn, width);
 ```
@@ -459,7 +459,7 @@ class CachedComponent {
 For components with text cursors (CJK input method support):
 
 ```typescript
-import { CURSOR_MARKER, type Focusable } from "@cwilson613/pi-tui";
+import { CURSOR_MARKER, type Focusable } from "@styrene-lab/pi-tui";
 
 class MyInput implements Component, Focusable {
   focused = false;
@@ -478,7 +478,7 @@ Container components with embedded inputs must propagate `focused` to child inpu
 Extend `CustomEditor` (not `Editor`) for vim-mode or alternative key handling:
 
 ```typescript
-import { CustomEditor } from "@cwilson613/pi-coding-agent";
+import { CustomEditor } from "@styrene-lab/pi-coding-agent";
 
 class VimEditor extends CustomEditor {
   private mode: "normal" | "insert" = "insert";

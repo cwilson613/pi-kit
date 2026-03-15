@@ -147,7 +147,7 @@ Expanded: show the full markdown report.
 
 **design_tree (query):** `◈ query  node  dashboard-dual-lifecycle` → collapsed: `◈ dashboard-dual-lifecycle  decided  3 decisions  0 questions`. Expanded: show the full overview.
 
-**Implementation approach:** All renderers live in a NEW `extensions/tool-renderer/` extension that imports `Text` from `@cwilson613/pi-tui` and re-registers the tools using `renderCall`/`renderResult` only — no execute override needed. This keeps the rendering concern isolated from the tool logic. The tool names match exactly so pi replaces the default renderer silently.
+**Implementation approach:** All renderers live in a NEW `extensions/tool-renderer/` extension that imports `Text` from `@styrene-lab/pi-tui` and re-registers the tools using `renderCall`/`renderResult` only — no execute override needed. This keeps the rendering concern isolated from the tool logic. The tool names match exactly so pi replaces the default renderer silently.
 
 Wait — actually this won't work: re-registering a tool from a different extension would replace the tool entirely, not just its renderer. The `execute` would be lost. The correct approach is to add `renderCall`/`renderResult` directly to the existing `pi.registerTool()` calls in each extension. No new extension.
 
@@ -196,5 +196,5 @@ Alternative: A dedicated `tool-renderer.ts` extension that uses `pi.on("tool_cal
 - isPartial renderResult must be fast and non-blocking — no filesystem I/O, no awaiting
 - child table in cleave_run isPartial: max 8 children visible; truncate with '… N more' if overflow
 - Text component constructor: new Text(styledString, marginTop, marginBottom) — marginTop/Bottom are numbers
-- Import Text from @cwilson613/pi-tui in each file that uses it
+- Import Text from @styrene-lab/pi-tui in each file that uses it
 - The dispatcher.ts onUpdate text simplification (removing wave/child counter) must be done alongside the renderResult addition — doing one without the other leaves the partial text unchanged but now redundant

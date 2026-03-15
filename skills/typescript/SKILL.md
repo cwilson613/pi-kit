@@ -219,7 +219,7 @@ interface ToolResult {
 }
 
 // ✅ Import from SDK
-import type { AgentToolResult } from "@cwilson613/pi-coding-agent";
+import type { AgentToolResult } from "@styrene-lab/pi-coding-agent";
 ```
 
 **Directive:** Always import SDK types. Never redefine them locally. If an SDK type is not exported, file an issue or use module augmentation — don't copy the shape.

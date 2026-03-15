@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@styrene-lab/pi-coding-agent";
 import { basename } from "path";
 import { DASHBOARD_UPDATE_EVENT, sharedState } from "./lib/shared-state.ts";
 import type { CleaveState } from "./dashboard/types.ts";

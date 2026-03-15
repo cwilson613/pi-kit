@@ -25,8 +25,8 @@
  * Load order: 01-auth loads after 00-secrets, so process.env is populated.
  */
 
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
-import { Text } from "@cwilson613/pi-tui";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
+import { Text } from "@styrene-lab/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { sciCall, sciOk, sciErr, sciExpanded } from "../lib/sci-ui.ts";
 

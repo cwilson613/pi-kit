@@ -16,7 +16,7 @@
  *   /effort uncap     — Remove ceiling lock
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@styrene-lab/pi-coding-agent";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 

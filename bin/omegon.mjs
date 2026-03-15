@@ -8,7 +8,7 @@
  *
  * Resolution order for the underlying agent core:
  *   1. vendor/pi-mono (dev mode — git submodule present)
- *   2. node_modules/@cwilson613/pi-coding-agent (installed via npm)
+ *   2. node_modules/@styrene-lab/pi-coding-agent (installed via npm)
  */
 import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
@@ -18,7 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const omegonRoot = dirname(dirname(__filename));
 
 const vendorCli = join(omegonRoot, "vendor/pi-mono/packages/coding-agent/dist/cli.js");
-const npmCli = join(omegonRoot, "node_modules/@cwilson613/pi-coding-agent/dist/cli.js");
+const npmCli = join(omegonRoot, "node_modules/@styrene-lab/pi-coding-agent/dist/cli.js");
 const cli = existsSync(vendorCli) ? vendorCli : npmCli;
 const resolutionMode = cli === vendorCli ? "vendor" : "npm";
 

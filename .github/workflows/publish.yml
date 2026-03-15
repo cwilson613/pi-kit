@@ -74,10 +74,14 @@ jobs:
           npm install --ignore-scripts
 
       - name: Publish pi-mono fork packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash scripts/publish-pi-mono.sh
 
       - name: Install Omegon publish dependencies
         run: npm install --ignore-scripts
 
       - name: Publish omegon
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance

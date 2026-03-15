@@ -4,8 +4,8 @@
 # Also rewrites file: refs in both omegon's package.json and pi-mono's internal cross-deps.
 set -euo pipefail
 
-PACKAGES=("ai" "tui" "agent" "coding-agent")
-SCOPED_NAMES=("@cwilson613/pi-ai" "@cwilson613/pi-tui" "@cwilson613/pi-agent-core" "@cwilson613/pi-coding-agent")
+PACKAGES=("ai" "tui" "agent" "coding-agent" "mom" "pods" "web-ui")
+SCOPED_NAMES=("@styrene-lab/pi-ai" "@styrene-lab/pi-tui" "@styrene-lab/pi-agent-core" "@styrene-lab/pi-coding-agent" "@styrene-lab/pi-mom" "@styrene-lab/pi" "@styrene-lab/pi-web-ui")
 BASE="vendor/pi-mono/packages"
 
 # Phase 1: Rewrite file: refs in pi-mono packages to pinned versions (for npm publish)
@@ -42,7 +42,7 @@ for i in "${!PACKAGES[@]}"; do
   "
 done
 
-# Phase 2: Publish packages in dependency order (ai, tui, agent-core, then coding-agent)
+# Phase 2: Publish packages in dependency order (runtime core first, then auxiliary packages)
 echo ""
 echo "Phase 2: Publishing packages..."
 for i in "${!PACKAGES[@]}"; do

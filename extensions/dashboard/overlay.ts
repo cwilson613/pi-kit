@@ -17,10 +17,10 @@
  */
 
 import { spawn } from "node:child_process";
-import type { ExtensionContext } from "@cwilson613/pi-coding-agent";
-import type { Theme } from "@cwilson613/pi-coding-agent";
-import type { TUI } from "@cwilson613/pi-tui";
-import { matchesKey, truncateToWidth, visibleWidth } from "@cwilson613/pi-tui";
+import type { ExtensionContext } from "@styrene-lab/pi-coding-agent";
+import type { Theme } from "@styrene-lab/pi-coding-agent";
+import type { TUI } from "@styrene-lab/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@styrene-lab/pi-tui";
 import { DASHBOARD_UPDATE_EVENT, sharedState } from "../lib/shared-state.ts";
 import {
   TABS,

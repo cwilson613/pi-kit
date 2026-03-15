@@ -19,7 +19,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { DASHBOARD_UPDATE_EVENT, sharedState } from "../lib/shared-state.ts";
 import type { ChildState, CleaveState, ModelTier } from "./types.ts";
 import { computeDispatchWaves } from "./planner.ts";

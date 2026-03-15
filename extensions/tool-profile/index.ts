@@ -14,7 +14,7 @@
  *   manage_tools     — List, enable, disable tools or switch profiles
  */
 
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../lib/typebox-helpers.ts";
 import {

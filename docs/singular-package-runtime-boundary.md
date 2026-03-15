@@ -19,7 +19,7 @@ open_questions: []
 
 ### Runtime entrypoint already encodes singular-package ownership
 
-`bin/pi.mjs` sets `PI_CODING_AGENT_DIR` to the Omegon root and then resolves the pi CLI from exactly one of two internal sources: vendored `vendor/pi-mono/.../dist/cli.js` in dev mode or `node_modules/@cwilson613/pi-coding-agent/dist/cli.js` in installed mode. In both cases the operator invokes the single Omegon-owned `pi`/`omegon` binary entrypoint, so runtime ownership is already centralized at the Omegon package boundary rather than delegated to a separately managed external pi installation.
+`bin/pi.mjs` sets `PI_CODING_AGENT_DIR` to the Omegon root and then resolves the pi CLI from exactly one of two internal sources: vendored `vendor/pi-mono/.../dist/cli.js` in dev mode or `node_modules/@styrene-lab/pi-coding-agent/dist/cli.js` in installed mode. In both cases the operator invokes the single Omegon-owned `pi`/`omegon` binary entrypoint, so runtime ownership is already centralized at the Omegon package boundary rather than delegated to a separately managed external pi installation.
 
 ### Installed-package story is singular in intent but inconsistent in repo source form
 

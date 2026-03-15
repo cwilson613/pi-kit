@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "changeName": "fork-package-ownership-alignment",
+  "assessmentKind": "cleave",
+  "outcome": "pass",
+  "timestamp": "2026-03-15T17:12:32.418Z",
+  "summary": "Implemented the styrene-lab package-scope migration, restored npm token fallback in publish workflow during transition, added legacy preinstall cleanup for @cwilson613/pi-coding-agent, expanded publish script coverage for auxiliary renamed packages, and validated with typecheck plus targeted Omegon and vendored coding-agent tests.",
+  "snapshot": {
+    "gitHead": "2ed672daac56be0580844ee30ee92b6e7c6b6d9b",
+    "fingerprint": "b0363aca00919d99bc1a9104dd22c07974763dab48a20463621fd2d2e462a936",
+    "dirty": true,
+    "scopedPaths": [
+      ".github/workflows/publish.yml",
+      "README.md",
+      "docs/omegon-install.md",
+      "package.json",
+      "scripts/publish-pi-mono.sh",
+      "vendor/pi-mono/package.json",
+      "vendor/pi-mono/packages/agent/package.json",
+      "vendor/pi-mono/packages/ai/package.json",
+      "vendor/pi-mono/packages/coding-agent/package.json",
+      "vendor/pi-mono/packages/mom/package.json",
+      "vendor/pi-mono/packages/pods/package.json",
+      "vendor/pi-mono/packages/tui/package.json",
+      "vendor/pi-mono/packages/web-ui/package.json"
+    ],
+    "files": [
+      {
+        "path": ".github/workflows/publish.yml",
+        "exists": true,
+        "size": 2714,
+        "sha256": "a064fa56bf78cd5d00c7d76f643337c30590ffae4d7d3bdf4ec42715de868fae"
+      },
+      {
+        "path": "README.md",
+        "exists": true,
+        "size": 17623,
+        "sha256": "b851e1da127b9c23c58c5f7726ffd30dc5dd373b8142be5ae83761ee6b3c3595"
+      },
+      {
+        "path": "docs/omegon-install.md",
+        "exists": true,
+        "size": 7635,
+        "sha256": "0721c28e3635c6d1293b65183ad03d175be8c1260dcbd9d80457f374df01c08e"
+      },
+      {
+        "path": "openspec/changes/fork-package-ownership-alignment/design.md",
+        "exists": true,
+        "size": 5217,
+        "sha256": "2ef209b8818e3f867e7385e9d391e137e5ea56aed55bf629d1103751ca54e61c"
+      },
+      {
+        "path": "openspec/changes/fork-package-ownership-alignment/proposal.md",
+        "exists": true,
+        "size": 360,
+        "sha256": "39b3839a77ea38720d62b6e3a90f4ce59314555f60e61534d9f008d4b04aa8b6"
+      },
+      {
+        "path": "openspec/changes/fork-package-ownership-alignment/specs/runtime/package-ownership.md",
+        "exists": true,
+        "size": 2513,
+        "sha256": "e2d80869c7abe14825e25565dc9e4b82cb3257d4356667fcb5141ab2222873f5"
+      },
+      {
+        "path": "openspec/changes/fork-package-ownership-alignment/tasks.md",
+        "exists": true,
+        "size": 3152,
+        "sha256": "5f9af06a9d33a151862a644894b0bd3148c434e7e23220ac26dd7fa0259c64d1"
+      },
+      {
+        "path": "package.json",
+        "exists": true,
+        "size": 2742,
+        "sha256": "16738ee1a4dc235c8744e9efa52b7a115cfe404b66400dbe4f31352e05395a7d"
+      },
+      {
+        "path": "scripts/publish-pi-mono.sh",
+        "exists": true,
+        "size": 3418,
+        "sha256": "4f39bab5dd402229106906770cd21b77d296d868b405074b11859a0379235e69"
+      },
+      {
+        "path": "vendor/pi-mono/package.json",
+        "exists": true,
+        "size": 3056,
+        "sha256": "ceb0a7deca3a882bed19cd6c2c533fb2c17cddbfe34fff96d38aa5f1d6e5a1ac"
+      },
+      {
+        "path": "vendor/pi-mono/packages/agent/package.json",
+        "exists": true,
+        "size": 987,
+        "sha256": "00e3ad06e8a5380d71c6266c3d020de1cb899e9d2447c644df700de8c7461d36"
+      },
+      {
+        "path": "vendor/pi-mono/packages/ai/package.json",
+        "exists": true,
+        "size": 1882,
+        "sha256": "84cdfe75cd24d96805190c6163737a7886be3a5bcc44138c2506db5621d1efde"
+      },
+      {
+        "path": "vendor/pi-mono/packages/coding-agent/package.json",
+        "exists": true,
+        "size": 3277,
+        "sha256": "bbb2488e5f646d4bd7b02ff0a23a0ab9d172f3acbf2ae86c6c982ab86ab09644"
+      },
+      {
+        "path": "vendor/pi-mono/packages/mom/package.json",
+        "exists": true,
+        "size": 1281,
+        "sha256": "6c4f92f138dfb0a90c457cc76554f9669ebb39c027fed643767750fd366b8ca5"
+      },
+      {
+        "path": "vendor/pi-mono/packages/pods/package.json",
+        "exists": true,
+        "size": 841,
+        "sha256": "edabda4ac45f4a3891532481698f7085268c17c1b2f8dceeffe0b360ad93b8f2"
+      },
+      {
+        "path": "vendor/pi-mono/packages/tui/package.json",
+        "exists": true,
+        "size": 1200,
+        "sha256": "e6d525f58b6910178de8eff208a4c72e20af03a45547d42215fa4359a1addbf3"
+      },
+      {
+        "path": "vendor/pi-mono/packages/web-ui/package.json",
+        "exists": true,
+        "size": 1738,
+        "sha256": "fd5b9ccda3d2692580959e92435901f0f8507a0289d06a08f84664569d86ee5e"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      ".github/workflows/publish.yml",
+      "README.md",
+      "bin/omegon.mjs",
+      "docs/omegon-install.md",
+      "package.json",
+      "scripts/preinstall.sh",
+      "scripts/publish-pi-mono.sh",
+      "vendor/pi-mono",
+      "openspec/changes/fork-package-ownership-alignment/tasks.md",
+      "openspec/changes/fork-package-ownership-alignment/specs/runtime/package-ownership.md"
+    ],
+    "constraints": [
+      "Preserve Omegon install/run behavior in dev and published modes while moving runtime packages to @styrene-lab/*.",
+      "Keep @cwilson613/* as explicit legacy compatibility only during the transition.",
+      "Allow publish workflow to use NPM_TOKEN fallback until trusted publishing is confirmed for every renamed package."
+    ],
+    "recommendedAction": null
+  }
+}

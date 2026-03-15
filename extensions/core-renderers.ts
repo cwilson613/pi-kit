@@ -9,7 +9,7 @@
  * diffs, and streaming output. Registering even just renderCall causes pi to
  * take the custom renderer path, losing all built-in content rendering.
  */
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { sciCall, sciOk, sciErr, sciLoading } from "./lib/sci-ui.ts";
 
 /** Shorten a file path for display — keep last 2-3 segments. */

@@ -26,9 +26,9 @@
  *   ╰──────────────────────────────────────────────────────────────────
  */
 
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@cwilson613/pi-tui";
-import type { Component } from "@cwilson613/pi-tui";
-import type { Theme } from "@cwilson613/pi-coding-agent";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@styrene-lab/pi-tui";
+import type { Component } from "@styrene-lab/pi-tui";
+import type { Theme } from "@styrene-lab/pi-coding-agent";
 import { STATUS_ICONS, STATUS_COLORS, ISSUE_TYPE_ICONS, PRIORITY_LABELS } from "./types.ts";
 import type { NodeStatus, IssueType, Priority } from "./types.ts";
 

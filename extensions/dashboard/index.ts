@@ -14,8 +14,8 @@
  * Subscribes to "dashboard:update" events for live re-rendering.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
-import type { OverlayHandle } from "@cwilson613/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@styrene-lab/pi-coding-agent";
+import type { OverlayHandle } from "@styrene-lab/pi-tui";
 import { DASHBOARD_UPDATE_EVENT } from "../lib/shared-state.ts";
 import { getSharedBridge, buildSlashCommandResult } from "../lib/slash-command-bridge.ts";
 import { DashboardFooter } from "./footer.ts";

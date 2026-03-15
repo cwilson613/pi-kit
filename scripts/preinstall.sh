@@ -5,8 +5,8 @@
 # that bundles extensions, themes, skills, and memory on top of the core
 # pi coding agent by Mario Zechner (@badlogic).
 #
-# Both omegon and the standalone pi packages (@cwilson613/pi-coding-agent,
-# @mariozechner/pi-coding-agent) register a `pi` binary. npm cannot create
+# Both omegon and the standalone pi packages (@styrene-lab/pi-coding-agent,
+# @cwilson613/pi-coding-agent, @mariozechner/pi-coding-agent) register a `pi` binary. npm cannot create
 # a bin link if another package already owns it, so this script removes the
 # standalone pi package before omegon installs — preventing an EEXIST error.
 #
@@ -21,7 +21,7 @@ if [ "$npm_config_global" != "true" ]; then
   exit 0
 fi
 
-for pkg in @cwilson613/pi-coding-agent @mariozechner/pi-coding-agent; do
+for pkg in @styrene-lab/pi-coding-agent @cwilson613/pi-coding-agent @mariozechner/pi-coding-agent; do
   if npm ls -g "$pkg" --depth=0 >/dev/null 2>&1; then
     echo ""
     echo "  omegon: Found standalone pi package ($pkg)."

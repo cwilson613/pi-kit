@@ -12,7 +12,7 @@
  *   AUTO_COMPACT_COOLDOWN — minimum seconds between compactions (default: 60)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@styrene-lab/pi-coding-agent";
 
 const COMPACT_PERCENT = Number(process.env.AUTO_COMPACT_PERCENT) || 70;
 const COOLDOWN_MS = (Number(process.env.AUTO_COMPACT_COOLDOWN) || 60) * 1000;

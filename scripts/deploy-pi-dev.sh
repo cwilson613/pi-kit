@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-PI_INSTALL="/opt/homebrew/lib/node_modules/@cwilson613/pi-coding-agent"
+PI_INSTALL="/opt/homebrew/lib/node_modules/@styrene-lab/pi-coding-agent"
 PI_MONO_DIST="$(cd "$(dirname "$0")/../.." && pwd)/pi-mono/packages/coding-agent/dist"
 TARGET_DIST="${PI_INSTALL}/dist"
 

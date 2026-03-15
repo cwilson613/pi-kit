@@ -19,7 +19,7 @@ Engineers should be able to install omegon with a single command — no git clon
 **What omegon needs at runtime from pi-mono:**
 - `packages/{coding-agent,agent,ai,tui,web-ui,mom,pods}/dist/` — ~15MB built JS
 - `node_modules/` — ~546MB of npm deps (the bulk)
-- Extensions import types/utilities from `@cwilson613/pi-{coding-agent,tui,ai}`
+- Extensions import types/utilities from `@styrene-lab/pi-{coding-agent,tui,ai}`
 
 **What omegon adds on top:**
 - ~1700 source files: extensions/, themes/, skills/, docs/, canonical `bin/omegon.mjs` entrypoint, and a legacy `bin/pi.mjs` compatibility shim
@@ -27,17 +27,18 @@ Engineers should be able to install omegon with a single command — no git clon
 
 **The blocker for `npm install -g omegon`:**
 - npm packages don't include git submodules — `vendor/pi-mono/` would be empty
-- The pi-mono packages ARE published to npm (`@cwilson613/pi-coding-agent` etc.)
-- Extensions resolve `@cwilson613/*` imports via the pi-mono workspace `node_modules/`
+- The pi-mono fork packages are migrating from `@cwilson613/*` to the styrene-lab-owned npm scope (`@styrene-lab/pi-coding-agent` etc.)
+- Extensions resolve the public styrene-lab package imports through either the vendored workspace in dev mode or Omegon's installed `node_modules/` tree
+- Older `@cwilson613/*` package names remain transition-only compatibility debt and must not be treated as the long-term release boundary
 
-**Key insight:** The @cwilson613 packages are already on npm. If omegon declares them as regular npm dependencies instead of importing from vendor/, `npm install -g omegon` would resolve everything from the registry. The vendor/ submodule becomes a dev-only concern for contributing patches to pi-mono.
+**Key insight:** Once the styrene-lab-scoped fork packages are published, omegon can declare them as regular npm dependencies instead of importing from vendor/. During the migration window, docs and install/update surfaces should treat `@styrene-lab/*` as authoritative and `@cwilson613/*` as legacy compatibility only. The vendor/ submodule becomes a dev-only concern for contributing patches to pi-mono.
 
 ### Distribution options
 
 **Option A: npm install -g omegon (registry-first)**
-- Declare `@cwilson613/pi-coding-agent` as a regular dependency in omegon's package.json
-- `bin/omegon.mjs` resolves cli.js from `node_modules/@cwilson613/pi-coding-agent/dist/cli.js` instead of `vendor/`
-- Extensions already import from `@cwilson613/*` — they'd resolve from omegon's own node_modules
+- Declare `@styrene-lab/pi-coding-agent` as a regular dependency in omegon's package.json
+- `bin/omegon.mjs` resolves cli.js from `node_modules/@styrene-lab/pi-coding-agent/dist/cli.js` instead of `vendor/`
+- Extensions import from the styrene-lab-scoped public packages — they'd resolve from omegon's own node_modules in installed mode
 - vendor/pi-mono stays as a devDependency / optional for contributors
 - Pros: standard npm install, auto-updates via npm, zero friction
 - Cons: requires publishing omegon to npm; pi-mono must be published first for each release
@@ -60,7 +61,7 @@ Engineers should be able to install omegon with a single command — no git clon
 - Pros: npm install works, no submodule
 - Cons: fragile postinstall, enterprise proxy issues
 
-**Recommendation: Option A** — simplest, most standard. The @cwilson613 packages are already published. `bin/omegon.mjs` uses `vendor/` only in a source checkout (dev mode) and otherwise falls back to `node_modules/` in the installed product. The legacy `pi` alias, if present, immediately re-enters that same Omegon-owned entrypoint.
+**Recommendation: Option A** — simplest, most standard. Omegon should depend on the styrene-lab-scoped fork packages for published installs. `bin/omegon.mjs` uses `vendor/` only in a source checkout (dev mode) and otherwise falls back to `node_modules/` in the installed product. The legacy `pi` alias, if present, immediately re-enters that same Omegon-owned entrypoint.
 
 ## Update contract
 
@@ -83,7 +84,7 @@ The authoritative update path therefore must:
 ### Decision: vendor/ preference with node_modules/ fallback in the Omegon entrypoint
 
 **Status:** decided
-**Rationale:** Dev mode uses vendor/pi-mono (git submodule, latest patches). Installed mode falls back to node_modules/@cwilson613/pi-coding-agent (npm registry). `bin/omegon.mjs` is the canonical entrypoint for both paths; any `pi` alias must immediately re-enter that same Omegon-owned boundary.
+**Rationale:** Dev mode uses vendor/pi-mono (git submodule, latest patches). Installed mode falls back to node_modules/@styrene-lab/pi-coding-agent (npm registry). `bin/omegon.mjs` is the canonical entrypoint for both paths; any `pi` alias must immediately re-enter that same Omegon-owned boundary.
 
 ### Decision: CI auto-publish on push to main
 
@@ -103,7 +104,7 @@ The authoritative update path therefore must:
 ### Decision: Preinstall script removes conflicting pi packages
 
 **Status:** decided
-**Rationale:** scripts/preinstall.sh auto-removes @cwilson613/pi-coding-agent and @mariozechner/pi-coding-agent during global install to prevent EEXIST on the legacy `pi` bin link while Omegon takes ownership of the canonical `omegon` entrypoint. Clear messaging about what it does and how to revert.
+**Rationale:** scripts/preinstall.sh auto-removes `@styrene-lab/pi-coding-agent`, legacy `@cwilson613/pi-coding-agent`, and `@mariozechner/pi-coding-agent` during global install to prevent EEXIST on the legacy `pi` bin link while Omegon takes ownership of the canonical `omegon` entrypoint. Clear messaging about what it does and how to revert.
 
 ## Open Questions
 
@@ -115,7 +116,7 @@ The authoritative update path therefore must:
 
 - `bin/omegon.mjs` (modified) — Canonical Omegon entrypoint with vendor/ first, node_modules/ fallback
 - `bin/pi.mjs` (modified) — Legacy compatibility shim that re-enters the Omegon entrypoint
-- `package.json` (modified) — Canonical `omegon` bin plus optional compatibility `pi` alias; add @cwilson613/pi-coding-agent + pi-tui + pi-ai as dependencies; add .files or .npmignore
+- `package.json` (modified) — Canonical `omegon` bin plus optional compatibility `pi` alias; add @styrene-lab/pi-coding-agent + pi-tui + pi-ai as dependencies; add .files or .npmignore
 - `.npmignore` (new) — Exclude vendor/, docs/, tests/, .git, .github, design/
 - `.github/workflows/publish.yml` (new) — CI: auto-publish omegon to npm on push to main
 
@@ -124,3 +125,7 @@ The authoritative update path therefore must:
 - omegon name must be available on npm
 - pi-mono fork packages must be published to npm before omegon can depend on them
 - extensions use dynamic imports — all .ts extension files must ship in the package
+
+## Migration note
+
+Until the styrene-lab-scoped fork packages are fully published and trusted-publisher configuration is confirmed for each package, registry installs may still observe older `@cwilson613/*` artifacts. Treat the personal scope as legacy compatibility only; new dependency references, docs, and release automation should target `@styrene-lab/*`.

@@ -8,7 +8,7 @@
  * Respects PI_SKIP_VERSION_CHECK and PI_OFFLINE environment variables.
  */
 
-import type { ExtensionAPI } from "@cwilson613/pi-coding-agent";
+import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";

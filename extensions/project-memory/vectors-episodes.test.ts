@@ -574,6 +574,16 @@ describe("JSONL Episode Export/Import", () => {
     const jsonl = store.exportToJsonl();
     const lines = jsonl.trim().split("\n").map(l => JSON.parse(l));
 
+    const fact = lines.find(l => l._type === "fact");
+    assert.ok(fact, "expected fact line in export");
+    assert.ok(!("confidence" in fact));
+    assert.ok(!("reinforcement_count" in fact));
+    assert.ok(!("last_reinforced" in fact));
+    assert.ok(!("decay_rate" in fact));
+
+    const edge = lines.find(l => l._type === "edge");
+    assert.equal(edge, undefined, "no edge expected in this export fixture");
+
     const episodes = lines.filter(l => l._type === "episode");
     assert.equal(episodes.length, 1);
     assert.equal(episodes[0].title, "Test Episode");

@@ -1428,10 +1428,6 @@ export class FactStore {
         created_at: fact.created_at,
         source: fact.source,
         content_hash: fact.content_hash,
-        confidence: fact.confidence,
-        last_reinforced: fact.last_reinforced,
-        reinforcement_count: fact.reinforcement_count,
-        decay_rate: fact.decay_rate,
         supersedes: fact.supersedes,
       }));
     }
@@ -1449,10 +1445,6 @@ export class FactStore {
         target_fact_id: edge.target_fact_id,
         relation: edge.relation,
         description: edge.description,
-        confidence: edge.confidence,
-        last_reinforced: edge.last_reinforced,
-        reinforcement_count: edge.reinforcement_count,
-        decay_rate: edge.decay_rate,
         source_mind: edge.source_mind,
         target_mind: edge.target_mind,
       }));
@@ -1497,9 +1489,11 @@ export class FactStore {
     // Map from imported fact ID → local fact ID (for edge remapping)
     const factIdMap = new Map<string, string>();
 
-    // Pre-dedup: merge=union in git can produce multiple lines with the same id
-    // but different metadata (reinforcement_count, last_reinforced). Keep only the
-    // line with the highest reinforcement_count per id to prevent churn.
+    // Pre-dedup: merge=union in git can produce multiple lines with the same id.
+    // Legacy exports may differ in volatile scoring metadata
+    // (reinforcement_count, last_reinforced); newer stable exports may be byte-identical
+    // apart from line duplication. Prefer the record with stronger legacy metadata when
+    // present, otherwise keep the first durable record encountered.
     const dedupedRecords: any[] = [];
     const seenById = new Map<string, number>(); // id → index in dedupedRecords
     for (const line of jsonl.split("\n")) {

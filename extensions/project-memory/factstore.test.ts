@@ -579,7 +579,7 @@ describe("JSONL Import Dedup (merge=union resilience)", () => {
       '{"_type":"fact","id":"F1","mind":"default","section":"Architecture","content":"Edge fact one","status":"active","content_hash":"ef1","reinforcement_count":1,"confidence":1,"decay_rate":0.05,"source":"manual","created_at":"2026-03-01T00:00:00Z","supersedes":null}',
       '{"_type":"fact","id":"F2","mind":"default","section":"Architecture","content":"Edge fact two","status":"active","content_hash":"ef2","reinforcement_count":1,"confidence":1,"decay_rate":0.05,"source":"manual","created_at":"2026-03-01T00:00:00Z","supersedes":null}',
       '{"_type":"edge","id":"E1","source_fact_id":"F1","target_fact_id":"F2","relation":"depends_on","description":"test","confidence":1,"reinforcement_count":1,"decay_rate":0.05,"source_mind":"default","target_mind":"default"}',
-      '{"_type":"edge","id":"E1","source_fact_id":"F1","target_fact_id":"F2","relation":"depends_on","description":"test","confidence":1,"reinforcement_count":3,"decay_rate":0.05,"source_mind":"default","target_mind":"default"}',
+      '{"_type":"edge","id":"E1","source_fact_id":"F1","target_fact_id":"F2","relation":"depends_on","description":"test","source_mind":"default","target_mind":"default"}',
     ].join("\n");
 
     const result = store.importFromJsonl(jsonl);
@@ -666,6 +666,69 @@ describe("JSONL Import Dedup (merge=union resilience)", () => {
     const export1 = store.exportToJsonl();
     const export2 = store.exportToJsonl();
     assert.equal(export1, export2, "Two consecutive exports should be byte-identical");
+  });
+
+  it("fact export stays byte-stable across reinforcement-only changes", () => {
+    const { id } = store.storeFact({ section: "Architecture", content: "Stable fact" });
+
+    const export1 = store.exportToJsonl();
+    store.reinforceFact(id);
+    const export2 = store.exportToJsonl();
+
+    assert.equal(export1, export2, "reinforcement-only changes should not change exported JSONL bytes");
+  });
+
+  it("fact export still changes for durable knowledge changes", () => {
+    store.storeFact({ section: "Architecture", content: "Original fact" });
+    const export1 = store.exportToJsonl();
+
+    store.storeFact({ section: "Decisions", content: "New durable fact" });
+    const export2 = store.exportToJsonl();
+
+    assert.notEqual(export1, export2, "durable knowledge changes should change exported JSONL");
+  });
+
+  it("exports fact records with the stable durable field set only", () => {
+    store.storeFact({ section: "Architecture", content: "Lean export fact" });
+
+    const factRecord = store.exportToJsonl()
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((line) => line._type === "fact");
+
+    assert.deepEqual(
+      Object.keys(factRecord ?? {}).sort(),
+      ["_type", "content", "content_hash", "created_at", "id", "mind", "section", "source", "status", "supersedes"].sort(),
+    );
+  });
+
+  it("deduplicates lean fact lines with same id from stable exports", () => {
+    const jsonl = [
+      '{"_type":"fact","id":"LEAN","mind":"default","section":"Architecture","content":"Lean fact","status":"active","content_hash":"lean123","source":"manual","created_at":"2026-03-01T00:00:00Z","supersedes":null}',
+      '{"_type":"fact","id":"LEAN","mind":"default","section":"Architecture","content":"Lean fact","status":"active","content_hash":"lean123","source":"manual","created_at":"2026-03-01T00:00:00Z","supersedes":null}',
+    ].join("\n");
+
+    const result = store.importFromJsonl(jsonl);
+    assert.equal(result.factsAdded, 1);
+    assert.equal(store.getActiveFacts("default").length, 1);
+  });
+
+  it("exports edge records without volatile runtime scoring metadata", () => {
+    const left = store.storeFact({ section: "Architecture", content: "Left" });
+    const right = store.storeFact({ section: "Architecture", content: "Right" });
+    store.storeEdge({ sourceFact: left.id, targetFact: right.id, relation: "depends_on", description: "test edge" });
+
+    const edgeRecord = store.exportToJsonl()
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((line) => line._type === "edge");
+
+    assert.deepEqual(
+      Object.keys(edgeRecord ?? {}).sort(),
+      ["_type", "description", "id", "relation", "source_fact_id", "source_mind", "target_fact_id", "target_mind"].sort(),
+    );
   });
 
   // --- sweepDecayedFacts ---

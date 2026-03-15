@@ -67,12 +67,17 @@ jobs:
             git push origin --tags
           fi
 
+      - name: Install pi-mono publish dependencies
+        run: |
+          cd vendor/pi-mono
+          npm install --ignore-scripts
+
       - name: Publish pi-mono fork packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash scripts/publish-pi-mono.sh
 
-      - name: Install dependencies
+      - name: Install Omegon publish dependencies
         run: npm install --ignore-scripts
 
       - name: Publish omegon

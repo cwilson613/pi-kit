@@ -586,16 +586,12 @@ export default function splashExtension(pi: ExtensionAPI): void {
       }
     }, FRAME_INTERVAL_MS);
 
-    // Safety timeout — don't hold splash forever if an extension never reports.
-    // 5s is generous; most startups complete in <2s.
-    // After safety timeout, if splash is still showing, auto-dismiss it.
+    // Safety timeout — if an extension never reports done, force the checklist
+    // to complete so the "press any key" prompt appears. Does NOT auto-dismiss;
+    // the user must press a key.
     const safetyTimer = setTimeout(() => {
       clearInterval(pollTimer);
       splashDone();
-      // Auto-dismiss after a further brief hold if user hasn't pressed a key
-      setTimeout(() => {
-        if (activeSplash) dismissSplash();
-      }, 1500);
     }, 5000);
 
     // Clean up on early session exit to prevent timer leaks

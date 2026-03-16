@@ -62,7 +62,8 @@ export function diagnoseError(stderr: string): { status: AuthStatus; reason: str
 	// Not logged in — check before invalid to avoid "not authenticated" matching "invalid"
 	if (lower.includes("not logged") || lower.includes("no token") || lower.includes("not authenticated")
 		|| lower.includes("login required") || lower.includes("no credentials")
-		|| lower.includes("no valid credentials")) {
+		|| lower.includes("no valid credentials")
+		|| lower.includes("missing client token")) {
 		return { status: "none", reason: "Not authenticated" };
 	}
 
@@ -75,7 +76,7 @@ export function diagnoseError(stderr: string): { status: AuthStatus; reason: str
 
 	// Forbidden (authenticated but insufficient permissions)
 	if (/\b403\b/.test(lower) || lower.includes("insufficient scope")
-		|| lower.includes("access denied")) {
+		|| lower.includes("access denied") || lower.includes("permission denied")) {
 		return { status: "invalid", reason: `Authenticated but forbidden: ${extractErrorLine(stderr)}` };
 	}
 

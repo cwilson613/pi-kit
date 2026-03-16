@@ -988,9 +988,6 @@ function isSignificantLine(raw: string): boolean {
  * piped so output is captured and forwarded through pi's notification
  * system rather than fighting with the TUI renderer.
  *
- * A heartbeat tick fires every `heartbeatMs` so the operator knows the
- * process is still alive during long compilations (e.g. cargo build).
- *
  * The install commands come exclusively from the static `deps.ts`
  * registry and are never influenced by operator input.
  *
@@ -1000,7 +997,6 @@ export function runAsync(
 	cmd: string,
 	onLine: (line: string) => void,
 	timeoutMs: number = 600_000,
-	heartbeatMs: number = 15_000,
 ): Promise<number> {
 	return new Promise((resolve) => {
 		const env = {
@@ -1024,21 +1020,14 @@ export function runAsync(
 
 		let settled = false;
 		let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-		let elapsedSec = 0;
 
 		const settle = (code: number) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			clearInterval(heartbeat);
 			clearTimeout(sigkillTimer);
 			resolve(code);
 		};
-
-		// Heartbeat intentionally omitted — callers that stream output via onLine
-		// already give the user live feedback, making a separate "still running"
-		// tick redundant. The timeout guard below still enforces the 10-min cap.
-		const heartbeat = setInterval(() => { /* no-op */ }, heartbeatMs);
 
 		// Forward captured lines from both streams.
 		const attachStream = (stream: NodeJS.ReadableStream | null) => {

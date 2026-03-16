@@ -1075,6 +1075,15 @@ async function installDeps(ctx: CommandContext, deps: DepStatus[]): Promise<void
 		const { dep } = sorted[i];
 		const step = `[${i + 1}/${total}]`;
 
+		// Preflight check — some deps need manual system prep before install
+		if (dep.preflight) {
+			const blocker = dep.preflight();
+			if (blocker) {
+				ctx.ui.notify(`\n${step} 🛑 ${dep.name} — manual setup required:\n\n${blocker}`);
+				continue;
+			}
+		}
+
 		// Check prerequisites — re-verify availability live (not from stale array)
 		if (dep.requires?.length) {
 			const unmet = dep.requires.filter((reqId) => {

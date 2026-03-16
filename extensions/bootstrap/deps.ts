@@ -31,6 +31,12 @@ export interface Dep {
 	url?: string;
 	/** Dep IDs that must be installed first */
 	requires?: string[];
+	/**
+	 * Optional preflight check. If it returns a string, that string is a
+	 * blocking message shown to the operator explaining what they need to do
+	 * manually before this dep can be installed. Return undefined if ready.
+	 */
+	preflight?: () => string | undefined;
 }
 
 export interface InstallOption {
@@ -53,6 +59,12 @@ function ensureToolPaths(): void {
 		"/nix/var/nix/profiles/default/bin",
 		join(home, ".nix-profile", "bin"),
 		join(home, ".cargo", "bin"),
+		// Linuxbrew
+		"/home/linuxbrew/.linuxbrew/bin",
+		join(home, ".linuxbrew", "bin"),
+		// macOS Homebrew
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
 	];
 	const current = process.env.PATH ?? "";
 	const parts = current.split(":");
@@ -62,6 +74,52 @@ function ensureToolPaths(): void {
 	}
 }
 ensureToolPaths();
+
+/** Detect ostree-based immutable Linux (Bazzite, Silverblue, Kinoite, Bluefin, etc.) */
+function isOstree(): boolean {
+	if (process.platform !== "linux") return false;
+	try {
+		execSync("which rpm-ostree", { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * On Fedora 42+ ostree systems, `/` is read-only by default (composefs).
+ * Nix needs to create `/nix` which requires `root.transient = true` in the
+ * ostree prepare-root config. Returns blocking instructions if not ready.
+ */
+function checkOstreeReadyForNix(): string | undefined {
+	// If /nix already exists, we're good (previous install or already configured)
+	if (existsSync("/nix")) return undefined;
+
+	// Check if root.transient is enabled
+	try {
+		const conf = execSync("cat /etc/ostree/prepare-root.conf 2>/dev/null", { encoding: "utf-8" });
+		if (/transient\s*=\s*true/i.test(conf)) return undefined;
+	} catch { /* file doesn't exist */ }
+
+	return [
+		"⚠️  Your system has a read-only root filesystem (ostree/composefs).",
+		"Nix needs `/nix` to exist, which requires enabling root.transient.",
+		"",
+		"Run these commands in your terminal, then reboot and run /bootstrap again:",
+		"",
+		"```",
+		"sudo tee /etc/ostree/prepare-root.conf <<'EOL'",
+		"[composefs]",
+		"enabled = yes",
+		"[root]",
+		"transient = true",
+		"EOL",
+		"",
+		"sudo rpm-ostree initramfs-etc --track=/etc/ostree/prepare-root.conf",
+		"systemctl reboot",
+		"```",
+	].join("\n");
+}
 
 function hasCmd(cmd: string): boolean {
 	try {
@@ -105,10 +163,19 @@ export const DEPS: Dep[] = [
 		tier: "core",
 		check: () => hasCmd("nix"),
 		install: [
-			// --no-confirm: headless (stdin is closed)
-			{ platform: "any", cmd: "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" },
+			// Immutable ostree-based Linux (Bazzite, Silverblue, Bluefin, etc.)
+			// needs root.transient enabled and --persistence=/var/lib/nix so the
+			// nix store lives on a writable partition. The upstream installer uses
+			// the ostree planner automatically when it detects ostree.
+			{ platform: "linux", cmd: isOstree()
+				? "curl -sSfL https://install.determinate.systems/nix | sh -s -- install --no-confirm --persistence=/var/lib/nix"
+				: "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" },
+			{ platform: "darwin", cmd: "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" },
 		],
 		url: "https://zero-to-nix.com",
+		// On ostree systems, root.transient must be enabled first for /nix to be created.
+		// preflight returns instructions if the system isn't ready.
+		preflight: isOstree() ? checkOstreeReadyForNix : undefined,
 	},
 	{
 		id: "ollama",

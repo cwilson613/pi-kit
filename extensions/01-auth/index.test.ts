@@ -138,8 +138,8 @@ describe("extractErrorLine", () => {
 // ─── Provider Registry ──────────────────────────────────────────
 
 describe("ALL_PROVIDERS", () => {
-	it("has 6 providers", () => {
-		assert.equal(ALL_PROVIDERS.length, 6);
+	it("has 7 providers", () => {
+		assert.equal(ALL_PROVIDERS.length, 7);
 	});
 
 	it("every provider has required fields", () => {
@@ -159,7 +159,7 @@ describe("ALL_PROVIDERS", () => {
 
 	it("includes all expected providers", () => {
 		const ids = ALL_PROVIDERS.map(p => p.id);
-		for (const expected of ["git", "github", "gitlab", "aws", "kubernetes", "oci"]) {
+		for (const expected of ["git", "github", "gitlab", "aws", "kubernetes", "oci", "vault"]) {
 			assert.ok(ids.includes(expected), `Missing provider: ${expected}`);
 		}
 	});
@@ -470,6 +470,155 @@ describe("ociProvider.check()", () => {
 	});
 });
 
+describe("vaultProvider.check()", () => {
+	const vault = ALL_PROVIDERS.find(p => p.id === "vault")!;
+
+	it("returns missing when vault CLI not installed", async () => {
+		const pi = createMockPi(new Map([
+			["which vault", FAIL],
+		]));
+		const result = await vault.check(pi);
+		assert.equal(result.status, "missing");
+		assert.equal(result.provider, "vault");
+	});
+
+	it("returns none when VAULT_ADDR not set", async () => {
+		const original = process.env.VAULT_ADDR;
+		delete process.env.VAULT_ADDR;
+		try {
+			const pi = createMockPi(new Map([
+				["which vault", OK],
+			]));
+			const result = await vault.check(pi);
+			assert.equal(result.status, "none");
+			assert.ok(result.detail.includes("VAULT_ADDR not set"));
+			assert.equal(result.secretHint, "VAULT_ADDR");
+		} finally {
+			if (original !== undefined) process.env.VAULT_ADDR = original;
+		}
+	});
+
+	it("returns ok with policies and expiry from token lookup", async () => {
+		const original = process.env.VAULT_ADDR;
+		process.env.VAULT_ADDR = "https://vault.example.com:8200";
+		try {
+			const tokenLookupOutput = JSON.stringify({
+				data: {
+					display_name: "token-admin",
+					policies: ["default", "admin"],
+					expire_time: "2026-06-01T00:00:00Z",
+				},
+			});
+			const pi = createMockPi(new Map([
+				["which vault", OK],
+				["vault token lookup -format=json", { code: 0, stdout: tokenLookupOutput, stderr: "" }],
+			]));
+			const result = await vault.check(pi);
+			assert.equal(result.status, "ok");
+			assert.ok(result.detail.includes("token-admin"), `Expected display_name in '${result.detail}'`);
+			assert.ok(result.detail.includes("admin"), `Expected policies in '${result.detail}'`);
+			assert.ok(result.detail.includes("2026-06-01"), `Expected expiry date in '${result.detail}'`);
+		} finally {
+			if (original !== undefined) process.env.VAULT_ADDR = original;
+			else delete process.env.VAULT_ADDR;
+		}
+	});
+
+	it("returns ok with 'no expiry' for non-expiring tokens", async () => {
+		const original = process.env.VAULT_ADDR;
+		process.env.VAULT_ADDR = "https://vault.example.com:8200";
+		try {
+			const tokenLookupOutput = JSON.stringify({
+				data: {
+					display_name: "root",
+					policies: ["root"],
+					expire_time: "",
+				},
+			});
+			const pi = createMockPi(new Map([
+				["which vault", OK],
+				["vault token lookup -format=json", { code: 0, stdout: tokenLookupOutput, stderr: "" }],
+			]));
+			const result = await vault.check(pi);
+			assert.equal(result.status, "ok");
+			assert.ok(result.detail.includes("no expiry"), `Expected 'no expiry' in '${result.detail}'`);
+		} finally {
+			if (original !== undefined) process.env.VAULT_ADDR = original;
+			else delete process.env.VAULT_ADDR;
+		}
+	});
+
+	it("returns expired when token has expired", async () => {
+		const original = process.env.VAULT_ADDR;
+		process.env.VAULT_ADDR = "https://vault.example.com:8200";
+		try {
+			const pi = createMockPi(new Map([
+				["which vault", OK],
+				["vault token lookup -format=json", {
+					code: 1,
+					stdout: "",
+					stderr: "Error looking up token: Code: 403. Errors:\n* token has expired",
+				}],
+			]));
+			const result = await vault.check(pi);
+			assert.equal(result.status, "expired");
+			assert.equal(result.secretHint, "VAULT_TOKEN");
+		} finally {
+			if (original !== undefined) process.env.VAULT_ADDR = original;
+			else delete process.env.VAULT_ADDR;
+		}
+	});
+
+	it("returns none when token is not set", async () => {
+		const original = process.env.VAULT_ADDR;
+		process.env.VAULT_ADDR = "https://vault.example.com:8200";
+		try {
+			const pi = createMockPi(new Map([
+				["which vault", OK],
+				["vault token lookup -format=json", {
+					code: 1,
+					stdout: "",
+					stderr: "Error looking up token: Code: 400. Errors:\n* missing client token",
+				}],
+			]));
+			const result = await vault.check(pi);
+			assert.equal(result.status, "none");
+			assert.equal(result.secretHint, "VAULT_TOKEN");
+		} finally {
+			if (original !== undefined) process.env.VAULT_ADDR = original;
+			else delete process.env.VAULT_ADDR;
+		}
+	});
+
+	it("never includes VAULT_TOKEN value in any output", async () => {
+		const original = process.env.VAULT_ADDR;
+		const originalToken = process.env.VAULT_TOKEN;
+		process.env.VAULT_ADDR = "https://vault.example.com:8200";
+		process.env.VAULT_TOKEN = "s.supersecrettoken123";
+		try {
+			const pi = createMockPi(new Map([
+				["which vault", OK],
+				["vault token lookup -format=json", {
+					code: 1,
+					stdout: "",
+					stderr: "Error: token has expired",
+				}],
+			]));
+			const result = await vault.check(pi);
+			const resultStr = JSON.stringify(result);
+			assert.ok(
+				!resultStr.includes("s.supersecrettoken123"),
+				"VAULT_TOKEN value must never appear in auth result"
+			);
+		} finally {
+			if (original !== undefined) process.env.VAULT_ADDR = original;
+			else delete process.env.VAULT_ADDR;
+			if (originalToken !== undefined) process.env.VAULT_TOKEN = originalToken;
+			else delete process.env.VAULT_TOKEN;
+		}
+	});
+});
+
 // ─── checkAllProviders ──────────────────────────────────────────
 
 describe("checkAllProviders", () => {
@@ -492,7 +641,7 @@ describe("checkAllProviders", () => {
 		const results = await checkAllProviders(pi);
 		// All providers should report their id
 		const providers = results.map(r => r.provider);
-		for (const id of ["git", "github", "gitlab", "aws", "kubernetes", "oci"]) {
+		for (const id of ["git", "github", "gitlab", "aws", "kubernetes", "oci", "vault"]) {
 			assert.ok(providers.includes(id), `Expected id '${id}' in providers, got: ${providers}`);
 		}
 	});

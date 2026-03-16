@@ -317,6 +317,79 @@ const ociProvider: AuthProvider = {
 	},
 };
 
+const vaultProvider: AuthProvider = {
+	id: "vault",
+	name: "Vault",
+	cli: "vault",
+	tokenEnvVar: "VAULT_TOKEN",
+	refreshCommand: "vault login",
+
+	async check(pi, signal) {
+		// 1. Check CLI is installed
+		const which = await pi.exec("which", ["vault"], { signal, timeout: 3_000 });
+		if (which.code !== 0) {
+			return { provider: this.id, status: "missing", detail: "vault CLI not installed" };
+		}
+
+		// 2. Check VAULT_ADDR is configured — without it, no meaningful check is possible
+		const addr = process.env["VAULT_ADDR"];
+		if (!addr) {
+			return {
+				provider: this.id,
+				status: "none",
+				detail: "VAULT_ADDR not set",
+				refresh: this.refreshCommand,
+				secretHint: "VAULT_ADDR",
+			};
+		}
+
+		// 3. Run vault token lookup — read-only, returns token metadata (never the token itself)
+		// VAULT_TOKEN is read by the vault CLI from the environment; we never access it directly.
+		const result = await pi.exec("vault", ["token", "lookup", "-format=json"], { signal, timeout: 10_000 });
+
+		if (result.code === 0) {
+			try {
+				const data = JSON.parse(result.stdout.trim());
+				const tokenData = data?.data ?? {};
+
+				// Extract safe metadata — policies and expiry only, never the token value
+				const policies: string[] = tokenData.policies ?? [];
+				const displayName: string = tokenData.display_name ?? "";
+				const expireTime: string = tokenData.expire_time ?? "";
+
+				// Build a human-readable detail string
+				const parts: string[] = [];
+				if (displayName) parts.push(displayName);
+				if (policies.length > 0) parts.push(`policies: ${policies.filter(p => p !== "default").join(", ") || "default"}`);
+				if (expireTime) parts.push(`expires: ${expireTime.split("T")[0]}`);
+				else parts.push("no expiry");
+
+				return {
+					provider: this.id,
+					status: "ok",
+					detail: parts.join(" · ") || "authenticated",
+					refresh: this.refreshCommand,
+				};
+			} catch {
+				// JSON parse failed but command succeeded — still authenticated
+				return { provider: this.id, status: "ok", detail: "authenticated", refresh: this.refreshCommand };
+			}
+		}
+
+		// 4. Diagnose failure — truncate to 300 chars, never log token values
+		const output = (result.stdout + "\n" + result.stderr).trim();
+		const diag = diagnoseError(output);
+		return {
+			provider: this.id,
+			status: diag.status,
+			detail: `${addr} — ${diag.reason}`,
+			error: output.slice(0, 300),
+			refresh: this.refreshCommand,
+			secretHint: "VAULT_TOKEN",
+		};
+	},
+};
+
 // ─── Provider Registry ───────────────────────────────────────────
 
 /** All providers, ordered by typical check priority. */
@@ -327,6 +400,7 @@ export const ALL_PROVIDERS: AuthProvider[] = [
 	awsProvider,
 	kubernetesProvider,
 	ociProvider,
+	vaultProvider,
 ];
 
 export function findProvider(idOrName: string): AuthProvider | undefined {

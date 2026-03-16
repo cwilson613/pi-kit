@@ -206,6 +206,19 @@ export const DEPS: Dep[] = [
 
 	// --- Recommended: common workflows ---
 	{
+		id: "vault",
+		name: "Vault CLI",
+		purpose: "HashiCorp Vault authentication status checking and secret management",
+		usedBy: ["01-auth"],
+		tier: "optional",
+		check: () => hasCmd("vault"),
+		requires: ["nix"],
+		install: [
+			{ platform: "any", cmd: "nix profile install nixpkgs#vault" },
+		],
+		url: "https://developer.hashicorp.com/vault/install",
+	},
+	{
 		id: "gh",
 		name: "GitHub CLI",
 		purpose: "GitHub authentication, PR creation, issue management",

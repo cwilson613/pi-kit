@@ -133,11 +133,21 @@ function hasCmd(cmd: string): boolean {
 /** Get the best install command for the current platform */
 export function bestInstallCmd(dep: Dep): string | undefined {
 	const plat = process.platform === "darwin" ? "darwin" : "linux";
-	return (
-		dep.install.find((o) => o.platform === plat)?.cmd ??
-		dep.install.find((o) => o.platform === "any")?.cmd ??
-		dep.install[0]?.cmd
-	);
+	const candidates = dep.install.filter((o) => o.platform === plat || o.platform === "any");
+	if (candidates.length === 0) return dep.install[0]?.cmd;
+
+	// If nix is available, prefer nix commands. Otherwise prefer brew.
+	const hasNix = hasCmd("nix");
+	const hasBrew = hasCmd("brew");
+	if (hasNix) {
+		const nix = candidates.find((o) => o.cmd.startsWith("nix "));
+		if (nix) return nix.cmd;
+	}
+	if (hasBrew) {
+		const brew = candidates.find((o) => o.cmd.startsWith("brew "));
+		if (brew) return brew.cmd;
+	}
+	return candidates[0]?.cmd;
 }
 
 /** Get all install options formatted for display */
@@ -154,28 +164,22 @@ export function installHints(dep: Dep): string[] {
  * Order matters: displayed in this order during bootstrap.
  */
 export const DEPS: Dep[] = [
-	// --- Core: most users want these ---
+	// --- Core: package manager + essential tools ---
 	{
 		id: "nix",
 		name: "Nix",
 		purpose: "Universal package manager — installs all other dependencies on any OS",
 		usedBy: ["bootstrap"],
 		tier: "core",
-		check: () => hasCmd("nix"),
-		install: [
-			// Immutable ostree-based Linux (Bazzite, Silverblue, Bluefin, etc.)
-			// needs root.transient enabled and --persistence=/var/lib/nix so the
-			// nix store lives on a writable partition. The upstream installer uses
-			// the ostree planner automatically when it detects ostree.
-			{ platform: "linux", cmd: isOstree()
-				? "curl -sSfL https://install.determinate.systems/nix | sh -s -- install --no-confirm --persistence=/var/lib/nix"
-				: "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" },
-			{ platform: "darwin", cmd: "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" },
-		],
+		// Either nix or brew satisfies this — we just need a working package manager
+		check: () => hasCmd("nix") || hasCmd("brew"),
+		install: isOstree()
+			? [{ platform: "linux", cmd: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' }]
+			: [
+				{ platform: "any", cmd: "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" },
+				{ platform: "any", cmd: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' },
+			],
 		url: "https://zero-to-nix.com",
-		// On ostree systems, root.transient must be enabled first for /nix to be created.
-		// preflight returns instructions if the system isn't ready.
-		preflight: isOstree() ? checkOstreeReadyForNix : undefined,
 	},
 	{
 		id: "ollama",
@@ -187,6 +191,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#ollama" },
+			{ platform: "any", cmd: "brew install ollama" },
 		],
 		url: "https://ollama.com",
 	},
@@ -200,24 +205,12 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#d2" },
+			{ platform: "any", cmd: "brew install d2" },
 		],
 		url: "https://d2lang.com",
 	},
 
 	// --- Recommended: common workflows ---
-	{
-		id: "vault",
-		name: "Vault CLI",
-		purpose: "HashiCorp Vault authentication status checking and secret management",
-		usedBy: ["01-auth"],
-		tier: "optional",
-		check: () => hasCmd("vault"),
-		requires: ["nix"],
-		install: [
-			{ platform: "any", cmd: "nix profile install nixpkgs#vault" },
-		],
-		url: "https://developer.hashicorp.com/vault/install",
-	},
 	{
 		id: "gh",
 		name: "GitHub CLI",
@@ -228,6 +221,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#gh" },
+			{ platform: "any", cmd: "brew install gh" },
 		],
 		url: "https://cli.github.com",
 	},
@@ -241,6 +235,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#pandoc" },
+			{ platform: "any", cmd: "brew install pandoc" },
 		],
 		url: "https://pandoc.org",
 	},
@@ -253,6 +248,7 @@ export const DEPS: Dep[] = [
 		check: () => hasCmd("cargo"),
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#rustup && rustup default stable" },
+			{ platform: "any", cmd: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y" },
 		],
 		url: "https://rustup.rs",
 	},
@@ -281,6 +277,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#librsvg" },
+			{ platform: "any", cmd: "brew install librsvg" },
 		],
 	},
 	{
@@ -293,6 +290,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#poppler_utils" },
+			{ platform: "any", cmd: "brew install poppler" },
 		],
 	},
 	{
@@ -305,6 +303,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#uv" },
+			{ platform: "any", cmd: "brew install uv" },
 		],
 		url: "https://docs.astral.sh/uv/",
 	},
@@ -318,6 +317,7 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#awscli2" },
+			{ platform: "any", cmd: "brew install awscli" },
 		],
 	},
 	{
@@ -330,7 +330,22 @@ export const DEPS: Dep[] = [
 		requires: ["nix"],
 		install: [
 			{ platform: "any", cmd: "nix profile install nixpkgs#kubectl" },
+			{ platform: "any", cmd: "brew install kubectl" },
 		],
+	},
+	{
+		id: "vault",
+		name: "Vault CLI",
+		purpose: "HashiCorp Vault authentication status checking and secret management",
+		usedBy: ["01-auth"],
+		tier: "optional",
+		check: () => hasCmd("vault"),
+		requires: ["nix"],
+		install: [
+			{ platform: "any", cmd: "nix profile install nixpkgs#vault" },
+			{ platform: "any", cmd: "brew install hashicorp/tap/vault" },
+		],
+		url: "https://developer.hashicorp.com/vault/install",
 	},
 ];
 

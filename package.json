@@ -40,6 +40,9 @@
 		"url": "https://github.com/styrene-lab/omegon/issues"
 	},
 	"homepage": "https://github.com/styrene-lab/omegon#readme",
+	"optionalDependencies": {
+		"@mariozechner/clipboard": "0.3.2"
+	},
 	"engines": {
 		"node": ">=20.0.0"
 	},

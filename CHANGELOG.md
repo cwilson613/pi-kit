@@ -3,6 +3,125 @@
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.7.6] - 2026-03-16
+
+### Fixed
+- `/restart` and `/update` restart handoff no longer corrupt the terminal with visible ANSI escape sequences — RIS reset now writes directly to `/dev/tty`, bypassing the TUI layer
+
+## [0.7.5] - 2026-03-16
+
+### Fixed
+- Splash auto-dismiss no longer bypasses press-any-key gate
+
+## [0.7.1] - 2026-03-16
+
+### Added
+- Glitch-convergence ASCII logo animation on startup with tiered rendering (full sigil on tall terminals, compact wordmark on mid-size, skip on short)
+- `/splash` easter egg command to replay the logo animation
+- Startup notifications gated behind press-any-key dismissal
+
+### Fixed
+- Terminal reset during `/update` restart uses RIS hard reset
+- Splash render lines truncated to terminal width
+- Splash extension registered in package.json manifest
+
+## [0.6.35] - 2026-03-16
+
+### Fixed
+- ANSI escape sequence leakage into editor input
+- `/update` recovers from detached HEAD before pulling
+
+## [0.6.27] - 2026-03-15
+
+### Fixed
+- Pop kitty keyboard protocol before restart to prevent ANSI barf
+- Dashboard compact footer hints moved to base row
+- Dashboard raised layout lifecycle artifacts finalized
+- Memory facts transport export made explicit
+
+## [0.6.26] - 2026-03-15
+
+### Fixed
+- Dashboard 3-column wide layout and compact model badges
+
+## [0.6.25] - 2026-03-15
+
+### Fixed
+- Remove duplicate vault dependency entry
+
+## [0.6.24] - 2026-03-15
+
+### Added
+- HashiCorp Vault provider for auth status checking
+
+### Fixed
+- Remove dead heartbeat, add Vault error patterns
+- Use HashiCorp apt repo for vault CLI install on Linux
+- Stream install output live and pin permanently
+
+## [0.6.23] - 2026-03-15
+
+### Fixed
+- Restart handoff terminal corruption and stale test
+- `@mariozechner/clipboard` added as direct optionalDependency for platform-correct native binary
+- `--version`/`-v` now reports Omegon version instead of pi-coding-agent's
+
+## [0.6.22] - 2026-03-15
+
+### Fixed
+- Brew fallback for all deps, auto-select by available package manager
+
+## [0.6.21] - 2026-03-15
+
+### Added
+- HashiCorp Vault provider for auth status checking
+
+## [0.6.20] - 2026-03-15
+
+### Fixed
+- Detect ostree read-only root, guide user through nix prereqs
+
+## [0.6.19] - 2026-03-15
+
+### Fixed
+- Remove invalid `--init none` flag from nix installer
+
+## [0.6.18] - 2026-03-15
+
+### Fixed
+- Restart via detached script to avoid TUI collision
+
+## [0.6.17] - 2026-03-15
+
+### Fixed
+- Nix `--init none` for immutable distros, readable failure output
+
+## [0.6.16] - 2026-03-15
+
+### Fixed
+- Clean terminal reset before restart, use shell exec
+
+## [0.6.15] - 2026-03-15
+
+### Fixed
+- Proactively patch PATH for nix/cargo at module load
+
+## [0.6.14] - 2026-03-15
+
+### Fixed
+- Nix install `--no-confirm` for headless, skip nix in runtime health check
+
+## [0.6.13] - 2026-03-15
+
+### Added
+- Auto-restart after `/update`, add `/restart` command
+- Nix as universal package manager, suppress pi resource collisions
+
+### Fixed
+- Clipboard diagnostic uses correct default export and sendMessage API
+- Shared-state test import path updated after module relocation
+- Merge consecutive `say()` calls; ASCII emoji fallback for legacy Windows console
+
 ## [0.6.11] - 2026-03-15
 
 ### Fixed

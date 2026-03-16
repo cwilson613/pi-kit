@@ -21,6 +21,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+
+      - name: Cache pi-mono node_modules
+        uses: actions/cache@v4
+        with:
+          path: vendor/pi-mono/node_modules
+          key: pi-mono-${{ hashFiles('vendor/pi-mono/package.json') }}
+          restore-keys: pi-mono-
 
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@^11.5.1

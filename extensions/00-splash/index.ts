@@ -43,10 +43,19 @@ export interface SplashItem {
   state: "hidden" | "pending" | "active" | "done" | "failed";
 }
 
+export interface QueuedNotification {
+  message: string;
+  type: "info" | "warning" | "error";
+}
+
 export interface SplashState {
   items: SplashItem[];
   /** Set to true when all session_start hooks have returned */
   loadingComplete: boolean;
+  /** True while splash is displayed — notifications should be queued */
+  active: boolean;
+  /** Queued notifications to flush after splash dismissal */
+  notificationQueue: QueuedNotification[];
 }
 
 function getSharedState(): SplashState {
@@ -61,6 +70,8 @@ function getSharedState(): SplashState {
         { label: "tools",      state: "pending" },
       ],
       loadingComplete: false,
+      active: true,
+      notificationQueue: [],
     };
     (globalThis as any)[SPLASH_KEY] = state;
   }
@@ -111,6 +122,7 @@ class SplashHeader implements Component {
   private onTransition: (() => void) | null = null;
   private cachedLines: string[] | undefined;
   private cachedWidth: number | undefined;
+  private promptBlink = false;
 
   private markRows: number;
   private logoWidth: number;
@@ -128,6 +140,21 @@ class SplashHeader implements Component {
     this.timer = setInterval(() => this.tick(), FRAME_INTERVAL_MS);
   }
 
+  /** Called externally (e.g. on keypress) to dismiss the splash. */
+  dismiss(): void {
+    if (this.transitioned) return;
+    this.transitioned = true;
+    this.dispose();
+    this.onTransition?.();
+    this.onTransition = null;
+  }
+
+  /** True when the animation is done and loading is complete — ready for dismissal. */
+  get readyToDismiss(): boolean {
+    const state = getSharedState();
+    return this.animDone && this.holdCount >= HOLD_FRAMES && state.loadingComplete;
+  }
+
   private tick(): void {
     this.frame++;
     this.scanFrame = (this.scanFrame + 1) % SCAN_FRAMES.length;
@@ -139,13 +166,9 @@ class SplashHeader implements Component {
 
     if (this.animDone && !this.transitioned) {
       this.holdCount++;
-      const state = getSharedState();
-      if (this.holdCount >= HOLD_FRAMES && state.loadingComplete) {
-        this.transitioned = true;
-        this.dispose();
-        this.onTransition?.();
-        this.onTransition = null; // prevent double-fire
-        return;
+      // Blink the "press any key" prompt every ~500ms (10 frames at 50ms)
+      if (this.readyToDismiss && this.holdCount % 10 === 0) {
+        this.promptBlink = !this.promptBlink;
       }
     }
 
@@ -178,6 +201,15 @@ class SplashHeader implements Component {
       lines.push(""); // spacer
       const checklistLines = this.renderChecklist(width);
       lines.push(...checklistLines);
+
+      // "Press any key" prompt when ready
+      if (this.readyToDismiss) {
+        lines.push(""); // spacer
+        const prompt = "press any key to continue";
+        const promptPad = Math.max(0, Math.floor((width - prompt.length) / 2));
+        const promptColor = this.promptBlink ? DIM : PRIMARY;
+        lines.push(" ".repeat(promptPad) + `${promptColor}${prompt}${RESET}`);
+      }
     }
 
     lines.push(""); // bottom spacer
@@ -460,8 +492,48 @@ export default function splashExtension(pi: ExtensionAPI): void {
     const canFitCompact = termWidth >= COMPACT_LINE_WIDTH + 4 && termRows >= COMPACT_LOGO_LINES.length + 6;
     const canFitWordmark = termWidth >= LINE_WIDTH + 4 && termRows >= WORDMARK_LINES.length + 6;
 
+    // -----------------------------------------------------------------------
+    // Notification queueing — intercept ctx.ui.notify while splash is active
+    // -----------------------------------------------------------------------
+    const state = getSharedState();
+    const originalNotify = ctx.ui.notify.bind(ctx.ui);
+    ctx.ui.notify = (message: string, type?: "info" | "warning" | "error") => {
+      if (state.active) {
+        state.notificationQueue.push({ message, type: type ?? "info" });
+      } else {
+        originalNotify(message, type);
+      }
+    };
+
+    /** Flush queued notifications and restore original notify. */
+    const flushAndRestore = () => {
+      state.active = false;
+      ctx.ui.notify = originalNotify;
+      for (const n of state.notificationQueue) {
+        originalNotify(n.message, n.type);
+      }
+      state.notificationQueue.length = 0;
+    };
+
+    // -----------------------------------------------------------------------
+    // Splash header setup
+    // -----------------------------------------------------------------------
+    let activeSplash: SplashHeader | null = null;
+
+    const dismissSplash = () => {
+      if (!activeSplash) return;
+      activeSplash.dismiss();
+      activeSplash = null;
+      if (unsubInput) { unsubInput(); unsubInput = null; }
+      flushAndRestore();
+    };
+
+    let unsubInput: (() => void) | null = null;
+
     if (!canFitCompact && !canFitWordmark) {
-      // Too small for any animation — minimal branded header
+      // Too small for any animation — minimal branded header, no splash gate
+      state.active = false;
+      ctx.ui.notify = originalNotify;
       ctx.ui.setHeader(() => new BrandedHeader(version));
     } else {
       let artLines: string[];
@@ -484,9 +556,20 @@ export default function splashExtension(pi: ExtensionAPI): void {
         const splash = new SplashHeader(tui, () => {
           // Transition to minimal branded header
           ctx.ui.setHeader((_, _t) => new BrandedHeader(version));
+          flushAndRestore();
         }, artLines, markRows, logoWidth);
         splash.start();
+        activeSplash = splash;
         return splash;
+      });
+
+      // Listen for any keypress to dismiss splash once ready
+      unsubInput = ctx.ui.onTerminalInput((data) => {
+        if (activeSplash?.readyToDismiss && data) {
+          dismissSplash();
+          return { consume: true };
+        }
+        return undefined;
       });
     }
 
@@ -504,16 +587,22 @@ export default function splashExtension(pi: ExtensionAPI): void {
     }, FRAME_INTERVAL_MS);
 
     // Safety timeout — don't hold splash forever if an extension never reports.
-    // 3s is generous; most startups complete in <2s.
+    // 5s is generous; most startups complete in <2s.
+    // After safety timeout, if splash is still showing, auto-dismiss it.
     const safetyTimer = setTimeout(() => {
       clearInterval(pollTimer);
       splashDone();
-    }, 3000);
+      // Auto-dismiss after a further brief hold if user hasn't pressed a key
+      setTimeout(() => {
+        if (activeSplash) dismissSplash();
+      }, 1500);
+    }, 5000);
 
     // Clean up on early session exit to prevent timer leaks
     pi.on("session_shutdown", async () => {
       clearInterval(pollTimer);
       clearTimeout(safetyTimer);
+      if (activeSplash) dismissSplash();
     });
   });
 }

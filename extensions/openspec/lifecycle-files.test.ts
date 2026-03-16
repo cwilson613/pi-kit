@@ -7,8 +7,10 @@ import { execFileSync } from "node:child_process";
 
 import {
 	assertTrackedLifecycleArtifacts,
+	detectMemoryTransportState,
 	detectUntrackedLifecycleArtifacts,
 	formatLifecycleArtifactError,
+	formatMemoryTransportNotice,
 	isDurableLifecycleArtifact,
 	parsePorcelainZ,
 } from "./lifecycle-files.ts";
@@ -52,6 +54,30 @@ describe("lifecycle-files", () => {
 			assert.match(text, /openspec\/changes\/x\/tasks\.md/);
 			assert.match(text, /git add/);
 			assert.match(text, /move transient scratch artifacts outside docs\/ and openspec\//);
+		});
+	});
+
+	describe("formatMemoryTransportNotice", () => {
+		it("returns null when memory transport is clean", () => {
+			assert.equal(formatMemoryTransportNotice({
+				tracked: true,
+				dirty: false,
+				untracked: false,
+				path: ".pi/memory/facts.jsonl",
+			}), null);
+		});
+
+		it("reports memory transport drift separately from lifecycle blockers", () => {
+			const text = formatMemoryTransportNotice({
+				tracked: true,
+				dirty: true,
+				untracked: false,
+				path: ".pi/memory/facts.jsonl",
+			});
+			assert.ok(text);
+			assert.match(text!, /Memory transport drift detected/);
+			assert.match(text!, /reported separately from durable lifecycle artifact blockers/);
+			assert.match(text!, /\/memory export/);
 		});
 	});
 
@@ -115,6 +141,23 @@ describe("lifecycle-files", () => {
 				assert.match(message, /docs\/node\.md/);
 				assert.match(message, /git add/);
 			}
+		});
+
+		it("classifies tracked facts.jsonl drift separately from lifecycle blockers", () => {
+			fs.mkdirSync(path.join(tmpDir, ".pi", "memory"), { recursive: true });
+			fs.writeFileSync(path.join(tmpDir, ".pi", "memory", "facts.jsonl"), '{"_type":"fact"}\n');
+			execFileSync("git", ["add", ".pi/memory/facts.jsonl"], { cwd: tmpDir, encoding: "utf-8" });
+			execFileSync("git", ["commit", "-m", "add facts"], { cwd: tmpDir, encoding: "utf-8" });
+			fs.writeFileSync(path.join(tmpDir, ".pi", "memory", "facts.jsonl"), '{"_type":"fact","id":"x"}\n');
+
+			assert.doesNotThrow(() => assertTrackedLifecycleArtifacts(tmpDir));
+			assert.deepStrictEqual(detectUntrackedLifecycleArtifacts(tmpDir), []);
+			assert.deepStrictEqual(detectMemoryTransportState(tmpDir), {
+				tracked: true,
+				dirty: true,
+				untracked: false,
+				path: ".pi/memory/facts.jsonl",
+			});
 		});
 	});
 });

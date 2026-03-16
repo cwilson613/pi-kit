@@ -188,6 +188,8 @@ Test files:
 | `/memory refresh` | Force extraction cycle (prune, consolidate, reinforce) |
 | `/memory export` | Export facts.jsonl for cross-machine sync |
 
+Tracked `facts.jsonl` is imported into the live SQLite store on startup, but it is no longer rewritten automatically at ordinary session shutdown. Use `/memory export` when you intentionally want to reconcile durable tracked memory transport with the current DB state.
+
 ## File Layout
 
 ```

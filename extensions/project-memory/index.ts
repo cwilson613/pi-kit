@@ -53,7 +53,7 @@ import { FactStore, parseExtractionOutput, GLOBAL_DECAY, type MindRecord, type F
 import { embed, isEmbeddingAvailable, resolveEmbeddingProvider, MODEL_DIMS, type EmbeddingProvider } from "./embeddings.ts";
 import { DEFAULT_CONFIG, type MemoryConfig, type LifecycleMemoryCandidate } from "./types.ts";
 import { sanitizeCompactionText, shouldInterceptCompaction } from "./compaction-policy.ts";
-import { writeJsonlIfChanged } from "./jsonl-io.ts";
+import { getJsonlSyncState, writeJsonlIfChanged } from "./jsonl-io.ts";
 import {
   computeMemoryBudgetPolicy,
   createMemoryInjectionMetrics,
@@ -337,6 +337,31 @@ export default function (pi: ExtensionAPI) {
   const pendingWriteEditArgs = new Map<string, { toolName: string; path: string }>();
   /** Proactive startup payload — injected on firstTurn before semantic retrieval */
   let startupInjectionPayload: string | null = null;
+
+  function getFactsJsonlPath(): string {
+    return path.join(memoryDir, "facts.jsonl");
+  }
+
+  function getMemoryTransportDrift(): { dirty: boolean; missing: boolean } {
+    if (!store || !memoryDir) return { dirty: false, missing: false };
+    try {
+      const fsSync = require("node:fs") as typeof import("node:fs");
+      const nextJsonl = store.exportToJsonl();
+      const state = getJsonlSyncState(fsSync, getFactsJsonlPath(), nextJsonl);
+      return { dirty: !state.inSync, missing: !state.exists };
+    } catch {
+      return { dirty: false, missing: false };
+    }
+  }
+
+  function exportMemoryTransport(): { wrote: boolean; path: string } {
+    if (!store || !memoryDir) throw new Error("Project memory not initialized");
+    const fsSync = require("node:fs") as typeof import("node:fs");
+    const jsonlPath = getFactsJsonlPath();
+    const jsonl = store.exportToJsonl();
+    const wrote = writeJsonlIfChanged(fsSync, jsonlPath, jsonl);
+    return { wrote, path: jsonlPath };
+  }
   const globalMemoryDir = path.join(os.homedir(), ".pi", "memory");
 
   // --- Context Pressure State ---
@@ -1044,18 +1069,7 @@ export default function (pi: ExtensionAPI) {
       } catch { /* best effort */ }
     }
 
-    // JSONL export + DB close (fast — synchronous I/O, ~50ms)
-    if (store) {
-      try {
-        const fsSync = await import("node:fs");
-        const jsonlPath = path.join(memoryDir, "facts.jsonl");
-        const jsonl = store.exportToJsonl();
-        writeJsonlIfChanged(fsSync, jsonlPath, jsonl);
-      } catch {
-        // Best effort — don't block shutdown
-      }
-    }
-
+    // Tracked facts transport is exported explicitly, not on ordinary shutdown.
     store?.close(); globalStore?.close();
   });
 
@@ -2900,6 +2914,11 @@ export default function (pi: ExtensionAPI) {
       badges.push("semantic");
     }
 
+    const transportDrift = getMemoryTransportDrift();
+    if (transportDrift.dirty) {
+      badges.push(transportDrift.missing ? "transport missing" : "transport drift");
+    }
+
     const status = badges.length > 0
       ? `${label} · ${badges.join(" · ")}`
       : label;
@@ -3019,7 +3038,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("memory", {
     description: "Interactive mind manager — view, switch, create, fork, ingest memory stores",
     getArgumentCompletions: (prefix: string) => {
-      const subs = ["edit", "refresh", "clear", "link", "stats"];
+      const subs = ["edit", "refresh", "clear", "link", "stats", "export"];
       const filtered = subs.filter((s) => s.startsWith(prefix));
       return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
     },
@@ -3087,6 +3106,22 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
+        case "export": {
+          try {
+            const result = exportMemoryTransport();
+            ctx.ui.notify(
+              result.wrote
+                ? `Exported memory transport to ${result.path}`
+                : `Memory transport already in sync: ${result.path}`,
+              "info",
+            );
+            updateStatus(ctx);
+          } catch (error: any) {
+            ctx.ui.notify(`Memory export failed: ${error?.message ?? String(error)}`, "error");
+          }
+          return;
+        }
+
         case "stats": {
           const mind = activeMind();
           const facts = store.getActiveFacts(mind);
@@ -3106,6 +3141,7 @@ export default function (pi: ExtensionAPI) {
 
           const vectorCount = store.countFactVectors(mind);
           const episodeCount = store.countEpisodes(mind);
+          const transportDrift = getMemoryTransportDrift();
 
           const lines = [
             `Mind: ${activeLabel()}`,
@@ -3114,6 +3150,7 @@ export default function (pi: ExtensionAPI) {
             `Episodes: ${episodeCount}`,
             `Working memory: ${workingMemory.size}/${WORKING_MEMORY_CAP}`,
             `Embedding model: ${embeddingAvailable ? embeddingModel : "unavailable"}`,
+            `Transport: ${transportDrift.dirty ? (transportDrift.missing ? "missing tracked facts.jsonl" : "drifted from tracked facts.jsonl") : "in sync"}`,
             `Avg confidence: ${(avgConfidence * 100).toFixed(1)}%`,
             `Avg reinforcements: ${(totalReinforcements / Math.max(total, 1)).toFixed(1)}`,
             "",

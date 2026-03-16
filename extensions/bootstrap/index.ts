@@ -634,6 +634,21 @@ async function updateDevMode(
 	const steps: string[] = [];
 
 	// ── Step 1: git pull omegon ──────────────────────────────────────
+	// If HEAD is detached (e.g. after a failed prior update or branch checkout),
+	// reattach to main before pulling — otherwise git pull silently fails and the
+	// rest of the pipeline builds stale code, producing a broken restart.
+	const headRef = await run("git", ["symbolic-ref", "--quiet", "HEAD"], { cwd: omegonRoot });
+	if (headRef.code !== 0) {
+		ctx.ui.notify("▸ Detached HEAD detected — checking out main…", "warning");
+		const checkout = await run("git", ["checkout", "main"], { cwd: omegonRoot });
+		if (checkout.code !== 0) {
+			steps.push(`✗ could not checkout main: ${checkout.stderr.trim().split("\n")[0]}`);
+			ctx.ui.notify(`Update aborted (detached HEAD, checkout failed):\n${steps.join("\n")}`, "error");
+			return;
+		}
+		steps.push("✓ reattached to main");
+	}
+
 	ctx.ui.notify("▸ Pulling omegon…", "info");
 	const pull = await run("git", ["pull", "--ff-only"], { cwd: omegonRoot });
 	if (pull.code !== 0) {

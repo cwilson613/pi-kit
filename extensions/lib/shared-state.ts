@@ -143,6 +143,10 @@ interface SharedState {
   /** Active directive: the design node currently being implemented.
    *  Set by design_tree_update(implement), read by session-start and dashboard. */
   activeDirective?: { nodeId: string; branch: string } | null;
+
+  /** Active mind name from factstore. Written by project-memory, read by dashboard.
+   *  null means default mind (no directive active). */
+  activeMind?: string | null;
 }
 
 export type MindLifecycleAction = "fork" | "activate" | "ingest" | "delete";

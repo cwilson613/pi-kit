@@ -676,10 +676,11 @@ export default function (pi: ExtensionAPI) {
         const branchResult = await pi.exec("git", ["branch", "--show-current"], { timeout: 3_000, cwd: ctx.cwd });
         const currentBranch = branchResult.stdout.trim();
         if (currentBranch && currentBranch !== expectedBranch) {
-          pi.sendMessage(
-            `⚠️ Mind↔branch mismatch: directive mind "${currentMind}" expects branch "${expectedBranch}" but current branch is "${currentBranch}".`,
-            { role: "context" },
-          );
+          pi.sendMessage({
+            customType: "directive-branch-mismatch",
+            content: `⚠️ Active directive mind "${currentMind}" expects branch "${expectedBranch}" but you are on "${currentBranch}". Run \`git checkout ${expectedBranch}\` to resume directive work.`,
+            display: false,
+          });
         }
       } catch {
         // Git not available or not a git repo — skip check silently

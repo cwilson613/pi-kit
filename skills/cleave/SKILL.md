@@ -173,6 +173,55 @@ Skills can hint at the model complexity needed. The resolution order is:
 3. Skill-based tier hint (highest `preferredTier` wins)
 4. Default: sonnet
 
+## Child Dispatch: RPC Mode (Phase 1)
+
+Since Phase 1 of cleave-process-tree, child processes are spawned in **RPC mode**
+(`--mode rpc --no-session`) by default. This replaces the legacy pipe mode for
+task execution while keeping pipe mode for adversarial review.
+
+### How It Works
+
+1. The dispatcher spawns the child with `--mode rpc --no-session`
+2. The task prompt is sent as a JSON command on stdin via `sendRpcCommand()`
+3. The child emits structured JSON events on stdout (one per line, JSONL framing)
+4. Events are parsed by `parseRpcEventStream()` and mapped to `RpcProgressUpdate`
+5. Progress updates drive the dashboard in real time (tool starts, lifecycle, errors)
+
+### Key Types
+
+- **`RpcChildEvent`** — Union of all structured events from the child (agent/turn/message
+  lifecycle, tool execution, compaction, retry, pipe_closed sentinel)
+- **`RpcProgressUpdate`** — Dashboard-friendly summary: `{ kind, summary, toolName? }`
+
+### The `useRpc` Flag
+
+`spawnChild()` accepts `useRpc?: boolean` (default: `true`).
+- **`true`** → RPC mode with structured event streaming and dashboard progress
+- **`false`** → Legacy pipe mode with debounced last-line output
+
+### Pipe-Mode Fallback
+
+Adversarial review (`review.ts`) continues to use **pipe mode**. RPC mode is used
+only for task execution dispatch. If RPC stdout breaks mid-stream, the parser emits
+a synthetic `pipe_closed` event for graceful degradation.
+
+### Task File Contract
+
+The task file format (`tasks.md`) is **unchanged** by RPC mode. OpenSpec task parsing,
+dependency markers, spec-domain annotations, and skill annotations all work exactly
+as before. RPC mode changes only the coordination channel between dispatcher and child,
+not the planning or task contract layer.
+
+### Phase 1 vs Phase 2
+
+| Capability | Phase 1 (current) | Phase 2 (future) |
+|------------|-------------------|-------------------|
+| Dispatch mode | RPC for tasks, pipe for review | RPC for both |
+| Event streaming | Structured JSON on stdout | Same |
+| Dashboard progress | Real-time tool/lifecycle updates | + resource metrics |
+| Graceful degradation | pipe_closed sentinel | + reconnect |
+| Process tree control | spawn + timeout | + pause/resume/cancel |
+
 ## Architecture
 
 ```
@@ -182,14 +231,25 @@ extensions/cleave/
   planner.ts      — LLM prompt builder, JSON plan parser, wave computation
   openspec.ts     — OpenSpec tasks.md parser → ChildPlan[] conversion
   dispatcher.ts   — Child process dispatch, AsyncSemaphore, wave execution
-  review.ts       — Adversarial review loop, severity gating, churn detection
+  rpc-child.ts    — RPC child communication: JSON framing, event parsing, progress mapping
+  review.ts       — Adversarial review loop, severity gating, churn detection (pipe mode)
   skills.ts       — Skill matching, resolution, model tier hints
   conflicts.ts    — 4-step conflict detection (file overlap, decision
                     contradiction, interface mismatch, assumption violation)
   workspace.ts    — Workspace management under ~/.pi/cleave/
   worktree.ts     — Git worktree create/merge/cleanup under ~/.pi/cleave/wt/
-  types.ts        — Shared type definitions
+  types.ts        — Shared type definitions (includes RpcChildEvent, RpcProgressUpdate)
 ```
+
+### Coordination Channel
+
+The dispatcher uses RPC mode as the primary coordination channel between the parent
+cleave process and child agent processes. Communication is bidirectional:
+
+- **Parent → Child**: JSON commands on stdin (`sendRpcCommand`, `buildPromptCommand`)
+- **Child → Parent**: Structured JSONL events on stdout (`parseRpcEventStream`)
+- **Progress**: Events are mapped to `RpcProgressUpdate` via `mapEventToProgress()`
+  and forwarded to the dashboard via `emitCleaveChildProgress()`
 
 ## Workspace Layout
 

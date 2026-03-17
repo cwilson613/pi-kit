@@ -1111,11 +1111,23 @@ async function dispatchSingleChild(
 	// resolveModelIdForTier returns just the model ID (e.g., "claude-sonnet-4-20250514");
 	// the Rust binary expects "provider:model" format (e.g., "anthropic:claude-sonnet-4-20250514").
 	let nativeModelSpec: string | undefined;
-	if (modelFlag && effectiveTier !== "local") {
-		const resolved = resolveTier(effectiveTier, registryModels, activePolicy);
-		nativeModelSpec = resolved
-			? `${resolved.provider}:${resolved.modelId}`
-			: `anthropic:${modelFlag}`; // fallback: assume anthropic
+	if (effectiveTier !== "local") {
+		if (modelFlag) {
+			const resolved = resolveTier(effectiveTier, registryModels, activePolicy);
+			nativeModelSpec = resolved
+				? `${resolved.provider}:${resolved.modelId}`
+				: `anthropic:${modelFlag}`; // fallback: assume anthropic
+		} else {
+			// Registry unavailable (empty registryModels) — use hardcoded tier defaults.
+			// The native binary just needs a provider:model string; pi-ai resolution
+			// isn't available in this code path when the registry is empty.
+			const TIER_DEFAULTS: Record<string, string> = {
+				gloriana: "anthropic:claude-sonnet-4-20250514",
+				victory: "anthropic:claude-sonnet-4-20250514",
+				retribution: "anthropic:claude-haiku-3-5-20241022",
+			};
+			nativeModelSpec = TIER_DEFAULTS[effectiveTier];
+		}
 	}
 
 	const useNative = nativeAgent != null

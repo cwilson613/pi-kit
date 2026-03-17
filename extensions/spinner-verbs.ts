@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@styrene-lab/pi-coding-agent";
 
 const verbs = [
   // ═══════════════════════════════════════════════════
@@ -193,29 +193,120 @@ const verbs = [
   "Invoking the egregore of the open source community",
 
   // ═══════════════════════════════════════════════════
-  // Sci-Fi Miscellany
+  // The Expanse — Belt & Beyond
   // ═══════════════════════════════════════════════════
-  "Reversing the polarity of the neutron flow",
-  "Aligning the deflector dish to emit a solution beam",
+  "Performing a hard burn toward the solution",
+  "Negotiating with the protomolecule",
+  "Navigating the Ring Gate to the next module",
+  "Checking the reactor bottle for containment leaks",
+  "Running diagnostics on the Epstein drive",
+  "Consulting the OPA network for dependencies",
+  "Bracing for a high-g maneuver through the refactor",
+  "Drifting in the slow zone, waiting on I/O",
+  "Deploying PDCs against incoming regressions",
+  "Venting atmosphere to kill the fire in the build",
+  "Reading the Roci's threat board",
+  "Investigating the protomolecule artifact in the stack trace",
+  "Adjusting the crash couch before the flip-and-burn",
+  "Clearing the lockout on the reactor safeties",
+
+  // ═══════════════════════════════════════════════════
+  // Three Body Problem — Trisolaran & Dark Forest
+  // ═══════════════════════════════════════════════════
+  "Unfolding the proton into two dimensions",
+  "Broadcasting our position into the dark forest",
+  "Monitoring the sophon for interference",
+  "Constructing the deterrence system",
+  "Computing the three-body orbital solution",
+  "Entering the dehydrated state to conserve resources",
+  "Awaiting the next Stable Era",
+  "Hiding behind the cosmic microwave background",
+  "Projecting the countdown on the retina of the test runner",
+  "Contemplating the dark forest hypothesis of open source",
+  "Activating the gravitational wave antenna",
+  "Fleeing at lightspeed from the dimensional collapse",
+  "Encoding the solution in the cosmic background radiation",
+  "Wallface-ing the architecture decision",
+
+  // ═══════════════════════════════════════════════════
+  // Annihilation — Area X & the Shimmer
+  // ═══════════════════════════════════════════════════
+  "Crossing the border into Area X",
+  "Descending the tower that is not a tower",
+  "Reading the words on the wall written in living tissue",
+  "Observing the refraction of the codebase through the Shimmer",
+  "Following the trail of the previous expedition",
+  "Cataloguing the mutations in the dependency graph",
+  "Listening to the moaning creature in the reeds",
+  "Watching the code bloom into something unrecognizable",
+  "Submitting to the annihilation of the old architecture",
+  "Confronting the doppelgänger at the lighthouse",
+  "Tracing the phosphorescent writing on the tunnel wall",
+  "Accepting that the border is not what it appears to be",
+
+  // ═══════════════════════════════════════════════════
+  // Starfleet Engineering — Jargon Only
+  // ═══════════════════════════════════════════════════
   "Rerouting auxiliary power to the build server",
-  "Engaging the probability drive",
-  "Computing the Answer (it's always 42)",
-  "Checking if the cake is a lie",
-  "Bypassing the Kobayashi Maru",
-  "Opening the pod bay doors",
-  "Reticulating splines",
+  "Realigning the dilithium matrix",
+  "Compensating for subspace interference",
+  "Modulating the shield harmonics",
+  "Recalibrating the EPS conduits",
+  "Purging the plasma manifold",
+  "Reinitializing the pattern buffer",
 ];
 
 function randomVerb(): string {
   return verbs[Math.floor(Math.random() * verbs.length)] + "...";
 }
 
+const SERMON_DWELL_MS = 5_000;
+const SERMON_WIDGET_KEY = "sermon-scrawl";
+
 export default function (pi: ExtensionAPI) {
+  let sermonTimer: ReturnType<typeof setTimeout> | null = null;
+  let sermonActive = false;
+
+  function resetSermonTimer(ctx: ExtensionContext) {
+    // Clear any pending sermon activation
+    if (sermonTimer) {
+      clearTimeout(sermonTimer);
+      sermonTimer = null;
+    }
+
+    // If sermon is showing, tear it down
+    if (sermonActive) {
+      ctx.ui.setWidget(SERMON_WIDGET_KEY, undefined);
+      sermonActive = false;
+    }
+
+    // Start the dwell timer — if nothing happens for 5s, the sermon begins
+    sermonTimer = setTimeout(async () => {
+      const { createSermonWidget } = await import("./sermon-widget.js");
+      ctx.ui.setWidget(SERMON_WIDGET_KEY, (tui, theme) => createSermonWidget(tui, theme));
+      sermonActive = true;
+    }, SERMON_DWELL_MS);
+  }
+
   pi.on("turn_start", async (_event, ctx) => {
     ctx.ui.setWorkingMessage(randomVerb());
+    resetSermonTimer(ctx);
   });
 
   pi.on("tool_call", async (_event, ctx) => {
     ctx.ui.setWorkingMessage(randomVerb());
+    resetSermonTimer(ctx);
+  });
+
+  pi.on("turn_end", async (_event, ctx) => {
+    // Clean up when the turn ends
+    if (sermonTimer) {
+      clearTimeout(sermonTimer);
+      sermonTimer = null;
+    }
+    if (sermonActive) {
+      ctx.ui.setWidget(SERMON_WIDGET_KEY, undefined);
+      sermonActive = false;
+    }
   });
 }

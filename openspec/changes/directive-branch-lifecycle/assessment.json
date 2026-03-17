@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "changeName": "directive-branch-lifecycle",
+  "assessmentKind": "cleave",
+  "outcome": "pass",
+  "timestamp": "2026-03-17T05:13:43.686Z",
+  "summary": "Adversarial review of 3 commits (release cleanup, heuristic fix, false-positive fix). Found 2 critical issues (vague/substring keywords in patterns) and 1 warning (overly common infra keywords), all fixed and tested. 1681/1681 tests pass, typecheck clean. No issues affect directive-branch-lifecycle change — all findings were in the cleave assessment subsystem.",
+  "snapshot": {
+    "gitHead": "5a5abcb97816bfab7b7060f3d8af8c45224aae1f",
+    "fingerprint": "73d7979c2e5cb67e693c433cc49a3f7604dbca6769199a063c206b357bc3a674",
+    "dirty": false,
+    "scopedPaths": [],
+    "files": [
+      {
+        "path": "openspec/changes/directive-branch-lifecycle/design.md",
+        "exists": true,
+        "size": 533,
+        "sha256": "a121a95450993ff3b980e74367b955a1daa75e195fb97b2467ba65ad75ffc6bf"
+      },
+      {
+        "path": "openspec/changes/directive-branch-lifecycle/proposal.md",
+        "exists": true,
+        "size": 510,
+        "sha256": "a2dcdca22a8f236ef762e02352c55cb1bb6a38070827a5a077cc24fc9354d16c"
+      },
+      {
+        "path": "openspec/changes/directive-branch-lifecycle/specs/lifecycle.md",
+        "exists": true,
+        "size": 3433,
+        "sha256": "f7602f9757d8868f614b6ada26857148a0a79750b3c088b775f7553d3dd0e9bb"
+      },
+      {
+        "path": "openspec/changes/directive-branch-lifecycle/tasks.md",
+        "exists": true,
+        "size": 1158,
+        "sha256": "b9527a4ac5b6768c6d37ad9914adcd6709402b45d24170a3e3d16c342fd25563"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [
+      "extensions/cleave/assessment.ts",
+      "extensions/cleave/assessment.test.ts"
+    ],
+    "constraints": [
+      "Pattern keywords must not include terms that appear in the vague-penalty list (improve, better, fix issues, make it, update)",
+      "Infrastructure pattern keywords should avoid domain-generic nouns (model, memory, context, status) that would match most directives in an AI-tooling codebase"
+    ],
+    "recommendedAction": null
+  }
+}

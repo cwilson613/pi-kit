@@ -184,3 +184,15 @@ The current state produces stale branches, assessment gaps, and work-on-main dri
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `extensions/cleave/assessment.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+- `extensions/cleave/assessment.test.ts` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
+
+### Constraints
+
+- Pattern keywords must not include terms that appear in the vague-penalty list (improve, better, fix issues, make it, update)
+- Infrastructure pattern keywords should avoid domain-generic nouns (model, memory, context, status) that would match most directives in an AI-tooling codebase

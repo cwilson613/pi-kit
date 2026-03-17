@@ -1442,7 +1442,6 @@ export class FactStore {
     return mind?.readonly === 1;
   }
 
-  /** Fork a mind — copy all active facts to a new mind */
   /**
    * Fork a mind — create a child scope that inherits the parent's facts.
    *

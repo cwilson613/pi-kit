@@ -37,10 +37,13 @@ const COMBINING_GLITCH = [
   "\u0335", // combining short stroke overlay  ̵
 ];
 
-// Alpharius palette — raw ANSI
-const ACCENT     = "\x1b[38;2;42;180;200m";   // #2ab4c8
-const ACCENT_DIM = "\x1b[38;2;26;136;152m";   // #1a8898
-const RESET      = "\x1b[0m";
+// Sermon palette — much dimmer than the spinner verb.
+// The sermon is background thought, not actionable signal.
+// Base text is near the noise floor; glitch accents stay subdued.
+const SERMON_DIM   = "\x1b[38;2;50;55;65m";     // #323741 — barely visible
+const GLITCH_GLYPH = "\x1b[38;2;55;75;90m";     // #374b5a — noise glyphs, slightly brighter
+const GLITCH_COLOR = "\x1b[38;2;30;100;115m";    // #1e6473 — muted teal shimmer
+const RESET        = "\x1b[0m";
 
 // Glitch probabilities per character per render
 const P_SUBSTITUTE = 0.03;
@@ -51,29 +54,29 @@ function randomFrom<T>(arr: readonly T[] | string): T | string {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function glitchChar(ch: string, muted: (s: string) => string): string {
+function glitchChar(ch: string): string {
   // Don't glitch spaces
-  if (ch === " ") return muted(ch);
+  if (ch === " ") return ch;
 
   const r = Math.random();
 
-  // Substitution — replace with noise glyph
+  // Substitution — replace with noise glyph, slightly brighter than base
   if (r < P_SUBSTITUTE) {
-    return ACCENT + randomFrom(NOISE_CHARS) + RESET;
+    return GLITCH_GLYPH + randomFrom(NOISE_CHARS) + RESET;
   }
 
-  // Color shimmer — accent instead of muted
+  // Color shimmer — subdued teal flicker
   if (r < P_SUBSTITUTE + P_COLOR) {
-    return ACCENT_DIM + ch + RESET;
+    return GLITCH_COLOR + ch + RESET;
   }
 
-  // Combining diacritics — corruption overlay
+  // Combining diacritics — corruption overlay at base dim
   if (r < P_SUBSTITUTE + P_COLOR + P_COMBINING) {
-    return muted(ch + randomFrom(COMBINING_GLITCH));
+    return ch + randomFrom(COMBINING_GLITCH);
   }
 
-  // Normal
-  return muted(ch);
+  // Normal — rendered in the SERMON_DIM wrapper set by the caller
+  return ch;
 }
 
 export function createSermonWidget(
@@ -84,8 +87,6 @@ export function createSermonWidget(
   let cursor = Math.floor(Math.random() * SERMON.length);
   let revealed = "";
   let intervalId: ReturnType<typeof setTimeout> | null = null;
-
-  const muted = (s: string) => theme.fg("muted", s);
 
   function advance() {
     const ch = SERMON[cursor % SERMON.length];
@@ -115,11 +116,14 @@ export function createSermonWidget(
         ? revealed.slice(revealed.length - maxW)
         : revealed;
 
-      // Build the line character by character with glitch effects
-      let line = "  ";
+      // Build the line character by character with glitch effects.
+      // Base color is SERMON_DIM — near the noise floor. Glitch effects
+      // momentarily escape to slightly brighter colors, then fall back.
+      let line = "  " + SERMON_DIM;
       for (const ch of visible) {
-        line += glitchChar(ch, muted);
+        line += glitchChar(ch);
       }
+      line += RESET;
 
       return [line];
     },

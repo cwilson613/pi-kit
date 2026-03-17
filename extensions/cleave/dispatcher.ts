@@ -21,8 +21,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@styrene-lab/pi-coding-agent";
 import { DASHBOARD_UPDATE_EVENT, sharedState } from "../lib/shared-state.ts";
-import type { ChildState, CleaveState, ModelTier } from "./types.ts";
+import type { ChildState, CleaveState, ModelTier, RpcChildEvent, RpcProgressUpdate } from "./types.ts";
 import { computeDispatchWaves } from "./planner.ts";
+import { sendRpcCommand, buildPromptCommand, parseRpcEventStream, mapEventToProgress } from "./rpc-child.ts";
 import { executeWithReview, type ReviewConfig, type ReviewExecutor, DEFAULT_REVIEW_CONFIG } from "./review.ts";
 import { saveState } from "./workspace.ts";
 import { resolveTier, getDefaultPolicy, getViableModels, type ProviderRoutingPolicy, type RegistryModel } from "../lib/model-routing.ts";
@@ -83,7 +84,7 @@ export function resolveModelIdForTier(
 export function emitCleaveChildProgress(
 	pi: Pick<ExtensionAPI, "events">,
 	childId: number,
-	patch: { status?: "pending" | "running" | "done" | "failed"; elapsed?: number; startedAt?: number; lastLine?: string; worktreePath?: string },
+	patch: { status?: "pending" | "running" | "done" | "failed"; elapsed?: number; startedAt?: number; lastLine?: string; worktreePath?: string; rpcProgress?: RpcProgressUpdate },
 ): void {
 	const cleaveState = (sharedState as any).cleave;
 	if (!cleaveState?.children?.[childId]) return;
@@ -99,8 +100,16 @@ export function emitCleaveChildProgress(
 	if (patch.worktreePath !== undefined) {
 		cleaveState.children[childId].worktreePath = patch.worktreePath;
 	}
-	if (patch.lastLine !== undefined) {
-		// Update lastLine for backward compat
+	if (patch.rpcProgress !== undefined) {
+		// Structured RPC progress — use summary as lastLine for backward compat
+		const summary = patch.rpcProgress.summary;
+		cleaveState.children[childId].lastLine = summary;
+		const child = cleaveState.children[childId];
+		if (!child.recentLines) child.recentLines = [];
+		child.recentLines.push(summary);
+		if (child.recentLines.length > 30) child.recentLines.splice(0, child.recentLines.length - 30);
+	} else if (patch.lastLine !== undefined) {
+		// Update lastLine for backward compat (pipe mode)
 		cleaveState.children[childId].lastLine = patch.lastLine;
 		// Append to ring buffer (cap at 30)
 		const child = cleaveState.children[childId];
@@ -364,7 +373,11 @@ function stripAnsiForStatus(s: string): string {
 	return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
 }
 
-async function spawnChild(
+/**
+ * Spawn a child in pipe mode (legacy).
+ * Uses `pi -p --no-session`, writes prompt to stdin, closes stdin.
+ */
+async function spawnChildPipe(
 	prompt: string,
 	cwd: string,
 	timeoutMs: number,
@@ -389,15 +402,13 @@ async function spawnChild(
 			detached: true,
 			env: {
 				...process.env,
-				// Prevent nested detection issues
 				PI_CHILD: "1",
-				// https://warhammer40k.fandom.com/wiki/Alpha_Legion
 				I_AM: "alpharius",
 			},
 		});
 		registerCleaveProc(proc);
 
-		// Write prompt to stdin
+		// Write prompt to stdin and close (pipe mode)
 		if (proc.stdin) {
 			proc.stdin.write(prompt);
 			proc.stdin.end();
@@ -408,7 +419,6 @@ async function spawnChild(
 			const chunk = data.toString();
 			stdout += chunk;
 			if (onLine) {
-				// Parse line by line and forward meaningful lines
 				lineBuf += chunk;
 				const parts = lineBuf.split("\n");
 				lineBuf = parts.pop() ?? "";
@@ -420,7 +430,6 @@ async function spawnChild(
 		});
 		proc.stderr?.on("data", (data) => { stderr += data.toString(); });
 
-		// SIGKILL escalation helper — sends SIGKILL by process group with fallback
 		let escalationTimer: ReturnType<typeof setTimeout> | undefined;
 		const scheduleEscalation = () => {
 			escalationTimer = setTimeout(() => {
@@ -434,15 +443,12 @@ async function spawnChild(
 			}, 5_000);
 		};
 
-		// Timeout enforcement
 		const timer = setTimeout(() => {
 			killed = true;
 			killCleaveProc(proc);
 			scheduleEscalation();
 		}, timeoutMs);
 
-		// Abort signal support (with SIGKILL escalation — detached processes
-		// won't receive SIGHUP on parent exit, so SIGTERM alone is insufficient)
 		const onAbort = () => {
 			killed = true;
 			killCleaveProc(proc);
@@ -479,6 +485,171 @@ async function spawnChild(
 			});
 		});
 	});
+}
+
+/** Events collected during an RPC child session. */
+interface RpcChildResult extends ChildResult {
+	events: RpcChildEvent[];
+	pipeBroken: boolean;
+}
+
+/**
+ * Spawn a child in RPC mode.
+ * Uses `--mode rpc --no-session`, sends prompt via sendRpcCommand on stdin,
+ * parses stdout as a JSON event stream. Stdin stays open for the session lifetime.
+ */
+async function spawnChildRpc(
+	prompt: string,
+	cwd: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+	localModel?: string,
+	onEvent?: (event: RpcChildEvent) => void,
+): Promise<RpcChildResult> {
+	const omegon = resolveOmegonSubprocess();
+	const args = [...omegon.argvPrefix, "--mode", "rpc", "--no-session"];
+	if (localModel) {
+		args.push("--model", localModel);
+	}
+
+	return new Promise<RpcChildResult>((resolve) => {
+		let stderr = "";
+		let killed = false;
+		const events: RpcChildEvent[] = [];
+		let pipeBroken = false;
+
+		const proc = spawn(omegon.command, args, {
+			cwd,
+			stdio: ["pipe", "pipe", "pipe"],
+			detached: true,
+			env: {
+				...process.env,
+				PI_CHILD: "1",
+				I_AM: "alpharius",
+			},
+		});
+		registerCleaveProc(proc);
+
+		// Send prompt via RPC command on stdin — keep stdin open
+		if (proc.stdin) {
+			const cmd = buildPromptCommand(prompt);
+			sendRpcCommand(proc.stdin, cmd);
+			// Do NOT close stdin — child may need it for the session lifetime
+		}
+
+		// Parse stdout as RPC event stream
+		let stdoutRaw = "";
+		proc.stdout?.on("data", (data: Buffer) => {
+			stdoutRaw += data.toString();
+		});
+		proc.stderr?.on("data", (data) => { stderr += data.toString(); });
+
+		// Process events from the stream in the background
+		let eventStreamDone = false;
+		if (proc.stdout) {
+			const processEvents = async () => {
+				try {
+					for await (const event of parseRpcEventStream(proc.stdout!)) {
+						events.push(event);
+						if (event.type === "pipe_closed") {
+							pipeBroken = true;
+						}
+						onEvent?.(event);
+					}
+				} catch {
+					// Stream parsing error — treat as pipe break
+					pipeBroken = true;
+				}
+				eventStreamDone = true;
+			};
+			processEvents();
+		}
+
+		let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+		const scheduleEscalation = () => {
+			escalationTimer = setTimeout(() => {
+				if (!proc.killed) {
+					try {
+						if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+					} catch {
+						try { proc.kill("SIGKILL"); } catch { /* already dead */ }
+					}
+				}
+			}, 5_000);
+		};
+
+		const timer = setTimeout(() => {
+			killed = true;
+			killCleaveProc(proc);
+			scheduleEscalation();
+		}, timeoutMs);
+
+		const onAbort = () => {
+			killed = true;
+			killCleaveProc(proc);
+			scheduleEscalation();
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+
+		let settled = false;
+		proc.on("close", (code) => {
+			if (settled) return;
+			settled = true;
+			deregisterCleaveProc(proc);
+			clearTimeout(timer);
+			clearTimeout(escalationTimer);
+			signal?.removeEventListener("abort", onAbort);
+
+			// Close stdin if still open (child has exited)
+			try { proc.stdin?.end(); } catch { /* already closed */ }
+
+			resolve({
+				exitCode: killed ? -1 : (code ?? 1),
+				stdout: stdoutRaw,
+				stderr: killed ? `Killed (timeout or abort)\n${stderr}` : stderr,
+				events,
+				pipeBroken,
+			});
+		});
+
+		proc.on("error", (err) => {
+			if (settled) return;
+			settled = true;
+			deregisterCleaveProc(proc);
+			clearTimeout(timer);
+			clearTimeout(escalationTimer);
+			signal?.removeEventListener("abort", onAbort);
+			resolve({
+				exitCode: 1,
+				stdout: "",
+				stderr: `Failed to spawn pi: ${err.message}`,
+				events,
+				pipeBroken: true,
+			});
+		});
+	});
+}
+
+/**
+ * Spawn a child process — dispatches to RPC or pipe mode.
+ *
+ * @param useRpc  When true (default), uses RPC mode with structured events.
+ *                When false, uses legacy pipe mode.
+ */
+async function spawnChild(
+	prompt: string,
+	cwd: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+	localModel?: string,
+	onLine?: (line: string) => void,
+	useRpc?: boolean,
+	onEvent?: (event: RpcChildEvent) => void,
+): Promise<ChildResult> {
+	if (useRpc) {
+		return spawnChildRpc(prompt, cwd, timeoutMs, signal, localModel, onEvent);
+	}
+	return spawnChildPipe(prompt, cwd, timeoutMs, signal, localModel, onLine);
 }
 
 // ─── Concurrency control ────────────────────────────────────────────────────
@@ -674,8 +845,20 @@ async function dispatchSingleChild(
 	// Mirror to sharedState for live dashboard updates (include startedAt for elapsed ticker)
 	emitCleaveChildProgress(pi, child.childId, { status: "running", startedAt: startedAtMs, worktreePath: child.worktreePath });
 
-	// Debounced last-line emitter: buffers stdout lines and pushes to shared
-	// state at most once per 500ms to avoid flooding the event bus.
+	// ── Progress callbacks ──────────────────────────────────────────────────
+	// RPC mode: direct event forwarding (no debounce)
+	// Pipe mode: debounced line emitter (legacy)
+	const useRpc = true;
+
+	// RPC event handler — forward structured progress directly
+	const onRpcEvent = (event: RpcChildEvent) => {
+		const progress = mapEventToProgress(event);
+		if (progress) {
+			emitCleaveChildProgress(pi, child.childId, { rpcProgress: progress });
+		}
+	};
+
+	// Pipe mode fallback: debounced last-line emitter
 	let pendingLine: string | undefined;
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 	const flushLine = () => {
@@ -738,14 +921,15 @@ async function dispatchSingleChild(
 	// Build executor adapter for the review loop
 	const executor: ReviewExecutor = {
 		execute: async (execPrompt: string, execCwd: string, execModelFlag?: string) => {
-			return spawnChild(execPrompt, execCwd, timeoutMs, signal, execModelFlag, onChildLine);
+			// Execution uses RPC mode for structured events
+			return spawnChild(execPrompt, execCwd, timeoutMs, signal, execModelFlag,
+				useRpc ? undefined : onChildLine, useRpc, useRpc ? onRpcEvent : undefined);
 		},
 		review: async (reviewPrompt: string, reviewCwd: string) => {
-			// Reviews always use gloriana (D4: highest available tier) — resolve to explicit ID
+			// Reviews always use pipe mode (Phase 1) + gloriana tier
 			const reviewModelId = resolveModelIdForTier("gloriana", registryModels, activePolicy, localModel);
-			// Review runs don't stream lastLine — they're short and we don't want
-			// review commentary to overwrite the last execution status line.
-			return spawnChild(reviewPrompt, reviewCwd, timeoutMs, signal, reviewModelId);
+			return spawnChild(reviewPrompt, reviewCwd, timeoutMs, signal, reviewModelId,
+				undefined, false /* pipe mode for review */);
 		},
 		readFile: (path: string) => readFileSync(path, "utf-8"),
 	};
@@ -797,6 +981,18 @@ async function dispatchSingleChild(
 	} else {
 		child.status = "failed";
 		child.error = result.stderr.slice(0, 2000) || `Exit code ${result.exitCode}`;
+	}
+
+	// RPC pipe-break handling: if stdout closed unexpectedly, mark failed
+	// but preserve worktree and branch for recovery
+	if (useRpc && "pipeBroken" in result && (result as RpcChildResult).pipeBroken) {
+		// Only override status if it wasn't already set to completed (child may
+		// have finished before the pipe break was detected)
+		if (child.status !== "completed") {
+			child.status = "failed";
+			child.error = "RPC pipe break: stdout closed unexpectedly — worktree preserved for recovery";
+			// Do NOT clean up worktree — preserve for manual recovery
+		}
 	}
 
 	// If review escalated, mark the child as failed

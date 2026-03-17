@@ -535,7 +535,7 @@ describe("LARGE_RUN_THRESHOLD", () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 import { sharedState } from "../lib/shared-state.ts";
-import type { CleaveState, ChildState } from "./types.ts";
+import type { CleaveState, ChildState, RpcProgressUpdate } from "./types.ts";
 
 /** Build a minimal CleaveState with N pre-failed children for test isolation. */
 function makeTestState(childCount: number): CleaveState {
@@ -695,6 +695,105 @@ describe("dispatchChildren preflight — integration (spec: Large/Small run trig
 			);
 		} finally {
 			teardown();
+		}
+	});
+});
+
+// ─── RPC mode: emitCleaveChildProgress with structured progress ─────────────
+
+describe("emitCleaveChildProgress — RPC structured progress", () => {
+	it("uses rpcProgress.summary as lastLine for dashboard backward compat", () => {
+		const previous = (sharedState as any).cleave;
+		try {
+			(sharedState as any).cleave = {
+				status: "dispatching",
+				runId: "test-rpc",
+				updatedAt: 0,
+				children: [
+					{ label: "child-0", status: "running" },
+				],
+			};
+			const events: Array<{ channel: string; data: unknown }> = [];
+			const pi = {
+				events: {
+					emit: (channel: string, data: unknown) => {
+						events.push({ channel, data });
+					},
+				},
+			} as any;
+
+			const progress: RpcProgressUpdate = {
+				kind: "tool",
+				summary: "tool: read src/auth.ts",
+				toolName: "read",
+			};
+			emitCleaveChildProgress(pi, 0, { rpcProgress: progress });
+
+			const child = (sharedState as any).cleave.children[0];
+			assert.equal(child.lastLine, "tool: read src/auth.ts");
+			assert.ok(child.recentLines?.includes("tool: read src/auth.ts"));
+			assert.equal(events.length, 1);
+		} finally {
+			(sharedState as any).cleave = previous;
+		}
+	});
+
+	it("appends to recentLines ring buffer and caps at 30", () => {
+		const previous = (sharedState as any).cleave;
+		try {
+			(sharedState as any).cleave = {
+				status: "dispatching",
+				runId: "test-rpc",
+				updatedAt: 0,
+				children: [
+					{ label: "child-0", status: "running", recentLines: Array.from({ length: 29 }, (_, i) => `line-${i}`) },
+				],
+			};
+			const pi = {
+				events: { emit: () => {} },
+			} as any;
+
+			emitCleaveChildProgress(pi, 0, {
+				rpcProgress: { kind: "tool", summary: "tool: bash npm test" },
+			});
+			const child = (sharedState as any).cleave.children[0];
+			assert.equal(child.recentLines.length, 30);
+
+			// Adding one more should trim to 30
+			emitCleaveChildProgress(pi, 0, {
+				rpcProgress: { kind: "lifecycle", summary: "Agent completed" },
+			});
+			assert.equal(child.recentLines.length, 30);
+			assert.equal(child.recentLines[29], "Agent completed");
+		} finally {
+			(sharedState as any).cleave = previous;
+		}
+	});
+
+	it("rpcProgress takes precedence over lastLine when both provided", () => {
+		const previous = (sharedState as any).cleave;
+		try {
+			(sharedState as any).cleave = {
+				status: "dispatching",
+				runId: "test-rpc",
+				updatedAt: 0,
+				children: [
+					{ label: "child-0", status: "running" },
+				],
+			};
+			const pi = {
+				events: { emit: () => {} },
+			} as any;
+
+			// rpcProgress should win over lastLine
+			emitCleaveChildProgress(pi, 0, {
+				rpcProgress: { kind: "tool", summary: "tool: edit file.ts" },
+				lastLine: "should be ignored",
+			});
+			const child = (sharedState as any).cleave.children[0];
+			assert.equal(child.lastLine, "tool: edit file.ts");
+		} finally {
+			(sharedState as any).cleave = previous;
 		}
 	});
 });

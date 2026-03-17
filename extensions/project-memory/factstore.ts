@@ -848,10 +848,12 @@ export class FactStore {
   getActiveEdges(mind?: string): Edge[] {
     let edges: Edge[];
     if (mind) {
+      const chain = this.resolveMindChain(mind);
+      const placeholders = chain.map(() => "?").join(", ");
       edges = this.db.prepare(`
         SELECT * FROM edges
-        WHERE (source_mind = ? OR target_mind = ?) AND status = 'active'
-      `).all(mind, mind) as Edge[];
+        WHERE (source_mind IN (${placeholders}) OR target_mind IN (${placeholders})) AND status = 'active'
+      `).all(...chain, ...chain) as Edge[];
     } else {
       edges = this.db.prepare(
         `SELECT * FROM edges WHERE status = 'active'`
@@ -948,14 +950,52 @@ export class FactStore {
   // ---------------------------------------------------------------------------
 
   /**
+   * Resolve the mind chain: [mind, parent, grandparent, ...].
+   * Used to include inherited facts from parent minds.
+   * Stops at 'default' or when no parent exists. Max depth 5 to prevent cycles.
+   */
+  private resolveMindChain(mind: string): string[] {
+    const chain: string[] = [mind];
+    let current = mind;
+    for (let i = 0; i < 5; i++) {
+      const rec = this.getMind(current);
+      if (!rec?.parent || rec.parent === current) break;
+      chain.push(rec.parent);
+      current = rec.parent;
+    }
+    return chain;
+  }
+
+  /**
    * Get active facts for a mind, with confidence decay applied.
+   * If the mind has a parent, includes inherited parent facts (deduped
+   * by content_hash — child facts shadow parent facts with the same content).
    * Optionally limit to top N by confidence.
    */
   getActiveFacts(mind: string, limit?: number): Fact[] {
-    const facts = this.db.prepare(
-      `SELECT * FROM facts WHERE mind = ? AND status = 'active'
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
+    const allFacts = this.db.prepare(
+      `SELECT * FROM facts WHERE mind IN (${placeholders}) AND status = 'active'
        ORDER BY section, created_at`
-    ).all(mind) as Fact[];
+    ).all(...chain) as Fact[];
+
+    // Deduplicate: child facts shadow parent facts with the same content_hash.
+    // Keep the fact from the earliest mind in the chain (= the child).
+    const seen = new Map<string, number>();
+    const facts: Fact[] = [];
+    for (const fact of allFacts) {
+      const chainIdx = chain.indexOf(fact.mind);
+      const existing = seen.get(fact.content_hash);
+      if (existing !== undefined && existing <= chainIdx) continue; // child already present
+      seen.set(fact.content_hash, chainIdx);
+      // Remove any previously added parent fact with same hash
+      if (existing !== undefined) {
+        const idx = facts.findIndex(f => f.content_hash === fact.content_hash);
+        if (idx !== -1) facts.splice(idx, 1);
+      }
+      facts.push(fact);
+    }
 
     // Apply time-based confidence decay.
     // Specs are exempt (binary exist/not-exist).
@@ -992,9 +1032,19 @@ export class FactStore {
 
   /** Get active facts for a specific section, sorted by confidence descending. */
   getFactsBySection(mind: string, section: string): Fact[] {
-    const facts = this.db.prepare(
-      `SELECT * FROM facts WHERE mind = ? AND section = ? AND status = 'active' ORDER BY created_at`
-    ).all(mind, section) as Fact[];
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
+    const allFacts = this.db.prepare(
+      `SELECT * FROM facts WHERE mind IN (${placeholders}) AND section = ? AND status = 'active' ORDER BY created_at`
+    ).all(...chain, section) as Fact[];
+    // Deduplicate by content_hash (child shadows parent)
+    const seen = new Set<string>();
+    const facts: Fact[] = [];
+    for (const f of allFacts) {
+      if (seen.has(f.content_hash)) continue;
+      seen.add(f.content_hash);
+      facts.push(f);
+    }
 
     const NO_DECAY_SECTIONS: readonly string[] = ["Specs"];
     const now = Date.now();
@@ -1015,17 +1065,21 @@ export class FactStore {
 
   /** Get the count of active facts per section for a mind. */
   getSectionCounts(mind: string): Map<string, number> {
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
     const rows = this.db.prepare(
-      `SELECT section, COUNT(*) as count FROM facts WHERE mind = ? AND status = 'active' GROUP BY section`
-    ).all(mind) as { section: string; count: number }[];
+      `SELECT section, COUNT(DISTINCT content_hash) as count FROM facts WHERE mind IN (${placeholders}) AND status = 'active' GROUP BY section`
+    ).all(...chain) as { section: string; count: number }[];
     return new Map(rows.map(r => [r.section, r.count]));
   }
 
-  /** Count active facts for a mind */
+  /** Count active facts for a mind (including inherited parent facts) */
   countActiveFacts(mind: string): number {
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
     const row = this.db.prepare(
-      `SELECT COUNT(*) as count FROM facts WHERE mind = ? AND status = 'active'`
-    ).get(mind);
+      `SELECT COUNT(DISTINCT content_hash) as count FROM facts WHERE mind IN (${placeholders}) AND status = 'active'`
+    ).get(...chain);
     return row?.count ?? 0;
   }
 
@@ -1036,11 +1090,13 @@ export class FactStore {
     const pattern = `${escaped}%`;
 
     if (mind) {
+      const chain = this.resolveMindChain(mind);
+      const placeholders = chain.map(() => "?").join(", ");
       return this.db.prepare(`
         SELECT * FROM facts
-        WHERE content LIKE ? ESCAPE '\\' AND mind = ? AND status = 'active'
+        WHERE content LIKE ? ESCAPE '\\' AND mind IN (${placeholders}) AND status = 'active'
         ORDER BY created_at DESC
-      `).all(pattern, mind) as Fact[];
+      `).all(pattern, ...chain) as Fact[];
     }
 
     return this.db.prepare(`
@@ -1057,12 +1113,14 @@ export class FactStore {
 
     try {
       if (mind) {
+        const chain = this.resolveMindChain(mind);
+        const placeholders = chain.map(() => "?").join(", ");
         return this.db.prepare(`
           SELECT f.* FROM facts f
           JOIN facts_fts fts ON f.rowid = fts.rowid
-          WHERE facts_fts MATCH ? AND f.mind = ?
+          WHERE facts_fts MATCH ? AND f.mind IN (${placeholders})
           ORDER BY rank
-        `).all(ftsQuery, mind) as Fact[];
+        `).all(ftsQuery, ...chain) as Fact[];
       }
 
       return this.db.prepare(`
@@ -1340,31 +1398,27 @@ export class FactStore {
   }
 
   /** Fork a mind — copy all active facts to a new mind */
+  /**
+   * Fork a mind — create a child scope that inherits the parent's facts.
+   *
+   * Lightweight: creates the mind record with `parent` set but copies zero
+   * facts, edges, or embeddings. Query methods (getActiveFacts, vector search)
+   * automatically include parent facts via the parent chain. Only facts
+   * explicitly stored in the child are scoped to it.
+   *
+   * On archive, `ingestMind` copies child-only facts back to the parent.
+   */
   forkMind(sourceName: string, newName: string, description: string): void {
-    const tx = this.db.transaction(() => {
-      this.createMind(newName, description, { parent: sourceName });
-
-      const facts = this.getActiveFacts(sourceName);
-      const now = new Date().toISOString();
-
-      for (const fact of facts) {
-        this.db.prepare(`
-          INSERT INTO facts (id, mind, section, content, status, created_at, created_session,
-                             source, content_hash, confidence, last_reinforced,
-                             reinforcement_count, decay_rate)
-          VALUES (?, ?, ?, ?, 'active', ?, NULL, 'ingest', ?, 1.0, ?, ?, ?)
-        `).run(
-          nanoid(), newName, fact.section, fact.content, now,
-          fact.content_hash, now, fact.reinforcement_count, fact.decay_rate,
-        );
-      }
-    });
-    tx();
+    this.createMind(newName, description, { parent: sourceName });
   }
 
   /** Ingest facts from one mind into another */
   ingestMind(sourceName: string, targetName: string): { factsIngested: number; duplicatesSkipped: number } {
-    const sourceFacts = this.getActiveFacts(sourceName);
+    // Only ingest facts directly stored in the source mind, not inherited from parents.
+    // Inherited facts already exist in the parent (which is typically the target).
+    const sourceFacts = this.db.prepare(
+      `SELECT * FROM facts WHERE mind = ? AND status = 'active' ORDER BY section, created_at`
+    ).all(sourceName) as Fact[];
     let ingested = 0;
     let skipped = 0;
 
@@ -1776,13 +1830,15 @@ export class FactStore {
     const minSim = opts?.minSimilarity ?? 0.3;
     const queryDims = queryVec.length;
 
-    // Get all active facts with vectors for this mind
+    // Get all active facts with vectors for this mind (including parent chain)
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
     let query = `
       SELECT f.*, v.embedding, v.dims FROM facts f
       JOIN facts_vec v ON f.id = v.fact_id
-      WHERE f.mind = ? AND f.status = 'active'
+      WHERE f.mind IN (${placeholders}) AND f.status = 'active'
     `;
-    const params: any[] = [mind];
+    const params: any[] = [...chain];
 
     if (opts?.section) {
       query += ` AND f.section = ?`;
@@ -1980,12 +2036,14 @@ export class FactStore {
     const queryDims = queryVec.length;
     const contentHashVal = contentHash(factContent);
 
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
     const rows = this.db.prepare(`
       SELECT f.*, v.embedding, v.dims FROM facts f
       JOIN facts_vec v ON f.id = v.fact_id
-      WHERE f.mind = ? AND f.section = ? AND f.status = 'active'
+      WHERE f.mind IN (${placeholders}) AND f.section = ? AND f.status = 'active'
         AND f.content_hash != ?
-    `).all(mind, section, contentHashVal) as (Fact & { embedding: Buffer; dims: number })[];
+    `).all(...chain, section, contentHashVal) as (Fact & { embedding: Buffer; dims: number })[];
 
     const results: (Fact & { similarity: number })[] = [];
 
@@ -2071,9 +2129,11 @@ export class FactStore {
 
   /** Get episodes for a mind, ordered by date descending */
   getEpisodes(mind: string, limit?: number): Episode[] {
-    const sql = `SELECT * FROM episodes WHERE mind = ? ORDER BY date DESC` +
+    const chain = this.resolveMindChain(mind);
+    const placeholders = chain.map(() => "?").join(", ");
+    const sql = `SELECT * FROM episodes WHERE mind IN (${placeholders}) ORDER BY date DESC` +
       (limit ? ` LIMIT ${limit}` : "");
-    return this.db.prepare(sql).all(mind) as Episode[];
+    return this.db.prepare(sql).all(...chain) as Episode[];
   }
 
   /** Get a single episode by ID */
@@ -2119,11 +2179,13 @@ export class FactStore {
     const minSim = opts?.minSimilarity ?? 0.3;
     const queryDims = queryVec.length;
 
+    const chain = this.resolveMindChain(mind);
+    const ePlaceholders = chain.map(() => "?").join(", ");
     const rows = this.db.prepare(`
       SELECT e.*, v.embedding, v.dims FROM episodes e
       JOIN episodes_vec v ON e.id = v.episode_id
-      WHERE e.mind = ?
-    `).all(mind) as (Episode & { embedding: Buffer; dims: number })[];
+      WHERE e.mind IN (${ePlaceholders})
+    `).all(...chain) as (Episode & { embedding: Buffer; dims: number })[];
 
     const results: (Episode & { similarity: number })[] = [];
 

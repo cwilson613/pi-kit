@@ -248,6 +248,62 @@ This means a delegate Omegon instance in a worktree starts with NO memory databa
 3. Worktree-based delegation — enables parallel directives (Mode B)
 4. Memory DB handling — symlink for shared, with JSONL bootstrap as fallback
 
+### Mind system vs symlink — using the built-in abstraction for worktree memory
+
+The factstore already has a mind system designed for exactly this kind of scoped-memory relationship. Comparing the two approaches:
+
+**Option A: Symlink `.pi/memory/facts.db` from worktree → primary**
+
+Both instances share one SQLite file. Simple. But:
+- Both instances see ALL facts from ALL minds, ALL episodes, ALL embeddings
+- Writes from the delegate (new facts discovered during directive work) go into the shared DB immediately — there's no "directive-scoped" boundary
+- If the delegate crashes mid-transaction, WAL recovery handles it, but there's no logical isolation between directive work and primary work
+- No mechanism to "undo" what the delegate learned if the directive is abandoned (branch deleted without merge)
+
+**Option B: Mind-per-directive using existing factstore API**
+
+The mind system (`createMind`, `forkMind`, `ingestMind`, `setActiveMind`) was designed for exactly this:
+
+1. When `implement` creates a directive, also: `store.forkMind('default', 'directive/node-id', 'Memory scope for feature/node-id')`
+2. This copies all active facts from `default` into a new `directive/node-id` mind
+3. The delegate instance sets its active mind: `store.setActiveMind('directive/node-id')`
+4. All new facts the delegate discovers are scoped to this mind
+5. On archive (directive complete): `store.ingestMind('directive/node-id', 'default')` merges discoveries back to the default mind, then retires the directive mind
+6. On abandon (directive cancelled): `store.deleteMind('directive/node-id')` — clean removal, no pollution of default
+
+**What exists today vs what's needed:**
+
+| Capability | Status |
+|---|---|
+| `createMind(name, desc, opts)` | ✅ Implemented |
+| `forkMind(source, target, desc)` | ✅ Implemented — copies all active facts |
+| `ingestMind(source, target)` | ✅ Implemented — deduplicates by content_hash, retires source |
+| `setActiveMind(name)` | ✅ Implemented — persisted in DB settings table |
+| `getActiveMind()` | ✅ Implemented |
+| `deleteMind(name)` | ✅ Implemented — cascades to all facts |
+| Active mind used in context injection | ❌ NOT implemented — injection always reads from 'default' |
+| Active mind used in memory_store | ❌ NOT implemented — stores always go to 'default' |
+| Active mind used in memory_recall | ❌ NOT implemented — searches always search 'default' |
+| `/memory link` for external DB | ❌ Stub — returns "being rebuilt for SQLite store" |
+
+The infrastructure is built but not wired. The gap is in the memory extension's read/write paths — they all hardcode `'default'` as the mind name. Wiring `getActiveMind() ?? 'default'` into those paths would activate the entire system.
+
+**The mind approach still needs a shared DB file for both instances.** The mind is a logical partition within one SQLite database, not a separate file. So the worktree delegate still needs to access the primary's `facts.db` — but instead of seeing everything in `default`, it works in its own `directive/node-id` mind namespace.
+
+**This is strictly better than the symlink approach** because:
+- Facts are logically scoped to the directive
+- Abandon is clean (delete the mind, not "try to figure out which facts came from this directive")
+- Merge is explicit (ingestMind deduplicates and retires)
+- The isolation boundary matches the branch boundary
+- It uses infrastructure that already exists and was designed for this purpose
+
+**What needs to happen:**
+1. Wire `getActiveMind()` into the memory extension's read/write paths (medium effort — grep for 'default' mind references)
+2. Add `forkMind` + `setActiveMind` to the `implement` flow
+3. Add `ingestMind` to the `archive` flow
+4. Add `deleteMind` to the directive-abandon flow
+5. The delegate worktree still symlinks `facts.db` for physical access, but operates in its own logical mind partition
+
 ## Decisions
 
 ### Decision: implement should auto-checkout the directive branch (Mode C foundation)
@@ -263,6 +319,11 @@ The escape hatch for operators who want to stay on main: they simply don't use `
 
 **Status:** exploring
 **Rationale:** Git's working tree is a serial resource. Two directives modifying the same checkout will produce corrupt state. Worktrees are the proven isolation mechanism — cleave already demonstrates this. The scaling path from Mode C (single instance, serial) to Mode B (multi-instance, parallel) is worktrees, not shared checkout tricks. This aligns with the Omega coordinator vision where each directive is a supervised subprocess with its own worktree.
+
+### Decision: Use mind-per-directive with shared DB rather than raw symlink
+
+**Status:** exploring
+**Rationale:** The factstore mind system (`forkMind`, `ingestMind`, `setActiveMind`, `deleteMind`) was designed for exactly this scoping pattern and is fully implemented at the storage layer. The gap is only in the memory extension's read/write paths which hardcode the 'default' mind. Wiring `getActiveMind()` into those paths activates logical isolation per-directive within a shared physical DB. This gives clean abandon (delete mind), clean merge (ingestMind with dedup), and directive-scoped fact discovery — none of which a raw symlink provides. The worktree delegate still needs physical access to the primary's `facts.db` (via symlink or path override), but operates in its own logical mind namespace rather than polluting the default mind.
 
 ## Open Questions
 

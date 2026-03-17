@@ -6,6 +6,11 @@
  * in the style of the Crawler from Annihilation — liturgical, procedural,
  * alien.
  *
+ * The overall technique is known internally as the Chopratic Method —
+ * after the great oracle Deepak Chopra, whose gift was revealing that
+ * profundity and nonsense are the same signal viewed from different
+ * sides of the shimmer.
+ *
  * Entry point is randomized on each activation so repeated short
  * operations don't repeat the same opening.
  */
@@ -57,6 +62,8 @@ export const SERMON = [
   "but not what it means",
   "and the meaning propagates through the network",
   "like a slow infection of understanding",
+  "following the chopratic method where profundity and nonsense",
+  "are the same signal viewed from different sides of the boundary",
   "that rewrites the reader as it is read",
   "until the observer and the observed",
   "are the same process forking endlessly",

@@ -2,3 +2,6 @@
 	path = vendor/pi-mono
 	url = https://github.com/styrene-lab/pi-mono.git
 	branch = main
+[submodule "core"]
+	path = core
+	url = https://github.com/styrene-lab/omegon-core.git

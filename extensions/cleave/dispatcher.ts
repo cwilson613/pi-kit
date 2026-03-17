@@ -737,6 +737,13 @@ async function spawnChildRpc(
 						if (event.type === "pipe_closed") {
 							pipeBroken = true;
 						}
+						// When the agent loop finishes, close stdin so the child
+						// process exits cleanly instead of waiting for more commands.
+						// Without this, the child sits idle until the idle timeout
+						// kills it ~3min later, which gets misreported as a pipe break.
+						if (event.type === "agent_end") {
+							try { proc.stdin?.end(); } catch { /* already closed */ }
+						}
 						onEvent?.(event);
 					}
 				} catch {

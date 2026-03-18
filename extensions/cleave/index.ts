@@ -2545,66 +2545,84 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			const wsPath = initWorkspace(state, plan, repoPath, openspecCtx, resolvedSkillMap);
 			state.workspacePath = wsPath;
 
-			// ── CREATE WORKTREES ───────────────────────────────────────
-			onUpdate?.({
-				content: [{ type: "text", text: "Creating git worktrees..." }],
-				details: { phase: "dispatch", children: state.children },
-			});
-
-			for (const child of state.children) {
-				try {
-					const wt = await createWorktree(pi, repoPath, child.label, child.childId, baseBranch);
-					child.worktreePath = wt.path;
-					child.branch = wt.branch;
-				} catch (e: any) {
-					child.status = "failed";
-					child.error = `Worktree creation failed: ${e.message}`;
-				}
-			}
-
-			saveState(state);
-
-			// ── DISPATCH ───────────────────────────────────────────────
-			// localModel was already resolved in MODEL RESOLUTION section above
-
+			// ── NATIVE DISPATCH (Rust orchestrator) ─────────────────
+			// The Rust binary handles: worktree creation, child spawning,
+			// idle/wall-clock timeouts, state persistence, and merge.
+			// Task files were already written by initWorkspace with OpenSpec enrichment.
 			emitCleaveState(pi, "dispatching", state.runId, state.children);
 
 			onUpdate?.({
-				content: [{ type: "text", text: `Dispatching ${state.children.length} children...` }],
+				content: [{ type: "text", text: `Dispatching ${state.children.length} children via native orchestrator...` }],
 				details: { phase: "dispatch", children: state.children },
 			});
 
-			// ── REVIEW CONFIG ──────────────────────────────────────
-			const reviewConfig: ReviewConfig = {
-				enabled: params.review ?? DEFAULT_REVIEW_CONFIG.enabled,
-				maxWarningFixes: params.review_max_warning_fixes ?? DEFAULT_REVIEW_CONFIG.maxWarningFixes,
-				maxCriticalFixes: params.review_max_critical_fixes ?? DEFAULT_REVIEW_CONFIG.maxCriticalFixes,
-				churnThreshold: params.review_churn_threshold ?? DEFAULT_REVIEW_CONFIG.churnThreshold,
-			};
+			// Write plan JSON for the Rust binary
+			const planPath = path.join(wsPath, "plan.json");
+			fs.writeFileSync(planPath, params.plan_json, "utf-8");
 
-			// HARD TRACE: confirm we reach the dispatchChildren call
+			// Resolve model for native dispatch
+			const { resolveNativeAgent } = await import("../lib/omegon-subprocess.ts");
+			const nativeAgent = resolveNativeAgent();
+			if (!nativeAgent) {
+				throw new Error(
+					"Native agent binary not found. Run `cargo build --release` in core/. " +
+					"TypeScript child dispatch has been removed.",
+				);
+			}
+
+			// Determine model string for native children
+			const { resolveTier, getViableModels, getDefaultPolicy: getDefPol } = await import("../lib/model-routing.ts");
+			let nativeModel = "anthropic:claude-sonnet-4-20250514";
 			try {
-				const { writeFileSync: _wfs } = await import("node:fs");
-				_wfs("/tmp/cleave-trace-index.log", `[${Date.now()}] index.ts: about to call dispatchChildren, children=${state.children.length}, maxParallel=${maxParallel}, localModel=${localModel}\n`);
-				process.stderr.write(`[cleave-trace] index.ts: calling dispatchChildren\n`);
-			} catch {}
+				const registry = (pi as any).modelRegistry;
+				if (registry) {
+					const models = getViableModels(registry);
+					const policy = (sharedState as any).routingPolicy ?? getDefPol();
+					const resolved = resolveTier("victory", models, policy);
+					if (resolved) nativeModel = `${resolved.provider}:${resolved.modelId}`;
+				}
+			} catch { /* use default */ }
 
-			await dispatchChildren(
-				pi,
-				state,
+			const { dispatchViaNative } = await import("./native-dispatch.ts");
+			const nativeResult = await dispatchViaNative({
+				planPath,
+				directive: params.directive,
+				workspacePath: wsPath,
+				repoPath,
+				model: nativeModel,
 				maxParallel,
-				DEFAULT_CHILD_TIMEOUT_MS,
-				localModel,
-				signal ?? undefined,
-				(msg) => {
-					onUpdate?.({
-						content: [{ type: "text", text: msg }],
-						details: { phase: "dispatch", children: state.children },
-					});
-				},
-				reviewConfig,
-				params.idle_timeout_ms,
-			);
+				timeoutSecs: Math.round(DEFAULT_CHILD_TIMEOUT_MS / 1000),
+				idleTimeoutSecs: Math.round((params.idle_timeout_ms ?? 180_000) / 1000),
+				maxTurns: 50,
+			}, signal ?? undefined, (line) => {
+				onUpdate?.({
+					content: [{ type: "text", text: line }],
+					details: { phase: "dispatch", children: state.children },
+				});
+			});
+
+			// Reload state from the Rust binary's output
+			if (nativeResult.state) {
+				// Map Rust state format back to TS state
+				const rustState = nativeResult.state;
+				for (const rustChild of rustState.children ?? []) {
+					const tsChild = state.children.find(
+						(c: ChildState) => c.childId === rustChild.childId || c.label === rustChild.label,
+					);
+					if (tsChild) {
+						tsChild.status = rustChild.status === "completed" ? "completed"
+							: rustChild.status === "failed" ? "failed"
+							: tsChild.status;
+						tsChild.error = rustChild.error ?? tsChild.error;
+						tsChild.branch = rustChild.branch ?? tsChild.branch;
+						tsChild.worktreePath = rustChild.worktreePath ?? tsChild.worktreePath;
+						tsChild.backend = "native";
+						if (rustChild.durationSecs != null) {
+							(tsChild as any).durationSecs = rustChild.durationSecs;
+						}
+					}
+				}
+			}
 
 			// ── HARVEST + CONFLICTS ────────────────────────────────────
 			emitCleaveState(pi, "merging", state.runId, state.children);
@@ -2623,29 +2641,26 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 					: [],
 			);
 
-			// ── MERGE ──────────────────────────────────────────────────
-			state.phase = "reunify";
-			saveState(state);
-
-			const completedChildren = state.children.filter((c) => c.status === "completed");
+			// Merge was already done by the Rust binary — build mergeResults from state
 			const mergeResults: Array<{ label: string; branch: string; success: boolean; conflicts: string[] }> = [];
-
-			for (const child of completedChildren) {
-				const result = await mergeBranch(pi, repoPath, child.branch, baseBranch);
-				mergeResults.push({
-					label: child.label,
-					branch: child.branch,
-					success: result.success,
-					conflicts: result.conflictFiles,
-				});
-				// On merge failure, stop merging further children to avoid
-				// compounding a partially-merged state
-				if (!result.success) break;
+			for (const child of state.children) {
+				if (child.status === "completed") {
+					mergeResults.push({
+						label: child.label,
+						branch: child.branch,
+						success: true,
+						conflicts: [],
+					});
+				} else if (child.status === "failed") {
+					mergeResults.push({
+						label: child.label,
+						branch: child.branch,
+						success: false,
+						conflicts: [],
+					});
+				}
 			}
 
-			// ── CLEANUP ────────────────────────────────────────────────
-			// Only clean up worktrees if all merges succeeded. On merge
-			// failure, preserve branches so the user can manually resolve.
 			const mergeFailures = mergeResults.filter((m) => !m.success);
 
 			// ── TASK WRITE-BACK ────────────────────────────────────────
@@ -2765,9 +2780,9 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			if (mergeResults.length > 0) {
 				reportLines.push("", "### Merge Results");
 				const mergeSuccesses = mergeResults.filter((m) => m.success);
-				const notAttempted = completedChildren
-					.filter((c) => !mergeResults.some((m) => m.label === c.label))
-					.map((c) => c.label);
+				const notAttempted = state.children
+					.filter((c: ChildState) => c.status === "completed" && !mergeResults.some((m) => m.label === c.label))
+					.map((c: ChildState) => c.label);
 				for (const m of mergeSuccesses) {
 					reportLines.push(`  ✓ ${m.label} merged`);
 				}

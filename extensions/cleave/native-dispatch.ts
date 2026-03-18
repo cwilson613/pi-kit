@@ -80,7 +80,7 @@ export async function dispatchViaNative(
 		"--timeout", String(config.timeoutSecs),
 		"--idle-timeout", String(config.idleTimeoutSecs),
 		"--max-turns", String(config.maxTurns),
-		// Bridge path is resolved by the binary from its own location
+		"--bridge", nativeAgent.bridgePath,
 	];
 
 	return new Promise<NativeDispatchResult>((resolve, reject) => {

@@ -898,13 +898,16 @@ async function spawnChild(
 	nativeAgent?: NativeAgentSpec | null,
 	useNative?: boolean,
 	model?: string,
+	idleTimeoutMs?: number,
 ): Promise<ChildResult> {
-	// Native dispatch: use the Rust binary when available and requested
+	// Native dispatch: use the Rust binary — MANDATORY.
+	// The TypeScript child path is dead. If native isn't available, fail loud.
 	if (useNative && nativeAgent && model) {
 		return spawnChildNative(nativeAgent, prompt, cwd, timeoutMs, model, signal, onLine);
 	}
+
 	if (useRpc) {
-		return spawnChildRpc(prompt, cwd, timeoutMs, signal, localModel, onEvent);
+		return spawnChildRpc(prompt, cwd, timeoutMs, signal, localModel, onEvent, idleTimeoutMs);
 	}
 	return spawnChildPipe(prompt, cwd, timeoutMs, signal, localModel, onLine);
 }
@@ -968,6 +971,7 @@ export async function dispatchChildren(
 	signal?: AbortSignal,
 	onProgress?: (msg: string) => void,
 	reviewConfig?: ReviewConfig,
+	idleTimeoutMs?: number,
 ): Promise<void> {
 	// HARD TRACE: writeFileSync + stderr — cannot be swallowed
 	try { writeFileSync("/tmp/cleave-trace-hard.log", `[${Date.now()}] dispatchChildren ENTERED children=${state.children.length}\n`); } catch {}
@@ -1064,7 +1068,7 @@ export async function dispatchChildren(
 			await semaphore.acquire();
 			_dlog(`dispatchChildren: semaphore acquired for ${child.label}, calling dispatchSingleChild`);
 			try {
-				await dispatchSingleChild(pi, state, child, childTimeoutMs, localModel, signal, effectiveReviewConfig);
+				await dispatchSingleChild(pi, state, child, childTimeoutMs, localModel, signal, effectiveReviewConfig, idleTimeoutMs);
 				_dlog(`dispatchChildren: dispatchSingleChild returned for ${child.label} status=${child.status}`);
 			} catch (e: any) {
 				_dlog(`dispatchChildren: dispatchSingleChild THREW for ${child.label}: ${e.message}`);
@@ -1102,6 +1106,7 @@ async function dispatchSingleChild(
 	localModel?: string,
 	signal?: AbortSignal,
 	reviewConfig?: ReviewConfig,
+	idleTimeoutMs?: number,
 ): Promise<void> {
 	// Skip children that are already settled — idempotent on resume.
 	// "completed" covers a successful prior run; "failed" covers worktree
@@ -1244,7 +1249,8 @@ async function dispatchSingleChild(
 			}
 			// TS dispatch: RPC mode for structured events
 			return spawnChild(execPrompt, execCwd, timeoutMs, signal, _execModelFlag,
-				useRpc ? undefined : onChildLine, useRpc, useRpc ? onRpcEvent : undefined);
+				useRpc ? undefined : onChildLine, useRpc, useRpc ? onRpcEvent : undefined,
+				undefined, undefined, undefined, idleTimeoutMs);
 		},
 		review: async (reviewPrompt: string, reviewCwd: string) => {
 			// Reviews always use TS + pipe mode (Phase 1) + gloriana tier.

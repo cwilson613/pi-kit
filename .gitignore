@@ -18,3 +18,7 @@ bin/fd
 .DS_Store
 auth.json
 sessions/
+
+# Cleave child artifacts (written by Rust agent into worktrees)
+.cleave-prompt.md
+.cleave-session.json

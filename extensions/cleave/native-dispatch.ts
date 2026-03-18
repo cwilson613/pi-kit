@@ -119,9 +119,10 @@ export async function dispatchViaNative(
 
 		log(`spawned pid=${proc.pid}`);
 
-		/** Capped stderr buffer — keeps last 64 KB for diagnostics without unbounded growth. */
+		/** Capped stderr ring — keeps the last 64 KB for diagnostics. */
 		const STDERR_CAP = 64 * 1024;
-		let stderr = "";
+		let stderrChunks: string[] = [];
+		let stderrLen = 0;
 		let stderrLines = 0;
 
 		// Parse stdout as NDJSON progress events
@@ -148,9 +149,12 @@ export async function dispatchViaNative(
 
 		proc.stderr?.on("data", (data: Buffer) => {
 			const text = data.toString();
-			if (stderr.length < STDERR_CAP) {
-				stderr += text;
-				if (stderr.length > STDERR_CAP) stderr = stderr.slice(-STDERR_CAP);
+			stderrChunks.push(text);
+			stderrLen += text.length;
+			// Evict old chunks when over budget
+			while (stderrLen > STDERR_CAP && stderrChunks.length > 1) {
+				stderrLen -= stderrChunks[0].length;
+				stderrChunks.shift();
 			}
 			for (const line of text.split("\n")) {
 				const trimmed = line.trim();
@@ -207,7 +211,7 @@ export async function dispatchViaNative(
 			resolve({
 				exitCode: code ?? 1,
 				state,
-				stderr,
+				stderr: stderrChunks.join(""),
 			});
 		});
 	});

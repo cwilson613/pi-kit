@@ -51,7 +51,7 @@ import {
 } from "./assessment.ts";
 import { detectConflicts, parseTaskResult } from "./conflicts.ts";
 import { emitResolvedBugCandidate } from "./lifecycle-emitter.ts";
-import { DEFAULT_CHILD_TIMEOUT_MS, dispatchChildren, resolveExecuteModel } from "./dispatcher.ts";
+import { DEFAULT_CHILD_TIMEOUT_MS, dispatchChildren, resolveExecuteModel, emitCleaveChildProgress } from "./dispatcher.ts";
 import type { RustChildState } from "./native-dispatch.ts";
 import { DEFAULT_REVIEW_CONFIG, type ReviewConfig } from "./review.ts";
 import {
@@ -2596,6 +2596,61 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 			} catch { /* use default */ }
 
 			const { dispatchViaNative } = await import("./native-dispatch.ts");
+			
+			// Create label-to-childId lookup for event mapping
+			const labelToChildId = new Map<string, number>();
+			for (const child of state.children) {
+				labelToChildId.set(child.label, child.childId);
+			}
+			
+			const handleProgressEvent = (event: any) => {
+				switch (event.type) {
+					case "child_spawned": {
+						const childId = labelToChildId.get(event.label);
+						if (childId !== undefined) {
+							emitCleaveChildProgress(pi, childId, {
+								status: "running",
+								startedAt: new Date().toISOString(),
+								worktreePath: event.worktree_path,
+							});
+						}
+						break;
+					}
+					case "child_activity": {
+						const childId = labelToChildId.get(event.label);
+						if (childId !== undefined) {
+							emitCleaveChildProgress(pi, childId, {
+								lastLine: event.activity,
+								...(event.tool && { lastTool: event.tool }),
+								...(event.turn && { lastTurn: event.turn }),
+							});
+						}
+						break;
+					}
+					case "child_status": {
+						const childId = labelToChildId.get(event.label);
+						if (childId !== undefined) {
+							const patch: any = {
+								status: event.status === "completed" ? "completed" : "failed",
+							};
+							if (event.elapsed_secs !== undefined) {
+								patch.durationSec = event.elapsed_secs;
+								patch.completedAt = new Date().toISOString();
+							}
+							if (event.error) {
+								patch.error = event.error;
+							}
+							emitCleaveChildProgress(pi, childId, patch);
+						}
+						break;
+					}
+					// Other events like wave_start, merge_start, done can be logged but don't directly update child state
+					default:
+						// Log other events for debugging
+						console.debug("[cleave] Native progress event:", event);
+				}
+			};
+
 			const nativeResult = await dispatchViaNative({
 				planPath,
 				directive: params.directive,
@@ -2611,7 +2666,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 					content: [{ type: "text", text: line }],
 					details: { phase: "dispatch", children: state.children },
 				});
-			});
+			}, handleProgressEvent);
 
 			// ── MAP RUST STATE → TS STATE ─────────────────────────────
 			if (nativeResult.state) {

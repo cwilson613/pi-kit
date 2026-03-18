@@ -139,6 +139,7 @@ export function buildReviewPrompt(
 		"   - Missing error handling, resource leaks",
 		"   - Scope violations: modifications outside declared scope",
 		"   - Spec scenario satisfaction (if acceptance criteria listed in task)",
+		"   - Missing test coverage: new functions/methods without tests (W-level finding)",
 		"3. Run tests if a test command is declared in the task file",
 		"",
 		"### Required Output Format",

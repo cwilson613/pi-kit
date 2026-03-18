@@ -1,0 +1,20 @@
+{
+  "name": "@styrene-lab/omegon-darwin-x64",
+  "version": "0.10.7",
+  "description": "Omegon native agent binary for darwin x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/styrene-lab/omegon"
+  },
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "bin": {
+    "omegon-agent": "omegon-agent"
+  },
+  "files": ["omegon-agent"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "rust_target": "x86_64-apple-darwin"
+}

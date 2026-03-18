@@ -1,105 +1,109 @@
 {
-	"name": "omegon",
-	"version": "0.10.7",
-	"description": "Omegon — an opinionated distribution of pi (by Mario Zechner) with extensions for lifecycle management, memory, orchestration, and visualization",
-	"bin": {
-		"omegon": "bin/omegon.mjs",
-		"pi": "bin/pi.mjs"
-	},
-	"type": "module",
-	"bundleDependencies": [
-		"@styrene-lab/pi-coding-agent",
-		"@styrene-lab/pi-agent-core",
-		"@styrene-lab/pi-ai",
-		"@styrene-lab/pi-tui"
-	],
-	"scripts": {
-		"prepack": "node scripts/prepack.mjs",
-		"postpack": "node scripts/postpack.mjs",
-		"preinstall": "sh ./scripts/preinstall.sh",
-		"test": "npx tsx --test tests/*.test.ts extensions/**/*.test.ts",
-		"typecheck": "npx tsc --noEmit",
-		"check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",
-		"check": "npx tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
-		"build:pi": "cd vendor/pi-mono && npm run build",
-		"update:pi": "git -C vendor/pi-mono pull --ff-only origin main && npm run build:pi",
-		"setup": "git submodule update --init --recursive && cd vendor/pi-mono && npm install && npm run build && cd ../.. && npm link --force"
-	},
-	"keywords": [
-		"pi-package",
-		"coding-agent",
-		"cli"
-	],
-	"author": "cwilson613",
-	"license": "ISC",
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/styrene-lab/omegon.git"
-	},
-	"bugs": {
-		"url": "https://github.com/styrene-lab/omegon/issues"
-	},
-	"homepage": "https://github.com/styrene-lab/omegon#readme",
-	"optionalDependencies": {
-		"@mariozechner/clipboard": "0.3.2"
-	},
-	"engines": {
-		"node": ">=20.0.0"
-	},
-	"pi": {
-		"extensions": [
-			"./extensions/00-splash",
-			"./extensions/bootstrap",
-			"./extensions/core-renderers.ts",
-			"./extensions/auto-compact.ts",
-			"./extensions/00-secrets",
-			"./extensions/01-auth",
-			"./extensions/chronos",
-			"./extensions/cleave",
-			"./extensions/openspec",
-			"./extensions/defaults.ts",
-			"./extensions/render",
-			"./extensions/local-inference",
-			"./extensions/mcp-bridge",
-			"./extensions/offline-driver.ts",
-			"./extensions/effort",
-			"./extensions/model-budget.ts",
-			"./extensions/project-memory",
-			"./extensions/session-log.ts",
-			"./extensions/spinner-verbs.ts",
-			"./extensions/style.ts",
-			"./extensions/terminal-title.ts",
-			"./extensions/view",
-			"./extensions/web-search",
-			"./extensions/design-tree",
-			"./extensions/dashboard",
-			"./extensions/tool-profile",
-			"./extensions/vault",
-			"./extensions/version-check.ts",
-			"./extensions/web-ui"
-		],
-		"skills": [
-			"./skills"
-		],
-		"prompts": [
-			"./prompts"
-		],
-		"themes": [
-			"./themes"
-		]
-	},
-	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.27.1",
-		"@resvg/resvg-js": "^2.6.2",
-		"@sinclair/typebox": "^0.34.48",
-		"@styrene-lab/pi-agent-core": "file:./vendor/pi-mono/packages/agent",
-		"@styrene-lab/pi-ai": "file:./vendor/pi-mono/packages/ai",
-		"@styrene-lab/pi-coding-agent": "file:./vendor/pi-mono/packages/coding-agent",
-		"@styrene-lab/pi-tui": "file:./vendor/pi-mono/packages/tui",
-		"better-sqlite3": "^12.6.2"
-	},
-	"devDependencies": {
-		"@types/node": "^22.0.0",
-		"typescript": "^5.9.3"
-	}
+  "name": "omegon",
+  "version": "0.10.7",
+  "description": "Omegon — an opinionated distribution of pi (by Mario Zechner) with extensions for lifecycle management, memory, orchestration, and visualization",
+  "bin": {
+    "omegon": "bin/omegon.mjs",
+    "pi": "bin/pi.mjs"
+  },
+  "type": "module",
+  "bundleDependencies": [
+    "@styrene-lab/pi-coding-agent",
+    "@styrene-lab/pi-agent-core",
+    "@styrene-lab/pi-ai",
+    "@styrene-lab/pi-tui"
+  ],
+  "scripts": {
+    "prepack": "node scripts/prepack.mjs",
+    "postpack": "node scripts/postpack.mjs",
+    "preinstall": "sh ./scripts/preinstall.sh",
+    "test": "npx tsx --test tests/*.test.ts extensions/**/*.test.ts",
+    "typecheck": "npx tsc --noEmit",
+    "check:lifecycle": "npx tsx extensions/openspec/lifecycle-files.ts",
+    "check": "npx tsc --noEmit && npm run check:lifecycle && npx tsx --test extensions/*.test.ts extensions/**/*.test.ts",
+    "build:pi": "cd vendor/pi-mono && npm run build",
+    "update:pi": "git -C vendor/pi-mono pull --ff-only origin main && npm run build:pi",
+    "setup": "git submodule update --init --recursive && cd vendor/pi-mono && npm install && npm run build && cd ../.. && npm link --force"
+  },
+  "keywords": [
+    "pi-package",
+    "coding-agent",
+    "cli"
+  ],
+  "author": "cwilson613",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/styrene-lab/omegon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/styrene-lab/omegon/issues"
+  },
+  "homepage": "https://github.com/styrene-lab/omegon#readme",
+  "optionalDependencies": {
+    "@mariozechner/clipboard": "0.3.2",
+    "@styrene-lab/omegon-darwin-arm64": "0.10.7",
+    "@styrene-lab/omegon-darwin-x64": "0.10.7",
+    "@styrene-lab/omegon-linux-x64": "0.10.7",
+    "@styrene-lab/omegon-linux-arm64": "0.10.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/00-splash",
+      "./extensions/bootstrap",
+      "./extensions/core-renderers.ts",
+      "./extensions/auto-compact.ts",
+      "./extensions/00-secrets",
+      "./extensions/01-auth",
+      "./extensions/chronos",
+      "./extensions/cleave",
+      "./extensions/openspec",
+      "./extensions/defaults.ts",
+      "./extensions/render",
+      "./extensions/local-inference",
+      "./extensions/mcp-bridge",
+      "./extensions/offline-driver.ts",
+      "./extensions/effort",
+      "./extensions/model-budget.ts",
+      "./extensions/project-memory",
+      "./extensions/session-log.ts",
+      "./extensions/spinner-verbs.ts",
+      "./extensions/style.ts",
+      "./extensions/terminal-title.ts",
+      "./extensions/view",
+      "./extensions/web-search",
+      "./extensions/design-tree",
+      "./extensions/dashboard",
+      "./extensions/tool-profile",
+      "./extensions/vault",
+      "./extensions/version-check.ts",
+      "./extensions/web-ui"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@resvg/resvg-js": "^2.6.2",
+    "@sinclair/typebox": "^0.34.48",
+    "@styrene-lab/pi-agent-core": "file:./vendor/pi-mono/packages/agent",
+    "@styrene-lab/pi-ai": "file:./vendor/pi-mono/packages/ai",
+    "@styrene-lab/pi-coding-agent": "file:./vendor/pi-mono/packages/coding-agent",
+    "@styrene-lab/pi-tui": "file:./vendor/pi-mono/packages/tui",
+    "better-sqlite3": "^12.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
 }

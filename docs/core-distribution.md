@@ -453,3 +453,20 @@ Each @omegon/ platform package needs its own npm trusted publisher configuration
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/Cargo.toml` (modified) — Add [profile.release] with LTO, strip, codegen-units=1, panic=abort, opt-level=3
+- `npm/platform-packages/` (new) — Scaffold 4 platform package dirs with package.json templates
+- `extensions/lib/omegon-subprocess.ts` (modified) — Add platform-package binary resolution path (node_modules/@styrene-lab/omegon-{platform})
+- `.github/workflows/publish.yml` (modified) — Add Rust build matrix, platform package publish, core-changed detection
+- `scripts/build-platform-packages.sh` (new) — Script to build + package platform binaries for local testing
+
+### Constraints
+
+- Use @styrene-lab/omegon-{platform} scope (existing trusted publisher)
+- Platform packages only publish when core/ submodule changes
+- Windows is not a target — WSL served by linux-x64
+- Binary must include bundled sqlite (rusqlite bundled feature)

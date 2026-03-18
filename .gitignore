@@ -22,3 +22,4 @@ sessions/
 # Cleave child artifacts (written by Rust agent into worktrees)
 .cleave-prompt.md
 .cleave-session.json
+npm/platform-packages/*/omegon-agent

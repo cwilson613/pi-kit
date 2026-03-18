@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -92,7 +93,15 @@ export function resolveNativeAgent(): NativeAgentSpec | null {
     return nativeCached;
   }
 
-  // 3. npm platform package install location
+  // 3. npm platform package (@styrene-lab/omegon-{platform})
+  const platformPkg = resolvePlatformPackageBinary();
+  if (platformPkg && existsSync(platformPkg)) {
+    nativeCached = { binaryPath: platformPkg, bridgePath };
+    nativeCachedAt = Date.now();
+    return nativeCached;
+  }
+
+  // 4. Legacy npm install location
   const npmBinary = join(repoRoot, "node_modules", ".omegon", "omegon-agent");
   if (existsSync(npmBinary)) {
     nativeCached = { binaryPath: npmBinary, bridgePath };
@@ -102,6 +111,35 @@ export function resolveNativeAgent(): NativeAgentSpec | null {
 
   // Don't cache null — allow immediate retry after cargo build
   return null;
+}
+
+/**
+ * Resolve the omegon-agent binary from the platform-specific npm package.
+ *
+ * Maps `process.platform` + `process.arch` to `@styrene-lab/omegon-{platform}`
+ * and finds the binary via createRequire resolution.
+ */
+function resolvePlatformPackageBinary(): string | null {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "@styrene-lab/omegon-darwin-arm64",
+    "darwin-x64": "@styrene-lab/omegon-darwin-x64",
+    "linux-x64": "@styrene-lab/omegon-linux-x64",
+    "linux-arm64": "@styrene-lab/omegon-linux-arm64",
+  };
+
+  const key = `${process.platform}-${process.arch}`;
+  const pkg = platformMap[key];
+  if (!pkg) return null;
+
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = resolve(here, "..", "..");
+    const req = createRequire(join(repoRoot, "package.json"));
+    const pkgJson = req.resolve(`${pkg}/package.json`);
+    return join(dirname(pkgJson), "omegon-agent");
+  } catch {
+    return null;
+  }
 }
 
 /**

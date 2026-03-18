@@ -2276,6 +2276,11 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 					description: "Fraction of reappearing issues that triggers churn bail (default: 0.5)",
 				}),
 			),
+			idle_timeout_ms: Type.Optional(
+				Type.Number({
+					description: "RPC idle timeout in ms — kill child if no event arrives within this window (default: 180000 = 3 minutes)",
+				}),
+			),
 		}),
 
 		renderCall(args, theme) {
@@ -2598,6 +2603,7 @@ export default function cleaveExtension(pi: ExtensionAPI) {
 					});
 				},
 				reviewConfig,
+				params.idle_timeout_ms,
 			);
 
 			// ── HARVEST + CONFLICTS ────────────────────────────────────

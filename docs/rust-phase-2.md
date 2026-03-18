@@ -1,12 +1,10 @@
 ---
 id: rust-phase-2
 title: "Phase 2 — Native TUI: Dioxus/ratatui replaces pi-tui bridge subprocess"
-status: exploring
+status: implementing
 parent: rust-agent-loop
 tags: [rust, phase-2, tui, dioxus, ratatui]
-open_questions:
-  - "What's the minimum viable interactive TUI? Just editor + streaming conversation view, or does the dashboard need to ship with the first cut?"
-  - Can we reuse the existing LLM bridge subprocess or does the interactive TUI need pi-ai loaded in a different configuration?
+open_questions: []
 priority: 1
 ---
 
@@ -57,7 +55,33 @@ Phase 1 investigation revealed that pi's InteractiveMode can't be separated into
 **Status:** decided
 **Rationale:** Dioxus terminal is interesting but too new for the critical path. ratatui has: 18k GitHub stars, extensive widget library (paragraphs, lists, tables, tabs, gauges), built-in markdown-like text styling, active maintenance, and is used by gitui/lazygit/bottom. The immediate-mode model (rebuild the frame every tick) is natural for streaming LLM output — we just re-render as new text arrives. The dashboard (design-tree state, openspec progress, cleave status) maps directly to ratatui's layout/widget system. crossterm handles the terminal backend.
 
+### Decision: Minimum viable TUI: editor input + streaming conversation + tool call summaries. No dashboard in first cut.
+
+**Status:** decided
+**Rationale:** The first interactive Rust session needs exactly three things: (1) a text editor for user input (single-line with Enter to submit, basic line editing), (2) a scrollable conversation view that streams assistant text as it arrives and shows tool call start/end, (3) Ctrl+C to cancel. Dashboard, footer, splash, and overlay system are all polish that can be layered on after the core loop works interactively. This keeps the MVP at ~500-800 lines of ratatui code.
+
+### Decision: Reuse the existing LLM bridge subprocess — it already handles streaming, auth, and all providers
+
+**Status:** decided
+**Rationale:** The LLM bridge (bridge.js, spawned as a Node.js subprocess, communicates via ndjson over stdio) is proven and handles all 15+ providers, OAuth, streaming. The interactive TUI uses the same bridge the headless agent already uses. No new LLM integration needed — the bridge is provider-agnostic from the Rust side.
+
 ## Open Questions
 
-- What's the minimum viable interactive TUI? Just editor + streaming conversation view, or does the dashboard need to ship with the first cut?
-- Can we reuse the existing LLM bridge subprocess or does the interactive TUI need pi-ai loaded in a different configuration?
+*No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/tui/mod.rs` (new) — TUI module: App state, event loop, render cycle
+- `core/crates/omegon/src/tui/editor.rs` (new) — Input editor: single-line text input with line editing
+- `core/crates/omegon/src/tui/conversation.rs` (new) — Conversation view: scrollable message display with streaming
+- `core/crates/omegon/src/main.rs` (modified) — Add interactive subcommand that launches TUI instead of headless
+- `core/crates/omegon/Cargo.toml` (modified) — Add ratatui + crossterm dependencies
+
+### Constraints
+
+- Terminal must be restored to normal state on panic (crossterm raw mode cleanup)
+- Streaming text must render incrementally, not wait for full message
+- Ctrl+C during agent execution cancels the turn, Ctrl+C at the editor exits
+- The TUI event loop must not block the agent loop — separate tokio tasks communicating via channels

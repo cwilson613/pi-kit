@@ -1,0 +1,40 @@
+Memory Recall Results for Query: 'Rust cleave orchestrator'
+
+Retrieved 10 facts from project memory:
+
+1. [d52de27f938c] (Architecture, 1803% match) 
+   The Rust cleave orchestrator handles child dispatch, worktree management, and merge.
+
+2. [GHRJgk3wED4q] (Architecture, 662% match) 
+   extensions/cleave/skills.ts implemented (343 lines): SkillMapping interface, DEFAULT_MAPPINGS (python/rust/OCI/etc.), matchSkillsToChild(), resolveSkillPaths(), globMatches(). Tests at skills.test.ts (345 lines).
+
+3. [hGy6oL7lzWz6] (Architecture, 635% match) 
+   Cleave skill matching at extensions/cleave/skills.ts: SkillMapping interface, DEFAULT_MAPPINGS (python, rust, oci, k8s-operations, typescript, style, git), matchSkillsToChild (annotation-first then auto-match from scope globs), resolveSkillPaths, resolveModelTier. Tests at skills.test.ts. [2026-03-07]
+
+4. [6T3NMHJ9hqiu] (Constraints, 616% match) 
+   JSONL format is backward-compatible — Rust must read files produced by TS and vice versa. See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-rust-port.md, decision: omega-memory-rust-port
+
+5. [BH1e9Rmrv-Ck] (Constraints, 613% match) 
+   api-types.ts field names are the source of truth — Rust serde attributes must match exactly. See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-rust-port.md, decision: omega-memory-rust-port
+
+6. [JsmDRVvnDxrN] (Constraints, 568% match) 
+   computeConfidence must match TS for same (daysSince, reinforcementCount, profile) inputs. See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-rust-port.md, decision: omega-memory-rust-port
+
+7. [fPKdVzIM10yS] (Constraints, 563% match) 
+   No HNSW, no sqlite-vec — linear scan only per parent decision. See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-rust-port.md, decision: omega-memory-rust-port
+
+8. [8pacf0Kus2-i] (Decisions, 559% match) 
+   api-types.ts is the canonical migration contract — Rust Axum handlers must satisfy it exactly — extensions/project-memory/api-types.ts defines all /api/memory/* HTTP request/response envelope types. Field names are snake_case to match Rust serde conventions. The Rust structs derive Serialize+Deserialize with field names identical to these TypeScript interfaces. Any deviation is a bug in the Rust port. The file also defines JsonlRecord (JSONL wire format discriminated union), EmbeddingMetadata, and ExtractionAction — the full set of types crossing the TS/Rust boundary.. See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-backend.md, decision: api-types.ts is the canonical migration contract — Rust Axum handlers must satisfy it exactly
+
+9. [CkdyBHry2Fyj] (Constraints, 554% match) 
+   Schema migrations must produce identical table structure to current TS migrations (v1-v4). See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-rust-port.md, decision: omega-memory-rust-port
+
+10. [vy9B02PQEtgX] (Constraints, 554% match) 
+    Lamport version semantics identical: MAX(version)+1 per mutation, default 0 on import. See /Users/cwilson/workspace/ai/omegon/docs/omega-memory-rust-port.md, decision: omega-memory-rust-port
+
+Top Result Summary:
+The most relevant fact (1803% match) confirms that "The Rust cleave orchestrator handles child dispatch, worktree management, and merge." This indicates the memory recall functionality is working correctly for Rust cleave children.
+
+Verification completed at: 2026-03-18
+Task: recall-fact (Task 1)
+Query used: 'Rust cleave orchestrator'

@@ -1,7 +1,8 @@
 {
   "lastUsedModel": {
     "provider": "anthropic",
-    "modelId": "claude-opus-4-20250514"
+    "modelId": "claude-opus-4-6"
   },
-  "thinkingLevel": "low"
+  "thinkingLevel": "low",
+  "maxTurns": 50
 }

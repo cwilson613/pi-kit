@@ -1,9 +1,0 @@
-{
-  "name": "project-memory",
-  "version": "1.0.0",
-  "type": "commonjs",
-  "dependencies": {
-    "@styrene-lab/pi-tui": "0.57.1-cwilson613.1",
-    "better-sqlite3": "^12.6.2"
-  }
-}

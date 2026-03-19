@@ -1,0 +1,24 @@
+---
+id: rust-secrets
+title: Port secrets system to Rust (redaction, recipes, tool guards)
+status: decided
+parent: ts-to-rust-migration
+open_questions: []
+---
+
+# Port secrets system to Rust (redaction, recipes, tool guards)
+
+## Overview
+
+Port the 00-secrets extension: secret recipes (env, keychain, shell cmd), output redaction, tool guards for sensitive paths, audit log. Security-critical — must be in-process, not external.
+
+## Decisions
+
+### Decision: omegon-secrets crate with 4 layers, wired into dispatch_tools
+
+**Status:** decided
+**Rationale:** Separate crate for testability. Redaction at the dispatch level catches all tool output. Guards fire before dispatch. Recipes stored in ~/.omegon/secrets.json. 18 tests. Matches TS 00-secrets layers 1-4,6. Layer 5 (local model scrub) deferred — same mechanism applies.
+
+## Open Questions
+
+*No open questions.*

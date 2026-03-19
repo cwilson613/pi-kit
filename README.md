@@ -293,4 +293,4 @@ Both fixes are submitted as PRs to upstream ([#2060](https://github.com/badlogic
 
 ## License
 
-ISC
+ISC.

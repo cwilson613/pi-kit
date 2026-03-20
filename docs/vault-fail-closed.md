@@ -1,7 +1,7 @@
 ---
 id: vault-fail-closed
 title: Vault client fail-closed security hardening
-status: implementing
+status: implemented
 parent: vault-secret-backend
 tags: [security, vault]
 open_questions: []

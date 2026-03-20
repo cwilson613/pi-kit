@@ -5,7 +5,7 @@ status: implemented
 parent: omegon-binary-identity
 tags: [npm, publishing, ownership, distribution, forks]
 open_questions: []
-branches: ["feature/fork-package-ownership-alignment"]
+branches: []
 openspec_change: fork-package-ownership-alignment
 ---
 

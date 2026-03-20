@@ -5,7 +5,7 @@ status: implemented
 parent: singular-package-update-lifecycle
 tags: [branding, runtime, packaging, binary, ux]
 open_questions: []
-branches: ["feature/omegon-binary-identity"]
+branches: []
 openspec_change: omegon-binary-identity
 issue_type: feature
 priority: 1

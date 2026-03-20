@@ -1,11 +1,11 @@
 ---
 id: repo-model
 title: RepoModel — git state tracking in Rust core
-status: decided
+status: implemented
 parent: git-harness-integration
 tags: [rust, git, architecture]
 open_questions: []
-branches: ["feature/repo-model"]
+branches: []
 openspec_change: repo-model
 ---
 

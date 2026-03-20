@@ -5,7 +5,7 @@ status: implemented
 parent: rust-agent-loop
 tags: [vault, secrets, infrastructure, operator, ux]
 open_questions: []
-branches: ["feature/vault-secret-backend"]
+branches: []
 openspec_change: vault-secret-backend
 issue_type: feature
 priority: 2

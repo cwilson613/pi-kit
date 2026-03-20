@@ -4,7 +4,7 @@ title: Auto-delete merged feature branches on OpenSpec archive
 status: implemented
 tags: [openspec, git, lifecycle, cleanup]
 open_questions: []
-branches: ["feature/archive-branch-cleanup"]
+branches: []
 openspec_change: archive-branch-cleanup
 ---
 

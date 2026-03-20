@@ -1,7 +1,7 @@
 ---
 id: commit-tool
 title: Structured commit tool — replaces bash git commit
-status: seed
+status: implemented
 parent: git-harness-integration
 tags: [rust, git, tools]
 open_questions: []

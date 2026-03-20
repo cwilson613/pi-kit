@@ -1,7 +1,7 @@
 ---
 id: jj-memory-binding
 title: Bind memory facts and episodes to jj change IDs
-status: resolved
+status: implemented
 parent: git-harness-integration
 tags: [architecture, memory, jj, knowledge-graph]
 open_questions: []

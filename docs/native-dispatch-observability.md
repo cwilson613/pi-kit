@@ -5,7 +5,7 @@ status: implemented
 parent: cleave-child-timeout
 tags: [cleave, dashboard, observability]
 open_questions: []
-branches: ["feature/native-dispatch-observability"]
+branches: []
 openspec_change: native-dispatch-observability
 ---
 

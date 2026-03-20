@@ -5,7 +5,7 @@ status: implemented
 related: [dash-raised-layout, unified-dashboard]
 tags: [dashboard, footer, ux, layout, cleanup]
 open_questions: []
-branches: ["feature/dashboard-cleanup"]
+branches: []
 openspec_change: dashboard-cleanup
 ---
 

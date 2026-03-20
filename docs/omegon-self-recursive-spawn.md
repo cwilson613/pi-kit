@@ -5,7 +5,7 @@ status: implemented
 parent: omegon-binary-identity
 tags: [runtime, cleave, subprocess, binary, bug, self-containment]
 open_questions: []
-branches: ["feature/omegon-self-recursive-spawn"]
+branches: []
 openspec_change: omegon-self-recursive-spawn
 issue_type: bug
 priority: 1

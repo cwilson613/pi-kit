@@ -5,7 +5,7 @@ status: implemented
 parent: lifecycle-gate-ergonomics
 tags: [chronos, portability, typescript, tools]
 open_questions: []
-branches: ["feature/chronos-native-ts"]
+branches: []
 openspec_change: chronos-native-ts
 ---
 

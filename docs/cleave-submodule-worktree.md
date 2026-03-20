@@ -4,7 +4,7 @@ title: Cleave worktree submodule failures — root cause and fix
 status: implemented
 tags: [cleave, git, submodule, reliability]
 open_questions: []
-branches: ["feature/cleave-submodule-worktree"]
+branches: []
 openspec_change: cleave-submodule-worktree
 ---
 

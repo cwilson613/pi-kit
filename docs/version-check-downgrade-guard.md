@@ -5,7 +5,7 @@ status: implemented
 parent: pi-fork-update-flow
 tags: [pi-mono, version-check, bugfix, ux]
 open_questions: []
-branches: ["feature/version-check-downgrade-guard"]
+branches: []
 openspec_change: version-check-downgrade-guard
 issue_type: bug
 priority: 2

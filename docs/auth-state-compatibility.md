@@ -5,7 +5,7 @@ status: implemented
 parent: omegon-binary-identity
 tags: [auth, state, migration, runtime, compatibility, ux]
 open_questions: []
-branches: ["feature/auth-state-compatibility"]
+branches: []
 openspec_change: auth-state-compatibility
 issue_type: bug
 priority: 1

@@ -5,7 +5,7 @@ status: implemented
 parent: pi-fork-update-flow
 tags: [release, stability, subprocess, memory, fts, review-followup]
 open_questions: []
-branches: ["feature/stability-step-0-6-6"]
+branches: []
 openspec_change: stability-step-0-6-6
 issue_type: bug
 priority: 1

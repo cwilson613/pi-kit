@@ -4,7 +4,7 @@ title: Enriched Tool Call Rendering
 status: implemented
 tags: [dashboard, tui, ux, cleave, design-tree]
 open_questions: []
-branches: ["feature/tool-call-renderer"]
+branches: []
 openspec_change: tool-call-renderer
 ---
 

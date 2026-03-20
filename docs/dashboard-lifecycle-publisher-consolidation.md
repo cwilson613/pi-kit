@@ -5,7 +5,7 @@ status: implemented
 parent: repo-consolidation-hardening
 tags: [dashboard, lifecycle, publishers, consolidation, shared-state]
 open_questions: []
-branches: ["feature/dashboard-lifecycle-publisher-consolidation"]
+branches: []
 openspec_change: dashboard-lifecycle-publisher-consolidation
 ---
 

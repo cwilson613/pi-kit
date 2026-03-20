@@ -5,7 +5,7 @@ status: implemented
 parent: memory-system-overhaul
 tags: [memory, git, jsonl, workflow, stability]
 open_questions: []
-branches: ["feature/facts-jsonl-stability"]
+branches: []
 openspec_change: facts-jsonl-stability
 issue_type: bug
 priority: 1

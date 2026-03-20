@@ -5,7 +5,7 @@ status: implemented
 parent: unified-dashboard
 tags: [dashboard, footer, ux, layout, responsive]
 open_questions: []
-branches: ["feature/dashboard-raised-layout-reorg"]
+branches: []
 openspec_change: dashboard-raised-layout-reorg
 issue_type: feature
 priority: 2

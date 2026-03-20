@@ -5,7 +5,7 @@ status: implemented
 related: [multi-instance-coordination, cleave-child-observability]
 tags: [architecture, cleave, subprocess, ipc, coordination, strategic]
 open_questions: []
-branches: ["feature/cleave-process-tree"]
+branches: []
 openspec_change: cleave-process-tree
 issue_type: feature
 priority: 2

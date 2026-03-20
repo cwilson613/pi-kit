@@ -5,7 +5,7 @@ status: implemented
 parent: vault-secret-backend
 tags: [security, vault]
 open_questions: []
-branches: ["feature/vault-fail-closed"]
+branches: []
 openspec_change: vault-fail-closed
 ---
 

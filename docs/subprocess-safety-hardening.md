@@ -5,7 +5,7 @@ status: implemented
 parent: repo-consolidation-hardening
 tags: [security, process, subprocess, hardening]
 open_questions: []
-branches: ["feature/subprocess-safety-hardening"]
+branches: []
 openspec_change: subprocess-safety-hardening
 ---
 

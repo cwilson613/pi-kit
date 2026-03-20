@@ -5,7 +5,7 @@ status: implemented
 parent: unified-dashboard
 tags: [dashboard, tui, ux, models, layout]
 open_questions: []
-branches: ["feature/dashboard-component-overhaul"]
+branches: []
 openspec_change: dashboard-component-overhaul
 issue_type: feature
 priority: 2

@@ -1,7 +1,7 @@
 ---
 id: git-harness-integration
 title: Git as first-class harness citizen — commit hygiene and repo-aware lifecycle
-status: resolved
+status: implemented
 tags: [architecture, git, harness, lifecycle]
 open_questions: []
 issue_type: epic

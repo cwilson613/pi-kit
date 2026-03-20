@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "changeName": "repo-model",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-20T16:27:26.650Z",
+  "summary": "All tasks complete. Reconciled tasks.md and design node statuses.",
+  "snapshot": {
+    "gitHead": "f691bda342b592b30b120be9829e592a0b872982",
+    "fingerprint": "532d37fb2777ceeb1ec5235e2a3bf438303d6cbbbb6b805dd2eaf77f53e91a88",
+    "dirty": true,
+    "scopedPaths": [
+      "core/Cargo.toml",
+      "core/crates/omegon-git/Cargo.toml",
+      "core/crates/omegon-git/src/commit.rs",
+      "core/crates/omegon-git/src/lib.rs",
+      "core/crates/omegon-git/src/merge.rs",
+      "core/crates/omegon-git/src/repo.rs",
+      "core/crates/omegon-git/src/status.rs",
+      "core/crates/omegon-git/src/worktree.rs",
+      "core/crates/omegon/Cargo.toml",
+      "core/crates/omegon/src/cleave/worktree.rs"
+    ],
+    "files": [
+      {
+        "path": "core/Cargo.toml",
+        "exists": true,
+        "size": 841,
+        "sha256": "637185bcb71ad0218c680428782cfa3f702a38b4e6bae9fd7ed0027c21065ee9"
+      },
+      {
+        "path": "core/crates/omegon-git/Cargo.toml",
+        "exists": true,
+        "size": 396,
+        "sha256": "92b509272af10fa9fcf8dfa7671845f4b1fba6d79c056eef5d95eebdd7e34542"
+      },
+      {
+        "path": "core/crates/omegon-git/src/commit.rs",
+        "exists": true,
+        "size": 13918,
+        "sha256": "d141578263a1a04e68d8e4a0bc4a1d8e7448487cebe7b78c077974e4b326a17f"
+      },
+      {
+        "path": "core/crates/omegon-git/src/lib.rs",
+        "exists": true,
+        "size": 494,
+        "sha256": "e7564177925c2a52816a5153200a59330ee0fa3bd3e64e3f02175165936cb0c2"
+      },
+      {
+        "path": "core/crates/omegon-git/src/merge.rs",
+        "exists": true,
+        "size": 19308,
+        "sha256": "b557cdee8749c9a44855128260b2553c1a31e3f12904d09a65ad54316b59b136"
+      },
+      {
+        "path": "core/crates/omegon-git/src/repo.rs",
+        "exists": true,
+        "size": 17016,
+        "sha256": "ecc9fd57e3f9cc4cff35576b877a99db2147d9d72526a17a73693c9ee6195cae"
+      },
+      {
+        "path": "core/crates/omegon-git/src/status.rs",
+        "exists": true,
+        "size": 5528,
+        "sha256": "95f063cabc0417625d3341840d1521d8d40df164eae5877bcc3c31d648914e92"
+      },
+      {
+        "path": "core/crates/omegon-git/src/worktree.rs",
+        "exists": true,
+        "size": 9780,
+        "sha256": "2821297b9c0debe4d71fe114c751ddec3094c0a647fed1ff866dca1325e4c4a6"
+      },
+      {
+        "path": "core/crates/omegon/Cargo.toml",
+        "exists": true,
+        "size": 1865,
+        "sha256": "df8eee672193db53ea3ed5e7bd2222b8f54ade58b46d06426f4e80d3f7a101d2"
+      },
+      {
+        "path": "core/crates/omegon/src/cleave/worktree.rs",
+        "exists": true,
+        "size": 13767,
+        "sha256": "430be21b31be2c721da13e5f89328b6d00d8b4ce390eb4fb6c787c578cdb55d6"
+      },
+      {
+        "path": "openspec/changes/repo-model/design.md",
+        "exists": true,
+        "size": 5410,
+        "sha256": "6989f73b45098f9504a2f9c1b7a82aa7b658497a1214dcf9ba058d0305055e9e"
+      },
+      {
+        "path": "openspec/changes/repo-model/proposal.md",
+        "exists": true,
+        "size": 388,
+        "sha256": "1d033b5ca951bbff20443d78b7c30ccea1233664a017343c16828e9bbbfc7e91"
+      },
+      {
+        "path": "openspec/changes/repo-model/tasks.md",
+        "exists": true,
+        "size": 1606,
+        "sha256": "fcae76c767ca9d5a345c5f3b38f9d97eb8592af50dbc62138f2777b5ca0e723a"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [],
+    "constraints": [],
+    "recommendedAction": null
+  }
+}

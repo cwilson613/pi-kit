@@ -13,8 +13,6 @@
 //! mutations (new, describe, squash, bookmark).
 
 use anyhow::{Context, Result};
-use jj_lib::object_id::ObjectId as _;
-use jj_lib::repo::Repo as _;
 use std::path::Path;
 
 // ── Detection ───────────────────────────────────────────────────────────
@@ -24,63 +22,62 @@ pub fn is_jj_repo(repo_path: &Path) -> bool {
     repo_path.join(".jj").exists()
 }
 
-// ── Read-only queries via jj-lib ────────────────────────────────────────
-//
-// These functions use jj-lib directly (no CLI). Currently used by tests
-// and available for future library-based queries (commit graph traversal,
-// revset evaluation). The CLI wrappers below are used for production
-// mutations.
+// ── Read-only queries via jj-lib (optional feature) ─────────────────────
 
-/// Load the jj workspace and repo at the current operation head.
-///
-/// This is the library entry point — returns the workspace and a
-/// ReadonlyRepo snapshot. Callers can query the commit graph, view,
-/// and working copy state without spawning a process.
-pub async fn load_repo(
-    repo_path: &Path,
-) -> Result<(jj_lib::workspace::Workspace, std::sync::Arc<jj_lib::repo::ReadonlyRepo>)> {
-    let config = jj_lib::config::StackedConfig::with_defaults();
-    let settings = jj_lib::settings::UserSettings::from_config(config)
-        .context("failed to create jj settings")?;
+#[cfg(feature = "jj-lib")]
+mod jj_lib_queries {
+    use super::*;
+    use jj_lib::object_id::ObjectId as _;
+    use jj_lib::repo::Repo as _;
 
-    let workspace = jj_lib::workspace::Workspace::load(
-        &settings,
-        repo_path,
-        &jj_lib::repo::StoreFactories::default(),
-        &jj_lib::workspace::default_working_copy_factories(),
-    )
-    .context("failed to load jj workspace")?;
+    /// Load the jj workspace and repo at the current operation head.
+    pub async fn load_repo(
+        repo_path: &Path,
+    ) -> Result<(jj_lib::workspace::Workspace, std::sync::Arc<jj_lib::repo::ReadonlyRepo>)> {
+        let config = jj_lib::config::StackedConfig::with_defaults();
+        let settings = jj_lib::settings::UserSettings::from_config(config)
+            .context("failed to create jj settings")?;
 
-    let repo = workspace
-        .repo_loader()
-        .load_at_head()
-        .await
-        .context("failed to load jj repo at head")?;
+        let workspace = jj_lib::workspace::Workspace::load(
+            &settings,
+            repo_path,
+            &jj_lib::repo::StoreFactories::default(),
+            &jj_lib::workspace::default_working_copy_factories(),
+        )
+        .context("failed to load jj workspace")?;
 
-    Ok((workspace, repo))
-}
+        let repo = workspace
+            .repo_loader()
+            .load_at_head()
+            .await
+            .context("failed to load jj repo at head")?;
 
-/// Get the change ID of the current working copy via jj-lib.
-pub async fn working_copy_change_id(repo_path: &Path) -> Result<Option<String>> {
-    if !is_jj_repo(repo_path) {
-        return Ok(None);
+        Ok((workspace, repo))
     }
 
-    let (workspace, repo) = load_repo(repo_path).await?;
-    let wc_id = repo
-        .view()
-        .get_wc_commit_id(workspace.workspace_name());
-
-    match wc_id {
-        Some(commit_id) => {
-            let commit = repo.store().get_commit(commit_id)?;
-            // Use reverse_hex() — matches `jj log -T change_id` output.
-            // NOT hex() which produces a different encoding.
-            Ok(Some(commit.change_id().reverse_hex()))
+    /// Get the change ID of the current working copy via jj-lib.
+    pub async fn working_copy_change_id(repo_path: &Path) -> Result<Option<String>> {
+        if !is_jj_repo(repo_path) {
+            return Ok(None);
         }
-        None => Ok(None),
+
+        let (workspace, repo) = load_repo(repo_path).await?;
+        let wc_id = repo
+            .view()
+            .get_wc_commit_id(workspace.workspace_name());
+
+        match wc_id {
+            Some(commit_id) => {
+                let commit = repo.store().get_commit(commit_id)?;
+                Ok(Some(commit.change_id().reverse_hex()))
+            }
+            None => Ok(None),
+        }
     }
 }
+
+#[cfg(feature = "jj-lib")]
+pub use jj_lib_queries::*;
 
 // ── Mutations via jj CLI ────────────────────────────────────────────────
 //
@@ -187,6 +184,7 @@ mod tests {
         assert!(!is_jj_repo(dir.path()));
     }
 
+    #[cfg(feature = "jj-lib")]
     #[tokio::test]
     async fn load_repo_in_jj_workspace() {
         let cwd = std::env::current_dir().unwrap();

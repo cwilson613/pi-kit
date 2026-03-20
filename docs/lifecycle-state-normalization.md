@@ -5,7 +5,7 @@ status: implemented
 parent: repo-consolidation-hardening
 tags: [lifecycle, design-tree, openspec, dashboard, shared-state]
 open_questions: []
-branches: ["feature/lifecycle-state-normalization"]
+branches: []
 openspec_change: lifecycle-state-normalization
 ---
 

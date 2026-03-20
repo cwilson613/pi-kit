@@ -6,7 +6,7 @@ parent: pi-fork-update-flow
 dependencies: [pi-fork-worktree-reconciliation, singular-package-runtime-boundary, update-lifecycle-parity]
 tags: [pi-mono, packaging, update, integration, architecture]
 open_questions: []
-branches: ["feature/singular-package-update-lifecycle"]
+branches: []
 openspec_change: singular-package-update-lifecycle
 issue_type: feature
 priority: 1

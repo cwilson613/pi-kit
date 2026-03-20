@@ -53,6 +53,9 @@ pub enum ToolRunner {
     Python,
     Node,
     Bash,
+    /// OCI container execution — podman (preferred) or docker fallback.
+    Oci,
+    /// WebAssembly sandbox (future).
     Wasm,
 }
 
@@ -62,23 +65,24 @@ impl std::fmt::Display for ToolRunner {
             Self::Python => write!(f, "python"),
             Self::Node => write!(f, "node"),
             Self::Bash => write!(f, "bash"),
+            Self::Oci => write!(f, "oci"),
             Self::Wasm => write!(f, "wasm"),
         }
     }
 }
 
-/// A tool declaration — can be script-backed or HTTP-backed.
+/// A tool declaration — can be script-backed, HTTP-backed, or OCI container-backed.
 #[derive(Debug, Deserialize)]
 pub struct ToolEntry {
     pub name: String,
     pub description: String,
-    /// Script runner (python/node/bash/wasm). Mutually exclusive with `endpoint`.
+    /// Tool runner (python/node/bash/oci/wasm). Mutually exclusive with `endpoint`.
     #[serde(default)]
     pub runner: Option<ToolRunner>,
-    /// Path to script file, relative to plugin root.
+    /// Path to script file, relative to plugin root (for script runners).
     #[serde(default)]
     pub script: Option<String>,
-    /// HTTP endpoint URL. Mutually exclusive with `runner`.
+    /// HTTP endpoint URL (mutually exclusive with `runner`).
     #[serde(default)]
     pub endpoint: Option<String>,
     /// HTTP method (default: POST).
@@ -87,6 +91,21 @@ pub struct ToolEntry {
     /// WASM module path, relative to plugin root.
     #[serde(default)]
     pub module: Option<String>,
+
+    // ── OCI-specific fields ──────────────────────────────
+    /// OCI image reference (e.g. `ghcr.io/styrene-lab/omegon-tool-drc:latest`).
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Path to Containerfile for local builds (relative to plugin root).
+    #[serde(default)]
+    pub build: Option<String>,
+    /// Mount the operator's working directory into the container (default: false).
+    #[serde(default)]
+    pub mount_cwd: bool,
+    /// Allow container network access (default: false).
+    #[serde(default)]
+    pub network: bool,
+
     /// JSON Schema for parameters.
     #[serde(default = "default_params")]
     pub parameters: serde_json::Value,
@@ -101,9 +120,12 @@ fn default_params() -> serde_json::Value {
 fn default_tool_timeout() -> u64 { 30 }
 
 impl ToolEntry {
-    /// Is this a script-backed tool?
+    /// Is this a script-backed tool (python/node/bash)?
     pub fn is_script(&self) -> bool {
-        self.runner.is_some() && self.script.is_some()
+        matches!(
+            self.runner,
+            Some(ToolRunner::Python | ToolRunner::Node | ToolRunner::Bash)
+        ) && self.script.is_some()
     }
 
     /// Is this an HTTP-backed tool?
@@ -111,27 +133,61 @@ impl ToolEntry {
         self.endpoint.is_some()
     }
 
+    /// Is this an OCI container-backed tool?
+    pub fn is_oci(&self) -> bool {
+        self.runner == Some(ToolRunner::Oci) && (self.image.is_some() || self.build.is_some())
+    }
+
     /// Validate the tool entry.
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
+
+        // runner and endpoint are mutually exclusive
         if self.runner.is_some() && self.endpoint.is_some() {
             errors.push(format!(
                 "tool '{}': runner and endpoint are mutually exclusive",
                 self.name
             ));
         }
-        if self.runner.is_some() && self.script.is_none() && self.module.is_none() {
-            errors.push(format!(
-                "tool '{}': runner specified but no script or module path",
-                self.name
-            ));
-        }
+
+        // Must have some execution method
         if self.runner.is_none() && self.endpoint.is_none() {
             errors.push(format!(
-                "tool '{}': must have either runner+script or endpoint",
+                "tool '{}': must have either runner+script/image or endpoint",
                 self.name
             ));
         }
+
+        // Runner-specific validation
+        if let Some(ref runner) = self.runner {
+            match runner {
+                ToolRunner::Python | ToolRunner::Node | ToolRunner::Bash => {
+                    if self.script.is_none() {
+                        errors.push(format!(
+                            "tool '{}': {} runner requires a script path",
+                            self.name, runner
+                        ));
+                    }
+                }
+                ToolRunner::Oci => {
+                    if self.image.is_none() && self.build.is_none() {
+                        errors.push(format!(
+                            "tool '{}': oci runner requires image or build path",
+                            self.name
+                        ));
+                    }
+                }
+                ToolRunner::Wasm => {
+                    if self.module.is_none() {
+                        errors.push(format!(
+                            "tool '{}': wasm runner requires a module path",
+                            self.name
+                        ));
+                    }
+                }
+            }
+        }
+
         errors
     }
 }
@@ -700,7 +756,7 @@ mod tests {
         "#;
         let manifest = ArmoryManifest::parse(toml).unwrap();
         let errors = manifest.validate();
-        assert!(errors.iter().any(|e| e.contains("no script or module")));
+        assert!(errors.iter().any(|e| e.contains("requires a script")));
     }
 
     #[test]
@@ -741,7 +797,128 @@ mod tests {
         "#;
         let manifest = ArmoryManifest::parse(toml).unwrap();
         let errors = manifest.validate();
-        assert!(errors.iter().any(|e| e.contains("must have either")));
+        assert!(errors.iter().any(|e| e.contains("must have either")),
+            "errors: {errors:?}");
+    }
+
+    // ── OCI container tool tests ─────────────────────────
+
+    #[test]
+    fn parse_oci_tool_with_image() {
+        let toml = r#"
+            [plugin]
+            type = "extension"
+            id = "dev.example.oci-tool"
+            name = "OCI Tool"
+            version = "1.0.0"
+            description = "Container-backed analysis tool"
+
+            [[tools]]
+            name = "analyze"
+            description = "Run analysis in container"
+            runner = "oci"
+            image = "ghcr.io/styrene-lab/omegon-tool-analyze:latest"
+            mount_cwd = true
+            network = false
+            timeout_secs = 120
+        "#;
+        let manifest = ArmoryManifest::parse(toml).unwrap();
+        assert!(manifest.validate().is_empty(), "should validate cleanly");
+
+        let tool = &manifest.tools[0];
+        assert_eq!(tool.runner, Some(ToolRunner::Oci));
+        assert_eq!(tool.image.as_deref(), Some("ghcr.io/styrene-lab/omegon-tool-analyze:latest"));
+        assert!(tool.mount_cwd);
+        assert!(!tool.network);
+        assert!(tool.is_oci());
+        assert!(!tool.is_script());
+        assert!(!tool.is_http());
+    }
+
+    #[test]
+    fn parse_oci_tool_with_build() {
+        let toml = r#"
+            [plugin]
+            type = "extension"
+            id = "dev.example.oci-build"
+            name = "OCI Build Tool"
+            version = "1.0.0"
+            description = "Build from Containerfile"
+
+            [[tools]]
+            name = "custom_tool"
+            description = "Locally built container tool"
+            runner = "oci"
+            build = "tools/custom/Containerfile"
+            mount_cwd = true
+        "#;
+        let manifest = ArmoryManifest::parse(toml).unwrap();
+        assert!(manifest.validate().is_empty());
+
+        let tool = &manifest.tools[0];
+        assert_eq!(tool.build.as_deref(), Some("tools/custom/Containerfile"));
+        assert!(tool.is_oci());
+    }
+
+    #[test]
+    fn validate_oci_tool_missing_image_and_build() {
+        let toml = r#"
+            [plugin]
+            type = "extension"
+            id = "dev.example.bad-oci"
+            name = "Bad OCI"
+            version = "1.0.0"
+            description = "OCI runner but no image or build"
+
+            [[tools]]
+            name = "broken_oci"
+            description = "Missing image reference"
+            runner = "oci"
+        "#;
+        let manifest = ArmoryManifest::parse(toml).unwrap();
+        let errors = manifest.validate();
+        assert!(errors.iter().any(|e| e.contains("image or build")),
+            "errors: {errors:?}");
+    }
+
+    #[test]
+    fn parse_persona_with_oci_tools() {
+        let toml = r#"
+            [plugin]
+            type = "persona"
+            id = "dev.styrene.omegon.pcb-designer"
+            name = "PCB Designer"
+            version = "1.0.0"
+            description = "PCB design with containerized KiCad tools"
+
+            [persona.identity]
+            directive = "PERSONA.md"
+
+            [[tools]]
+            name = "drc_check"
+            description = "Run KiCad DRC in container"
+            runner = "oci"
+            image = "ghcr.io/styrene-lab/omegon-tool-kicad:latest"
+            mount_cwd = true
+            network = false
+            timeout_secs = 120
+
+            [[tools]]
+            name = "gerber_export"
+            description = "Export Gerber files"
+            runner = "oci"
+            build = "tools/gerber/Containerfile"
+            mount_cwd = true
+
+            [detect]
+            file_patterns = ["*.kicad_pcb"]
+        "#;
+        let manifest = ArmoryManifest::parse(toml).unwrap();
+        assert_eq!(manifest.plugin.plugin_type, PluginType::Persona);
+        assert_eq!(manifest.tools.len(), 2);
+        assert!(manifest.validate().is_empty());
+        assert!(manifest.tools[0].is_oci());
+        assert!(manifest.tools[1].is_oci());
     }
 
     #[test]
@@ -764,6 +941,7 @@ mod tests {
         assert_eq!(ToolRunner::Python.to_string(), "python");
         assert_eq!(ToolRunner::Node.to_string(), "node");
         assert_eq!(ToolRunner::Bash.to_string(), "bash");
+        assert_eq!(ToolRunner::Oci.to_string(), "oci");
         assert_eq!(ToolRunner::Wasm.to_string(), "wasm");
     }
 

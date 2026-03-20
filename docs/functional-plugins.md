@@ -1,12 +1,10 @@
 ---
 id: functional-plugins
 title: Functional plugins — code-backed skills with tools, endpoints, and runtime logic
-status: exploring
+status: decided
 parent: persona-system
 tags: [plugins, architecture, extensions, tools, mcp, code]
-open_questions:
-  - Should script-backed tools declare their runtime dependencies (requirements.txt, package.json) and should omegon auto-install them?
-  - "Sandboxing: should script-backed tools run in a restricted environment (no network, limited filesystem access) or trust the operator?"
+open_questions: []
 issue_type: feature
 priority: 2
 ---
@@ -154,7 +152,80 @@ The `runner` field distinguishes script-backed from HTTP-backed:
 - No `runner` + `endpoint = "..."` → HTTP call (existing behavior)
 - `runner = "wasm"` + `module = "..."` → future WASM execution
 
+### OCI containers as a tool runner — answering deps and sandboxing
+
+OCI containers solve both open questions:
+
+**Dependencies**: declared in the Containerfile, frozen in the image. No `requirements.txt` parsing, no venv management, no "works on my machine." The image IS the dependency declaration.
+
+**Sandboxing**: containers run isolated by default — no host filesystem access unless explicitly mounted, no network unless explicitly allowed, resource limits via cgroup. The operator chooses the isolation level:
+- `--mount=cwd` → mount the current working directory (most tools need this)
+- `--network=none` → air-gapped execution (security tools, offline analysis)
+- `--network=host` → full network (API calls, web scraping)
+
+**The runner model**:
+
+```toml
+[[tools]]
+name = "drc_check"
+description = "Run KiCad Design Rule Check"
+runner = "oci"
+image = "ghcr.io/styrene-lab/omegon-tool-kicad-drc:latest"
+# Or build from local Containerfile
+build = "tools/drc/Containerfile"
+mount_cwd = true
+network = false
+timeout_secs = 120
+```
+
+**Contract**: same JSON stdin/stdout as script-backed tools. The harness:
+1. Pulls/builds the image if needed (cached)
+2. Runs `podman run` (or `docker run`) with the configured mounts/network
+3. Pipes tool arguments as JSON to stdin
+4. Reads JSON result from stdout
+5. Enforces timeout via `--stop-timeout`
+
+**Why podman over docker**: rootless by default, no daemon, OCI-compliant, better security posture. Falls back to docker if podman isn't available.
+
+**Cross-platform payoff**: a Linux-only tool (KiCad CLI, EDA tools, system analyzers) runs on macOS via podman machine. A Windows-only tool runs via WSL2 container. The plugin author builds once, the operator runs anywhere.
+
+**Image distribution**: published to any OCI registry (GHCR, Docker Hub, private). The plugin.toml declares the image URI. `omegon plugin install` pulls the image on first activation. Updates via standard image tag management.
+
+**Build from source**: for development/customization, the plugin can include a Containerfile. `omegon plugin build <id>` builds the image locally. The Containerfile is committed to the plugin repo alongside the tool script.
+
+```
+my-pcb-tools/
+├── plugin.toml
+├── PERSONA.md
+├── tools/
+│   ├── drc_check/
+│   │   ├── Containerfile      ← builds the tool image
+│   │   ├── drc_check.py       ← the actual tool code
+│   │   └── requirements.txt   ← frozen in the image
+│   └── bom_export/
+│       ├── Containerfile
+│       └── bom_export.py
+└── mind/
+    └── facts.jsonl
+```
+
+## Decisions
+
+### Decision: OCI containers are a first-class tool runner alongside script/HTTP/WASM
+
+**Status:** decided
+**Rationale:** Containers solve dependencies (frozen in image), sandboxing (isolated by default), and cross-platform (Linux tools run on macOS via podman machine). Same JSON stdin/stdout contract as script-backed tools. runner='oci' with image URI or local Containerfile build path. Podman preferred (rootless, daemonless), docker fallback. Plugin can declare mount_cwd, network, timeout per tool.
+
+### Decision: Dependencies declared in Containerfile, not managed by omegon
+
+**Status:** decided
+**Rationale:** Omegon should not be a package manager. For script-backed tools, the operator manages their own Python/Node environment. For OCI tools, the Containerfile IS the dependency declaration — requirements.txt, apt packages, etc. are frozen in the image layer. This is the clean boundary: omegon manages plugin lifecycle, the image manages runtime dependencies.
+
+### Decision: Sandboxing via container isolation — operator controls mount and network policy per tool
+
+**Status:** decided
+**Rationale:** Containers provide natural sandboxing. Script-backed tools trust the operator (they run on the host). OCI tools are isolated by default — no host access unless mount_cwd=true, no network unless network=true. This gives a clean security gradient: passive plugins (zero risk) → script tools (operator trust) → OCI tools (sandboxed) → WASM tools (fully sandboxed, future).
+
 ## Open Questions
 
-- Should script-backed tools declare their runtime dependencies (requirements.txt, package.json) and should omegon auto-install them?
-- Sandboxing: should script-backed tools run in a restricted environment (no network, limited filesystem access) or trust the operator?
+*No open questions.*

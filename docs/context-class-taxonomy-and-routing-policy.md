@@ -1,7 +1,7 @@
 ---
 id: context-class-taxonomy-and-routing-policy
 title: Context Class Taxonomy and Routing Policy — named context classes, route envelopes, downgrade safeguards
-status: implementing
+status: implemented
 related: [model-degradation, effort-tiers, rust-provider-fallback, codex-tier-routing, provider-neutral-model-controls]
 tags: [architecture, routing, context-window, policy, control-plane, ux]
 open_questions: []

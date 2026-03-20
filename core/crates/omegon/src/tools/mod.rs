@@ -480,6 +480,48 @@ impl ToolProvider for CoreTools {
                 let message = args["message"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'message' argument"))?;
+
+                // ── jj path: describe + new ─────────────────────────────
+                // In jj, the working copy is already a mutable change.
+                // "Committing" means: describe it, then create a new empty
+                // change on top (`jj new`). No staging, no index, no dance.
+                if self.repo_model.as_ref().is_some_and(|m| m.is_jj()) {
+                    omegon_git::jj::describe(&self.cwd, message)?;
+                    omegon_git::jj::new_change(&self.cwd, "")?;
+
+                    // Get the change ID of the just-committed change (parent of @)
+                    let committed_id = std::process::Command::new("jj")
+                        .args(["log", "-r", "@-", "--no-graph", "-T", "change_id.short()"])
+                        .current_dir(&self.cwd)
+                        .output()
+                        .ok()
+                        .and_then(|o| {
+                            if o.status.success() {
+                                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    // Refresh model state
+                    if let Some(ref model) = self.repo_model {
+                        model.clear_working_set();
+                        let _ = model.refresh();
+                    }
+
+                    let summary = format!("Committed (jj): {committed_id}\n{message}");
+                    return Ok(ToolResult {
+                        content: vec![omegon_traits::ContentBlock::Text { text: summary }],
+                        details: json!({
+                            "jj_change_id": committed_id,
+                            "message": message,
+                            "backend": "jj",
+                        }),
+                    });
+                }
+
+                // ── git path: stage + commit ────────────────────────────
                 let paths: Vec<String> = args
                     .get("paths")
                     .and_then(|v| v.as_array())
@@ -490,14 +532,12 @@ impl ToolProvider for CoreTools {
                     })
                     .unwrap_or_default();
 
-                // Gather pending lifecycle files from RepoModel (if available)
                 let lifecycle_paths: Vec<String> = self
                     .repo_model
                     .as_ref()
                     .map(|m| m.pending_lifecycle_files().into_iter().collect())
                     .unwrap_or_default();
 
-                // Detect submodules that need commits first
                 let sub_paths = self
                     .repo_model
                     .as_ref()
@@ -523,7 +563,6 @@ impl ToolProvider for CoreTools {
                     }
                 }
 
-                // Create the commit — includes lifecycle files if any are pending
                 let include_lifecycle = !lifecycle_paths.is_empty();
                 let result = omegon_git::commit::create_commit(
                     &self.cwd,
@@ -535,7 +574,6 @@ impl ToolProvider for CoreTools {
                     },
                 )?;
 
-                // Clear working set + lifecycle queue after successful commit
                 if let Some(ref model) = self.repo_model {
                     model.clear_working_set();
                     if let Err(e) = model.refresh() {

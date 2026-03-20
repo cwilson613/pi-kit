@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "changeName": "cleave-submodule-worktree",
+  "assessmentKind": "spec",
+  "outcome": "pass",
+  "timestamp": "2026-03-20T12:40:26.705Z",
+  "summary": "All 11 spec scenarios verified. Rust: salvage_worktree_changes on both paths, verify_scope_accessible with 4 tests, build_submodule_context. TS: parseGitmodules, submodule field on GitStatusEntry, inspectGitState cross-references, checkpoint warns on submodule paths, 6 tests. worktree.ts marked legacy.",
+  "snapshot": {
+    "gitHead": "5eb6c461d1739b0bc2514fc8607a6afcf5d7cfbb",
+    "fingerprint": "894e09dd43ef456329c3f4a4a87346bdc577f787992ed4b25ffff427ed689969",
+    "dirty": false,
+    "scopedPaths": [
+      "core/crates/omegon/src/cleave/orchestrator.rs",
+      "core/crates/omegon/src/cleave/worktree.rs",
+      "extensions/cleave/index.ts",
+      "extensions/lib/git-state.ts"
+    ],
+    "files": [
+      {
+        "path": "core/crates/omegon/src/cleave/orchestrator.rs",
+        "exists": true,
+        "size": 36443,
+        "sha256": "beb740946d9f1e54c3e18ef42d61e6406a187692c8dbacd8c29c7147638cd89a"
+      },
+      {
+        "path": "core/crates/omegon/src/cleave/worktree.rs",
+        "exists": true,
+        "size": 14734,
+        "sha256": "fe3f7d7a6ff7aadf7b32b3c6ad9a6d511c5c126d96cd4be18b0d0a44f8e78b23"
+      },
+      {
+        "path": "extensions/cleave/index.ts",
+        "exists": false,
+        "size": 0,
+        "sha256": null
+      },
+      {
+        "path": "extensions/lib/git-state.ts",
+        "exists": false,
+        "size": 0,
+        "sha256": null
+      },
+      {
+        "path": "openspec/changes/cleave-submodule-worktree/design.md",
+        "exists": true,
+        "size": 12816,
+        "sha256": "0787ceaceb3d690eb968a9450d8b22ef2ff7fc458e3288c162427a41cbd1ec55"
+      },
+      {
+        "path": "openspec/changes/cleave-submodule-worktree/proposal.md",
+        "exists": true,
+        "size": 261,
+        "sha256": "c597be7aaaa5e7a524449855529482af695253a5386322fe5da01c07cd49fd5f"
+      },
+      {
+        "path": "openspec/changes/cleave-submodule-worktree/specs/cleave/submodule.md",
+        "exists": true,
+        "size": 3256,
+        "sha256": "3ee775a90be52b9e513f9e30442d6d797fa5825adf8dedd58deb8e5e9a713f5b"
+      },
+      {
+        "path": "openspec/changes/cleave-submodule-worktree/tasks.md",
+        "exists": true,
+        "size": 2181,
+        "sha256": "5e9780e02fe3b2cccbda6ae790d4e72bbac1b7fde213870a8cf42e1c7d5b2469"
+      }
+    ]
+  },
+  "reconciliation": {
+    "reopen": false,
+    "changedFiles": [],
+    "constraints": [],
+    "recommendedAction": null
+  }
+}

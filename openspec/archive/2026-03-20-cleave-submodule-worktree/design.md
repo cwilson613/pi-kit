@@ -1,20 +1,33 @@
----
-id: cleave-submodule-worktree
-title: Cleave worktree submodule failures — root cause and fix
-status: implemented
-tags: [cleave, git, submodule, reliability]
-open_questions: []
-branches: ["feature/cleave-submodule-worktree"]
-openspec_change: cleave-submodule-worktree
----
+# Cleave worktree submodule failures — root cause and fix — Design
 
-# Cleave worktree submodule failures — root cause and fix
+## Architecture Decisions
 
-## Overview
+### Decision: Orchestrator must own all submodule commits — children should not need submodule awareness
 
-Security assessment runs showed 2/4 child failures in both cleave runs. All failures were on children whose scope targeted files inside the `core` git submodule. Root cause analysis below.
+**Status:** decided
+**Rationale:** Making children submodule-aware would mean injecting git plumbing knowledge into every child agent. The orchestrator already has commit_dirty_submodules() — it just needs to run it unconditionally (success AND failure paths) and verify after submodule_init that the files in scope are actually accessible. The child edits files normally; the orchestrator handles the two-level commit dance.
 
-## Research
+### Decision: commit_dirty_submodules must run on both success and failure paths
+
+**Status:** decided
+**Rationale:** Currently only the Ok(output) arm of the child result match calls commit_dirty_submodules. The Err(e) arm skips it entirely. A child that times out (code -1) or errors (code 1) may have made real edits inside the submodule before dying. Those edits should be preserved by the orchestrator's auto-commit, not silently lost. Even on failure, we should capture whatever work the child produced.
+
+### Decision: Worktree health check after submodule init — verify scope files are accessible
+
+**Status:** decided
+**Rationale:** After create_worktree + submodule_init, the orchestrator should stat at least one file from the child's scope to confirm the worktree is functional. If scope files are inside a submodule and the submodule init failed silently (e.g., network error fetching submodule, .gitmodules missing), the child would spin uselessly. A health check catches this early and marks the child as failed with an actionable error message.
+
+### Decision: Task files should declare submodule context when scope crosses a submodule boundary
+
+**Status:** decided
+**Rationale:** The task file should include a note like "Note: files in core/ are inside a git submodule. The orchestrator handles submodule commits — edit files normally." This doesn't require the child to understand git submodules, but it provides context that prevents confusion if the child runs git status and sees unexpected output. The orchestrator can detect submodules at worktree creation time and inject this context into the task file.
+
+### Decision: Dirty-tree preflight should classify submodule paths and ensure consistency before checkpoint
+
+**Status:** decided
+**Rationale:** When git status shows ` m core` (modified submodule content), the preflight should recognize this as a submodule path and ensure the submodule's HEAD matches what will be committed in the checkpoint. Currently the preflight treats it as a regular file. The checkpoint commits the outer pointer but if the submodule has uncommitted changes inside it, the worktree will be created from a parent that pins the submodule to a SHA that doesn't include those changes. The preflight should either commit inside the submodule first or warn the operator.
+
+## Research Context
 
 ### Root cause analysis — two distinct failure paths
 
@@ -128,47 +141,14 @@ For `fail-closed-auth` (code -1 = killed by idle timeout): The child probably st
 3. **Failed children skip submodule commit** — the `Err(e)` path in orchestrator never calls `commit_dirty_submodules()`
 4. **Cargo cache not shared** — worktree submodules rebuild from scratch, hitting idle timeouts
 
-## Decisions
-
-### Decision: Orchestrator must own all submodule commits — children should not need submodule awareness
-
-**Status:** decided
-**Rationale:** Making children submodule-aware would mean injecting git plumbing knowledge into every child agent. The orchestrator already has commit_dirty_submodules() — it just needs to run it unconditionally (success AND failure paths) and verify after submodule_init that the files in scope are actually accessible. The child edits files normally; the orchestrator handles the two-level commit dance.
-
-### Decision: commit_dirty_submodules must run on both success and failure paths
-
-**Status:** decided
-**Rationale:** Currently only the Ok(output) arm of the child result match calls commit_dirty_submodules. The Err(e) arm skips it entirely. A child that times out (code -1) or errors (code 1) may have made real edits inside the submodule before dying. Those edits should be preserved by the orchestrator's auto-commit, not silently lost. Even on failure, we should capture whatever work the child produced.
-
-### Decision: Worktree health check after submodule init — verify scope files are accessible
-
-**Status:** decided
-**Rationale:** After create_worktree + submodule_init, the orchestrator should stat at least one file from the child's scope to confirm the worktree is functional. If scope files are inside a submodule and the submodule init failed silently (e.g., network error fetching submodule, .gitmodules missing), the child would spin uselessly. A health check catches this early and marks the child as failed with an actionable error message.
-
-### Decision: Task files should declare submodule context when scope crosses a submodule boundary
-
-**Status:** decided
-**Rationale:** The task file should include a note like "Note: files in core/ are inside a git submodule. The orchestrator handles submodule commits — edit files normally." This doesn't require the child to understand git submodules, but it provides context that prevents confusion if the child runs git status and sees unexpected output. The orchestrator can detect submodules at worktree creation time and inject this context into the task file.
-
-### Decision: Dirty-tree preflight should classify submodule paths and ensure consistency before checkpoint
-
-**Status:** decided
-**Rationale:** When git status shows ` m core` (modified submodule content), the preflight should recognize this as a submodule path and ensure the submodule's HEAD matches what will be committed in the checkpoint. Currently the preflight treats it as a regular file. The checkpoint commits the outer pointer but if the submodule has uncommitted changes inside it, the worktree will be created from a parent that pins the submodule to a SHA that doesn't include those changes. The preflight should either commit inside the submodule first or warn the operator.
-
-## Open Questions
-
-*No open questions.*
-
-## Implementation Notes
-
-### File Scope
+## File Changes
 
 - `core/crates/omegon/src/cleave/orchestrator.rs` (modified) — Move commit_dirty_submodules to run on BOTH success and failure paths. Add worktree health check after submodule init. Inject submodule context note into task files when scope crosses submodule boundary.
 - `core/crates/omegon/src/cleave/worktree.rs` (modified) — Add verify_scope_accessible() function that stats files from scope to confirm worktree is functional after submodule init.
 - `extensions/lib/git-state.ts` (modified) — Add submodule detection to inspectGitState — classify paths that are submodule roots based on .gitmodules parsing.
 - `extensions/cleave/index.ts` (modified) — Dirty-tree preflight: detect submodule paths, ensure submodule HEAD consistency before checkpoint. TS worktree.ts is dead code (native dispatch owns worktrees) but add a deprecation comment.
 
-### Constraints
+## Constraints
 
 - commit_dirty_submodules must run on both Ok and Err paths
 - Worktree health check must verify at least one scope file is readable

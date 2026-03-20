@@ -1,46 +1,158 @@
-//! Worktree operations — create, remove, list.
+//! Worktree/workspace operations — create, remove, list.
 //!
-//! Uses CLI for create (git2 worktree API is limited for branch creation)
-//! and git2 for list/query.
+//! When jj is co-located, uses `jj workspace` (lock-free, no submodule
+//! init needed, shared repo objects). Falls back to git worktrees when
+//! jj is not available.
 
 use anyhow::{Context, Result};
 use git2::Repository;
 use std::path::{Path, PathBuf};
 
-/// Info about a created worktree.
+/// Info about a created worktree/workspace.
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub path: PathBuf,
     pub branch: String,
+    /// "jj" or "git" — which backend created it.
+    pub backend: &'static str,
 }
 
-/// Create a worktree with a new branch from the current HEAD.
+// ── jj workspace operations ─────────────────────────────────────────────
+
+/// Create a jj workspace for a child task.
 ///
-/// Uses CLI because git2's worktree API doesn't support `-b` (create branch).
+/// `jj workspace add` creates a new workspace sharing the same repo.
+/// All files are immediately available — no submodule init, no clone.
+/// The workspace gets its own working copy change on top of the
+/// specified parent revision (defaults to current working copy parent).
+pub fn create_jj_workspace(
+    repo_path: &Path,
+    workspace_path: &Path,
+    name: &str,
+) -> Result<WorktreeInfo> {
+    // Remove stale workspace dir
+    if workspace_path.exists() {
+        let _ = std::fs::remove_dir_all(workspace_path);
+    }
+
+    // Forget stale workspace registration
+    let _ = std::process::Command::new("jj")
+        .args(["workspace", "forget", name])
+        .current_dir(repo_path)
+        .output();
+
+    let output = std::process::Command::new("jj")
+        .args([
+            "workspace",
+            "add",
+            &workspace_path.to_string_lossy(),
+            "--name",
+            name,
+            "-r",
+            "@-", // Parent of current working copy — same base as other children
+        ])
+        .current_dir(repo_path)
+        .output()
+        .context("jj workspace add failed")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("jj workspace add failed: {}", stderr.trim());
+    }
+
+    tracing::info!(name = name, path = %workspace_path.display(), "jj workspace created");
+
+    Ok(WorktreeInfo {
+        path: workspace_path.to_path_buf(),
+        branch: name.to_string(),
+        backend: "jj",
+    })
+}
+
+/// Remove a jj workspace.
+pub fn remove_jj_workspace(repo_path: &Path, name: &str, workspace_path: &Path) -> Result<()> {
+    let _ = std::process::Command::new("jj")
+        .args(["workspace", "forget", name])
+        .current_dir(repo_path)
+        .output();
+
+    // Remove the directory
+    if workspace_path.exists() {
+        let _ = std::fs::remove_dir_all(workspace_path);
+    }
+
+    Ok(())
+}
+
+/// List jj workspaces.
+pub fn list_jj_workspaces(repo_path: &Path) -> Result<Vec<String>> {
+    let output = std::process::Command::new("jj")
+        .args(["workspace", "list"])
+        .current_dir(repo_path)
+        .output()
+        .context("jj workspace list failed")?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout
+            .lines()
+            .filter_map(|line| {
+                // Format: "name: change_id sha (description)"
+                line.split(':').next().map(|s| s.trim().to_string())
+            })
+            .filter(|s| !s.is_empty())
+            .collect())
+    } else {
+        Ok(vec![])
+    }
+}
+
+// ── Smart dispatch ──────────────────────────────────────────────────────
+
+/// Create a worktree/workspace — auto-selects jj or git based on availability.
+pub fn create_smart(
+    repo_path: &Path,
+    workspace_path: &Path,
+    name: &str,
+    _branch: &str,
+) -> Result<WorktreeInfo> {
+    if crate::jj::is_jj_repo(repo_path) {
+        create_jj_workspace(repo_path, workspace_path, name)
+    } else {
+        create(repo_path, workspace_path, _branch)
+    }
+}
+
+/// Remove a worktree/workspace — auto-selects jj or git.
+pub fn remove_smart(repo_path: &Path, name: &str, workspace_path: &Path) -> Result<()> {
+    if crate::jj::is_jj_repo(repo_path) {
+        remove_jj_workspace(repo_path, name, workspace_path)
+    } else {
+        remove(repo_path, workspace_path)
+    }
+}
+
+// ── git worktree operations (fallback) ──────────────────────────────────
+
+/// Create a git worktree with a new branch from HEAD.
 pub fn create(
     repo_path: &Path,
     worktree_path: &Path,
     branch: &str,
 ) -> Result<WorktreeInfo> {
-    // Clean up stale branch if it exists
     let _ = std::process::Command::new("git")
         .args(["branch", "-D", branch])
         .current_dir(repo_path)
         .output();
 
-    // Remove stale worktree dir
     if worktree_path.exists() {
         let _ = std::fs::remove_dir_all(worktree_path);
     }
 
     let output = std::process::Command::new("git")
         .args([
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            &worktree_path.to_string_lossy(),
-            "HEAD",
+            "worktree", "add", "-b", branch,
+            &worktree_path.to_string_lossy(), "HEAD",
         ])
         .current_dir(repo_path)
         .output()
@@ -56,16 +168,15 @@ pub fn create(
     Ok(WorktreeInfo {
         path: worktree_path.to_path_buf(),
         branch: branch.to_string(),
+        backend: "git",
     })
 }
 
-/// Remove a worktree.
+/// Remove a git worktree.
 pub fn remove(repo_path: &Path, worktree_path: &Path) -> Result<()> {
     let output = std::process::Command::new("git")
         .args([
-            "worktree",
-            "remove",
-            "--force",
+            "worktree", "remove", "--force",
             &worktree_path.to_string_lossy(),
         ])
         .current_dir(repo_path)
@@ -76,18 +187,17 @@ pub fn remove(repo_path: &Path, worktree_path: &Path) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::warn!("worktree remove: {}", stderr.trim());
     }
-
     Ok(())
 }
 
-/// List active worktrees via git2.
+/// List git worktrees.
 pub fn list(repo_path: &Path) -> Result<Vec<String>> {
     let repo = Repository::open(repo_path)?;
     let worktrees = repo.worktrees().context("failed to list worktrees")?;
     Ok(worktrees.iter().filter_map(|w| w.map(String::from)).collect())
 }
 
-/// Delete a branch (after worktree removal and merge).
+/// Delete a git branch.
 pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let repo = Repository::open(repo_path)?;
     if let Ok(mut branch_ref) = repo.find_branch(branch, git2::BranchType::Local) {
@@ -96,7 +206,7 @@ pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Prune stale worktree references.
+/// Prune stale git worktree references.
 pub fn prune(repo_path: &Path) -> Result<()> {
     let _ = std::process::Command::new("git")
         .args(["worktree", "prune"])
@@ -104,6 +214,8 @@ pub fn prune(repo_path: &Path) -> Result<()> {
         .output();
     Ok(())
 }
+
+// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -117,5 +229,74 @@ mod tests {
             let wts = list(repo_root);
             assert!(wts.is_ok());
         }
+    }
+
+    #[test]
+    fn jj_workspace_lifecycle() {
+        let cwd = std::env::current_dir().unwrap();
+        // Find the repo root
+        let mut repo_path = cwd.as_path();
+        loop {
+            if repo_path.join(".jj").exists() {
+                break;
+            }
+            match repo_path.parent() {
+                Some(p) => repo_path = p,
+                None => return, // Not in a jj repo
+            }
+        }
+
+        let ws_dir = tempfile::tempdir().unwrap();
+        let ws_path = ws_dir.path().join("test-child");
+        let name = format!("test-ws-{}", std::process::id());
+
+        // Create
+        let result = create_jj_workspace(repo_path, &ws_path, &name);
+        assert!(result.is_ok(), "create failed: {:?}", result.err());
+        let info = result.unwrap();
+        assert!(info.path.exists());
+        assert_eq!(info.backend, "jj");
+
+        // Verify files are accessible (no submodule init needed!)
+        assert!(ws_path.join("core").exists(), "core/ should exist");
+        assert!(
+            ws_path.join("core/crates/omegon-git/src/lib.rs").exists(),
+            "Rust source should be accessible"
+        );
+
+        // List
+        let workspaces = list_jj_workspaces(repo_path).unwrap();
+        assert!(workspaces.contains(&name), "workspace should be listed");
+
+        // Remove
+        remove_jj_workspace(repo_path, &name, &ws_path).unwrap();
+        assert!(!ws_path.exists(), "workspace dir should be removed");
+    }
+
+    #[test]
+    fn smart_dispatch_picks_jj() {
+        let cwd = std::env::current_dir().unwrap();
+        let mut repo_path = cwd.as_path();
+        loop {
+            if repo_path.join(".jj").exists() {
+                break;
+            }
+            match repo_path.parent() {
+                Some(p) => repo_path = p,
+                None => return,
+            }
+        }
+
+        let ws_dir = tempfile::tempdir().unwrap();
+        let ws_path = ws_dir.path().join("smart-child");
+        let name = format!("smart-{}", std::process::id());
+
+        let result = create_smart(repo_path, &ws_path, &name, "unused-branch");
+        assert!(result.is_ok(), "smart create failed: {:?}", result.err());
+        let info = result.unwrap();
+        assert_eq!(info.backend, "jj", "should use jj when co-located");
+
+        // Cleanup
+        remove_smart(repo_path, &name, &ws_path).unwrap();
     }
 }

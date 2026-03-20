@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 
 // ── Worktree lifecycle ──────────────────────────────────────────────────
 
-/// Create a git worktree for a child branch.
+/// Create a worktree/workspace for a child.
+///
+/// Uses jj workspace when co-located (lock-free, all files immediately
+/// available, no submodule init). Falls back to git worktree otherwise.
 pub fn create_worktree(
     repo_path: &Path,
     workspace_path: &Path,
@@ -18,18 +21,29 @@ pub fn create_worktree(
     branch: &str,
 ) -> Result<PathBuf> {
     let worktree_dir = workspace_path.join(format!("{}-wt-{}", child_id, label));
-    omegon_git::worktree::create(repo_path, &worktree_dir, branch)?;
+    let name = format!("cleave-{}-{}", child_id, label);
+    omegon_git::worktree::create_smart(repo_path, &worktree_dir, &name, branch)?;
     Ok(worktree_dir)
 }
 
-/// Remove a git worktree.
+/// Remove a worktree/workspace.
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
-    omegon_git::worktree::remove(repo_path, worktree_path)
+    // Extract workspace name from path for jj cleanup
+    let name = worktree_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    omegon_git::worktree::remove_smart(repo_path, name, worktree_path)
 }
 
-/// Delete a branch after merge.
+/// Delete a branch after merge (git-only, no-op for jj).
 pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<()> {
-    omegon_git::worktree::delete_branch(repo_path, branch)
+    if omegon_git::jj::is_jj_repo(repo_path) {
+        // jj doesn't use branches for workspaces — nothing to delete
+        Ok(())
+    } else {
+        omegon_git::worktree::delete_branch(repo_path, branch)
+    }
 }
 
 // ── Merge ───────────────────────────────────────────────────────────────
@@ -79,7 +93,19 @@ pub fn merge_branch(repo_path: &Path, branch: &str) -> Result<MergeResult> {
 // ── Submodule operations ────────────────────────────────────────────────
 
 /// Initialize submodules in a worktree.
+///
+/// No-op when jj is active — jj workspaces share the full repo tree,
+/// no submodule init needed. Also no-op in a monorepo with no submodules.
 pub fn submodule_init(worktree_path: &Path) -> Result<()> {
+    // Skip if jj co-located (workspaces have everything already)
+    if omegon_git::jj::is_jj_repo(worktree_path) {
+        return Ok(());
+    }
+    // Skip if no submodules detected
+    let subs = omegon_git::submodule::list_submodule_paths(worktree_path).unwrap_or_default();
+    if subs.is_empty() {
+        return Ok(());
+    }
     omegon_git::submodule::init_submodules(worktree_path)?;
     Ok(())
 }

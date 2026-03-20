@@ -12,6 +12,7 @@
 //! This is the extension API contract for all external integrations.
 //! The contract is: TOML manifest + HTTP endpoints. Language-agnostic.
 
+pub mod armory;
 pub mod manifest;
 pub mod http_feature;
 

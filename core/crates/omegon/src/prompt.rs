@@ -15,6 +15,7 @@ pub fn build_base_prompt(cwd: &Path, tools: &[ToolDefinition]) -> String {
     let date = utc_date();
     let tool_list = format_tool_list(tools);
     let tool_guidelines = build_tool_guidelines(tools);
+    let lex_imperialis = load_lex_imperialis();
     let lifecycle_context = detect_lifecycle_context(cwd, tools);
     let global_directives = load_global_directives();
     let project_directives = load_project_directives(cwd);
@@ -42,7 +43,7 @@ Available tools:
 - Every non-trivial code change must include tests. Untested code is incomplete.
 - Commit your work with descriptive messages when the task is complete. Do NOT push.
 - When you complete the task, summarize what you did and what changed.
-{lifecycle_context}{global_directives}{project_directives}{project_conventions}
+{lex_imperialis}{lifecycle_context}{global_directives}{project_directives}{project_conventions}
 Current date: {date}
 Current working directory: {cwd}"#,
         cwd = cwd.display()
@@ -206,6 +207,17 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
     }
 
     format!("\n# Project Lifecycle\n\n{}\n", sections.join("\n\n"))
+}
+
+/// Load the Lex Imperialis — non-overridable core directives.
+///
+/// These are constitutional axioms that define what Omegon *is*.
+/// They are always injected, always first in the directive stack,
+/// and cannot be disabled by personas, tones, or operator config.
+fn load_lex_imperialis() -> String {
+    // Embedded at compile time from the armory source
+    static LEX: &str = include_str!("../../../../data/lex-imperialis.md");
+    format!("\n# Core Directives\n\n{LEX}\n")
 }
 
 /// Load global operator directives from ~/.omegon/AGENTS.md
@@ -522,5 +534,32 @@ mod tests {
         let prompt = build_base_prompt(Path::new("/tmp"), &tools);
         assert!(prompt.contains("Ground your claims in evidence"), "should include evidence directive");
         assert!(prompt.contains("distinguish what you've verified"), "should include verification distinction");
+    }
+
+    #[test]
+    fn lex_imperialis_in_prompt() {
+        let tools = vec![];
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        assert!(prompt.contains("Lex Imperialis"), "should include Lex Imperialis");
+        assert!(prompt.contains("Anti-Sycophancy"), "should include directive I");
+        assert!(prompt.contains("Evidence-Based Epistemology"), "should include directive II");
+        assert!(prompt.contains("Perfection Is the Enemy of Good"), "should include directive III");
+        assert!(prompt.contains("Systems Engineering Harness"), "should include directive IV");
+        assert!(prompt.contains("Cognitive Honesty"), "should include directive V");
+        assert!(prompt.contains("Operator Agency"), "should include directive VI");
+    }
+
+    #[test]
+    fn lex_imperialis_before_operator_directives() {
+        let tools = vec![];
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let lex_pos = prompt.find("Lex Imperialis").unwrap_or(usize::MAX);
+        // Lex should come before any operator/project directives sections
+        if let Some(op_pos) = prompt.find("Operator Directives") {
+            assert!(lex_pos < op_pos, "Lex Imperialis must appear before Operator Directives");
+        }
+        if let Some(proj_pos) = prompt.find("Project Directives") {
+            assert!(lex_pos < proj_pos, "Lex Imperialis must appear before Project Directives");
+        }
     }
 }

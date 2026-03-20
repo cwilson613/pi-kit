@@ -36,9 +36,12 @@ pub struct ArmoryManifest {
     pub tone: Option<ToneConfig>,
     #[serde(default)]
     pub skill: Option<SkillConfig>,
-    /// Functional tools — script-backed, HTTP-backed, or WASM-backed.
+    /// Functional tools — script-backed, HTTP-backed, OCI, or WASM-backed.
     #[serde(default)]
     pub tools: Vec<ToolEntry>,
+    /// MCP servers — tools discovered via Model Context Protocol.
+    #[serde(default)]
+    pub mcp_servers: std::collections::HashMap<String, super::mcp::McpServerConfig>,
     /// Dynamic context injection — script or HTTP endpoint.
     #[serde(default)]
     pub context: Option<ContextEntry>,

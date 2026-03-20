@@ -15,6 +15,7 @@
 pub mod armory;
 pub mod manifest;
 pub mod http_feature;
+pub mod mcp;
 pub mod registry;
 
 use manifest::PluginManifest;

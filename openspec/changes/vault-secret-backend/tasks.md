@@ -1,6 +1,6 @@
 # Vault as first-class secret backend — Tasks
 
-## 1. Vault HTTP client + config (crates/omegon-secrets)
+## 1. Vault HTTP client + config (core/crates/omegon-secrets)
 
 **Scope**: `src/vault.rs` (new), `Cargo.toml` (modified), `src/lib.rs` (modified)
 
@@ -21,20 +21,20 @@
 - [ ] 1.15 Wire VaultClient into SecretsManager — optional field, initialized from VaultConfig if configured, None otherwise
 - [ ] 1.16 Tests: mock HTTP responses for health, read, write, auth negotiation, path allowlist enforcement
 
-## 2. Vault recipe kind (crates/omegon-secrets/src/resolve.rs)
+## 2. Vault recipe kind (core/crates/omegon-secrets/src/resolve.rs)
 
 - [ ] 2.1 Add `vault:` recipe kind — parse `vault:path#key` (e.g., `vault:secret/data/omegon/api-keys#anthropic`)
 - [ ] 2.2 Resolve by calling VaultClient.read(path), extract the named key from the data map
 - [ ] 2.3 Graceful fallback — if VaultClient is None or unreachable, log warning and return None
 - [ ] 2.4 Tests: vault recipe parsing, resolution with mock client, fallback on unreachable
 
-## 3. Guard patterns (crates/omegon-secrets/src/guards.rs)
+## 3. Guard patterns (core/crates/omegon-secrets/src/guards.rs)
 
 - [ ] 3.1 Add Block pattern for `~/.omegon/vault.json` (Vault config — contains token/auth)
 - [ ] 3.2 Add Warn pattern for `.vault-token` (already exists — verify)
 - [ ] 3.3 Tests: guard blocks vault.json read, warns on vault-token
 
-## 4. /vault TUI command (crates/omegon/src/tui/mod.rs)
+## 4. /vault TUI command (core/crates/omegon/src/tui/mod.rs)
 
 - [ ] 4.1 `/vault status` — call VaultClient.health(), display sealed/unsealed/unreachable, addr, auth method
 - [ ] 4.2 `/vault unseal` — enter masked unseal key input mode, show progress (n/threshold), repeat until unsealed or cancelled
@@ -44,12 +44,12 @@
 - [ ] 4.6 Masked input mode — key entry not echoed, not logged, not stored in history. Separate from normal editor input.
 - [ ] 4.7 System notification on startup if Vault is configured but sealed
 
-## 5. whoami integration (crates/omegon/src/tools/whoami.rs)
+## 5. whoami integration (core/crates/omegon/src/tools/whoami.rs)
 
 - [ ] 5.1 Add Vault section — status (active/sealed/unreachable), address, auth method, token TTL remaining
 - [ ] 5.2 Graceful skip if Vault not configured
 
-## 6. Startup context (crates/omegon/src/features/lifecycle.rs)
+## 6. Startup context (core/crates/omegon/src/features/lifecycle.rs)
 
 - [ ] 6.1 Check Vault health on session_start, emit SystemNotification if sealed
 - [ ] 6.2 Include Vault status in dashboard footer data if configured

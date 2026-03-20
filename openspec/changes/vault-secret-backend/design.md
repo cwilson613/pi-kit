@@ -186,16 +186,16 @@ This is defense-in-depth: Vault enforces server-side via policy, omegon enforces
 
 ## File Changes
 
-- `crates/omegon-secrets/src/vault.rs` (new) — Vault HTTP client — health, seal-status, unseal, KV v2 read/write/list, token lookup/renew
-- `crates/omegon-secrets/src/resolve.rs` (modified) — Add vault: recipe kind — resolves vault:path#key via Vault client
-- `crates/omegon-secrets/src/lib.rs` (modified) — Wire VaultClient into SecretsManager, add vault config, expose unseal/status methods
-- `crates/omegon-secrets/Cargo.toml` (modified) — Add reqwest + tokio dependency for async Vault HTTP calls
-- `crates/omegon/src/tui/mod.rs` (modified) — Add /vault slash command (status, unseal, seal, login), masked unseal key input
-- `crates/omegon/src/tools/whoami.rs` (modified) — Include Vault status in whoami output
-- `crates/omegon/src/features/lifecycle.rs` (modified) — Vault health check in startup context injection
-- `crates/omegon-secrets/src/guards.rs` (modified) — Add guard patterns for vault config files
-- `crates/omegon-secrets/src/vault.rs` (new) — Vault HTTP client: health, seal-status, unseal, KV v2 CRUD, token lifecycle, auth method negotiation (token/AppRole/K8s SA), path allowlist enforcement, child token minting for cleave
-- `crates/omegon/src/tui/mod.rs` (modified) — /vault command: configure, status, unseal (masked multi-key input with progress), login, init-policy. Operator-only — agent loop never invokes these.
+- `core/crates/omegon-secrets/src/vault.rs` (new) — Vault HTTP client — health, seal-status, unseal, KV v2 read/write/list, token lookup/renew
+- `core/crates/omegon-secrets/src/resolve.rs` (modified) — Add vault: recipe kind — resolves vault:path#key via Vault client
+- `core/crates/omegon-secrets/src/lib.rs` (modified) — Wire VaultClient into SecretsManager, add vault config, expose unseal/status methods
+- `core/crates/omegon-secrets/Cargo.toml` (modified) — Add reqwest + tokio dependency for async Vault HTTP calls
+- `core/crates/omegon/src/tui/mod.rs` (modified) — Add /vault slash command (status, unseal, seal, login), masked unseal key input
+- `core/crates/omegon/src/tools/whoami.rs` (modified) — Include Vault status in whoami output
+- `core/crates/omegon/src/features/lifecycle.rs` (modified) — Vault health check in startup context injection
+- `core/crates/omegon-secrets/src/guards.rs` (modified) — Add guard patterns for vault config files
+- `core/crates/omegon-secrets/src/vault.rs` (new) — Vault HTTP client: health, seal-status, unseal, KV v2 CRUD, token lifecycle, auth method negotiation (token/AppRole/K8s SA), path allowlist enforcement, child token minting for cleave
+- `core/crates/omegon/src/tui/mod.rs` (modified) — /vault command: configure, status, unseal (masked multi-key input with progress), login, init-policy. Operator-only — agent loop never invokes these.
 
 ## Constraints
 

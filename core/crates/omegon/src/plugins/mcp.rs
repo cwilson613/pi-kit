@@ -76,6 +76,12 @@ pub struct McpServerConfig {
     /// If set, uses `docker mcp gateway run <name>` instead of direct spawn.
     #[serde(default)]
     pub docker_mcp: Option<String>,
+    /// Styrene mesh destination hash for remote MCP server execution.
+    /// The MCP server runs on a remote node accessible via RNS/Yggdrasil.
+    /// Traffic is PQC-encrypted end-to-end via styrene-tunnel.
+    /// Uses DaemonFleet::terminal_open for bidirectional stdio over the mesh.
+    #[serde(default)]
+    pub styrene_dest: Option<String>,
     /// Timeout for tool calls in seconds (default: 30).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
@@ -186,8 +192,35 @@ impl McpFeature {
     }
 
     /// Build the command to spawn an MCP server based on its config mode.
+    ///
+    /// Modes (in priority order):
+    /// 1. Styrene mesh — remote exec over RNS/Yggdrasil (PQC-encrypted)
+    /// 2. Docker MCP Gateway — Docker Desktop MCP Toolkit
+    /// 3. OCI container — podman/docker with mount/network policy
+    /// 4. Local process — direct command spawn (default)
     fn build_command(server_name: &str, config: &McpServerConfig) -> anyhow::Result<Command> {
-        // Mode 1: Docker MCP Toolkit gateway
+        // Mode 1: Styrene mesh transport
+        // The MCP server runs on a remote node. We use styrene-ipc's
+        // DaemonFleet::terminal_open() for bidirectional stdio, wrapped
+        // as an rmcp Transport. For now, this falls through to a
+        // placeholder that requires the styrene daemon to be available.
+        if let Some(ref dest) = config.styrene_dest {
+            let command = config.command.as_deref().unwrap_or("mcp-server");
+            // Use styrene CLI as the transport bridge:
+            // styrene exec <dest> <command> [args...]
+            // This opens a terminal session to the remote and pipes stdio.
+            let mut cmd = Command::new("styrene");
+            cmd.arg("exec");
+            cmd.arg(dest);
+            cmd.arg(command);
+            cmd.args(&config.args);
+            for (key, value) in &config.env {
+                cmd.env(key, resolve_env_template(value));
+            }
+            return Ok(cmd);
+        }
+
+        // Mode 2: Docker MCP Toolkit gateway
         if let Some(ref gateway_name) = config.docker_mcp {
             let mut cmd = Command::new("docker");
             cmd.args(["mcp", "gateway", "run", gateway_name]);
@@ -483,6 +516,7 @@ mod tests {
             mount_cwd: false,
             network: true,
             docker_mcp: None,
+            styrene_dest: None,
             timeout_secs: 30,
         };
         let cmd = McpFeature::build_command("test", &config).unwrap();
@@ -500,6 +534,7 @@ mod tests {
             mount_cwd: false,
             network: false,
             docker_mcp: None,
+            styrene_dest: None,
             timeout_secs: 30,
         };
         let cmd = McpFeature::build_command("test", &config).unwrap();
@@ -522,6 +557,7 @@ mod tests {
             mount_cwd: false,
             network: true,
             docker_mcp: Some("github".into()),
+            styrene_dest: None,
             timeout_secs: 30,
         };
         let cmd = McpFeature::build_command("test", &config).unwrap();
@@ -534,6 +570,40 @@ mod tests {
     }
 
     #[test]
+    fn mcp_server_config_styrene_mesh() {
+        let toml = r#"
+            styrene_dest = "a7b3c9d1e5f2..."
+            command = "/opt/mcp-servers/gpu-inference"
+            args = ["--model", "qwen3:30b"]
+        "#;
+        let config: McpServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.styrene_dest.as_deref(), Some("a7b3c9d1e5f2..."));
+        assert_eq!(config.command.as_deref(), Some("/opt/mcp-servers/gpu-inference"));
+    }
+
+    #[test]
+    fn build_command_styrene_mesh() {
+        let config = McpServerConfig {
+            command: Some("/opt/mcp/server".into()),
+            args: vec!["--port".into(), "0".into()],
+            env: HashMap::new(),
+            image: None,
+            mount_cwd: false,
+            network: true,
+            docker_mcp: None,
+            styrene_dest: Some("a7b3c9d1e5f2".into()),
+            timeout_secs: 60,
+        };
+        let cmd = McpFeature::build_command("gpu", &config).unwrap();
+        let prog = cmd.as_std().get_program().to_str().unwrap();
+        assert_eq!(prog, "styrene");
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(args.contains(&"exec"), "should have exec subcommand: {args:?}");
+        assert!(args.contains(&"a7b3c9d1e5f2"), "should have dest hash: {args:?}");
+        assert!(args.contains(&"/opt/mcp/server"), "should have command: {args:?}");
+    }
+
+    #[test]
     fn build_command_no_execution_method() {
         let config = McpServerConfig {
             command: None,
@@ -543,6 +613,7 @@ mod tests {
             mount_cwd: false,
             network: true,
             docker_mcp: None,
+            styrene_dest: None,
             timeout_secs: 30,
         };
         let result = McpFeature::build_command("test", &config);

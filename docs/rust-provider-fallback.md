@@ -3,6 +3,7 @@ id: rust-provider-fallback
 title: Provider fallback chain — task-aware resilience in the Rust agent loop
 status: exploring
 parent: rust-agent-loop
+related: [context-class-taxonomy-and-routing-policy]
 tags: [rust, providers, resilience, fallback, routing]
 open_questions:
   - "How does the fallback chain interact with the existing IntentDocument and thinking-level settings? If we fall back from Anthropic to OpenAI, thinking parameters don't translate 1:1."

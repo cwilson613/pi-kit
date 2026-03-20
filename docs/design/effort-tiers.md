@@ -2,6 +2,7 @@
 id: effort-tiers
 title: Effort Tiers — Global Inference Cost Control (Servitor → Omnissiah)
 status: implemented
+related: [context-class-taxonomy-and-routing-policy]
 tags: [cost, local-inference, architecture, cross-cutting]
 open_questions: []
 branches: ["feature/effort-tiers"]

@@ -2,7 +2,7 @@
 id: provider-neutral-model-controls
 title: Provider-neutral model controls and driver persistence
 status: implemented
-related: [operator-capability-profile]
+related: [operator-capability-profile, context-class-taxonomy-and-routing-policy]
 tags: [models, provider, routing, ux, persistence]
 open_questions: []
 ---

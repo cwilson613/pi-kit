@@ -71,8 +71,6 @@ impl RepoModel {
 
         // Read jj change ID if co-located
         let jj_change_id = if jj_colocated {
-            // Use CLI for initial read (async load_repo not available in sync discover)
-            crate::jj::diff_summary(&repo_path).ok(); // warm up
             let id = std::process::Command::new("jj")
                 .args(["log", "-r", "@", "--no-graph", "-T", "change_id"])
                 .current_dir(&repo_path)
@@ -155,9 +153,8 @@ impl RepoModel {
     pub fn containing_submodule(&self, path: &str) -> Option<SubmoduleInfo> {
         let subs = self.submodules.read().unwrap_or_else(|e| e.into_inner());
         for (sub_path, info) in subs.iter() {
-            if path.starts_with(sub_path)
-                && (path.len() == sub_path.len() || path[sub_path.len()..].starts_with('/'))
-            {
+            let prefix = format!("{}/", sub_path);
+            if path.starts_with(&prefix) || path == *sub_path {
                 return Some(info.clone());
             }
         }
@@ -174,9 +171,11 @@ impl RepoModel {
     /// When jj is co-located, queries jj's diff (the working copy IS a
     /// change, so jj knows exactly what's modified). When git-only,
     /// returns the manually-tracked HashSet.
+    ///
+    /// Note: the jj path spawns a subprocess. Callers should avoid
+    /// calling this in tight loops — cache the result if needed.
     pub fn working_set(&self) -> HashSet<String> {
         if self.jj_colocated {
-            // jj tracks this natively — query it
             crate::jj::diff_summary(&self.repo_path)
                 .unwrap_or_default()
                 .into_iter()
@@ -236,7 +235,7 @@ impl RepoModel {
     pub fn record_lifecycle_write(&self, path: &str) {
         self.pending_lifecycle
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(path.to_string());
     }
 

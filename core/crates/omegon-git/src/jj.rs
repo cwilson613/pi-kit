@@ -25,6 +25,11 @@ pub fn is_jj_repo(repo_path: &Path) -> bool {
 }
 
 // ── Read-only queries via jj-lib ────────────────────────────────────────
+//
+// These functions use jj-lib directly (no CLI). Currently used by tests
+// and available for future library-based queries (commit graph traversal,
+// revset evaluation). The CLI wrappers below are used for production
+// mutations.
 
 /// Load the jj workspace and repo at the current operation head.
 ///
@@ -69,7 +74,9 @@ pub async fn working_copy_change_id(repo_path: &Path) -> Result<Option<String>> 
     match wc_id {
         Some(commit_id) => {
             let commit = repo.store().get_commit(commit_id)?;
-            Ok(Some(commit.change_id().hex()))
+            // Use reverse_hex() — matches `jj log -T change_id` output.
+            // NOT hex() which produces a different encoding.
+            Ok(Some(commit.change_id().reverse_hex()))
         }
         None => Ok(None),
     }

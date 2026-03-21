@@ -90,7 +90,7 @@ pub async fn start_server(
     let bound = listener.local_addr()?;
 
     let token = token_for_query.to_string();
-    tracing::info!(port = bound.port(), "web dashboard at http://{bound}/?token={token}");
+    tracing::debug!(port = bound.port(), "web dashboard at http://{bound}/?token={token}");
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {

@@ -249,7 +249,11 @@ async fn main() -> anyhow::Result<()> {
 
     // ─── Logging setup ──────────────────────────────────────────────────
     // Priority: RUST_LOG env > --log-level flag > "info" default
-    let is_interactive = matches!(cli.command, Some(Commands::Interactive));
+    // Interactive mode: no subcommand (default) or explicit `interactive`.
+    // In both cases ratatui owns stderr — tracing must go to file only.
+    let is_interactive = matches!(cli.command, Some(Commands::Interactive) | None)
+        && cli.prompt.is_none()
+        && cli.prompt_file.is_none();
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
 

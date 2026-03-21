@@ -1,9 +1,11 @@
 ---
 id: extension-migration-architecture
 title: Extension migration architecture — TS extensions → Rust integrated features
-status: implementing
+status: implemented
 tags: [architecture, migration, extensions, event-bus]
 open_questions: []
+issue_type: epic
+priority: 1
 ---
 
 # Extension migration architecture — TS extensions → Rust integrated features
@@ -304,3 +306,21 @@ These three are pure Feature implementations with zero new dependencies, zero ne
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon-traits/src/lib.rs` (modified) — Unified Feature trait with tools(), commands(), execute(), provide_context(), on_event(&mut self) -> Vec<BusRequest>. BusEvent (14 variants), BusRequest (Notify, InjectSystemMessage, RequestCompaction). CommandDefinition + CommandResult.
+- `core/crates/omegon/src/bus.rs` (new) — EventBus runtime — sequential &mut self delivery, feature registry, tool/command definition caching, drain_requests(), emit_harness_status()
+- `core/crates/omegon/src/features/` (new) — 10 Feature impls: adapter.rs (3 legacy adapters), auto_compact.rs, cleave.rs, lifecycle.rs, manage_tools.rs, model_budget.rs, session_log.rs, terminal_title.rs, version_check.rs
+- `core/crates/omegon/src/plugins/armory_feature.rs` (new) — ArmoryFeature — script/OCI tool execution for armory plugins
+- `core/crates/omegon/src/plugins/http_feature.rs` (new) — HttpPluginFeature — HTTP endpoint tools from legacy manifests
+- `core/crates/omegon/src/plugins/mcp.rs` (new) — McpFeature — MCP protocol tool servers (4 transport modes)
+
+### Constraints
+
+- Features are modules within the binary crate, not separate crates
+- Bus types (BusEvent, BusRequest) live in omegon-traits; bus runtime in binary crate
+- Sequential &mut self delivery — no concurrent mutation, registration-order processing
+- 14 Feature impls total: 10 built-in features + 3 plugin types + legacy adapters

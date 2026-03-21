@@ -131,16 +131,21 @@ mod tests {
         assert!(is_newer("0.13.0", "0.12.0"));
     }
 
-    #[test]
-    fn respects_env_skip() {
+    #[tokio::test]
+    async fn checked_flag_prevents_duplicate_check() {
         let mut vc = VersionCheck::new("0.12.0");
-        // SAFETY: single-threaded test — no concurrent env access
-        unsafe { std::env::set_var("OMEGON_SKIP_VERSION_CHECK", "1"); }
+        // First session start sets checked=true
+        let _ = vc.on_event(&BusEvent::SessionStart {
+            cwd: "/tmp".into(),
+            session_id: "test-1".into(),
+        });
+        assert!(vc.checked, "should be marked as checked after first event");
+
+        // Second session start returns empty (already checked)
         let requests = vc.on_event(&BusEvent::SessionStart {
             cwd: "/tmp".into(),
-            session_id: "test".into(),
+            session_id: "test-2".into(),
         });
-        assert!(requests.is_empty());
-        unsafe { std::env::remove_var("OMEGON_SKIP_VERSION_CHECK"); }
+        assert!(requests.is_empty(), "should skip duplicate check");
     }
 }

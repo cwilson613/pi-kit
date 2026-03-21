@@ -1,7 +1,7 @@
 ---
 id: tui-integration-testing
 title: TUI integration testing — snapshot tests, PTY harness, and interactive verification
-status: implementing
+status: implemented
 parent: tui-visual-system
 tags: [testing, tui, ratatui, snapshot, pty, insta, ci, quality]
 open_questions: []
@@ -176,6 +176,9 @@ fn full_startup_renders_splash_then_editor() {
 ### File Scope
 
 - `core/crates/omegon/src/tui/tests.rs` (new) — T2 scenario tests: 22 tests covering slash command routing (12), selector overlays (4), event handling (2), routing guards (3), completeness guard (1). App constructed with test_settings(), commands dispatched via handle_slash_command().
+- `core/crates/omegon/src/tui/snapshot_tests.rs` (new) — T1 insta snapshots: 10 tests covering dashboard (4 states), footer (3 states), bootstrap (2 states), selector (1). render_to_string() captures TestBackend buffer as multi-line text.
+- `core/crates/omegon/src/tui/snapshots/` (new) — 10 .snap files — golden references for visual regression detection
+- `core/crates/omegon/Cargo.toml` (modified) — Added insta = "1.46" as dev-dependency
 
 ### Constraints
 

@@ -347,6 +347,53 @@ mod tests {
     }
 
     #[test]
+    fn provide_context_includes_persona_directive_after_activation() {
+        let mut registry = test_registry();
+        registry.activate_persona(crate::plugins::registry::LoadedPersona {
+            id: "test.eng".into(),
+            name: "Test Engineer".into(),
+            directive: "You are a test engineering persona with deep Rust expertise.".into(),
+            mind_facts: vec![],
+            activated_skills: vec![],
+            disabled_tools: vec![],
+            badge: Some("🧪".into()),
+        });
+        let feature = PersonaFeature::new(registry);
+        let signals = omegon_traits::ContextSignals {
+            user_prompt: "test",
+            recent_tools: &[],
+            recent_files: &[],
+            lifecycle_phase: &omegon_traits::LifecyclePhase::Idle,
+            turn_number: 1,
+            context_budget_tokens: 50000,
+        };
+        let ctx = feature.provide_context(&signals).unwrap();
+        assert!(ctx.content.contains("test engineering persona"), "should include persona directive: {}", ctx.content);
+        assert!(ctx.content.contains("Lex Imperialis"), "should still include Lex: {}", ctx.content);
+        assert_eq!(ctx.priority, 85);
+    }
+
+    #[test]
+    fn on_event_session_start_with_persona_notifies() {
+        let mut registry = test_registry();
+        registry.activate_persona(crate::plugins::registry::LoadedPersona {
+            id: "test.eng".into(),
+            name: "Test Engineer".into(),
+            directive: "You are a test engineer.".into(),
+            mind_facts: vec![],
+            activated_skills: vec![],
+            disabled_tools: vec![],
+            badge: Some("🧪".into()),
+        });
+        let mut feature = PersonaFeature::new(registry);
+        let requests = feature.on_event(&BusEvent::SessionStart {
+            cwd: std::path::PathBuf::from("/tmp"),
+            session_id: "test".into(),
+        });
+        assert!(!requests.is_empty(), "should notify about active persona");
+    }
+
+    #[test]
     fn on_event_session_start_no_persona() {
         let mut feature = PersonaFeature::new(test_registry());
         let requests = feature.on_event(&BusEvent::SessionStart {

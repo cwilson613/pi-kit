@@ -221,13 +221,22 @@ mod tests {
 
     #[test]
     fn activation_env_var() {
-        unsafe { std::env::set_var("TEST_PLUGIN_ACTIVE", "1"); }
+        // Test that env_var activation works by checking the code path:
+        // Activation::is_active checks env::var().is_ok() for each env_var.
+        // Rather than setting real env vars (unsafe, racy), test with
+        // a var that's always set in cargo test:
         let activation = Activation {
-            env_vars: vec!["TEST_PLUGIN_ACTIVE".into()],
+            env_vars: vec!["CARGO".into()], // always set during cargo test
             ..Default::default()
         };
         assert!(activation.is_active(std::path::Path::new(".")));
-        unsafe { std::env::remove_var("TEST_PLUGIN_ACTIVE"); }
+
+        // And one that's never set:
+        let activation_missing = Activation {
+            env_vars: vec!["_OMEGON_TEST_NONEXISTENT_VAR_12345".into()],
+            ..Default::default()
+        };
+        assert!(!activation_missing.is_active(std::path::Path::new(".")));
     }
 
     #[test]
@@ -237,11 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_template_with_env() {
-        unsafe { std::env::set_var("TEST_SCRIBE_URL", "http://localhost:3000"); }
-        let result = resolve_template("{TEST_SCRIBE_URL}/api/status", &HashMap::new());
+    fn resolve_template_with_explicit_env() {
+        // Use the HashMap parameter instead of real env vars
+        let mut env = HashMap::new();
+        env.insert("TEST_SCRIBE_URL".into(), "http://localhost:3000".into());
+        let result = resolve_template("{TEST_SCRIBE_URL}/api/status", &env);
         assert_eq!(result, "http://localhost:3000/api/status");
-        unsafe { std::env::remove_var("TEST_SCRIBE_URL"); }
     }
 
     #[test]

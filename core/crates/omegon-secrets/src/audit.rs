@@ -54,3 +54,58 @@ impl AuditLog {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_guard_writes_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(dir.path());
+
+        let decision = GuardDecision::Block {
+            reason: "sensitive path".into(),
+            path: "/etc/passwd".into(),
+        };
+        audit.log_guard("bash", &serde_json::json!({"command": "cat /etc/passwd"}), &decision);
+
+        let content = std::fs::read_to_string(dir.path().join("secrets-audit.jsonl")).unwrap();
+        assert!(content.contains("\"tool\":\"bash\""), "should log tool name: {content}");
+        assert!(content.contains("\"decision\":\"block\""), "should log decision: {content}");
+        assert!(content.contains("/etc/passwd"), "should log path: {content}");
+    }
+
+    #[test]
+    fn log_guard_warn_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(dir.path());
+
+        let decision = GuardDecision::Warn {
+            reason: "external path".into(),
+            path: "/opt/data".into(),
+        };
+        audit.log_guard("read", &serde_json::json!({}), &decision);
+
+        let content = std::fs::read_to_string(dir.path().join("secrets-audit.jsonl")).unwrap();
+        assert!(content.contains("\"decision\":\"warn\""));
+    }
+
+    #[test]
+    fn log_guard_appends_multiple_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(dir.path());
+
+        for i in 0..3 {
+            let decision = GuardDecision::Block {
+                reason: format!("reason {i}"),
+                path: format!("/path/{i}"),
+            };
+            audit.log_guard("bash", &serde_json::json!({}), &decision);
+        }
+
+        let content = std::fs::read_to_string(dir.path().join("secrets-audit.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3, "should have 3 entries");
+    }
+}

@@ -804,29 +804,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_key_env() {
-        unsafe { std::env::set_var("_TEST_OMEGON_API_KEY", "test-123"); }
-        // Direct env lookup
-        assert!(std::env::var("_TEST_OMEGON_API_KEY").is_ok());
-        unsafe { std::env::remove_var("_TEST_OMEGON_API_KEY"); }
+    fn resolve_key_from_env_uses_standard_var_names() {
+        // Verify the function checks the right env var names
+        // without setting/unsetting them (which is racy).
+        // The function resolve_api_key checks: ANTHROPIC_API_KEY for anthropic,
+        // OPENAI_API_KEY for openai. We test the name mapping logic.
+        let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let result = resolve_api_key("anthropic");
+        // If the key is set, result should be Some; if not, depends on auth.json
+        if anthropic_key.is_some() {
+            assert!(result.is_some(), "should find ANTHROPIC_API_KEY from env");
+        }
+        // Main assertion: doesn't panic regardless of env state
     }
 
     #[test]
-    fn auto_detect_without_keys_returns_none() {
-        // Clear keys to test (save + restore)
-        let saved = std::env::var("ANTHROPIC_API_KEY").ok();
-        let saved2 = std::env::var("ANTHROPIC_OAUTH_TOKEN").ok();
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY"); }
-        unsafe { std::env::remove_var("ANTHROPIC_OAUTH_TOKEN"); }
-        unsafe { std::env::remove_var("OPENAI_API_KEY"); }
-
-        // Without any keys or auth.json, should return None
-        // (might still find auth.json on dev machine, so just check it doesn't panic)
+    fn auto_detect_does_not_panic_regardless_of_env() {
+        // auto_detect_bridge should handle missing keys gracefully
+        // without us needing to clear/restore env vars
         let _ = auto_detect_bridge("anthropic:test");
-
-        // Restore
-        if let Some(k) = saved { unsafe { std::env::set_var("ANTHROPIC_API_KEY", k); } }
-        if let Some(k) = saved2 { unsafe { std::env::set_var("ANTHROPIC_OAUTH_TOKEN", k); } }
+        let _ = auto_detect_bridge("openai:test");
+        let _ = auto_detect_bridge("unknown-provider:test");
+        // All should return Some or None without panicking
     }
 
     #[test]

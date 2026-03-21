@@ -5,7 +5,6 @@ status: exploring
 parent: core-distribution
 tags: [release, distribution, versioning, ci, diagnostics]
 open_questions:
-  - "How should RC builds be distributed to other machines? Options: GitHub release (pre-release tag), install.sh with channel flag (--rc), scp/direct copy, or cargo install from git ref"
   - "What self-diagnostic output should every build expose? Candidates: --version with git sha, --diagnostics dumping tool registry + feature list + provider status, startup banner with build fingerprint"
   - Should the existing release workflow (release.toml + cargo-release + GitHub Actions) be extended, or should RC be a separate lighter-weight path (just build + tag + upload artifacts)?
 jj_change_id: vnmporvyqpnowlowqomxokqxxkswtzzn
@@ -99,6 +98,5 @@ The sha is the tie-breaker. Two machines showing the same sha are running the sa
 
 ## Open Questions
 
-- How should RC builds be distributed to other machines? Options: GitHub release (pre-release tag), install.sh with channel flag (--rc), scp/direct copy, or cargo install from git ref
 - What self-diagnostic output should every build expose? Candidates: --version with git sha, --diagnostics dumping tool registry + feature list + provider status, startup banner with build fingerprint
 - Should the existing release workflow (release.toml + cargo-release + GitHub Actions) be extended, or should RC be a separate lighter-weight path (just build + tag + upload artifacts)?

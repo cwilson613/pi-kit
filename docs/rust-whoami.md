@@ -1,7 +1,7 @@
 ---
 id: rust-whoami
 title: Implement whoami tool in Rust
-status: decided
+status: implemented
 parent: ts-to-rust-migration
 open_questions: []
 ---

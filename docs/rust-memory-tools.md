@@ -1,7 +1,7 @@
 ---
 id: rust-memory-tools
 title: "Register memory_* agent-callable tools in Rust"
-status: decided
+status: implemented
 parent: ts-to-rust-migration
 open_questions: []
 ---

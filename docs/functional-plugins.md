@@ -1,7 +1,7 @@
 ---
 id: functional-plugins
 title: Functional plugins — code-backed skills with tools, endpoints, and runtime logic
-status: decided
+status: implementing
 parent: persona-system
 tags: [plugins, architecture, extensions, tools, mcp, code]
 open_questions: []

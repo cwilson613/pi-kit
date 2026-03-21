@@ -1,7 +1,7 @@
 ---
 id: tui-paste-clipboard
 title: TUI paste and clipboard handling — images, files, multiline
-status: seed
+status: implemented
 parent: tui-visual-system
 tags: [tui, ux, clipboard]
 open_questions: []

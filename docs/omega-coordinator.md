@@ -1,7 +1,7 @@
 ---
 id: omega-coordinator
 title: Omega coordinator tier — cross-project cleave and multi-instance orchestration
-status: seed
+status: deferred
 parent: omega
 open_questions:
   - Is cross-project cleave (dispatching child tasks across multiple project repos simultaneously) a target use case? If yes, a coordinator tier is necessary. If no, the flat catalog + federation model is sufficient and the coordinator can be deferred.

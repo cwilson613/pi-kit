@@ -4,10 +4,7 @@ title: 0.6.9 stability step — runaway resource use, lingering pi processes, an
 status: implemented
 parent: pi-fork-update-flow
 tags: [release, stability, usability, processes, resource-usage, runtime, clipboard]
-open_questions:
-  - "Which concrete subprocess paths are leaving lingering `pi` processes behind, and under what operator actions or failure modes do they fail to exit cleanly?"
-  - "Is the runaway resource usage primarily caused by orphaned subprocesses, repeated memory/context injection, clipboard/temp-file churn, or another long-lived runtime loop?"
-  - "What operator-facing usability failures accompany the resource/process issues—silent stalls, confusing temp-path output, degraded responsiveness, or bad recovery messaging?"
+open_questions: []
 issue_type: bug
 priority: 1
 ---
@@ -46,6 +43,4 @@ The Cleave spec-assessment subprocess path in `extensions/cleave/index.ts` rejec
 
 ## Open Questions
 
-- Which concrete subprocess paths are leaving lingering `pi` processes behind, and under what operator actions or failure modes do they fail to exit cleanly?
-- Is the runaway resource usage primarily caused by orphaned subprocesses, repeated memory/context injection, clipboard/temp-file churn, or another long-lived runtime loop?
-- What operator-facing usability failures accompany the resource/process issues—silent stalls, confusing temp-path output, degraded responsiveness, or bad recovery messaging?
+*No open questions.*

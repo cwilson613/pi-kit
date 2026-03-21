@@ -1,7 +1,7 @@
 ---
 id: conv-scroll-strategy
 title: Conversation scroll strategy — tui-scrollview vs custom virtual scroll
-status: decided
+status: implemented
 parent: conversation-widget
 open_questions: []
 ---

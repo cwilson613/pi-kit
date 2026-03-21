@@ -1,7 +1,7 @@
 ---
 id: persona-system
 title: Persona System — domain-expert identities with dedicated mind stores
-status: decided
+status: implementing
 tags: [architecture, persona, memory, skills, domain-expertise, strategic]
 open_questions: []
 issue_type: epic

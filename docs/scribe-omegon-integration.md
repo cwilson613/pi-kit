@@ -1,7 +1,7 @@
 ---
 id: scribe-omegon-integration
 title: Scribe × Omegon integration — wrapper harness vs bolt-on extension
-status: decided
+status: deferred
 tags: [architecture, scribe, extension]
 open_questions: []
 ---

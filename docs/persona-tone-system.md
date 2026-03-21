@@ -1,7 +1,7 @@
 ---
 id: persona-tone-system
 title: Tone system — conversational voice layer independent of persona expertise
-status: decided
+status: implementing
 parent: persona-system
 tags: [persona, tone, voice, creative, ux, design-mode]
 open_questions: []

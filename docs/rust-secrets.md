@@ -1,7 +1,7 @@
 ---
 id: rust-secrets
 title: Port secrets system to Rust (redaction, recipes, tool guards)
-status: decided
+status: implementing
 parent: ts-to-rust-migration
 open_questions: []
 ---

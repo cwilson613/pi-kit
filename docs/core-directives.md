@@ -1,7 +1,7 @@
 ---
 id: core-directives
 title: Core system directives — always-on behavioral axioms beneath all personas
-status: decided
+status: implemented
 parent: persona-system
 open_questions: []
 issue_type: feature

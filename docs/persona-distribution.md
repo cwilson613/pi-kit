@@ -1,7 +1,7 @@
 ---
 id: persona-distribution
 title: Persona distribution — repos, manifests, and URI addressing
-status: decided
+status: implementing
 parent: persona-system
 open_questions: []
 issue_type: feature

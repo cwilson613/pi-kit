@@ -1,10 +1,12 @@
 ---
 id: status-slash-command
 title: "/status slash command — re-display bootstrap panel mid-session"
-status: implementing
+status: implemented
 parent: harness-status-contract
 tags: [ux, tui, commands, bootstrap, status]
 open_questions: []
+issue_type: task
+priority: 4
 ---
 
 # /status slash command — re-display bootstrap panel mid-session
@@ -23,3 +25,14 @@ Operators see the bootstrap panel once at startup and never again. A /status com
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/tui/mod.rs` (modified) — Added 'status' to COMMANDS table + match arm in handle_slash_command — calls render_bootstrap(color=false)
+- `core/crates/omegon/src/tui/bootstrap.rs` (modified) — Added status_command_rerender_no_color test — verifies mid-session re-render with live data, no ANSI
+
+### Constraints
+
+- render_bootstrap called with color=false because SlashResult::Display goes through ratatui text rendering, not raw terminal

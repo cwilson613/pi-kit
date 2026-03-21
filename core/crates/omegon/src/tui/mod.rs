@@ -577,6 +577,7 @@ impl App {
         ("migrate",  "import from other tools",               &["auto", "claude-code", "pi", "codex", "cursor", "aider"]),
         ("dash",     "toggle dashboard panel / open web UI",  &["open"]),
         ("vault",    "Vault status and management",           &["status", "unseal", "login", "configure", "init-policy"]),
+        ("status",   "show harness status (providers, MCP, secrets, routing)", &[]),
         ("splash",   "replay splash animation",              &[]),
         ("exit",     "quit (or double Ctrl+C)",              &[]),
     ];
@@ -648,6 +649,14 @@ impl App {
                     self.footer_data.context_percent, s.context_window,
                     s.model_short(), s.thinking.icon(), s.thinking.as_str(),
                 ))
+            }
+
+            "status" => {
+                let panel = crate::tui::bootstrap::render_bootstrap(
+                    &self.footer_data.harness,
+                    false, // no ANSI — SlashResult::Display renders via ratatui
+                );
+                SlashResult::Display(panel)
             }
 
             "detail" => {

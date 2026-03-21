@@ -205,4 +205,28 @@ mod tests {
         let output = render_bootstrap(&status, false);
         assert!(!output.contains("\x1b["), "no-color mode should have no ANSI codes");
     }
+
+    /// /status slash command use case: re-render with live data, no ANSI.
+    #[test]
+    fn status_command_rerender_no_color() {
+        let mut status = HarnessStatus::default();
+        // Simulate mid-session state changes
+        status.active_persona = Some(PersonaSummary {
+            id: "eng".into(), name: "Systems Engineer".into(), badge: "⚙".into(),
+            mind_facts_count: 42, activated_skills: vec!["rust".into()],
+            disabled_tools: vec![],
+        });
+        status.context_class = "Maniple".into();
+        status.thinking_level = "High".into();
+        status.memory.total_facts = 1200;
+        status.memory.active_facts = 900;
+
+        // /status renders without ANSI (SlashResult::Display goes through ratatui)
+        let output = render_bootstrap(&status, false);
+        assert!(!output.contains("\x1b["), "slash command output must not have ANSI codes");
+        assert!(output.contains("Systems Engineer"), "should show current persona");
+        assert!(output.contains("Maniple"), "should show current context class");
+        assert!(output.contains("High"), "should show current thinking level");
+        assert!(output.contains("1200"), "should show current fact count");
+    }
 }

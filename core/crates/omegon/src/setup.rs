@@ -179,6 +179,7 @@ impl AgentSetup {
                 tracing::info!(facts = initial_fact_count, "memory snapshot for TUI");
             }
 
+            // Import JSONL if database is empty (but not in child processes)
             if !is_child {
                 let stats = backend.stats(&mind).await.ok();
                 if stats.as_ref().is_none_or(|s| s.active_facts == 0)
@@ -192,32 +193,14 @@ impl AgentSetup {
                         Err(e) => tracing::warn!("JSONL import failed: {e}"),
                     }
                 }
-
-                let provider = omegon_memory::MemoryProvider::new(
-                    backend,
-                    omegon_memory::MarkdownRenderer,
-                    mind.clone(),
-                );
-                bus.register(Box::new(features::adapter::ToolAdapter::new(
-                    "memory",
-                    Box::new(provider),
-                )));
             }
 
-            // Context injection: read-only handle for all processes
-            if let Ok(ctx_backend) = omegon_memory::SqliteBackend::open(&db_path) {
-                let ctx_provider = omegon_memory::MemoryProvider::new(
-                    ctx_backend,
-                    omegon_memory::MarkdownRenderer,
-                    mind,
-                );
-                bus.register(Box::new(
-                    features::adapter::ContextAdapter::new(
-                        "memory-context",
-                        Box::new(ctx_provider),
-                    ),
-                ));
-            }
+            // Register MemoryFeature with Arc<dyn MemoryBackend>
+            let memory_backend: std::sync::Arc<dyn omegon_memory::MemoryBackend> = std::sync::Arc::new(backend);
+            bus.register(Box::new(features::memory::MemoryFeature::new(
+                memory_backend,
+                mind,
+            )));
         }
 
         // ─── Lifecycle (design-tree + openspec) ──────────────────────────

@@ -26,6 +26,7 @@ pub mod adapter;
 pub mod harness_settings;
 pub mod lifecycle;
 pub mod manage_tools;
+pub mod memory;
 pub mod model_budget;
 pub mod persona;
 pub mod session_log;

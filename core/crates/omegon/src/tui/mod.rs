@@ -25,6 +25,9 @@ pub mod splash;
 pub mod theme;
 pub mod widgets;
 
+#[cfg(test)]
+mod tests;
+
 use std::io;
 use std::time::Duration;
 
@@ -121,12 +124,15 @@ pub struct App {
     toasts: ratatui_toaster::ToastEngine<()>,
     /// Pending image attachment from clipboard paste.
     pending_image: Option<std::path::PathBuf>,
+    /// Previous harness status for diffing on HarnessStatusChanged.
+    previous_harness_status: Option<crate::status::HarnessStatus>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum SelectorKind {
     Model,
     ThinkingLevel,
+    ContextClass,
 }
 
 /// Result of handling a slash command.
@@ -185,6 +191,7 @@ impl App {
                 .default_duration(std::time::Duration::from_secs(4))
                 .build(),
             pending_image: None,
+            previous_harness_status: None,
         }
     }
 
@@ -245,6 +252,92 @@ impl App {
         self.selector_kind = Some(SelectorKind::ThinkingLevel);
     }
 
+    fn open_context_selector(&mut self) {
+        let current = self.settings().context_class;
+        let options = crate::settings::ContextClass::all().iter().map(|class| {
+            selector::SelectOption {
+                value: class.short().to_string(),
+                label: class.label().to_string(),
+                description: match class {
+                    crate::settings::ContextClass::Squad => "Standard sessions".into(),
+                    crate::settings::ContextClass::Maniple => "Extended analysis".into(),
+                    crate::settings::ContextClass::Clan => "Large codebase".into(),
+                    crate::settings::ContextClass::Legion => "Massive context".into(),
+                },
+                active: *class == current,
+            }
+        }).collect();
+        self.selector = Some(selector::Selector::new("Context Class", options));
+        self.selector_kind = Some(SelectorKind::ContextClass);
+    }
+
+    fn show_status_change_toasts(&mut self, prev: &crate::status::HarnessStatus, current: &crate::status::HarnessStatus) {
+        // Check for persona changes
+        if prev.active_persona != current.active_persona {
+            match (&prev.active_persona, &current.active_persona) {
+                (Some(old), Some(new)) => {
+                    if old.id != new.id {
+                        self.show_toast(&format!("Persona → {} {}", new.badge, new.name), ratatui_toaster::ToastType::Info);
+                    }
+                }
+                (Some(old), None) => {
+                    self.show_toast(&format!("Persona deactivated: {} {}", old.badge, old.name), ratatui_toaster::ToastType::Warning);
+                }
+                (None, Some(new)) => {
+                    self.show_toast(&format!("Persona activated: {} {}", new.badge, new.name), ratatui_toaster::ToastType::Info);
+                }
+                _ => {}
+            }
+        }
+
+        // Check for tone changes
+        if prev.active_tone != current.active_tone {
+            match (&prev.active_tone, &current.active_tone) {
+                (Some(old), Some(new)) => {
+                    if old.id != new.id {
+                        self.show_toast(&format!("Tone → {}", new.name), ratatui_toaster::ToastType::Info);
+                    }
+                }
+                (Some(old), None) => {
+                    self.show_toast(&format!("Tone deactivated: {}", old.name), ratatui_toaster::ToastType::Warning);
+                }
+                (None, Some(new)) => {
+                    self.show_toast(&format!("Tone activated: {}", new.name), ratatui_toaster::ToastType::Info);
+                }
+                _ => {}
+            }
+        }
+
+        // Check for MCP server changes
+        let prev_connected: std::collections::HashSet<&String> = prev.mcp_servers.iter()
+            .filter(|s| s.connected)
+            .map(|s| &s.name)
+            .collect();
+        let current_connected: std::collections::HashSet<&String> = current.mcp_servers.iter()
+            .filter(|s| s.connected)
+            .map(|s| &s.name)
+            .collect();
+
+        // New connections
+        for name in current_connected.difference(&prev_connected) {
+            if let Some(server) = current.mcp_servers.iter().find(|s| &s.name == *name) {
+                self.show_toast(&format!("MCP connected: {} ({}t)", name, server.tool_count), ratatui_toaster::ToastType::Info);
+            }
+        }
+
+        // Lost connections
+        for name in prev_connected.difference(&current_connected) {
+            self.show_toast(&format!("MCP disconnected: {}", name), ratatui_toaster::ToastType::Warning);
+        }
+
+        // Check for auth expiration (simplified - checking provider count as proxy)
+        let prev_auth_count = prev.providers.iter().filter(|p| p.authenticated).count();
+        let current_auth_count = current.providers.iter().filter(|p| p.authenticated).count();
+        if current_auth_count < prev_auth_count {
+            self.show_toast("Authentication expired for provider", ratatui_toaster::ToastType::Error);
+        }
+    }
+
     fn confirm_selector(&mut self, tx: &mpsc::Sender<TuiCommand>) -> Option<String> {
         let sel = self.selector.take()?;
         let kind = self.selector_kind.take()?;
@@ -265,6 +358,18 @@ impl App {
                     Some(format!("Thinking → {} {}", level.icon(), level.as_str()))
                 } else {
                     Some(format!("Unknown level: {value}"))
+                }
+            }
+            SelectorKind::ContextClass => {
+                if let Some(class) = crate::settings::ContextClass::parse(&value) {
+                    self.update_settings(|s| {
+                        s.context_class = class;
+                        s.context_window = class.nominal_tokens();
+                        s.context_mode = class.context_mode();
+                    });
+                    Some(format!("Context class → {}", class.label()))
+                } else {
+                    Some(format!("Unknown context class: {value}"))
                 }
             }
         }
@@ -575,7 +680,7 @@ impl App {
         ("compact",  "trigger context compaction",           &[]),
         ("clear",    "clear conversation display",           &[]),
         ("detail",   "toggle tool display (compact/detailed)", &["compact", "detailed"]),
-        ("context",  "toggle context window (200k/1M)",       &["200k", "1m"]),
+        ("context",  "select context class (Squad/Maniple/Clan/Legion)",       &["squad", "maniple", "clan", "legion"]),
         ("sessions", "list saved sessions",                  &[]),
         ("memory",   "memory stats",                        &[]),
         ("auth",     "authentication management",             &["status", "login", "logout", "unlock"]),
@@ -781,23 +886,9 @@ impl App {
 
             "context" => {
                 if args.is_empty() {
-                    // Toggle
-                    let current = self.settings().context_mode;
-                    let next = match current {
-                        crate::settings::ContextMode::Standard => crate::settings::ContextMode::Extended,
-                        crate::settings::ContextMode::Extended => crate::settings::ContextMode::Standard,
-                    };
-                    self.update_settings(|s| {
-                        s.context_mode = next;
-                        s.apply_context_mode();
-                    });
-                    let s = self.settings();
-                    self.footer_data.context_window = s.context_window;
-                    SlashResult::Display(format!(
-                        "Context → {} {} ({})",
-                        next.icon(), next.as_str(),
-                        if next == crate::settings::ContextMode::Extended { "Anthropic 1M beta" } else { "standard" }
-                    ))
+                    // No args → open interactive context class selector
+                    self.open_context_selector();
+                    SlashResult::Handled
                 } else if let Some(mode) = crate::settings::ContextMode::parse(args) {
                     self.update_settings(|s| {
                         s.context_mode = mode;
@@ -1275,7 +1366,16 @@ impl App {
             AgentEvent::HarnessStatusChanged { status_json } => {
                 // Deserialize and update the footer's harness status snapshot
                 if let Ok(status) = serde_json::from_value::<crate::status::HarnessStatus>(status_json) {
-                    self.footer_data.update_harness(status);
+                    // Compare with previous status and show toasts for changes
+                    if let Some(prev) = self.previous_harness_status.take() {
+                        self.show_status_change_toasts(&prev, &status);
+                    }
+                    
+                    // Update footer data and store current status as previous
+                    self.footer_data.update_harness(status.clone());
+                    self.previous_harness_status = Some(status);
+                    
+                    // Visual effect
                     self.effects.ping_footer(self.theme.as_ref());
                 }
             }

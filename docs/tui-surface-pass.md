@@ -1,7 +1,7 @@
 ---
 id: tui-surface-pass
 title: TUI surface pass — expose new subsystems in dashboard, footer, selectors, and commands
-status: implementing
+status: implemented
 parent: tui-visual-system
 tags: [tui, ux, dashboard, footer, commands, persona, mcp, auth, secrets, inference]
 open_questions: []
@@ -90,6 +90,7 @@ The Rust core has grown significantly — persona system, MCP transport (5 modes
 - `core/crates/omegon/src/tui/selector.rs` (modified) — Add SelectorKind::ContextClass with 4 options (Squad/Maniple/Clan/Legion + token counts + descriptions)
 - `core/crates/omegon/src/tui/mod.rs` (modified) — /context opens context class selector overlay. Toast notifications on HarnessStatusChanged state transitions (persona switch, MCP connect/disconnect, auth expiry, compaction). Dashboard refresh on HarnessStatusChanged.
 - `core/crates/omegon/src/tui/footer.rs` (modified) — Compaction flash indicator (brief accent color pulse on system card when compaction fires)
+- `core/crates/omegon/src/status.rs` (modified) — Post-assess reconciliation delta — touched during follow-up fixes
 
 ### Constraints
 

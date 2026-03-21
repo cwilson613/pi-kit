@@ -44,7 +44,8 @@ impl AuthFeature {
             .map_or(true, |last| now.duration_since(last).unwrap_or(CACHE_TTL) >= CACHE_TTL);
 
         if should_refresh {
-            self.cached_providers = crate::auth::probe_all_providers().await;
+            let auth_status = crate::auth::probe_all_providers().await;
+            self.cached_providers = crate::auth::auth_status_to_provider_statuses(&auth_status);
             self.last_probe_time = Some(now);
             tracing::debug!(
                 providers = self.cached_providers.len(),
@@ -104,9 +105,8 @@ impl Feature for AuthFeature {
             .unwrap_or("status");
 
         // For this tool we need to do a fresh probe since it's mutable self
-        // Note: This is a limitation of the current Feature trait design
-        // In practice, the auth probe is fast enough to not need caching here
-        let providers = crate::auth::probe_all_providers().await;
+        let auth_status = crate::auth::probe_all_providers().await;
+        let providers = crate::auth::auth_status_to_provider_statuses(&auth_status);
 
         let mut output = String::new();
         

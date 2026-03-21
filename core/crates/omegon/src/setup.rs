@@ -277,8 +277,8 @@ impl AgentSetup {
         let mut harness_status = crate::status::HarnessStatus::assemble();
 
         // Probe all authentication providers
-        let providers = crate::auth::probe_all_providers().await;
-        harness_status.providers = providers;
+        let auth_status = crate::auth::probe_all_providers().await;
+        harness_status.providers = crate::auth::auth_status_to_provider_statuses(&auth_status);
 
         // Populate MCP/plugin info from discovered features
         harness_status.update_from_bus(&bus);

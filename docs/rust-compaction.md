@@ -1,7 +1,7 @@
 ---
 id: rust-compaction
 title: Rust compaction — context decay + LLM-driven summarization
-status: implementing
+status: implemented
 parent: rust-phase-1
 tags: [rust, compaction, context, decay]
 open_questions: []
@@ -80,3 +80,19 @@ The existing `lifecycle/mod.rs` has commented-out stubs for this. `conversation.
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/conversation.rs` (modified) — ConversationState: estimate_tokens (chars/4), needs_compaction (threshold check), build_compaction_payload, apply_compaction, build_llm_view (decay + summary injection), IntentDocument (auto-populated from tool calls)
+- `core/crates/omegon/src/loop.rs` (modified) — compact_via_llm() sends summarization through bridge. Pre-turn compaction check at 75% of context_window.
+- `core/crates/omegon/src/context.rs` (modified) — inject_intent() adds IntentDocument as high-priority context block
+- `core/crates/omegon/src/features/auto_compact.rs` (new) — AutoCompact Feature: event-driven compaction trigger with cooldown, 4 tests
+
+### Constraints
+
+- Two-view solution: canonical history unmodified for session persistence, LLM-facing view has decay applied
+- Decay only targets messages older than decay_window (default 10 turns)
+- IntentDocument survives compaction verbatim — not summarized
+- Reference tracking deferred — all results decay at same rate for now

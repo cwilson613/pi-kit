@@ -103,12 +103,40 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum AuthAction {
+    /// Show authentication status for all providers.
+    Status,
+    /// Log in to a provider via OAuth.
+    Login {
+        /// Provider to log in to (anthropic or openai). Default: anthropic.
+        #[arg(default_value = "anthropic")]
+        provider: String,
+    },
+    /// Log out from a provider (removes stored credentials).
+    Logout {
+        /// Provider to log out from.
+        provider: String,
+    },
+    /// Unlock encrypted secrets store.
+    Unlock,
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Run interactive TUI session — ratatui-based terminal interface.
     Interactive,
 
+    /// Unified authentication management.
+    /// Usage: omegon auth <status|login|logout|unlock> [provider]
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+
     /// Log in to a provider via OAuth. Defaults to Anthropic.
     /// Usage: omegon-agent login [anthropic|openai]
+    /// DEPRECATED: Use `omegon auth login` instead.
+    #[command(hide = true)]
     Login {
         /// Provider to log in to (anthropic or openai). Default: anthropic.
         #[arg(default_value = "anthropic")]
@@ -272,22 +300,13 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", report.summary());
             Ok(())
         }
+        Some(Commands::Auth { ref action }) => {
+            run_auth_command(action).await
+        }
         Some(Commands::Login { ref provider }) => {
-            let result = match provider.as_str() {
-                "anthropic" | "claude" => auth::login_anthropic().await,
-                "openai" | "chatgpt" => auth::login_openai().await,
-                _ => {
-                    eprintln!("Unknown provider: {provider}. Use: anthropic, openai");
-                    std::process::exit(1);
-                }
-            };
-            match result {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    eprintln!("Login failed: {e}");
-                    std::process::exit(1);
-                }
-            }
+            // Backward compatibility - redirect to new auth login command
+            eprintln!("Warning: 'login' command is deprecated. Use 'omegon auth login' instead.");
+            run_auth_login(provider).await
         }
         Some(Commands::Cleave {
             ref plan,
@@ -604,17 +623,79 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::BusCommand { name, args } => {
-                let result = agent.bus.dispatch_command(&name, &args);
-                match result {
-                    omegon_traits::CommandResult::Display(msg) => {
-                        // Send back to TUI as a system notification (not into LLM conversation)
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: msg });
+                // Handle special auth commands directly
+                if name.starts_with("auth_") {
+                    match name.as_str() {
+                        "auth_status" => {
+                            let status = auth::probe_all_providers().await;
+                            let message = format_auth_status(&status);
+                            let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                        }
+                        "auth_login" => {
+                            let provider = args.trim();
+                            let provider = if provider.is_empty() { "anthropic" } else { provider };
+                            
+                            // Run the login in a background task to avoid blocking
+                            let events_tx_clone = events_tx.clone();
+                            let provider_clone = provider.to_string();
+                            tokio::spawn(async move {
+                                let result = run_auth_login(&provider_clone).await;
+                                let message = match result {
+                                    Ok(()) => format!("✓ Successfully logged in to {}", provider_clone),
+                                    Err(e) => format!("❌ Login failed: {}", e),
+                                };
+                                let _ = events_tx_clone.send(AgentEvent::SystemNotification { message });
+                            });
+                        }
+                        "auth_logout" => {
+                            let provider = args.trim();
+                            if provider.is_empty() {
+                                let _ = events_tx.send(AgentEvent::SystemNotification { 
+                                    message: "Error: Provider required for logout".to_string() 
+                                });
+                            } else {
+                                let message = match auth::logout_provider(provider) {
+                                    Ok(()) => format!("✓ Logged out from {}", provider),
+                                    Err(e) => format!("❌ Logout failed: {}", e),
+                                };
+                                let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                            }
+                        }
+                        "auth_unlock" => {
+                            let _ = events_tx.send(AgentEvent::SystemNotification { 
+                                message: "🔒 Secrets store unlock not yet implemented".to_string() 
+                            });
+                        }
+                        _ => {
+                            // Unknown auth command - fall through to bus
+                            let result = agent.bus.dispatch_command(&name, &args);
+                            match result {
+                                omegon_traits::CommandResult::Display(msg) => {
+                                    let _ = events_tx.send(AgentEvent::SystemNotification { message: msg });
+                                }
+                                omegon_traits::CommandResult::Handled => {
+                                    tracing::debug!(cmd = %name, "bus command handled silently");
+                                }
+                                omegon_traits::CommandResult::NotHandled => {
+                                    tracing::warn!(cmd = %name, "bus command not handled by any feature");
+                                }
+                            }
+                        }
                     }
-                    omegon_traits::CommandResult::Handled => {
-                        tracing::debug!(cmd = %name, "bus command handled silently");
-                    }
-                    omegon_traits::CommandResult::NotHandled => {
-                        tracing::warn!(cmd = %name, "bus command not handled by any feature");
+                } else {
+                    // Regular bus command
+                    let result = agent.bus.dispatch_command(&name, &args);
+                    match result {
+                        omegon_traits::CommandResult::Display(msg) => {
+                            // Send back to TUI as a system notification (not into LLM conversation)
+                            let _ = events_tx.send(AgentEvent::SystemNotification { message: msg });
+                        }
+                        omegon_traits::CommandResult::Handled => {
+                            tracing::debug!(cmd = %name, "bus command handled silently");
+                        }
+                        omegon_traits::CommandResult::NotHandled => {
+                            tracing::warn!(cmd = %name, "bus command not handled by any feature");
+                        }
                     }
                 }
                 // Drain any requests generated by the command
@@ -974,6 +1055,112 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
     result
 }
 
+async fn run_auth_command(action: &AuthAction) -> anyhow::Result<()> {
+    match action {
+        AuthAction::Status => {
+            let status = auth::probe_all_providers().await;
+            println!("{}", format_auth_status(&status));
+            Ok(())
+        }
+        AuthAction::Login { provider } => {
+            run_auth_login(provider).await
+        }
+        AuthAction::Logout { provider } => {
+            match auth::logout_provider(provider) {
+                Ok(()) => {
+                    println!("✓ Logged out from {provider}");
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("Logout failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        AuthAction::Unlock => {
+            // TODO: Implement secrets store unlock
+            eprintln!("Secrets store unlock not yet implemented");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
+    let result = match provider {
+        "anthropic" | "claude" => auth::login_anthropic().await,
+        "openai" | "chatgpt" => auth::login_openai().await,
+        _ => {
+            eprintln!("Unknown provider: {provider}. Use: anthropic, openai");
+            std::process::exit(1);
+        }
+    };
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            eprintln!("Login failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn format_auth_status(status: &auth::AuthStatus) -> String {
+    let mut lines = vec!["Authentication Status:".to_string()];
+    
+    for provider in &status.providers {
+        let icon = match provider.status {
+            auth::ProviderAuthStatus::Authenticated => "✓",
+            auth::ProviderAuthStatus::Expired => "⚠",
+            auth::ProviderAuthStatus::Missing => "✗",
+            auth::ProviderAuthStatus::Error => "❌",
+        };
+        
+        let auth_type = if provider.is_oauth { "oauth" } else { "api-key" };
+        let mut line = format!("  {icon} {:<12} {auth_type}", provider.name);
+        
+        if let Some(ref details) = provider.details {
+            line.push_str(&format!(" ({details})"));
+        }
+        
+        lines.push(line);
+    }
+    
+    if !status.vault.is_empty() || !status.secrets.is_empty() || !status.mcp.is_empty() {
+        lines.push(String::new());
+        
+        if !status.vault.is_empty() {
+            lines.push("Vault:".to_string());
+            for vault_info in &status.vault {
+                lines.push(format!("  {} {}", 
+                    if vault_info.accessible { "✓" } else { "✗" }, 
+                    vault_info.addr
+                ));
+            }
+        }
+        
+        if !status.secrets.is_empty() {
+            lines.push("Secrets Store:".to_string());
+            for secret_info in &status.secrets {
+                lines.push(format!("  {} {}", 
+                    if secret_info.unlocked { "🔓" } else { "🔒" }, 
+                    secret_info.store
+                ));
+            }
+        }
+        
+        if !status.mcp.is_empty() {
+            lines.push("MCP Servers:".to_string());
+            for mcp_info in &status.mcp {
+                lines.push(format!("  {} {}", 
+                    if mcp_info.connected { "✓" } else { "✗" }, 
+                    mcp_info.server
+                ));
+            }
+        }
+    }
+    
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,5 +1186,72 @@ mod tests {
         let e = anyhow::anyhow!("status=429 Too Many Requests blah blah");
         let result = format_agent_error(&e);
         assert!(result.contains("status=429"), "got: {result}");
+    }
+
+    #[test]
+    fn cli_auth_commands_parse_correctly() {
+        // Test the auth status command
+        let cli = Cli::try_parse_from(vec!["omegon", "auth", "status"]).expect("should parse auth status");
+        match cli.command.unwrap() {
+            Commands::Auth { action } => {
+                match action {
+                    AuthAction::Status => {}, // expected
+                    _ => panic!("Expected Status action"),
+                }
+            },
+            _ => panic!("Expected Auth command"),
+        }
+
+        // Test auth login with provider
+        let cli = Cli::try_parse_from(vec!["omegon", "auth", "login", "anthropic"]).expect("should parse auth login");
+        match cli.command.unwrap() {
+            Commands::Auth { action } => {
+                match action {
+                    AuthAction::Login { provider } => {
+                        assert_eq!(provider, "anthropic");
+                    },
+                    _ => panic!("Expected Login action"),
+                }
+            },
+            _ => panic!("Expected Auth command"),
+        }
+
+        // Test auth logout
+        let cli = Cli::try_parse_from(vec!["omegon", "auth", "logout", "openai"]).expect("should parse auth logout");
+        match cli.command.unwrap() {
+            Commands::Auth { action } => {
+                match action {
+                    AuthAction::Logout { provider } => {
+                        assert_eq!(provider, "openai");
+                    },
+                    _ => panic!("Expected Logout action"),
+                }
+            },
+            _ => panic!("Expected Auth command"),
+        }
+
+        // Test auth unlock
+        let cli = Cli::try_parse_from(vec!["omegon", "auth", "unlock"]).expect("should parse auth unlock");
+        match cli.command.unwrap() {
+            Commands::Auth { action } => {
+                match action {
+                    AuthAction::Unlock => {}, // expected
+                    _ => panic!("Expected Unlock action"),
+                }
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn backward_compat_login_command_still_works() {
+        // Test that the deprecated login command still parses
+        let cli = Cli::try_parse_from(vec!["omegon", "login", "anthropic"]).expect("should parse legacy login");
+        match cli.command.unwrap() {
+            Commands::Login { provider } => {
+                assert_eq!(provider, "anthropic");
+            },
+            _ => panic!("Expected Login command"),
+        }
     }
 }

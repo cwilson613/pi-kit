@@ -12,6 +12,55 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
+/// Authentication status for all providers and backends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthStatus {
+    pub providers: Vec<ProviderInfo>,
+    pub vault: Vec<VaultInfo>,
+    pub secrets: Vec<SecretsInfo>,
+    pub mcp: Vec<McpInfo>,
+}
+
+/// Provider authentication information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    pub name: String,
+    pub status: ProviderAuthStatus,
+    pub is_oauth: bool,
+    pub details: Option<String>,
+}
+
+/// Provider authentication status.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum ProviderAuthStatus {
+    Authenticated,
+    Expired,
+    Missing,
+    Error,
+}
+
+/// Vault backend information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultInfo {
+    pub addr: String,
+    pub accessible: bool,
+    pub sealed: Option<bool>,
+}
+
+/// Secrets store information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretsInfo {
+    pub store: String,
+    pub unlocked: bool,
+}
+
+/// MCP server information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpInfo {
+    pub server: String,
+    pub connected: bool,
+}
+
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
@@ -66,6 +115,111 @@ pub fn write_credentials(provider: &str, creds: &OAuthCredentials) -> anyhow::Re
     };
 
     auth[provider] = serde_json::to_value(creds)?;
+    std::fs::write(&path, serde_json::to_string_pretty(&auth)?)?;
+    Ok(())
+}
+
+/// Probe all authentication providers to get current status.
+pub async fn probe_all_providers() -> AuthStatus {
+    let mut providers = Vec::new();
+    
+    // Probe Anthropic
+    let anthropic_info = probe_provider("anthropic").await;
+    providers.push(anthropic_info);
+    
+    // Probe OpenAI
+    let openai_info = probe_provider("openai").await;
+    providers.push(openai_info);
+    
+    // TODO: Probe Vault
+    let vault = Vec::new(); // probe_vault().await
+    
+    // TODO: Probe secrets stores
+    let secrets = Vec::new(); // probe_secrets().await
+    
+    // TODO: Probe MCP servers
+    let mcp = Vec::new(); // probe_mcp().await
+    
+    AuthStatus {
+        providers,
+        vault,
+        secrets,
+        mcp,
+    }
+}
+
+/// Probe a single provider for authentication status.
+async fn probe_provider(provider: &str) -> ProviderInfo {
+    // Check environment variables first
+    let env_keys: &[&str] = match provider {
+        "anthropic" => &["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
+        "openai" => &["OPENAI_API_KEY"],
+        _ => &[],
+    };
+    
+    for key in env_keys {
+        if let Ok(val) = std::env::var(key) {
+            if !val.is_empty() {
+                let is_oauth = key.contains("OAUTH");
+                return ProviderInfo {
+                    name: provider.to_string(),
+                    status: ProviderAuthStatus::Authenticated,
+                    is_oauth,
+                    details: Some(format!("env:{}", key)),
+                };
+            }
+        }
+    }
+    
+    // Check stored credentials
+    let auth_key = if provider == "openai" { "openai-codex" } else { provider };
+    if let Some(creds) = read_credentials(auth_key) {
+        let status = if creds.is_expired() {
+            ProviderAuthStatus::Expired
+        } else {
+            ProviderAuthStatus::Authenticated
+        };
+        
+        return ProviderInfo {
+            name: provider.to_string(),
+            status,
+            is_oauth: creds.cred_type == "oauth",
+            details: Some("stored".to_string()),
+        };
+    }
+    
+    // No credentials found
+    ProviderInfo {
+        name: provider.to_string(),
+        status: ProviderAuthStatus::Missing,
+        is_oauth: false,
+        details: None,
+    }
+}
+
+/// Remove stored credentials for a provider.
+pub fn logout_provider(provider: &str) -> anyhow::Result<()> {
+    let path = auth_json_path().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    
+    if !path.exists() {
+        return Err(anyhow::anyhow!("No credentials found for {provider}"));
+    }
+    
+    let content = std::fs::read_to_string(&path)?;
+    let mut auth: Value = serde_json::from_str(&content)?;
+    
+    let auth_key = if provider == "openai" { "openai-codex" } else { provider };
+    
+    if auth.get(auth_key).is_none() {
+        return Err(anyhow::anyhow!("No credentials found for {provider}"));
+    }
+    
+    // Remove the provider's entry
+    if let Some(obj) = auth.as_object_mut() {
+        obj.remove(auth_key);
+    }
+    
+    // Write back
     std::fs::write(&path, serde_json::to_string_pretty(&auth)?)?;
     Ok(())
 }

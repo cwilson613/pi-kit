@@ -578,6 +578,7 @@ impl App {
         ("context",  "toggle context window (200k/1M)",       &["200k", "1m"]),
         ("sessions", "list saved sessions",                  &[]),
         ("memory",   "memory stats",                        &[]),
+        ("auth",     "authentication management",             &["status", "login", "logout", "unlock"]),
         ("chronos",  "date/time context",                      &["week", "month", "quarter", "relative", "iso", "epoch", "tz", "range", "all"]),
         ("migrate",  "import from other tools",               &["auto", "claude-code", "pi", "codex", "cursor", "aider"]),
         ("dash",     "toggle dashboard panel / open web UI",  &["open"]),
@@ -831,6 +832,88 @@ impl App {
                     self.footer_data.total_facts, self.footer_data.injected_facts,
                     self.footer_data.working_memory, self.footer_data.memory_tokens_est,
                 ))
+            }
+
+            "auth" => {
+                match args {
+                    "" | "status" => {
+                        // Show authentication status
+                        let _ = tx.try_send(TuiCommand::BusCommand {
+                            name: "auth_status".to_string(),
+                            args: String::new(),
+                        });
+                        SlashResult::Handled
+                    }
+                    "login" | "login anthropic" | "login claude" => {
+                        // Login to Anthropic
+                        let _ = tx.try_send(TuiCommand::BusCommand {
+                            name: "auth_login".to_string(),
+                            args: "anthropic".to_string(),
+                        });
+                        SlashResult::Handled
+                    }
+                    "login openai" | "login chatgpt" => {
+                        // Login to OpenAI
+                        let _ = tx.try_send(TuiCommand::BusCommand {
+                            name: "auth_login".to_string(),
+                            args: "openai".to_string(),
+                        });
+                        SlashResult::Handled
+                    }
+                    "logout anthropic" | "logout claude" => {
+                        // Logout from Anthropic
+                        let _ = tx.try_send(TuiCommand::BusCommand {
+                            name: "auth_logout".to_string(),
+                            args: "anthropic".to_string(),
+                        });
+                        SlashResult::Handled
+                    }
+                    "logout openai" | "logout chatgpt" => {
+                        // Logout from OpenAI
+                        let _ = tx.try_send(TuiCommand::BusCommand {
+                            name: "auth_logout".to_string(),
+                            args: "openai".to_string(),
+                        });
+                        SlashResult::Handled
+                    }
+                    "unlock" => {
+                        // Unlock secrets store
+                        let _ = tx.try_send(TuiCommand::BusCommand {
+                            name: "auth_unlock".to_string(),
+                            args: String::new(),
+                        });
+                        SlashResult::Handled
+                    }
+                    _ => {
+                        if args.starts_with("login ") {
+                            let provider = &args[6..];
+                            if provider.is_empty() {
+                                SlashResult::Display("Usage: /auth login <provider>\nSupported: anthropic, openai".into())
+                            } else {
+                                let _ = tx.try_send(TuiCommand::BusCommand {
+                                    name: "auth_login".to_string(),
+                                    args: provider.to_string(),
+                                });
+                                SlashResult::Handled
+                            }
+                        } else if args.starts_with("logout ") {
+                            let provider = &args[7..];
+                            if provider.is_empty() {
+                                SlashResult::Display("Usage: /auth logout <provider>\nSupported: anthropic, openai".into())
+                            } else {
+                                let _ = tx.try_send(TuiCommand::BusCommand {
+                                    name: "auth_logout".to_string(),
+                                    args: provider.to_string(),
+                                });
+                                SlashResult::Handled
+                            }
+                        } else {
+                            SlashResult::Display(format!(
+                                "Unknown auth command: {args}\n\nUsage:\n  /auth status\n  /auth login <provider>\n  /auth logout <provider>\n  /auth unlock\n\nSupported providers: anthropic, openai"
+                            ))
+                        }
+                    }
+                }
             }
 
             "migrate" => {

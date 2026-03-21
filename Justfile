@@ -43,9 +43,9 @@ update:
 build-release:
     cd core && cargo build --release -p omegon
 
-# Run the binary (dev-release profile — fast build, optimized)
+# Run the built binary directly (no recompile)
 run *args:
-    cd core && cargo run --profile dev-release -p omegon -- {{args}}
+    core/target/dev-release/omegon {{args}}
 
 # ─── TypeScript (omegon-pi) ─────────────────────────────────
 

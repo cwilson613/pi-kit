@@ -159,7 +159,8 @@ printf "${DIM}  │${RESET}  ${BOLD}Installation Plan${RESET}                   
 printf "${DIM}  │${RESET}                                                       ${DIM}│${RESET}\n"
 printf "${DIM}  │${RESET}  ${CYAN}Version:${RESET}    %-42s ${DIM}│${RESET}\n" "${VERSION}"
 printf "${DIM}  │${RESET}  ${CYAN}Platform:${RESET}   %-42s ${DIM}│${RESET}\n" "${PLATFORM}"
-printf "${DIM}  │${RESET}  ${CYAN}Install to:${RESET} %-42s ${DIM}│${RESET}\n" "${INSTALL_DIR}/${BINARY}"
+printf "${DIM}  │${RESET}  ${CYAN}Install to:${RESET} %-42s ${DIM}│${RESET}\n" "~/.omegon/versions/${VERSION}/omegon"
+printf "${DIM}  │${RESET}  ${CYAN}Symlink at:${RESET} %-42s ${DIM}│${RESET}\n" "${INSTALL_DIR}/${BINARY}"
 if [ -n "$EXISTING" ]; then
 printf "${DIM}  │${RESET}  ${YELLOW}Replaces:${RESET}   %-42s ${DIM}│${RESET}\n" "${EXISTING}"
 fi
@@ -294,8 +295,49 @@ ok "Binary validated"
 
 # ── Install ───────────────────────────────────────────────────
 
-step "Installing to ${INSTALL_DIR}/${BINARY}..."
+VERSION_DIR="${HOME}/.omegon/versions/${VERSION}"
+INSTALL_TARGET="${INSTALL_DIR}/${BINARY}"
 
+step "Installing to versioned directory ${VERSION_DIR}/${BINARY}..."
+
+# Create versioned install directory
+mkdir -p "$VERSION_DIR" || die "could not create version directory ${VERSION_DIR}"
+
+# Handle backward compatibility: move existing flat binary to versioned directory
+if [ -f "$INSTALL_TARGET" ] && [ ! -L "$INSTALL_TARGET" ]; then
+  step "Migrating existing installation to versioned layout..."
+  
+  # Determine existing version if possible
+  EXISTING_VER=""
+  if [ -x "$INSTALL_TARGET" ]; then
+    EXISTING_VER=$("$INSTALL_TARGET" --version 2>/dev/null | head -1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
+  fi
+  
+  if [ "$EXISTING_VER" = "unknown" ]; then
+    EXISTING_VER="pre-versioned"
+  fi
+  
+  EXISTING_DIR="${HOME}/.omegon/versions/${EXISTING_VER}"
+  mkdir -p "$EXISTING_DIR"
+  
+  if [ "$NEEDS_SUDO" = true ]; then
+    sudo cp "$INSTALL_TARGET" "${EXISTING_DIR}/${BINARY}" || \
+      die "could not backup existing binary to ${EXISTING_DIR}"
+    sudo chmod +x "${EXISTING_DIR}/${BINARY}"
+  else
+    cp "$INSTALL_TARGET" "${EXISTING_DIR}/${BINARY}" || \
+      die "could not backup existing binary to ${EXISTING_DIR}"
+    chmod +x "${EXISTING_DIR}/${BINARY}"
+  fi
+  
+  ok "Backed up existing binary to ${EXISTING_DIR}/${BINARY}"
+fi
+
+# Install new version to versioned directory
+mv "${TMP}/${BINARY}" "${VERSION_DIR}/${BINARY}"
+chmod +x "${VERSION_DIR}/${BINARY}" || die "could not make binary executable"
+
+# Create install directory if needed
 if [ ! -d "$INSTALL_DIR" ]; then
   if [ "$NEEDS_SUDO" = true ]; then
     sudo mkdir -p "$INSTALL_DIR" || die "could not create ${INSTALL_DIR}"
@@ -304,13 +346,25 @@ if [ ! -d "$INSTALL_DIR" ]; then
   fi
 fi
 
+# Create or update symlink at install location
 if [ "$NEEDS_SUDO" = true ]; then
-  sudo mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}" || \
-    die "could not install to ${INSTALL_DIR} — try: INSTALL_DIR=~/.local/bin curl -fsSL … | sh"
-  sudo chmod +x "${INSTALL_DIR}/${BINARY}"
+  # Remove existing binary/symlink
+  if [ -e "$INSTALL_TARGET" ] || [ -L "$INSTALL_TARGET" ]; then
+    sudo rm -f "$INSTALL_TARGET"
+  fi
+  
+  # Create symlink
+  sudo ln -s "${VERSION_DIR}/${BINARY}" "$INSTALL_TARGET" || \
+    die "could not create symlink at ${INSTALL_TARGET}"
 else
-  mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-  chmod +x "${INSTALL_DIR}/${BINARY}" 2>/dev/null || true
+  # Remove existing binary/symlink
+  if [ -e "$INSTALL_TARGET" ] || [ -L "$INSTALL_TARGET" ]; then
+    rm -f "$INSTALL_TARGET"
+  fi
+  
+  # Create symlink
+  ln -s "${VERSION_DIR}/${BINARY}" "$INSTALL_TARGET" || \
+    die "could not create symlink at ${INSTALL_TARGET}"
 fi
 
 # ── Write install receipt ─────────────────────────────────────
@@ -322,9 +376,12 @@ cat > "${RECEIPT_DIR}/install-receipt.json" 2>/dev/null <<EOF || true
   "platform": "${PLATFORM}",
   "install_dir": "${INSTALL_DIR}",
   "binary": "${INSTALL_DIR}/${BINARY}",
+  "version_dir": "${VERSION_DIR}",
+  "versioned_binary": "${VERSION_DIR}/${BINARY}",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source": "https://github.com/${REPO}/releases/tag/${VERSION}",
-  "installer": "https://omegon.styrene.dev/install.sh"
+  "installer": "https://omegon.styrene.dev/install.sh",
+  "layout": "versioned"
 }
 EOF
 
@@ -333,7 +390,8 @@ EOF
 INSTALLED_VERSION=""
 if command -v "$BINARY" >/dev/null 2>&1; then
   INSTALLED_VERSION=$("${INSTALL_DIR}/${BINARY}" --version 2>/dev/null | head -1 || echo "")
-  ok "Installed to ${BOLD}${INSTALL_DIR}/${BINARY}${RESET}"
+  ok "Installed to ${BOLD}${VERSION_DIR}/${BINARY}${RESET}"
+  ok "Symlinked from ${BOLD}${INSTALL_DIR}/${BINARY}${RESET}"
 elif [ -x "${INSTALL_DIR}/${BINARY}" ]; then
   warn "${BINARY} installed but ${INSTALL_DIR} is not in your PATH"
   printf "${DIM}    Add it: export PATH=\"${INSTALL_DIR}:\$PATH\"${RESET}\n"

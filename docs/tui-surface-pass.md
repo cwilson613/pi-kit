@@ -1,12 +1,12 @@
 ---
 id: tui-surface-pass
 title: TUI surface pass — expose new subsystems in dashboard, footer, selectors, and commands
-status: exploring
+status: implementing
 parent: tui-visual-system
 tags: [tui, ux, dashboard, footer, commands, persona, mcp, auth, secrets, inference]
-open_questions:
-  - Should the dashboard harness section replace the cleave section when no cleave is active, or always be visible below it? The sidebar has limited vertical space.
-  - How many selector overlay types can we support before the UX becomes confusing? Currently 2 (model, thinking). Adding persona, tone, and context class makes 5. Should some of these be combined into a unified settings overlay with tabs instead?
+open_questions: []
+branches: ["feature/tui-surface-pass"]
+openspec_change: tui-surface-pass
 issue_type: epic
 priority: 1
 ---
@@ -66,10 +66,37 @@ The Rust core has grown significantly — persona system, MCP transport (5 modes
 
 11. Fractal widget at bottom of dashboard sidebar — already designed in fractal-status-surface node.
 
+## Decisions
+
+### Decision: Dashboard sections are independent — harness status always visible, cleave hides when idle
+
+**Status:** decided
+**Rationale:** Each dashboard section represents a different subsystem. They render independently in vertical stack order: design tree (always), openspec (always), cleave (visible only when active), harness status (always). When cleave is idle, its section disappears and the remaining sections get more vertical space. The harness section is not a replacement for cleave — it's a peer.
+
+### Decision: Depth-ordered settings surface — deep changes get selectors, shallow changes are inline
+
+**Status:** decided
+**Rationale:** Settings are ordered by depth of impact: model (deepest — changes everything) → thinking level → context class → persona → tone (shallowest — cosmetic voice). Deep changes warrant a full selector overlay because the operator needs to see options and understand consequences. Shallow changes can be inline — persona/tone switch via the existing /persona and /tone commands with a quick-pick list, or a lightweight inline selector, not a full overlay. Model stays as a full overlay selector. Thinking level stays as a full overlay. Context class gets a lightweight selector (4 options, one line each). Persona and tone use the existing slash command lists — they're quick enough at typical install counts (2-5 options) that an overlay adds ceremony without value.
+
 ## Open Questions
 
-- Should the dashboard harness section replace the cleave section when no cleave is active, or always be visible below it? The sidebar has limited vertical space.
-- How many selector overlay types can we support before the UX becomes confusing? Currently 2 (model, thinking). Adding persona, tone, and context class makes 5. Should some of these be combined into a unified settings overlay with tabs instead?
+*No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/tui/dashboard.rs` (modified) — Add harness status section (persona/tone, providers, MCP, secrets, inference, container). Make cleave section conditional (hide when idle). Vertical stack: design tree → openspec → cleave (if active) → harness status.
+- `core/crates/omegon/src/tui/selector.rs` (modified) — Add SelectorKind::ContextClass with 4 options (Squad/Maniple/Clan/Legion + token counts + descriptions)
+- `core/crates/omegon/src/tui/mod.rs` (modified) — /context opens context class selector overlay. Toast notifications on HarnessStatusChanged state transitions (persona switch, MCP connect/disconnect, auth expiry, compaction). Dashboard refresh on HarnessStatusChanged.
+- `core/crates/omegon/src/tui/footer.rs` (modified) — Compaction flash indicator (brief accent color pulse on system card when compaction fires)
+
+### Constraints
+
+- Cleave section hides entirely when no cleave is active — not just empty, invisible
+- Harness status section reads from FooterData.harness (same HarnessStatus, no separate data path)
+- Context class selector shows nominal token count and one-line description per class
+- Toast notifications compare previous HarnessStatus snapshot to detect meaningful transitions — don't toast on every event
 
 ## Dashboard (right panel, 616 LoC)
 

@@ -163,12 +163,12 @@
     content: ''; display: inline-block; width: 8px; height: 8px;
     border-radius: 50%; margin-right: 4px; vertical-align: middle;
   }
-  .legend-seed::before { background: var(--muted); opacity: 0.4; }
-  .legend-exploring::before { background: var(--accent); }
-  .legend-decided::before { background: var(--success); }
-  .legend-implementing::before { background: var(--warning); }
-  .legend-implemented::before { background: var(--dim); opacity: 0.3; }
-  .legend-blocked::before { background: var(--error); }
+  .legend-seed::before { background: #506878; }
+  .legend-exploring::before { background: #2ab4c8; }
+  .legend-decided::before { background: #1ab878; }
+  .legend-implementing::before { background: #e89020; }
+  .legend-implemented::before { background: #5898b8; }
+  .legend-blocked::before { background: #ef4444; }
 
   #conversation {
     margin-top: 16px;
@@ -310,7 +310,7 @@
         <span class="legend-seed">seed</span>
         <span class="legend-exploring">exploring</span>
         <span class="legend-decided">decided</span>
-        <span class="legend-implementing">implementing</span>
+        <span class="legend-implementing">implementing (1)</span>
         <span class="legend-implemented">done</span>
         <span class="legend-blocked">blocked</span>
       </div>
@@ -458,14 +458,24 @@ const STATUS_ICONS = {
   implementing: '⚙', implemented: '✓', blocked: '✕', deferred: '◑'
 };
 const STATUS_COLORS = {
-  seed: 'var(--muted)', exploring: 'var(--accent)', resolved: 'var(--success)',
-  decided: 'var(--success)', implementing: 'var(--warning)',
-  implemented: 'var(--dim)', blocked: 'var(--error)', deferred: 'var(--caution)'
+  seed: '#506878',         // cold gray — unstarted, no energy
+  exploring: '#2ab4c8',    // cyan — active investigation
+  resolved: '#38a86e',     // teal-green — questions answered
+  decided: '#1ab878',      // bright green — ready to implement
+  implementing: '#e89020', // amber — work in progress
+  implemented: '#5898b8',  // steel blue — complete, visible but receded
+  blocked: '#ef4444',      // red — blocked
+  deferred: '#8b5cf6',     // purple — parked
 };
 const STATUS_HEX = {
-  seed: '#607888', exploring: '#2ab4c8', resolved: '#22c55e',
-  decided: '#22c55e', implementing: '#f59e0b',
-  implemented: '#405870', blocked: '#ef4444', deferred: '#8b5cf6'
+  seed: '#506878',
+  exploring: '#2ab4c8',
+  resolved: '#38a86e',
+  decided: '#1ab878',
+  implementing: '#e89020',
+  implemented: '#5898b8',
+  blocked: '#ef4444',
+  deferred: '#8b5cf6',
 };
 const STAGE_ICONS = {
   proposed: '◌', specified: '◐', planned: '▸',
@@ -1120,11 +1130,16 @@ function runSimulation(canvas) {
         // Text with background for legibility
         const textW = ctx.measureText(label).width;
         const tx = n.x, ty = n.y + r + 3;
-        ctx.fillStyle = '#02030a';
-        ctx.globalAlpha = 0.7;
-        ctx.fillRect(tx - textW/2 - 2, ty - 1, textW + 4, fontSize + 2);
-        ctx.globalAlpha = isSelected || isHovered ? 1 : isNeighborOfSelected ? 0.8 : 0.6;
-        ctx.fillStyle = isSelected ? '#c4d8e4' : isHovered ? '#c4d8e4' : '#607888';
+        const pad = 3;
+        ctx.fillStyle = '#020308';
+        ctx.globalAlpha = 0.85;
+        // Rounded rect background
+        const rx = tx - textW/2 - pad, ry = ty - 1, rw = textW + pad*2, rh = fontSize + 3;
+        ctx.beginPath();
+        ctx.roundRect(rx, ry, rw, rh, 2);
+        ctx.fill();
+        ctx.globalAlpha = isSelected || isHovered ? 1 : isNeighborOfSelected ? 0.85 : 0.7;
+        ctx.fillStyle = isSelected ? '#c4d8e4' : isHovered ? '#c4d8e4' : '#8ca8b8';
         ctx.fillText(label, tx, ty);
         ctx.globalAlpha = 1;
       }
@@ -1135,8 +1150,8 @@ function runSimulation(canvas) {
         const badgeText = String(n.questions);
         ctx.font = 'bold 7px monospace';
         const bw = ctx.measureText(badgeText).width + 4;
-        // Badge background
-        ctx.fillStyle = '#f59e0b';
+        // Badge background — amber for open questions
+        ctx.fillStyle = STATUS_HEX.implementing;
         ctx.globalAlpha = alpha;
         ctx.beginPath();
         ctx.arc(bx + bw/2 - 1, by, 5, 0, Math.PI * 2);

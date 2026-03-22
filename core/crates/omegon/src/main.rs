@@ -135,6 +135,10 @@ struct Cli {
     #[arg(long)]
     initial_prompt_file: Option<PathBuf>,
 
+    /// Override context class (squad/maniple/clan/legion).
+    #[arg(long)]
+    context_class: Option<String>,
+
     /// Log level: error, warn, info, debug, trace. Overrides RUST_LOG.
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
@@ -601,6 +605,21 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let is_oauth = providers::resolve_api_key_sync(
         cli.model.split(':').next().unwrap_or("anthropic")
     ).is_some_and(|(_, oauth)| oauth);
+
+    // ─── Apply CLI overrides ──────────────────────────────────────────
+    if let Some(ref class_str) = cli.context_class {
+        if let Ok(mut s) = shared_settings.lock() {
+            match class_str.to_lowercase().as_str() {
+                "squad" => { s.context_class = settings::ContextClass::Squad; s.context_window = 200_000; }
+                "maniple" => { s.context_class = settings::ContextClass::Maniple; s.context_window = 500_000; }
+                "clan" => { s.context_class = settings::ContextClass::Clan; s.context_window = 680_000; }
+                "legion" => { s.context_class = settings::ContextClass::Legion; s.context_window = 1_000_000; }
+                _ => tracing::warn!("Unknown context class: {class_str}"),
+            }
+            s.apply_context_mode();
+            tracing::info!(class = %class_str, window = s.context_window, "context class override applied");
+        }
+    }
 
     // ─── Launch TUI ─────────────────────────────────────────────────────
     let initial = agent.initial_tui_state();

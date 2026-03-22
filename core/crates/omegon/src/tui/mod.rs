@@ -454,7 +454,10 @@ impl App {
             let err = std::process::Command::new(&exe)
                 .arg("--initial-prompt-file")
                 .arg(&prompt_file)
+                
                 .arg("--no-splash")
+                .arg("--context-class")
+                .arg("squad")
                 .current_dir(&demo_dir)
                 .exec();
             SlashResult::Display(format!("Failed to launch demo: {err}"))
@@ -464,7 +467,10 @@ impl App {
             let _ = std::process::Command::new(&exe)
                 .arg("--initial-prompt-file")
                 .arg(&prompt_file)
+                
                 .arg("--no-splash")
+                .arg("--context-class")
+                .arg("squad")
                 .current_dir(&demo_dir)
                 .spawn();
             self.should_quit = true;
@@ -663,8 +669,10 @@ impl App {
             let tool_delta = self.tool_calls.saturating_sub(self.prev_tool_calls);
             self.prev_tool_calls = self.tool_calls;
 
+            // Consume memory ops accumulated since last telemetry update.
+            // These accumulate from ToolEnd events between draws.
             let mem_ops = self.memory_ops_this_frame;
-            self.memory_ops_this_frame = 0; // reset per frame
+            self.memory_ops_this_frame = 0;
 
             self.instrument_panel.update_telemetry(
                 self.footer_data.context_percent,
@@ -2022,6 +2030,12 @@ pub async fn run_tui(
             }
         }
 
+        // Drain agent events BEFORE drawing — so telemetry counters
+        // (memory_ops, tool_calls) are current when draw reads them
+        while let Ok(agent_event) = events_rx.try_recv() {
+            app.handle_agent_event(agent_event);
+        }
+
         // Draw
         terminal.draw(|f| app.draw(f))?;
 
@@ -2312,10 +2326,7 @@ pub async fn run_tui(
         } // match event::read()
         } // if has_terminal_event
 
-        // Drain agent events
-        while let Ok(agent_event) = events_rx.try_recv() {
-            app.handle_agent_event(agent_event);
-        }
+        // Agent events already drained before draw (above).
 
         // Drain queued prompt after agent finishes (but not if quitting)
         if !app.agent_active && !app.should_quit && app.queued_prompt.is_some() {

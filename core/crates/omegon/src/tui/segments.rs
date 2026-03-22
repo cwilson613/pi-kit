@@ -125,7 +125,8 @@ impl Segment {
                 let max_r = if *expanded { 200 } else { 12 };
                 let a = detail_args.as_ref().map(|a| a.lines().count()).unwrap_or(0);
                 let r = detail_result.as_ref().map(|r| r.lines().count().min(max_r)).unwrap_or(0);
-                (a + r + 6) as u16
+                // 3 = border top + title + border bottom. Compact cards.
+                (a + r + 3) as u16
             }
             Self::SystemNotification { text } => text.lines().count() as u16 + 3,
             _ => 4,

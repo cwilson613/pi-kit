@@ -303,7 +303,7 @@ pub fn tool_card<'a>(
 
     if let Some(summary) = result_summary {
         let display = if summary.len() > 40 {
-            format!("  {}…", &summary[..39.min(summary.len())])
+            format!("  {}", crate::util::truncate(&summary, 39))
         } else {
             format!("  {summary}")
         };

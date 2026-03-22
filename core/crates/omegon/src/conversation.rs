@@ -274,7 +274,7 @@ impl ConversationState {
                 }
                 AgentMessage::Assistant(a, turn) => {
                     let truncated = if a.text.len() > 200 {
-                        format!("{}...", &a.text[..200])
+                        crate::util::truncate(&a.text, 200)
                     } else {
                         a.text.clone()
                     };

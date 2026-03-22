@@ -148,7 +148,7 @@ impl ConversationView {
                         })
                         .unwrap_or("").trim();
                     if line.is_empty() { None }
-                    else if line.len() > 100 { Some(format!("{}…", &line[..99])) }
+                    else if line.chars().count() > 100 { Some(crate::util::truncate(line, 99)) }
                     else { Some(line.to_string()) }
                 });
                 // Store the full result — truncation happens at render time

@@ -257,7 +257,7 @@ fn format_results(results: &[SearchResult]) -> String {
         out.push_str(&r.snippet);
         out.push('\n');
         if let Some(content) = &r.content {
-            let truncated = if content.len() > 2000 { &content[..2000] } else { content };
+            let truncated = crate::util::truncate_str(content, 2000);
             out.push_str(&format!("\n<extracted_content>\n{truncated}\n</extracted_content>\n"));
         }
         out.push('\n');

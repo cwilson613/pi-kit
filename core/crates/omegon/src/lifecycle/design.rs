@@ -386,7 +386,7 @@ pub fn build_context_injection(node: &DesignNode, sections: &DocumentSections) -
 
     if !sections.overview.is_empty() {
         let overview = if sections.overview.len() > 500 {
-            format!("{}...", &sections.overview[..500])
+            crate::util::truncate(&sections.overview, 500)
         } else {
             sections.overview.clone()
         };

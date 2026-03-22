@@ -215,7 +215,7 @@ fn truncate_snippet(s: &str, max: usize) -> String {
     if first_line.len() <= max {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max.min(first_line.len())])
+        crate::util::truncate(first_line, max)
     }
 }
 
@@ -358,8 +358,8 @@ mod tests {
     fn truncate_snippet_long() {
         let long = "x".repeat(100);
         let result = truncate_snippet(&long, 80);
-        assert!(result.len() <= 84); // 80 + "..."
-        assert!(result.ends_with("..."));
+        assert!(result.len() <= 84); // 80 + "…" (3 bytes)
+        assert!(result.ends_with('…'));
     }
 
     #[test]

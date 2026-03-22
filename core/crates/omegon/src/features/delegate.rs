@@ -437,7 +437,7 @@ impl Feature for DelegateFeature {
                         DelegateTaskStatus::Failed { .. } => "❌ Error".to_string(),
                     };
                     let description = if task.task_description.len() > 50 {
-                        format!("{}...", &task.task_description[..50])
+                        crate::util::truncate(&task.task_description, 50)
                     } else {
                         task.task_description.clone()
                     };

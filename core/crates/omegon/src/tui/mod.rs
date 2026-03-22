@@ -568,7 +568,7 @@ impl App {
             let ctx_mode = self.footer_data.context_mode;
             let mut hint_spans = Vec::new();
             if let Some(ref queued) = self.queued_prompt {
-                let preview = if queued.len() > 40 { &queued[..40] } else { queued.as_str() };
+                let preview = crate::util::truncate_str(queued, 40);
                 hint_spans.push(Span::styled("⏳ Queued: ", Style::default().fg(t.warning())));
                 hint_spans.push(Span::styled(preview.to_string(), Style::default().fg(t.muted())));
             } else if self.agent_active {

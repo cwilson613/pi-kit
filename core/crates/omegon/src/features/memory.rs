@@ -314,7 +314,7 @@ impl Feature for MemoryFeature {
                     let section = section.trim_matches('"');
                     // Truncate very long facts in recall results
                     let content = if sf.fact.content.len() > 200 {
-                        format!("{}…", &sf.fact.content[..197])
+                        crate::util::truncate(&sf.fact.content, 197)
                     } else {
                         sf.fact.content.clone()
                     };
@@ -356,7 +356,7 @@ impl Feature for MemoryFeature {
                     for fact in section_facts.iter().take(max_per_section) {
                         // Truncate long facts to keep output manageable
                         let content = if fact.content.len() > 120 {
-                            format!("{}…", &fact.content[..117])
+                            crate::util::truncate(&fact.content, 117)
                         } else {
                             fact.content.clone()
                         };

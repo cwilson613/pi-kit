@@ -454,7 +454,7 @@ async fn stream_with_retry(
                 );
                 // Notify the TUI so the user knows why it's paused.
                 // First retry shows in conversation (persistent); subsequent are toasts.
-                let short_err = if err_msg.len() > 300 { &err_msg[..300] } else { &err_msg };
+                let short_err = crate::util::truncate_str(&err_msg, 300);
                 let msg = format!("⚠ LLM error (attempt {attempt}/{}): {short_err}", config.max_retries);
                 let _ = events.send(AgentEvent::SystemNotification {
                     message: msg,
@@ -1025,7 +1025,7 @@ pub fn summarize_tool_args(tool_name: &str, args: &Value) -> Option<String> {
         "web_search" => {
             args.get("query").and_then(|v| v.as_str()).map(|q| {
                 if q.len() > 60 {
-                    format!("{}…", &q[..60])
+                    crate::util::truncate(&q, 60)
                 } else {
                     q.to_string()
                 }
@@ -1037,7 +1037,7 @@ pub fn summarize_tool_args(tool_name: &str, args: &Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|s| {
                     if s.len() > 60 {
-                        format!("{}…", &s[..60])
+                        crate::util::truncate(&s, 60)
                     } else {
                         s.to_string()
                     }

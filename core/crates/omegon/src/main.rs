@@ -35,6 +35,7 @@ mod plugin_cli;
 mod plugins;
 pub mod status;
 pub mod tool_registry;
+pub mod util;
 mod tools;
 mod tui;
 mod web;
@@ -1002,7 +1003,7 @@ fn format_agent_error(e: &anyhow::Error) -> String {
         }
     }
     // Fallback: truncate
-    let truncated = if raw.len() > 500 { &raw[..500] } else { &raw };
+    let truncated = crate::util::truncate_str(&raw, 500);
     format!("⚠ {truncated}")
 }
 
@@ -1097,7 +1098,7 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
                         .map(|c| match c {
                             omegon_traits::ContentBlock::Text { text } => {
                                 if text.len() > 200 {
-                                    format!("{}...", &text[..200])
+                                    crate::util::truncate(&text, 200)
                                 } else {
                                     text.clone()
                                 }

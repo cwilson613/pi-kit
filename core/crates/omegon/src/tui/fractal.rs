@@ -50,8 +50,10 @@ pub enum Palette {
 impl Default for FractalWidget {
     fn default() -> Self {
         Self {
-            center: (-0.5, 0.0),
-            zoom: 1.0,
+            // Start zoomed into the Seahorse Valley — organic tendrils,
+            // not the iconic beetle silhouette
+            center: (-0.745, 0.186),
+            zoom: 40.0,
             max_iter: 100,
             palette: Palette::Ocean,
             julia_c: None,
@@ -71,8 +73,8 @@ impl FractalWidget {
         is_cleave_active: bool,
         dt: f64,
     ) {
-        // Zoom tracks context utilization
-        self.zoom = 1.0 + (context_pct as f64 / 100.0) * 50.0;
+        // Zoom tracks context utilization — deeper into the edge as context fills
+        self.zoom = 40.0 + (context_pct as f64 / 100.0) * 200.0;
 
         // Iteration depth tracks thinking level
         self.max_iter = match thinking_level {
@@ -100,11 +102,12 @@ impl FractalWidget {
             (real, imag)
         });
 
-        // Slow drift when active
-        let speed = if is_agent_active { 0.003 } else { 0.0005 };
+        // Slow drift around the Seahorse Valley edge
+        let speed = if is_agent_active { 0.002 } else { 0.0003 };
         self.time += dt;
-        self.center.0 = -0.5 + (self.time * speed).sin() * 0.1;
-        self.center.1 = (self.time * speed * 0.7).cos() * 0.05;
+        let drift_radius = 0.002 / (self.zoom / 40.0); // tighter orbit at higher zoom
+        self.center.0 = -0.745 + (self.time * speed).sin() * drift_radius;
+        self.center.1 = 0.186 + (self.time * speed * 0.7).cos() * drift_radius;
     }
 
     /// Render the fractal into a ratatui Buffer area.
@@ -160,49 +163,59 @@ impl FractalWidget {
     }
 
     /// Map iteration count to a color using the active palette.
+    ///
+    /// All palettes are subdued — the fractal is ambient, not a spotlight.
+    /// Peak brightness ~60-80 so it glows against the dark Alpharius bg
+    /// without competing with the text content below.
     fn iter_to_color(&self, iter: u32) -> Color {
         if iter >= self.max_iter {
-            return Color::Rgb(0, 0, 0); // inside the set = black
+            // Inside the set = surface bg (blends with dashboard)
+            return Color::Rgb(6, 10, 18);
         }
 
-        let t = iter as f64 / self.max_iter as f64;
+        // Smooth coloring using log2 for gradual gradients instead of banding
+        let t = (iter as f64 / self.max_iter as f64).sqrt(); // sqrt for gentler ramp
 
         match self.palette {
             Palette::Ocean => {
-                let r = (9.0 * (1.0 - t) * t * t * t * 255.0) as u8;
-                let g = (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8;
-                let b = (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8;
-                Color::Rgb(r, g.saturating_add(40), b.saturating_add(80))
+                // Deep teal → dark cyan. Alpharius ocean tones.
+                let r = (t * 12.0) as u8;
+                let g = (t * 36.0 + t * t * 20.0) as u8;
+                let b = (t * 50.0 + t * t * 30.0) as u8;
+                Color::Rgb(r, g, b)
             }
             Palette::Amber => {
-                let r = (t * 255.0).min(255.0) as u8;
-                let g = (t * t * 200.0).min(255.0) as u8;
-                let b = (t * t * t * 80.0).min(255.0) as u8;
+                // Warm ember glow — working, thinking
+                let r = (t * 65.0 + t * t * 20.0) as u8;
+                let g = (t * 30.0 + t * t * 10.0) as u8;
+                let b = (t * 8.0) as u8;
                 Color::Rgb(r, g, b)
             }
             Palette::Violet => {
-                let r = (t * 180.0).min(255.0) as u8;
-                let g = (t * t * 100.0).min(255.0) as u8;
-                let b = (t * 255.0).min(255.0) as u8;
+                // Cool violet — design mode
+                let r = (t * 35.0 + t * t * 15.0) as u8;
+                let g = (t * 12.0) as u8;
+                let b = (t * 55.0 + t * t * 25.0) as u8;
                 Color::Rgb(r, g, b)
             }
             Palette::Split => {
-                // Two-hue: warm for even iterations, cool for odd
+                // Alternating warm/cool bands — cleave parallel work
                 if iter % 2 == 0 {
-                    let r = (t * 255.0) as u8;
-                    let g = (t * 140.0) as u8;
-                    let b = (t * 60.0) as u8;
+                    let r = (t * 50.0) as u8;
+                    let g = (t * 25.0) as u8;
+                    let b = (t * 8.0) as u8;
                     Color::Rgb(r, g, b)
                 } else {
-                    let r = (t * 60.0) as u8;
-                    let g = (t * 180.0) as u8;
-                    let b = (t * 255.0) as u8;
+                    let r = (t * 8.0) as u8;
+                    let g = (t * 30.0) as u8;
+                    let b = (t * 50.0) as u8;
                     Color::Rgb(r, g, b)
                 }
             }
             Palette::Muted => {
-                let v = (t * 120.0) as u8;
-                Color::Rgb(v, v, v.saturating_add(20))
+                // Near-monochrome — error/degraded state
+                let v = (t * 30.0) as u8;
+                Color::Rgb(v, v, v.saturating_add(5))
             }
         }
     }

@@ -1725,6 +1725,16 @@ pub async fn run_tui(
     image::init_picker();
 
     io::stdout().execute(EnterAlternateScreen)?;
+    // Set the terminal's own background color to our theme bg.
+    // This ensures the alternate screen buffer is filled with our color,
+    // not the user's terminal profile background. Without this, crossterm's
+    // diff optimizer may skip cells that haven't changed from the initial
+    // state, leaving the terminal's native background visible.
+    io::stdout().execute(crossterm::style::SetBackgroundColor(
+        crossterm::style::Color::Rgb { r: 4, g: 6, b: 14 },
+    ))?;
+    // Clear the screen with our bg so every pixel starts owned.
+    io::stdout().execute(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
     io::stdout().execute(EnableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());

@@ -1,30 +1,58 @@
----
-id: tui-footer-engine-display
-title: "Footer redesign — engine display + linked minds"
-status: implemented
-parent: tui-hud-redesign
-tags: []
-open_questions: []
-dependencies: []
-related: []
-branches:
-  - feature/tui-footer-engine-display
-openspec_change: tui-footer-engine-display
----
+# Footer redesign — engine display + linked minds — Design
 
-# Footer redesign — engine display + linked minds
+## Architecture Decisions
 
-## Overview
+### Decision: Footer grows to 10-12 rows, conversation absorbs the loss
 
-Merge the current 4-card footer into a denser, more meaningful layout:
+**Status:** exploring
+**Rationale:** Conversation is scroll history — compressible. The instrument panel is the operator's persistent situational awareness surface. Allocating 20-24% of vertical space to instruments (vs current 10%) follows the CIC pattern where instruments dominate and the viewport is one element among many. Compact fallback at terminal heights under 35 rows.
 
-**Engine panel** (replaces context + model cards): Unified display of the tri-axis — provider/tier/thinking. Shows the "engine configuration" as a single coherent unit. Context gauge stays but is part of this panel. Model name, tier badge, thinking level indicator all in one visual group.
+### Decision: Four simultaneous fractal instruments, not one switching display
 
-**Minds panel** (replaces memory card): "Linked minds" concept — which memory systems are active (project memory, working memory, episodes, archive). Each mind shows: name, fact count, injection status, estimated token weight. The headline is the active minds, not a raw fact count.
+**Status:** exploring
+**Rationale:** A submarine CIC runs sonar, radar, thermal, and signal analysis simultaneously — different instruments showing different dimensions of the same environment. Each of our four algorithms maps to a distinct telemetry source: Perlin=context health, Lissajous=tool activity, Plasma=thinking state, Clifford=memory activity. Running all four simultaneously gives the operator peripheral awareness of all system dimensions at once. The pattern of which instruments are active/calm IS the situational awareness.
 
-**System panel** (remains but leaner): cwd, git branch (just current, not the full tree — that goes to sidebar), session uptime, MCP status. Tool call and compaction counters move here.
+### Decision: Unified color language: idle navy → stormy blue → amber at maximum
 
-## Research
+**Status:** decided
+**Rationale:** All four instruments share the same color ramp: idle navy (near-black teal), increasing activity shifts toward brighter blue, maximum intensity shifts hue toward amber. This keeps every instrument visually consistent with one another and with the theme's existing color meanings (teal=normal, amber=warning). The operator reads intensity across all four instruments as a unified signal — no need to learn per-instrument color vocabularies. Shape (algorithm) differentiates the instruments, color (intensity) differentiates the state.
+
+### Decision: Color ramp: dark navy (idle) → teal (normal) → amber (maximum)
+
+**Status:** decided
+**Rationale:** Teal is the Alpharius brand color — it belongs at the center of the ramp as the steady-state "everything is nominal" reading. Dark navy below it for idle/resting. Amber above it for high load/attention needed. The operator's eye calibrates to teal as normal; darker means quieter, warmer means hotter. This matches the existing theme semantics where teal=accent (normal) and amber=warning.
+
+### Decision: Split-panel layout: inference (left 40%) / system state (right 60%)
+
+**Status:** decided
+**Rationale:** Left half = what is inferencing and what is being inferenced about (engine config + linked minds). Right half = what is the state of the system driving the inference (four fractal instruments + operational stats). Maps to CIC station separation. High-frequency glance target (inference) on the reading side for LTR.
+
+### Decision: Footer grows to 10-12 rows with focus mode toggle
+
+**Status:** decided
+**Rationale:** Conversation is compressible scroll history. Instruments are the persistent situational awareness surface. Default is instrument-heavy (10-12 rows). Focus mode (hotkey or /focus) hides the instrument panel entirely for full-height conversation — useful for reading long outputs, viewing rendered images, or working in alternate tabs. Compact fallback at terminal heights under 35 rows.
+
+### Decision: Four simultaneous fractal instruments in 2×2 grid
+
+**Status:** decided
+**Rationale:** CIC pattern — multiple instruments running simultaneously, each showing a different dimension of system state. Perlin=context health, Plasma=thinking/inference, Lissajous=tool activity, Clifford=memory activity. The pattern across all four IS the situational awareness. Shape differentiates instruments, unified color ramp differentiates intensity.
+
+### Decision: All instruments share unified navy→teal→amber ramp, differentiate by shape only
+
+**Status:** decided
+**Rationale:** Answered: teal is the center (normal), navy is idle, amber is hot. Shape (algorithm) differentiates instruments. No per-instrument hue.
+
+### Decision: Dashboard header collapses — fractal moves to system panel, sidebar gains design tree space
+
+**Status:** decided
+**Rationale:** The fractal's home is the system panel in the footer. The dashboard sidebar header (previously 36×8 fractal) becomes available for the design tree to use as additional vertical space.
+
+### Decision: CA waterfall replaces Clifford attractor for memory instrument, with per-mind columns
+
+**Status:** decided
+**Rationale:** Clifford attractor was unreadable at 22×5. 1D CA waterfall with CRT noise glyphs is visually distinct (digital/crisp vs smooth), has history (scrolling), and maps to memory semantics (patterns from discrete operations). Per-mind independent columns show which minds are linked (column count) and which are active (brightness). Each mind runs its own CA rule based on operation type.
+
+## Research Context
 
 ### Current footer anatomy and waste analysis
 
@@ -295,84 +323,20 @@ This creates a visual bridge between the sonar and waterfall instruments — the
 - Injection band is TEXTURE (glitch vs smooth) — skill-based, a different visual feel in the same space
 - Both use existing visual language (glitch chars, color ramp) — no new symbols to learn
 
-## Decisions
+## File Changes
 
-### Decision: Footer grows to 10-12 rows, conversation absorbs the loss
+- `core/crates/omegon/src/tui/footer.rs` (modified) — Complete rewrite: replace 4-card layout with split-panel (engine+memory left, system state right). 10-12 rows. All data always visible.
+- `core/crates/omegon/src/tui/instruments.rs` (new) — New: four-instrument renderer (Perlin sonar, Lissajous radar, Plasma thermal, CA waterfall). CIE L* color ramp. Per-mind waterfall columns.
+- `core/crates/omegon/src/tui/fractal.rs` (modified) — Remove or gut — replaced by instruments.rs. Keep color ramp utilities.
+- `core/crates/omegon/src/tui/mod.rs` (modified) — Layout change: footer grows from Length(5) to Length(12). Add /focus toggle. Remove hint line (absorbed into footer). Wire instrument telemetry from bus events.
+- `core/crates/omegon/src/tui/dashboard.rs` (modified) — Remove fractal from dashboard header. Dashboard sidebar gains 8 rows for design tree.
+- `core/crates/omegon/src/tui/theme.rs` (modified) — Add instrument-specific theme methods if needed. Ensure footer_bg works with new layout.
+- `core/crates/omegon/src/tui/widgets.rs` (modified) — Gauge bar may need updates for new engine panel context gauge.
+- `core/themes/alpharius.json` (modified) — Add any new color variables for instrument panel.
+- `README.md` (modified) — Update screenshots, feature description for CIC instrument panel.
+- `CHANGELOG.md` (modified) — Document the CIC instrument panel feature.
 
-**Status:** exploring
-
-**Rationale:** Conversation is scroll history — compressible. The instrument panel is the operator's persistent situational awareness surface. Allocating 20-24% of vertical space to instruments (vs current 10%) follows the CIC pattern where instruments dominate and the viewport is one element among many. Compact fallback at terminal heights under 35 rows.
-
-### Decision: Four simultaneous fractal instruments, not one switching display
-
-**Status:** exploring
-
-**Rationale:** A submarine CIC runs sonar, radar, thermal, and signal analysis simultaneously — different instruments showing different dimensions of the same environment. Each of our four algorithms maps to a distinct telemetry source: Perlin=context health, Lissajous=tool activity, Plasma=thinking state, Clifford=memory activity. Running all four simultaneously gives the operator peripheral awareness of all system dimensions at once. The pattern of which instruments are active/calm IS the situational awareness.
-
-### Decision: Unified color language: idle navy → stormy blue → amber at maximum
-
-**Status:** decided
-
-**Rationale:** All four instruments share the same color ramp: idle navy (near-black teal), increasing activity shifts toward brighter blue, maximum intensity shifts hue toward amber. This keeps every instrument visually consistent with one another and with the theme's existing color meanings (teal=normal, amber=warning). The operator reads intensity across all four instruments as a unified signal — no need to learn per-instrument color vocabularies. Shape (algorithm) differentiates the instruments, color (intensity) differentiates the state.
-
-### Decision: Color ramp: dark navy (idle) → teal (normal) → amber (maximum)
-
-**Status:** decided
-
-**Rationale:** Teal is the Alpharius brand color — it belongs at the center of the ramp as the steady-state "everything is nominal" reading. Dark navy below it for idle/resting. Amber above it for high load/attention needed. The operator's eye calibrates to teal as normal; darker means quieter, warmer means hotter. This matches the existing theme semantics where teal=accent (normal) and amber=warning.
-
-### Decision: Split-panel layout: inference (left 40%) / system state (right 60%)
-
-**Status:** decided
-
-**Rationale:** Left half = what is inferencing and what is being inferenced about (engine config + linked minds). Right half = what is the state of the system driving the inference (four fractal instruments + operational stats). Maps to CIC station separation. High-frequency glance target (inference) on the reading side for LTR.
-
-### Decision: Footer grows to 10-12 rows with focus mode toggle
-
-**Status:** decided
-
-**Rationale:** Conversation is compressible scroll history. Instruments are the persistent situational awareness surface. Default is instrument-heavy (10-12 rows). Focus mode (hotkey or /focus) hides the instrument panel entirely for full-height conversation — useful for reading long outputs, viewing rendered images, or working in alternate tabs. Compact fallback at terminal heights under 35 rows.
-
-### Decision: Four simultaneous fractal instruments in 2×2 grid
-
-**Status:** decided
-
-**Rationale:** CIC pattern — multiple instruments running simultaneously, each showing a different dimension of system state. Perlin=context health, Plasma=thinking/inference, Lissajous=tool activity, Clifford=memory activity. The pattern across all four IS the situational awareness. Shape differentiates instruments, unified color ramp differentiates intensity.
-
-### Decision: All instruments share unified navy→teal→amber ramp, differentiate by shape only
-
-**Status:** decided
-
-**Rationale:** Answered: teal is the center (normal), navy is idle, amber is hot. Shape (algorithm) differentiates instruments. No per-instrument hue.
-
-### Decision: Dashboard header collapses — fractal moves to system panel, sidebar gains design tree space
-
-**Status:** decided
-
-**Rationale:** The fractal's home is the system panel in the footer. The dashboard sidebar header (previously 36×8 fractal) becomes available for the design tree to use as additional vertical space.
-
-### Decision: CA waterfall replaces Clifford attractor for memory instrument, with per-mind columns
-
-**Status:** decided
-
-**Rationale:** Clifford attractor was unreadable at 22×5. 1D CA waterfall with CRT noise glyphs is visually distinct (digital/crisp vs smooth), has history (scrolling), and maps to memory semantics (patterns from discrete operations). Per-mind independent columns show which minds are linked (column count) and which are active (brightness). Each mind runs its own CA rule based on operation type.
-
-## Implementation Notes
-
-### File Scope
-
-- `core/crates/omegon/src/tui/footer.rs` (modified)` — Complete rewrite: replace 4-card layout with split-panel (engine+memory left, system state right). 10-12 rows. All data always visible.
-- `core/crates/omegon/src/tui/instruments.rs` (new)` — New: four-instrument renderer (Perlin sonar, Lissajous radar, Plasma thermal, CA waterfall). CIE L* color ramp. Per-mind waterfall columns.
-- `core/crates/omegon/src/tui/fractal.rs` (modified)` — Remove or gut — replaced by instruments.rs. Keep color ramp utilities.
-- `core/crates/omegon/src/tui/mod.rs` (modified)` — Layout change: footer grows from Length(5) to Length(12). Add /focus toggle. Remove hint line (absorbed into footer). Wire instrument telemetry from bus events.
-- `core/crates/omegon/src/tui/dashboard.rs` (modified)` — Remove fractal from dashboard header. Dashboard sidebar gains 8 rows for design tree.
-- `core/crates/omegon/src/tui/theme.rs` (modified)` — Add instrument-specific theme methods if needed. Ensure footer_bg works with new layout.
-- `core/crates/omegon/src/tui/widgets.rs` (modified)` — Gauge bar may need updates for new engine panel context gauge.
-- `core/themes/alpharius.json` (modified)` — Add any new color variables for instrument panel.
-- `README.md` (modified)` — Update screenshots, feature description for CIC instrument panel.
-- `CHANGELOG.md` (modified)` — Document the CIC instrument panel feature.
-
-### Constraints
+## Constraints
 
 - Must work at minimum terminal width 120 cols
 - Focus mode toggle must be instant — no re-layout delay

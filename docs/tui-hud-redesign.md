@@ -1,7 +1,7 @@
 ---
 id: tui-hud-redesign
 title: TUI HUD redesign — game-inspired operator interface
-status: exploring
+status: resolved
 parent: rust-tui-bridge
 tags: [tui, ux, design]
 open_questions:

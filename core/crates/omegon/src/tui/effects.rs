@@ -75,31 +75,11 @@ impl Effects {
 
     /// Queue the initial startup reveal effects.
     /// Resets the frame timer so effects start from zero delta.
-    pub fn queue_startup(&mut self, t: &dyn Theme) {
+    pub fn queue_startup(&mut self, _t: &dyn Theme) {
         self.last_frame = Instant::now();
-        // Footer sweeps in from bottom
-        let footer_sweep = self.footer.unique(
-            FooterSlot::Reveal,
-            fx::sweep_in(
-                Motion::DownToUp,
-                3,   // gradient length
-                1,   // randomness
-                t.bg(),
-                EffectTimer::from_ms(600, Interpolation::CubicOut),
-            ),
-        );
-        self.footer.add_effect(footer_sweep);
-
-        // Conversation fades in from void
-        let conv_fade = self.conversation.unique(
-            ConvSlot::Startup,
-            fx::fade_from(
-                t.bg(),
-                t.bg(),
-                EffectTimer::from_ms(800, Interpolation::CubicOut),
-            ),
-        );
-        self.conversation.add_effect(conv_fade);
+        // Startup effects disabled — they were interpolating bg colors
+        // and leaving non-theme RGB values in the buffer, causing visible
+        // color mismatches between the conversation and dashboard panels.
     }
 
     /// Flash effect when a footer value changes (fact count, context %, etc.).
@@ -157,11 +137,12 @@ mod tests {
     }
 
     #[test]
-    fn queue_startup_adds_effects() {
+    fn queue_startup_no_effects() {
         let mut fx = Effects::new();
         let t = Alpharius;
         fx.queue_startup(&t);
-        assert!(fx.has_active());
+        // Startup effects disabled — no bg color pollution
+        assert!(!fx.has_active());
     }
 
     #[test]

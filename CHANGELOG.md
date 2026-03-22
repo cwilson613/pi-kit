@@ -3,6 +3,37 @@
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-03-22
+
+### Added
+- **CIC Instrument Panel**: Submarine-inspired footer redesign with split-panel layout and four simultaneous fractal instruments providing ambient system awareness.
+  - **Split-panel layout**: Engine/memory state (left 40%) + system telemetry (right 60%) replacing the old 4-card footer
+  - **Perlin sonar instrument**: Context health monitoring with organic noise patterns responding to token utilization and context pressure
+  - **Lissajous radar instrument**: Tool activity visualization using parametric curves that trace call patterns and execution state
+  - **Plasma thermal instrument**: Thinking state display with fluid dynamics responding to reasoning intensity and model temperature
+  - **CA waterfall instrument**: Memory operations visualization using 1D cellular automata with per-mind columns, CRT noise glyphs, and state-driven evolution rules
+  - **Unified navy→teal→amber color ramp**: Perceptual CIE L* color progression from idle navy through stormy teal to amber at maximum intensity across all instruments
+  - **Focus mode toggle**: Hide instruments completely for full-height conversation when concentration is needed
+  - **Fractal header removal**: Dashboard header collapses as fractal visualization moves to system panel, freeing space for design tree
+  - Footer grows from 4 rows to 10-12 rows with conversation absorbing the height loss
+- **Per-mind independent CA columns**: Each active memory mind gets its own waterfall column with independent cellular automaton state
+- **CRT noise texture**: Waterfall instrument uses authentic terminal glyphs (`▓`, `▒`, `░`) to simulate CRT monitor noise patterns
+- **State-driven CA rules**: Cellular automaton evolution rules change dynamically based on memory operation types (injection, compaction, retrieval)
+- **Operator-tuned telemetry defaults**: All instrument sensitivity curves hand-tuned for practical submarine operation feel
+- **Context caps and error visualization**: Context utilization hard-capped at 70% with amber+red border treatment for error states
+
+### Changed
+- Footer layout completely redesigned from horizontal 4-card layout to vertical split-panel with instrument grid
+- Color language unified across all instruments using single navy→teal→amber perceptual ramp instead of per-instrument color schemes
+- Dashboard header space reallocation provides more room for design tree navigation and git branch topology
+- Memory waterfall replaces Clifford attractor for more actionable memory operation feedback
+
+### Fixed
+- Perceptual color linearization ensures visible feedback starts at 10% intensity and reaches amber by 80%
+- Instrument color distribution rebalanced so amber state gets half the ramp length for better visual distinctness
+- Memory event feedback now shows "hotter" activity during injection and compaction operations
+- Tool state differentiation with distinct visual patterns for different tool execution phases
+
 ## [0.8.0] - 2026-03-17
 
 ### Added

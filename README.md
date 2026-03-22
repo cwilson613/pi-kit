@@ -120,6 +120,16 @@ Specs use **Given/When/Then** scenarios to define what must be true *before* cod
 /assess design     # Evaluate design node readiness
 ```
 
+### CIC Instrument Panel
+
+Submarine-inspired real-time system state visualization in the terminal footer:
+
+- **Split-panel layout** — Engine/memory state (left 40%) + system telemetry (right 60%)
+- **Four simultaneous fractal instruments** — Perlin sonar (context health), Lissajous radar (tool activity), Plasma thermal (thinking state), CA waterfall (memory operations with per-mind columns)
+- **Unified navy→teal→amber color ramp** — Perceptual CIE L* color progression from idle to maximum intensity
+- **Focus mode toggle** — Hide instruments for full-height conversation when needed
+- **Ambient awareness** — Pattern recognition across all four instruments provides situational awareness without text reading
+
 ### Skills
 
 Markdown-based skill definitions that inject domain expertise into the agent context:

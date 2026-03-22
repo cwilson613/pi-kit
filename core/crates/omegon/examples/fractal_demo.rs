@@ -325,6 +325,8 @@ struct TelemetrySim {
     // Tools: 0.0 = idle, 1.0 = max activity. Decays over time.
     tool_activity: f64,
     tool_state: ToolState,
+    /// Hue override for tool states: 0.0 = use normal ramp, >0 = shift toward amber/red
+    tool_hue_override: Option<[u8; 3]>, // Some((r,g,b)) for error red, None for normal ramp
     // Thinking: 0.0 = idle, 1.0 = deep extended thinking
     thinking_level: f64,
     thinking_target: f64,
@@ -343,7 +345,7 @@ impl Default for TelemetrySim {
     fn default() -> Self {
         Self {
             context_fill: 0.0, context_target: 0.0, context_speed_mult: 1.0,
-            tool_activity: 0.0, tool_state: ToolState::Idle,
+            tool_activity: 0.0, tool_state: ToolState::Idle, tool_hue_override: None,
             thinking_level: 0.0, thinking_target: 0.0,
             memory_activity: 0.0, memory_state: MemoryState::Idle,
         }
@@ -356,9 +358,19 @@ impl TelemetrySim {
         self.context_fill += (self.context_target - self.context_fill) * dt * 2.0;
         self.context_speed_mult = 0.3 + self.context_fill * 2.5; // faster when fuller
 
-        // Tools: decay toward 0
-        self.tool_activity = (self.tool_activity - dt * 0.8).max(0.0);
-        if self.tool_activity < 0.05 { self.tool_state = ToolState::Idle; }
+        // Tools: decay rate varies by state
+        let tool_decay = match self.tool_state {
+            ToolState::Idle => 1.0,
+            ToolState::Single => 0.6,   // quick decay
+            ToolState::Burst => 0.4,    // medium sustain
+            ToolState::Cleave => 0.2,   // long sustain — parallel work
+            ToolState::Error => 0.3,    // medium sustain for visibility
+        };
+        self.tool_activity = (self.tool_activity - dt * tool_decay).max(0.0);
+        if self.tool_activity < 0.05 {
+            self.tool_state = ToolState::Idle;
+            self.tool_hue_override = None;
+        }
 
         // Thinking: smooth approach to target
         self.thinking_level += (self.thinking_target - self.thinking_level) * dt * 3.0;
@@ -381,7 +393,13 @@ impl TelemetrySim {
     fn speed_mult(&self, instrument: usize) -> f64 {
         match instrument {
             0 => self.context_speed_mult,
-            1 => 0.3 + self.tool_activity * 3.0,
+            1 => match self.tool_state {
+                ToolState::Idle => 0.3,
+                ToolState::Single => 0.5,    // gentle
+                ToolState::Burst => 0.8,     // moderate
+                ToolState::Cleave => 1.2,    // visibly faster
+                ToolState::Error => 0.15,    // SLOW — ominous, not frenetic
+            },
             2 => 0.2 + self.thinking_level * 2.0,
             3 => 0.3 + self.memory_activity * 2.0,
             _ => 1.0,
@@ -392,11 +410,28 @@ impl TelemetrySim {
     fn set_context(&mut self, fill: f64) { self.context_target = fill.clamp(0.0, 1.0); }
     fn compaction(&mut self) { self.context_target = 0.30; self.context_fill = self.context_fill.max(0.5); }
 
-    // Tool scenarios
-    fn tool_call(&mut self)  { self.tool_activity = 0.4; self.tool_state = ToolState::Single; }
-    fn tool_burst(&mut self) { self.tool_activity = 0.75; self.tool_state = ToolState::Burst; }
-    fn tool_cleave(&mut self){ self.tool_activity = 1.0; self.tool_state = ToolState::Cleave; }
-    fn tool_error(&mut self) { self.tool_activity = 0.6; self.tool_state = ToolState::Error; }
+    // Tool scenarios — each has distinct intensity + color behavior
+    fn tool_call(&mut self) {
+        self.tool_activity = 0.45;
+        self.tool_state = ToolState::Single;
+        self.tool_hue_override = None; // normal teal ramp
+    }
+    fn tool_burst(&mut self) {
+        self.tool_activity = 0.75;
+        self.tool_state = ToolState::Burst;
+        self.tool_hue_override = None; // pushed toward amber by intensity alone
+    }
+    fn tool_cleave(&mut self) {
+        self.tool_activity = 1.0;
+        self.tool_state = ToolState::Cleave;
+        self.tool_hue_override = None; // full amber via max intensity + slow decay
+    }
+    fn tool_error(&mut self) {
+        self.tool_activity = 0.85;
+        self.tool_state = ToolState::Error;
+        // Error breaks the ramp entirely — red alert
+        self.tool_hue_override = Some([224, 72, 72]); // theme error color
+    }
 
     // Thinking scenarios
     fn thinking_start(&mut self) { self.thinking_target = 0.85; }
@@ -493,21 +528,53 @@ fn pixel_color(value: f64, intensity: f64) -> Color {
 }
 
 fn pixel_color_floor(value: f64, intensity: f64, floor: f64) -> Color {
+    pixel_color_floor_hue(value, intensity, floor, None)
+}
+
+fn pixel_color_floor_hue(value: f64, intensity: f64, floor: f64, hue_override: Option<[u8; 3]>) -> Color {
     let v = value.clamp(0.0, 1.0);
     if v < 0.01 { return bg_color(); }
     let effective = (v * intensity).max(v * floor);
-    intensity_color(effective)
+    match hue_override {
+        Some([r, g, b]) => {
+            // Blend: scale the override color by effective intensity
+            let e = effective.clamp(0.0, 1.0);
+            Color::Rgb(
+                (r as f64 * e * 0.4) as u8,  // subdued — not full blast
+                (g as f64 * e * 0.3) as u8,
+                (b as f64 * e * 0.3) as u8,
+            )
+        }
+        None => intensity_color(effective),
+    }
+}
+
+fn pixel_color_hue(value: f64, intensity: f64, hue_override: Option<[u8; 3]>) -> Color {
+    let v = value.clamp(0.0, 1.0);
+    if v < 0.01 { return bg_color(); }
+    match hue_override {
+        Some([r, g, b]) => {
+            let e = (v * intensity).clamp(0.0, 1.0);
+            Color::Rgb(
+                (r as f64 * e * 0.4) as u8,
+                (g as f64 * e * 0.3) as u8,
+                (b as f64 * e * 0.3) as u8,
+            )
+        }
+        None => intensity_color(v * intensity),
+    }
 }
 
 // ─── Instrument rendering ──────────────────────────────────────────────
 
 fn render_instrument(idx: usize, time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState) {
     let speed = s.sim.speed_mult(idx);
+    let hue_override = if idx == 1 { s.sim.tool_hue_override } else { None };
     match idx {
-        0 => render_perlin(time * speed, intensity, area, buf, s),
-        1 => render_lissajous(time * speed, intensity, area, buf, s),
-        2 => render_plasma(time * speed, intensity, area, buf, s),
-        3 => render_attractor(time * speed, intensity, area, buf, s),
+        0 => render_perlin(time * speed, intensity, area, buf, s, None),
+        1 => render_lissajous(time * speed, intensity, area, buf, s, hue_override),
+        2 => render_plasma(time * speed, intensity, area, buf, s, None),
+        3 => render_attractor(time * speed, intensity, area, buf, s, None),
         _ => {}
     }
 }
@@ -522,7 +589,7 @@ fn set_halfblock(buf: &mut Buffer, area: Rect, px: usize, row: usize, top: Color
 
 // ─── Perlin (sonar — context health) ────────────────────────────────────
 
-fn render_perlin(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState) {
+fn render_perlin(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, hue_override: Option<[u8; 3]>) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     for py in (0..h).step_by(2) {
@@ -534,8 +601,8 @@ fn render_perlin(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &De
                                      time, s.perlin_octaves as usize, s.perlin_lacunarity);
             let bot = noise_octaves(px as f64 / s.perlin_scale, (py+1) as f64 / s.perlin_scale,
                                      time, s.perlin_octaves as usize, s.perlin_lacunarity);
-            let tc = pixel_color((top * 0.5 + 0.5) * s.perlin_amplitude, intensity);
-            let bc = pixel_color((bot * 0.5 + 0.5) * s.perlin_amplitude, intensity);
+            let tc = pixel_color_hue((top * 0.5 + 0.5) * s.perlin_amplitude, intensity, hue_override);
+            let bc = pixel_color_hue((bot * 0.5 + 0.5) * s.perlin_amplitude, intensity, hue_override);
             set_halfblock(buf, area, px, row, tc, bc);
         }
     }
@@ -564,7 +631,7 @@ fn noise_sample(x: f64, y: f64, z: f64) -> f64 {
 
 // ─── Plasma (thermal — thinking state) ──────────────────────────────────
 
-fn render_plasma(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState) {
+fn render_plasma(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, _hue_override: Option<[u8; 3]>) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     for py in (0..h).step_by(2) {
@@ -593,7 +660,7 @@ fn plasma_sample(x: f64, y: f64, t: f64, s: &DemoState) -> f64 {
 
 // ─── Lissajous (radar — tool activity) ──────────────────────────────────
 
-fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState) {
+fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, hue_override: Option<[u8; 3]>) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     let mut grid = vec![0u32; w * h];
@@ -622,8 +689,8 @@ fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: 
             if px >= area.width as usize { break; }
             let top_v = (grid[py * w + px] as f64 / max_hits).min(1.0);
             let bot_v = if py+1 < h { (grid[(py+1) * w + px] as f64 / max_hits).min(1.0) } else { 0.0 };
-            let tc = pixel_color_floor(top_v, intensity, 0.25);
-            let bc = pixel_color_floor(bot_v, intensity, 0.25);
+            let tc = pixel_color_floor_hue(top_v, intensity, 0.25, hue_override);
+            let bc = pixel_color_floor_hue(bot_v, intensity, 0.25, hue_override);
             set_halfblock(buf, area, px, row, tc, bc);
         }
     }
@@ -631,7 +698,7 @@ fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: 
 
 // ─── Clifford attractor (signal — memory activity) ──────────────────────
 
-fn render_attractor(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState) {
+fn render_attractor(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, _hue_override: Option<[u8; 3]>) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     let mut grid = vec![0u32; w * h];
@@ -706,11 +773,14 @@ impl Default for DemoState {
         Self {
             selected_instrument: 0, selected_param: 0, paused: false,
             sim: TelemetrySim::default(),
-            perlin_scale: 18.0, perlin_octaves: 2.0,
-            perlin_lacunarity: 2.3, perlin_amplitude: 0.5,
+            // Sonar — operator tuned
+            perlin_scale: 7.9, perlin_octaves: 2.5,
+            perlin_lacunarity: 4.0, perlin_amplitude: 1.0,
+            // Thermal — operator tuned
             plasma_complexity: 1.65, plasma_distortion: 0.8, plasma_amplitude: 0.88,
-            liss_num_curves: 8.0, liss_freq_base: 1.9,
-            liss_freq_spread: 1.86, liss_amplitude: 0.50, liss_points: 5375.0,
+            // Radar — operator tuned
+            liss_num_curves: 3.6, liss_freq_base: 1.9,
+            liss_freq_spread: 3.0, liss_amplitude: 0.50, liss_points: 500.0,
             attr_iterations: 12000.0, attr_evolve_speed: 0.03, attr_a: -1.4,
             attr_b: 1.6, attr_spread: 5.0, attr_gamma: 0.45,
         }

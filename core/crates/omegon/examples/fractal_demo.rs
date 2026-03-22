@@ -437,17 +437,30 @@ impl TelemetrySim {
 
 fn intensity_color(intensity: f64) -> Color {
     let i = intensity.clamp(0.0, 1.0);
-    if i < 0.5 {
-        let t = i / 0.5;
-        let r = (t * 2.0) as u8;
-        let g = (4.0 + t * 36.0) as u8;
-        let b = (8.0 + t * 32.0) as u8;
+    // Three-segment ramp:
+    //   0.0 → 0.3:  dark navy → visible teal (floor lifted so 10% is visible)
+    //   0.3 → 0.6:  teal deepening (brand center at ~0.5)
+    //   0.6 → 1.0:  teal → amber (hot zone starts earlier)
+    if i < 0.3 {
+        // Dark navy → dim teal. Floor at r=1,g=6,b=10 so it's never invisible.
+        let t = i / 0.3;
+        let r = (1.0 + t * 1.0) as u8;           // 1 → 2
+        let g = (6.0 + t * 24.0) as u8;           // 6 → 30
+        let b = (10.0 + t * 22.0) as u8;          // 10 → 32
+        Color::Rgb(r, g, b)
+    } else if i < 0.6 {
+        // Dim teal → full teal (brand center)
+        let t = (i - 0.3) / 0.3;
+        let r = (2.0 + t * 2.0) as u8;            // 2 → 4
+        let g = (30.0 + t * 18.0) as u8;          // 30 → 48
+        let b = (32.0 + t * 12.0) as u8;          // 32 → 44
         Color::Rgb(r, g, b)
     } else {
-        let t = (i - 0.5) / 0.5;
-        let r = (2.0 + t * 68.0) as u8;
-        let g = (40.0 + t * 20.0) as u8;
-        let b = (40.0 - t * 28.0) as u8;
+        // Full teal → amber (the hot zone)
+        let t = (i - 0.6) / 0.4;
+        let r = (4.0 + t * 76.0) as u8;           // 4 → 80
+        let g = (48.0 - t * 4.0) as u8;           // 48 → 44
+        let b = (44.0 - t * 36.0) as u8;          // 44 → 8
         Color::Rgb(r, g, b)
     }
 }

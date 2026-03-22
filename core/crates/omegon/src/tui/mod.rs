@@ -18,6 +18,7 @@ pub mod image;
 pub mod editor;
 pub mod effects;
 pub mod footer;
+pub mod instruments;
 pub mod segments;
 pub mod selector;
 pub mod spinner;
@@ -53,6 +54,7 @@ use self::dashboard::DashboardState;
 use self::segments::Segment;
 use self::footer::FooterData;
 use self::editor::Editor;
+use self::instruments::{InstrumentPanel, InstrumentTelemetry};
 
 /// Messages from TUI to the agent coordinator.
 #[derive(Debug)]
@@ -91,6 +93,10 @@ pub struct App {
     history_idx: Option<usize>,
     dashboard: DashboardState,
     footer_data: FooterData,
+    /// CIC instrument panel for telemetry visualization
+    instrument_panel: InstrumentPanel,
+    /// Focus mode toggle state
+    focus_mode: bool,
     theme: Box<dyn theme::Theme>,
     /// Shared settings — source of truth for model, thinking, etc.
     settings: crate::settings::SharedSettings,
@@ -173,6 +179,8 @@ impl App {
                 model_provider,
                 ..Default::default()
             },
+            instrument_panel: InstrumentPanel::default(),
+            focus_mode: false,
             theme: theme::default_theme(),
             settings,
             cancel: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -469,20 +477,7 @@ impl App {
             self.dashboard.context_window_k = self.footer_data.context_window;
         }
 
-        // ── Fractal telemetry (every frame for smooth animation) ────
-        {
-            let thinking = self.settings().thinking.as_str();
-            let persona_id: Option<&str> = None; // TODO: wire persona when active
-            let is_cleave = self.dashboard.cleave.as_ref().is_some_and(|c| c.active);
-            self.dashboard.fractal.update_from_status(
-                self.footer_data.context_percent,
-                thinking,
-                self.agent_active,
-                persona_id,
-                is_cleave,
-                0.016, // ~60fps frame time
-            );
-        }
+
 
         let area = frame.area();
 
@@ -527,10 +522,9 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(3),    // [0] conversation (all remaining space)
-                Constraint::Length(3), // [1] editor (input box)
-                Constraint::Length(1), // [2] hint line
-                Constraint::Length(5), // [3] footer cards (bordered, at the foot)
+                Constraint::Min(3),     // [0] conversation (all remaining space)
+                Constraint::Length(3),  // [1] editor (input box)
+                Constraint::Length(12), // [2] instrument panel (CIC telemetry)
             ])
             .split(main_area);
 
@@ -571,46 +565,36 @@ impl App {
             self.dashboard.render_themed(dash_area, frame, t.as_ref());
         }
 
-        // Footer — sync from settings + session state (renders at the foot)
+        // ── CIC Instrument Panel (replaces footer and hint line) ────
         {
-            let s = self.settings();
-            self.footer_data.model_id = s.model.clone();
-            self.footer_data.model_provider = s.provider().to_string();
-            self.footer_data.context_window = s.context_window;
-            self.footer_data.context_class = s.context_class;
-            self.footer_data.context_mode = s.context_mode;
-        }
-        self.footer_data.turn = self.turn;
-        self.footer_data.tool_calls = self.tool_calls;
-        self.footer_data.compactions = self.dashboard.compactions;
-        self.footer_data.render(chunks[3], frame, t.as_ref());
+            // Update telemetry from current state
+            let telemetry = InstrumentTelemetry {
+                context_percent: self.footer_data.context_percent / 100.0,
+                tool_activity: if self.agent_active { 0.8 } else { 0.1 },
+                thinking_level: match self.settings().thinking {
+                    crate::settings::ThinkingLevel::Off => 0.0,
+                    crate::settings::ThinkingLevel::Minimal => 0.2,
+                    crate::settings::ThinkingLevel::Low => 0.4,
+                    crate::settings::ThinkingLevel::Medium => 0.7,
+                    crate::settings::ThinkingLevel::High => 1.0,
+                },
+                memory_activity: [
+                    (self.footer_data.total_facts as f32 / 1000.0).min(1.0),
+                    (self.footer_data.working_memory as f32 / 100.0).min(1.0),
+                    if self.agent_active { 0.6 } else { 0.1 },
+                    (self.footer_data.compactions as f32 / 10.0).min(1.0),
+                ],
+                memory_minds_active: [
+                    self.footer_data.total_facts > 0,
+                    self.footer_data.working_memory > 0,
+                    true, // episodes always active
+                    self.footer_data.compactions > 0,
+                ],
+                focus_mode: self.focus_mode,
+            };
 
-        // Hint line between footer and editor
-        {
-            let ctx_mode = self.footer_data.context_mode;
-            let mut hint_spans = Vec::new();
-            if let Some(ref queued) = self.queued_prompt {
-                let preview = crate::util::truncate_str(queued, 40);
-                hint_spans.push(Span::styled("⏳ Queued: ", Style::default().fg(t.warning())));
-                hint_spans.push(Span::styled(preview.to_string(), Style::default().fg(t.muted())));
-            } else if self.agent_active {
-                hint_spans.push(Span::styled("Type ahead ", Style::default().fg(t.accent_muted())));
-                hint_spans.push(Span::styled("· Enter queues · Esc interrupts", Style::default().fg(t.dim())));
-            } else {
-                hint_spans.push(Span::styled("Tab ", Style::default().fg(t.dim())));
-                hint_spans.push(Span::styled("expand card", Style::default().fg(t.dim())));
-                hint_spans.push(Span::styled("  ·  ", Style::default().fg(t.border_dim())));
-                hint_spans.push(Span::styled(format!("{} {}", ctx_mode.icon(), ctx_mode.as_str()), Style::default().fg(t.dim())));
-                hint_spans.push(Span::styled("  ·  ", Style::default().fg(t.border_dim())));
-                hint_spans.push(Span::styled(
-                    format!("{} {}", self.settings().thinking.icon(), self.settings().thinking.as_str()),
-                    Style::default().fg(t.dim()),
-                ));
-            }
-            let hint_spans = hint_spans;
-            let hint = Paragraph::new(Line::from(hint_spans))
-                .style(Style::default().bg(t.card_bg()));
-            frame.render_widget(hint, chunks[2]);
+            self.instrument_panel.update_telemetry(telemetry, 0.016);
+            self.instrument_panel.render(chunks[2], frame, t.as_ref());
         }
 
         // Apply theme to textarea each frame (in case theme changed)
@@ -698,7 +682,7 @@ impl App {
         }
 
         // ── Post-render effects (tachyonfx) — each zone processed separately ──
-        self.effects.process(frame.buffer_mut(), chunks[0], chunks[3], chunks[1]);
+        self.effects.process(frame.buffer_mut(), chunks[0], chunks[2], chunks[1]);
 
         // ── Toast notifications — rendered last, on top of everything ──
         self.toasts.set_area(frame.area());
@@ -774,6 +758,7 @@ impl App {
         ("tone",     "switch tone (or 'off' to deactivate)",    &["off"]),
         ("delegate", "delegate task management",              &["status"]),
         ("status",   "show harness status (providers, MCP, secrets, routing)", &[]),
+        ("focus",    "toggle instrument panel focus mode",   &[]),
         ("splash",   "replay splash animation",              &[]),
         ("dashboard", "open web dashboard (alias for /dash open)", &[]),
         ("version",  "show build version and git sha",       &[]),
@@ -1144,6 +1129,13 @@ impl App {
                         SlashResult::Display("Usage: /delegate status\n\nTo invoke a delegate, use the delegate agent tool.".into())
                     }
                 }
+            }
+
+            "focus" => {
+                // Toggle instrument panel focus mode
+                self.focus_mode = !self.focus_mode;
+                let status = if self.focus_mode { "enabled" } else { "disabled" };
+                SlashResult::Display(format!("Instrument panel focus mode → {status}"))
             }
 
             "vault" => {

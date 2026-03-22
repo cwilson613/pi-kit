@@ -12,7 +12,6 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::lifecycle::types::*;
 use super::theme::Theme;
 use super::widgets;
-use super::fractal::FractalWidget;
 
 use std::sync::{Arc, Mutex};
 
@@ -146,10 +145,7 @@ pub struct DashboardState {
     // Context gauge
     pub context_used_pct: f32,
     pub context_window_k: usize,
-    // Fractal widget
-    pub fractal: FractalWidget,
-    /// Last rendered fractal area — cleanup pass must skip this region.
-    pub fractal_area: Rect,
+
 }
 
 #[derive(Default, Clone)]
@@ -211,25 +207,8 @@ impl DashboardState {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // ─── Fractal state surface (top of dashboard) ───────────
-        let fractal_h = 8u16.min(inner.height.saturating_sub(4));
-        let (fractal_area, text_area) = if fractal_h >= 4 {
-            let chunks = Layout::vertical([
-                Constraint::Length(fractal_h),
-                Constraint::Min(3),
-            ]).split(inner);
-            (chunks[0], chunks[1])
-        } else {
-            (Rect::ZERO, inner)
-        };
-
-        if fractal_area.height >= 4 {
-            self.fractal.render(fractal_area, frame.buffer_mut());
-            self.fractal_area = fractal_area;
-        } else {
-            self.fractal_area = Rect::ZERO;
-        }
-
+        // Dashboard content area (fractal removed)
+        let text_area = inner;
         let inner_w = text_area.width.saturating_sub(1) as usize;
         let mut lines: Vec<Line> = Vec::new();
 

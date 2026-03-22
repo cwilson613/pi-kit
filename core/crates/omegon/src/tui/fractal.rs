@@ -102,68 +102,126 @@ impl FractalWidget {
             (real, imag)
         });
 
-        // Slow drift around the Seahorse Valley edge
-        let speed = if is_agent_active { 0.002 } else { 0.0003 };
+        // Drift around the Seahorse Valley edge — visible but not frantic
+        let speed = if is_agent_active { 0.15 } else { 0.03 };
         self.time += dt;
-        let drift_radius = 0.002 / (self.zoom / 40.0); // tighter orbit at higher zoom
+        let drift_radius = 0.003 / (self.zoom / 40.0); // tighter orbit at higher zoom
         self.center.0 = -0.745 + (self.time * speed).sin() * drift_radius;
-        self.center.1 = 0.186 + (self.time * speed * 0.7).cos() * drift_radius;
+        self.center.1 = 0.186 + (self.time * speed * 0.7).cos() * drift_radius * 1.3;
     }
 
-    /// Render the fractal into a ratatui Buffer area with Ω mask and border glow.
-    /// Uses half-block characters for 2x vertical resolution.
+    /// Render the fractal into a ratatui Buffer area using braille characters
+    /// with an Ω-shaped mask and pulsing border glow.
+    ///
+    /// Braille gives 2×4 dots per cell = 4× the resolution of half-blocks.
+    /// Each cell gets one fg color (from the fractal) against the bg.
+    /// The Ω mask controls which dots are lit within each cell.
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.width < 4 || area.height < 2 {
             return;
         }
 
-        let px_w = area.width as usize;
-        let px_h = area.height as usize * 2; // half-block = 2 pixels per cell
+        let cell_w = area.width as usize;
+        let cell_h = area.height as usize;
+        // Braille: each cell is 2 dots wide × 4 dots tall
+        let dot_w = cell_w * 2;
+        let dot_h = cell_h * 4;
 
-        let aspect = px_w as f64 / px_h as f64;
+        let aspect = dot_w as f64 / dot_h as f64;
         let view_h = 2.5 / self.zoom;
         let view_w = view_h * aspect;
 
-        // Generate the Ω mask at current resolution
-        let mask = omega_mask(px_w, px_h);
+        // Generate the Ω mask at braille resolution
+        let mask = omega_mask(dot_w, dot_h);
 
-        // Border glow color — matches the active palette, pulsing gently
-        let glow_phase = (self.time * 0.8).sin() * 0.5 + 0.5; // 0..1 pulse
+        // Border glow
+        let glow_phase = (self.time * 0.8).sin() * 0.5 + 0.5;
         let glow_color = self.glow_color(glow_phase);
 
-        for cy in (0..px_h).step_by(2) {
-            let row = cy / 2;
-            if row >= area.height as usize { break; }
+        let bg = Color::Rgb(6, 10, 18); // surface_bg
 
-            for cx in 0..px_w {
-                if cx >= area.width as usize { break; }
+        for cy in 0..cell_h {
+            for cx in 0..cell_w {
+                // Each braille cell covers a 2×4 dot region
+                let dx = cx * 2;
+                let dy = cy * 4;
 
-                let top_mask = mask_value(&mask, cx, cy, px_w);
-                let bot_mask = mask_value(&mask, cx, cy + 1, px_w);
+                // Determine which dots are lit and the dominant color
+                let mut braille_bits: u8 = 0;
+                let mut total_r: u32 = 0;
+                let mut total_g: u32 = 0;
+                let mut total_b: u32 = 0;
+                let mut color_count: u32 = 0;
+                let mut has_border = false;
 
-                let top_color = match top_mask {
-                    MaskVal::Inside => self.iter_to_color(
-                        self.compute_pixel(cx, cy, px_w, px_h, view_w, view_h)
-                    ),
-                    MaskVal::Border => glow_color,
-                    MaskVal::Outside => Color::Rgb(6, 10, 18), // surface_bg
+                // Braille dot positions within the 2×4 grid:
+                // Col 0: bits 0,1,2,6 (top to bottom)
+                // Col 1: bits 3,4,5,7
+                let dot_bits = [
+                    [0u8, 1, 2, 6], // column 0, rows 0-3
+                    [3, 4, 5, 7],   // column 1, rows 0-3
+                ];
+
+                for col in 0..2 {
+                    for row in 0..4 {
+                        let px = dx + col;
+                        let py = dy + row;
+                        if px >= dot_w || py >= dot_h { continue; }
+
+                        let mv = mask_value(&mask, px, py, dot_w);
+                        match mv {
+                            MaskVal::Inside => {
+                                braille_bits |= 1 << dot_bits[col][row];
+                                let iter = self.compute_pixel(px, py, dot_w, dot_h, view_w, view_h);
+                                if let Color::Rgb(r, g, b) = self.iter_to_color(iter) {
+                                    total_r += r as u32;
+                                    total_g += g as u32;
+                                    total_b += b as u32;
+                                    color_count += 1;
+                                }
+                            }
+                            MaskVal::Border => {
+                                braille_bits |= 1 << dot_bits[col][row];
+                                has_border = true;
+                            }
+                            MaskVal::Outside => {}
+                        }
+                    }
+                }
+
+                let fg = if has_border && color_count == 0 {
+                    glow_color
+                } else if color_count > 0 {
+                    // Average color of the fractal pixels in this cell
+                    let r = (total_r / color_count) as u8;
+                    let g = (total_g / color_count) as u8;
+                    let b = (total_b / color_count) as u8;
+                    // Blend in border glow if present
+                    if has_border {
+                        if let (Color::Rgb(gr, gg, gb), Color::Rgb(fr, fg, fb)) = (glow_color, Color::Rgb(r, g, b)) {
+                            Color::Rgb(
+                                ((fr as u16 + gr as u16) / 2) as u8,
+                                ((fg as u16 + gg as u16) / 2) as u8,
+                                ((fb as u16 + gb as u16) / 2) as u8,
+                            )
+                        } else { Color::Rgb(r, g, b) }
+                    } else {
+                        Color::Rgb(r, g, b)
+                    }
+                } else {
+                    bg // no dots lit
                 };
-                let bot_color = match bot_mask {
-                    MaskVal::Inside => self.iter_to_color(
-                        self.compute_pixel(cx, cy + 1, px_w, px_h, view_w, view_h)
-                    ),
-                    MaskVal::Border => glow_color,
-                    MaskVal::Outside => Color::Rgb(6, 10, 18),
-                };
 
-                let cell = buf.cell_mut(Position::new(
+                // Braille Unicode block starts at U+2800
+                let braille_char = char::from_u32(0x2800 + braille_bits as u32).unwrap_or(' ');
+
+                if let Some(cell) = buf.cell_mut(Position::new(
                     area.x + cx as u16,
-                    area.y + row as u16,
-                ));
-                if let Some(cell) = cell {
-                    cell.set_char('▀');
-                    cell.set_fg(top_color);
-                    cell.set_bg(bot_color);
+                    area.y + cy as u16,
+                )) {
+                    cell.set_char(braille_char);
+                    cell.set_fg(fg);
+                    cell.set_bg(bg);
                 }
             }
         }
@@ -429,15 +487,17 @@ mod tests {
         widget.render(area, &mut buf);
 
         // Verify cells were written (not all spaces)
-        let mut non_empty = 0;
+        let mut non_space = 0;
         for y in 0..area.height {
             for x in 0..area.width {
-                if buf.cell(Position::new(x, y)).unwrap().symbol() == "▀" {
-                    non_empty += 1;
+                let sym = buf.cell(Position::new(x, y)).unwrap().symbol().chars().next().unwrap_or(' ');
+                // Braille block is U+2800..U+28FF
+                if ('\u{2800}'..='\u{28FF}').contains(&sym) {
+                    non_space += 1;
                 }
             }
         }
-        assert!(non_empty > 0, "should render half-block characters");
+        assert!(non_space > 0, "should render braille characters");
     }
 
     #[test]

@@ -210,7 +210,7 @@ impl DashboardState {
         frame.render_widget(block, area);
 
         // ─── Fractal state surface (top of dashboard) ───────────
-        let fractal_h = 8u16.min(inner.height.saturating_sub(4)); // reserve space for text
+        let fractal_h = 8u16.min(inner.height.saturating_sub(4));
         let (fractal_area, text_area) = if fractal_h >= 4 {
             let chunks = Layout::vertical([
                 Constraint::Length(fractal_h),

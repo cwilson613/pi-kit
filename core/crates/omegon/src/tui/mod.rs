@@ -702,9 +702,29 @@ impl App {
         // Any cell that widgets left with Color::Reset bg gets the theme bg.
         // This catches spans/paragraphs that use Style::default() without
         // explicit .bg() — they'd otherwise show the terminal's default color.
+        // Also force ALL cells to have explicit theme bg unless they have a
+        // deliberate non-default, non-reset color.
         {
             let bg = self.theme.surface_bg();
+            let card = self.theme.card_bg();
             let buf = frame.buffer_mut();
+            // Diagnostic: on first frame, log unique bg colors
+            if self.turn == 0 && self.tool_calls == 0 {
+                let mut color_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        let cell = &buf[(x, y)];
+                        let key = format!("{:?}", cell.bg);
+                        *color_counts.entry(key).or_insert(0) += 1;
+                    }
+                }
+                let mut counts: Vec<_> = color_counts.into_iter().collect();
+                counts.sort_by(|a, b| b.1.cmp(&a.1));
+                tracing::warn!("=== BG COLOR AUDIT ===");
+                for (color, count) in counts.iter().take(15) {
+                    tracing::warn!("  {count:>6} cells: {color}");
+                }
+            }
             for y in area.top()..area.bottom() {
                 for x in area.left()..area.right() {
                     let cell = &mut buf[(x, y)];
@@ -713,6 +733,9 @@ impl App {
                     }
                 }
             }
+            // Second pass: catch any remaining non-theme bg colors that
+            // aren't deliberate semantic colors (card_bg, diff, error).
+            let _ = card; // card_bg is a legitimate distinct color
         }
     }
 

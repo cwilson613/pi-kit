@@ -110,152 +110,44 @@ impl FractalWidget {
         self.center.1 = 0.186 + (self.time * speed * 0.7).cos() * drift_radius * 1.3;
     }
 
-    /// Render the fractal into a ratatui Buffer area using braille characters
-    /// with an Ω-shaped mask and pulsing border glow.
-    ///
-    /// Braille gives 2×4 dots per cell = 4× the resolution of half-blocks.
-    /// Each cell gets one fg color (from the fractal) against the bg.
-    /// The Ω mask controls which dots are lit within each cell.
+    /// Render the fractal using half-block characters (▀).
+    /// Each cell = 2 vertical pixels (fg = top, bg = bottom).
+    /// Fills the entire area — no mask, no overlay.
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.width < 4 || area.height < 2 {
             return;
         }
 
-        let cell_w = area.width as usize;
-        let cell_h = area.height as usize;
-        // Braille: each cell is 2 dots wide × 4 dots tall
-        let dot_w = cell_w * 2;
-        let dot_h = cell_h * 4;
+        let px_w = area.width as usize;
+        let px_h = area.height as usize * 2;
 
-        let aspect = dot_w as f64 / dot_h as f64;
+        let aspect = px_w as f64 / px_h as f64;
         let view_h = 2.5 / self.zoom;
         let view_w = view_h * aspect;
 
-        // Generate the Ω mask at braille resolution
-        let mask = omega_mask(dot_w, dot_h);
+        for cy in (0..px_h).step_by(2) {
+            let row = cy / 2;
+            if row >= area.height as usize { break; }
 
-        // Border glow
-        let glow_phase = (self.time * 0.8).sin() * 0.5 + 0.5;
-        let glow_color = self.glow_color(glow_phase);
+            for cx in 0..px_w {
+                if cx >= area.width as usize { break; }
 
-        let bg = Color::Rgb(6, 10, 18); // surface_bg
-
-        for cy in 0..cell_h {
-            for cx in 0..cell_w {
-                // Each braille cell covers a 2×4 dot region
-                let dx = cx * 2;
-                let dy = cy * 4;
-
-                // Determine which dots are lit and the dominant color
-                let mut braille_bits: u8 = 0;
-                let mut total_r: u32 = 0;
-                let mut total_g: u32 = 0;
-                let mut total_b: u32 = 0;
-                let mut color_count: u32 = 0;
-                let mut has_border = false;
-
-                // Braille dot positions within the 2×4 grid:
-                // Col 0: bits 0,1,2,6 (top to bottom)
-                // Col 1: bits 3,4,5,7
-                let dot_bits = [
-                    [0u8, 1, 2, 6], // column 0, rows 0-3
-                    [3, 4, 5, 7],   // column 1, rows 0-3
-                ];
-
-                for col in 0..2 {
-                    for row in 0..4 {
-                        let px = dx + col;
-                        let py = dy + row;
-                        if px >= dot_w || py >= dot_h { continue; }
-
-                        let mv = mask_value(&mask, px, py, dot_w);
-                        match mv {
-                            MaskVal::Inside => {
-                                braille_bits |= 1 << dot_bits[col][row];
-                                let iter = self.compute_pixel(px, py, dot_w, dot_h, view_w, view_h);
-                                if let Color::Rgb(r, g, b) = self.iter_to_color(iter) {
-                                    total_r += r as u32;
-                                    total_g += g as u32;
-                                    total_b += b as u32;
-                                    color_count += 1;
-                                }
-                            }
-                            MaskVal::Border => {
-                                braille_bits |= 1 << dot_bits[col][row];
-                                has_border = true;
-                            }
-                            MaskVal::Outside => {}
-                        }
-                    }
-                }
-
-                let fg = if has_border && color_count == 0 {
-                    glow_color
-                } else if color_count > 0 {
-                    // Average color of the fractal pixels in this cell
-                    let r = (total_r / color_count) as u8;
-                    let g = (total_g / color_count) as u8;
-                    let b = (total_b / color_count) as u8;
-                    // Blend in border glow if present
-                    if has_border {
-                        if let (Color::Rgb(gr, gg, gb), Color::Rgb(fr, fg, fb)) = (glow_color, Color::Rgb(r, g, b)) {
-                            Color::Rgb(
-                                ((fr as u16 + gr as u16) / 2) as u8,
-                                ((fg as u16 + gg as u16) / 2) as u8,
-                                ((fb as u16 + gb as u16) / 2) as u8,
-                            )
-                        } else { Color::Rgb(r, g, b) }
-                    } else {
-                        Color::Rgb(r, g, b)
-                    }
-                } else {
-                    bg // no dots lit
-                };
-
-                // Braille Unicode block starts at U+2800
-                let braille_char = char::from_u32(0x2800 + braille_bits as u32).unwrap_or(' ');
+                let top_color = self.iter_to_color(
+                    self.compute_pixel(cx, cy, px_w, px_h, view_w, view_h)
+                );
+                let bot_color = self.iter_to_color(
+                    self.compute_pixel(cx, cy + 1, px_w, px_h, view_w, view_h)
+                );
 
                 if let Some(cell) = buf.cell_mut(Position::new(
                     area.x + cx as u16,
-                    area.y + cy as u16,
+                    area.y + row as u16,
                 )) {
-                    cell.set_char(braille_char);
-                    cell.set_fg(fg);
-                    cell.set_bg(bg);
+                    cell.set_char('▀');
+                    cell.set_fg(top_color);
+                    cell.set_bg(bot_color);
                 }
             }
-        }
-    }
-
-    /// Border glow color — subdued, palette-matched pulse.
-    fn glow_color(&self, phase: f64) -> Color {
-        let intensity = 20.0 + phase * 25.0; // 20..45 brightness
-        match self.palette {
-            Palette::Ocean => Color::Rgb(
-                (intensity * 0.2) as u8,
-                (intensity * 0.6) as u8,
-                (intensity * 0.9) as u8,
-            ),
-            Palette::Amber => Color::Rgb(
-                (intensity * 0.9) as u8,
-                (intensity * 0.5) as u8,
-                (intensity * 0.1) as u8,
-            ),
-            Palette::Violet => Color::Rgb(
-                (intensity * 0.6) as u8,
-                (intensity * 0.2) as u8,
-                (intensity * 0.9) as u8,
-            ),
-            Palette::Split => Color::Rgb(
-                (intensity * 0.7) as u8,
-                (intensity * 0.4) as u8,
-                (intensity * 0.7) as u8,
-            ),
-            Palette::Muted => Color::Rgb(
-                (intensity * 0.4) as u8,
-                (intensity * 0.4) as u8,
-                (intensity * 0.45) as u8,
-            ),
         }
     }
 
@@ -370,75 +262,6 @@ fn simple_hash(s: &str) -> u64 {
     h
 }
 
-// ─── Ω mask ─────────────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq)]
-enum MaskVal {
-    Inside,  // fractal shows through
-    Border,  // glow edge
-    Outside, // background
-}
-
-/// Generate an Ω (omega) shaped mask at the given pixel resolution.
-/// The Ω is a circle open at the bottom with two feet.
-fn omega_mask(w: usize, h: usize) -> Vec<MaskVal> {
-    let mut mask = vec![MaskVal::Outside; w * h];
-    let cx = w as f64 / 2.0;
-    let cy = h as f64 / 2.0 - 1.0; // shift up slightly to make room for feet
-    let radius = (w.min(h) as f64 / 2.0) - 2.0; // leave margin for border
-    let border_width = 1.2;
-
-    for py in 0..h {
-        for px in 0..w {
-            let dx = px as f64 - cx;
-            let dy = py as f64 - cy;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            // Angle from center (0 = right, π/2 = down)
-            let angle = dy.atan2(dx);
-
-            // The Ω shape: a circle with a gap at the bottom (~30° each side)
-            let gap_angle = 0.45; // radians from straight down
-            let in_gap = angle > std::f64::consts::FRAC_PI_2 - gap_angle
-                && angle < std::f64::consts::FRAC_PI_2 + gap_angle;
-
-            // Feet: two small rectangles at the bottom of the gap
-            let foot_y = cy + radius * 0.85;
-            let foot_width = radius * 0.22;
-            let left_foot_x = cx - radius * gap_angle.sin() - foot_width * 0.5;
-            let right_foot_x = cx + radius * gap_angle.sin() - foot_width * 0.5;
-            let is_foot = py as f64 >= foot_y && py as f64 <= foot_y + 2.5
-                && ((px as f64 >= left_foot_x && px as f64 <= left_foot_x + foot_width * 2.0)
-                    || (px as f64 >= right_foot_x && px as f64 <= right_foot_x + foot_width * 2.0));
-
-            let idx = py * w + px;
-            if is_foot {
-                // Check if this foot pixel is on the edge
-                let is_foot_edge = py as f64 <= foot_y + border_width
-                    || py as f64 >= foot_y + 2.5 - border_width
-                    || px as f64 <= left_foot_x + border_width
-                    || px as f64 >= left_foot_x + foot_width * 2.0 - border_width
-                    || px as f64 <= right_foot_x + border_width
-                    || px as f64 >= right_foot_x + foot_width * 2.0 - border_width;
-                mask[idx] = if is_foot_edge { MaskVal::Border } else { MaskVal::Inside };
-            } else if !in_gap && dist <= radius {
-                // Inside the circle (excluding gap)
-                if dist >= radius - border_width {
-                    mask[idx] = MaskVal::Border; // outer edge
-                } else {
-                    mask[idx] = MaskVal::Inside;
-                }
-            }
-        }
-    }
-    mask
-}
-
-fn mask_value(mask: &[MaskVal], x: usize, y: usize, w: usize) -> MaskVal {
-    let idx = y * w + x;
-    if idx < mask.len() { mask[idx] } else { MaskVal::Outside }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,14 +313,12 @@ mod tests {
         let mut non_space = 0;
         for y in 0..area.height {
             for x in 0..area.width {
-                let sym = buf.cell(Position::new(x, y)).unwrap().symbol().chars().next().unwrap_or(' ');
-                // Braille block is U+2800..U+28FF
-                if ('\u{2800}'..='\u{28FF}').contains(&sym) {
+                if buf.cell(Position::new(x, y)).unwrap().symbol() == "▀" {
                     non_space += 1;
                 }
             }
         }
-        assert!(non_space > 0, "should render braille characters");
+        assert!(non_space > 0, "should render half-block characters");
     }
 
     #[test]

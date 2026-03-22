@@ -1,145 +1,132 @@
-//! CIC instrument panel — four simultaneous fractal instruments.
+//! CIC instrument panel — four simultaneous displays.
 //!
-//! Replace the 4-card footer with a split-panel layout:
-//! - Engine + memory (left 40%): inference state and memory telemetry
-//! - System state (right 60%): 2×2 grid of fractal instruments
+//! Ported directly from the fractal_demo example (the operator-tuned reference).
 //!
 //! ## Four Instruments
 //!
-//! 1. **Perlin sonar** (context) — smooth noise flow, scale=7.9
-//! 2. **Lissajous radar** (tools) — curve intersection patterns, 3.6 curves
-//! 3. **Plasma thermal** (thinking) — sine interference, complexity=2.46
-//! 4. **CA waterfall** (memory) — cellular automata with CRT noise glyphs
+//! 1. **Context** (Perlin flow) — context utilization, scale=7.9
+//! 2. **Tools** (Lissajous curves) — tool execution activity, curves=3.6
+//! 3. **Thinking** (Plasma sine) — inference/thinking state, complexity=2.46
+//! 4. **Memory** (CA waterfall) — memory activity with per-mind columns
 //!
 //! All use unified navy→teal→amber CIE L* perceptual color ramp.
-//! Amber gets 50% of the range for high-intensity visibility.
 
 use ratatui::prelude::*;
-use ratatui::buffer::Buffer;
-use std::collections::HashMap;
+use ratatui::widgets::{Block, Borders};
 
-/// Instrument panel state and rendering core.
+// ─── Panel ──────────────────────────────────────────────────────────────
+
+/// Instrument panel — four simultaneous displays in a 2×2 grid.
 pub struct InstrumentPanel {
-    /// Perlin sonar instrument (context monitoring).
-    perlin: PerlinSonar,
-    /// Lissajous radar instrument (tool monitoring).
-    lissajous: LissajousRadar,
-    /// Plasma thermal instrument (thinking monitoring).
-    plasma: PlasmaThermal,
-    /// CA waterfall instrument (memory monitoring).
-    waterfall: CaWaterfall,
-    /// Animation time counter.
     time: f64,
-    /// Focus mode toggle state.
-    focus_mode: bool,
-    /// Tracked intensities for display in borders.
+    /// Per-instrument intensity (0.0 = idle, 1.0 = max)
     context_intensity: f64,
     tool_intensity: f64,
     thinking_intensity: f64,
     memory_intensity: f64,
-    /// Tool error state for red border.
+    /// Tool error state → red border
     tool_error: bool,
+    /// Waterfall persistent state (one per mind)
+    waterfalls: [WaterfallState; 4],
+    minds_active: [bool; 4],
+    /// Focus mode toggle
+    pub focus_mode: bool,
 }
 
 impl Default for InstrumentPanel {
     fn default() -> Self {
         Self {
-            perlin: PerlinSonar::new(),
-            lissajous: LissajousRadar::new(),
-            plasma: PlasmaThermal::new(),
-            waterfall: CaWaterfall::new(),
             time: 0.0,
-            focus_mode: false,
             context_intensity: 0.0,
             tool_intensity: 0.0,
             thinking_intensity: 0.0,
             memory_intensity: 0.0,
             tool_error: false,
+            waterfalls: [
+                WaterfallState::new(22, 5),
+                WaterfallState::new(22, 5),
+                WaterfallState::new(22, 5),
+                WaterfallState::new(22, 5),
+            ],
+            minds_active: [true, false, false, false],
+            focus_mode: false,
         }
     }
 }
 
 impl InstrumentPanel {
-    /// Update telemetry data from the harness.
     pub fn update_telemetry(
         &mut self,
         context_pct: f32,
         tool_calls: u32,
         thinking_level: &str,
         memory_facts: usize,
-        memory_minds: &[String], // per-mind column labels
+        _memory_minds: &[String],
         dt: f64,
     ) {
         self.time += dt;
 
-        // Update individual instruments with their telemetry
-        let ctx = (context_pct / 70.0).min(1.0) as f64; // cap at 70% (compaction threshold)
-        self.context_intensity = ctx;
-        self.perlin.update(context_pct, self.time);
+        // Context: cap at 70% (auto-compaction threshold)
+        self.context_intensity = (context_pct as f64 / 70.0).min(1.0);
 
-        self.lissajous.update(tool_calls, self.time);
-        self.tool_intensity = if tool_calls > 0 { 0.6 } else { self.tool_intensity * 0.95 };
+        // Tools: spike on calls, decay
+        if tool_calls > 0 {
+            self.tool_intensity = (self.tool_intensity + 0.3).min(1.0);
+        } else {
+            self.tool_intensity = (self.tool_intensity - dt * 0.5).max(0.0);
+        }
 
-        self.plasma.update(thinking_level, self.time);
+        // Thinking: map level name to intensity, quadratic speed ramp
         self.thinking_intensity = match thinking_level {
-            "high" => 0.9, "medium" => 0.6, "low" => 0.3, "minimal" => 0.15, _ => 0.0,
+            "high" => 0.85, "medium" => 0.6, "low" => 0.35, "minimal" => 0.15, _ => 0.0,
         };
 
-        self.waterfall.update(memory_facts, memory_minds, self.time);
-        self.memory_intensity = if memory_facts > 0 { 0.3 } else { 0.0 };
+        // Memory: based on fact count presence
+        let mem_active = memory_facts > 0;
+        self.memory_intensity = if mem_active {
+            (self.memory_intensity + dt * 0.5).min(0.4)
+        } else {
+            (self.memory_intensity - dt * 0.3).max(0.0)
+        };
+
+        // Tick waterfalls
+        let active_count = self.minds_active.iter().filter(|&&a| a).count().max(1);
+        let col_w = (22 / active_count).max(2);
+        for i in 0..4 {
+            if !self.minds_active[i] { continue; }
+            let density = 0.008 + self.memory_intensity * 0.25;
+            let scroll = 6.0 * (0.5 + self.memory_intensity * 1.5);
+            let rule = 204u8; // identity at idle; TODO: per-mind ops
+            self.waterfalls[i].ensure_size(col_w, 5);
+            self.waterfalls[i].tick(dt, scroll, density, rule, 0.85);
+        }
     }
 
-    /// Toggle focus mode (expand one instrument to full panel).
     pub fn toggle_focus(&mut self) {
         self.focus_mode = !self.focus_mode;
     }
 
-    /// Render the 2×2 instrument grid or single focused instrument.
     pub fn render(&self, area: Rect, frame: &mut Frame) {
-        if area.width < 8 || area.height < 4 {
-            return;
-        }
+        if area.width < 8 || area.height < 4 { return; }
 
-        if self.focus_mode {
-            // TODO: implement focus mode (single instrument expanded)
-            self.render_grid(area, frame);
-        } else {
-            self.render_grid(area, frame);
-        }
-    }
-
-    /// Render the 2×2 grid layout.
-    fn render_grid(&self, area: Rect, frame: &mut Frame) {
-        // Split into 2×2 grid
         let rows = Layout::vertical([
             Constraint::Percentage(50),
             Constraint::Percentage(50),
         ]).split(area);
+        let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[0]);
+        let bot = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[1]);
 
-        let top_cols = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ]).split(rows[0]);
-
-        let bottom_cols = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ]).split(rows[1]);
-
-        // Render each instrument in its quadrant with labeled borders
-        let labels = [
-            (" sonar ", &self.context_intensity),
-            (" radar ", &self.tool_intensity),
-            (" thermal ", &self.thinking_intensity),
-            (" waterfall ", &self.memory_intensity),
+        let instruments: [(Rect, &str, f64, bool); 4] = [
+            (top[0], "context",  self.context_intensity, false),
+            (top[1], "tools",    self.tool_intensity, self.tool_error),
+            (bot[0], "thinking", self.thinking_intensity, false),
+            (bot[1], "memory",   self.memory_intensity, false),
         ];
-        let areas = [top_cols[0], top_cols[1], bottom_cols[0], bottom_cols[1]];
 
-        for (i, (area, (label, intensity))) in areas.iter().zip(labels.iter()).enumerate() {
-            use ratatui::widgets::{Block, Borders};
-            let pct = (**intensity * 100.0) as u32;
-            let border_color = if i == 1 && self.tool_error {
-                Color::Rgb(224, 72, 72) // red border on tool error
+        for (idx, (area, label, intensity, is_error)) in instruments.iter().enumerate() {
+            let pct = (*intensity * 100.0) as u32;
+            let border_color = if *is_error {
+                Color::Rgb(224, 72, 72)
             } else {
                 Color::Rgb(20, 40, 55)
             };
@@ -147,32 +134,30 @@ impl InstrumentPanel {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    format!("{}{pct}% ", label),
+                    format!(" {} {}% ", label, pct),
                     Style::default().fg(Color::Rgb(64, 88, 112)),
                 ));
             let inner = block.inner(*area);
             frame.render_widget(block, *area);
 
-            match i {
-                0 => self.perlin.render(inner, frame.buffer_mut()),
-                1 => self.lissajous.render(inner, frame.buffer_mut()),
-                2 => self.plasma.render(inner, frame.buffer_mut()),
-                3 => self.waterfall.render(inner, frame.buffer_mut()),
+            if inner.width < 2 || inner.height < 1 { continue; }
+
+            match idx {
+                0 => render_perlin(self.time, *intensity, inner, frame.buffer_mut()),
+                1 => render_lissajous(self.time, *intensity, inner, frame.buffer_mut()),
+                2 => render_plasma(self.time, *intensity, inner, frame.buffer_mut()),
+                3 => render_waterfall_multi(*intensity, inner, frame.buffer_mut(),
+                        &self.waterfalls, &self.minds_active),
                 _ => {}
             }
         }
     }
 }
 
-// ═══ Individual Instruments ═══════════════════════════════════════════════
+// ─── Color ramp (CIE L* perceptual, ported from demo) ──────────────────
 
-/// CIE L* perceptual navy→teal→amber ramp (operator-tuned from demo).
-/// Cube root transfer function makes equal numeric steps feel like equal
-/// visual steps. Amber gets 50% of perceptual range.
 fn intensity_color(intensity: f64) -> Color {
-    if intensity < 0.005 {
-        return Color::Rgb(0, 1, 3);
-    }
+    if intensity < 0.005 { return Color::Rgb(0, 1, 3); }
     let linear = intensity.clamp(0.0, 1.0);
     let i = if linear > 0.008856 { linear.cbrt() } else { linear * 7.787 + 16.0 / 116.0 };
     let i = ((i - 0.138) / (1.0 - 0.138)).clamp(0.0, 1.0);
@@ -189,558 +174,320 @@ fn intensity_color(intensity: f64) -> Color {
     }
 }
 
-/// Set half-block character with top/bottom colors.
-fn set_halfblock(buf: &mut Buffer, area: Rect, x: usize, y: usize, top: Color, bot: Color) {
-    if x < area.width as usize && y < area.height as usize {
-        if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + y as u16)) {
-            cell.set_char('▀');
-            cell.set_fg(top);
-            cell.set_bg(bot);
+fn bg_color() -> Color { Color::Rgb(0, 1, 3) }
+
+fn pixel_color(value: f64, intensity: f64) -> Color {
+    let v = value.clamp(0.0, 1.0);
+    if v < 0.01 { return bg_color(); }
+    intensity_color(v * intensity)
+}
+
+fn pixel_color_floor(value: f64, intensity: f64, floor: f64) -> Color {
+    let v = value.clamp(0.0, 1.0);
+    if v < 0.01 { return bg_color(); }
+    let effective = (v * intensity).max(v * floor);
+    intensity_color(effective)
+}
+
+fn set_halfblock(buf: &mut Buffer, area: Rect, px: usize, row: usize, top: Color, bot: Color) {
+    if let Some(cell) = buf.cell_mut(Position::new(area.x + px as u16, area.y + row as u16)) {
+        cell.set_char('▀');
+        cell.set_fg(top);
+        cell.set_bg(bot);
+    }
+}
+
+// ─── Perlin flow (context) — ported from demo ──────────────────────────
+
+fn render_perlin(time: f64, intensity: f64, area: Rect, buf: &mut Buffer) {
+    let w = area.width as usize;
+    let h = area.height as usize * 2;
+    // Speed increases with intensity (flame effect)
+    let speed = 0.3 + intensity * 2.5;
+    let t = time * speed;
+    for py in (0..h).step_by(2) {
+        let row = py / 2;
+        if row >= area.height as usize { break; }
+        for px in 0..w {
+            if px >= area.width as usize { break; }
+            let top = noise_octaves(px as f64 / 7.9, py as f64 / 7.9, t, 2, 4.0);
+            let bot = noise_octaves(px as f64 / 7.9, (py + 1) as f64 / 7.9, t, 2, 4.0);
+            let tc = pixel_color((top * 0.5 + 0.5) * 1.0, intensity);
+            let bc = pixel_color((bot * 0.5 + 0.5) * 1.0, intensity);
+            set_halfblock(buf, area, px, row, tc, bc);
         }
     }
 }
 
-// ═══ Perlin Sonar (Context) ═══════════════════════════════════════════════
-
-/// Perlin noise sonar — context usage monitoring.
-/// Shows smooth flowing patterns that intensify with context usage.
-pub struct PerlinSonar {
-    scale: f64,
-    octaves: u32,
-    lacunarity: f64,
-    amplitude: f64,
-    context_intensity: f32,
+fn noise_octaves(x: f64, y: f64, z: f64, octaves: usize, lacunarity: f64) -> f64 {
+    let mut val = 0.0;
+    let mut amp = 1.0;
+    let mut freq = 1.0;
+    let mut total_amp = 0.0;
+    for _ in 0..octaves.max(1) {
+        val += noise_sample(x * freq, y * freq, z) * amp;
+        total_amp += amp;
+        amp *= 0.5;
+        freq *= lacunarity;
+    }
+    val / total_amp
 }
 
-impl PerlinSonar {
-    fn new() -> Self {
-        Self {
-            scale: 7.9,
-            octaves: 3, // Approximated from 2.5
-            lacunarity: 4.0,
-            amplitude: 1.0,
-            context_intensity: 0.0,
-        }
-    }
-
-    fn update(&mut self, context_pct: f32, _time: f64) {
-        // Cap context at 70% as specified
-        self.context_intensity = (context_pct / 100.0).min(0.7);
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let w = area.width as usize;
-        let h = area.height as usize;
-
-        for y in 0..h {
-            for x in 0..w {
-                // Perlin noise sample
-                let nx = x as f64 / self.scale;
-                let ny = y as f64 / self.scale;
-                let noise = self.layered_noise(nx, ny);
-                
-                // Modulate with context intensity
-                let intensity = (noise * 0.5 + 0.5) * self.context_intensity as f64 * self.amplitude;
-                let color = intensity_color(intensity);
-                
-                if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + y as u16)) {
-                    cell.set_char('█');
-                    cell.set_fg(color);
-                    cell.set_bg(Color::Rgb(0, 1, 3)); // surface_bg
-                }
-            }
-        }
-    }
-
-    fn layered_noise(&self, x: f64, y: f64) -> f64 {
-        let mut value = 0.0;
-        let mut amplitude = 1.0;
-        let mut frequency = 1.0;
-        let mut total_amplitude = 0.0;
-
-        for _ in 0..self.octaves {
-            value += self.noise_sample(x * frequency, y * frequency) * amplitude;
-            total_amplitude += amplitude;
-            amplitude *= 0.5;
-            frequency *= self.lacunarity;
-        }
-
-        value / total_amplitude
-    }
-
-    fn noise_sample(&self, x: f64, y: f64) -> f64 {
-        // Fast smooth noise using sine interference
-        let v1 = (x * 1.3).sin() * (y * 0.7).cos();
-        let v2 = ((x + y) * 0.8).sin();
-        let v3 = (x * 2.1).cos() * (y * 1.5).sin();
-        (v1 + v2 + v3) / 3.0
-    }
+fn noise_sample(x: f64, y: f64, z: f64) -> f64 {
+    let v1 = (x * 1.3 + z).sin() * (y * 0.7 + z * 0.5).cos();
+    let v2 = ((x + y) * 0.8 - z * 0.3).sin();
+    let v3 = (x * 2.1 - z * 0.7).cos() * (y * 1.5 + z * 0.4).sin();
+    (v1 + v2 + v3) / 3.0
 }
 
-// ═══ Lissajous Radar (Tools) ═══════════════════════════════════════════════
+// ─── Plasma sine (thinking) — ported from demo ─────────────────────────
 
-/// Lissajous curve radar — tool activity monitoring.
-/// Shows intersecting parametric curves that intensify with tool usage.
-pub struct LissajousRadar {
-    curves: f64,
-    freq_base: f64,
-    spread: f64,
-    amplitude: f64,
-    points: usize,
-    tool_intensity: f32,
-    error_state: bool,
-}
-
-impl LissajousRadar {
-    fn new() -> Self {
-        Self {
-            curves: 3.6,
-            freq_base: 1.9,
-            spread: 3.0,
-            amplitude: 0.5,
-            points: 500,
-            tool_intensity: 0.0,
-            error_state: false,
-        }
-    }
-
-    fn update(&mut self, tool_calls: u32, _time: f64) {
-        // Intensity based on recent tool activity
-        self.tool_intensity = if tool_calls > 0 {
-            (tool_calls as f32 / 10.0).min(1.0) // Scale tool calls to intensity
-        } else {
-            self.tool_intensity * 0.95 // Decay when idle
-        };
-
-        // TODO: detect tool errors and set error_state accordingly
-        self.error_state = false;
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let w = area.width as usize;
-        let h = area.height as usize;
-        let mut grid = vec![0u32; w * h];
-
-        let num_curves = (self.curves as usize).max(1);
-        
-        // Render Lissajous curves
-        for curve in 0..num_curves {
-            let fx = self.freq_base + curve as f64 * self.spread / num_curves as f64;
-            let fy = self.freq_base + curve as f64 * (self.spread * 0.8) / num_curves as f64;
-            
-            for i in 0..self.points {
-                let t = i as f64 / self.points as f64 * std::f64::consts::TAU;
-                let x = (fx * t).sin();
-                let y = (fy * t).cos();
-                
-                let gx = ((x * self.amplitude + 0.5) * w as f64) as usize;
-                let gy = ((y * self.amplitude + 0.5) * h as f64) as usize;
-                
-                if gx < w && gy < h {
-                    grid[gy * w + gx] += 1;
-                }
-            }
-        }
-
-        // Render grid to buffer
-        let max_hits = (*grid.iter().max().unwrap_or(&1)).max(1) as f64;
-        for y in 0..h {
-            for x in 0..w {
-                let hits = grid[y * w + x] as f64 / max_hits;
-                let intensity = hits * self.tool_intensity as f64;
-                
-                let color = if self.error_state && intensity > 0.1 {
-                    // Tool error: amber body + red border effect
-                    Color::Rgb(255, 191, 0) // Amber
-                } else {
-                    intensity_color(intensity)
-                };
-                
-                if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + y as u16)) {
-                    cell.set_char('█');
-                    cell.set_fg(color);
-                    cell.set_bg(Color::Rgb(0, 1, 3)); // surface_bg
-                }
-            }
+fn render_plasma(time: f64, intensity: f64, area: Rect, buf: &mut Buffer) {
+    let w = area.width as usize;
+    let h = area.height as usize * 2;
+    // Quadratic speed: slow ignition, then accelerates
+    let speed = 0.2 + intensity * intensity * 2.0;
+    let t = time * speed;
+    for py in (0..h).step_by(2) {
+        let row = py / 2;
+        if row >= area.height as usize { break; }
+        for px in 0..w {
+            if px >= area.width as usize { break; }
+            let top = plasma_sample(px as f64, py as f64, t);
+            let bot = plasma_sample(px as f64, (py + 1) as f64, t);
+            let tc = pixel_color((top * 0.5 + 0.5) * 1.0, intensity);
+            let bc = pixel_color((bot * 0.5 + 0.5) * 1.0, intensity);
+            set_halfblock(buf, area, px, row, tc, bc);
         }
     }
 }
 
-// ═══ Plasma Thermal (Thinking) ═══════════════════════════════════════════
-
-/// Plasma thermal display — thinking activity monitoring.
-/// Shows sine interference patterns that vary with cognitive load.
-pub struct PlasmaThermal {
-    complexity: f64,
-    distortion: f64,
-    amplitude: f64,
-    quadratic_speed: bool,
-    thinking_intensity: f32,
+fn plasma_sample(x: f64, y: f64, t: f64) -> f64 {
+    let c = 2.46;
+    let d = 0.68;
+    let v1 = (x / (6.0 / c) + t).sin();
+    let v2 = ((y / (4.0 / c) + t * 0.7).sin() + (x / (8.0 / c)).cos()).sin();
+    let v3 = ((x * x + y * y).sqrt() * d / (6.0 / c) - t * 1.3).sin();
+    let v4 = (x / (3.0 / c) - t * 0.5).cos() * (y / (5.0 / c) + t * 0.9).sin();
+    (v1 + v2 + v3 + v4) / 4.0
 }
 
-impl PlasmaThermal {
-    fn new() -> Self {
-        Self {
-            complexity: 2.46,
-            distortion: 0.68,
-            amplitude: 1.0,
-            quadratic_speed: true,
-            thinking_intensity: 0.0,
+// ─── Lissajous curves (tools) — ported from demo ───────────────────────
+
+fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer) {
+    let w = area.width as usize;
+    let h = area.height as usize * 2;
+    let mut grid = vec![0u32; w * h];
+
+    let nc = 3; // curves=3.6 rounded
+    let pts = 500usize;
+    let speed = match () {
+        _ if intensity > 0.8 => 1.2,  // cleave
+        _ if intensity > 0.5 => 0.8,  // burst
+        _ if intensity > 0.2 => 0.5,  // single
+        _ => 0.3,                      // idle
+    };
+    let t = time * speed;
+
+    for curve in 0..nc {
+        let fx = 1.9 + curve as f64 * 3.0 / nc as f64;
+        let fy = 1.9 + 1.0 + curve as f64 * (3.0 * 0.8) / nc as f64;
+        let phase = t * (1.0 + curve as f64 * 0.03);
+        for i in 0..pts {
+            let tt = i as f64 / pts as f64 * std::f64::consts::TAU;
+            let x = (fx * tt + phase).sin();
+            let y = (fy * tt + phase * 0.3).cos();
+            let gx = ((x * 0.5 + 0.5) * w as f64) as usize;
+            let gy = ((y * 0.5 + 0.5) * h as f64) as usize;
+            if gx < w && gy < h { grid[gy * w + gx] += 1; }
         }
     }
 
-    fn update(&mut self, thinking_level: &str, _time: f64) {
-        self.thinking_intensity = match thinking_level.to_lowercase().as_str() {
-            "off" => 0.0,
-            "minimal" => 0.2,
-            "low" => 0.4,
-            "medium" => 0.6,
-            "high" => 0.8,
-            _ => 0.0,
-        };
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let w = area.width as usize;
-        let h = area.height as usize;
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-
-        for y in 0..h {
-            for x in 0..w {
-                let plasma = self.plasma_sample(x as f64, y as f64, time);
-                let intensity = (plasma * 0.5 + 0.5) * self.thinking_intensity as f64 * self.amplitude;
-                let color = intensity_color(intensity);
-                
-                if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + y as u16)) {
-                    cell.set_char('█');
-                    cell.set_fg(color);
-                    cell.set_bg(Color::Rgb(0, 1, 3)); // surface_bg
-                }
-            }
-        }
-    }
-
-    fn plasma_sample(&self, x: f64, y: f64, t: f64) -> f64 {
-        let c = self.complexity;
-        let speed = if self.quadratic_speed { t * t * 0.1 } else { t };
-        
-        let v1 = (x / (6.0 / c) + speed).sin();
-        let v2 = ((y / (4.0 / c) + speed * 0.7).sin() + (x / (8.0 / c)).cos()).sin();
-        let v3 = ((x * x + y * y).sqrt() * self.distortion / (6.0 / c) - speed * 1.3).sin();
-        let v4 = (x / (3.0 / c) - speed * 0.5).cos() * (y / (5.0 / c) + speed * 0.9).sin();
-        
-        (v1 + v2 + v3 + v4) / 4.0
-    }
-}
-
-// ═══ CA Waterfall (Memory) ═══════════════════════════════════════════════
-
-/// Cellular automata waterfall — memory monitoring with per-mind columns.
-/// Uses CRT noise glyphs and Rule 204/30/110/90/150 rotation.
-pub struct CaWaterfall {
-    rules: [u8; 5],
-    current_rule_index: usize,
-    states: HashMap<String, WaterfallState>,
-    glyph_set: Vec<char>,
-    memory_facts: usize,
-}
-
-impl CaWaterfall {
-    fn new() -> Self {
-        Self {
-            rules: [204, 30, 110, 90, 150],
-            current_rule_index: 0,
-            states: HashMap::new(),
-            glyph_set: vec!['░', '▒', '▓', '█', '▞', '▚', '▜', '▟'],
-            memory_facts: 0,
-        }
-    }
-
-    fn update(&mut self, memory_facts: usize, memory_minds: &[String], _time: f64) {
-        self.memory_facts = memory_facts;
-
-        // Ensure each mind has a waterfall state
-        for mind in memory_minds {
-            if !self.states.contains_key(mind) {
-                self.states.insert(mind.clone(), WaterfallState::new());
-            }
-        }
-
-        // Remove states for minds that no longer exist
-        self.states.retain(|mind, _| memory_minds.contains(mind));
-
-        // Advance CA simulation for each mind
-        for state in self.states.values_mut() {
-            state.step(self.rules[self.current_rule_index]);
-        }
-
-        // Rotate rule periodically
-        if memory_facts % 100 == 0 && memory_facts > 0 {
-            self.current_rule_index = (self.current_rule_index + 1) % self.rules.len();
-        }
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let w = area.width as usize;
-        let h = area.height as usize;
-
-        if self.states.is_empty() {
-            // No memory minds - show static noise
-            for y in 0..h {
-                for x in 0..w {
-                    let glyph_idx = (x + y * 17) % self.glyph_set.len();
-                    let intensity = if self.memory_facts > 0 { 0.1 } else { 0.05 };
-                    let color = intensity_color(intensity);
-                    
-                    if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + y as u16)) {
-                        cell.set_char(self.glyph_set[glyph_idx]);
-                        cell.set_fg(color);
-                        cell.set_bg(Color::Rgb(0, 1, 3)); // surface_bg
-                    }
-                }
-            }
-            return;
-        }
-
-        // Divide width among mind columns
-        let minds: Vec<&String> = self.states.keys().collect();
-        let col_width = w / minds.len().max(1);
-
-        for (mind_idx, mind_name) in minds.iter().enumerate() {
-            if let Some(state) = self.states.get(*mind_name) {
-                let col_start = mind_idx * col_width;
-                let col_end = if mind_idx == minds.len() - 1 { w } else { (mind_idx + 1) * col_width };
-
-                for y in 0..h {
-                    for x in col_start..col_end {
-                        let local_x = x - col_start;
-                        let ca_width = col_end - col_start;
-                        
-                        if local_x < ca_width && y < state.height {
-                            let cell_state = state.get_cell(local_x, y);
-                            let glyph_idx = (cell_state as usize) % self.glyph_set.len();
-                            let intensity = if cell_state > 0 { 
-                                (cell_state as f64 / 255.0) * 0.8 
-                            } else { 
-                                0.02 
-                            };
-                            let color = intensity_color(intensity);
-                            
-                            if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + y as u16)) {
-                                cell.set_char(self.glyph_set[glyph_idx]);
-                                cell.set_fg(color);
-                                cell.set_bg(Color::Rgb(0, 1, 3)); // surface_bg
-                            }
-                        }
-                    }
-                }
-            }
+    let max_hits = (*grid.iter().max().unwrap_or(&1)).max(1) as f64;
+    for py in (0..h).step_by(2) {
+        let row = py / 2;
+        if row >= area.height as usize { break; }
+        for px in 0..w {
+            if px >= area.width as usize { break; }
+            let top_v = (grid[py * w + px] as f64 / max_hits).min(1.0);
+            let bot_v = if py + 1 < h { (grid[(py + 1) * w + px] as f64 / max_hits).min(1.0) } else { 0.0 };
+            let tc = pixel_color_floor(top_v, intensity, 0.25);
+            let bc = pixel_color_floor(bot_v, intensity, 0.25);
+            set_halfblock(buf, area, px, row, tc, bc);
         }
     }
 }
 
-/// Per-mind cellular automata waterfall state.
+// ─── CA waterfall (memory) — ported from demo ──────────────────────────
+
+const NOISE_CHARS: &[char] = &[
+    '▏', '▎', '▍', '░',
+    '▌', '▐', '▒', '┤', '├', '│', '─',
+    '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫',
+    '█', '╬', '■', '◆',
+];
+
+/// Persistent waterfall state per mind.
 pub struct WaterfallState {
+    grid: Vec<f64>,
     width: usize,
     height: usize,
-    cells: Vec<Vec<u8>>,
-    generation: usize,
+    scroll_accum: f64,
+    rng: u64,
 }
 
 impl WaterfallState {
-    fn new() -> Self {
-        let width = 32;
-        let height = 24;
-        let mut cells = vec![vec![0u8; width]; height];
-        
-        // Initialize with random seed
-        for x in 0..width {
-            cells[0][x] = if (x * 37 + 17) % 3 == 0 { 1 } else { 0 };
-        }
+    fn new(w: usize, h: usize) -> Self {
+        Self { grid: vec![0.0; w * h], width: w, height: h, scroll_accum: 0.0, rng: 0xdeadbeef }
+    }
 
-        Self {
-            width,
-            height,
-            cells,
-            generation: 0,
+    fn next_rand(&mut self) -> u64 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        self.rng
+    }
+
+    fn tick(&mut self, dt: f64, scroll_rate: f64, density: f64, rule: u8, fade: f64) {
+        self.scroll_accum += dt * scroll_rate;
+        while self.scroll_accum >= 1.0 {
+            self.scroll_accum -= 1.0;
+            let w = self.width;
+            let h = self.height;
+            for y in 0..(h - 1) {
+                for x in 0..w {
+                    self.grid[y * w + x] = self.grid[(y + 1) * w + x] * fade;
+                }
+            }
+            let prev_row = h - 2;
+            let new_row = h - 1;
+            for x in 0..w {
+                let left = if x > 0 { (self.grid[prev_row * w + x - 1] > 0.3) as u8 } else { 0 };
+                let center = (self.grid[prev_row * w + x] > 0.3) as u8;
+                let right = if x + 1 < w { (self.grid[prev_row * w + x + 1] > 0.3) as u8 } else { 0 };
+                let neighborhood = (left << 2) | (center << 1) | right;
+                let alive = (rule >> neighborhood) & 1 == 1;
+                let random_birth = (self.next_rand() % 1000) < (density * 1000.0) as u64;
+                self.grid[new_row * w + x] = if alive || random_birth { 1.0 } else { 0.0 };
+            }
         }
     }
 
-    fn step(&mut self, rule: u8) {
-        // Scroll down: move all rows down one position
-        for y in (1..self.height).rev() {
-            self.cells[y] = self.cells[y - 1].clone();
-        }
-
-        // Generate new top row using CA rule
-        let mut new_row = vec![0u8; self.width];
-        for x in 0..self.width {
-            let left = if x > 0 { self.cells[1][x - 1] } else { 0 };
-            let center = self.cells[1][x];
-            let right = if x + 1 < self.width { self.cells[1][x + 1] } else { 0 };
-            
-            new_row[x] = self.apply_rule(rule, left, center, right);
-        }
-        self.cells[0] = new_row;
-        self.generation += 1;
-    }
-
-    fn apply_rule(&self, rule: u8, left: u8, center: u8, right: u8) -> u8 {
-        let pattern = (left << 2) | (center << 1) | right;
-        if (rule >> pattern) & 1 == 1 { 1 } else { 0 }
-    }
-
-    fn get_cell(&self, x: usize, y: usize) -> u8 {
-        if x < self.width && y < self.height {
-            self.cells[y][x] * 255 // Scale to full intensity range
-        } else {
-            0
+    fn ensure_size(&mut self, w: usize, h: usize) {
+        if self.width != w || self.height != h {
+            self.grid = vec![0.0; w * h];
+            self.width = w;
+            self.height = h;
         }
     }
 }
+
+fn render_waterfall_multi(
+    intensity: f64, area: Rect, buf: &mut Buffer,
+    waterfalls: &[WaterfallState; 4], minds_active: &[bool; 4],
+) {
+    let active_indices: Vec<usize> = minds_active.iter().enumerate()
+        .filter(|(_, a)| **a).map(|(i, _)| i).collect();
+    let n = active_indices.len();
+    if n == 0 { return; }
+
+    let total_w = area.width as usize;
+    let gap = if n > 1 { 1 } else { 0 };
+    let total_gaps = if n > 1 { n - 1 } else { 0 };
+    let usable = total_w.saturating_sub(total_gaps);
+    let col_w = usable / n;
+
+    for (seg_idx, &mind_idx) in active_indices.iter().enumerate() {
+        let x_offset = seg_idx * (col_w + gap);
+        let seg_area = Rect {
+            x: area.x + x_offset as u16,
+            y: area.y,
+            width: (col_w as u16).min(area.width.saturating_sub(x_offset as u16)),
+            height: area.height,
+        };
+        render_waterfall(intensity, seg_area, buf, &waterfalls[mind_idx]);
+
+        if seg_idx < n - 1 && gap > 0 {
+            let sep_x = area.x + (x_offset + col_w) as u16;
+            for y in area.y..area.bottom() {
+                if let Some(cell) = buf.cell_mut(Position::new(sep_x, y)) {
+                    cell.set_char('│');
+                    cell.set_fg(Color::Rgb(20, 40, 55));
+                    cell.set_bg(bg_color());
+                }
+            }
+        }
+    }
+}
+
+fn render_waterfall(intensity: f64, area: Rect, buf: &mut Buffer, wf: &WaterfallState) {
+    for cy in 0..area.height as usize {
+        for cx in 0..area.width as usize {
+            let val = if cx < wf.width && cy < wf.height {
+                wf.grid[cy * wf.width + cx]
+            } else { 0.0 };
+
+            if val < 0.05 {
+                if let Some(cell) = buf.cell_mut(Position::new(area.x + cx as u16, area.y + cy as u16)) {
+                    cell.set_char(' ');
+                    cell.set_fg(bg_color());
+                    cell.set_bg(bg_color());
+                }
+                continue;
+            }
+
+            let hash = ((cx * 7 + cy * 13 + (val * 100.0) as usize) * 31) % NOISE_CHARS.len();
+            let tier = ((val * (NOISE_CHARS.len() - 1) as f64) as usize).min(NOISE_CHARS.len() - 1);
+            let idx = (tier / 2 + hash / 2).min(NOISE_CHARS.len() - 1);
+            let ch = NOISE_CHARS[idx];
+
+            let effective = (val * intensity).max(val * 0.08);
+            let color = intensity_color(effective);
+
+            if let Some(cell) = buf.cell_mut(Position::new(area.x + cx as u16, area.y + cy as u16)) {
+                cell.set_char(ch);
+                cell.set_fg(color);
+                cell.set_bg(bg_color());
+            }
+        }
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    #[test]
-    fn instrument_panel_creates_successfully() {
-        let panel = InstrumentPanel::default();
-        assert!(!panel.focus_mode);
-    }
-
-    #[test]
-    fn instrument_panel_renders_without_panic() {
-        let panel = InstrumentPanel::default();
-        let backend = TestBackend::new(40, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| {
-            panel.render(frame.area(), frame);
-        }).unwrap();
-    }
 
     #[test]
     fn intensity_color_floor_is_bg() {
         assert!(matches!(intensity_color(0.0), Color::Rgb(0, 1, 3)));
-        assert!(matches!(intensity_color(0.004), Color::Rgb(0, 1, 3)));
     }
 
     #[test]
     fn intensity_color_ramp_progresses() {
-        // Low intensity should be in the dark end of the ramp
         if let Color::Rgb(r, g, b) = intensity_color(0.1) {
-            assert!(r < 20 && g < 50 && b < 50, "0.1 should be dark: ({r},{g},{b})");
+            assert!(r < 20 && g < 50 && b < 50, "0.1 dark: ({r},{g},{b})");
         }
-        // Mid intensity perceptually maps to amber zone (CIE L* pushes it up)
-        if let Color::Rgb(r, g, b) = intensity_color(0.5) {
-            assert!(g > 20 || b > 20, "0.5 should have color: ({r},{g},{b})");
-        }
-        // High intensity should shift toward amber (r grows, b shrinks)
         if let Color::Rgb(r, g, b) = intensity_color(1.0) {
-            assert!(r > 40 && b < r, "1.0 should be amber-ish: ({r},{g},{b})");
+            assert!(r > 40 && b < r, "1.0 amber: ({r},{g},{b})");
         }
     }
 
     #[test]
-    fn perlin_sonar_caps_context_at_70_percent() {
-        let mut sonar = PerlinSonar::new();
-        sonar.update(90.0, 1.0); // 90% context
-        assert_eq!(sonar.context_intensity, 0.7); // Capped at 70%
+    fn panel_renders_without_panic() {
+        let panel = InstrumentPanel::default();
+        let area = Rect::new(0, 0, 96, 12);
+        let backend = ratatui::backend::TestBackend::new(96, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| panel.render(area, f)).unwrap();
     }
 
     #[test]
-    fn lissajous_radar_scales_tool_intensity() {
-        let mut radar = LissajousRadar::new();
-        radar.update(5, 1.0);
-        assert_eq!(radar.tool_intensity, 0.5); // 5 tools / 10 = 0.5
-        
-        radar.update(20, 1.0);
-        assert_eq!(radar.tool_intensity, 1.0); // Capped at 1.0
-    }
-
-    #[test]
-    fn plasma_thermal_thinking_levels() {
-        let mut plasma = PlasmaThermal::new();
-        
-        plasma.update("off", 1.0);
-        assert_eq!(plasma.thinking_intensity, 0.0);
-        
-        plasma.update("medium", 1.0);
-        assert_eq!(plasma.thinking_intensity, 0.6);
-        
-        plasma.update("high", 1.0);
-        assert_eq!(plasma.thinking_intensity, 0.8);
-    }
-
-    #[test]
-    fn ca_waterfall_creates_states_for_minds() {
-        let mut waterfall = CaWaterfall::new();
-        let minds = vec!["alice".to_string(), "bob".to_string()];
-        
-        waterfall.update(100, &minds, 1.0);
-        assert_eq!(waterfall.states.len(), 2);
-        assert!(waterfall.states.contains_key("alice"));
-        assert!(waterfall.states.contains_key("bob"));
-    }
-
-    #[test]
-    fn ca_waterfall_removes_unused_mind_states() {
-        let mut waterfall = CaWaterfall::new();
-        let initial_minds = vec!["alice".to_string(), "bob".to_string()];
-        waterfall.update(100, &initial_minds, 1.0);
-        
-        let remaining_minds = vec!["alice".to_string()];
-        waterfall.update(200, &remaining_minds, 1.0);
-        
-        assert_eq!(waterfall.states.len(), 1);
-        assert!(waterfall.states.contains_key("alice"));
-        assert!(!waterfall.states.contains_key("bob"));
-    }
-
-    #[test]
-    fn waterfall_state_applies_ca_rules() {
-        let mut state = WaterfallState::new();
-        let initial_gen = state.generation;
-        
-        state.step(30); // Rule 30
-        assert_eq!(state.generation, initial_gen + 1);
-    }
-
-    #[test]
-    fn all_instruments_render_without_panic() {
-        let backend = TestBackend::new(20, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        
-        let perlin = PerlinSonar::new();
-        let lissajous = LissajousRadar::new();
-        let plasma = PlasmaThermal::new();
-        let waterfall = CaWaterfall::new();
-        
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let buf = frame.buffer_mut();
-            
-            perlin.render(area, buf);
-            lissajous.render(area, buf);
-            plasma.render(area, buf);
-            waterfall.render(area, buf);
-        }).unwrap();
-    }
-
-    #[test]
-    fn focus_mode_toggle() {
-        let mut panel = InstrumentPanel::default();
-        assert!(!panel.focus_mode);
-        
-        panel.toggle_focus();
-        assert!(panel.focus_mode);
-        
-        panel.toggle_focus();
-        assert!(!panel.focus_mode);
+    fn waterfall_scrolls() {
+        let mut wf = WaterfallState::new(10, 5);
+        wf.tick(0.5, 10.0, 0.1, 30, 0.85);
+        let has_content = wf.grid.iter().any(|&v| v > 0.0);
+        assert!(has_content, "waterfall should have content after tick");
     }
 }

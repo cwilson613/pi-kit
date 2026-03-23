@@ -58,7 +58,7 @@ pub const STEPS: &[Step] = &[
     // ═══ Act 1 — The Cockpit ═══════════════════════════════════
     Step {
         title: "Welcome to Omegon",
-        body: "This is your AI agent cockpit.\n\nThe main area is the conversation \u{2014} where you\nand the agent work together. The panels at the\nbottom show engine status and live telemetry.\nThe sidebar on the right tracks your design space.\n\n\u{25b6} Hands-on mode: Acts 2\u{2013}3 use YOUR project.\n\n  Want the full scripted demo with live cleave?\n  Press Esc, then type /tutorial demo",
+        body: "This is your AI agent cockpit.\n\nThe main area is the conversation \u{2014} where you\nand the agent work together. The panels at the\nbottom show engine status and live telemetry.\nThe sidebar on the right tracks your design space.\n\n\u{00b7} Hands-on mode: Acts 2\u{2013}3 use YOUR project.\n\n  Want the full scripted demo with live cleave?\n  Esc \u{2192} /tutorial demo",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
@@ -370,6 +370,15 @@ impl Tutorial {
         let title_line = format!("\u{1f4d8} {} ", step.title);
 
         let overlay_bg = theme.card_bg();
+
+        // Forward key hint — only shown when Tab actually does something
+        let forward_hint = match &step.trigger {
+            Trigger::AutoPrompt(_) if self.auto_prompt_sent => "",  // waiting for agent
+            _ => "[Tab]",
+        };
+
+        let forward_label = format!(" {forward_hint} ");
+        let progress_label = format!("  {progress}");
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent()).bg(overlay_bg))
@@ -377,10 +386,13 @@ impl Tutorial {
             .title(Span::styled(&title_line, Style::default().fg(theme.accent()).bg(overlay_bg).bold()))
             .title_bottom(
                 Line::from(vec![
-                    Span::styled(&progress, Style::default().fg(theme.muted()).bg(overlay_bg)),
-                    Span::styled("  ", Style::default().bg(overlay_bg)),
-                    Span::styled("[Esc skip] [Shift+Tab back]", Style::default().fg(theme.muted()).bg(overlay_bg)),
-                ]).right_aligned()
+                    Span::styled(
+                        forward_label.as_str(),
+                        Style::default().fg(theme.accent_bright()).bg(overlay_bg).bold()
+                    ),
+                    Span::styled(" [Esc] skip  [\u{21e7}Tab] back", Style::default().fg(theme.muted()).bg(overlay_bg)),
+                    Span::styled(progress_label.as_str(), Style::default().fg(theme.muted()).bg(overlay_bg)),
+                ])
             );
 
         let inner = block.inner(overlay);

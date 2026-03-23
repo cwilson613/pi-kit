@@ -90,7 +90,10 @@ pub const STEPS: &[Step] = &[
         body: "Now let's see the agent work.\n\nIt will read this project, analyze the code,\nand store facts about its architecture.\n\nWatch the instruments \u{2014} tools will light up\nand memory strings will pulse as facts\nare stored.",
         anchor: Anchor::Upper,
         trigger: Trigger::AutoPrompt(
-            "Read the project files in src/ and Cargo.toml. Understand the architecture, then store 3 memory facts about what this project does, its structure, and its test coverage."
+            "Read this project: look for source files (src/, lib.rs, main.rs, Cargo.toml, package.json, pyproject.toml — whatever exists), \
+understand what it does and how it's structured. \
+Then store exactly 3 memory facts: one about what the project does, one about its code structure, \
+one about its test coverage or quality practices."
         ),
         highlight: Some(Highlight::InstrumentPanel),
     },
@@ -99,7 +102,11 @@ pub const STEPS: &[Step] = &[
         body: "The agent will now explore a design question.\n\nWatch the sidebar \u{2014} the node's status will\nchange as the agent adds research and makes\na decision.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Focus on the design node 'output-formatting' and explore it. Read the doc, research the open question about color support, add your findings, and make a decision."
+            "Use the design_tree tool (action: list) to see what design nodes exist in this project. \
+If there are nodes with open questions, pick the most interesting one and explore it: read its doc, \
+research the open question, add your findings, and record a decision. \
+If the design tree is empty, create a first design node for this project about its overall architecture — \
+give it a meaningful id, title, and overview based on what you read about the codebase."
         ),
         highlight: Some(Highlight::Dashboard),
     },
@@ -109,7 +116,10 @@ pub const STEPS: &[Step] = &[
         body: "This is the showpiece \u{2014} live parallel work.\n\nThe agent will decompose a prepared task into\nparallel branches and execute them simultaneously.\n\nThis uses API credits (~$0.10\u{2013}0.30).\n\n  \u{25b6} Press Tab to start the cleave\n  \u{25b6} Press Esc to skip this step",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Run /assess diff to review the current state, then execute the prepared cleave plan in the openspec change 'add-validation'. Use retribution tier for the children."
+            "Check the openspec directory (ai/openspec/changes/ or openspec/changes/) for any prepared changes. \
+If a change with tasks.md exists, run /cleave on it using retribution tier. \
+If no prepared change exists, instead: use openspec_manage to propose a small change called 'add-tests' \
+for this project, generate a spec, and fast_forward it to create tasks — then describe what the cleave would do."
         ),
         highlight: None,
     },
@@ -118,7 +128,9 @@ pub const STEPS: &[Step] = &[
         body: "The branches have merged.\n\nNow the agent will verify the implementation\nagainst the specs. Watch for pass/fail results.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Run the tests with `cargo test` and report the results. Then summarize what was implemented across the cleave branches."
+            "Check if there are tests in this project. If so, run them and report results. \
+If not, describe the test strategy you would use based on the codebase you've read. \
+Summarize what was accomplished during this tutorial session."
         ),
         highlight: None,
     },
@@ -148,14 +160,23 @@ pub struct Tutorial {
     /// Whether the current AutoPrompt step has sent its prompt.
     /// Reset to false when advancing to a new step.
     pub auto_prompt_sent: bool,
+    /// Whether the project has pre-existing design tree content.
+    /// Set at construction — affects warning display in Act 2/3.
+    pub has_design_tree: bool,
 }
 
 impl Tutorial {
     pub fn new() -> Self {
+        Self::with_context(false)
+    }
+
+    /// Create a tutorial with project context so steps can adapt.
+    pub fn with_context(has_design_tree: bool) -> Self {
         Self {
             current: 0,
             active: true,
             auto_prompt_sent: false,
+            has_design_tree,
         }
     }
 

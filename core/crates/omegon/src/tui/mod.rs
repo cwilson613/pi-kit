@@ -536,8 +536,22 @@ impl App {
                         return SlashResult::Display(format!("{status}\n\nLesson queued."));
                     }
                 }
-                // No lesson files — start the built-in overlay tutorial
-                self.tutorial_overlay = Some(tutorial::Tutorial::new());
+                // No lesson files — start the built-in overlay tutorial.
+                // Check design tree presence so Act 2/3 steps can adapt.
+                let cwd = std::path::Path::new(&self.footer_data.cwd);
+                let has_design_tree = crate::paths::design_docs_dir(cwd)
+                    .read_dir()
+                    .map(|mut d| d.next().is_some())
+                    .unwrap_or(false);
+                if !has_design_tree {
+                    // Warn the operator: Acts 2 & 3 adapt but work best with
+                    // an existing codebase. Steps now handle empty trees gracefully.
+                    self.show_toast(
+                        "No design tree found — Acts 2 & 3 will adapt to this project.",
+                        ratatui_toaster::ToastType::Warning,
+                    );
+                }
+                self.tutorial_overlay = Some(tutorial::Tutorial::with_context(has_design_tree));
                 SlashResult::Handled
             }
         }

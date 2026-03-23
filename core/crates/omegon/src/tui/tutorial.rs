@@ -13,8 +13,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap, Clear};
 pub enum Anchor {
     /// Centered in the conversation area.
     Center,
-    /// Above the footer, spanning full width.
-    AboveFooter,
+    /// Upper portion — leaves the footer/instruments visible.
+    Upper,
 }
 
 /// How a step advances to the next one.
@@ -23,7 +23,7 @@ pub enum Trigger {
     /// Press Enter (or any key) to continue.
     Enter,
     /// Wait for a specific slash command (e.g. "/focus").
-    Command(& 'static str),
+    Command(&'static str),
     /// Wait for any user message to be sent.
     AnyInput,
 }
@@ -44,7 +44,6 @@ pub struct Step {
 pub enum Highlight {
     InstrumentPanel,
     EnginePanel,
-    ConversationArea,
     InputBar,
 }
 
@@ -52,49 +51,49 @@ pub enum Highlight {
 pub const STEPS: &[Step] = &[
     Step {
         title: "Welcome to Omegon",
-        body: "This is your AI agent cockpit. I'll walk you through what everything does.\n\nThe main area above is the conversation — where you and the agent talk.\n\nThe panels at the bottom show engine status and live telemetry.",
+        body: "This is your AI agent cockpit.\n\nThe main area is the conversation — where you\nand the agent talk. The panels at the bottom\nshow engine status and live telemetry.\n\nPress Enter to continue.",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
     },
     Step {
         title: "Engine Panel",
-        body: "The bottom-left shows the inference engine:\n\n  • Model name and provider\n  • Tier (Victory / Gloriana / Retribution)\n  • Thinking level\n  • Context usage percentage\n\nThis is your at-a-glance status.",
-        anchor: Anchor::AboveFooter,
+        body: "Look at the bottom-left of your screen.\n\nThe engine panel shows:\n  \u{2022} Model name and provider\n  \u{2022} Tier (Victory / Gloriana / Retribution)\n  \u{2022} Thinking level\n  \u{2022} Context usage percentage\n\nPress Enter to continue.",
+        anchor: Anchor::Upper,
         trigger: Trigger::Enter,
         highlight: Some(Highlight::EnginePanel),
     },
     Step {
-        title: "Instrument Panel — Inference",
-        body: "The left instrument shows inference state:\n\n  • Context bar — gradient from navy (empty) through teal to amber (full)\n  • Glitch characters appear on the bar when the agent is thinking\n  • Memory strings below show fact counts per linked mind\n\nWaves on the strings show memory activity:\n  → rightward = storing, ← leftward = recalling",
-        anchor: Anchor::AboveFooter,
+        title: "Inference Instruments",
+        body: "The left instrument panel shows inference state:\n\n  \u{2022} Context bar \u{2014} navy (empty) \u{2192} teal \u{2192} amber (full)\n  \u{2022} Glitch chars appear when the agent thinks\n  \u{2022} Memory strings show fact counts per mind\n\nWaves on the strings show memory activity:\n  \u{2192} rightward = storing\n  \u{2190} leftward = recalling\n\nPress Enter to continue.",
+        anchor: Anchor::Upper,
         trigger: Trigger::Enter,
         highlight: Some(Highlight::InstrumentPanel),
     },
     Step {
-        title: "Instrument Panel — Tools",
-        body: "The right instrument shows tool activity:\n\n  • A sorted list of tools, most recently used at top\n  • Each tool shows a recency bar (teal = just called, fading to navy)\n  • Timestamps show time since last call\n\nSend me a message and watch the tools light up!",
-        anchor: Anchor::AboveFooter,
+        title: "Tool Activity",
+        body: "The right instrument panel shows tools:\n\n  \u{2022} Sorted list, most recently used at top\n  \u{2022} Recency bars (teal = just called)\n  \u{2022} Timestamps since last call\n\nType any message to the agent and watch\nthe tools light up!",
+        anchor: Anchor::Upper,
         trigger: Trigger::AnyInput,
         highlight: Some(Highlight::InstrumentPanel),
     },
     Step {
         title: "Slash Commands",
-        body: "Type / in the input bar to see available commands:\n\n  /model    — switch models\n  /think    — adjust thinking level\n  /context  — change context class\n  /focus    — toggle instrument panel\n  /help     — full command list\n\nTry typing /focus now to toggle the instruments.",
+        body: "Type / in the input bar to see commands:\n\n  /model    \u{2014} switch models\n  /think    \u{2014} adjust thinking level\n  /context  \u{2014} change context class\n  /focus    \u{2014} toggle instruments\n  /help     \u{2014} full command list\n\nTry typing /focus now.",
         anchor: Anchor::Center,
         trigger: Trigger::Command("focus"),
         highlight: Some(Highlight::InputBar),
     },
     Step {
         title: "Focus Mode",
-        body: "The instruments disappeared! Focus mode gives the conversation full screen height.\n\nType /focus again to bring them back.",
+        body: "The instruments disappeared!\n\nFocus mode gives the conversation full height.\n\nType /focus again to bring them back.",
         anchor: Anchor::Center,
         trigger: Trigger::Command("focus"),
         highlight: None,
     },
     Step {
-        title: "You're Ready",
-        body: "That's the basics! A few more things:\n\n  • The agent has memory — facts persist across sessions\n  • The design tree tracks ideas from seed to implementation\n  • /tutorial shows this guide again anytime\n\nPress Enter to dismiss and start working.",
+        title: "You're Ready!",
+        body: "That's the basics!\n\n  \u{2022} The agent has memory \u{2014} facts persist\n  \u{2022} The design tree tracks ideas\n  \u{2022} /help shows all commands\n  \u{2022} /tutorial restarts this guide\n\nPress Enter to start working.",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
@@ -193,30 +192,36 @@ impl Tutorial {
         self.step().highlight
     }
 
-    /// Render the tutorial overlay.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme) {
+    /// Render the tutorial overlay into the given area.
+    /// `footer_height` is the actual footer height so we can position above it.
+    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, footer_height: u16) {
         if !self.active { return; }
 
         let step = self.step();
 
         // Calculate overlay position and size
         let overlay = match step.anchor {
-            Anchor::Center => centered_rect(area, 60, 50),
-            Anchor::AboveFooter => above_footer_rect(area),
+            Anchor::Center => centered_rect(area),
+            Anchor::Upper => upper_rect(area, footer_height),
         };
 
         // Clear the area behind the overlay
         Clear.render(overlay, buf);
 
+        // Highlight border: pulse the relevant region
+        if let Some(highlight) = step.highlight {
+            render_highlight(area, buf, theme, highlight, footer_height);
+        }
+
         // Build the content
         let progress = format!(" {}/{} ", self.current + 1, STEPS.len());
         let trigger_hint = match &step.trigger {
-            Trigger::Enter => "▶ Enter".to_string(),
-            Trigger::Command(cmd) => format!("▶ Type /{cmd}"),
-            Trigger::AnyInput => "▶ Send a message".to_string(),
+            Trigger::Enter => "\u{25b6} Enter".to_string(),
+            Trigger::Command(cmd) => format!("\u{25b6} Type /{cmd}"),
+            Trigger::AnyInput => "\u{25b6} Send a message".to_string(),
         };
 
-        let title_line = format!("📘 {} ", step.title);
+        let title_line = format!("\u{1f4d8} {} ", step.title);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -242,22 +247,68 @@ impl Tutorial {
     }
 }
 
-/// Center a rect within the parent, sized as percentage of parent.
-fn centered_rect(parent: Rect, pct_w: u16, pct_h: u16) -> Rect {
-    let w = (parent.width as u32 * pct_w as u32 / 100).min(70) as u16;
-    let h = (parent.height as u32 * pct_h as u32 / 100).min(20) as u16;
-    let x = parent.x + (parent.width.saturating_sub(w)) / 2;
-    let y = parent.y + (parent.height.saturating_sub(h)) / 2;
-    Rect::new(x, y, w.min(parent.width), h.min(parent.height))
+/// Render a highlight border around a UI region.
+fn render_highlight(area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, highlight: Highlight, footer_height: u16) {
+    let highlight_style = Style::default().fg(theme.accent_bright());
+
+    // Approximate regions based on the known layout
+    let footer_top = area.bottom().saturating_sub(footer_height);
+    let region = match highlight {
+        Highlight::EnginePanel => {
+            // Engine panel: left 40% of footer
+            let w = area.width * 40 / 100;
+            Rect::new(area.x, footer_top, w, footer_height)
+        }
+        Highlight::InstrumentPanel => {
+            // Instrument panel: right 60% of footer
+            let engine_w = area.width * 40 / 100;
+            Rect::new(area.x + engine_w, footer_top, area.width - engine_w, footer_height)
+        }
+        Highlight::InputBar => {
+            // Input bar: bottom row of conversation area (above footer)
+            Rect::new(area.x, footer_top.saturating_sub(1), area.width, 1)
+        }
+    };
+
+    // Draw highlight markers on the corners
+    if region.width > 2 && region.height > 0 {
+        let top = region.y;
+        let bot = region.bottom().saturating_sub(1);
+        let left = region.x;
+        let right = region.right().saturating_sub(1);
+
+        // Safety: only write if within buffer bounds
+        let (bw, bh) = (buf.area().width, buf.area().height);
+        for &(x, y, ch) in &[
+            (left, top, '▶'),
+            (right, top, '◀'),
+            (left, bot, '▶'),
+            (right, bot, '◀'),
+        ] {
+            if x < bw && y < bh {
+                buf[(x, y)].set_char(ch).set_style(highlight_style);
+            }
+        }
+    }
 }
 
-/// Rect positioned above the footer area.
-fn above_footer_rect(parent: Rect) -> Rect {
-    let w = (parent.width * 60 / 100).min(70);
-    let h = 12u16.min(parent.height / 2);
+/// Center a rect — fixed max size, always fits content.
+fn centered_rect(parent: Rect) -> Rect {
+    let w = 50u16.min(parent.width.saturating_sub(4));
+    let h = 14u16.min(parent.height.saturating_sub(4));
     let x = parent.x + (parent.width.saturating_sub(w)) / 2;
-    // Position in the lower third, above where the footer would be
-    let y = parent.y + parent.height.saturating_sub(h + 14);
+    let y = parent.y + (parent.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
+}
+
+/// Rect in the upper portion of the screen — leaves footer/instruments visible.
+fn upper_rect(parent: Rect, footer_height: u16) -> Rect {
+    let w = 50u16.min(parent.width.saturating_sub(4));
+    let h = 14u16.min(parent.height.saturating_sub(footer_height + 4));
+    let x = parent.x + (parent.width.saturating_sub(w)) / 2;
+    // Position in upper third of available space (above footer)
+    let available = parent.height.saturating_sub(footer_height);
+    let y = parent.y + (available.saturating_sub(h)) / 3;
     Rect::new(x, y, w, h)
 }
 
@@ -357,5 +408,46 @@ mod tests {
             assert!(!step.title.is_empty(), "step {i} has empty title");
             assert!(!step.body.is_empty(), "step {i} has empty body");
         }
+    }
+
+    #[test]
+    fn centered_rect_fits_in_parent() {
+        let parent = Rect::new(0, 0, 80, 24);
+        let r = centered_rect(parent);
+        assert!(r.right() <= parent.right());
+        assert!(r.bottom() <= parent.bottom());
+        assert!(r.width >= 10);
+        assert!(r.height >= 10);
+    }
+
+    #[test]
+    fn upper_rect_leaves_footer_visible() {
+        let parent = Rect::new(0, 0, 80, 40);
+        let footer_h = 12;
+        let r = upper_rect(parent, footer_h);
+        // The overlay should not overlap the footer region
+        assert!(r.bottom() <= parent.height - footer_h,
+            "overlay bottom {} should be above footer at {}", r.bottom(), parent.height - footer_h);
+    }
+
+    #[test]
+    fn centered_rect_tiny_terminal() {
+        // 20x10 terminal — overlay should still fit
+        let parent = Rect::new(0, 0, 20, 10);
+        let r = centered_rect(parent);
+        assert!(r.right() <= parent.right());
+        assert!(r.bottom() <= parent.bottom());
+        assert!(r.width > 0);
+        assert!(r.height > 0);
+    }
+
+    #[test]
+    fn inactive_tutorial_does_not_consume_input() {
+        let mut tut = Tutorial::new();
+        tut.dismiss();
+        assert!(!tut.check_enter());
+        assert!(!tut.check_any_input());
+        assert!(!tut.check_command("focus"));
+        assert!(tut.current_highlight().is_none());
     }
 }

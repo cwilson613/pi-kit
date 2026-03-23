@@ -16,5 +16,5 @@ pub use types::{
     Priority, IssueType,
 };
 pub use error::OpsxError;
-pub use store::{StateStore, JsonFileStore, LifecycleState};
+pub use store::{StateStore, JsonFileStore, MemoryStore, LifecycleState};
 pub use fsm::Lifecycle;

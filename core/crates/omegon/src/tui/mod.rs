@@ -1065,9 +1065,18 @@ impl App {
         // ── Tutorial overlay — rendered absolutely last, on top of everything ──
         if let Some(ref tut) = self.tutorial_overlay {
             if tut.active {
-                tut.render(area, frame.buffer_mut(), self.theme.as_ref());
+                let footer_h: u16 = if self.focus_mode { 0 } else { 12 };
+                tut.render(area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
             }
         }
+    }
+
+    /// Mark tutorial as completed so it doesn't auto-start again.
+    fn mark_tutorial_completed(&self) {
+        let marker = std::path::Path::new(&self.footer_data.cwd)
+            .join(".omegon").join("tutorial_completed");
+        let _ = std::fs::create_dir_all(marker.parent().unwrap_or(std::path::Path::new(".")));
+        let _ = std::fs::write(&marker, "");
     }
 
     /// Show a transient toast notification.
@@ -2444,6 +2453,15 @@ pub async fn run_tui(
         app.queue_prompt(prompt);
     }
 
+    // Auto-start tutorial on first run (no .omegon/ directory yet = fresh project)
+    {
+        let omegon_dir = std::path::Path::new(&app.footer_data.cwd).join(".omegon");
+        let tutorial_done = omegon_dir.join("tutorial_completed");
+        if !tutorial_done.exists() && app.queued_prompt.is_none() {
+            app.tutorial_overlay = Some(tutorial::Tutorial::new());
+        }
+    }
+
     loop {
         // ── Splash replay (/splash command) ─────────────────────────
         if app.replay_splash {
@@ -2577,10 +2595,12 @@ pub async fn run_tui(
                         match key.code {
                             KeyCode::Esc => {
                                 tut.dismiss();
+                                app.mark_tutorial_completed();
                                 continue; // consume the key
                             }
                             KeyCode::Enter => {
                                 if tut.check_enter() {
+                                    if !tut.active { app.mark_tutorial_completed(); }
                                     continue; // consumed — advanced to next step
                                 }
                                 // Not an Enter-trigger step — fall through
@@ -2693,6 +2713,7 @@ pub async fn run_tui(
                                 if let Some(ref mut tut) = app.tutorial_overlay {
                                     let cmd = text[1..].split_whitespace().next().unwrap_or("");
                                     tut.check_command(cmd);
+                                    if !tut.active { app.mark_tutorial_completed(); }
                                 }
                                 match app.handle_slash_command(&text, &command_tx) {
                                     SlashResult::Display(response) => {
@@ -2707,6 +2728,7 @@ pub async fn run_tui(
                                         // Tutorial overlay: AnyInput trigger
                                         if let Some(ref mut tut) = app.tutorial_overlay {
                                             tut.check_any_input();
+                                            if !tut.active { app.mark_tutorial_completed(); }
                                         }
                                         if app.agent_active {
                                             app.queue_prompt(text.clone());

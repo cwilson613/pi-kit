@@ -107,10 +107,10 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Transition a design node to a new state (FSM-validated).
     pub fn transition_node(&mut self, id: &str, target: NodeState) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter().find(|n| n.id == id)
+        let idx = self.state.nodes.iter().position(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
 
-        let from = node.state;
+        let from = self.state.nodes[idx].state;
 
         if !from.can_transition_to(target) {
             return Err(OpsxError::InvalidTransition {
@@ -123,15 +123,14 @@ impl<S: StateStore> Lifecycle<S> {
         // Enforce preconditions for specific transitions
         match target {
             NodeState::Decided => {
-                if !node.open_questions.is_empty() {
+                if !self.state.nodes[idx].open_questions.is_empty() {
                     return Err(OpsxError::PreconditionFailed(
                         format!("node '{}' has {} open questions — resolve before deciding",
-                            id, node.open_questions.len())
+                            id, self.state.nodes[idx].open_questions.len())
                     ));
                 }
             }
             NodeState::Implementing => {
-                // Must come from Decided or Blocked (resume)
                 if from != NodeState::Decided && from != NodeState::Blocked {
                     return Err(OpsxError::PreconditionFailed(
                         format!("node '{}' must be decided (or blocked) before implementing", id)
@@ -151,9 +150,8 @@ impl<S: StateStore> Lifecycle<S> {
         }
 
         let from_str = from.as_str().to_string();
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id).unwrap();
-        node.state = target;
-        node.updated_at = iso_now();
+        self.state.nodes[idx].state = target;
+        self.state.nodes[idx].updated_at = iso_now();
         self.audit_and_save("node", id, &from_str, target.as_str(), None, false)
     }
 
@@ -351,10 +349,10 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Transition a change to a new state (FSM-validated).
     pub fn transition_change(&mut self, name: &str, target: ChangeState) -> Result<(), OpsxError> {
-        let change = self.state.changes.iter().find(|c| c.name == name)
+        let idx = self.state.changes.iter().position(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
 
-        let from = change.state;
+        let from = self.state.changes[idx].state;
         if !from.can_transition_to(target) {
             return Err(OpsxError::InvalidTransition {
                 entity: format!("change '{name}'"),
@@ -364,6 +362,7 @@ impl<S: StateStore> Lifecycle<S> {
         }
 
         // Enforce preconditions — specs before code, plan before implementation
+        let change = &self.state.changes[idx];
         match target {
             ChangeState::Specced => {
                 if change.specs.is_empty() {
@@ -409,9 +408,8 @@ impl<S: StateStore> Lifecycle<S> {
         }
 
         let from_str = from.as_str().to_string();
-        let change = self.state.changes.iter_mut().find(|c| c.name == name).unwrap();
-        change.state = target;
-        change.updated_at = iso_now();
+        self.state.changes[idx].state = target;
+        self.state.changes[idx].updated_at = iso_now();
         self.audit_and_save("change", name, &from_str, target.as_str(), None, false)
     }
 

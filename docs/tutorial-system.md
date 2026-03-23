@@ -1,11 +1,11 @@
 ---
 id: tutorial-system
 title: "Interactive /tutorial system — structured onboarding replacing /demo"
-status: exploring
+status: implemented
 open_questions: []
 branches: ["feature/tutorial-system"]
 openspec_change: tutorial-system
-jj_change_id: rlxnlpoltlwmulkrqqukwzpvmmkwvwuu
+jj_change_id: uupuwqlttlqyymuuykprrzwsrvtprzku
 ---
 
 # Interactive /tutorial system — structured onboarding replacing /demo

@@ -98,6 +98,24 @@ impl StateStore for JsonFileStore {
     }
 }
 
+/// In-memory store — never persists. Used as a fallback when the filesystem
+/// is unavailable (e.g. read-only directory, corrupted state).
+#[derive(Default)]
+pub struct MemoryStore {
+    state: std::sync::Mutex<LifecycleState>,
+}
+
+impl StateStore for MemoryStore {
+    fn load(&self) -> Result<LifecycleState, OpsxError> {
+        Ok(self.state.lock().unwrap().clone())
+    }
+
+    fn save(&self, state: &LifecycleState) -> Result<(), OpsxError> {
+        *self.state.lock().unwrap() = state.clone();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

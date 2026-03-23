@@ -6,7 +6,7 @@
 //! or operator action.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap, Clear};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 /// Where to anchor the tutorial callout.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -215,8 +215,18 @@ impl Tutorial {
             (Anchor::Upper, _) => upper_rect(area, footer_height),
         };
 
-        // Clear the area behind the overlay
-        Clear.render(overlay, buf);
+        // Fill the overlay area with theme background — prevents terminal
+        // default color bleed-through. Clear alone resets to Color::Reset.
+        let bg = theme.bg();
+        for y in overlay.top()..overlay.bottom() {
+            for x in overlay.left()..overlay.right() {
+                if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
+                    cell.reset();
+                    cell.set_char(' ');
+                    cell.set_bg(bg);
+                }
+            }
+        }
 
         // Build the call-to-action — prominent line inside the content
         let cta = match &step.trigger {
@@ -238,8 +248,9 @@ impl Tutorial {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent()))
-            .title(Span::styled(&title_line, Style::default().fg(theme.accent()).bold()))
+            .border_style(Style::default().fg(theme.accent()).bg(theme.bg()))
+            .style(Style::default().bg(theme.bg()))
+            .title(Span::styled(&title_line, Style::default().fg(theme.accent()).bg(theme.bg()).bold()))
             .title_bottom(
                 Line::from(vec![
                     Span::styled(&progress, Style::default().fg(theme.muted())),
@@ -254,7 +265,7 @@ impl Tutorial {
         // Body text + call-to-action as last line
         let body_with_cta = format!("{}\n\n{}", step.body, cta);
         let text = Paragraph::new(body_with_cta)
-            .style(Style::default().fg(theme.fg()))
+            .style(Style::default().fg(theme.fg()).bg(theme.bg()))
             .wrap(Wrap { trim: false });
         text.render(inner, buf);
 

@@ -10,7 +10,9 @@ use super::dashboard::*;
 use super::footer::FooterData;
 use super::theme::Alpharius;
 use crate::lifecycle::types::*;
-use crate::settings::{ContextClass, Settings};
+use crate::settings::ContextClass;
+#[allow(unused_imports)]
+use crate::settings::Settings;
 use crate::status::*;
 
 /// Render a terminal buffer to a multi-line string suitable for insta snapshots.

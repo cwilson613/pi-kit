@@ -141,6 +141,8 @@ pub struct App {
     pending_image: Option<std::path::PathBuf>,
     /// Previous harness status for diffing on HarnessStatusChanged.
     previous_harness_status: Option<crate::status::HarnessStatus>,
+    /// Tutorial state — active when running /tutorial.
+    tutorial: Option<TutorialState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -213,6 +215,7 @@ impl App {
                 .build(),
             pending_image: None,
             previous_harness_status: None,
+            tutorial: None,
         }
     }
 
@@ -410,36 +413,102 @@ impl App {
 
     /// Try to cancel the active agent turn. Returns true if cancelled.
     /// Queue a prompt to be sent when the agent finishes.
-    /// Replaces any previously queued prompt with a warning.
-    /// Launch the interactive demo — clones the demo project and exec's omegon inside it.
-    fn launch_demo(&mut self) -> SlashResult {
-        // Don't exec during tests — the test runner would be replaced
-        if cfg!(test) || std::env::var("CARGO_TEST").is_ok() {
-            return SlashResult::Display("Demo: would clone and launch omegon-demo".into());
-        }
+    /// Handle /tutorial — start, resume, or manage the interactive tutorial.
+    fn handle_tutorial(&mut self, args: &str) -> SlashResult {
+        match args.trim() {
+            "status" => {
+                if let Some(ref tut) = self.tutorial {
+                    return SlashResult::Display(tut.status_line());
+                }
+                SlashResult::Display("No tutorial active. Type /tutorial to start.".into())
+            }
+            "reset" => {
+                if let Some(ref mut tut) = self.tutorial {
+                    tut.reset();
+                    return SlashResult::Display("Tutorial reset to lesson 1. Type /tutorial to start.".into());
+                }
+                SlashResult::Display("No tutorial active.".into())
+            }
+            _ => {
+                // Start or resume tutorial
+                let tutorial_dir = std::path::Path::new(&self.footer_data.cwd)
+                    .join(".omegon").join("tutorial");
 
-        const DEMO_REPO: &str = "https://github.com/styrene-lab/omegon-demo.git";
-        let demo_dir = std::env::temp_dir().join("omegon-demo");
-
-        // Clone or pull
-        if demo_dir.join(".git").exists() {
-            let _ = std::process::Command::new("git")
-                .args(["pull", "--rebase"])
-                .current_dir(&demo_dir)
-                .output();
-        } else {
-            let _ = std::fs::remove_dir_all(&demo_dir);
-            let result = std::process::Command::new("git")
-                .args(["clone", "--depth=1", DEMO_REPO, &demo_dir.to_string_lossy()])
-                .output();
-            if result.is_err() || !demo_dir.join(".git").exists() {
-                return SlashResult::Display("Failed to clone demo project. Check network connectivity.".into());
+                if tutorial_dir.is_dir() {
+                    // Tutorial lessons exist in this project — run in-place
+                    match TutorialState::load(&tutorial_dir) {
+                        Some(tut) => {
+                            let lesson = tut.current_lesson().clone();
+                            let status = tut.status_line();
+                            self.tutorial = Some(tut);
+                            self.queue_prompt(lesson.content);
+                            SlashResult::Display(format!("{status}\n\nLesson queued. The agent will begin when ready."))
+                        }
+                        None => SlashResult::Display("Tutorial directory exists but no lessons found.".into()),
+                    }
+                } else {
+                    // No tutorial in this project — clone and exec into the tutorial project
+                    self.launch_tutorial_project()
+                }
             }
         }
+    }
 
-        let prompt_file = demo_dir.join(".omegon/prompts/demo.md");
-        if !prompt_file.exists() {
-            return SlashResult::Display("Demo project cloned but prompt file not found.".into());
+    /// Advance to the next tutorial lesson.
+    fn handle_tutorial_next(&mut self) -> SlashResult {
+        if let Some(ref mut tut) = self.tutorial {
+            if tut.advance() {
+                let lesson = tut.current_lesson().clone();
+                let status = tut.status_line();
+                self.queue_prompt(lesson.content);
+                SlashResult::Display(format!("{status}\n\nLesson queued."))
+            } else {
+                SlashResult::Display("🎉 You've completed the tutorial! Type /tutorial reset to start over.".into())
+            }
+        } else {
+            SlashResult::Display("No tutorial active. Type /tutorial to start.".into())
+        }
+    }
+
+    /// Go back to the previous tutorial lesson.
+    fn handle_tutorial_prev(&mut self) -> SlashResult {
+        if let Some(ref mut tut) = self.tutorial {
+            if tut.go_back() {
+                let lesson = tut.current_lesson().clone();
+                let status = tut.status_line();
+                self.queue_prompt(lesson.content);
+                SlashResult::Display(format!("{status}\n\nLesson queued."))
+            } else {
+                SlashResult::Display("Already at the first lesson.".into())
+            }
+        } else {
+            SlashResult::Display("No tutorial active. Type /tutorial to start.".into())
+        }
+    }
+
+    /// Clone the tutorial project and exec omegon inside it.
+    fn launch_tutorial_project(&mut self) -> SlashResult {
+        if cfg!(test) || std::env::var("CARGO_TEST").is_ok() {
+            return SlashResult::Display("Tutorial: would clone and launch tutorial project".into());
+        }
+
+        const TUTORIAL_REPO: &str = "https://github.com/styrene-lab/omegon-demo.git";
+        let tutorial_dir = std::env::temp_dir().join("omegon-tutorial");
+
+        // Clone or pull
+        if tutorial_dir.join(".git").exists() {
+            let _ = std::process::Command::new("git")
+                .args(["pull", "--rebase"])
+                .current_dir(&tutorial_dir)
+                .output();
+        } else {
+            let _ = std::fs::remove_dir_all(&tutorial_dir);
+            let result = std::process::Command::new("git")
+                .args(["clone", "--depth=1", TUTORIAL_REPO, &tutorial_dir.to_string_lossy()])
+                .output();
+            if result.is_err() || !tutorial_dir.join(".git").exists() {
+                return SlashResult::Display("Failed to clone tutorial project. Check network connectivity.".into());
+            }
         }
 
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omegon"));
@@ -450,31 +519,24 @@ impl App {
         let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
         let _ = io::stdout().execute(crossterm::event::DisableMouseCapture);
 
-        // exec replaces this process
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
             let err = std::process::Command::new(&exe)
-                .arg("--initial-prompt-file")
-                .arg(&prompt_file)
-                
                 .arg("--no-splash")
                 .arg("--context-class")
                 .arg("squad")
-                .current_dir(&demo_dir)
+                .current_dir(&tutorial_dir)
                 .exec();
-            SlashResult::Display(format!("Failed to launch demo: {err}"))
+            SlashResult::Display(format!("Failed to launch tutorial: {err}"))
         }
         #[cfg(not(unix))]
         {
             let _ = std::process::Command::new(&exe)
-                .arg("--initial-prompt-file")
-                .arg(&prompt_file)
-                
                 .arg("--no-splash")
                 .arg("--context-class")
                 .arg("squad")
-                .current_dir(&demo_dir)
+                .current_dir(&tutorial_dir)
                 .spawn();
             self.should_quit = true;
             SlashResult::Handled
@@ -1008,8 +1070,10 @@ impl App {
         ("delegate", "delegate task management",              &["status"]),
         ("status",   "show harness status (providers, MCP, secrets, routing)", &[]),
         ("focus",    "toggle instrument panel focus mode",   &[]),
-        ("demo",     "launch interactive demo (clones demo project)", &[]),
-        ("milestone","release milestone management",          &["freeze", "status"]),
+        ("tutorial", "interactive tutorial (replaces /demo)",         &["status", "reset"]),
+        ("next",     "advance to next tutorial lesson",              &[]),
+        ("prev",     "go back to previous tutorial lesson",          &[]),
+        ("milestone","release milestone management",                 &["freeze", "status"]),
         ("splash",   "replay splash animation",              &[]),
         ("dashboard", "open web dashboard (alias for /dash open)", &[]),
         ("version",  "show build version and git sha",       &[]),
@@ -1393,8 +1457,16 @@ impl App {
                 self.handle_milestone(args)
             }
 
-            "demo" => {
-                self.launch_demo()
+            "tutorial" | "demo" => {
+                self.handle_tutorial(args)
+            }
+
+            "next" => {
+                self.handle_tutorial_next()
+            }
+
+            "prev" => {
+                self.handle_tutorial_prev()
             }
 
             "vault" => {
@@ -2019,6 +2091,166 @@ fn load_milestones(path: &std::path::Path) -> std::collections::BTreeMap<String,
 fn save_milestones(path: &std::path::Path, milestones: &std::collections::BTreeMap<String, Milestone>) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(milestones)?;
     std::fs::write(path, json)
+}
+
+// ─── Tutorial system ────────────────────────────────────────────────────
+
+/// A single tutorial lesson.
+#[derive(Debug, Clone)]
+struct TutorialLesson {
+    /// Filename (e.g. "01-cockpit.md")
+    filename: String,
+    /// Title from frontmatter
+    title: String,
+    /// The lesson prompt content (body after frontmatter)
+    content: String,
+}
+
+/// Tutorial runner state — tracks lessons and progress.
+#[derive(Debug)]
+struct TutorialState {
+    lessons: Vec<TutorialLesson>,
+    current: usize, // 0-indexed
+    tutorial_dir: std::path::PathBuf,
+}
+
+/// Persisted tutorial progress.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct TutorialProgress {
+    current_lesson: usize,
+    completed: Vec<usize>,
+}
+
+impl TutorialState {
+    /// Load tutorial lessons from a directory.
+    fn load(tutorial_dir: &std::path::Path) -> Option<Self> {
+        if !tutorial_dir.is_dir() {
+            return None;
+        }
+
+        let mut entries: Vec<_> = std::fs::read_dir(tutorial_dir).ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".md") && name.chars().next().is_some_and(|c| c.is_ascii_digit())
+            })
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+
+        let mut lessons = Vec::new();
+        for entry in entries {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            let raw = std::fs::read_to_string(entry.path()).ok()?;
+            let (title, content) = parse_lesson(&raw, &filename);
+            lessons.push(TutorialLesson { filename, title, content });
+        }
+
+        if lessons.is_empty() {
+            return None;
+        }
+
+        // Load progress
+        let progress = load_tutorial_progress(tutorial_dir);
+        let current = progress.current_lesson.min(lessons.len().saturating_sub(1));
+
+        Some(Self {
+            lessons,
+            current,
+            tutorial_dir: tutorial_dir.to_path_buf(),
+        })
+    }
+
+    fn current_lesson(&self) -> &TutorialLesson {
+        &self.lessons[self.current]
+    }
+
+    fn total(&self) -> usize {
+        self.lessons.len()
+    }
+
+    fn is_last(&self) -> bool {
+        self.current >= self.lessons.len() - 1
+    }
+
+    fn advance(&mut self) -> bool {
+        if self.current < self.lessons.len() - 1 {
+            self.current += 1;
+            self.save_progress();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn go_back(&mut self) -> bool {
+        if self.current > 0 {
+            self.current -= 1;
+            self.save_progress();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn reset(&mut self) {
+        self.current = 0;
+        let progress_path = self.tutorial_dir.join("progress.json");
+        let _ = std::fs::remove_file(progress_path);
+    }
+
+    fn save_progress(&self) {
+        let progress = TutorialProgress {
+            current_lesson: self.current,
+            completed: (0..self.current).collect(),
+        };
+        let progress_path = self.tutorial_dir.join("progress.json");
+        if let Ok(json) = serde_json::to_string_pretty(&progress) {
+            let _ = std::fs::write(progress_path, json);
+        }
+    }
+
+    fn status_line(&self) -> String {
+        let lesson = self.current_lesson();
+        format!(
+            "Tutorial: lesson {}/{} — \"{}\"{}",
+            self.current + 1,
+            self.total(),
+            lesson.title,
+            if self.is_last() { " (final)" } else { "" }
+        )
+    }
+}
+
+fn parse_lesson(raw: &str, filename: &str) -> (String, String) {
+    // Extract title from frontmatter if present
+    let mut title = filename.trim_end_matches(".md").to_string();
+    let content;
+
+    if let Some(rest) = raw.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---") {
+            let frontmatter = &rest[..end];
+            for line in frontmatter.lines() {
+                if let Some(t) = line.strip_prefix("title:") {
+                    title = t.trim().trim_matches('"').trim_matches('\'').to_string();
+                }
+            }
+            content = rest[end + 4..].trim().to_string();
+        } else {
+            content = raw.to_string();
+        }
+    } else {
+        content = raw.to_string();
+    }
+
+    (title, content)
+}
+
+fn load_tutorial_progress(tutorial_dir: &std::path::Path) -> TutorialProgress {
+    let path = tutorial_dir.join("progress.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 pub async fn run_tui(

@@ -433,3 +433,105 @@ fn slash_prefix_matching_ambiguous() {
         _ => panic!("/s should be ambiguous, got: {result:?}"),
     }
 }
+
+#[test]
+fn tutorial_parse_lesson_with_frontmatter() {
+    let raw = "---\ntitle: \"The Cockpit\"\n---\n\nWelcome to Omegon!\n\nLook at the bottom.";
+    let (title, content) = super::parse_lesson(raw, "01-cockpit.md");
+    assert_eq!(title, "The Cockpit");
+    assert!(content.contains("Welcome to Omegon!"));
+    assert!(!content.contains("title:"));
+}
+
+#[test]
+fn tutorial_parse_lesson_without_frontmatter() {
+    let raw = "Just plain content.\n\nNo frontmatter here.";
+    let (title, content) = super::parse_lesson(raw, "02-tools.md");
+    assert_eq!(title, "02-tools");
+    assert!(content.contains("Just plain content."));
+}
+
+#[test]
+fn tutorial_state_load_and_advance() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let tutorial_dir = tmp.path().join(".omegon").join("tutorial");
+    std::fs::create_dir_all(&tutorial_dir).unwrap();
+
+    std::fs::write(tutorial_dir.join("01-first.md"), "---\ntitle: \"First\"\n---\nLesson one.").unwrap();
+    std::fs::write(tutorial_dir.join("02-second.md"), "---\ntitle: \"Second\"\n---\nLesson two.").unwrap();
+    std::fs::write(tutorial_dir.join("03-third.md"), "---\ntitle: \"Third\"\n---\nLesson three.").unwrap();
+
+    let mut tut = super::TutorialState::load(&tutorial_dir).unwrap();
+    assert_eq!(tut.total(), 3);
+    assert_eq!(tut.current, 0);
+    assert_eq!(tut.current_lesson().title, "First");
+    assert!(!tut.is_last());
+
+    assert!(tut.advance());
+    assert_eq!(tut.current, 1);
+    assert_eq!(tut.current_lesson().title, "Second");
+
+    assert!(tut.advance());
+    assert_eq!(tut.current, 2);
+    assert!(tut.is_last());
+
+    assert!(!tut.advance()); // can't go past last
+
+    assert!(tut.go_back());
+    assert_eq!(tut.current, 1);
+
+    assert!(!super::TutorialState::load(tmp.path()).is_some()); // no tutorial dir
+}
+
+#[test]
+fn tutorial_progress_persistence() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let tutorial_dir = tmp.path();
+
+    std::fs::write(tutorial_dir.join("01-a.md"), "---\ntitle: A\n---\nA").unwrap();
+    std::fs::write(tutorial_dir.join("02-b.md"), "---\ntitle: B\n---\nB").unwrap();
+
+    {
+        let mut tut = super::TutorialState::load(tutorial_dir).unwrap();
+        tut.advance();
+        // Progress saved automatically
+    }
+
+    {
+        let tut = super::TutorialState::load(tutorial_dir).unwrap();
+        assert_eq!(tut.current, 1, "should resume at lesson 2");
+        assert_eq!(tut.current_lesson().title, "B");
+    }
+}
+
+#[test]
+fn tutorial_reset_clears_progress() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let tutorial_dir = tmp.path();
+
+    std::fs::write(tutorial_dir.join("01-a.md"), "---\ntitle: A\n---\nA").unwrap();
+    std::fs::write(tutorial_dir.join("02-b.md"), "---\ntitle: B\n---\nB").unwrap();
+
+    let mut tut = super::TutorialState::load(tutorial_dir).unwrap();
+    tut.advance();
+    tut.reset();
+    assert_eq!(tut.current, 0);
+    assert!(!tutorial_dir.join("progress.json").exists());
+}
+
+#[test]
+fn tutorial_status_line() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let tutorial_dir = tmp.path();
+
+    std::fs::write(tutorial_dir.join("01-intro.md"), "---\ntitle: Introduction\n---\nHello").unwrap();
+    std::fs::write(tutorial_dir.join("02-end.md"), "---\ntitle: Finale\n---\nBye").unwrap();
+
+    let mut tut = super::TutorialState::load(tutorial_dir).unwrap();
+    assert!(tut.status_line().contains("1/2"));
+    assert!(tut.status_line().contains("Introduction"));
+
+    tut.advance();
+    assert!(tut.status_line().contains("2/2"));
+    assert!(tut.status_line().contains("(final)"));
+}

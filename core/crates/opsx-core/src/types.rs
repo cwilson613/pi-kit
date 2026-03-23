@@ -26,9 +26,11 @@ impl NodeState {
             Resolved => &[Decided, Exploring, Blocked, Deferred],
             Decided => &[Implementing, Exploring, Blocked, Deferred],
             Implementing => &[Implemented, Decided, Blocked, Deferred],
-            Implemented => &[Deferred], // terminal, can only be deferred
-            Blocked => &[Exploring, Decided, Deferred],
-            Deferred => &[Seed, Exploring], // can be revived
+            // Implemented can reopen — "the implementation was wrong"
+            Implemented => &[Exploring, Decided, Deferred],
+            // Blocked can resume to where it was interrupted
+            Blocked => &[Exploring, Decided, Implementing, Deferred],
+            Deferred => &[Seed, Exploring],
         }
     }
 
@@ -75,18 +77,23 @@ pub enum ChangeState {
     Implementing,
     Verifying,
     Archived,
+    /// Abandoned — proposal or change was dropped before completion.
+    Abandoned,
 }
 
 impl ChangeState {
     pub fn valid_transitions(self) -> &'static [ChangeState] {
         use ChangeState::*;
         match self {
-            Proposed => &[Specced],
-            Specced => &[Planned, Proposed], // can revise specs
-            Planned => &[Implementing, Specced],
-            Implementing => &[Verifying, Planned], // can re-plan
-            Verifying => &[Archived, Implementing], // can re-implement on failure
-            Archived => &[], // terminal
+            Proposed => &[Specced, Abandoned],
+            Specced => &[Planned, Proposed, Abandoned],
+            Planned => &[Implementing, Specced, Abandoned],
+            Implementing => &[Verifying, Planned, Abandoned],
+            Verifying => &[Archived, Implementing, Abandoned],
+            // Archived can be reopened — "we archived too early"
+            Archived => &[Proposed],
+            // Abandoned can be revived — "actually, let's do this"
+            Abandoned => &[Proposed],
         }
     }
 
@@ -102,6 +109,7 @@ impl ChangeState {
             Self::Implementing => "implementing",
             Self::Verifying => "verifying",
             Self::Archived => "archived",
+            Self::Abandoned => "abandoned",
         }
     }
 }
@@ -193,6 +201,20 @@ pub struct Milestone {
     pub updated_at: String,
 }
 
+/// An audit log entry — records every state transition with reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub timestamp: String,
+    pub entity_type: String, // "node", "change", "milestone"
+    pub entity_id: String,
+    pub from_state: String,
+    pub to_state: String,
+    /// Why this transition happened. Required for force_transition.
+    pub reason: Option<String>,
+    /// True if this was a forced override bypassing FSM validation.
+    pub forced: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,15 +225,30 @@ mod tests {
         assert!(NodeState::Exploring.can_transition_to(NodeState::Decided));
         assert!(NodeState::Decided.can_transition_to(NodeState::Implementing));
         assert!(!NodeState::Seed.can_transition_to(NodeState::Implemented));
-        assert!(!NodeState::Implemented.can_transition_to(NodeState::Exploring));
+        // Implemented CAN reopen now
+        assert!(NodeState::Implemented.can_transition_to(NodeState::Exploring));
+        assert!(NodeState::Implemented.can_transition_to(NodeState::Decided));
+    }
+
+    #[test]
+    fn blocked_can_resume_to_implementing() {
+        assert!(NodeState::Blocked.can_transition_to(NodeState::Implementing));
+        assert!(NodeState::Blocked.can_transition_to(NodeState::Decided));
+        assert!(NodeState::Blocked.can_transition_to(NodeState::Exploring));
     }
 
     #[test]
     fn change_state_transitions() {
         assert!(ChangeState::Proposed.can_transition_to(ChangeState::Specced));
         assert!(ChangeState::Implementing.can_transition_to(ChangeState::Verifying));
-        assert!(!ChangeState::Archived.can_transition_to(ChangeState::Proposed));
         assert!(!ChangeState::Proposed.can_transition_to(ChangeState::Archived));
+        // Abandoned from any active state
+        assert!(ChangeState::Proposed.can_transition_to(ChangeState::Abandoned));
+        assert!(ChangeState::Planned.can_transition_to(ChangeState::Abandoned));
+        // Archived can reopen
+        assert!(ChangeState::Archived.can_transition_to(ChangeState::Proposed));
+        // Abandoned can revive
+        assert!(ChangeState::Abandoned.can_transition_to(ChangeState::Proposed));
     }
 
     #[test]

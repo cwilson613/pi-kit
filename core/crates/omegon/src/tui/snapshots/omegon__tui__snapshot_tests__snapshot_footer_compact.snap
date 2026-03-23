@@ -1,0 +1,7 @@
+---
+source: crates/omegon/src/tui/snapshot_tests.rs
+expression: render_to_string(&terminal)
+---
+────────────────────────────────────────────────────────────────────────────────
+ Ω claude-sonnet-4-6 V·M 42%
+ T·12 ⚙·35 ⌗1500

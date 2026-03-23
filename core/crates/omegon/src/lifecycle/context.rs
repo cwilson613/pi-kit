@@ -119,27 +119,22 @@ impl LifecycleContextProvider {
     /// so the operator can trace the breakage.
     pub fn refresh(&mut self) {
         let docs_dir = self.repo_path.join("docs");
-        let new_nodes = design::scan_design_docs(&docs_dir);
+        let scan = design::scan_design_docs_full(&docs_dir);
+        let new_nodes = scan.nodes;
+
+        // Build set of paths that had frontmatter but failed to produce nodes
+        let failure_paths: std::collections::HashSet<_> =
+            scan.parse_failures.iter().collect();
 
         // Detect degraded: nodes present before but missing now
         let mut degraded = Vec::new();
         for (id, old_node) in &self.nodes {
             if !new_nodes.contains_key(id) && old_node.file_path.exists() {
-                // File still on disk but didn't parse — degraded.
-                // Determine reason: try reading the file to see what failed.
-                let reason = match std::fs::read_to_string(&old_node.file_path) {
-                    Ok(content) => {
-                        if let Some(fm) = design::parse_frontmatter(&content) {
-                            if fm.get("id").and_then(|v| v.as_str()).is_none() {
-                                DegradedReason::MissingId
-                            } else {
-                                DegradedReason::ParseFailed
-                            }
-                        } else {
-                            DegradedReason::ParseFailed
-                        }
-                    }
-                    Err(_) => DegradedReason::ParseFailed,
+                // Determine reason from scan results — no re-read needed
+                let reason = if failure_paths.contains(&old_node.file_path) {
+                    DegradedReason::MissingId
+                } else {
+                    DegradedReason::ParseFailed
                 };
 
                 degraded.push(DegradedNode {

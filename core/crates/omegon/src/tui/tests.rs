@@ -535,3 +535,48 @@ fn tutorial_status_line() {
     assert!(tut.status_line().contains("2/2"));
     assert!(tut.status_line().contains("(final)"));
 }
+
+// ─── Responsive layout tier tests ───────────────────────────────
+
+#[test]
+fn footer_height_tier_1_full() {
+    // ≥24h → full 9-row footer
+    assert_eq!(App::compute_footer_height(30, false), 9);
+    assert_eq!(App::compute_footer_height(50, false), 9);
+    assert_eq!(App::compute_footer_height(24, false), 9);
+}
+
+#[test]
+fn footer_height_tier_3_compact() {
+    // 18..24h → compact 4-row footer
+    assert_eq!(App::compute_footer_height(23, false), 4);
+    assert_eq!(App::compute_footer_height(20, false), 4);
+    assert_eq!(App::compute_footer_height(18, false), 4);
+}
+
+#[test]
+fn footer_height_tier_4_none() {
+    // <18h → no footer
+    assert_eq!(App::compute_footer_height(17, false), 0);
+    assert_eq!(App::compute_footer_height(10, false), 0);
+}
+
+#[test]
+fn footer_height_focus_mode_overrides() {
+    // Focus mode always returns 0 regardless of height
+    assert_eq!(App::compute_footer_height(50, true), 0);
+    assert_eq!(App::compute_footer_height(20, true), 0);
+    assert_eq!(App::compute_footer_height(10, true), 0);
+}
+
+#[test]
+fn dashboard_visible_tracks_render_state() {
+    let mut app = test_app();
+    // Initially no dashboard visible (no content + width is 0)
+    assert!(!app.dashboard_visible());
+    // Simulate draw setting the width
+    app.last_dash_width = 40;
+    assert!(app.dashboard_visible());
+    app.last_dash_width = 0;
+    assert!(!app.dashboard_visible());
+}

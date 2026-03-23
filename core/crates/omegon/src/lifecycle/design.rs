@@ -319,21 +319,38 @@ const MAX_SCAN_FILES: usize = 1000;
 /// to prevent memory bloat from adversarial frontmatter.
 const MAX_NODE_ID_LEN: usize = 128;
 
+/// Result of a design doc scan — successful nodes + files that had
+/// frontmatter but couldn't produce a valid node (e.g. missing `id`).
+pub struct ScanResult {
+    pub nodes: HashMap<String, DesignNode>,
+    /// Paths of .md files that had YAML frontmatter but failed to produce
+    /// a node (missing id, invalid structure). Used for degradation detection
+    /// without re-reading the files.
+    pub parse_failures: Vec<PathBuf>,
+}
+
 pub fn scan_design_docs(docs_dir: &Path) -> HashMap<String, DesignNode> {
-    let mut nodes = HashMap::new();
-    scan_dir(docs_dir, &mut nodes);
+    scan_design_docs_full(docs_dir).nodes
+}
+
+pub fn scan_design_docs_full(docs_dir: &Path) -> ScanResult {
+    let mut result = ScanResult {
+        nodes: HashMap::new(),
+        parse_failures: Vec::new(),
+    };
+    scan_dir(docs_dir, &mut result);
 
     // Also scan docs/design/ subdirectory if it exists
     let design_dir = docs_dir.join("design");
     if design_dir.is_dir() {
-        scan_dir(&design_dir, &mut nodes);
+        scan_dir(&design_dir, &mut result);
     }
 
-    nodes
+    result
 }
 
 /// Scan a single directory for design doc markdown files.
-fn scan_dir(dir: &Path, nodes: &mut HashMap<String, DesignNode>) {
+fn scan_dir(dir: &Path, result: &mut ScanResult) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -374,14 +391,17 @@ fn scan_dir(dir: &Path, nodes: &mut HashMap<String, DesignNode>) {
             Err(_) => continue, // binary file, permission error, etc.
         };
 
-        if let Some(fm) = parse_frontmatter(&content)
-            && let Some(mut node) = node_from_frontmatter(&fm, path)
-        {
-            // Truncate oversized IDs
-            if node.id.len() > MAX_NODE_ID_LEN {
-                node.id.truncate(MAX_NODE_ID_LEN);
+        if let Some(fm) = parse_frontmatter(&content) {
+            if let Some(mut node) = node_from_frontmatter(&fm, path.clone()) {
+                // Truncate oversized IDs
+                if node.id.len() > MAX_NODE_ID_LEN {
+                    node.id.truncate(MAX_NODE_ID_LEN);
+                }
+                result.nodes.insert(node.id.clone(), node);
+            } else {
+                // Had frontmatter but no valid node (missing id, etc.)
+                result.parse_failures.push(path);
             }
-            nodes.insert(node.id.clone(), node);
         }
     }
 }

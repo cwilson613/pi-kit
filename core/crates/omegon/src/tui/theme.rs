@@ -363,46 +363,89 @@ fn calibrate_color(
 
 // ─── Calibrated theme wrapper ───────────────────────────────────────
 
-/// A theme wrapper that applies HSL calibration to all colors from a base theme.
+/// Pre-computed calibrated colors. All HSL transforms are done once at
+/// construction time — no per-frame recalculation.
 struct CalibratedTheme {
-    base: Box<dyn Theme>,
-    cal: crate::settings::CalibrationParams,
+    c_bg: Color,
+    c_card_bg: Color,
+    c_surface_bg: Color,
+    c_border: Color,
+    c_border_dim: Color,
+    c_fg: Color,
+    c_muted: Color,
+    c_dim: Color,
+    c_accent: Color,
+    c_accent_muted: Color,
+    c_accent_bright: Color,
+    c_success: Color,
+    c_error: Color,
+    c_warning: Color,
+    c_caution: Color,
+    c_footer_bg: Color,
+    c_user_msg_bg: Color,
+    c_tool_success_bg: Color,
+    c_tool_error_bg: Color,
+    c_diff_added: Color,
+    c_diff_removed: Color,
+    c_diff_added_bg: Color,
+    c_diff_removed_bg: Color,
 }
 
 impl CalibratedTheme {
     fn new(base: Box<dyn Theme>, cal: crate::settings::CalibrationParams) -> Self {
-        Self { base, cal }
-    }
-
-    fn cal(&self, color: Color) -> Color {
-        calibrate_color(color, &self.cal)
+        let c = |color: Color| calibrate_color(color, &cal);
+        Self {
+            c_bg: c(base.bg()),
+            c_card_bg: c(base.card_bg()),
+            c_surface_bg: c(base.surface_bg()),
+            c_border: c(base.border()),
+            c_border_dim: c(base.border_dim()),
+            c_fg: c(base.fg()),
+            c_muted: c(base.muted()),
+            c_dim: c(base.dim()),
+            c_accent: c(base.accent()),
+            c_accent_muted: c(base.accent_muted()),
+            c_accent_bright: c(base.accent_bright()),
+            c_success: c(base.success()),
+            c_error: c(base.error()),
+            c_warning: c(base.warning()),
+            c_caution: c(base.caution()),
+            c_footer_bg: c(base.footer_bg()),
+            c_user_msg_bg: c(base.user_msg_bg()),
+            c_tool_success_bg: c(base.tool_success_bg()),
+            c_tool_error_bg: c(base.tool_error_bg()),
+            c_diff_added: c(base.diff_added()),
+            c_diff_removed: c(base.diff_removed()),
+            c_diff_added_bg: c(base.diff_added_bg()),
+            c_diff_removed_bg: c(base.diff_removed_bg()),
+        }
     }
 }
 
 impl Theme for CalibratedTheme {
-    fn bg(&self) -> Color { self.cal(self.base.bg()) }
-    fn card_bg(&self) -> Color { self.cal(self.base.card_bg()) }
-    fn surface_bg(&self) -> Color { self.cal(self.base.surface_bg()) }
-    fn border(&self) -> Color { self.cal(self.base.border()) }
-    fn border_dim(&self) -> Color { self.cal(self.base.border_dim()) }
-    fn fg(&self) -> Color { self.cal(self.base.fg()) }
-    fn muted(&self) -> Color { self.cal(self.base.muted()) }
-    fn dim(&self) -> Color { self.cal(self.base.dim()) }
-    fn accent(&self) -> Color { self.cal(self.base.accent()) }
-    fn accent_muted(&self) -> Color { self.cal(self.base.accent_muted()) }
-    fn accent_bright(&self) -> Color { self.cal(self.base.accent_bright()) }
-    fn success(&self) -> Color { self.cal(self.base.success()) }
-    fn error(&self) -> Color { self.cal(self.base.error()) }
-    fn warning(&self) -> Color { self.cal(self.base.warning()) }
-    fn caution(&self) -> Color { self.cal(self.base.caution()) }
-    fn footer_bg(&self) -> Color { self.cal(self.base.footer_bg()) }
-    fn user_msg_bg(&self) -> Color { self.cal(self.base.user_msg_bg()) }
-    fn tool_success_bg(&self) -> Color { self.cal(self.base.tool_success_bg()) }
-    fn tool_error_bg(&self) -> Color { self.cal(self.base.tool_error_bg()) }
-    fn diff_added(&self) -> Color { self.cal(self.base.diff_added()) }
-    fn diff_removed(&self) -> Color { self.cal(self.base.diff_removed()) }
-    fn diff_added_bg(&self) -> Color { self.cal(self.base.diff_added_bg()) }
-    fn diff_removed_bg(&self) -> Color { self.cal(self.base.diff_removed_bg()) }
+    fn bg(&self) -> Color { self.c_bg }
+    fn card_bg(&self) -> Color { self.c_card_bg }
+    fn surface_bg(&self) -> Color { self.c_surface_bg }
+    fn border(&self) -> Color { self.c_border }
+    fn border_dim(&self) -> Color { self.c_border_dim }
+    fn fg(&self) -> Color { self.c_fg }
+    fn muted(&self) -> Color { self.c_muted }
+    fn dim(&self) -> Color { self.c_dim }
+    fn accent(&self) -> Color { self.c_accent }
+    fn accent_muted(&self) -> Color { self.c_accent_muted }
+    fn accent_bright(&self) -> Color { self.c_accent_bright }
+    fn success(&self) -> Color { self.c_success }
+    fn error(&self) -> Color { self.c_error }
+    fn warning(&self) -> Color { self.c_warning }
+    fn caution(&self) -> Color { self.c_caution }
+    fn footer_bg(&self) -> Color { self.c_footer_bg }
+    fn user_msg_bg(&self) -> Color { self.c_user_msg_bg }
+    fn tool_success_bg(&self) -> Color { self.c_tool_success_bg }
+    fn tool_error_bg(&self) -> Color { self.c_tool_error_bg }
+    fn diff_added(&self) -> Color { self.c_diff_added }
+    fn diff_removed(&self) -> Color { self.c_diff_removed }
+    fn diff_added_bg(&self) -> Color { self.c_diff_added_bg }
+    fn diff_removed_bg(&self) -> Color { self.c_diff_removed_bg }
 }
 
 #[cfg(test)]

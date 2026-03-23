@@ -129,6 +129,26 @@ fn snapshot_dashboard_with_harness_status() {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
+fn snapshot_footer_compact() {
+    let footer = FooterData {
+        model_id: "claude-sonnet-4-6".into(),
+        model_provider: "anthropic".into(),
+        model_tier: "victory".into(),
+        thinking_level: "medium".into(),
+        context_percent: 42.0,
+        context_window: 200_000,
+        total_facts: 1500,
+        turn: 12,
+        tool_calls: 35,
+        ..Default::default()
+    };
+    let backend = TestBackend::new(80, 4);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| footer.render_compact(f.area(), f, &Alpharius)).unwrap();
+    insta::assert_snapshot!(render_to_string(&terminal));
+}
+
+#[test]
 fn snapshot_footer_default() {
     let footer = FooterData::default();
     let backend = TestBackend::new(120, 5);

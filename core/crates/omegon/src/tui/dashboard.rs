@@ -7,9 +7,7 @@
 //! 1. Header — title + pipeline funnel bar + status counts
 //! 2. Focused node — enriched detail for the active design focus
 //! 3. Tree — tui-tree-widget with status icons, badges, parent-child hierarchy
-//! 4. OpenSpec changes — active change names with stage + progress
-//! 5. Cleave — child progress when active
-//! 6. Session — turn/tool counts (bottom-anchored)
+//! 4. OpenSpec changes — active change names with stage + progress (bottom-anchored)
 
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
@@ -49,15 +47,19 @@ pub struct DashboardHandles {
 }
 
 impl DashboardHandles {
-    /// Rescan filesystem state (design docs, openspec changes).
+    /// Rescan filesystem and refresh dashboard in a single lock acquisition.
     /// Call periodically to pick up changes from external processes
     /// (other Omegon instances, git pull, manual edits).
-    pub fn rescan_lifecycle(&self) {
+    /// Combines rescan + refresh to avoid double-locking the lifecycle Mutex.
+    pub fn rescan_and_refresh(&self, state: &mut DashboardState) {
         if let Some(ref lp_lock) = self.lifecycle
             && let Ok(mut lp) = lp_lock.lock()
         {
             lp.refresh();
+            // Fall through to refresh_from_lifecycle below
+            Self::refresh_from_lifecycle(&lp, state);
         }
+        self.refresh_non_lifecycle(state);
     }
 
     /// Refresh dashboard state from the shared feature handles.
@@ -66,6 +68,30 @@ impl DashboardHandles {
         if let Some(ref lp_lock) = self.lifecycle
             && let Ok(lp) = lp_lock.lock()
         {
+            Self::refresh_from_lifecycle(&lp, state);
+        }
+        self.refresh_non_lifecycle(state);
+    }
+
+    fn refresh_non_lifecycle(&self, state: &mut DashboardState) {
+        // Cleave
+        if let Some(ref cp_lock) = self.cleave
+            && let Ok(cp) = cp_lock.lock()
+        {
+            state.cleave = Some(cp.clone());
+        }
+        // Harness
+        if let Some(ref harness_lock) = self.harness
+            && let Ok(harness) = harness_lock.lock()
+        {
+            state.harness = Some(harness.clone());
+        }
+    }
+
+    fn refresh_from_lifecycle(
+        lp: &LifecycleContextProvider,
+        state: &mut DashboardState,
+    ) {
             state.focused_node = lp.focused_node_id().and_then(|id| {
                 lp.get_node(id).map(|n| {
                     let sections = design::read_node_sections(n);
@@ -162,21 +188,6 @@ impl DashboardHandles {
                     reason: d.reason.to_string(),
                 }
             }).collect();
-        }
-
-        // Cleave
-        if let Some(ref cp_lock) = self.cleave
-            && let Ok(cp) = cp_lock.lock()
-        {
-            state.cleave = Some(cp.clone());
-        }
-
-        // Harness
-        if let Some(ref harness_lock) = self.harness
-            && let Ok(harness) = harness_lock.lock()
-        {
-            state.harness = Some(harness.clone());
-        }
     }
 }
 
@@ -216,19 +227,19 @@ impl DashboardState {
             return false;
         }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.tree_state.key_up();
                 true
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 self.tree_state.key_down();
                 true
             }
-            KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Left => {
                 self.tree_state.key_left();
                 true
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Right => {
                 self.tree_state.key_right();
                 true
             }
@@ -464,11 +475,18 @@ impl DashboardState {
                     .max(if count > 0 { 1.0 } else { 0.0 }) as usize;
                 Span::styled(ch.repeat(cw), Style::default().fg(color))
             };
+            // All statuses represented so segments sum to total
+            let seed_resolved = c.total.saturating_sub(
+                c.exploring + c.decided + c.implementing + c.implemented + c.blocked + c.deferred
+            );
             lines.push(Line::from(vec![
                 Span::styled(" ", Style::default()),
+                seg(seed_resolved, "·", t.dim()),
                 seg(c.exploring, "░", t.accent()),
                 seg(c.decided, "▒", t.success()),
                 seg(c.implementing, "▓", t.warning()),
+                seg(c.blocked, "▓", t.error()),
+                seg(c.deferred, "░", t.caution()),
                 seg(c.implemented, "█", t.dim()),
             ]));
         }
@@ -836,7 +854,7 @@ fn stage_badge(stage: ChangeStage, t: &dyn Theme) -> (&'static str, Color) {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn format_k(tokens: usize) -> String {
     if tokens >= 1_000_000 {
         format!("{}M", tokens / 1_000_000)
@@ -1452,6 +1470,81 @@ mod tests {
         assert!(
             text.contains("no active") || text.contains("Dashboard"),
             "should show hint or title: {text}"
+        );
+    }
+
+    #[test]
+    fn degraded_nodes_render_in_tree() {
+        let mut state = DashboardState::default();
+        state.status_counts.total = 5;
+        state.all_nodes = vec![NodeSummary {
+            id: "good-node".into(),
+            title: "Good".into(),
+            status: NodeStatus::Exploring,
+            open_questions: 0,
+            parent: None,
+            priority: None,
+            issue_type: None,
+            openspec_change: None,
+        }];
+        state.degraded_nodes = vec![DegradedNodeSummary {
+            id: "broken-node".into(),
+            title: "Was Good".into(),
+            file_path: "docs/broken-node.md".into(),
+            reason: "frontmatter parse failed".into(),
+        }];
+
+        let backend = TestBackend::new(50, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                state.render_themed(frame.area(), frame, &super::super::theme::Alpharius);
+            })
+            .unwrap();
+
+        let text = buf_text(&terminal);
+        assert!(
+            text.contains("broken-node"),
+            "should render degraded node in tree: {text}"
+        );
+        assert!(
+            text.contains("good-node"),
+            "should still render valid nodes: {text}"
+        );
+    }
+
+    #[test]
+    fn degraded_count_in_header() {
+        let mut state = DashboardState::default();
+        state.status_counts.total = 10;
+        state.degraded_nodes = vec![
+            DegradedNodeSummary {
+                id: "a".into(),
+                title: "A".into(),
+                file_path: "a.md".into(),
+                reason: "parse failed".into(),
+            },
+            DegradedNodeSummary {
+                id: "b".into(),
+                title: "B".into(),
+                file_path: "b.md".into(),
+                reason: "missing id".into(),
+            },
+        ];
+
+        let backend = TestBackend::new(50, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                state.render_themed(frame.area(), frame, &super::super::theme::Alpharius);
+            })
+            .unwrap();
+
+        let text = buf_text(&terminal);
+        // Should show ⚠2 in the header
+        assert!(
+            text.contains("⚠2") || text.contains("⚠ 2"),
+            "should show degraded count badge: {text}"
         );
     }
 }

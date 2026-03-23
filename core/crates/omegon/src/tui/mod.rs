@@ -134,6 +134,8 @@ pub struct App {
     dashboard_refresh_turn: u32,
     /// Last time we rescanned filesystem for design/lifecycle changes.
     last_lifecycle_rescan: std::time::Instant,
+    /// Width of the dashboard panel on last render (0 if not visible).
+    last_dash_width: u16,
     /// Web dashboard server address (if running).
     web_server_addr: Option<std::net::SocketAddr>,
     /// Prompt queued while agent was busy — sent on next AgentEnd.
@@ -224,6 +226,7 @@ impl App {
             dashboard_handles: dashboard::DashboardHandles::default(),
             dashboard_refresh_turn: u32::MAX, // force refresh on first frame
             last_lifecycle_rescan: std::time::Instant::now(),
+            last_dash_width: 0,
             web_server_addr: None,
             queued_prompt: None,
             toasts: ratatui_toaster::ToastEngineBuilder::new(ratatui::prelude::Rect::default())
@@ -445,7 +448,7 @@ impl App {
             }
             "reset" => {
                 profile.calibration = None;
-                let _ = profile.save_global();
+                let _ = profile.save(&cwd);
                 self.theme = theme::default_theme();
                 SlashResult::Display("Calibration reset to defaults".into())
             }
@@ -477,7 +480,7 @@ impl App {
                     }
                 }
                 profile.calibration = Some(cal);
-                let _ = profile.save_global();
+                let _ = profile.save(&cwd);
                 // Apply live — rebuild theme with new calibration
                 self.theme = theme::calibrated_theme(&cal);
                 SlashResult::Display(format!(
@@ -788,16 +791,25 @@ impl App {
         false
     }
 
-    /// Whether the dashboard panel should be shown (based on terminal width + content).
-    fn show_dashboard(&self) -> bool {
-        // We can't know terminal width without a frame, but the dashboard
-        // has a minimum width threshold of 120 and must have content to show.
-        // Since we check this from key handlers (not during rendering),
-        // we just check content availability.
-        self.dashboard.status_counts.total > 0
-            || self.dashboard.focused_node.is_some()
-            || !self.dashboard.active_changes.is_empty()
-            || self.dashboard.cleave.as_ref().is_some_and(|c| c.active || c.total_children > 0)
+    /// Compute the footer height for a given terminal height.
+    /// Extracted for testability.
+    fn compute_footer_height(terminal_h: u16, focus_mode: bool) -> u16 {
+        if focus_mode {
+            0
+        } else if terminal_h < 18 {
+            0       // Tier 4: no footer
+        } else if terminal_h < 24 {
+            4       // Tier 3: compact footer
+        } else {
+            9       // Tier 1/2: full footer
+        }
+    }
+
+    /// Whether the dashboard panel was visible on the last rendered frame.
+    /// Set during draw() based on terminal dimensions + content availability.
+    /// Prevents activating sidebar navigation when the panel isn't on screen.
+    fn dashboard_visible(&self) -> bool {
+        self.last_dash_width > 0
     }
 
     /// Update the dashboard with lifecycle context.
@@ -844,28 +856,25 @@ impl App {
 
         // Periodic lifecycle rescan — pick up filesystem changes from
         // external processes (other Omegon instances, git pull, manual edits).
-        // Every 10 seconds, rescan docs/ and openspec/ for new/changed nodes.
-        // The scan reads ~240 markdown frontmatters so we keep the interval modest.
-        if self.last_lifecycle_rescan.elapsed() >= Duration::from_secs(10) {
-            self.last_lifecycle_rescan = std::time::Instant::now();
-            self.dashboard_handles.rescan_lifecycle();
-            // Force a dashboard refresh on next check
-            self.dashboard_refresh_turn = self.dashboard_refresh_turn.wrapping_add(1);
-        }
+        // Single lock acquisition via rescan_and_refresh avoids double-locking.
+        let needs_rescan = self.last_lifecycle_rescan.elapsed() >= Duration::from_secs(10);
+        let needs_refresh = self.turn != self.dashboard_refresh_turn;
 
-        // Refresh dashboard from shared feature handles (throttled per-turn
-        // or after a lifecycle rescan)
-        if self.turn != self.dashboard_refresh_turn {
+        if needs_rescan {
+            self.last_lifecycle_rescan = std::time::Instant::now();
+            self.dashboard_refresh_turn = self.turn;
+            self.dashboard_handles.rescan_and_refresh(&mut self.dashboard);
+        } else if needs_refresh {
             self.dashboard_refresh_turn = self.turn;
             self.dashboard_handles.refresh_into(&mut self.dashboard);
-            // Write session stats for the web API
+        }
+
+        if needs_rescan || needs_refresh {
             if let Ok(mut ss) = self.dashboard_handles.session.lock() {
                 ss.turns = self.turn;
                 ss.tool_calls = self.tool_calls;
                 ss.compactions = self.dashboard.compactions;
             }
-
-            // Feed context gauge into dashboard
             self.dashboard.context_used_pct = self.footer_data.context_percent;
             self.dashboard.context_window_k = self.footer_data.context_window;
         }
@@ -923,15 +932,7 @@ impl App {
 
         // Determine footer height based on responsive tier
         // (focus_mode override: operator toggle always wins)
-        let footer_height: u16 = if self.focus_mode {
-            0
-        } else if h < 18 {
-            0       // Tier 4: no footer
-        } else if h < 24 {
-            4       // Tier 3: compact footer
-        } else {
-            9       // Tier 1/2: full footer
-        };
+        let footer_height = Self::compute_footer_height(h, self.focus_mode);
 
         let has_dashboard_content = self.dashboard.status_counts.total > 0
             || self.dashboard.focused_node.is_some()
@@ -993,6 +994,9 @@ impl App {
         }
 
         // Dashboard panel (right side)
+        // Record whether dashboard is visible for key handler checks
+        self.last_dash_width = if show_dashboard { dash_area.width } else { 0 };
+
         if show_dashboard && dash_area.width > 0 {
             self.dashboard.render_themed(dash_area, frame, t.as_ref());
         }
@@ -1014,7 +1018,9 @@ impl App {
         self.footer_data.compactions = self.dashboard.compactions;
 
         // ── CIC Instrument Panel telemetry update ────
-        {
+        // Only update instrument telemetry when the instrument panel is rendered
+        // (full footer mode). Skip in compact/no-footer tiers to avoid wasted work.
+        if footer_height >= 9 {
             let thinking = match self.settings().thinking {
                 crate::settings::ThinkingLevel::Off => "off",
                 crate::settings::ThinkingLevel::Minimal => "minimal",
@@ -2870,7 +2876,7 @@ pub async fn run_tui(
 
                     // Ctrl+D: enter sidebar navigation mode (if dashboard visible)
                     (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                        if app.show_dashboard() {
+                        if app.dashboard_visible() {
                             app.dashboard.sidebar_active = !app.dashboard.sidebar_active;
                             if app.dashboard.sidebar_active && app.dashboard.tree_state.selected().is_empty() {
                                 app.dashboard.tree_state.select_first();

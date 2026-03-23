@@ -2778,6 +2778,10 @@ pub async fn run_tui(
                                 app.mark_tutorial_completed();
                                 continue;
                             }
+                            (KeyCode::BackTab, _) => {
+                                tut.go_back();
+                                continue;
+                            }
                             (KeyCode::Tab, mods) if mods.contains(KeyModifiers::SHIFT) => {
                                 tut.go_back();
                                 continue;
@@ -2804,7 +2808,11 @@ pub async fn run_tui(
                                 }
                                 continue;
                             }
-                            _ => {}
+                            _ => {
+                                // Tutorial is active — swallow all other key events
+                                // so they don't trigger sidebar nav, editor input, etc.
+                                continue;
+                            }
                         }
                     }
                 }

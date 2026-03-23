@@ -273,28 +273,38 @@ impl Tutorial {
 
         let step = self.step();
 
-        // Smart positioning: avoid covering highlighted areas
-        let overlay = match (&step.anchor, &step.highlight) {
-            // Steps highlighting footer elements → position in upper area
-            (_, Some(Highlight::EnginePanel | Highlight::InstrumentPanel)) => {
-                upper_rect(area, footer_height)
+        // Smart positioning: avoid covering highlighted areas.
+        // AutoPrompt steps that are running get a larger overlay to cover
+        // the conversation chaos while the agent works behind the scenes.
+        let auto_prompt_active = self.auto_prompt_sent
+            && matches!(step.trigger, Trigger::AutoPrompt(_));
+
+        let overlay = if auto_prompt_active {
+            // Agent is working — large centered overlay covers the conversation
+            large_centered_rect(area, footer_height)
+        } else {
+            match (&step.anchor, &step.highlight) {
+                // Steps highlighting footer elements → position in upper area
+                (_, Some(Highlight::EnginePanel | Highlight::InstrumentPanel)) => {
+                    upper_rect(area, footer_height)
+                }
+                // Steps highlighting input → position in center-upper (above input bar)
+                (_, Some(Highlight::InputBar)) => {
+                    upper_rect(area, footer_height + 3) // extra 3 for input bar
+                }
+                // Steps highlighting dashboard → position in left portion
+                (_, Some(Highlight::Dashboard)) => {
+                    // Dashboard is on the right — put overlay on the left
+                    let w = area.width.min(48).max(30);
+                    let h = area.height.saturating_sub(footer_height + 3).min(14);
+                    let x = area.x + 2;
+                    let y = area.y + 2;
+                    Rect { x, y, width: w, height: h }
+                }
+                // Center for steps with no highlight or Center anchor
+                (Anchor::Center, _) => centered_rect(area),
+                (Anchor::Upper, _) => upper_rect(area, footer_height),
             }
-            // Steps highlighting input → position in center-upper (above input bar)
-            (_, Some(Highlight::InputBar)) => {
-                upper_rect(area, footer_height + 3) // extra 3 for input bar
-            }
-            // Steps highlighting dashboard → position in left portion
-            (_, Some(Highlight::Dashboard)) => {
-                // Dashboard is on the right — put overlay on the left
-                let w = area.width.min(48).max(30);
-                let h = area.height.saturating_sub(footer_height + 3).min(14);
-                let x = area.x + 2;
-                let y = area.y + 2;
-                Rect { x, y, width: w, height: h }
-            }
-            // Center for steps with no highlight or Center anchor
-            (Anchor::Center, _) => centered_rect(area),
-            (Anchor::Upper, _) => upper_rect(area, footer_height),
         };
 
         // Fill the overlay area with card background — a distinct surface
@@ -387,6 +397,17 @@ impl Tutorial {
             }
         }
     }
+}
+
+/// Large centered rect — covers most of the conversation area while the
+/// agent works during AutoPrompt steps. Leaves footer visible.
+fn large_centered_rect(parent: Rect, footer_height: u16) -> Rect {
+    let available_h = parent.height.saturating_sub(footer_height + 2);
+    let w = 60u16.min(parent.width.saturating_sub(4));
+    let h = available_h.min(18);
+    let x = parent.x + (parent.width.saturating_sub(w)) / 2;
+    let y = parent.y + (available_h.saturating_sub(h)) / 3;
+    Rect::new(x, y, w, h)
 }
 
 /// Center a rect — fixed max size, always fits content.

@@ -28,7 +28,7 @@ impl RenderProvider {
 
 fn visuals_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let dir = home.join(".pi/visuals");
+    let dir = home.join(".config/omegon/visuals");
     let _ = fs::create_dir_all(&dir);
     dir
 }

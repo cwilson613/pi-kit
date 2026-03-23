@@ -3,7 +3,7 @@
 //! Replaces core/bridge/llm-bridge.mjs entirely. The Rust binary makes
 //! HTTPS requests directly to api.anthropic.com / api.openai.com.
 //!
-//! API keys resolved from: env vars → ~/.pi/agent/auth.json (OAuth tokens).
+//! API keys resolved from: env vars → ~/.config/omegon/auth.json (OAuth tokens).
 //! The upstream provider APIs are the only external dependency — no npm,
 //! no Node.js, no supply chain risk from package registries.
 
@@ -84,7 +84,7 @@ pub fn resolve_api_key_sync(provider: &str) -> Option<(String, bool)> {
     None
 }
 
-/// Resolve API key from env vars or ~/.pi/agent/auth.json (legacy, no refresh).
+/// Resolve API key from env vars or auth.json (no refresh).
 fn resolve_api_key(provider: &str) -> Option<String> {
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
@@ -108,9 +108,8 @@ fn resolve_api_key(provider: &str) -> Option<String> {
             return Some(val);
         }
 
-    // ~/.pi/agent/auth.json — OAuth access tokens from pi's auth flow
-    let home = dirs::home_dir()?;
-    let auth_path = home.join(".pi/agent/auth.json");
+    // auth.json — OAuth tokens (primary: ~/.config/omegon/, legacy: ~/.pi/agent/)
+    let auth_path = crate::auth::auth_json_path()?;
     let content = std::fs::read_to_string(&auth_path).ok()?;
     let auth: Value = serde_json::from_str(&content).ok()?;
     auth.get(provider)?

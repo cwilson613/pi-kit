@@ -1,11 +1,12 @@
 ---
 id: tutorial-demo-project
 title: Tutorial demo project — self-seeded repo with live cleave demonstration
-status: implementing
+status: implemented
 parent: tutorial-system
 tags: [tutorial, demo, cleave, onboarding, 0.15.0]
-open_questions: []
-jj_change_id: pqvwovtvltpkrkxrmwtynquqtnvnotkn
+open_questions:
+  - "Should /tutorial support a hands-on mode that runs on the operator's current project instead of cloning a demo? This bridges /init and /tutorial — showing how Omegon works FOR the operator's own codebase. The overlay steps would skip the cleave demo and focus on: reading the project, storing initial facts, creating the first design node."
+jj_change_id: uumumslvnzlntqvqmvymxykyqqsunlkx
 issue_type: feature
 priority: 2
 ---
@@ -81,7 +82,7 @@ This is ~10 steps, up from 7. The key difference: Acts 2-3 involve the agent doi
 
 ## Open Questions
 
-*No open questions.*
+- Should /tutorial support a hands-on mode that runs on the operator's current project instead of cloning a demo? This bridges /init and /tutorial — showing how Omegon works FOR the operator's own codebase. The overlay steps would skip the cleave demo and focus on: reading the project, storing initial facts, creating the first design node.
 
 ## Implementation Notes
 

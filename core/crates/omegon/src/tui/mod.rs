@@ -2623,7 +2623,7 @@ pub async fn run_tui(
         let omegon_dir = std::path::Path::new(&app.footer_data.cwd).join(".omegon");
         let tutorial_done = omegon_dir.join("tutorial_completed");
         let has_memory = omegon_dir.join("memory").join("facts.jsonl").exists()
-            || std::path::Path::new(&app.footer_data.cwd).join(".pi").join("memory").join("facts.jsonl").exists();
+            || std::path::Path::new(&app.footer_data.cwd).join(".pi").join("memory").join("facts.jsonl").exists(); // legacy compat
         if !tutorial_done.exists() && !has_memory && app.queued_prompt.is_none() {
             app.show_toast(
                 "Welcome to Omegon! Type /tutorial for an interactive guide.",

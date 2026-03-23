@@ -226,7 +226,8 @@ impl RepoModel {
     fn is_lifecycle_path(path: &str) -> bool {
         path.starts_with("openspec/")
             || path.starts_with("docs/")
-            || path.starts_with(".pi/")
+            || path.starts_with(".omegon/")
+            || path.starts_with(".pi/") // legacy compat
             || path.starts_with("design/")
     }
 
@@ -411,7 +412,7 @@ mod tests {
                 // Git-only: lifecycle classification
                 model.record_edit("openspec/changes/foo/tasks.md");
                 model.record_edit("docs/some-design-doc.md");
-                model.record_edit(".pi/memory/facts.jsonl");
+                model.record_edit(".omegon/memory/facts.jsonl");
                 assert_eq!(model.pending_lifecycle_files().len(), 3);
                 assert!(model.working_set().is_empty());
 

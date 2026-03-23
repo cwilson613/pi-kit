@@ -88,9 +88,20 @@ impl OAuthCredentials {
     }
 }
 
-/// Path to auth.json.
+/// Path to auth.json — primary location is ~/.config/omegon/auth.json,
+/// with fallback to legacy ~/.pi/agent/auth.json for backward compat.
 pub fn auth_json_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".pi/agent/auth.json"))
+    let home = dirs::home_dir()?;
+    let primary = home.join(".config/omegon/auth.json");
+    if primary.exists() {
+        return Some(primary);
+    }
+    let legacy = home.join(".pi/agent/auth.json");
+    if legacy.exists() {
+        return Some(legacy);
+    }
+    // Default to primary for new writes
+    Some(primary)
 }
 
 /// Read credentials for a provider from auth.json.

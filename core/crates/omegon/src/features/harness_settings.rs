@@ -164,9 +164,13 @@ impl Feature for HarnessSettings {
             }
 
             "memory_stats" => {
-                // Read from .pi/memory/facts.db if accessible
+                // Read from .omegon/memory/facts.db (or legacy .pi/memory/)
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let db_path = cwd.join(".pi").join("memory").join("facts.db");
+                let db_path = {
+                    let primary = cwd.join(".omegon").join("memory").join("facts.db");
+                    if primary.exists() { primary }
+                    else { cwd.join(".pi").join("memory").join("facts.db") }
+                };
                 if db_path.exists() {
                     match rusqlite::Connection::open_with_flags(
                         &db_path,
@@ -198,13 +202,13 @@ impl Feature for HarnessSettings {
                         Err(e) => Ok(error_result(&format!("Cannot read memory DB: {e}"))),
                     }
                 } else {
-                    Ok(text_result("No memory database found at .pi/memory/facts.db"))
+                    Ok(text_result("No memory database found at .omegon/memory/facts.db"))
                 }
             }
 
             "sessions" => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let sessions_dir = cwd.join(".pi").join("sessions");
+                let sessions_dir = cwd.join(".omegon").join("sessions");
                 if !sessions_dir.is_dir() {
                     return Ok(text_result("No saved sessions."));
                 }

@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn jsonl_deserializes_real_file_format() {
-        // This is the actual format from .pi/memory/facts.jsonl
+        // This is the actual format from .omegon/memory/facts.jsonl
         let line = r#"{"_type":"fact","id":"scQZ59OF3fPW","mind":"default","section":"Architecture","content":"Some fact","status":"active","created_at":"2026-03-04T05:30:13.976Z","source":"extraction","content_hash":"497f84b1d8aecb70","supersedes":"JngamqHkF69o"}"#;
         let record: JsonlRecord = serde_json::from_str(line).unwrap();
         match record {

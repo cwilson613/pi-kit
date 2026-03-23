@@ -1,6 +1,6 @@
 //! Session management — directory layout, save-on-exit, list, resume.
 //!
-//! Session files live at `~/.pi/agent/sessions/<cwd-slug>/<timestamp>_<id>.json`.
+//! Session files live at `~/.config/omegon/sessions/<cwd-slug>/<timestamp>_<id>.json`.
 //! Compatible with pi's directory structure so TS and Rust sessions coexist.
 
 use std::fs;
@@ -30,11 +30,19 @@ pub struct SessionEntry {
 }
 
 /// Get the sessions directory for a given cwd.
-/// Returns `~/.pi/agent/sessions/<cwd-slug>/`.
+/// Returns `~/.config/omegon/sessions/<cwd-slug>/`.
+/// Falls back to legacy `~/.pi/agent/sessions/` if it has content.
 pub fn sessions_dir(cwd: &Path) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let slug = cwd_slug(cwd);
-    Some(home.join(".pi/agent/sessions").join(slug))
+    let primary = home.join(".config/omegon/sessions").join(&slug);
+    if !primary.exists() {
+        let legacy = home.join(".pi/agent/sessions").join(&slug);
+        if legacy.exists() {
+            return Some(legacy);
+        }
+    }
+    Some(primary)
 }
 
 /// Convert a cwd path to a directory slug: `/Users/cwilson/workspace` → `--Users-cwilson-workspace--`

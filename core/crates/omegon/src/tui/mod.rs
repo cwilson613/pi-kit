@@ -2793,6 +2793,39 @@ pub async fn run_tui(
                 // or any other keybinding.
                 if let Some(ref mut tut) = app.tutorial_overlay {
                     if tut.active {
+                        // ── Project-choice widget (step 0, empty project) ──────
+                        if tut.showing_choice() {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    tut.dismiss();
+                                    app.mark_tutorial_completed();
+                                }
+                                KeyCode::Left | KeyCode::Right => {
+                                    tut.toggle_choice();
+                                }
+                                KeyCode::Tab | KeyCode::Enter => {
+                                    let choice = tut.choice;
+                                    tut.confirm_choice();
+                                    if choice == tutorial::TutorialChoice::Demo {
+                                        // Extract bundled tarball + exec into demo project
+                                        let launch_result = crate::demo::launch_bundled_demo();
+                                        if let Err(e) = launch_result {
+                                            app.show_toast(
+                                                &format!("Demo launch failed: {e}")[..48.min(format!("Demo launch failed: {e}").len())],
+                                                ratatui_toaster::ToastType::Error,
+                                            );
+                                        }
+                                        // exec() replaces the process; if we get here it failed
+                                    } else {
+                                        // My project — advance past choice into hands-on
+                                        tut.advance();
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => {
                                 tut.dismiss();

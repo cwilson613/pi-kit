@@ -148,6 +148,13 @@ Explain what you proposed and why."
     },
 ];
 
+/// Which option is highlighted in the project-choice widget.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TutorialChoice {
+    Demo,
+    MyProject,
+}
+
 /// Tutorial overlay state.
 pub struct Tutorial {
     /// Current step index.
@@ -158,8 +165,14 @@ pub struct Tutorial {
     /// Reset to false when advancing to a new step.
     pub auto_prompt_sent: bool,
     /// Whether the project has pre-existing design tree content.
-    /// Set at construction — affects warning display in Act 2/3.
+    /// When false, step 0 shows a project-choice widget instead of
+    /// the normal passive welcome.
     pub has_design_tree: bool,
+    /// Current selection in the project-choice widget (step 0, empty project).
+    pub choice: TutorialChoice,
+    /// Set to true when the operator confirms a choice — caller reads
+    /// `choice` to know which path to take, then advances the tutorial.
+    pub choice_confirmed: bool,
 }
 
 impl Tutorial {
@@ -174,7 +187,28 @@ impl Tutorial {
             active: true,
             auto_prompt_sent: false,
             has_design_tree,
+            choice: TutorialChoice::Demo,
+            choice_confirmed: false,
         }
+    }
+
+    /// Whether the project-choice widget is active (step 0, empty project).
+    pub fn showing_choice(&self) -> bool {
+        self.current == 0 && !self.has_design_tree && !self.choice_confirmed
+    }
+
+    /// Toggle the choice selection left/right.
+    pub fn toggle_choice(&mut self) {
+        self.choice = match self.choice {
+            TutorialChoice::Demo => TutorialChoice::MyProject,
+            TutorialChoice::MyProject => TutorialChoice::Demo,
+        };
+    }
+
+    /// Confirm the current choice. Caller should read `self.choice`
+    /// and act accordingly (launch demo or advance normally).
+    pub fn confirm_choice(&mut self) {
+        self.choice_confirmed = true;
     }
 
     pub fn step(&self) -> &Step {
@@ -288,6 +322,13 @@ impl Tutorial {
     /// Highlighting is handled by the widgets themselves — see tutorial_highlight field on App.
     pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, footer_height: u16) {
         if !self.active { return; }
+
+        // Step 0 on an empty project shows a project-choice widget
+        // instead of the normal passive welcome step.
+        if self.showing_choice() {
+            self.render_choice(area, buf, theme, footer_height);
+            return;
+        }
 
         let step = self.step();
 
@@ -429,6 +470,125 @@ impl Tutorial {
                 }
             }
         }
+    }
+
+    fn render_choice(&self, area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, footer_height: u16) {
+        let overlay = large_centered_rect(area, footer_height);
+        let overlay_bg = theme.card_bg();
+
+        // Fill background
+        for y in overlay.top()..overlay.bottom() {
+            for x in overlay.left()..overlay.right() {
+                if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
+                    cell.reset();
+                    cell.set_char(' ');
+                    cell.set_bg(overlay_bg);
+                    cell.set_fg(theme.fg());
+                }
+            }
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent()).bg(overlay_bg))
+            .style(Style::default().bg(overlay_bg))
+            .title(Span::styled(
+                "\u{1f4d8} Welcome to Omegon ",
+                Style::default().fg(theme.accent()).bg(overlay_bg).bold()
+            ))
+            .title_bottom(
+                Line::from(vec![
+                    Span::styled(
+                        " [\u{2190}/\u{2192}] select  [Tab] confirm  [Esc] exit ",
+                        Style::default().fg(theme.muted()).bg(overlay_bg)
+                    ),
+                ]).centered()
+            );
+
+        let inner = block.inner(overlay);
+        block.render(overlay, buf);
+
+        // Layout: intro text on top, two side-by-side option boxes below
+        use ratatui::layout::{Direction, Layout, Constraint};
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // intro text
+                Constraint::Min(6),    // option boxes
+            ])
+            .split(inner);
+
+        // Intro line
+        let intro = Paragraph::new("No existing project detected. Choose a mode:")
+            .style(Style::default().fg(theme.muted()).bg(overlay_bg));
+        intro.render(rows[0], buf);
+
+        // Two option columns
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(rows[1]);
+
+        self.render_choice_option(
+            cols[0], buf, theme, overlay_bg,
+            TutorialChoice::Demo,
+            "\u{1f4e6} Guided demo",
+            "Pre-seeded Rust project.\nFull lifecycle: read \u{2192}\ndesign \u{2192} spec \u{2192} cleave.\n\n~$0.10\u{2013}0.20 in tokens",
+        );
+        self.render_choice_option(
+            cols[1], buf, theme, overlay_bg,
+            TutorialChoice::MyProject,
+            "\u{1f528} My project",
+            "Use your current code.\nReads your files, stores\nfacts, creates your first\ndesign node + spec.\n\n~$0.05 in tokens",
+        );
+    }
+
+    fn render_choice_option(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &dyn super::theme::Theme,
+        overlay_bg: Color,
+        option: TutorialChoice,
+        title: &str,
+        body: &str,
+    ) {
+        let selected = self.choice == option;
+        let (border_style, title_style) = if selected {
+            (
+                Style::default().fg(theme.accent_bright()).bg(overlay_bg),
+                Style::default().fg(theme.accent_bright()).bg(overlay_bg).bold(),
+            )
+        } else {
+            (
+                Style::default().fg(theme.muted()).bg(overlay_bg),
+                Style::default().fg(theme.fg()).bg(overlay_bg),
+            )
+        };
+
+        // Shrink area slightly for padding between options
+        let padded = Rect {
+            x: area.x + 1,
+            y: area.y,
+            width: area.width.saturating_sub(2),
+            height: area.height,
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(Span::styled(format!(" {title} "), title_style));
+
+        let inner = block.inner(padded);
+        block.render(padded, buf);
+
+        Paragraph::new(body)
+            .style(Style::default().fg(if selected { theme.fg() } else { theme.muted() }).bg(overlay_bg))
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 }
 

@@ -20,6 +20,7 @@ pub mod bus;
 mod cleave;
 pub mod features;
 mod context;
+mod demo;
 mod migrate;
 pub mod paths;
 mod switch;

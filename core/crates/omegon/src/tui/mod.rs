@@ -132,6 +132,8 @@ pub struct App {
     dashboard_handles: dashboard::DashboardHandles,
     /// Turn counter for throttled dashboard refresh.
     dashboard_refresh_turn: u32,
+    /// Last time we rescanned filesystem for design/lifecycle changes.
+    last_lifecycle_rescan: std::time::Instant,
     /// Web dashboard server address (if running).
     web_server_addr: Option<std::net::SocketAddr>,
     /// Prompt queued while agent was busy — sent on next AgentEnd.
@@ -221,6 +223,7 @@ impl App {
             bus_commands: Vec::new(),
             dashboard_handles: dashboard::DashboardHandles::default(),
             dashboard_refresh_turn: u32::MAX, // force refresh on first frame
+            last_lifecycle_rescan: std::time::Instant::now(),
             web_server_addr: None,
             queued_prompt: None,
             toasts: ratatui_toaster::ToastEngineBuilder::new(ratatui::prelude::Rect::default())
@@ -839,7 +842,19 @@ impl App {
         self.dashboard.turns = self.turn;
         self.dashboard.tool_calls = self.tool_calls;
 
-        // Refresh dashboard from shared feature handles (throttled)
+        // Periodic lifecycle rescan — pick up filesystem changes from
+        // external processes (other Omegon instances, git pull, manual edits).
+        // Every 10 seconds, rescan docs/ and openspec/ for new/changed nodes.
+        // The scan reads ~240 markdown frontmatters so we keep the interval modest.
+        if self.last_lifecycle_rescan.elapsed() >= Duration::from_secs(10) {
+            self.last_lifecycle_rescan = std::time::Instant::now();
+            self.dashboard_handles.rescan_lifecycle();
+            // Force a dashboard refresh on next check
+            self.dashboard_refresh_turn = self.dashboard_refresh_turn.wrapping_add(1);
+        }
+
+        // Refresh dashboard from shared feature handles (throttled per-turn
+        // or after a lifecycle rescan)
         if self.turn != self.dashboard_refresh_turn {
             self.dashboard_refresh_turn = self.turn;
             self.dashboard_handles.refresh_into(&mut self.dashboard);

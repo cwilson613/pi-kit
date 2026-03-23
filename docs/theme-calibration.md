@@ -1,11 +1,11 @@
 ---
 id: theme-calibration
 title: "Theme calibration — /calibrate command, gamma/sat/hue slider, tweakcn-style theme export"
-status: implementing
+status: implemented
 parent: alpharius-theme
 tags: [theme, ux, calibration, display, tweakcn, 0.15.0]
 open_questions: []
-jj_change_id: vlysvlkmwtumyvmlypsmvpoplxvrrvrk
+jj_change_id: qzztylntkywyrnmqksnttnwvlrymyrqt
 issue_type: feature
 priority: 3
 ---

@@ -49,6 +49,17 @@ pub struct DashboardHandles {
 }
 
 impl DashboardHandles {
+    /// Rescan filesystem state (design docs, openspec changes).
+    /// Call periodically to pick up changes from external processes
+    /// (other Omegon instances, git pull, manual edits).
+    pub fn rescan_lifecycle(&self) {
+        if let Some(ref lp_lock) = self.lifecycle
+            && let Ok(mut lp) = lp_lock.lock()
+        {
+            lp.refresh();
+        }
+    }
+
     /// Refresh dashboard state from the shared feature handles.
     pub fn refresh_into(&self, state: &mut DashboardState) {
         // Lifecycle

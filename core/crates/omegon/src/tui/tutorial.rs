@@ -215,15 +215,18 @@ impl Tutorial {
             (Anchor::Upper, _) => upper_rect(area, footer_height),
         };
 
-        // Fill the overlay area with theme background — prevents terminal
-        // default color bleed-through. Clear alone resets to Color::Reset.
-        let bg = theme.bg();
+        // Fill the overlay area with card background — a distinct surface
+        // on top of the main bg, guaranteed theme-owned. Uses card_bg rather
+        // than bg to provide subtle lift and prevent any terminal default
+        // color bleed-through.
+        let overlay_bg = theme.card_bg();
         for y in overlay.top()..overlay.bottom() {
             for x in overlay.left()..overlay.right() {
                 if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
                     cell.reset();
                     cell.set_char(' ');
-                    cell.set_bg(bg);
+                    cell.set_bg(overlay_bg);
+                    cell.set_fg(theme.fg());
                 }
             }
         }
@@ -246,16 +249,17 @@ impl Tutorial {
         let progress = format!(" {}/{} ", self.current + 1, STEPS.len());
         let title_line = format!("\u{1f4d8} {} ", step.title);
 
+        let overlay_bg = theme.card_bg();
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent()).bg(theme.bg()))
-            .style(Style::default().bg(theme.bg()))
-            .title(Span::styled(&title_line, Style::default().fg(theme.accent()).bg(theme.bg()).bold()))
+            .border_style(Style::default().fg(theme.accent()).bg(overlay_bg))
+            .style(Style::default().bg(overlay_bg))
+            .title(Span::styled(&title_line, Style::default().fg(theme.accent()).bg(overlay_bg).bold()))
             .title_bottom(
                 Line::from(vec![
-                    Span::styled(&progress, Style::default().fg(theme.muted())),
-                    Span::raw("  "),
-                    Span::styled("[Esc skip] [Shift+Tab back]", Style::default().fg(theme.muted())),
+                    Span::styled(&progress, Style::default().fg(theme.muted()).bg(overlay_bg)),
+                    Span::styled("  ", Style::default().bg(overlay_bg)),
+                    Span::styled("[Esc skip] [Shift+Tab back]", Style::default().fg(theme.muted()).bg(overlay_bg)),
                 ]).right_aligned()
             );
 
@@ -265,7 +269,7 @@ impl Tutorial {
         // Body text + call-to-action as last line
         let body_with_cta = format!("{}\n\n{}", step.body, cta);
         let text = Paragraph::new(body_with_cta)
-            .style(Style::default().fg(theme.fg()).bg(theme.bg()))
+            .style(Style::default().fg(theme.fg()).bg(theme.card_bg()))
             .wrap(Wrap { trim: false });
         text.render(inner, buf);
 

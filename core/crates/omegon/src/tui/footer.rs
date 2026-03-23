@@ -157,9 +157,16 @@ impl FooterData {
         frame.render_widget(block, area);
 
         if inner.width < 15 || inner.height < 3 { return; }
+        let w = inner.width as usize;
 
         let model_short = short_model(&self.model_id);
         let source_icon = if self.model_provider == "local" { "⚡" } else { "☁" };
+        let provider_name = match self.model_provider.as_str() {
+            "anthropic" => "Anthropic",
+            "openai" => "OpenAI",
+            "local" => "Local",
+            other => other,
+        };
         let auth_icon = if self.is_oauth { "●" } else { "○" };
         let auth_color = if self.is_oauth { t.success() } else { t.muted() };
         let ctx_class_color = match self.context_class {
@@ -167,46 +174,6 @@ impl FooterData {
             ContextClass::Clan => t.fg(),
             _ => t.dim(),
         };
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-
-        // Model + class
-        lines.push(Line::from(vec![
-            Span::styled(format!("{source_icon} "), Style::default().fg(if self.model_provider == "local" { t.accent() } else { t.dim() })),
-            Span::styled(model_short.to_string(), Style::default().fg(t.fg()).add_modifier(Modifier::BOLD)),
-            Span::styled(" · ", Style::default().fg(t.border_dim())),
-            Span::styled(self.context_class.short(), Style::default().fg(ctx_class_color)),
-        ]));
-
-        // Line 3: auth + persona
-        let mut auth_parts: Vec<Span<'static>> = vec![
-            Span::styled(format!("{auth_icon} "), Style::default().fg(auth_color)),
-            Span::styled(
-                if self.is_oauth { "subscription" } else { "api key" },
-                Style::default().fg(t.muted()),
-            ),
-        ];
-        if let Some(ref p) = self.harness.active_persona {
-            auth_parts.push(Span::styled(" · ", Style::default().fg(t.border_dim())));
-            auth_parts.push(Span::styled(format!("{} {}", p.badge, p.name), Style::default().fg(t.accent())));
-        }
-        lines.push(Line::from(auth_parts));
-
-        // Line 4: context summary (gauge is in the inference panel)
-        let pct = self.context_percent.min(100.0) as u32;
-        let ctx_color = widgets::percent_color(self.context_percent.min(100.0), t);
-        let mut ctx_parts: Vec<Span<'static>> = vec![
-            Span::styled(format!("{}%", pct), Style::default().fg(ctx_color)),
-        ];
-        if self.context_window > 0 {
-            ctx_parts.push(Span::styled(
-                format!(" / {}", widgets::format_tokens(self.context_window)),
-                Style::default().fg(t.dim()),
-            ));
-        }
-        lines.push(Line::from(ctx_parts));
-
-        // Line 5: tier + thinking level
         let tier_color = match self.model_tier.as_str() {
             "gloriana" => t.accent(),
             "victory" => t.fg(),
@@ -219,22 +186,93 @@ impl FooterData {
             "low" => t.muted(),
             _ => t.dim(),
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{}", capitalize(&self.model_tier)), Style::default().fg(tier_color)),
-            Span::styled(" · ", Style::default().fg(t.border_dim())),
-            Span::styled(format!("◎ {}", capitalize(&self.thinking_level)), Style::default().fg(think_color)),
-            Span::styled(" · ", Style::default().fg(t.border_dim())),
-            Span::styled(
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // ── Row 1: Model name (headline) + context class right-aligned ──
+        {
+            let model_display = format!("{source_icon} {model_short}");
+            let class_display = self.context_class.short();
+            let pad = w.saturating_sub(model_display.chars().count() + class_display.chars().count());
+            lines.push(Line::from(vec![
+                Span::styled(format!("{source_icon} "), Style::default().fg(
+                    if self.model_provider == "local" { t.accent() } else { t.muted() }
+                )),
+                Span::styled(model_short.to_string(), Style::default().fg(t.fg()).add_modifier(Modifier::BOLD)),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(class_display, Style::default().fg(ctx_class_color)),
+            ]));
+        }
+
+        // ── Row 2: Provider + auth (supporting info) ──
+        {
+            let mut parts: Vec<Span<'static>> = vec![
+                Span::styled(provider_name.to_string(), Style::default().fg(t.dim())),
+                Span::styled(" · ", Style::default().fg(t.border_dim())),
+                Span::styled(format!("{auth_icon} "), Style::default().fg(auth_color)),
+                Span::styled(
+                    if self.is_oauth { "subscription" } else { "api key" }.to_string(),
+                    Style::default().fg(t.dim()),
+                ),
+            ];
+            if let Some(ref p) = self.harness.active_persona {
+                parts.push(Span::styled(" · ", Style::default().fg(t.border_dim())));
+                parts.push(Span::styled(format!("{} {}", p.badge, p.name), Style::default().fg(t.accent())));
+            }
+            lines.push(Line::from(parts));
+        }
+
+        // ── Row 3: spacer ──
+        lines.push(Line::from(""));
+
+        // ── Row 4: Context gauge bar ──
+        {
+            let pct = self.context_percent.min(100.0);
+            let ctx_color = widgets::percent_color(pct, t);
+            let bar_w = w.saturating_sub(6).max(4); // reserve space for " XX%"
+            let filled = ((pct / 100.0) * bar_w as f32) as usize;
+            let empty = bar_w.saturating_sub(filled);
+            let pct_str = format!("{:>3}%", pct as u32);
+
+            lines.push(Line::from(vec![
+                Span::styled("▰".repeat(filled), Style::default().fg(ctx_color)),
+                Span::styled("▱".repeat(empty), Style::default().fg(t.border_dim())),
+                Span::styled(format!(" {pct_str}"), Style::default().fg(ctx_color)),
+            ]));
+        }
+
+        // ── Row 5: Context details ──
+        {
+            let mut parts: Vec<Span<'static>> = Vec::new();
+            if self.context_window > 0 {
+                parts.push(Span::styled(
+                    widgets::format_tokens(self.context_window),
+                    Style::default().fg(t.dim()),
+                ));
+                parts.push(Span::styled(" · ", Style::default().fg(t.border_dim())));
+            }
+            parts.push(Span::styled(
                 format!("{} {}", self.context_mode.icon(), self.context_mode.as_str()),
                 Style::default().fg(t.dim()),
-            ),
+            ));
+            lines.push(Line::from(parts));
+        }
+
+        // ── Row 6: spacer ──
+        lines.push(Line::from(""));
+
+        // ── Row 7: Tier + thinking level ──
+        lines.push(Line::from(vec![
+            Span::styled(capitalize(&self.model_tier), Style::default().fg(tier_color)),
+            Span::styled(" · ", Style::default().fg(t.border_dim())),
+            Span::styled(format!("◎ {}", capitalize(&self.thinking_level)), Style::default().fg(think_color)),
         ]));
 
-        // Line 6: session counters (always visible, even at 0)
+        // ── Row 8: Session counters ──
         lines.push(Line::from(vec![
-            Span::styled(format!("T·{}", self.turn), Style::default().fg(t.muted())),
+            Span::styled(format!("T·{}", self.turn), Style::default().fg(t.dim())),
             Span::styled(" · ", Style::default().fg(t.border_dim())),
-            Span::styled(format!("⚙ {}", self.tool_calls), Style::default().fg(t.muted())),
+            Span::styled(format!("⚙ {}", self.tool_calls), Style::default().fg(t.dim())),
             Span::styled(" · ", Style::default().fg(t.border_dim())),
             Span::styled(format!("↻ {}", self.compactions), Style::default().fg(t.dim())),
         ]));

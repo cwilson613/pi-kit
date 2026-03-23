@@ -1,9 +1,9 @@
 ---
 id: footer-idle-state
 title: Footer idle state — engine border, useful content in empty panels before first turn
-status: exploring
+status: implemented
 open_questions: []
-jj_change_id: wqtwwwwwzlylkqtnxoqrlmzpxrpvrmqv
+jj_change_id: kvpkrlrksplwruroomolnlmotrnxtyzl
 ---
 
 # Footer idle state — engine border, useful content in empty panels before first turn

@@ -62,17 +62,32 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
 
     // Fire all probes concurrently. Each sends its result as it completes.
     // The tokio::time::timeout wraps the entire join to enforce the 2s ceiling.
+    //
+    // Fast probes (env checks, file reads) complete in <1ms. To produce a
+    // visible cascade in the splash grid, we stagger sends with small delays.
+    // The total stagger is ~400ms — well within the 1.7s animation window.
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
         tokio::join!(
-            async { let _ = tx1.send(probe_cloud()); },
+            // Network probes run immediately (they have real latency)
             async { let _ = tx2.send(probe_local().await); },
-            async { let _ = tx3.send(probe_hardware()); },
-            async { let _ = tx4.send(probe_memory(&cwd)); },
-            async { let _ = tx5.send(probe_tools()); },
-            async { let _ = tx6.send(probe_design(&cwd2)); },
-            async { let _ = tx7.send(probe_secrets()); },
-            async { let _ = tx8.send(probe_container()); },
-            async { let _ = tx9.send(probe_mcp(&cwd3)); },
+            // Fast probes stagger at ~50ms intervals for visual cascade
+            async {
+                let _ = tx1.send(probe_cloud());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx3.send(probe_hardware());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx4.send(probe_memory(&cwd));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx5.send(probe_tools());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx6.send(probe_design(&cwd2));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx7.send(probe_secrets());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx8.send(probe_container());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = tx9.send(probe_mcp(&cwd3));
+            },
         )
     }).await;
 }

@@ -41,7 +41,7 @@ pub struct SecretsManager {
     /// Pre-compiled Aho-Corasick redactor (rebuilt when secrets change).
     redactor: Arc<RwLock<Redactor>>,
     /// Recipe store (persisted to ~/.omegon/secrets.json)
-    recipes: RecipeStore,
+    recipes: RwLock<RecipeStore>,
     /// Path guard for sensitive file access
     path_guard: PathGuard,
     /// Audit log
@@ -60,7 +60,7 @@ impl SecretsManager {
         let mut mgr = Self {
             redaction_set: Arc::new(RwLock::new(HashMap::new())),
             redactor: Arc::new(RwLock::new(Redactor::build(&HashMap::new()))),
-            recipes,
+            recipes: RwLock::new(recipes),
             path_guard,
             audit,
             vault_client: Arc::new(Mutex::new(None)),
@@ -148,7 +148,8 @@ impl SecretsManager {
     /// Resolve a secret by name. Checks env vars first, then recipes.
     /// For vault: recipes, this will try async resolution and fall back to None.
     pub fn resolve(&self, name: &str) -> Option<String> {
-        resolve::resolve_secret(name, &self.recipes)
+        let recipes = self.recipes.read().unwrap();
+        resolve::resolve_secret(name, &recipes)
             .map(|s| s.expose_secret().to_string())
     }
 
@@ -158,7 +159,8 @@ impl SecretsManager {
         let client = self.vault_client.lock().await;
         let vault_client = client.as_ref();
         
-        if let Some(secret) = resolve_secret_async(name, &self.recipes, vault_client).await {
+        let recipes = self.recipes.read().unwrap();
+        if let Some(secret) = resolve_secret_async(name, &recipes, vault_client).await {
             let value = secret.expose_secret().to_string();
             
             // Add to redaction set if it's a new value
@@ -203,13 +205,45 @@ impl SecretsManager {
         decision
     }
 
+    /// List all configured secret recipes with their resolution hints.
+    pub fn list_recipes(&self) -> Vec<(String, String)> {
+        self.recipes.read().unwrap().iter()
+            .map(|(name, recipe)| (name.clone(), recipe.as_string()))
+            .collect()
+    }
+
+    /// Set a secret recipe (e.g. "env:MY_VAR", "cmd:pass show x", "vault:path").
+    pub fn set_recipe(&self, name: &str, recipe_str: &str) -> anyhow::Result<()> {
+        self.recipes.write().unwrap().set_string(name.to_string(), recipe_str.to_string())
+    }
+
+    /// Store a raw value in the OS keyring and create a keyring: recipe for it.
+    pub fn set_keyring_secret(&self, name: &str, value: &str) -> anyhow::Result<()> {
+        // Store in keyring
+        let entry = keyring::Entry::new("omegon", name)
+            .map_err(|e| anyhow::anyhow!("keyring error: {e}"))?;
+        entry.set_password(value)
+            .map_err(|e| anyhow::anyhow!("keyring store failed: {e}"))?;
+        // Create recipe pointing to keyring
+        self.set_recipe(name, &format!("keyring:{name}"))
+    }
+
+    /// Delete a secret recipe (and try to remove from keyring if applicable).
+    pub fn delete_recipe(&self, name: &str) -> anyhow::Result<()> {
+        // Try to remove from keyring
+        if let Ok(entry) = keyring::Entry::new("omegon", name) {
+            let _ = entry.delete_credential(); // best-effort
+        }
+        self.recipes.write().unwrap().remove(name).map(|_| ())
+    }
+
     /// Re-resolve all secrets and rebuild the redaction automaton.
     fn refresh_redaction_set(&mut self) {
         let mut set = self.redaction_set.write().unwrap();
         set.clear();
 
         // Resolve from recipes (sync only - vault recipes will be skipped here)
-        for (name, recipe) in self.recipes.iter() {
+        for (name, recipe) in self.recipes.read().unwrap().iter() {
             if let Some(value) = resolve::execute_recipe(name, recipe) {
                 set.insert(name.clone(), value);
             }

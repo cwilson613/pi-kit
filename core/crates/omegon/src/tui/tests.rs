@@ -355,7 +355,7 @@ fn handled_commands_are_in_commands_table() {
         .collect();
 
     // Test a set of plausible undocumented command names
-    let undocumented = ["secret", "config", "debug", "reload", "undo", "redo",
+    let undocumented = ["config", "debug", "reload", "undo", "redo",
         "run", "build", "deploy", "test", "profile", "env", "reset"];
 
     for name in undocumented {
@@ -402,9 +402,10 @@ fn unknown_slash_commands_show_error() {
     assert!(matches!(result, SlashResult::Display(_)),
         "/foobar should show error, not go to agent");
 
-    let result = app.handle_slash_command("/secret", &tx);
+    // /secret now prefix-matches to /secrets (valid command)
+    let result = app.handle_slash_command("/zzz_nonexistent", &tx);
     assert!(matches!(result, SlashResult::Display(_)),
-        "/secret should show error, not go to agent");
+        "/zzz_nonexistent should show error, not go to agent");
 }
 
 #[test]

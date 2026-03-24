@@ -1,10 +1,10 @@
 ---
 id: release-process-hygiene
 title: Release process hygiene — close the gaps between version bumps, git tags, and CI releases
-status: exploring
+status: implemented
 tags: [release, git, ci, versioning, process, 0.15.1]
 open_questions: []
-jj_change_id: zpotrqqskypwupvprqokpyvplvyvulll
+jj_change_id: xomkzkwmotwrlzyowltnxuxukkmtknkz
 issue_type: chore
 priority: 1
 ---

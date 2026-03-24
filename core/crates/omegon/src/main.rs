@@ -760,7 +760,80 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
 
             tui::TuiCommand::BusCommand { name, args } => {
                 // Handle special auth commands directly
-                if name.starts_with("auth_") {
+                if name == "secrets" {
+                    let parts: Vec<&str> = args.splitn(3, ' ').collect();
+                    let message = match parts.first().copied().unwrap_or("") {
+                        "list" | "" => {
+                            let names = agent.secrets.list_recipes();
+                            if names.is_empty() {
+                                "No secrets configured.\n\n\
+                                 Usage:\n\
+                                 \x20 /secrets set NAME VALUE        store in OS keyring\n\
+                                 \x20 /secrets set NAME env:VAR      resolve from env var\n\
+                                 \x20 /secrets set NAME cmd:COMMAND   resolve from shell command\n\
+                                 \x20 /secrets get NAME               retrieve value\n\
+                                 \x20 /secrets delete NAME            remove\n\
+                                 \x20 /secrets list                   list all".into()
+                            } else {
+                                let mut out = format!("Configured secrets ({}):\n", names.len());
+                                for (name, recipe) in &names {
+                                    out.push_str(&format!("  • {name:<24} {recipe}\n"));
+                                }
+                                out
+                            }
+                        }
+                        "set" => {
+                            if parts.len() < 3 {
+                                "Usage: /secrets set NAME VALUE\n\
+                                 \x20 /secrets set MY_KEY sk-abc123        (stores in OS keyring)\n\
+                                 \x20 /secrets set MY_KEY env:MY_ENV_VAR   (resolves from env var)\n\
+                                 \x20 /secrets set MY_KEY cmd:pass show x  (resolves from command)".into()
+                            } else {
+                                let secret_name = parts[1];
+                                let secret_value = parts[2];
+                                // If value looks like a recipe (env:, cmd:, vault:, keyring:, file:), store as recipe.
+                                // Otherwise, store in keyring and create a keyring: recipe.
+                                let result = if secret_value.contains(':') && 
+                                    ["env:", "cmd:", "vault:", "keyring:", "file:"].iter()
+                                        .any(|p| secret_value.starts_with(p)) 
+                                {
+                                    agent.secrets.set_recipe(secret_name, secret_value)
+                                } else {
+                                    // Store raw value in OS keyring
+                                    agent.secrets.set_keyring_secret(secret_name, secret_value)
+                                };
+                                match result {
+                                    Ok(()) => format!("✓ Secret '{secret_name}' stored."),
+                                    Err(e) => format!("Error storing secret: {e}"),
+                                }
+                            }
+                        }
+                        "get" => {
+                            if parts.len() < 2 {
+                                "Usage: /secrets get NAME".into()
+                            } else {
+                                let secret_name = parts[1];
+                                match agent.secrets.resolve(secret_name) {
+                                    Some(val) => format!("{secret_name} = {val}"),
+                                    None => format!("Secret '{secret_name}' not found or could not be resolved."),
+                                }
+                            }
+                        }
+                        "delete" => {
+                            if parts.len() < 2 {
+                                "Usage: /secrets delete NAME".into()
+                            } else {
+                                let secret_name = parts[1];
+                                match agent.secrets.delete_recipe(secret_name) {
+                                    Ok(()) => format!("✓ Secret '{secret_name}' deleted."),
+                                    Err(e) => format!("Error: {e}"),
+                                }
+                            }
+                        }
+                        sub => format!("Unknown secrets subcommand: {sub}\n\nUsage: /secrets [list|set|get|delete]"),
+                    };
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                } else if name.starts_with("auth_") {
                     match name.as_str() {
                         "auth_status" => {
                             let status = auth::probe_all_providers().await;

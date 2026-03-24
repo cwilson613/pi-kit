@@ -1,11 +1,11 @@
 ---
 id: tutorial-system
 title: Interactive /tutorial system — structured onboarding replacing /demo
-status: implementing
+status: implemented
 parent: null
 tags: [tutorial, onboarding, ux, tui, overlay]
 open_questions: []
-jj_change_id: null
+jj_change_id: xomkzkwmotwrlzyowltnxuxukkmtknkz
 issue_type: feature
 priority: 2
 ---

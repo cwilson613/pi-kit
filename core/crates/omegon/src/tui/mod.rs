@@ -1159,6 +1159,7 @@ impl App {
         ("chronos",  "date/time context",                      &["week", "month", "quarter", "relative", "iso", "epoch", "tz", "range", "all"]),
         ("migrate",  "import from other tools",               &["auto", "claude-code", "pi", "codex", "cursor", "aider"]),
         ("dash",     "open web dashboard in browser",          &["status"]),
+        ("secrets",  "manage stored secrets",                 &["list", "set", "get", "delete"]),
         ("vault",    "Vault status and management",           &["status", "unseal", "login", "configure", "init-policy"]),
         ("persona",  "switch persona (or 'off' to deactivate)",  &["off"]),
         ("tone",     "switch tone (or 'off' to deactivate)",    &["off"]),
@@ -1568,6 +1569,14 @@ impl App {
 
             "prev" => {
                 self.handle_tutorial_prev()
+            }
+
+            "secrets" => {
+                let _ = tx.try_send(TuiCommand::BusCommand {
+                    name: "secrets".to_string(),
+                    args: args.to_string(),
+                });
+                SlashResult::Handled
             }
 
             "vault" => {

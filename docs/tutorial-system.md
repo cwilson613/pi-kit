@@ -1,110 +1,137 @@
 ---
 id: tutorial-system
-title: "Interactive /tutorial system — structured onboarding replacing /demo"
+title: Interactive /tutorial system — structured onboarding replacing /demo
 status: implementing
+parent: null
+tags: [tutorial, onboarding, ux, tui, overlay]
 open_questions: []
-branches: ["feature/tutorial-system"]
-openspec_change: tutorial-system
-jj_change_id: srploqxvsokkuqulvxmsuwmmwkvwwryp
+jj_change_id: null
+issue_type: feature
+priority: 2
 ---
 
 # Interactive /tutorial system — structured onboarding replacing /demo
 
 ## Overview
 
-Evolve /demo from a single guided tour into a proper /tutorial system with discrete lessons, progress tracking, and operator-paced progression. The current /demo has a fundamental problem: the agent treats the entire phase list as one instruction and blasts through without pausing. A tutorial system needs structural enforcement of pacing — the harness controls progression, not the agent's willingness to stop.
+The tutorial system replaces the old `/demo` with a two-layer onboarding experience: a **compiled overlay engine** for game-style first-play guidance, and a **lesson runner** for markdown-based tutorial content. Both are wired into the TUI and controlled by the harness — the agent never decides pacing.
 
-## Research
+The overlay engine is the primary system. It renders a floating callout on top of the normal UI, highlights relevant cockpit regions, and auto-sends prompts to the agent. The operator advances with Tab, goes back with Shift+Tab, or dismisses with Esc. Steps can also wait for a specific slash command (`/dash`, `/cleave`) or any user input before advancing. The overlay passes keyboard input through to the editor on Command/AnyInput steps so the user can actually type.
 
-### Current /demo architecture and failure mode
+Two step arrays are compiled in: `STEPS_DEMO` (9 steps, sprint board project) and `STEPS_HANDS_ON` (7 steps, user's own project). A project-choice widget on step 0 lets users pick between demo and hands-on mode.
 
-The current /demo:
-1. Clones styrene-lab/omegon-demo into /tmp
-2. exec's omegon with --initial-prompt-file pointing at demo.md
-3. demo.md contains Phase 1 only, tells agent to wait
-4. AGENTS.md contains Phases 2-8, agent reads it when told "next"
+## Architecture
 
-The failure mode: the agent treats "read AGENTS.md and do the next phase" as "read AGENTS.md and do everything." The STOP instruction is advisory. The agent's context window sees all 8 phases and its completion bias takes over.
+### Overlay engine (`tui/tutorial.rs`)
 
-Root cause: the harness has no concept of "lesson" or "step." The initial-prompt is just a string. The agent decides when to stop. There's no structural gate between phases — just natural language instructions saying "please stop."
+The core types:
 
-The fix must be structural: the harness feeds one lesson at a time, and the agent literally cannot see the next lesson until the operator advances.
+```rust
+pub struct Step {
+    pub title: &'static str,
+    pub body: &'static str,
+    pub anchor: Anchor,       // Center | Upper
+    pub trigger: Trigger,     // Enter | Command("dash") | AnyInput | AutoPrompt("...")
+    pub highlight: Option<Highlight>,  // InstrumentPanel | EnginePanel | InputBar | Dashboard
+}
 
-### Architecture proposal: Tutorial as a Feature with harness-controlled pacing
+pub struct Tutorial {
+    current: usize,
+    pub active: bool,
+    pub auto_prompt_sent: bool,
+    pub is_demo: bool,
+    pub has_design_tree: bool,
+    pub choice: TutorialChoice,  // Demo | MyProject
+    pub choice_confirmed: bool,
+}
+```
 
+Key behaviors:
+- **`Trigger::Enter`** — Tab advances. All other keys consumed (overlay blocks input).
+- **`Trigger::Command("dash")`** — Overlay stays visible. Keys pass through to editor. Step advances when the slash command fires.
+- **`Trigger::AutoPrompt("...")`** — Tab sends the compiled prompt to the agent. Overlay shows "agent is working..." until the turn completes, then auto-advances.
+- **`Trigger::AnyInput`** — Keys pass through. Step advances when user sends any message.
 
+Rendering: the overlay positions itself using smart anchoring — steps highlighting footer elements go to the upper area, steps highlighting the dashboard sit in the conversation zone. An active AutoPrompt step shows a large centered overlay to cover conversation chaos while the agent works.
+
+### Lesson runner (`TutorialState` in `tui/mod.rs`)
+
+A simpler fallback for projects with `.omegon/tutorial/*.md` files. Loads markdown with frontmatter, queues lesson content as prompts. Progress persisted in `progress.json`. Used when the tutorial directory exists in the project.
+
+### TUI integration (`tui/mod.rs`)
+
+- `App.tutorial_overlay: Option<Tutorial>` — the active overlay
+- `App.tutorial: Option<TutorialState>` — the active lesson runner
+- **Rendering**: overlay renders after effects, before toasts
+- **Event loop**: Tab/Esc/ShiftTab intercepted when overlay active; Command/AnyInput steps pass all other keys through
+- **AgentEnd**: calls `on_agent_turn_complete()` to auto-advance AutoPrompt steps
+- **Slash commands**: `check_command(cmd)` advances Command-triggered steps
+- **User messages**: `check_any_input()` advances AnyInput steps
+
+### Demo project (`test-project/`)
+
+A broken sprint board (browser-based task tracker) with 4 seeded bugs, 6 design nodes, pre-written OpenSpec specs, and 5 memory facts. Used by `STEPS_DEMO`. Located in `test-project/` in the repo; cloned from `styrene-lab/omegon-demo` when users run `/tutorial demo` outside the dev workspace.
+
+## Step content (STEPS_DEMO — 9 steps)
+
+1. **Welcome to the Omegon Demo** — "4 bugs, about 3 minutes" (Enter)
+2. **Your Cockpit** — quick orientation: bottom-left model, bottom-center activity, right panel design notes (Enter, highlights instruments)
+3. **Reading the Code** — AI reads project, stores facts, ~30 seconds (AutoPrompt, highlights instruments)
+4. **Making a Design Decision** — AI researches search-filter open question, records decision (AutoPrompt, highlights dashboard)
+5. **The Fix Plan** — AI reads OpenSpec spec and explains 4-branch fix plan (AutoPrompt)
+6. **Fix All 4 Bugs** — user types `/cleave fix-board-bugs`, overlay stays visible (Command("cleave"), highlights instruments)
+7. **Verify and Launch** — AI checks fixes and opens browser (AutoPrompt)
+8. **Web Dashboard** — optional, skippable with Tab (Command("dash"))
+9. **What Just Happened** — summary without jargon, next steps (Enter)
+
+## Step content (STEPS_HANDS_ON — 7 steps)
+
+1. **Welcome to Omegon** — "your AI coding agent, about 5 minutes" (Enter)
+2. **Your Cockpit** — same orientation step (Enter)
+3. **Reading Your Code** — AI reads user's project, stores 3 facts (AutoPrompt)
+4. **Design Notes** — AI creates or explores a design node (AutoPrompt)
+5. **Writing a Spec** — AI proposes an improvement and writes Given/When/Then spec (AutoPrompt)
+6. **Web Dashboard** — optional (Command("dash"))
+7. **What's Next** — summary, mention `/tutorial demo` for the full demo (Enter)
+
+## Slash commands
+
+| Command | Behavior |
+|---|---|
+| `/tutorial` | Start overlay (hands-on mode), or resume if active |
+| `/tutorial demo` | Start overlay (demo mode) |
+| `/tutorial status` | Show current step/total and mode |
+| `/tutorial reset` | Dismiss and clear overlay |
+| `/next` | Advance overlay or lesson runner |
+| `/prev` | Go back in overlay or lesson runner |
+
+When `.omegon/tutorial/` exists with markdown lesson files, `/tutorial` uses the lesson runner instead of the overlay.
 
 ## Decisions
 
-### Decision: Individual markdown files per lesson (.omegon/tutorial/01-*.md) with YAML frontmatter
+### Individual markdown files per lesson with YAML frontmatter (decided)
+For the lesson runner path. Each lesson is self-contained — the agent sees one file at a time. Files ordered by numeric prefix. Frontmatter carries title. This is the simpler of the two systems and exists as a fallback.
 
-**Status:** decided
-**Rationale:** Each lesson is self-contained. The agent sees one file at a time — structurally impossible to read ahead. Files are ordered by numeric prefix. Frontmatter carries title and optional validation criteria. Easy to add, remove, reorder lessons without touching code.
+### Harness-controlled pacing (decided)
+The root cause of the old /demo failure was delegating pacing to the agent. Both systems enforce structural pacing: the overlay feeds one step at a time via compiled steps; the lesson runner queues one markdown file as a prompt.
 
-### Decision: Harness-controlled pacing via /next command — agent sees one lesson at a time
+### Sandbox tutorial project (decided)
+`/tutorial demo` clones `styrene-lab/omegon-demo` into `/tmp/omegon-tutorial` and exec's omegon there. Safe to experiment. The test-project/ in this repo is the source of that demo content.
 
-**Status:** decided
-**Rationale:** The root cause of the demo's pause failure is that pacing was delegated to agent self-control. The fix: the harness injects one lesson as a queued prompt, the agent responds, the operator reads, the operator types /next, the harness injects the next lesson. The agent never sees the lesson list. Structural enforcement, not advisory instructions.
+### Progress persistence (decided)
+Lesson runner persists to `.omegon/tutorial/progress.json`. The overlay doesn't persist progress — it's a single-session experience (~3 minutes).
 
-### Decision: Sandbox tutorial project (clone/create temp), not in-place
+### Junior-friendly content (decided, rc.16)
+Tutorial step text was rewritten for accessibility:
+- Collapsed 3 cockpit tour steps into 1
+- Removed all Omegon jargon from first encounter (no Retribution/Victory/Gloriana, no "inference instruments", no "design tree nodes")
+- Cleave step uses Command trigger — overlay stays visible, no Esc/come-back dance
+- Web Dashboard moved to after the action, made optional/skippable
+- Time estimates on every auto-prompt step
+- Recovery text on the cleave step
 
-**Status:** decided
-**Rationale:** New operators shouldn't risk their real project during onboarding. /tutorial clones a tutorial repo with pre-seeded content (like /demo does now), exec's omegon inside it. The tutorial repo has lesson files, seed data, and tone directives. Safe to experiment, break things, create/delete files.
+## Cost philosophy
 
-### Decision: Progress persists in .omegon/tutorial/progress.json — /tutorial resumes, /tutorial reset starts over
+This tool is not designed to save tokens or save costs. Those levers exist to service the primary goal of Omegon: building functional things. Cost is a real-world constraint, so all levers are tunable and the entire system takes them into account. But remember: Omegon will smile as it sacrifices your wallet upon the altar of productivity.
 
-**Status:** decided
-**Rationale:** Operators may not finish the tutorial in one sitting. Progress is cheap to store (one JSON file with current_lesson and completed list). /tutorial without args resumes. /tutorial reset clears progress. /tutorial status shows where you are.
-
-## Open Questions
-
-*No open questions.*
-
-## The key insight
-
-The agent must never see more than one lesson at a time. This is a harness constraint, not an agent instruction. The tutorial system is a Feature (like LifecycleFeature) that:
-
-1. Owns a lesson manifest — ordered list of lessons, each with a prompt and optional validation
-2. Tracks current position — which lesson the operator is on
-3. Controls injection — injects the current lesson as context/prompt, nothing else
-4. Gates advancement — /next advances to the next lesson, /prev goes back, /tutorial status shows progress
-
-## Lesson format
-
-Individual markdown files, numbered: `.omegon/tutorial/01-cockpit.md`, `02-tools.md`, etc.
-
-Each file has frontmatter:
-```yaml
----
-title: "The Cockpit"
-order: 1
-validates: ["instrument panel visible", "engine panel shows model name"]
----
-```
-
-The body is the agent prompt for that lesson — what the agent should explain, demonstrate, or do. The agent sees ONLY this file's content as its instruction.
-
-## Progression mechanism
-
-The Feature registers a `/next` command (or overloads `/tutorial next`). When the operator types `/next`:
-1. The current lesson is marked complete
-2. The next lesson's content is injected as a user message (like --initial-prompt)
-3. The agent responds to the new lesson, and ONLY to it
-
-The agent never sees the full lesson list. It gets one prompt at a time, delivered by the harness.
-
-## Tutorial project
-
-Keep the sandbox approach: /tutorial clones a tutorial repo (or creates a temp project) and exec's omegon inside it, just like /demo. The tutorial repo has:
-- `.omegon/tutorial/*.md` — lesson files
-- `AGENTS.md` — tone/personality directives (no phase list!)
-- Pre-seeded content to work with (source files, memory facts, design nodes)
-
-## Progress persistence
-
-Yes — store progress in `.omegon/tutorial/progress.json`:
-```json
-{"current_lesson": 3, "completed": [1, 2], "started_at": "2026-03-23T..."}
-```
-
-/tutorial resumes where you left off. /tutorial reset starts over.
+This applies to the tutorial: auto-prompts are not cheap (each one is a full agent turn with tool calls), but they're the right way to show what the tool does. A tutorial that doesn't demonstrate real AI work is worthless.

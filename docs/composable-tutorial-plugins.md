@@ -32,7 +32,7 @@ This transforms onboarding from "one tutorial fits all" into a composable librar
 
 The current tutorial system has two layers:
 
-1. **Overlay engine** (`tui/tutorial.rs`) — compiled Rust structs with `Step { title, body, anchor, trigger, highlight }`. Two hardcoded step arrays: `STEPS_DEMO` (12 steps, sprint board project) and `STEPS_HANDS_ON` (10 steps, user's own project). Triggers: `Enter` (passive), `Command("dash")` (wait for slash command), `AnyInput` (wait for user message), `AutoPrompt("...")` (auto-send to agent). Renders as an overlay with smart positioning and highlight hints.
+1. **Overlay engine** (`tui/tutorial.rs`) — compiled Rust structs with `Step { title, body, anchor, trigger, highlight }`. Two hardcoded step arrays: `STEPS_DEMO` (9 steps, sprint board project) and `STEPS_HANDS_ON` (7 steps, user's own project). Triggers: `Enter` (passive), `Command("cleave")` / `Command("dash")` (wait for slash command — overlay stays visible, keys pass through), `AnyInput` (wait for user message), `AutoPrompt("...")` (auto-send to agent, auto-advance on agent turn complete). Renders as a floating overlay with smart positioning, highlight hints, and input passthrough for Command/AnyInput steps.
 
 2. **Lesson runner** (`TutorialState` in `tui/mod.rs`) — loads markdown files from `.omegon/tutorial/` with frontmatter, queues lesson content as prompts. Progress persisted to `progress.json`.
 

@@ -2,4 +2,16 @@
 
 ## Intent
 
-Evolve /demo from a single guided tour into a proper /tutorial system with discrete lessons, progress tracking, and operator-paced progression. The current /demo has a fundamental problem: the agent treats the entire phase list as one instruction and blasts through without pausing. A tutorial system needs structural enforcement of pacing — the harness controls progression, not the agent's willingness to stop.
+Replace the old `/demo` (which blasted through all phases because pacing was advisory) with a structurally-enforced tutorial system. Two layers:
+
+1. **Overlay engine** — compiled step arrays rendered as floating TUI callouts. The harness controls pacing via triggers (Tab to advance, Command to wait for slash command, AutoPrompt to auto-send and wait for agent completion). The agent never sees more than one step at a time.
+
+2. **Lesson runner** — markdown files in `.omegon/tutorial/` queued as prompts one at a time. Simpler fallback for projects with custom tutorial content.
+
+The demo mode uses a pre-seeded sprint board project (4 bugs, 6 design nodes, OpenSpec specs) to showcase the full lifecycle: read code → store memory → make design decisions → write specs → parallel fix → verify → browser.
+
+## Status
+
+Implemented in rc.16 on `feature/tutorial-system`. Overlay engine fully wired into TUI with input passthrough, AutoPrompt lifecycle, and Command triggers. Step content rewritten for junior engineer accessibility. Demo project content seeded.
+
+Remaining: lesson markdown files for the lesson runner path are deferred to the composable-tutorial-plugins design node (0.16.0 milestone feature).

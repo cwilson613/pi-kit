@@ -747,32 +747,26 @@ fn render_image_placeholder(
     path: &std::path::Path, alt: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme,
 ) {
     if area.height == 0 { return; }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(t.border_dim()))
-        .title(Span::styled(" 🖼 image ", Style::default().fg(t.accent_muted())))
-        .padding(Padding::horizontal(1))
-        .style(Style::default().bg(t.surface_bg()));
-
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    if inner.height == 0 { return; }
 
     let filename = path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("image");
-    let caption = if alt.is_empty() { filename.to_string() } else { alt.to_string() };
+    let label = if alt.is_empty() || alt == "clipboard paste" {
+        format!(" 📎 {filename} ")
+    } else {
+        format!(" 📎 {alt} ")
+    };
 
-    let lines = vec![
-        Line::from(Span::styled(caption, Style::default().fg(t.muted()))),
-        Line::from(Span::styled(
-            path.display().to_string(),
-            Style::default().fg(t.dim()),
-        )),
-    ];
-    Paragraph::new(lines).render(inner, buf);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_dim()))
+        .title(Span::styled(label, Style::default().fg(t.accent_muted())))
+        .style(Style::default().bg(t.surface_bg()));
+
+    // The block is the placeholder — the actual image is rendered on top
+    // of this area in a second pass by the ConversationWidget (ratatui-image).
+    block.render(area, buf);
 }
 
 fn render_separator(area: Rect, buf: &mut Buffer, t: &dyn Theme) {

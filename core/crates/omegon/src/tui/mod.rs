@@ -41,7 +41,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use crossterm::event::DisableMouseCapture;
+use crossterm::event::{EnableMouseCapture, DisableMouseCapture, MouseEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tokio::sync::{broadcast, mpsc};
@@ -2380,10 +2380,11 @@ pub async fn run_tui(
     ))?;
     // Clear the screen with our bg so every pixel starts owned.
     io::stdout().execute(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
-    // Do NOT enable mouse capture — this blocks native text selection in the
-    // terminal. Pi/Claude Code doesn't capture mouse either. Users select and
-    // copy text with their terminal's native mouse handling. Scroll with
-    // Page Up/Down instead of scroll-wheel. See: mouse-text-selection node.
+    // Enable mouse capture for scroll-wheel support.
+    // This blocks native text selection — users must hold Option (macOS) or
+    // Shift (most terminals) to select text. Proper in-app selection with
+    // OSC 52 clipboard is tracked in design node: mouse-text-selection.
+    io::stdout().execute(EnableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -2564,10 +2565,16 @@ pub async fn run_tui(
                 // sent scroll-up" which, with natural scrolling, means the
                 // user swiped fingers DOWN (wanting to see newer content).
                 // So: ScrollUp → scroll toward bottom, ScrollDown → scroll toward top.
-                Event::Mouse(_) => {
-                    // Mouse capture is disabled — terminal owns the mouse
-                    // for native text selection. This arm shouldn't fire,
-                    // but is kept for safety.
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            app.conversation.scroll_up(3);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            app.conversation.scroll_down(3);
+                        }
+                        _ => {}
+                    }
                 }
                 // ── Paste — pass directly to textarea ──────────
                 Event::Paste(ref text) => {

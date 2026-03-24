@@ -1,23 +1,13 @@
----
-id: splash-systems-integration
-title: Splash screen systems check visualization — real loading behind the animation
-status: implementing
-parent: startup-systems-check
-tags: [tui, splash, startup, systems-check, ux, 0.15.1]
-open_questions: []
-branches: ["feature/splash-systems-integration"]
-openspec_change: splash-systems-integration
-jj_change_id: vvrskonyvwrpnttlkmvoxmkzrxpplpyw
-priority: 2
----
+# Splash screen systems check visualization — real loading behind the animation — Design
 
-# Splash screen systems check visualization — real loading behind the animation
+## Architecture Decisions
 
-## Overview
+### Decision: Multi-line grid beneath logo — 3 columns, shows the breadth of startup work
 
-Replace the cosmetic splash loading checklist with real systems check progress. The splash animation runs ~1.7s; the systems check (GPU detection, Ollama probe, port scanning, provider auth check, memory loading) takes 100-500ms. Run them in parallel — the animation masks the latency, and each checklist item transitions from scanning → done/failed as the actual probe completes. The user sees Omegon genuinely discovering its environment, not a fake loading bar.
+**Status:** decided
+**Rationale:** A single line can only fit 3-4 items legibly. With 8-9 probe categories, a grid shows the true scope of what Omegon does at startup. The grid fills the vertical space between the logo and the 'press any key' prompt — space that's currently empty. Three columns of 3 rows is compact enough for the compact logo tier too. Each cell shows indicator + label + parenthetical summary when done. The visual effect of 9 items cascading from scanning to checkmark is significantly more impressive than 3 items blinking done.
 
-## Research
+## Research Context
 
 ### Current splash architecture and what changes
 
@@ -80,27 +70,14 @@ Key constraint: the splash loop is NOT async — it's a synchronous `loop` that 
 
 The probes themselves need tokio for HTTP requests (Ollama, LM Studio). The simplest approach: spawn the probe task before the splash loop, pass a `std::sync::mpsc::Sender` for results. The probe task uses `tokio::spawn` internally for parallelism.
 
-## Decisions
-
-### Decision: Multi-line grid beneath logo — 3 columns, shows the breadth of startup work
-
-**Status:** decided
-**Rationale:** A single line can only fit 3-4 items legibly. With 8-9 probe categories, a grid shows the true scope of what Omegon does at startup. The grid fills the vertical space between the logo and the 'press any key' prompt — space that's currently empty. Three columns of 3 rows is compact enough for the compact logo tier too. Each cell shows indicator + label + parenthetical summary when done. The visual effect of 9 items cascading from scanning to checkmark is significantly more impressive than 3 items blinking done.
-
-## Open Questions
-
-*No open questions.*
-
-## Implementation Notes
-
-### File Scope
+## File Changes
 
 - `core/crates/omegon/src/tui/splash.rs` (modified) — Expand LoadItem to carry optional summary string. Replace 3 hardcoded items with 9 probe categories. Add multi-line grid renderer (3 columns). Accept probe results via try_recv in tick/draw cycle.
 - `core/crates/omegon/src/tui/mod.rs` (modified) — Spawn async probe task before splash loop. Create mpsc channel. Pass Sender to probe task, Receiver to splash loop. Replace cosmetic frame-threshold state transitions with channel-driven updates.
 - `core/crates/omegon/src/startup.rs` (new) — New module: async probe functions for each category (cloud, local, hardware, memory, tools, design, secrets, container, mcp). Each returns ProbeResult. Top-level run_probes() joins all and sends results through channel.
 - `core/crates/omegon/src/main.rs` (modified) — Add mod startup. Wire probe results into CapabilityTier for downstream consumption by tutorial and routing.
 
-### Constraints
+## Constraints
 
 - Splash loop is synchronous — probe results must arrive via try_recv, not .await
 - Probes must not block each other — tokio::join! or individual spawns

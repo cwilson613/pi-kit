@@ -306,66 +306,43 @@ impl App {
     }
 
     fn open_login_selector(&mut self) {
-        let options = vec![
-            // LLM Providers
-            selector::SelectOption {
-                value: "anthropic".into(),
-                label: "Anthropic (Claude)".into(),
-                description: "OAuth — opens browser, Claude Pro/Max subscription".into(),
-                active: false,
-            },
-            selector::SelectOption {
-                value: "openai".into(),
-                label: "OpenAI (ChatGPT)".into(),
-                description: "OAuth — opens browser, ChatGPT Plus/Pro subscription".into(),
-                active: false,
-            },
-            selector::SelectOption {
-                value: "openrouter".into(),
-                label: "OpenRouter".into(),
-                description: "API key — free tier available, 27+ models".into(),
-                active: false,
-            },
-            // Other API key providers
-            selector::SelectOption {
-                value: "brave".into(),
-                label: "Brave Search".into(),
-                description: "API key — web search provider".into(),
-                active: false,
-            },
-            selector::SelectOption {
-                value: "tavily".into(),
-                label: "Tavily Search".into(),
-                description: "API key — AI-optimized web search".into(),
-                active: false,
-            },
-            selector::SelectOption {
-                value: "serper".into(),
-                label: "Serper (Google Search)".into(),
-                description: "API key — Google search results".into(),
-                active: false,
-            },
-            // Git forges
-            selector::SelectOption {
-                value: "github".into(),
-                label: "GitHub".into(),
-                description: "OAuth or token — git operations, API access".into(),
-                active: false,
-            },
-            selector::SelectOption {
-                value: "gitlab".into(),
-                label: "GitLab".into(),
-                description: "Token — git operations, API access".into(),
-                active: false,
-            },
-            // Infrastructure
-            selector::SelectOption {
-                value: "huggingface".into(),
-                label: "Hugging Face".into(),
-                description: "API key — models, datasets, spaces".into(),
-                active: false,
-            },
+        // Check what's already configured
+        let has_key = |env_vars: &[&str], auth_name: &str| -> bool {
+            env_vars.iter().any(|v| std::env::var(v).is_ok_and(|s| !s.is_empty()))
+                || crate::auth::read_credentials(auth_name)
+                    .is_some_and(|c| !c.access.is_empty())
+        };
+
+        let catalog: &[(&str, &str, &str, &[&str], &str)] = &[
+            // (value, label, description, env_vars_to_check, auth.json_key)
+            ("anthropic",   "Anthropic (Claude)",    "OAuth — Claude Pro/Max subscription",     &["ANTHROPIC_API_KEY"], "anthropic"),
+            ("openai",      "OpenAI (ChatGPT)",      "OAuth — ChatGPT Plus/Pro subscription",   &["OPENAI_API_KEY"], "openai-codex"),
+            ("openrouter",  "OpenRouter",            "API key — free tier, 27+ models",         &["OPENROUTER_API_KEY"], "openrouter"),
+            ("brave",       "Brave Search",          "API key — web search",                    &["BRAVE_API_KEY"], "brave"),
+            ("tavily",      "Tavily Search",         "API key — AI-optimized search",           &["TAVILY_API_KEY"], "tavily"),
+            ("serper",      "Serper (Google Search)", "API key — Google results",                &["SERPER_API_KEY"], "serper"),
+            ("github",      "GitHub",                "Dynamic — uses gh CLI",                   &["GITHUB_TOKEN", "GH_TOKEN"], "github"),
+            ("gitlab",      "GitLab",                "Token — git operations, API",             &["GITLAB_TOKEN"], "gitlab"),
+            ("huggingface", "Hugging Face",          "API key — models, datasets",              &["HF_TOKEN", "HUGGING_FACE_TOKEN"], "huggingface"),
         ];
+
+        let options: Vec<selector::SelectOption> = catalog.iter().map(|(val, label, desc, envs, auth_key)| {
+            let configured = has_key(envs, auth_key);
+            selector::SelectOption {
+                value: val.to_string(),
+                label: if configured {
+                    format!("✓ {label}")
+                } else {
+                    format!("  {label}")
+                },
+                description: if configured {
+                    "configured ✓".into()
+                } else {
+                    desc.to_string()
+                },
+                active: configured,
+            }
+        }).collect();
         self.selector = Some(selector::Selector::new("Login — choose provider", options));
         self.selector_kind = Some(SelectorKind::LoginProvider);
     }

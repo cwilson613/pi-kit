@@ -145,12 +145,34 @@ impl SecretsManager {
         }
     }
 
-    /// Resolve a secret by name. Checks env vars first, then recipes.
-    /// For vault: recipes, this will try async resolution and fall back to None.
+    /// Resolve a secret by name. Checks the in-memory redaction cache first
+    /// (avoids repeated OS keyring access prompts on macOS), then falls back
+    /// to recipe resolution.
+    ///
+    /// Security: the redaction set already caches all resolved secrets as
+    /// `SecretString` (zeroized on drop) for the Aho-Corasick output redactor.
+    /// This method reads that existing cache — it doesn't create a new one.
     pub fn resolve(&self, name: &str) -> Option<String> {
+        // Check redaction cache first — the value is already in memory
+        // for output redaction purposes. Reading it here avoids a second
+        // keyring prompt on macOS.
+        {
+            let set = self.redaction_set.read().unwrap();
+            if let Some(cached) = set.get(name) {
+                return Some(cached.expose_secret().to_string());
+            }
+        }
+        // Cache miss — resolve from recipe, then cache for redaction + future lookups
         let recipes = self.recipes.read().unwrap();
-        resolve::resolve_secret(name, &recipes)
-            .map(|s| s.expose_secret().to_string())
+        let resolved = resolve::resolve_secret(name, &recipes)?;
+        let value = resolved.expose_secret().to_string();
+        {
+            let mut set = self.redaction_set.write().unwrap();
+            set.insert(name.to_string(), resolved);
+            let new_redactor = Redactor::build(&set);
+            *self.redactor.write().unwrap() = new_redactor;
+        }
+        Some(value)
     }
 
     /// Resolve a secret by name with async vault support.

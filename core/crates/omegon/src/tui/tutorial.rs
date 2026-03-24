@@ -423,7 +423,7 @@ impl Tutorial {
         false
     }
 
-    /// Check if Enter was pressed and the current step accepts it.
+    /// Check if Tab was pressed and the current step accepts it.
     pub fn check_enter(&mut self) -> bool {
         if !self.active { return false; }
         if self.step().trigger == Trigger::Tab {
@@ -510,7 +510,6 @@ impl Tutorial {
         // Build the call-to-action — prominent line inside the content
         let cta = match &step.trigger {
             Trigger::Tab => "  \u{25b6} Press Tab to continue",
-            Trigger::Command("focus") => "  \u{25b6} Type /focus in the input bar below",
             Trigger::Command(cmd) => {
                 return self.render_with_cta(overlay, buf, theme, &format!("  \u{25b6} Type /{cmd} in the input bar below"));
             }

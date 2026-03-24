@@ -5,8 +5,7 @@ status: exploring
 parent: tutorial-system
 dependencies: [startup-systems-check]
 tags: [tutorial, free-tier, accessibility, local-inference, onboarding, 0.15.1]
-open_questions:
-  - "Should OpenRouter be a first-class provider in the routing layer (alongside anthropic/openai) rather than just an OPENAI_BASE_URL override, so Omegon can use the openrouter/free meta-model and task-specific model selection?"
+open_questions: []
 jj_change_id: kvywttuknzuoxmkzorsyqmsrwqvwpnku
 priority: 2
 ---
@@ -186,6 +185,49 @@ Rate limit concern: OpenRouter's free tier has per-model and per-account limits.
 
 This is the "Omegon sacrifices your time instead of your wallet" mode. It works. It's slower. But it's free, and the user sees all 4 branches executing.
 
+### Tutorial step 0 provider selection — the guided first-contact flow
+
+When `/tutorial` launches and the systems check finds no configured providers, the overlay presents a 4-option choice widget before any tutorial content:
+
+```
+┌─ Welcome to Omegon ──────────────────────────┐
+│                                               │
+│  No AI provider configured yet.               │
+│  Pick how you want to run:                    │
+│                                               │
+│  ▸ [Local]     Run on your machine (Ollama)   │
+│    [Free]      Free cloud — 27 models, $0     │
+│    [Login]     I have a Claude/OpenAI sub      │
+│    [API Key]   I have an API key already       │
+│                                               │
+│  ← → to select, Enter to confirm              │
+└───────────────────────────────────────────────┘
+```
+
+**Each path**:
+
+**Local** — Systems check already ran. If Ollama is running with a model loaded, skip straight to tutorial with local driver. If Ollama is installed but no model: auto-pull a recommended model based on RAM (14B for 32GB+, 8B for 16GB, 4B for 8GB). If Ollama isn't installed: show a step with the install command (`curl -fsSL https://ollama.com/install.sh | sh`), wait for user to confirm, then pull a model.
+
+**Free** — Guided OpenRouter signup:
+1. Step shows: "Open openrouter.ai/keys in your browser" (auto-open if possible)
+2. "Create a free account — no credit card needed"
+3. "Copy your API key and paste it below"
+4. User types the key into the input bar (Command trigger, overlay stays visible)
+5. Omegon stores the key, routes through OpenRouter, tutorial continues
+
+This is 60 seconds of setup for infinite free inference. The tutorial then runs against Qwen3 Coder 480B or whatever openrouter/free selects.
+
+**Login** — Existing `/login anthropic` or `/login openai` OAuth flow. The tutorial waits for auth to complete (Command trigger on "login"), then continues with the full experience.
+
+**API Key** — Direct key entry:
+1. "Which provider? ← → Anthropic / OpenAI / OpenRouter / Custom"
+2. "Paste your API key below"
+3. Stored and routed. Tutorial continues.
+
+After any path completes, the tutorial falls through to the normal step 1 (cockpit orientation) with the provider now active. The bootstrap panel refreshes to show the new provider.
+
+**Adaptive detection**: If the systems check already found a provider (API key in env, Ollama running), skip this widget entirely and go straight to the tutorial. This widget only shows when there's genuinely nothing configured.
+
 ## Decisions
 
 ### Decision: Groq free tier as the zero-cost cloud fallback for tutorials
@@ -203,6 +245,16 @@ This is the "Omegon sacrifices your time instead of your wallet" mode. It works.
 **Status:** exploring
 **Rationale:** OpenRouter solves the problem cleanly: one API key (free, no credit card), 27 models with tool calling, OpenAI-compatible API, and an `openrouter/free` meta-model that auto-selects based on capability requirements. Instead of teaching the user about Groq vs Gemini vs DeepSeek, we teach them one thing: 'sign up at openrouter.ai, paste the key.' Omegon's routing layer then uses free models for everything — driver, cleave children, compaction, memory extraction — selecting the right free model per task. This supersedes the Groq-specific decision: OpenRouter includes Groq's models AND 26 others.
 
+### Decision: OpenRouter is a first-class provider with task-aware model routing, not just a BASE_URL hack
+
+**Status:** decided
+**Rationale:** OPENAI_BASE_URL is a single-model pipe — Omegon can't route compaction to Nano and driver to Coder 480B through one base URL. OpenRouter's API supports model selection per-request, which means Omegon's routing layer can pick the right free model for each task class. This requires an OpenRouterClient alongside AnthropicClient and OpenAIClient — it speaks the OpenAI wire protocol but adds model-selection intelligence. The investment is small (thin client wrapper) and the payoff is massive: zero-cost users get task-optimized routing across 27 models instead of one-size-fits-all.
+
+### Decision: Dedicated openrouter provider — separate credential, separate routing table, separate model catalog
+
+**Status:** decided
+**Rationale:** Reusing the openai slot with OPENAI_BASE_URL is a hack that breaks when the user later adds a real OpenAI key. OpenRouter needs its own provider entry: own credential storage (OPENROUTER_API_KEY or stored in auth.json), own model catalog (the 27 free models + paid models), own routing table (task → model mapping for free tier). The wire protocol is OpenAI-compatible so the client is thin — just OpenAIClient with a different base URL and model catalog. But the provider identity must be distinct so the routing layer can make task-specific model choices.
+
 ## Open Questions
 
-- Should OpenRouter be a first-class provider in the routing layer (alongside anthropic/openai) rather than just an OPENAI_BASE_URL override, so Omegon can use the openrouter/free meta-model and task-specific model selection?
+*No open questions.*

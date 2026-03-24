@@ -61,7 +61,7 @@ link:
 
 # Run the built binary directly (no recompile)
 run *args:
-    core/target/dev-release/omegon {{args}}
+    core/target/release/omegon {{args}}
 
 # ─── TypeScript (omegon-pi) ─────────────────────────────────
 

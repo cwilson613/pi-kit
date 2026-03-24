@@ -1110,15 +1110,19 @@ impl App {
     }
 
     /// Show a transient toast notification.
-    /// Try to paste a clipboard image. Shows toast feedback on success or failure.
+    /// Try to paste a clipboard image. Shows visible feedback in conversation.
     fn try_paste_clipboard_image(&mut self) {
         if let Some(path) = clipboard_image_to_temp() {
+            let display_name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            self.conversation.push_system(&format!("📎 Image attached: {display_name}"));
             self.conversation.push_image(path.clone(), "clipboard paste");
             self.show_toast("📎 Image pasted — send a message to include it", ratatui_toaster::ToastType::Info);
             self.pending_image = Some(path);
-        } else {
-            self.show_toast("No image found in clipboard", ratatui_toaster::ToastType::Warning);
         }
+        // No feedback on failure — the user might just be pressing Ctrl+V
+        // for a normal text paste that crossterm handles separately.
     }
 
     fn show_toast(&mut self, message: &str, toast_type: ratatui_toaster::ToastType) {
@@ -2026,18 +2030,22 @@ fn clipboard_image_to_temp() -> Option<std::path::PathBuf> {
             .ok()?;
         let info_str = String::from_utf8_lossy(&info.stdout);
 
-        // Map clipboard UTI → (extension, pasteboard type for AppleScript)
+        // Map clipboard info markers → (extension, pasteboard type for AppleScript).
+        // `osascript -e 'clipboard info'` outputs markers like «class PNGf»,
+        // JPEG picture, TIFF picture — NOT UTI strings like public.png.
         let formats: &[(&str, &str, &str)] = &[
-            ("public.png",          "png",  "«class PNGf»"),
-            ("public.jpeg",         "jpg",  "«class JPEG»"),
-            ("public.tiff",         "tiff", "«class TIFF»"),
-            ("com.compuserve.gif",  "gif",  "«class GIFf»"),
-            ("com.microsoft.bmp",   "bmp",  "«class BMP »"),
-            ("public.webp",         "webp", "«class PNGf»"), // WebP often comes as PNG on pasteboard
+            ("PNGf",           "png",  "«class PNGf»"),
+            ("JPEG picture",   "jpg",  "«class JPEG»"),
+            ("JPEG",           "jpg",  "«class JPEG»"),
+            ("TIFF picture",   "tiff", "«class TIFF»"),
+            ("TIFF",           "tiff", "«class TIFF»"),
+            ("GIF picture",    "gif",  "«class GIFf»"),
+            ("GIFf",           "gif",  "«class GIFf»"),
+            ("BMP",            "bmp",  "«class BMP »"),
         ];
 
         let (ext, pb_type) = formats.iter()
-            .find(|(uti, _, _)| info_str.contains(uti))
+            .find(|(marker, _, _)| info_str.contains(marker))
             .map(|(_, ext, pb)| (*ext, *pb))?;
 
         // Read the raw image data via AppleScript

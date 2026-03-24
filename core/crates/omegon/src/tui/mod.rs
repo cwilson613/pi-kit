@@ -36,12 +36,12 @@ mod snapshot_tests;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::DisableMouseCapture;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tokio::sync::{broadcast, mpsc};
@@ -1110,6 +1110,17 @@ impl App {
     }
 
     /// Show a transient toast notification.
+    /// Try to paste a clipboard image. Shows toast feedback on success or failure.
+    fn try_paste_clipboard_image(&mut self) {
+        if let Some(path) = clipboard_image_to_temp() {
+            self.conversation.push_image(path.clone(), "clipboard paste");
+            self.show_toast("📎 Image pasted — send a message to include it", ratatui_toaster::ToastType::Info);
+            self.pending_image = Some(path);
+        } else {
+            self.show_toast("No image found in clipboard", ratatui_toaster::ToastType::Warning);
+        }
+    }
+
     fn show_toast(&mut self, message: &str, toast_type: ratatui_toaster::ToastType) {
         use ratatui_toaster::{ToastBuilder, ToastPosition};
         self.toasts.show_toast(
@@ -2361,7 +2372,10 @@ pub async fn run_tui(
     ))?;
     // Clear the screen with our bg so every pixel starts owned.
     io::stdout().execute(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
-    io::stdout().execute(EnableMouseCapture)?;
+    // Do NOT enable mouse capture — this blocks native text selection in the
+    // terminal. Pi/Claude Code doesn't capture mouse either. Users select and
+    // copy text with their terminal's native mouse handling. Scroll with
+    // Page Up/Down instead of scroll-wheel. See: mouse-text-selection node.
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -2542,32 +2556,25 @@ pub async fn run_tui(
                 // sent scroll-up" which, with natural scrolling, means the
                 // user swiped fingers DOWN (wanting to see newer content).
                 // So: ScrollUp → scroll toward bottom, ScrollDown → scroll toward top.
-                Event::Mouse(mouse) => {
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            // Terminal sends ScrollUp = show older content
-                            // (natural scrolling is handled by the terminal emulator)
-                            app.conversation.scroll_up(3);
-                        }
-                        MouseEventKind::ScrollDown => {
-                            app.conversation.scroll_down(3);
-                        }
-                        _ => {}
-                    }
+                Event::Mouse(_) => {
+                    // Mouse capture is disabled — terminal owns the mouse
+                    // for native text selection. This arm shouldn't fire,
+                    // but is kept for safety.
                 }
                 // ── Paste — pass directly to textarea ──────────
                 Event::Paste(ref text) => {
-                    app.editor.textarea.insert_str(text);
+                    if text.is_empty() {
+                        // Empty paste — might be an image in the clipboard.
+                        // Some terminals send an empty Paste event when clipboard
+                        // has non-text content (e.g., an image from Cmd+V on macOS).
+                        app.try_paste_clipboard_image();
+                    } else {
+                        app.editor.textarea.insert_str(text);
+                    }
                 }
                 // ── Ctrl+V: check for clipboard image ──────────
                 Event::Key(KeyEvent { code: KeyCode::Char('v'), modifiers: KeyModifiers::CONTROL, .. }) => {
-                    if let Some(path) = clipboard_image_to_temp() {
-                        app.conversation.push_image(path.clone(), "clipboard paste");
-                        app.show_toast("📎 Image pasted", ratatui_toaster::ToastType::Info);
-                        // Store the path for attachment on next prompt
-                        app.pending_image = Some(path);
-                    }
-                    // If no image, Ctrl+V is handled by crossterm as bracketed paste
+                    app.try_paste_clipboard_image();
                 }
                 Event::Key(key) => {
                 // ── Selector popup intercepts all keys when open ────

@@ -127,7 +127,8 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
 pub fn load_lex_imperialis() -> String {
     // Embedded at compile time from the armory source
     static LEX: &str = include_str!("../../../../data/lex-imperialis.md");
-    format!("\n# Core Directives\n\n{LEX}\n")
+    static TOOL_LIMITS: &str = include_str!("tool_limitations.md");
+    format!("\n# Core Directives\n\n{LEX}\n\n{TOOL_LIMITS}\n")
 }
 
 /// Load global operator directives from ~/.omegon/AGENTS.md

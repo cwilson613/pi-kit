@@ -305,6 +305,54 @@ impl App {
         self.selector_kind = Some(SelectorKind::ContextClass);
     }
 
+    /// Generate a recovery hint for a tool error, if one applies.
+    fn recovery_hint(tool_name: Option<&str>, error_text: &str) -> &'static str {
+        let lower = error_text.to_lowercase();
+        // Connection / network errors
+        if lower.contains("connection refused") || lower.contains("connect timeout") {
+            if lower.contains("ollama") || lower.contains("11434") {
+                return "Ollama not running. Start with: ollama serve";
+            }
+            return "Service unreachable. Check if the target is running and the port is correct.";
+        }
+        // Rate limiting
+        if lower.contains("rate limit") || lower.contains("429") || lower.contains("too many requests") {
+            return "Rate limited. Use /model to switch provider, or wait a moment and retry.";
+        }
+        // Authentication
+        if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key") {
+            return "Authentication failed. Use /login to re-authenticate.";
+        }
+        if lower.contains("403") || lower.contains("forbidden") || lower.contains("permission denied") {
+            return "Permission denied. Check file permissions or API access scope.";
+        }
+        // Timeout
+        if lower.contains("timeout") || lower.contains("timed out") {
+            return "Operation timed out. Try a simpler request or increase timeout.";
+        }
+        // MCP errors
+        if lower.contains("mcp") && (lower.contains("not connected") || lower.contains("disconnected")) {
+            return "MCP server disconnected. Check the server process and restart if needed.";
+        }
+        // Context window
+        if lower.contains("context length") || lower.contains("too many tokens") || lower.contains("context_length") {
+            return "Context window exceeded. Use /compact to free space, or /context to select a larger class.";
+        }
+        // Git errors
+        if tool_name == Some("bash") && (lower.contains("not a git repository") || lower.contains("fatal: ")) {
+            return "Git error. Check that you're in a git repository and the operation is valid.";
+        }
+        ""
+    }
+
+    /// Count pending notes in .omegon/notes.md
+    fn count_notes(cwd: &std::path::Path) -> usize {
+        let notes_path = cwd.join(".omegon").join("notes.md");
+        std::fs::read_to_string(&notes_path)
+            .map(|c| c.lines().filter(|l| l.starts_with("- [")).count())
+            .unwrap_or(0)
+    }
+
     fn open_login_selector(&mut self) {
         // Check what's already configured
         let has_key = |env_vars: &[&str], auth_name: &str| -> bool {
@@ -1384,6 +1432,9 @@ impl App {
         ("milestone","release milestone management",                 &["freeze", "status"]),
         ("splash",   "replay splash animation",              &[]),
         ("dashboard", "open web dashboard (alias for /dash)",      &[]),
+        ("note",     "capture a note for later (persists across sessions)", &[]),
+        ("notes",    "show or clear pending notes",          &["clear"]),
+        ("checkin",  "triage what needs attention now",      &[]),
         ("version",  "show build version and git sha",       &[]),
         ("exit",     "quit (or double Ctrl+C)",              &[]),
     ];
@@ -1899,6 +1950,107 @@ impl App {
                 SlashResult::Handled
             }
 
+            // /note <text> — append a deferred investigation note
+            "note" => {
+                if args.is_empty() {
+                    // Show pending notes
+                    return self.handle_slash_command("/notes", tx);
+                }
+                let notes_path = std::path::Path::new(&self.footer_data.cwd).join(".omegon").join("notes.md");
+                let _ = std::fs::create_dir_all(notes_path.parent().unwrap());
+                let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
+                let entry = format!("- [{timestamp}] {args}\n");
+                let _ = std::fs::OpenOptions::new()
+                    .create(true).append(true).open(&notes_path)
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()));
+                SlashResult::Display(format!("📌 Noted. ({} entries)", Self::count_notes(&std::path::Path::new(&self.footer_data.cwd))))
+            }
+
+            // /notes [clear] — show or clear pending notes
+            "notes" => {
+                let notes_path = std::path::Path::new(&self.footer_data.cwd).join(".omegon").join("notes.md");
+                if args == "clear" {
+                    let _ = std::fs::remove_file(&notes_path);
+                    return SlashResult::Display("📌 Notes cleared.".into());
+                }
+                match std::fs::read_to_string(&notes_path) {
+                    Ok(content) if !content.trim().is_empty() => {
+                        let count = content.lines().filter(|l| l.starts_with("- [")).count();
+                        SlashResult::Display(format!("📌 Pending notes ({count}):\n\n{content}\nClear with /notes clear"))
+                    }
+                    _ => SlashResult::Display("No pending notes. Use /note <text> to capture something for later.".into()),
+                }
+            }
+
+            // /checkin — interactive triage of what needs attention
+            "checkin" => {
+                let mut sections: Vec<String> = Vec::new();
+
+                // Git status
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(["status", "--short"])
+                    .current_dir(&std::path::Path::new(&self.footer_data.cwd))
+                    .output()
+                {
+                    let status = String::from_utf8_lossy(&output.stdout);
+                    if !status.trim().is_empty() {
+                        let count = status.lines().count();
+                        sections.push(format!("📂 Git: {count} uncommitted change{}", if count == 1 { "" } else { "s" }));
+                    }
+                }
+
+                // Unpushed commits
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(["log", "--oneline", "@{u}..", "--"])
+                    .current_dir(&std::path::Path::new(&self.footer_data.cwd))
+                    .output()
+                {
+                    let unpushed = String::from_utf8_lossy(&output.stdout);
+                    if !unpushed.trim().is_empty() {
+                        let count = unpushed.lines().count();
+                        sections.push(format!("⬆ {count} unpushed commit{}", if count == 1 { "" } else { "s" }));
+                    }
+                }
+
+                // Pending notes
+                let note_count = Self::count_notes(&std::path::Path::new(&self.footer_data.cwd));
+                if note_count > 0 {
+                    sections.push(format!("📌 {note_count} pending note{}", if note_count == 1 { "" } else { "s" }));
+                }
+
+                // OpenSpec changes in progress
+                let opsx_dir = std::path::Path::new(&self.footer_data.cwd).join("openspec").join("changes");
+                if opsx_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&opsx_dir) {
+                        let active: Vec<String> = entries.filter_map(|e| {
+                            let e = e.ok()?;
+                            if e.file_type().ok()?.is_dir() {
+                                Some(e.file_name().to_string_lossy().to_string())
+                            } else { None }
+                        }).collect();
+                        if !active.is_empty() {
+                            sections.push(format!("📋 {} OpenSpec change{}: {}",
+                                active.len(),
+                                if active.len() == 1 { "" } else { "s" },
+                                active.join(", ")));
+                        }
+                    }
+                }
+
+                // Memory facts
+                if self.footer_data.total_facts > 0 {
+                    sections.push(format!("🧠 {} facts ({} working)",
+                        self.footer_data.total_facts,
+                        self.footer_data.working_memory));
+                }
+
+                if sections.is_empty() {
+                    SlashResult::Display("✓ All clear — nothing needs attention.".into())
+                } else {
+                    SlashResult::Display(format!("🔍 Check-in:\n\n{}", sections.join("\n")))
+                }
+            }
+
             "exit" | "quit" => SlashResult::Quit,
 
             // ── Aliases ─────────────────────────────────────────────
@@ -2097,7 +2249,31 @@ impl App {
                     omegon_traits::ContentBlock::Text { text } => Some(text.as_str()),
                     _ => None,
                 });
-                self.conversation.push_tool_end(&id, is_error, summary);
+
+                // Append recovery hint for tool errors
+                let display_summary = if is_error {
+                    if let Some(text) = summary {
+                        let hint = Self::recovery_hint(self.last_tool_name.as_deref(), text);
+                        if hint.is_empty() {
+                            Some(text)
+                        } else {
+                            // Store the enriched message in a temporary String
+                            let enriched = format!("{text}\n\n💡 {hint}");
+                            self.conversation.push_tool_end(&id, true, Some(&enriched));
+                            // Skip the normal push below
+                            if let Some(ref name) = self.last_tool_name {
+                                self.instrument_panel.set_tool_error(name);
+                            }
+                            // Jump past the normal flow
+                            return;
+                        }
+                    } else {
+                        summary
+                    }
+                } else {
+                    summary
+                };
+                self.conversation.push_tool_end(&id, is_error, display_summary);
 
                 // Signal tool error to instrument panel
                 if is_error {

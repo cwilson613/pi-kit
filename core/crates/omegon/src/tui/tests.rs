@@ -585,3 +585,92 @@ fn clipboard_format_matching() {
     assert!(match_clipboard_image_format(info_with_uti).is_none(),
         "UTI strings should not match — osascript never outputs them");
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// /note and /notes commands
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn slash_note_with_text_returns_display() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/note look into this later", &tx);
+    if let SlashResult::Display(text) = result {
+        assert!(text.contains("Noted"), "should confirm note: {text}");
+    } else {
+        panic!("expected Display result");
+    }
+}
+
+#[test]
+fn slash_note_without_args_shows_notes() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/note", &tx);
+    if let SlashResult::Display(text) = result {
+        assert!(text.contains("note"), "should mention notes: {text}");
+    } else {
+        panic!("expected Display result");
+    }
+}
+
+#[test]
+fn slash_notes_clear_returns_display() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/notes clear", &tx);
+    if let SlashResult::Display(text) = result {
+        assert!(text.contains("cleared"), "should confirm clear: {text}");
+    } else {
+        panic!("expected Display result");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// /checkin command
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn slash_checkin_returns_display() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/checkin", &tx);
+    match result {
+        SlashResult::Display(_) => {} // good — either "All clear" or triage output
+        _ => panic!("expected Display result"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Recovery hints
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn recovery_hint_rate_limit() {
+    let hint = App::recovery_hint(None, "Error: 429 Too Many Requests");
+    assert!(hint.contains("Rate limited"), "should suggest rate limit recovery: {hint}");
+}
+
+#[test]
+fn recovery_hint_unauthorized() {
+    let hint = App::recovery_hint(None, "Error: 401 Unauthorized");
+    assert!(hint.contains("/login"), "should suggest login: {hint}");
+}
+
+#[test]
+fn recovery_hint_ollama_connection() {
+    let hint = App::recovery_hint(None, "Connection refused to ollama at localhost:11434");
+    assert!(hint.contains("ollama serve"), "should suggest starting ollama: {hint}");
+}
+
+#[test]
+fn recovery_hint_context_window() {
+    let hint = App::recovery_hint(None, "context_length_exceeded: too many tokens");
+    assert!(hint.contains("/compact"), "should suggest compact: {hint}");
+}
+
+#[test]
+fn recovery_hint_no_match() {
+    let hint = App::recovery_hint(None, "some random error");
+    assert!(hint.is_empty(), "should return empty for unknown errors");
+}

@@ -1,17 +1,30 @@
 ---
 id: blattman-pattern-harvest
 title: Assessment — Harvestable patterns from claudeblattman.com
-status: exploring
-source: https://claudeblattman.com/
-date: 2026-03-24
+status: decided
 tags: [assessment, patterns, skills, context-management, ux]
+open_questions: []
+jj_change_id: qlxmsyrtwltlvwtzsnusznyummxokvmk
 ---
 
-# Blattman Pattern Harvest for Omegon
+# Assessment — Harvestable patterns from claudeblattman.com
+
+## Overview
 
 Assessment of every extractable pattern from claudeblattman.com's AI tooling system (skills, agents, workflows, context management, voice, continuous improvement) mapped against Omegon's existing architecture. Categorized by where the value lands.
 
 ---
+
+## Decisions
+
+### Decision: 12 patterns harvested for harness, 4 for persona packs, 5 out of scope
+
+**Status:** decided
+**Rationale:** Full assessment complete. P1+P2 items to implement in 0.15.1-rc.41. Persona packs and editor integration are roadmap items. VSCode skipped entirely — Zed and nvim only.
+
+## Open Questions
+
+*No open questions.*
 
 ## 🟢 HARVEST — Directly applicable to the Omegon harness
 

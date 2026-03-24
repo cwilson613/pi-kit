@@ -44,11 +44,20 @@ update:
 build-release:
     cd core && cargo build --release -p omegon
 
-# Symlink release binary into ~/.cargo/bin so rebuilds are instantly live
+# Symlink build binary so rebuilds are instantly live.
+# Targets /opt/homebrew/bin if the existing symlink lives there, else ~/.cargo/bin.
 link:
-    ln -sf "{{justfile_directory()}}/core/target/release/omegon" ~/.cargo/bin/omegon
-    @echo "Linked ~/.cargo/bin/omegon → core/target/release/omegon"
-    @core/target/release/omegon --version 2>/dev/null || echo "(build first with: just build)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SRC="{{justfile_directory()}}/core/target/release/omegon"
+    if [ -L /opt/homebrew/bin/omegon ] || [ -f /opt/homebrew/bin/omegon ]; then
+        ln -sf "$SRC" /opt/homebrew/bin/omegon
+        echo "Linked /opt/homebrew/bin/omegon → $SRC"
+    else
+        ln -sf "$SRC" ~/.cargo/bin/omegon
+        echo "Linked ~/.cargo/bin/omegon → $SRC"
+    fi
+    "$SRC" --version 2>/dev/null || echo "(build first with: just build)"
 
 # Run the built binary directly (no recompile)
 run *args:

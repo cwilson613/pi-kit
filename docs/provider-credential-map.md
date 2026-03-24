@@ -117,11 +117,48 @@ The OS keychain is the most secure local storage available:
 
 If you don't trust your OS to store your keys, you have bigger problems than an agent tool. The prompts mean the system is working — your keys are protected by the same mechanism that guards your browser passwords.
 
-### Prompt frequency
+### Prompt frequency and how to eliminate it
 
-Omegon caches resolved secrets in memory (as `SecretString`, zeroized on drop) for the session duration. You should see **one keychain prompt per secret per session launch**, not per use. If you see repeated prompts, that's a bug — report it.
+The OS keychain prompts once per secret per session launch. If you have 3 secrets in the keyring, that's 3 prompts every time you start Omegon. This is friction, and we know it.
 
-On macOS, you can select "Always Allow" in the Keychain Access prompt to suppress future prompts for Omegon's entries. This only grants Omegon access to its own items, not the rest of your keychain.
+**To eliminate prompts permanently on macOS:** When the Keychain Access dialog appears, click **"Always Allow"**. This grants Omegon permanent access to *its own* keychain entries (service name `omegon`). It does NOT grant access to your browser passwords, SSH keys, or any other application's entries.
+
+This is the recommended path. One click per secret, once ever, and you never see the prompt again.
+
+If you don't want to grant persistent keychain access, see "Opting out" below for alternatives.
+
+### Opting out of the OS keychain
+
+If "Always Allow" isn't your style, you have alternatives. In decreasing order of how seriously we take your operational judgment:
+
+**1. HashiCorp Vault (recommended for teams)**
+No local prompts. Centralized secret management. Token-based access with TTL. The grown-up answer:
+```
+/secrets set MY_KEY vault:secret/data/myproject/key
+```
+
+**2. Environment variables (recommended for solo operators)**
+No prompts. Set in your shell profile, inherited by Omegon. Simple, portable, works everywhere:
+```
+# In ~/.zshrc or ~/.bashrc:
+export OPENROUTER_API_KEY="sk-or-..."
+
+# Then tell Omegon to resolve from env:
+/secrets set OPENROUTER_API_KEY env:OPENROUTER_API_KEY
+```
+
+**3. Dynamic CLI resolution (recommended for tokens with CLIs)**
+No prompts. Fresh token every time. The right answer for GitHub, npm, gcloud:
+```
+/secrets set GITHUB_TOKEN cmd:gh auth token
+```
+
+**4. File-based storage (you asked for it)**
+Stores secrets in auth.json (0600 permissions) instead of the OS keyring. No prompts. No hardware encryption. If someone gets read access to your home directory, they get your keys.
+
+We will implement this if operators demand it. We will also judge them quietly.
+
+The default is keyring. The recommendation is "Always Allow." Everything else is your funeral.
 
 ## Adding a New Provider
 

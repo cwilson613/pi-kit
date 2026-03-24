@@ -5,7 +5,8 @@ status: exploring
 parent: tutorial-system
 dependencies: [startup-systems-check]
 tags: [tutorial, free-tier, accessibility, local-inference, onboarding, 0.15.1]
-open_questions: []
+open_questions:
+  - "Should OpenRouter be a first-class provider in the routing layer (alongside anthropic/openai) rather than just an OPENAI_BASE_URL override, so Omegon can use the openrouter/free meta-model and task-specific model selection?"
 jj_change_id: kvywttuknzuoxmkzorsyqmsrwqvwpnku
 priority: 2
 ---
@@ -121,6 +122,70 @@ The guided Groq signup could be a Command-trigger tutorial step: "Paste your Gro
 
 No new provider implementation needed. The infrastructure exists.
 
+### Free-tier providers viable for baked-in routing (March 2026)
+
+All of these are OpenAI-compatible, no credit card, and support tool/function calling — the minimum bar for Omegon to use them:
+
+**OpenRouter** — The single best option for baked-in free routing.
+- 27 free models, all with tool calling support
+- `openrouter/free` meta-model auto-selects from available free models, filtering for capabilities (tool calling, vision, etc.)
+- Highlights with tool support: Qwen3 Coder 480B A35B, Nemotron 3 Super 120B, Llama 3.3 70B, Mistral Small 3.1 24B, GPT-OSS 120B
+- OpenAI-compatible API at `https://openrouter.ai/api/v1`
+- Free API key signup, no credit card
+- Rate limits exist but generous for single-user operation
+- **This is the answer for cleave leaf children**: route leaf tasks to `openrouter/free` and let it pick the best available free model
+
+**Groq** — Fastest free inference, Llama 70B.
+- ~14K req/day, 6K-18K TPM
+- 394 TPS — feels instant
+- Best for: driver model where speed matters, single-tool-call steps
+
+**Google Gemini** — Free tier, Gemini 2.5 Flash.
+- 15 RPM free tier
+- 1M context window
+- Good for: long-context tasks, reading entire codebases
+
+**DeepSeek** — 5M free tokens, no credit card.
+- R1 reasoning model at 1/27th OpenAI cost
+- Good for: complex reasoning tasks in cleave children
+
+**Mistral** — Free "Experiment" tier.
+- All Mistral models including Codestral
+- 2 RPM (slow) but 1B tokens/month
+- Good for: code-focused leaf tasks where speed doesn't matter
+
+**GitHub Models** — Free with GitHub account.
+- GPT-4o and other models via Azure inference
+- OpenAI-compatible API
+- Good for: users who already have a GitHub account (most developers)
+
+**Scaleway** — Llama 3.1 8B free tier, OpenAI-compatible.
+
+**The architecture play**: Omegon doesn't need to pick one. The routing layer can stack these:
+- Driver: Groq (fast) or OpenRouter/free (smart selection)
+- Cleave children: OpenRouter/free (auto-selects best available)
+- Compaction: local Ollama if available, else cheapest cloud free tier
+- Memory extraction: smallest free model that works (Nemotron Nano 9B via OpenRouter)
+
+This is genuinely viable as a zero-cost full-stack inference setup. The user signs up for OpenRouter (30 seconds, no CC), sets one API key, and Omegon routes across 27 free models based on task requirements.
+
+### Free-tier routing architecture for cleave leaf children
+
+Cleave dispatches 1-N child processes, each running an agent loop. Today these use the same provider as the parent. For free-tier users, this means every child burns tokens from the same limited pool.
+
+With OpenRouter's free tier:
+- Parent (driver): `openrouter/free` or a specific free model like Qwen3 Coder 480B
+- Each cleave child: independently calls `openrouter/free` — the meta-model distributes across available free models, so N children don't all hit the same rate limit
+- Memory extraction: cheapest/smallest free model (Nemotron Nano 9B)
+- Compaction: local Ollama if available, else free cloud
+
+Rate limit concern: OpenRouter's free tier has per-model and per-account limits. 4 parallel cleave children might hit aggregate limits. Mitigation:
+1. Stagger child dispatch (existing wave system already does this for dependency ordering)
+2. Route different children to different free models explicitly
+3. Accept that free-tier cleave is slower — add retry-after handling
+
+This is the "Omegon sacrifices your time instead of your wallet" mode. It works. It's slower. But it's free, and the user sees all 4 branches executing.
+
 ## Decisions
 
 ### Decision: Groq free tier as the zero-cost cloud fallback for tutorials
@@ -133,6 +198,11 @@ No new provider implementation needed. The infrastructure exists.
 **Status:** exploring
 **Rationale:** The systems check (startup-systems-check) knows: API keys present, Ollama availability, GPU/RAM profile. This is enough to auto-select the right tutorial variant. The project-choice widget (already exists in tutorial.rs step 0) can present the detected option as the default with an override: "We detected [Ollama with 14B model / Groq free tier / Claude API]. Starting demo with [local inference / free cloud / full cloud]. Press ← → to change." Asking "do you have a Pro subscription?" is a mood killer. Telling them "we found Ollama running, let's use that" is empowering.
 
+### Decision: OpenRouter as the primary free-tier provider — one key, 27 free models with tool calling
+
+**Status:** exploring
+**Rationale:** OpenRouter solves the problem cleanly: one API key (free, no credit card), 27 models with tool calling, OpenAI-compatible API, and an `openrouter/free` meta-model that auto-selects based on capability requirements. Instead of teaching the user about Groq vs Gemini vs DeepSeek, we teach them one thing: 'sign up at openrouter.ai, paste the key.' Omegon's routing layer then uses free models for everything — driver, cleave children, compaction, memory extraction — selecting the right free model per task. This supersedes the Groq-specific decision: OpenRouter includes Groq's models AND 26 others.
+
 ## Open Questions
 
-*No open questions.*
+- Should OpenRouter be a first-class provider in the routing layer (alongside anthropic/openai) rather than just an OPENAI_BASE_URL override, so Omegon can use the openrouter/free meta-model and task-specific model selection?

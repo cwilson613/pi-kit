@@ -1,10 +1,10 @@
 ---
 id: mouse-text-selection
 title: Mouse text selection — EnableMouseCapture blocks native terminal selection
-status: exploring
+status: decided
 tags: [tui, ux, mouse, clipboard, accessibility]
 open_questions: []
-jj_change_id: xvwqvszpzzzssvzlospplutkqztvprwx
+jj_change_id: syrxywznxmmylkqwzqrpzrxlqzlvrqlm
 issue_type: bug
 priority: 1
 ---
@@ -39,6 +39,25 @@ This is the same behavior users see in any TUI with a sidebar (htop, btop, lazyg
 
 The correct long-term fix is to re-enable mouse capture and implement in-app text selection with OSC 52 clipboard write. This is what VS Code's integrated terminal does. For now, mouse capture needs to come back for scroll-wheel, and we accept the selection tradeoff until we build proper in-app copy.
 
+## Decisions
+
+### Decision: Keep EnableMouseCapture for scroll-wheel; accept modifier-key selection until in-app copy is built
+
+**Status:** decided
+**Rationale:** Tested both directions in rc.16. Without mouse capture: scroll-wheel dies, and native selection wraps across the full terminal width including the sidebar, producing garbled text. With mouse capture: scroll-wheel works, and users can still select text using Option+click (macOS iTerm2/Kitty rectangular selection) or Shift+click (most terminals). The scroll-wheel is more important day-to-day than frictionless selection, and cross-panel garbled selection isn't actually useful anyway. The real fix is in-app text selection with OSC 52 clipboard write — that's the approach VS Code's integrated terminal uses. This is not a cost-saving deferral; it's the architecturally correct solution that just hasn't been built yet.
+
 ## Open Questions
 
 *No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/tui/mod.rs` (modified) — EnableMouseCapture enabled at startup. ScrollUp/ScrollDown handled in Event::Mouse arm. DisableMouseCapture in cleanup/panic paths.
+
+### Constraints
+
+- Scroll-wheel must work — it's the primary navigation for reading conversation history
+- Text selection must not require undiscoverable modifier keys for basic use cases
+- OSC 52 clipboard write has security implications — some terminals prompt, some block it entirely

@@ -15,6 +15,7 @@ use std::process::Command;
 pub const WELL_KNOWN_SECRET_ENVS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
     "BRAVE_API_KEY",
     "TAVILY_API_KEY",
     "SERPER_API_KEY",

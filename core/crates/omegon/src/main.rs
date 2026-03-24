@@ -1234,12 +1234,53 @@ async fn run_auth_command(action: &AuthAction) -> anyhow::Result<()> {
     }
 }
 
+/// Direct API key login — for providers without OAuth (OpenRouter, etc.)
+/// Prompts for the key on stdin, stores in auth.json.
+async fn login_api_key(provider: &str, env_var: &str, keys_url: &str) -> anyhow::Result<auth::OAuthCredentials> {
+    eprintln!("Login to {provider}:");
+    eprintln!("  1. Open {keys_url}");
+    eprintln!("  2. Create or copy your API key");
+    eprintln!("  3. Paste it below (input is hidden)");
+    eprintln!();
+    eprint!("API key: ");
+
+    // Read key without echo (rpassword hides input on TTYs)
+    let key = rpassword::read_password()
+        .unwrap_or_else(|_| {
+            // Fallback for non-TTY (piped input, CI)
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf).unwrap_or(0);
+            buf.trim().to_string()
+        });
+
+    if key.is_empty() {
+        anyhow::bail!("No API key provided");
+    }
+
+    let creds = auth::OAuthCredentials {
+        cred_type: "api-key".into(),
+        access: key,
+        refresh: String::new(),
+        expires: u64::MAX, // API keys don't expire
+    };
+    auth::write_credentials(provider, &creds)?;
+
+    // Also set the env var for the current session so the provider resolves immediately
+    // SAFETY: single-threaded at this point in startup — no other threads reading env vars
+    unsafe { std::env::set_var(env_var, &creds.access); }
+
+    eprintln!("✓ {provider} API key stored. Active for this session and future sessions.");
+    Ok(creds)
+}
+
 async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
     let result = match provider {
         "anthropic" | "claude" => auth::login_anthropic().await,
         "openai" | "chatgpt" => auth::login_openai().await,
+        "openrouter" => login_api_key("openrouter", "OPENROUTER_API_KEY",
+            "https://openrouter.ai/keys").await,
         _ => {
-            eprintln!("Unknown provider: {provider}. Use: anthropic, openai");
+            eprintln!("Unknown provider: {provider}. Use: anthropic, openai, openrouter");
             std::process::exit(1);
         }
     };

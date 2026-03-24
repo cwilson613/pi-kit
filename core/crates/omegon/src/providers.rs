@@ -29,6 +29,7 @@ pub fn resolve_api_key_sync(provider: &str) -> Option<(String, bool)> {
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
         _ => &[],
     };
     for key in env_keys {
@@ -89,6 +90,7 @@ fn resolve_api_key(provider: &str) -> Option<String> {
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
         "google" => &["GOOGLE_API_KEY"],
         "mistral" => &["MISTRAL_API_KEY"],
         _ => &[],
@@ -133,14 +135,19 @@ pub async fn auto_detect_bridge(model_spec: &str) -> Option<Box<dyn LlmBridge>> 
             AnthropicClient::from_env_async().await.map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
         "openai" => OpenAIClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
+        "openrouter" => OpenRouterClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
         _ => {
+            // Fallback chain: Anthropic → OpenAI → OpenRouter
             if let Some(client) = AnthropicClient::from_env() {
                 return Some(Box::new(client));
             }
             if let Some(client) = AnthropicClient::from_env_async().await {
                 return Some(Box::new(client));
             }
-            OpenAIClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>)
+            if let Some(client) = OpenAIClient::from_env() {
+                return Some(Box::new(client));
+            }
+            OpenRouterClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
     }
 }
@@ -864,6 +871,56 @@ async fn parse_openai_stream(
         }
         true
     }).await
+}
+
+// ─── OpenRouter ─────────────────────────────────────────────────────────────
+//
+// OpenRouter speaks the OpenAI wire protocol but routes across 27+ free models.
+// Uses the OpenAI client internally with a different base URL and API key source.
+
+pub struct OpenRouterClient {
+    inner: OpenAIClient,
+}
+
+impl OpenRouterClient {
+    pub fn new(api_key: String) -> Self {
+        Self {
+            inner: OpenAIClient {
+                client: reqwest::Client::new(),
+                api_key,
+                base_url: "https://openrouter.ai/api".into(),
+            },
+        }
+    }
+
+    pub fn from_env() -> Option<Self> {
+        resolve_api_key("openrouter").map(Self::new)
+    }
+}
+
+#[async_trait]
+impl LlmBridge for OpenRouterClient {
+    async fn stream(
+        &self,
+        system_prompt: &str,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        options: &StreamOptions,
+    ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
+        // Delegate to the OpenAI client — OpenRouter is wire-compatible.
+        // Override model to use OpenRouter's free model selector if none specified.
+        let mut opts = options.clone();
+        if opts.model.is_none() || opts.model.as_deref() == Some("") {
+            opts.model = Some("openrouter:openrouter/free".into());
+        }
+        // Rewrite model prefix: strip "openrouter:" for the wire request
+        if let Some(ref mut m) = opts.model {
+            if let Some(stripped) = m.strip_prefix("openrouter:") {
+                *m = stripped.to_string();
+            }
+        }
+        self.inner.stream(system_prompt, messages, tools, &opts).await
+    }
 }
 
 #[cfg(test)]

@@ -59,6 +59,7 @@ hyperrat = "0.1"
 rmcp = { version = "1.2", features = ["transport-child-process", "client", "transport-streamable-http-client-reqwest", "auth"], default-features = false }
 tar = "0.4"
 flate2 = "1.0"
+rpassword = "7"
 
 [dev-dependencies]
 insta = "1.46"

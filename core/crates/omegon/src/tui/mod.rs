@@ -1149,7 +1149,7 @@ impl App {
         ("context",  "select context class (Squad/Maniple/Clan/Legion)",       &["squad", "maniple", "clan", "legion"]),
         ("sessions", "list saved sessions",                  &[]),
         ("memory",   "memory stats",                        &[]),
-        ("login",    "log in to provider (default: anthropic)", &["anthropic", "openai"]),
+        ("login",    "log in to provider (default: anthropic)", &["anthropic", "openai", "openrouter"]),
         ("logout",   "log out of provider",                   &["anthropic", "openai"]),
         ("auth",     "authentication management",             &["status", "login", "logout", "unlock"]),
         ("chronos",  "date/time context",                      &["week", "month", "quarter", "relative", "iso", "epoch", "tz", "range", "all"]),

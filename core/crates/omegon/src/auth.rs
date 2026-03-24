@@ -130,6 +130,12 @@ pub async fn probe_all_providers() -> AuthStatus {
     // Probe OpenAI
     let openai_info = probe_provider("openai").await;
     providers.push(openai_info);
+
+    // Probe OpenRouter (only show if configured — it's optional)
+    let openrouter_info = probe_provider("openrouter").await;
+    if openrouter_info.status == ProviderAuthStatus::Authenticated {
+        providers.push(openrouter_info);
+    }
     
     // TODO: Probe Vault
     let vault = Vec::new(); // probe_vault().await
@@ -154,6 +160,7 @@ async fn probe_provider(provider: &str) -> ProviderInfo {
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
         "openai" => &["OPENAI_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
         _ => &[],
     };
     

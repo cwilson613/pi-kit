@@ -51,102 +51,221 @@ pub enum Highlight {
     Dashboard,
 }
 
-/// The compiled tutorial steps — Omegon's built-in onboarding.
-/// Four acts: Cockpit (passive UI tour), Agent Works (auto-prompted
-/// tasks), Lifecycle (live cleave), Ready (wrap-up).
-pub const STEPS: &[Step] = &[
-    // ═══ Act 1 — The Cockpit ═══════════════════════════════════
+// ─── Shared Act 1 steps (cockpit tour — same for both modes) ────────────────
+
+const STEP_WELCOME_DEMO: Step = Step {
+    title: "Welcome to the Omegon Demo",
+    body: "You\u{2019}re in a pre-seeded Rust CLI project.\n\nIt has design nodes, an OpenSpec change with\nGiven/When/Then specs, and memory facts already\nloaded. This tour shows the full Omegon lifecycle:\nread \u{2192} design \u{2192} spec \u{2192} decompose \u{2192} verify.\n\nAbout 5 minutes. The agent does the work;\nyou watch.",
+    anchor: Anchor::Center,
+    trigger: Trigger::Enter,
+    highlight: None,
+};
+
+const STEP_WELCOME_HANDS_ON: Step = Step {
+    title: "Welcome to Omegon",
+    body: "This is your AI agent cockpit.\n\nThe agent works alongside you in your terminal.\nUnlike a chatbot, it has memory, tracks\narchitecture decisions, enforces specs before\ncode, and can parallelize work in parallel\nbranches.\n\nThis tour uses YOUR project. About 5 minutes.",
+    anchor: Anchor::Center,
+    trigger: Trigger::Enter,
+    highlight: None,
+};
+
+const STEP_ENGINE: Step = Step {
+    title: "Engine Panel",
+    body: "Bottom-left of your screen.\n\nThe engine panel shows:\n  \u{2022} Model and provider\n  \u{2022} Tier: Retribution (fast/cheap) \u{2192}\n         Victory (balanced) \u{2192}\n         Gloriana (deep reasoning)\n  \u{2022} Thinking level\n  \u{2022} Context capacity\n\nYou can change any of these mid-session.",
+    anchor: Anchor::Upper,
+    trigger: Trigger::Enter,
+    highlight: Some(Highlight::EnginePanel),
+};
+
+const STEP_INSTRUMENTS: Step = Step {
+    title: "Inference Instruments",
+    body: "The center and right panels show live telemetry.\n\nWhile the agent works you\u{2019}ll see:\n  \u{2022} Context bar fills navy \u{2192} teal \u{2192} amber\n  \u{2022} Glitch characters during deep thinking\n  \u{2022} Memory strings pulse as facts are stored\n  \u{2022} Tool names appear with recency bars\n\nWatch these during the next steps.",
+    anchor: Anchor::Upper,
+    trigger: Trigger::Enter,
+    highlight: Some(Highlight::InstrumentPanel),
+};
+
+const STEP_SIDEBAR: Step = Step {
+    title: "Design Sidebar",
+    body: "Right panel \u{2014} your design tree.\n\nEvery architectural decision, question, and\nstatus lives here. Nodes are grouped by status:\n  \u{2022} \u{2699} implementing  \u{25cf} decided\n  \u{2022} \u{25d0} exploring     \u{2715} blocked\n\nCtrl+D to navigate. Enter to focus a node\ninto the agent\u{2019}s context.\n\nWatch it update live during the next steps.",
+    anchor: Anchor::Center,
+    trigger: Trigger::Enter,
+    highlight: Some(Highlight::Dashboard),
+};
+
+// ─── Demo mode STEPS (pre-seeded project, specific content) ─────────────────
+
+/// Steps for the guided demo mode — run inside the bundled demo project.
+/// References specific pre-seeded artifacts: output-formatting node,
+/// add-validation OpenSpec change with tasks.md.
+pub const STEPS_DEMO: &[Step] = &[
+    // Act 1 — The Cockpit (passive)
+    STEP_WELCOME_DEMO,
+    STEP_ENGINE,
+    STEP_INSTRUMENTS,
+    STEP_SIDEBAR,
+
+    // Act 2 — The Agent Works
     Step {
-        title: "Welcome to Omegon",
-        body: "This is your AI agent cockpit.\n\nThe main area is the conversation \u{2014} where you\nand the agent work together. The panels at the\nbottom show engine status and live telemetry.\nThe sidebar on the right tracks your design space.\n\n\u{00b7} Hands-on mode: Acts 2\u{2013}3 use YOUR project.\n\n  Want the full scripted demo with live cleave?\n  Esc \u{2192} /tutorial demo",
-        anchor: Anchor::Center,
-        trigger: Trigger::Enter,
-        highlight: None,
-    },
-    Step {
-        title: "Engine Panel",
-        body: "Look at the bottom-left of your screen.\n\nThe engine panel shows:\n  \u{2022} Model name and provider\n  \u{2022} Tier (Victory / Gloriana / Retribution)\n  \u{2022} Thinking level\n  \u{2022} Context capacity",
-        anchor: Anchor::Upper,
-        trigger: Trigger::Enter,
-        highlight: Some(Highlight::EnginePanel),
-    },
-    Step {
-        title: "Inference Instruments",
-        body: "The right panels show live telemetry:\n\n  \u{2022} Context bar \u{2014} navy \u{2192} teal \u{2192} amber\n  \u{2022} Glitch chars when the agent thinks\n  \u{2022} Memory strings show fact counts\n  \u{2022} Tool recency \u{2014} most recent at top",
-        anchor: Anchor::Upper,
-        trigger: Trigger::Enter,
-        highlight: Some(Highlight::InstrumentPanel),
-    },
-    Step {
-        title: "Design Sidebar",
-        body: "The right panel is your design tree.\n\nIt shows every design node, grouped by status:\n  \u{2022} \u{2699} implementing  \u{25cf} decided\n  \u{2022} \u{25d0} exploring     \u{2715} blocked\n\nPress Ctrl+D to navigate it. Enter focuses\na node into the agent's context.\n\nWatch it update live as work progresses.",
-        anchor: Anchor::Center,
-        trigger: Trigger::Enter,
-        highlight: Some(Highlight::Dashboard),
-    },
-    // ═══ Act 2 — The Agent Works ═══════════════════════════════
-    Step {
-        title: "Watch the Agent",
-        body: "Now let's see the agent work.\n\nIt will read this project, analyze the code,\nand store facts about its architecture.\n\nWatch the instruments \u{2014} tools will light up\nand memory strings will pulse as facts\nare stored.",
+        title: "Reading the Project",
+        body: "The agent will read this project\u{2019}s source\nfiles and store what it learns.\n\nWatch the instruments:\n  \u{2022} Tool bars light up as files are read\n  \u{2022} Memory strings pulse as facts are stored\n  \u{2022} The sidebar may update with context\n\nYou\u{2019}ll see three facts appear in memory.",
         anchor: Anchor::Upper,
         trigger: Trigger::AutoPrompt(
-            "Read this project: look for source files (src/, lib.rs, main.rs, Cargo.toml, package.json, pyproject.toml — whatever exists), \
-understand what it does and how it's structured. \
-Then store exactly 3 memory facts: one about what the project does, one about its code structure, \
-one about its test coverage or quality practices."
+            "Read this project. Start with README.md, then src/config.rs, src/validate.rs, \
+src/format.rs, and src/lib.rs. Understand what it does: it parses TOML config files and validates \
+them. Then store exactly 3 memory facts using memory_store: \
+(1) what this project does and its purpose, \
+(2) the structure of the Config struct and what fields it validates, \
+(3) what tests exist and what they cover."
         ),
         highlight: Some(Highlight::InstrumentPanel),
     },
     Step {
-        title: "Design Exploration",
-        body: "The agent will now explore a design question.\n\nWatch the sidebar \u{2014} the node's status will\nchange as the agent adds research and makes\na decision.",
+        title: "Exploring a Design Question",
+        body: "This project has two design nodes:\n  \u{2022} output-formatting (exploring)\n  \u{2022} add-validation (decided)\n\nThe agent will explore the open question\nin output-formatting: should we support\nANSI color output?\n\nWatch the sidebar \u{2014} the node status\nwill change as research is added.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Use the design_tree tool (action: list) to see what design nodes exist in this project. \
-If there are nodes with open questions, pick the most interesting one and explore it: read its doc, \
-research the open question, add your findings, and record a decision. \
-If the design tree is empty, create a first design node for this project about its overall architecture — \
-give it a meaningful id, title, and overview based on what you read about the codebase."
+            "Use design_tree with action 'node' and node_id 'output-formatting' to read the design doc. \
+It has an open question about ANSI color support. \
+Research this question: consider terminal capability detection (TERM, NO_COLOR, COLORTERM env vars), \
+common approaches in Rust CLI tools (the 'supports-color' crate pattern), and the tradeoffs. \
+Then use design_tree_update with action 'add_research' to record your findings. \
+Finally use action 'add_decision' to record a decision: should this project support ANSI color, and how?"
         ),
         highlight: Some(Highlight::Dashboard),
     },
-    // ═══ Act 3 — The Lifecycle ═════════════════════════════════
+
+    // Act 3 — The Lifecycle
     Step {
-        title: "Spec Before Code",
-        body: "Omegon enforces spec-before-code.\n\nThe agent will now propose a concrete improvement\nit identified while reading YOUR project \u{2014}\nand create a proper spec for it with\nGiven/When/Then scenarios.\n\nThis creates a real OpenSpec change in your\nai/openspec/ directory.",
+        title: "A Prepared Spec",
+        body: "Look at the sidebar \u{2014} add-validation is\nmarked \u{25cf} decided and bound to an OpenSpec\nchange with Given/When/Then specs.\n\nThe agent will show you the spec and the\ntask plan that\u{2019}s ready for parallel execution.\n\nThis is the point where you\u{2019}d normally\nrun /cleave to split across branches.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Based on what you read about this project, identify ONE concrete, small improvement that would be valuable. \
-Use openspec_manage with action 'propose' to create a change for it (pick a short slug like 'improve-error-handling' or 'add-validation'). \
-Then use action 'generate_spec' to create a Given/When/Then spec for it. \
-Keep it focused: one clear requirement, 2-3 scenarios. \
-Explain what you proposed and why."
+            "Use openspec_manage with action 'get' and change_name 'add-validation' to read the full \
+change: proposal, specs, and tasks. \
+Then read the file ai/openspec/changes/add-validation/tasks.md directly using the bash tool. \
+Explain clearly: (1) what the spec requires, (2) what the 5 tasks are, \
+(3) how these would be split across parallel cleave branches, \
+(4) what the operator would type to execute this: /cleave add-validation"
         ),
         highlight: None,
     },
     Step {
-        title: "The Full Lifecycle",
-        body: "You've just experienced the core lifecycle:\n\n  \u{2022} Memory \u{2014} facts persist across sessions\n  \u{2022} Design tree \u{2014} nodes track architecture\n  \u{2022} OpenSpec \u{2014} specs before code\n\nThe next step is decomposition \u{2014} breaking the\nspec into parallel branches with /cleave.\n\nType /tutorial demo to see a live cleave\non a pre-seeded project.",
+        title: "Your Turn: Run the Cleave",
+        body: "The spec is clear. The plan is ready.\n\nNow you run it.\n\nClose this overlay (Esc), then type:\n  /cleave add-validation\n\nOmegon will split the work across parallel\nbranches, execute them simultaneously, and\nmerge the results.\n\nCome back to /tutorial after to finish.",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
     },
-    // ═══ Act 4 — You're Ready ══════════════════════════════════
+
+    // Act 4 — You're Ready
     Step {
         title: "Power Tools",
-        body: "A few more things to know:\n\n  \u{2022} /focus \u{2014} toggle instrument panels\n  \u{2022} /calibrate \u{2014} adjust display colors\n  \u{2022} /model \u{2014} switch AI models\n  \u{2022} /think \u{2014} adjust reasoning depth\n  \u{2022} Ctrl+D \u{2014} navigate the design tree\n  \u{2022} Ctrl+C \u{d7}2 \u{2014} quit",
+        body: "Key commands to know:\n\n  \u{2022} /model \u{2014} switch AI model or provider\n  \u{2022} /think \u{2014} adjust reasoning depth\n  \u{2022} /context \u{2014} change context window size\n  \u{2022} /focus \u{2014} hide panels, full-height chat\n  \u{2022} /calibrate \u{2014} adjust display colors\n  \u{2022} Ctrl+D \u{2014} navigate design tree\n  \u{2022} Ctrl+C \u{d7}2 \u{2014} quit",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
     },
     Step {
-        title: "You're Ready!",
-        body: "That's Omegon.\n\n  \u{2022} Memory persists across sessions\n  \u{2022} Design tree tracks your architecture\n  \u{2022} OpenSpec enforces spec-before-code\n  \u{2022} /help shows all commands\n  \u{2022} /tutorial replays this guide\n\nGo build something.",
+        title: "You\u{2019}re Ready!",
+        body: "You\u{2019}ve seen the full Omegon lifecycle:\n\n  1. Read the project \u{2014} facts in memory\n  2. Explore design \u{2014} questions answered\n  3. Spec before code \u{2014} Given/When/Then\n  4. Decompose \u{2014} parallel branches\n\nRun Omegon in YOUR project to start.\nMemory persists. Design tree builds up.\nEvery session adds to what it knows.\n\n/help for all commands.",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
     },
 ];
+
+// ─── Hands-on mode STEPS (user's own project, adaptive) ─────────────────────
+
+/// Steps for hands-on mode — run in the operator's own project.
+/// Prompts are adaptive: they work in any project, gracefully handle
+/// empty design trees, and create real value (facts, nodes, specs).
+pub const STEPS_HANDS_ON: &[Step] = &[
+    // Act 1 — The Cockpit (passive)
+    STEP_WELCOME_HANDS_ON,
+    STEP_ENGINE,
+    STEP_INSTRUMENTS,
+    STEP_SIDEBAR,
+
+    // Act 2 — The Agent Works
+    Step {
+        title: "Reading Your Project",
+        body: "The agent will read YOUR project\u{2019}s source\nfiles and store what it learns as memory facts.\n\nThese facts persist across every session.\nNext time you open Omegon here, it already\nknows your codebase.\n\nWatch the instruments \u{2014} tools light up,\nmemory strings pulse as facts are stored.",
+        anchor: Anchor::Upper,
+        trigger: Trigger::AutoPrompt(
+            "Read this project. Look for whatever source files exist: src/, lib.rs, main.rs, \
+Cargo.toml, package.json, pyproject.toml, go.mod, README.md — whatever is here. \
+Understand what it does and how it\u{2019}s structured. \
+Then store exactly 3 memory facts using memory_store: \
+(1) what this project does and its primary purpose, \
+(2) the key code structure (main modules, important files, language/framework), \
+(3) testing practices and coverage (or lack thereof). \
+Be specific — these facts will be loaded in future sessions."
+        ),
+        highlight: Some(Highlight::InstrumentPanel),
+    },
+    Step {
+        title: "Your Design Tree",
+        body: "Design nodes track architectural decisions.\n\nThe agent will check your design tree.\nIf you have nodes with open questions, it\nwill explore one. If your tree is empty,\nit will create a first node \u{2014} a real\narchitecture overview of YOUR project.\n\nWatch the sidebar update live.",
+        anchor: Anchor::Center,
+        trigger: Trigger::AutoPrompt(
+            "Use design_tree with action 'list' to see what design nodes exist. \
+If there are nodes with open questions, pick the most interesting one and explore it: \
+use action 'node' to read it, add research with your findings, then add a decision. \
+If the design tree is empty, create a first node using action 'create' with: \
+  - node_id: a short slug based on the project name or its main concern \
+  - title: a clear description of the project\u{2019}s main architectural decision \
+  - overview: 2-3 sentences about the architecture based on what you read \
+  - status: 'exploring' \
+Explain what you did and why this node matters for the project."
+        ),
+        highlight: Some(Highlight::Dashboard),
+    },
+
+    // Act 3 — The Lifecycle
+    Step {
+        title: "Spec Before Code",
+        body: "Omegon enforces spec-before-code.\n\nEvery task starts with a Given/When/Then\nspec before any implementation begins.\nThe FSM blocks implementation until\nspecs exist.\n\nThe agent will now propose a real improvement\nfor YOUR project and write a spec for it.",
+        anchor: Anchor::Center,
+        trigger: Trigger::AutoPrompt(
+            "Based on what you read about this project, identify ONE concrete, valuable improvement. \
+Something specific that would actually help: better error handling, missing validation, \
+a test gap, a missing feature. \
+Use openspec_manage with action 'propose' to create a change (pick a descriptive slug). \
+Then use action 'generate_spec' to write Given/When/Then scenarios for it \
+(domain name can match the slug). \
+Keep it focused: one clear requirement, 2-3 scenarios. \
+This creates a real ai/openspec/ entry in your project."
+        ),
+        highlight: None,
+    },
+    Step {
+        title: "The Full Lifecycle",
+        body: "You\u{2019}ve seen three of the four lifecycle steps:\n\n  1. Memory \u{2014} facts persist across sessions\n  2. Design tree \u{2014} nodes track decisions\n  3. OpenSpec \u{2014} specs before code\n\nStep 4 is decomposition \u{2014} splitting the\nspec into parallel branches with /cleave.\n\nTo see that live on a prepared project:\n  /tutorial demo",
+        anchor: Anchor::Center,
+        trigger: Trigger::Enter,
+        highlight: None,
+    },
+
+    // Act 4 — You're Ready
+    Step {
+        title: "Power Tools",
+        body: "Key commands to know:\n\n  \u{2022} /model \u{2014} switch AI model or provider\n  \u{2022} /think \u{2014} adjust reasoning depth\n  \u{2022} /context \u{2014} change context window size\n  \u{2022} /focus \u{2014} hide panels, full-height chat\n  \u{2022} /calibrate \u{2014} adjust display colors\n  \u{2022} Ctrl+D \u{2014} navigate design tree\n  \u{2022} Ctrl+C \u{d7}2 \u{2014} quit",
+        anchor: Anchor::Center,
+        trigger: Trigger::Enter,
+        highlight: None,
+    },
+    Step {
+        title: "You\u{2019}re Ready!",
+        body: "Omegon now knows your project.\n\n  \u{2022} Memory facts loaded every session\n  \u{2022} Design tree tracks your decisions\n  \u{2022} First OpenSpec change is ready\n  \u{2022} /cleave when you\u{2019}re ready to parallelize\n\nKeep asking it questions. Keep adding design\nnodes. The more context it has, the better\nit gets at helping you.\n\n/help for all commands.",
+        anchor: Anchor::Center,
+        trigger: Trigger::Enter,
+        highlight: None,
+    },
+];
+
+/// Legacy alias — hands-on is the default for direct /tutorial invocations.
+pub const STEPS: &[Step] = STEPS_HANDS_ON;
 
 /// Which option is highlighted in the project-choice widget.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -168,6 +287,9 @@ pub struct Tutorial {
     /// When false, step 0 shows a project-choice widget instead of
     /// the normal passive welcome.
     pub has_design_tree: bool,
+    /// True when running inside the bundled demo project (--tutorial flag).
+    /// Selects STEPS_DEMO instead of STEPS_HANDS_ON.
+    pub is_demo: bool,
     /// Current selection in the project-choice widget (step 0, empty project).
     pub choice: TutorialChoice,
     /// Set to true when the operator confirms a choice — caller reads
@@ -182,19 +304,34 @@ impl Tutorial {
 
     /// Create a tutorial with project context so steps can adapt.
     pub fn with_context(has_design_tree: bool) -> Self {
+        Self::new_mode(has_design_tree, false)
+    }
+
+    /// Create a demo-mode tutorial (--tutorial flag, bundled project).
+    pub fn new_demo(has_design_tree: bool) -> Self {
+        Self::new_mode(has_design_tree, true)
+    }
+
+    fn new_mode(has_design_tree: bool, is_demo: bool) -> Self {
         Self {
             current: 0,
             active: true,
             auto_prompt_sent: false,
             has_design_tree,
+            is_demo,
             choice: TutorialChoice::Demo,
             choice_confirmed: false,
         }
     }
 
+    /// The active steps array — STEPS_DEMO in demo mode, STEPS_HANDS_ON otherwise.
+    pub fn steps(&self) -> &'static [Step] {
+        if self.is_demo { STEPS_DEMO } else { STEPS_HANDS_ON }
+    }
+
     /// Whether the project-choice widget is active (step 0, empty project).
     pub fn showing_choice(&self) -> bool {
-        self.current == 0 && !self.has_design_tree && !self.choice_confirmed
+        self.current == 0 && !self.has_design_tree && !self.choice_confirmed && !self.is_demo
     }
 
     /// Toggle the choice selection left/right.
@@ -212,7 +349,7 @@ impl Tutorial {
     }
 
     pub fn step(&self) -> &Step {
-        &STEPS[self.current]
+        &self.steps()[self.current]
     }
 
     pub fn step_index(&self) -> usize {
@@ -220,12 +357,12 @@ impl Tutorial {
     }
 
     pub fn total_steps(&self) -> usize {
-        STEPS.len()
+        self.steps().len()
     }
 
     /// Advance to the next step. Returns false if already at the end.
     pub fn advance(&mut self) -> bool {
-        if self.current < STEPS.len() - 1 {
+        if self.current < self.steps().len() - 1 {
             self.current += 1;
             self.auto_prompt_sent = false;
             true
@@ -407,7 +544,7 @@ impl Tutorial {
 
     fn render_with_cta(&self, overlay: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, cta: &str) {
         let step = self.step();
-        let progress = format!(" {}/{} ", self.current + 1, STEPS.len());
+        let progress = format!(" {}/{} ", self.current + 1, self.steps().len());
         let title_line = format!("\u{1f4d8} {} ", step.title);
 
         let overlay_bg = theme.card_bg();
@@ -644,7 +781,7 @@ mod tests {
     #[test]
     fn tutorial_ends_at_last_step() {
         let mut tut = Tutorial::new();
-        for _ in 0..STEPS.len() - 1 {
+        for _ in 0..tut.steps().len() - 1 {
             assert!(tut.advance());
         }
         assert!(!tut.advance()); // at end

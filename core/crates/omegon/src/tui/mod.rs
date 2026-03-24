@@ -557,7 +557,7 @@ impl App {
                         ratatui_toaster::ToastType::Warning,
                     );
                 }
-                self.tutorial_overlay = Some(tutorial::Tutorial::with_context(has_design_tree));
+                self.tutorial_overlay = Some(tutorial::Tutorial::with_context(has_design_tree)); // hands-on mode
                 SlashResult::Handled
             }
         }
@@ -2672,7 +2672,9 @@ pub async fn run_tui(
             .read_dir()
             .map(|mut d| d.next().is_some())
             .unwrap_or(false);
-        app.tutorial_overlay = Some(tutorial::Tutorial::with_context(has_design_tree));
+        // Demo mode: use STEPS_DEMO with specific prompts referencing the
+        // pre-seeded demo content (output-formatting, add-validation).
+        app.tutorial_overlay = Some(tutorial::Tutorial::new_demo(has_design_tree));
     }
 
     // First-run hint is now baked into the welcome message above — no toast needed.

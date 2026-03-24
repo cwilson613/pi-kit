@@ -149,11 +149,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         extract_tarball(tmp.path()).unwrap();
 
-        // Key files should be present
-        assert!(tmp.path().join("Cargo.toml").exists(), "Cargo.toml missing");
-        assert!(tmp.path().join("src/lib.rs").exists(), "src/lib.rs missing");
-        assert!(tmp.path().join("ai/docs/add-validation.md").exists(), "design doc missing");
-        assert!(tmp.path().join("ai/openspec/changes/add-validation/tasks.md").exists(), "tasks.md missing");
+        // Key files for the sprint board demo
+        assert!(tmp.path().join("index.html").exists(), "index.html missing");
+        assert!(tmp.path().join("src/board.js").exists(), "src/board.js missing");
+        assert!(tmp.path().join("src/styles.css").exists(), "src/styles.css missing");
+        assert!(tmp.path().join("ai/docs/sprint-board-overview.md").exists(), "design docs missing");
+        assert!(tmp.path().join("ai/openspec/changes/fix-board-bugs/tasks.md").exists(), "tasks.md missing");
         assert!(tmp.path().join("ai/memory/facts.jsonl").exists(), "facts.jsonl missing");
     }
 

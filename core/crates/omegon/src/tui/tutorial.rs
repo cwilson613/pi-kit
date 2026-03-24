@@ -55,7 +55,7 @@ pub enum Highlight {
 
 const STEP_WELCOME_DEMO: Step = Step {
     title: "Welcome to the Omegon Demo",
-    body: "You\u{2019}re in a pre-seeded Rust CLI project.\n\nIt has design nodes, an OpenSpec change with\nGiven/When/Then specs, and memory facts already\nloaded. This tour shows the full Omegon lifecycle:\nread \u{2192} design \u{2192} spec \u{2192} decompose \u{2192} verify.\n\nAbout 5 minutes. The agent does the work;\nyou watch.",
+    body: "You\u{2019}re in a broken sprint board \u{2014} a\nbrowser-based task tracker mid-development.\n\nFour bugs make it visually unusable:\n  \u{2022} Wrong task count\n  \u{2022} Done column always empty\n  \u{2022} Add Task reloads the page\n  \u{2022} Data lost on refresh\n\nWatch Omegon understand, spec, fix in\nparallel, then open the working result.",
     anchor: Anchor::Center,
     trigger: Trigger::Enter,
     highlight: None,
@@ -115,30 +115,31 @@ pub const STEPS_DEMO: &[Step] = &[
 
     // Act 2 — The Agent Works
     Step {
-        title: "Reading the Project",
-        body: "The agent will read this project\u{2019}s source\nfiles and store what it learns.\n\nWatch the instruments:\n  \u{2022} Tool bars light up as files are read\n  \u{2022} Memory strings pulse as facts are stored\n  \u{2022} The sidebar may update with context\n\nYou\u{2019}ll see three facts appear in memory.",
+        title: "Reading the Broken App",
+        body: "The agent will read the sprint board code\nand identify the four bugs documented\nin src/board.js.\n\nWatch the instruments:\n  \u{2022} Tool bars light up as files are read\n  \u{2022} Memory strings pulse as facts are stored\n  \u{2022} The sidebar shows design nodes loading\n\nFive memory facts are already seeded \u{2014}\nwatch for a 6th as the agent reads.",
         anchor: Anchor::Upper,
         trigger: Trigger::AutoPrompt(
-            "Read this project. Start with README.md, then src/config.rs, src/validate.rs, \
-src/format.rs, and src/lib.rs. Understand what it does: it parses TOML config files and validates \
-them. Then store exactly 3 memory facts using memory_store: \
-(1) what this project does and its purpose, \
-(2) the structure of the Config struct and what fields it validates, \
-(3) what tests exist and what they cover."
+            "Read this project. Start with README.md to understand the context, then read \
+src/board.js carefully — pay attention to the four BUG comments. \
+Read index.html to understand the HTML structure. \
+Then store 1 additional memory fact: summarize the relationship between the four bugs \
+and why they must be fixed in separate branches (no file conflicts between fixes). \
+Finally, confirm what each bug does to the user experience."
         ),
         highlight: Some(Highlight::InstrumentPanel),
     },
     Step {
         title: "Exploring a Design Question",
-        body: "This project has two design nodes:\n  \u{2022} output-formatting (exploring)\n  \u{2022} add-validation (decided)\n\nThe agent will explore the open question\nin output-formatting: should we support\nANSI color output?\n\nWatch the sidebar \u{2014} the node status\nwill change as research is added.",
+        body: "The design tree has 6 nodes:\n  \u{2022} 5 decided (architecture + 4 bugs)\n  \u{2022} 1 exploring: search-filter\n\nThe search feature has an open question:\nfuzzy match vs exact match?\n\nWatch the sidebar \u{2014} the node\u{2019}s status\nwill change as the agent researches\nand records a decision.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Use design_tree with action 'node' and node_id 'output-formatting' to read the design doc. \
-It has an open question about ANSI color support. \
-Research this question: consider terminal capability detection (TERM, NO_COLOR, COLORTERM env vars), \
-common approaches in Rust CLI tools (the 'supports-color' crate pattern), and the tradeoffs. \
-Then use design_tree_update with action 'add_research' to record your findings. \
-Finally use action 'add_decision' to record a decision: should this project support ANSI color, and how?"
+            "Use design_tree with action 'node' and node_id 'search-filter' to read the design doc. \
+It has an open question: should search be fuzzy (partial substring) or exact (whole word)? \
+Research this: consider the user experience for a task list (most users type partial words), \
+how browsers handle input events for live filtering, and what 'Array.filter + String.includes' vs \
+'fuzzy-match' implementations look like. \
+Then use design_tree_update with action 'add_research' to record your findings, \
+and action 'add_decision' to record a decision with clear rationale."
         ),
         highlight: Some(Highlight::Dashboard),
     },
@@ -146,22 +147,24 @@ Finally use action 'add_decision' to record a decision: should this project supp
     // Act 3 — The Lifecycle
     STEP_WEB_DASHBOARD,
     Step {
-        title: "A Prepared Spec",
-        body: "Look at the sidebar \u{2014} add-validation is\nmarked \u{25cf} decided and bound to an OpenSpec\nchange with Given/When/Then specs.\n\nThe agent will show you the spec and the\ntask plan that\u{2019}s ready for parallel execution.\n\nThis is the point where you\u{2019}d normally\nrun /cleave to split across branches.",
+        title: "The Fix Plan",
+        body: "Four decided nodes. Four specs.\nOne cleave plan.\n\nThe agent will read the fix-board-bugs\nOpenSpec change and explain exactly what\neach of the 4 parallel branches will do\nand which function each one touches.\n\nAfter this you\u{2019}ll run it yourself.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
-            "Use openspec_manage with action 'get' and change_name 'add-validation' to read the full \
-change: proposal, specs, and tasks. \
-Then read the file ai/openspec/changes/add-validation/tasks.md directly using the bash tool. \
-Explain clearly: (1) what the spec requires, (2) what the 5 tasks are, \
-(3) how these would be split across parallel cleave branches, \
-(4) what the operator would type to execute this: /cleave add-validation"
+            "Use openspec_manage with action 'get' and change_name 'fix-board-bugs' to read the full \
+change. Then read ai/openspec/changes/fix-board-bugs/tasks.md using the bash tool. \
+Explain clearly and concisely: \
+(1) what the spec scenarios require for each of the 4 bugs, \
+(2) which function in src/board.js each task touches, \
+(3) why these 4 tasks can safely run as parallel branches (no file conflicts), \
+(4) what the user will see in their browser once all fixes are applied, \
+(5) the exact command to execute: /cleave fix-board-bugs"
         ),
         highlight: None,
     },
     Step {
-        title: "Your Turn: Run the Cleave",
-        body: "The spec is clear. The plan is ready.\n\nNow you run it.\n\nClose this overlay (Esc), then type:\n  /cleave add-validation\n\nOmegon will split the work across parallel\nbranches, execute them simultaneously, and\nmerge the results.\n\nCome back to /tutorial after to finish.",
+        title: "Run the Cleave",
+        body: "The plan is ready. Four branches.\nOne merge. A working sprint board.\n\nClose this overlay (Esc), then type:\n  /cleave fix-board-bugs\n\nWatch the sidebar as branches execute.\nWatch tools fire in the instruments.\n\nWhen the cleave completes, come back:\n  /tutorial",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,
@@ -176,8 +179,25 @@ Explain clearly: (1) what the spec requires, (2) what the 5 tasks are, \
         highlight: None,
     },
     Step {
+        title: "Verify and Launch",
+        body: "Let\u{2019}s confirm the fixes worked and\nopen the sprint board in your browser.\n\nThe agent will check the fixed code,\nverify the bugs are resolved, and open\nindex.html so you can see the working\nresult yourself.",
+        anchor: Anchor::Center,
+        trigger: Trigger::AutoPrompt(
+            "The cleave should have fixed four bugs in src/board.js. Verify each fix: \
+(1) read src/board.js using the bash tool and confirm getTotalCount uses '.task-card', \
+(2) confirm getTasksByStatus compares against lowercase status values, \
+(3) confirm handleAddTask calls event.preventDefault(), \
+(4) confirm addTask and updateTaskStatus both call saveTasks(). \
+Then open the sprint board in the default browser: \
+bash 'open ./index.html 2>/dev/null || xdg-open ./index.html 2>/dev/null || echo \"Open index.html in your browser to see the fixed sprint board\"'. \
+Finally, write a short completion report: what was fixed, what the user can now do in the browser, \
+and how this lifecycle (memory → design → spec → cleave → verify) applies to their own projects."
+        ),
+        highlight: None,
+    },
+    Step {
         title: "You\u{2019}re Ready!",
-        body: "You\u{2019}ve seen the full Omegon lifecycle:\n\n  1. Read the project \u{2014} facts in memory\n  2. Explore design \u{2014} questions answered\n  3. Spec before code \u{2014} Given/When/Then\n  4. Decompose \u{2014} parallel branches\n\nRun Omegon in YOUR project to start.\nMemory persists. Design tree builds up.\nEvery session adds to what it knows.\n\n/help for all commands.",
+        body: "The sprint board is open in your browser.\n\nYou\u{2019}ve watched the full lifecycle:\n  1. Memory \u{2014} facts loaded from the start\n  2. Design \u{2014} 6 nodes tracked decisions\n  3. Spec \u{2014} Given/When/Then before code\n  4. Cleave \u{2014} 4 branches, 4 parallel fixes\n  5. Verify \u{2014} confirmed and launched\n\nNow run Omegon in YOUR project.\n/tutorial demo to replay.\n/help for all commands.",
         anchor: Anchor::Center,
         trigger: Trigger::Enter,
         highlight: None,

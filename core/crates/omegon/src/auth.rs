@@ -269,6 +269,15 @@ pub fn read_credentials(provider: &str) -> Option<OAuthCredentials> {
     serde_json::from_value(entry.clone()).ok()
 }
 
+/// Read extra fields stored alongside credentials in auth.json.
+/// Used for accountId on openai-codex entries.
+pub fn read_credential_extra(provider: &str, field: &str) -> Option<String> {
+    let path = auth_json_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let auth: Value = serde_json::from_str(&content).ok()?;
+    auth.get(provider)?.get(field)?.as_str().map(String::from)
+}
+
 /// Write credentials for a provider to auth.json.
 /// Sets file permissions to 0600 (owner-only read/write) on Unix.
 pub fn write_credentials(provider: &str, creds: &OAuthCredentials) -> anyhow::Result<()> {
@@ -752,7 +761,7 @@ pub async fn refresh_openai_token(refresh: &str) -> anyhow::Result<OAuthCredenti
 }
 
 /// Extract a claim from a JWT payload (simple base64 decode, no verification).
-fn extract_jwt_claim(token: &str, claim_path: &str, field: &str) -> Option<String> {
+pub fn extract_jwt_claim(token: &str, claim_path: &str, field: &str) -> Option<String> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 { return None; }
     // Add padding for base64

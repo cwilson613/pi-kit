@@ -124,10 +124,12 @@ pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
             OpenAICompatClient::from_env(provider_id)
                 .map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
-        // Codex uses the Responses API — not Chat Completions. Needs its own client.
+        // Codex uses the Responses API (not Chat Completions) with OAuth JWT tokens
         "openai-codex" => {
-            tracing::debug!("openai-codex requires Responses API client (not yet implemented)");
-            None
+            if let Some(client) = CodexClient::from_env() {
+                return Some(Box::new(client));
+            }
+            CodexClient::from_env_async().await.map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
         _ => None,
     }
@@ -933,6 +935,339 @@ impl LlmBridge for OpenRouterClient {
         }
         self.inner.stream(system_prompt, messages, tools, &opts).await
     }
+}
+
+// ─── Codex Client (OpenAI Responses API) ─────────────────────────────────────
+
+const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
+
+pub struct CodexClient {
+    client: reqwest::Client,
+    jwt_token: String,
+    account_id: String,
+    base_url: String,
+}
+
+impl CodexClient {
+    pub fn new(jwt_token: String, account_id: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            jwt_token,
+            account_id,
+            base_url: std::env::var("CODEX_BASE_URL")
+                .unwrap_or_else(|_| CODEX_BASE_URL.into()),
+        }
+    }
+
+    pub fn from_env() -> Option<Self> {
+        // 1. Try CHATGPT_OAUTH_TOKEN env var
+        if let Ok(token) = std::env::var("CHATGPT_OAUTH_TOKEN") {
+            if !token.is_empty() && token.starts_with("eyJ") {
+                if let Some(account_id) = crate::auth::extract_jwt_claim(
+                    &token, "https://api.openai.com/auth", "chatgpt_account_id"
+                ) {
+                    tracing::debug!("CodexClient: resolved from CHATGPT_OAUTH_TOKEN env var");
+                    return Some(Self::new(token, account_id));
+                }
+            }
+        }
+
+        // 2. Try auth.json (openai-codex entry)
+        let creds = crate::auth::read_credentials("openai-codex")?;
+        if creds.cred_type != "oauth" || creds.access.is_empty() || !creds.access.starts_with("eyJ") {
+            return None;
+        }
+        if creds.is_expired() {
+            tracing::debug!("CodexClient: auth.json token expired — needs refresh");
+            return None;
+        }
+        let account_id = crate::auth::read_credential_extra("openai-codex", "accountId")
+            .or_else(|| crate::auth::extract_jwt_claim(
+                &creds.access, "https://api.openai.com/auth", "chatgpt_account_id"
+            ))?;
+        tracing::debug!("CodexClient: resolved from auth.json");
+        Some(Self::new(creds.access, account_id))
+    }
+
+    pub async fn from_env_async() -> Option<Self> {
+        if let Some(client) = Self::from_env() { return Some(client); }
+        let (token, is_oauth) = crate::auth::resolve_with_refresh("openai-codex").await?;
+        if !is_oauth || !token.starts_with("eyJ") { return None; }
+        let account_id = crate::auth::read_credential_extra("openai-codex", "accountId")
+            .or_else(|| crate::auth::extract_jwt_claim(
+                &token, "https://api.openai.com/auth", "chatgpt_account_id"
+            ))?;
+        Some(Self::new(token, account_id))
+    }
+
+    fn build_input(messages: &[LlmMessage]) -> Vec<Value> {
+        let mut input = Vec::new();
+        let mut msg_index = 0u32;
+        for msg in messages {
+            match msg {
+                LlmMessage::User { content, images } => {
+                    if images.is_empty() {
+                        input.push(json!({"role": "user", "content": [{"type": "input_text", "text": content}]}));
+                    } else {
+                        let mut parts: Vec<Value> = images.iter().map(|img| json!({
+                            "type": "input_image", "detail": "auto",
+                            "image_url": format!("data:{};base64,{}", img.media_type, img.data),
+                        })).collect();
+                        parts.push(json!({"type": "input_text", "text": content}));
+                        input.push(json!({"role": "user", "content": parts}));
+                    }
+                }
+                LlmMessage::Assistant { text, tool_calls, .. } => {
+                    for t in text {
+                        if !t.is_empty() {
+                            input.push(json!({
+                                "type": "message", "role": "assistant",
+                                "content": [{"type": "output_text", "text": t, "annotations": []}],
+                                "status": "completed", "id": format!("msg_{msg_index}"),
+                            }));
+                            msg_index += 1;
+                        }
+                    }
+                    for tc in tool_calls {
+                        let (call_id, item_id) = if tc.id.contains('|') {
+                            let parts: Vec<&str> = tc.id.splitn(2, '|').collect();
+                            (parts[0].to_string(), parts.get(1).unwrap_or(&"fc_0").to_string())
+                        } else {
+                            (tc.id.clone(), format!("fc_{msg_index}"))
+                        };
+                        input.push(json!({
+                            "type": "function_call", "id": item_id, "call_id": call_id,
+                            "name": tc.name,
+                            "arguments": if tc.arguments.is_object() { tc.arguments.to_string() } else { "{}".into() },
+                        }));
+                        msg_index += 1;
+                    }
+                }
+                LlmMessage::ToolResult { call_id, content, .. } => {
+                    let cid = if call_id.contains('|') {
+                        call_id.splitn(2, '|').next().unwrap_or(call_id).to_string()
+                    } else { call_id.clone() };
+                    input.push(json!({"type": "function_call_output", "call_id": cid, "output": content}));
+                }
+            }
+        }
+        input
+    }
+
+    fn build_tools(tools: &[ToolDefinition]) -> Vec<Value> {
+        tools.iter().map(|t| {
+            let compact = strip_parameter_descriptions(
+                t.parameters.get("properties").unwrap_or(&json!({}))
+            );
+            json!({
+                "type": "function", "name": t.name, "description": t.description,
+                "parameters": {
+                    "type": "object", "properties": compact,
+                    "required": t.parameters.get("required").cloned().unwrap_or(json!([])),
+                },
+                "strict": null,
+            })
+        }).collect()
+    }
+}
+
+fn is_codex_retryable(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
+#[async_trait]
+impl LlmBridge for CodexClient {
+    async fn stream(
+        &self, system_prompt: &str, messages: &[LlmMessage],
+        tools: &[ToolDefinition], options: &StreamOptions,
+    ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
+        let (tx, rx) = mpsc::channel(256);
+
+        let (jwt_token, account_id) = match crate::auth::resolve_with_refresh("openai-codex").await {
+            Some((token, true)) if token.starts_with("eyJ") => {
+                let aid = crate::auth::read_credential_extra("openai-codex", "accountId")
+                    .or_else(|| crate::auth::extract_jwt_claim(&token, "https://api.openai.com/auth", "chatgpt_account_id"))
+                    .unwrap_or_else(|| self.account_id.clone());
+                (token, aid)
+            }
+            _ => (self.jwt_token.clone(), self.account_id.clone()),
+        };
+
+        let model = options.model.as_deref()
+            .and_then(|m| m.strip_prefix("openai-codex:").or_else(|| m.strip_prefix("openai:")))
+            .unwrap_or("gpt-5.3-codex-spark");
+
+        let input = Self::build_input(messages);
+        let wire_tools = Self::build_tools(tools);
+
+        let mut body = json!({
+            "model": model, "store": false, "stream": true,
+            "instructions": system_prompt, "input": input,
+            "text": {"verbosity": "medium"},
+            "include": ["reasoning.encrypted_content"],
+            "tool_choice": "auto", "parallel_tool_calls": true,
+        });
+        if !wire_tools.is_empty() { body["tools"] = Value::Array(wire_tools); }
+        if let Some(ref level) = options.reasoning {
+            body["reasoning"] = json!({"effort": match level.as_str() {
+                "low" | "minimal" => "low", "high" | "xhigh" => "high", _ => "medium",
+            }, "summary": "auto"});
+        }
+
+        let url = format!("{}/codex/responses", self.base_url.trim_end_matches('/'));
+        let max_retries = 3u32;
+        let base_delay = std::time::Duration::from_secs(1);
+        let mut last_error = String::new();
+
+        for attempt in 0..=max_retries {
+            let response = self.client.post(&url)
+                .header("Authorization", format!("Bearer {jwt_token}"))
+                .header("chatgpt-account-id", &account_id)
+                .header("originator", "omegon")
+                .header("OpenAI-Beta", "responses=experimental")
+                .header("accept", "text/event-stream")
+                .header("content-type", "application/json")
+                .header("user-agent", format!("omegon ({} {}; {})",
+                    std::env::consts::OS, std::env::consts::ARCH, env!("CARGO_PKG_VERSION")))
+                .json(&body).send().await;
+
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    let tx_clone = tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = parse_codex_stream(resp, &tx_clone).await {
+                            let _ = tx_clone.send(LlmEvent::Error { message: format!("{e}") }).await;
+                        }
+                    });
+                    return Ok(rx);
+                }
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let err_body = resp.text().await.unwrap_or_default();
+                    let user_msg = serde_json::from_str::<Value>(&err_body).ok()
+                        .and_then(|v| v["error"]["message"].as_str().or(v["detail"].as_str()).map(String::from))
+                        .unwrap_or_else(|| err_body.chars().take(200).collect());
+                    if attempt < max_retries && is_codex_retryable(status) {
+                        tokio::time::sleep(base_delay * 2u32.pow(attempt)).await;
+                        last_error = format!("Codex {status}: {user_msg}");
+                        continue;
+                    }
+                    let _ = tx.send(LlmEvent::Error { message: format!("Codex {status}: {user_msg}") }).await;
+                    return Ok(rx);
+                }
+                Err(e) => {
+                    if attempt < max_retries {
+                        tokio::time::sleep(base_delay * 2u32.pow(attempt)).await;
+                        last_error = format!("Network error: {e}");
+                        continue;
+                    }
+                    let _ = tx.send(LlmEvent::Error { message: format!("Codex connection failed: {last_error}") }).await;
+                    return Ok(rx);
+                }
+            }
+        }
+        let _ = tx.send(LlmEvent::Error { message: format!("Codex failed after retries: {last_error}") }).await;
+        Ok(rx)
+    }
+}
+
+/// Parse Codex Responses API SSE stream (different event structure from Chat Completions).
+async fn parse_codex_stream(response: reqwest::Response, tx: &mpsc::Sender<LlmEvent>) -> anyhow::Result<()> {
+    let mut full_text = String::new();
+    let mut current_item_type: Option<String> = None;
+    let mut current_text = String::new();
+    let mut current_thinking = String::new();
+    struct ToolAcc { call_id: String, item_id: String, name: String, args_json: String }
+    let mut tool_calls: Vec<ToolAcc> = Vec::new();
+    let mut completed_tool_calls: Vec<Value> = Vec::new();
+    let _ = tx.try_send(LlmEvent::Start);
+
+    process_sse(response, |data| {
+        let Ok(event) = serde_json::from_str::<Value>(data) else { return true; };
+        let etype = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match etype {
+            "response.output_item.added" => {
+                let item = &event["item"];
+                match item["type"].as_str().unwrap_or("") {
+                    "reasoning" => { current_item_type = Some("reasoning".into()); current_thinking.clear(); let _ = tx.try_send(LlmEvent::ThinkingStart); }
+                    "message" => { current_item_type = Some("message".into()); current_text.clear(); let _ = tx.try_send(LlmEvent::TextStart); }
+                    "function_call" => {
+                        current_item_type = Some("function_call".into());
+                        tool_calls.push(ToolAcc {
+                            call_id: item["call_id"].as_str().unwrap_or("").into(),
+                            item_id: item["id"].as_str().unwrap_or("").into(),
+                            name: item["name"].as_str().unwrap_or("").into(),
+                            args_json: String::new(),
+                        });
+                        let _ = tx.try_send(LlmEvent::ToolCallStart);
+                    }
+                    _ => {}
+                }
+            }
+            "response.output_text.delta" => {
+                let delta = event["delta"].as_str().unwrap_or("");
+                full_text.push_str(delta); current_text.push_str(delta);
+                let _ = tx.try_send(LlmEvent::TextDelta { delta: delta.into() });
+            }
+            "response.reasoning_summary_text.delta" => {
+                let delta = event["delta"].as_str().unwrap_or("");
+                current_thinking.push_str(delta);
+                let _ = tx.try_send(LlmEvent::ThinkingDelta { delta: delta.into() });
+            }
+            "response.reasoning_summary_part.done" => {
+                current_thinking.push_str("\n\n");
+                let _ = tx.try_send(LlmEvent::ThinkingDelta { delta: "\n\n".into() });
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(tc) = tool_calls.last_mut() { tc.args_json.push_str(event["delta"].as_str().unwrap_or("")); }
+            }
+            "response.function_call_arguments.done" => {
+                if let Some(tc) = tool_calls.last_mut() {
+                    if let Some(args) = event["arguments"].as_str() { tc.args_json = args.into(); }
+                }
+            }
+            "response.output_item.done" => {
+                let item = &event["item"];
+                match item["type"].as_str().unwrap_or("") {
+                    "reasoning" => { let _ = tx.try_send(LlmEvent::ThinkingEnd); }
+                    "message" => { let _ = tx.try_send(LlmEvent::TextEnd); }
+                    "function_call" => {
+                        let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+                        let item_id = item["id"].as_str().unwrap_or("").to_string();
+                        let name = item["name"].as_str().unwrap_or("").to_string();
+                        let args: Value = serde_json::from_str(item["arguments"].as_str().unwrap_or("{}")).unwrap_or(json!({}));
+                        let compound_id = format!("{call_id}|{item_id}");
+                        completed_tool_calls.push(json!({"id": compound_id, "name": name, "arguments": args}));
+                        let _ = tx.try_send(LlmEvent::ToolCallEnd {
+                            tool_call: crate::bridge::WireToolCall { id: compound_id, name, arguments: args },
+                        });
+                    }
+                    _ => {}
+                }
+                current_item_type = None;
+            }
+            "response.completed" => {
+                let _ = tx.try_send(LlmEvent::Done { message: json!({"text": full_text, "tool_calls": completed_tool_calls}) });
+                return false;
+            }
+            "response.failed" => {
+                let msg = event["response"]["error"]["message"].as_str()
+                    .or(event["response"]["incomplete_details"]["reason"].as_str())
+                    .unwrap_or("Codex response failed");
+                let _ = tx.try_send(LlmEvent::Error { message: format!("Codex: {msg}") });
+                return false;
+            }
+            "error" => {
+                let msg = event["message"].as_str().unwrap_or("unknown error");
+                let _ = tx.try_send(LlmEvent::Error { message: format!("Codex error: {msg}") });
+                return false;
+            }
+            "response.content_part.added" | "response.reasoning_summary_part.added" => {}
+            _ => {}
+        }
+        true
+    }).await
 }
 
 // ─── OpenAI-Compatible Generic Client ────────────────────────────────────────

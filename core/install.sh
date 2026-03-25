@@ -8,7 +8,7 @@
 #   curl -fsSL https://omegon.styrene.dev/install.sh | sh -s -- --no-confirm
 #
 # Or directly from GitHub:
-#   curl -fsSL https://raw.githubusercontent.com/styrene-lab/omegon-core/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/styrene-lab/omegon/main/install.sh | sh
 #
 # Environment variables:
 #   INSTALL_DIR   — installation directory (default: /usr/local/bin)
@@ -16,11 +16,11 @@
 #   NO_COLOR      — disable colored output (set to any value)
 #
 # Manual download:
-#   https://github.com/styrene-lab/omegon-core/releases
+#   https://github.com/styrene-lab/omegon/releases
 
 set -eu
 
-REPO="styrene-lab/omegon-core"
+REPO="styrene-lab/omegon"
 BINARY="omegon"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-}"

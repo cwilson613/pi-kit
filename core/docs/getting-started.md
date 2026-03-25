@@ -12,12 +12,12 @@ This installs the `omegon` binary to `/usr/local/bin` (or `$INSTALL_DIR`).
 
 ### Manual download
 
-Download a release from [GitHub Releases](https://github.com/styrene-lab/omegon-core/releases) and place the binary on your `$PATH`.
+Download a release from [GitHub Releases](https://github.com/styrene-lab/omegon/releases) and place the binary on your `$PATH`.
 
 ### From source
 
 ```bash
-git clone https://github.com/styrene-lab/omegon-core.git
+git clone https://github.com/styrene-lab/omegon.git
 cd omegon-core
 cargo build --release
 cp target/release/omegon ~/.local/bin/

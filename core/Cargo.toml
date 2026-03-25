@@ -30,7 +30,7 @@ strip = false
 version = "0.15.2"
 edition = "2024"
 license = "BUSL-1.1"
-repository = "https://github.com/styrene-lab/omegon-core"
+repository = "https://github.com/styrene-lab/omegon"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

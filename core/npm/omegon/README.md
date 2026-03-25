@@ -34,6 +34,6 @@ npm install -g omegon-pi
 
 ## Links
 
-- [GitHub](https://github.com/styrene-lab/omegon-core)
+- [GitHub](https://github.com/styrene-lab/omegon)
 - [Website](https://omegon.styrene.dev)
 - [omegon-pi (TS TUI)](https://www.npmjs.com/package/omegon-pi)

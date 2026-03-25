@@ -27,7 +27,7 @@ if (!pkg) {
   console.error(
     `Omegon does not have a prebuilt binary for ${process.platform}-${process.arch}.\n` +
     `Supported platforms: ${Object.keys(PLATFORM_MAP).join(", ")}\n` +
-    `Install from source: https://github.com/styrene-lab/omegon-core`
+    `Install from source: https://github.com/styrene-lab/omegon`
   );
   process.exit(1);
 }

@@ -31,15 +31,23 @@ lint:
 build:
     cd core && cargo build --release
 
-# Link the dev-release binary onto $PATH so it can be run as `omegon` system-wide.
+# Link the newest built binary onto $PATH so it can be run as `omegon` system-wide.
+# Prefers release over dev-release (just rc builds release; just update builds dev-release).
 # Resolution order: /opt/homebrew/bin (macOS+Homebrew) → /usr/local/bin → ~/.local/bin
-# Creates ~/.local/bin if needed and reminds you to add it to PATH if it's missing.
 link:
     #!/usr/bin/env bash
     set -e
-    BINARY="$(pwd)/core/target/dev-release/omegon"
-    if [ ! -f "$BINARY" ]; then
-        echo "Binary not found — run 'just update' first"
+    REL="$(pwd)/core/target/release/omegon"
+    DEV="$(pwd)/core/target/dev-release/omegon"
+    # Pick whichever exists and is newer
+    if [ -f "$REL" ] && [ -f "$DEV" ]; then
+        if [ "$REL" -nt "$DEV" ]; then BINARY="$REL"; else BINARY="$DEV"; fi
+    elif [ -f "$REL" ]; then
+        BINARY="$REL"
+    elif [ -f "$DEV" ]; then
+        BINARY="$DEV"
+    else
+        echo "No binary found — run 'just rc' or 'just update' first"
         exit 1
     fi
     # Pick first writable candidate in PATH-order

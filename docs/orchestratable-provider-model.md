@@ -1,14 +1,13 @@
 ---
 id: orchestratable-provider-model
 title: Orchestratable provider model — treat providers as assignable resources, not user preferences
-status: exploring
+status: implementing
 parent: bridge-provider-routing
 tags: [architecture, providers, orchestration, cleave, local-inference, routing, strategic, epic]
-open_questions:
-  - Should cost tracking be real-time (per-request token counting) or post-hoc (session summary)? Real-time enables budget enforcement mid-session but requires provider-specific usage parsing from every response.
-  - "How does the operator express budget intent beyond effort tiers? A monthly spend ceiling? A per-session limit? Or just the implicit signal of which providers they've authenticated?"
-  - "Should the cleave planner's task-to-tier mapping be configurable per project (e.g. a safety-critical project wants Frontier for everything) or is the scope-based heuristic sufficient for V1?"
-jj_change_id: zwpqsrkovlqplwuormtrnsluptxrxzzv
+open_questions: []
+branches: ["feature/orchestratable-provider-model"]
+openspec_change: orchestratable-provider-model
+jj_change_id: nswxvwqzwlykkyuqxskszlmxkyvoqrol
 issue_type: epic
 priority: 1
 ---
@@ -248,11 +247,24 @@ F1+F3 are prerequisites for F2. F2 is prerequisite for F4. F5 is independent but
 **Status:** decided
 **Rationale:** The orchestratable model doesn't override the operator's choice for interactive chat. If the operator says /model anthropic:opus, that's what drives the conversation. The routing engine only takes over for background tasks (cleave children, memory extraction, compaction) where the operator hasn't expressed a preference and cost/capability optimization matters. The primary bridge remains Arc<RwLock> with hot-swap — the BridgeFactory sits alongside it for orchestrated tasks.
 
+### Decision: No cost tracking in V1 — route by tier and credential availability
+
+**Status:** decided
+**Rationale:** Cost tracking requires provider-specific usage parsing from every SSE response (each provider reports tokens differently or not at all). This is scope creep for V1. The routing signal we have — which providers are authenticated, what capability tier the task needs, and operator preference — is sufficient to make good assignments. Cost tracking is a V2 concern after the routing infrastructure proves itself.
+
+### Decision: V1 budget signal is implicit: authenticated providers = available budget
+
+**Status:** decided
+**Rationale:** The operator already tells us their budget posture by which providers they've authenticated. Someone with only Ollama and Codex Spark (free) has a zero-cost posture. Someone with Anthropic API key + OpenAI API key has a premium posture. The routing engine respects effort tier caps (/effort command) and the existing cheapCloudPreferredOverLocal session policy bit. Explicit budget ceilings are a V2 UX surface that can layer on top.
+
+### Decision: Scope-based heuristic for V1, per-project override deferred
+
+**Status:** decided
+**Rationale:** A V1 heuristic (scope size + keywords in description → tier) is sufficient to prove the routing concept. Per-project configuration (e.g. omegon.toml tier overrides) can be added once we have data on how well the heuristic performs across real cleave runs. The heuristic is also overridable at the ChildPlan level if the plan JSON includes an explicit executeModel.
+
 ## Open Questions
 
-- Should cost tracking be real-time (per-request token counting) or post-hoc (session summary)? Real-time enables budget enforcement mid-session but requires provider-specific usage parsing from every response.
-- How does the operator express budget intent beyond effort tiers? A monthly spend ceiling? A per-session limit? Or just the implicit signal of which providers they've authenticated?
-- Should the cleave planner's task-to-tier mapping be configurable per project (e.g. a safety-critical project wants Frontier for everything) or is the scope-based heuristic sufficient for V1?
+*No open questions.*
 
 ## Implementation Notes
 

@@ -3,6 +3,35 @@
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.15.1-rc.62] - 2026-03-25
+
+### Added
+
+- **Provider routing engine** (`routing.rs`) — `CapabilityTier` (Leaf/Mid/Frontier/Max), `ProviderInventory`, `ProviderEntry`, scored `route()` function, and `BridgeFactory` for cached bridge instances. Providers are ranked by tier match, cost, and local preference. 8 unit tests.
+- **OllamaManager** (`ollama.rs`) — structured Ollama server interaction: `is_reachable()`, `list_models()`, `list_running()`, `hardware_profile()` with Apple Silicon unified memory detection. 5 unit tests.
+- **Per-child cleave routing** — `CleaveConfig.inventory` and `ChildState.provider_id` enable scope-aware provider assignment. Children with ≤2 files get Leaf tier, 3–5 get Mid, 6+ get Frontier. Falls back to global model if no inventory or route() returns empty.
+- **`auto_detect_bridge()` routing fallback** — when the requested provider is unavailable, fallback now uses the routing engine's scored candidates before the legacy static provider list.
+- **Startup inventory probing** — `ProviderInventory::probe()` runs after splash, checking env vars and auth.json for credential availability. Stored on `App` for downstream use.
+
+### Changed
+
+- `resolve_provider()` in `providers.rs` is now `pub` (was crate-private) for `BridgeFactory` access.
+- `auth.json` writes now set `0600` permissions on Unix (owner-only read/write).
+
+### Fixed
+
+- **Credential probe bug** — `ProviderInventory::probe()` was reporting all providers as credentialed (checked provider registry instead of actual env vars / auth.json). Fixed to check `env_vars` and `read_credentials()`.
+- **Async safety** — replaced `blocking_read()` with `read().await` in cleave dispatch loop to avoid potential deadlock in tokio context.
+- **Corrupted design titles** — `startup-systems-check` and `memory-task-completion-facts` had exponential backslash doubling in YAML frontmatter. Replaced with clean titles.
+- **Dead code warnings** — suppressed unused `model_for_redetect` variable and `resolve_secret` sync function.
+- **90 clippy warnings** resolved via autofix (collapsible-if, map_or simplification, late initialization, format!).
+
+### Removed
+
+- 3 stale feature branches (orchestratable-provider-model, splash-systems-integration, tutorial-system) — all work merged to main.
+- 3 stale remote tracking branches pruned from origin.
+- 11 stale git stashes referencing dead branches.
+
 ## [0.15.0] - 2026-03-21
 
 ### Added

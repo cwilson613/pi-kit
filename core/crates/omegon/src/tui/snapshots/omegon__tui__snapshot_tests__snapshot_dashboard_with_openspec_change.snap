@@ -2,13 +2,9 @@
 source: crates/omegon/src/tui/snapshot_tests.rs
 expression: render_to_string(&terminal)
 ---
-│Ω Dashboard
+│ Ω Dashboard
 │
-│── openspec ──────────────────
-│⟳ tui-surface-pass 7/10
-│
-│── session ───────────────────
-│0 turns · 0 tool calls
+│ no active nodes
 │
 │
 │
@@ -27,3 +23,7 @@ expression: render_to_string(&terminal)
 │
 │
 │
+│
+│
+│── openspec ───────────────────
+│ ⟳ tui-surface-pass 7/10

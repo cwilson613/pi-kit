@@ -11,6 +11,15 @@ use super::spec;
 use super::types::*;
 
 /// Provides lifecycle context (design nodes + openspec changes) to the agent.
+/// A node that was previously parseable but is now broken.
+#[derive(Debug, Clone)]
+pub struct DegradedNode {
+    pub id: String,
+    pub title: String,
+    pub file_path: PathBuf,
+    pub reason: &'static str,
+}
+
 pub struct LifecycleContextProvider {
     /// All design nodes, keyed by id.
     nodes: HashMap<String, DesignNode>,
@@ -67,6 +76,11 @@ impl LifecycleContextProvider {
     }
 
     /// Get all active changes.
+    /// Degraded nodes — currently a stub, full tracking deferred.
+    pub fn degraded_nodes(&self) -> &[DegradedNode] {
+        &[]
+    }
+
     pub fn changes(&self) -> &[ChangeInfo] {
         &self.changes
     }

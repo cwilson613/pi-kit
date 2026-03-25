@@ -60,6 +60,7 @@ fn snapshot_dashboard_with_focused_node() {
         assumptions: 1,
         decisions: 3,
         readiness: 0.5,
+        openspec_change: None,
     });
     let backend = TestBackend::new(36, 25);
     let mut terminal = Terminal::new(backend).unwrap();

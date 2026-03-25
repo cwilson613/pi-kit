@@ -66,6 +66,7 @@ impl LifecycleSnapshot {
                     assumptions,
                     decisions: decisions_count,
                     readiness,
+                    openspec_change: n.openspec_change.clone(),
                 }
             })
         });

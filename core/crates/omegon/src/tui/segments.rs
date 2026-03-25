@@ -158,7 +158,7 @@ impl Segment {
         match &self.content {
             UserPrompt { text } => render_user_prompt(text, area, buf, t),
             AssistantText { text, thinking, complete } => {
-                render_assistant_text(text, thinking, *complete, area, buf, t);
+                render_assistant_text(text, thinking, *complete, &self.meta, area, buf, t);
             }
             ToolCard {
                 name, detail_args, detail_result, is_error, complete, expanded, ..
@@ -192,7 +192,8 @@ impl Segment {
         let estimate = match &self.content {
             UserPrompt { text } => (text.len() / width.max(1) as usize) as u16 + 4,
             AssistantText { text, thinking, .. } => {
-                (text.lines().count() + thinking.lines().count()) as u16 + 6
+                let meta_line = if self.meta.model_id.is_some() || self.meta.provider.is_some() { 1u16 } else { 0 };
+                (text.lines().count() + thinking.lines().count()) as u16 + 6 + meta_line
             }
             ToolCard { detail_args, detail_result, expanded, .. } => {
                 let max_r = if *expanded { 200 } else { 12 };
@@ -280,8 +281,35 @@ fn render_user_prompt(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
         .render(inner, buf);
 }
 
+/// Build a compact meta tag string from SegmentMeta for display in the response header.
+/// Example: "claude-sonnet-4-6 · anthropic · victory · think:medium"
+fn build_meta_tag(meta: &SegmentMeta) -> String {
+    let mut parts = Vec::new();
+    if let Some(ref m) = meta.model_id {
+        // Trim provider prefix if present (e.g. "anthropic:claude-..." → "claude-...")
+        let short = m.split(':').last().unwrap_or(m);
+        parts.push(short.to_string());
+    }
+    if let Some(ref p) = meta.provider {
+        parts.push(p.clone());
+    }
+    if let Some(ref tier) = meta.tier {
+        parts.push(tier.clone());
+    }
+    if let Some(ref tl) = meta.thinking_level {
+        if tl != "off" {
+            parts.push(format!("think:{tl}"));
+        }
+    }
+    if let Some(ref persona) = meta.persona {
+        parts.push(format!("⌘ {persona}"));
+    }
+    parts.join(" · ")
+}
+
 fn render_assistant_text(
     text: &str, thinking: &str, complete: bool,
+    meta: &SegmentMeta,
     area: Rect, buf: &mut Buffer, t: &dyn Theme,
 ) {
     if area.width < 3 || area.height == 0 { return; }
@@ -304,6 +332,15 @@ fn render_assistant_text(
     };
 
     let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Meta tag line: model / provider / tier — dim right-aligned header
+    let meta_tag = build_meta_tag(meta);
+    if !meta_tag.is_empty() {
+        lines.push(Line::from(Span::styled(
+            meta_tag,
+            Style::default().fg(t.border_dim()),
+        )));
+    }
 
     // Thinking block — collapsed summary with line count
     if !thinking.is_empty() {
@@ -1103,5 +1140,38 @@ mod tests {
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
         assert!(text.contains("hello world"), "should render plain text: {text}");
+    }
+
+    #[test]
+    fn meta_tag_formats_model_and_provider() {
+        let meta = SegmentMeta {
+            model_id: Some("anthropic:claude-sonnet-4-6".into()),
+            provider: Some("anthropic".into()),
+            tier: Some("victory".into()),
+            thinking_level: Some("medium".into()),
+            ..Default::default()
+        };
+        let tag = build_meta_tag(&meta);
+        assert!(tag.contains("claude-sonnet-4-6"), "should strip provider prefix: {tag}");
+        assert!(tag.contains("anthropic"), "should include provider: {tag}");
+        assert!(tag.contains("victory"), "should include tier: {tag}");
+        assert!(tag.contains("think:medium"), "should include thinking level: {tag}");
+    }
+
+    #[test]
+    fn meta_tag_empty_when_no_fields() {
+        let meta = SegmentMeta::default();
+        assert!(build_meta_tag(&meta).is_empty());
+    }
+
+    #[test]
+    fn meta_tag_omits_thinking_off() {
+        let meta = SegmentMeta {
+            model_id: Some("gpt-4o".into()),
+            thinking_level: Some("off".into()),
+            ..Default::default()
+        };
+        let tag = build_meta_tag(&meta);
+        assert!(!tag.contains("think"), "should omit think:off: {tag}");
     }
 }

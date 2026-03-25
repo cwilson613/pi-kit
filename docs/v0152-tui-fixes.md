@@ -1,10 +1,10 @@
 ---
 id: v0152-tui-fixes
 title: v0.15.2 TUI fixes — borders, expansion, tool formatting
-status: decided
+status: resolved
 tags: [tui, ux, release]
 open_questions: []
-jj_change_id: rwqrkovotkzmxlkwqrwwllvnzzkrzqvm
+jj_change_id: yspsprooonttxvysvprrltpsxuklxmxy
 ---
 
 # v0.15.2 TUI fixes — borders, expansion, tool formatting

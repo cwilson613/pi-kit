@@ -21,7 +21,7 @@ pub fn build_base_prompt(cwd: &Path, tools: &[ToolDefinition]) -> String {
     let project_conventions = detect_project_conventions(cwd);
 
     format!(
-        r#"You are an expert coding assistant. You help by reading files, executing commands, editing code, and writing new files.
+        r#"You are a systems engineering agent. You design, implement, test, and ship software — reading files, executing commands, editing code, managing infrastructure, and making architectural decisions.
 
 Available tools: {tool_list}
 

@@ -55,7 +55,7 @@ pub enum Highlight {
 
 const STEP_WELCOME_DEMO: Step = Step {
     title: "Welcome to the Omegon Demo",
-    body: "You\u{2019}re looking at a broken sprint board \u{2014}\na browser-based task tracker with 4 bugs:\n\n  \u{2022} Wrong task count\n  \u{2022} Done column always empty\n  \u{2022} Add Task reloads the page\n  \u{2022} Changes lost on refresh\n\nYou\u{2019}re about to watch AI read the code,\nwrite a fix plan, then fix all 4 bugs\nat the same time in separate branches.\n\nTotal time: about 3 minutes.",
+    body: "You\u{2019}re looking at a broken sprint board \u{2014}\na browser-based task tracker with 4 bugs:\n\n  \u{2022} Wrong task count\n  \u{2022} Done column always empty\n  \u{2022} Add Task reloads the page\n  \u{2022} Changes lost on refresh\n\nYou\u{2019}re about to watch Omegon read the code,\nwrite a fix plan, then fix all 4 bugs\nat the same time in separate branches.\n\nTotal time: about 3 minutes.",
     anchor: Anchor::Center,
     trigger: Trigger::Tab,
     highlight: None,
@@ -63,7 +63,7 @@ const STEP_WELCOME_DEMO: Step = Step {
 
 const STEP_WELCOME_HANDS_ON: Step = Step {
     title: "Welcome to Omegon",
-    body: "This is your AI coding agent.\n\nIt works in your terminal, remembers your\nproject across sessions, and can split work\ninto parallel branches.\n\nThis tour uses YOUR project. About 5 minutes.\nThe AI will read your code and do real work.",
+    body: "This is Omegon, your coding agent.\n\nIt works in your terminal, remembers your\nproject across sessions, and can split work\ninto parallel branches.\n\nThis tour uses YOUR project. About 5 minutes.\nOmegon will read your code and do real work.",
     anchor: Anchor::Center,
     trigger: Trigger::Tab,
     highlight: None,
@@ -71,7 +71,7 @@ const STEP_WELCOME_HANDS_ON: Step = Step {
 
 const STEP_COCKPIT: Step = Step {
     title: "Your Cockpit",
-    body: "Quick orientation:\n\n  Bottom-left \u{2014} model, speed, context\n  Bottom-center \u{2014} live activity display\n  Right panel \u{2014} design notes & decisions\n\nThese all update live while the AI works.\nYou\u{2019}ll see them light up in the next step.",
+    body: "Quick orientation:\n\n  Bottom-left \u{2014} model, speed, context\n  Bottom-center \u{2014} live activity display\n  Right panel \u{2014} design notes & decisions\n\nThese all update live while Omegon works.\nYou\u{2019}ll see them light up in the next step.",
     anchor: Anchor::Upper,
     trigger: Trigger::Tab,
     highlight: Some(Highlight::InstrumentPanel),
@@ -95,10 +95,10 @@ pub const STEPS_DEMO: &[Step] = &[
     STEP_WELCOME_DEMO,
     STEP_COCKPIT,
 
-    // Act 2 — The Agent Works (watch the AI do real things)
+    // Act 2 — The Agent Works (watch the agent do real things)
     Step {
         title: "Reading the Code",
-        body: "The AI is about to read the broken app\nand figure out what\u{2019}s wrong.\n\nWatch the bottom panels light up:\n  \u{2022} Tool names appear as files are read\n  \u{2022} The right panel loads design notes\n  \u{2022} Memory facts get stored for next time\n\nThis takes about 30 seconds.",
+        body: "Omegon is about to read the broken app\nand figure out what\u{2019}s wrong.\n\nWatch the bottom panels light up:\n  \u{2022} Tool names appear as files are read\n  \u{2022} The right panel loads design notes\n  \u{2022} Memory facts get stored for next time\n\nThis takes about 30 seconds.",
         anchor: Anchor::Upper,
         trigger: Trigger::AutoPrompt(
             "Read this project. Start with README.md to understand the context, then read \
@@ -112,7 +112,7 @@ Finally, confirm what each bug does to the user experience."
     },
     Step {
         title: "Making a Design Decision",
-        body: "The right panel tracks design decisions.\n\nThere\u{2019}s an open question about the search\nfeature: should it match partial words\nor require exact matches?\n\nWatch the AI research this, weigh the\noptions, and record a decision.\nThe sidebar will update live.",
+        body: "The right panel tracks design decisions.\n\nThere\u{2019}s an open question about the search\nfeature: should it match partial words\nor require exact matches?\n\nWatch Omegon research this, weigh the\noptions, and record a decision.\nThe sidebar will update live.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
             "Use design_tree with action 'node' and node_id 'search-filter' to read the design doc. \
@@ -129,7 +129,7 @@ and action 'add_decision' to record a decision with clear rationale."
     // Act 3 — The Fix (spec → parallel fix → verify)
     Step {
         title: "The Fix Plan",
-        body: "Before writing any code, the AI wrote a\nspec \u{2014} a checklist of what each fix must do.\n\nNow it will explain the plan:\n  \u{2022} 4 bugs, 4 separate fix branches\n  \u{2022} Each branch touches one function\n  \u{2022} They all run at the same time\n\nAfter this, YOU\u{2019}ll run the fix.",
+        body: "Before writing any code, Omegon wrote a\nspec \u{2014} a checklist of what each fix must do.\n\nNow it will explain the plan:\n  \u{2022} 4 bugs, 4 separate fix branches\n  \u{2022} Each branch touches one function\n  \u{2022} They all run at the same time\n\nAfter this, YOU\u{2019}ll run the fix.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
             "Use openspec_manage with action 'get' and change_name 'fix-board-bugs' to read the full \
@@ -154,7 +154,7 @@ Explain clearly and concisely: \
     // Act 4 — Verify, celebrate, explore
     Step {
         title: "Verify and Launch",
-        body: "The fixes should be merged. Now the AI\nwill check each fix and open the working\nsprint board in your browser.\n\nYou\u{2019}ll see the result yourself \u{2014}\ntasks count correctly, Done column works,\nAdd Task works, data persists on refresh.",
+        body: "The fixes should be merged. Now Omegon\nwill check each fix and open the working\nsprint board in your browser.\n\nYou\u{2019}ll see the result yourself \u{2014}\ntasks count correctly, Done column works,\nAdd Task works, data persists on refresh.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
             "The cleave should have fixed four bugs in src/board.js. Verify each fix: \
@@ -171,7 +171,7 @@ Finally, briefly explain what was fixed and that the user can now use the board.
     STEP_WEB_DASHBOARD,
     Step {
         title: "What Just Happened",
-        body: "You watched the full workflow:\n\n  1. AI read the code and stored facts\n  2. AI made a design decision\n  3. Specs defined what each fix must do\n  4. 4 branches fixed 4 bugs in parallel\n  5. Fixes verified, app opened in browser\n\nThis same workflow works on YOUR project.\nType /help to see all commands.\n/tutorial to replay this demo.\nCtrl+C twice to quit.",
+        body: "You watched the full workflow:\n\n  1. Omegon read the code and stored facts\n  2. Omegon made a design decision\n  3. Specs defined what each fix must do\n  4. 4 branches fixed 4 bugs in parallel\n  5. Fixes verified, app opened in browser\n\nThis same workflow works on YOUR project.\nType /help to see all commands.\n/tutorial to replay this demo.\nCtrl+C twice to quit.",
         anchor: Anchor::Center,
         trigger: Trigger::Tab,
         highlight: None,
@@ -191,7 +191,7 @@ pub const STEPS_HANDS_ON: &[Step] = &[
     // Act 2 — The Agent Works on YOUR project
     Step {
         title: "Reading Your Code",
-        body: "The AI is about to read your project and\nremember what it learns.\n\nThese memories persist \u{2014} next time you\nopen Omegon here, it already knows\nyour codebase. No re-explaining.\n\nWatch the bottom panels light up as\nit reads files and stores facts.\nAbout 30 seconds.",
+        body: "Omegon is about to read your project and\nremember what it learns.\n\nThese memories persist \u{2014} next time you\nopen Omegon here, it already knows\nyour codebase. No re-explaining.\n\nWatch the bottom panels light up as\nit reads files and stores facts.\nAbout 30 seconds.",
         anchor: Anchor::Upper,
         trigger: Trigger::AutoPrompt(
             "Read this project. Look for whatever source files exist: src/, lib.rs, main.rs, \
@@ -207,7 +207,7 @@ Be specific — these facts will be loaded in future sessions."
     },
     Step {
         title: "Design Notes",
-        body: "The right panel tracks design decisions.\n\nThe AI will check if you have any existing\nnotes. If not, it will create a first one \u{2014}\nan architecture overview of YOUR project.\n\nThink of it as a living design doc that\nthe AI and you both maintain.",
+        body: "The right panel tracks design decisions.\n\nOmegon will check if you have any existing\nnotes. If not, it will create a first one \u{2014}\nan architecture overview of YOUR project.\n\nThink of it as a living design doc that\nOmegon and you both maintain.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
             "Use design_tree with action 'list' to see what design nodes exist. \
@@ -226,7 +226,7 @@ Explain what you did and why this node matters for the project."
     // Act 3 — Spec before code
     Step {
         title: "Writing a Spec",
-        body: "Before changing any code, the AI writes\na spec \u{2014} a checklist of what the change\nmust do, written as simple scenarios:\n\n  Given [setup]\n  When [action]\n  Then [expected result]\n\nThe AI will now propose a real improvement\nfor YOUR project and write a spec for it.",
+        body: "Before changing any code, the agent writes\na spec \u{2014} a checklist of what the change\nmust do, written as simple scenarios:\n\n  Given [setup]\n  When [action]\n  Then [expected result]\n\nOmegon will now propose a real improvement\nfor YOUR project and write a spec for it.",
         anchor: Anchor::Center,
         trigger: Trigger::AutoPrompt(
             "Based on what you read about this project, identify ONE concrete, valuable improvement. \
@@ -243,7 +243,7 @@ This creates a real ai/openspec/ entry in your project."
     STEP_WEB_DASHBOARD,
     Step {
         title: "What\u{2019}s Next",
-        body: "You\u{2019}ve seen the core workflow:\n\n  1. AI reads code and remembers it\n  2. Design notes track decisions\n  3. Specs define what changes must do\n\nThe last piece: /cleave splits a spec\ninto parallel branches and fixes them\nall at once. To see that in action on\na prepared demo project:\n  /tutorial demo\n\nOr just start asking it to help with\nyour code. /help for all commands.\nCtrl+C twice to quit.",
+        body: "You\u{2019}ve seen the core workflow:\n\n  1. Omegon reads code and remembers it\n  2. Design notes track decisions\n  3. Specs define what changes must do\n\nThe last piece: /cleave splits a spec\ninto parallel branches and fixes them\nall at once. To see that in action on\na prepared demo project:\n  /tutorial demo\n\nOr just start asking it to help with\nyour code. /help for all commands.\nCtrl+C twice to quit.",
         anchor: Anchor::Center,
         trigger: Trigger::Tab,
         highlight: None,

@@ -527,10 +527,16 @@ impl InstrumentPanel {
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) { cell.set_char(' '); cell.set_bg(bg_color()); }
                 x += 1;
             }
+            // Bar character degrades with recency — three visual channels:
+            // fill length (how much bar), color (teal intensity), character (signal density)
+            let bar_char = if recency > 0.7 { '≋' }      // strong — just fired
+                else if recency > 0.3 { '≈' }             // recent — decaying
+                else if recency > 0.05 { '∿' }            // fading echo
+                else { '·' };                              // nearly silent
             for i in 0..bar_w {
                 if x >= inner.right() { break; }
-                let ch = if i < bar_filled { '█' } else { '░' };
-                let c = if i < bar_filled { bar_color } else { Color::Rgb(10, 16, 24) };
+                let ch = if i < bar_filled { bar_char } else { '·' };
+                let c = if i < bar_filled { bar_color } else { Color::Rgb(16, 28, 36) };
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                     cell.set_char(ch); cell.set_fg(c); cell.set_bg(bg_color());
                 }

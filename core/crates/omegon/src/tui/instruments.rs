@@ -52,6 +52,73 @@ fn intensity_color(intensity: f64) -> Color {
 
 fn bg_color() -> Color { Color::Rgb(0, 1, 3) }
 
+/// Compact glyph+label for the instrument panel. Keeps tool rows readable
+/// even in narrow terminals. Format: "⌘ label" — 2-char glyph prefix + short name.
+fn tool_short_name(name: &str) -> String {
+    let (glyph, label) = match name {
+        // ── Core file ops ──
+        "bash"              => ("⌘", "sh"),
+        "read" | "Read"     => ("◇", "read"),
+        "write" | "Write"   => ("◆", "write"),
+        "edit" | "Edit"     => ("✎", "edit"),
+        "view"              => ("◈", "view"),
+        // ── Git / speculate ──
+        "commit"            => ("⊕", "commit"),
+        "speculate_start"   => ("⊘", "spec∘"),
+        "speculate_check"   => ("⊘", "spec?"),
+        "speculate_commit"  => ("⊘", "spec✓"),
+        "speculate_rollback"=> ("⊘", "spec✗"),
+        // ── Memory ──
+        "memory_store"      => ("▪", "mem+"),
+        "memory_recall"     => ("▫", "recall"),
+        "memory_query"      => ("▫", "memq"),
+        "memory_archive"    => ("▪", "mem⌫"),
+        "memory_supersede"  => ("▪", "mem↻"),
+        "memory_connect"    => ("▪", "mem⊷"),
+        "memory_focus"      => ("▪", "focus"),
+        "memory_release"    => ("▪", "unfoc"),
+        "memory_episodes"   => ("▫", "epis"),
+        "memory_compact"    => ("▪", "compct"),
+        "memory_search_archive" => ("▫", "marcv"),
+        "memory_ingest_lifecycle" => ("▪", "mingt"),
+        // ── Design + lifecycle ──
+        "design_tree"       => ("△", "d.tree"),
+        "design_tree_update"=> ("▲", "d.tree↑"),
+        "openspec_manage"   => ("◎", "opsx"),
+        // ── Cleave / decomposition ──
+        "cleave_assess"     => ("⟁", "assess"),
+        "cleave_run"        => ("⟁", "cleave"),
+        "delegate"          => ("⇉", "deleg"),
+        "delegate_result"   => ("⇉", "d.res"),
+        "delegate_status"   => ("⇉", "d.stat"),
+        // ── Web / render ──
+        "web_search"        => ("⊕", "search"),
+        "render_diagram"    => ("⬡", "diag"),
+        "generate_image_local" => ("⬡", "img"),
+        // ── Local inference ──
+        "ask_local_model"   => ("⊛", "local"),
+        "list_local_models" => ("⊛", "l.list"),
+        "manage_ollama"     => ("⊛", "ollama"),
+        // ── Settings / meta ──
+        "set_model_tier"    => ("⚙", "tier"),
+        "set_thinking_level"=> ("⚙", "think"),
+        "switch_to_offline_driver" => ("⚙", "offln"),
+        "manage_tools"      => ("⚙", "tools"),
+        "whoami"            => ("⚙", "whoami"),
+        "chronos"           => ("⚙", "chrono"),
+        "change"            => ("⚙", "change"),
+        // ── Auth / persona ──
+        "auth_status"       => ("⚿", "auth"),
+        "harness_settings"  => ("⚿", "hrnss"),
+        "switch_persona"    => ("⚿", "persna"),
+        "switch_tone"       => ("⚿", "tone"),
+        "list_personas"     => ("⚿", "pers?"),
+        // ── Fallback: truncate ──
+        other => return other.to_string(),
+    };
+    format!("{glyph} {label}")
+}
+
 const NOISE_CHARS: &[char] = &[
     '▏', '▎', '▍', '░', '▌', '▐', '▒', '┤', '├', '│', '─',
     '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫', '█', '╬', '■', '◆',
@@ -514,7 +581,8 @@ impl InstrumentPanel {
                 }
                 x += 1;
             }
-            let display_name = if tool.name.len() > name_w - 2 { &tool.name[..name_w - 2] } else { &tool.name };
+            let short = tool_short_name(&tool.name);
+            let display_name = if short.len() > name_w - 2 { &short[..name_w - 2] } else { short.as_str() };
             for ch in display_name.chars() {
                 if x >= inner.right() { break; }
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {

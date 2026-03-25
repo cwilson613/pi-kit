@@ -1,10 +1,10 @@
 ---
 id: startup-systems-check
 title: "Startup systems check — probe environment capabilities at launch"
-status: decided
+status: implemented
 tags: [bootstrap, hardware, capabilities, inference, ux, 0.15.1]
 open_questions: []
-jj_change_id: mtlqkrozknluwzxymluqvzmwzmolpmko
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 priority: 1
 ---
 

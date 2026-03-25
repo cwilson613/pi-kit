@@ -1,13 +1,11 @@
 ---
 id: bridge-provider-routing
 title: Bridge-provider routing — dynamic provider switching without restart
-status: exploring
+status: implemented
 parent: blattman-pattern-harvest
 tags: [architecture, providers, routing, bridge, hot-swap]
-open_questions:
-  - "Should the bridge be a trait-object registry (HashMap<provider, Box<dyn LlmBridge>>) instead of a single instance? This would let /model openai:gpt-5.4 route to the OpenAI client while /model anthropic:claude routes to Anthropic — no restart, no hot-swap complexity."
-  - "Should /model trigger bridge re-detection when the provider prefix changes? (e.g., switching from anthropic:X to openai:Y)"
-jj_change_id: klvxnyqpttlormtswpqqopvkqqtwsnro
+open_questions: []
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 ---
 
 # Bridge-provider routing — dynamic provider switching without restart
@@ -53,5 +51,4 @@ The LlmBridge is created once at startup and determines which provider API recei
 
 ## Open Questions
 
-- Should the bridge be a trait-object registry (HashMap<provider, Box<dyn LlmBridge>>) instead of a single instance? This would let /model openai:gpt-5.4 route to the OpenAI client while /model anthropic:claude routes to Anthropic — no restart, no hot-swap complexity.
-- Should /model trigger bridge re-detection when the provider prefix changes? (e.g., switching from anthropic:X to openai:Y)
+*No open questions.*

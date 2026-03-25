@@ -1,10 +1,10 @@
 ---
 id: release-milestone-system
 title: Release milestone and feature freeze system
-status: decided
+status: implemented
 tags: [meta, process]
 open_questions: []
-jj_change_id: qxvkosqoopxxpptolvoxnzwmxktqypxz
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 ---
 
 # Release milestone and feature freeze system

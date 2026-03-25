@@ -1,11 +1,11 @@
 ---
 id: tutorial-demo-web-ui
 title: Tutorial demo project — sprint board web UI with visible bugs
-status: decided
+status: implemented
 parent: tutorial-demo-project
 tags: [tutorial, demo, web-ui, 0.15.1]
 open_questions: []
-jj_change_id: xmvtpzuxnllqxzsuqspwrzrytxututkr
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 ---
 
 # Tutorial demo project — sprint board web UI with visible bugs

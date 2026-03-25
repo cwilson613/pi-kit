@@ -1,10 +1,10 @@
 ---
 id: blattman-pattern-harvest
 title: Assessment — Harvestable patterns from claudeblattman.com
-status: decided
+status: implemented
 tags: [assessment, patterns, skills, context-management, ux]
 open_questions: []
-jj_change_id: qlxmsyrtwltlvwtzsnusznyummxokvmk
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 ---
 
 # Assessment — Harvestable patterns from claudeblattman.com

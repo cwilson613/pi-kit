@@ -1,11 +1,11 @@
 ---
 id: openrouter-provider
 title: OpenRouter as first-class provider — client, credential storage, task-aware model routing
-status: exploring
+status: implemented
 parent: free-tier-tutorial
 tags: [providers, openrouter, routing, free-tier, 0.15.1]
 open_questions: []
-jj_change_id: woxolrmlskyyypxkwllltztnnwmzznxo
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 priority: 1
 ---
 

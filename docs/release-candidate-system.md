@@ -4,9 +4,7 @@ title: Release candidate system — identifiable pre-release builds with deploym
 status: implemented
 parent: core-distribution
 tags: [release, distribution, versioning, ci, diagnostics]
-open_questions:
-  - "What self-diagnostic output should every build expose? Candidates: --version with git sha, --diagnostics dumping tool registry + feature list + provider status, startup banner with build fingerprint"
-  - Should the existing release workflow (release.toml + cargo-release + GitHub Actions) be extended, or should RC be a separate lighter-weight path (just build + tag + upload artifacts)?
+open_questions: []
 jj_change_id: ymrwmkxqnkwmptrqkkpnlovwvrnroktl
 ---
 
@@ -96,7 +94,11 @@ The sha is the tie-breaker. Two machines showing the same sha are running the sa
 **Status:** decided
 **Rationale:** Two orthogonal identity axes: the version string (semver, set in Cargo.toml, controls release channel semantics) and the build fingerprint (git sha + dirty + date, baked by build.rs, identifies the exact code). RC uses semver pre-release: `0.14.1-rc.1`. The fingerprint distinguishes builds within the same version. Together: `omegon 0.14.1-rc.1 (3a4b5c6 2026-03-21)`. Implemented via build.rs + clap version override.
 
+### Decision: Bake git sha + dirty flag + build timestamp into every binary via build.rs
+
+**Status:** decided
+**Rationale:** Implemented in build.rs. --version shows sha and build date. Standard Rust pattern.
+
 ## Open Questions
 
-- What self-diagnostic output should every build expose? Candidates: --version with git sha, --diagnostics dumping tool registry + feature list + provider status, startup banner with build fingerprint
-- Should the existing release workflow (release.toml + cargo-release + GitHub Actions) be extended, or should RC be a separate lighter-weight path (just build + tag + upload artifacts)?
+*No open questions.*

@@ -1,11 +1,11 @@
 ---
 id: opsx-core-rust-fsm
 title: opsx-core — Rust-backed lifecycle FSM for OpenSpec enforcement
-status: decided
+status: implemented
 parent: release-milestone-system
 tags: [omega, architecture, future]
 open_questions: []
-jj_change_id: wynsxvxlokoqvwzslpxzkwwpovuqormm
+jj_change_id: ulryuzrsrlwyxtyysnklyxxtuuqqyxzy
 ---
 
 # opsx-core — Rust-backed lifecycle FSM for OpenSpec enforcement

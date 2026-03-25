@@ -899,6 +899,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         sub => format!("Unknown: /secrets {sub}\n\nType /secrets to see usage."),
                     };
                     let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                } else if name == "open_dashboard" {
+                    // Side-effect from tutorial — open the web dashboard
+                    let _ = web_command_tx.send(tui::TuiCommand::StartWebDashboard).await;
                 } else if name == "bridge_redetect" {
                     // Re-detect and hot-swap bridge after API key stored via /login
                     let detect_model = format!("{args}:auto");

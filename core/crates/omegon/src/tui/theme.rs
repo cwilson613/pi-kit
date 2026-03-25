@@ -211,12 +211,12 @@ impl Theme for Alpharius {
     fn bg(&self) -> Color { Color::Rgb(2, 4, 8) }          // Thunderhawk-tinted near-black
     fn card_bg(&self) -> Color { Color::Rgb(4, 10, 18) }   // subtle lift for conversation cards
     fn surface_bg(&self) -> Color { Color::Rgb(2, 4, 8) }  // matches bg
-    fn border(&self) -> Color { Color::Rgb(48, 112, 140) }
-    fn border_dim(&self) -> Color { Color::Rgb(36, 80, 104) } // brighter than before (was 32,72,96)
+    fn border(&self) -> Color { Color::Rgb(48, 104, 120) }
+    fn border_dim(&self) -> Color { Color::Rgb(44, 92, 112) }
 
     fn fg(&self) -> Color { Color::Rgb(196, 216, 228) }
-    fn muted(&self) -> Color { Color::Rgb(108, 136, 152) } // brighter (was 96,120,136)
-    fn dim(&self) -> Color { Color::Rgb(72, 100, 124) }    // brighter (was 64,88,112)
+    fn muted(&self) -> Color { Color::Rgb(124, 152, 168) }
+    fn dim(&self) -> Color { Color::Rgb(88, 116, 144) }
 
     fn accent(&self) -> Color { Color::Rgb(42, 180, 200) }
     fn accent_muted(&self) -> Color { Color::Rgb(26, 136, 152) }

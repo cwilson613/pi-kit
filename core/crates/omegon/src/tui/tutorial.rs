@@ -31,6 +31,15 @@ pub enum Trigger {
     AutoPrompt(&'static str),
 }
 
+/// Side effect to fire when a tutorial step is entered.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SideEffect {
+    /// No side effect.
+    None,
+    /// Open the web dashboard in the browser.
+    OpenDashboard,
+}
+
 /// A single tutorial step.
 #[derive(Debug, Clone)]
 pub struct Step {
@@ -40,6 +49,8 @@ pub struct Step {
     pub trigger: Trigger,
     /// Region to highlight (pulse border).
     pub highlight: Option<Highlight>,
+    /// Side effect to fire when this step is entered.
+    pub on_enter: SideEffect,
 }
 
 /// A TUI region to visually highlight during a tutorial step.
@@ -59,6 +70,7 @@ const STEP_WELCOME_DEMO: Step = Step {
     anchor: Anchor::Center,
     trigger: Trigger::Tab,
     highlight: None,
+    on_enter: SideEffect::None,
 };
 
 const STEP_WELCOME_HANDS_ON: Step = Step {
@@ -67,6 +79,7 @@ const STEP_WELCOME_HANDS_ON: Step = Step {
     anchor: Anchor::Center,
     trigger: Trigger::Tab,
     highlight: None,
+    on_enter: SideEffect::None,
 };
 
 const STEP_COCKPIT: Step = Step {
@@ -75,14 +88,16 @@ const STEP_COCKPIT: Step = Step {
     anchor: Anchor::Upper,
     trigger: Trigger::Tab,
     highlight: Some(Highlight::InstrumentPanel),
+    on_enter: SideEffect::None,
 };
 
 const STEP_WEB_DASHBOARD: Step = Step {
     title: "Web Dashboard",
-    body: "Want a bigger view? Type /dash to open\nthe browser dashboard, or press Tab\nto skip ahead.\n\nIt shows everything from the right panel\nin a full web page \u{2014} design notes, specs,\nand a live feed of what\u{2019}s happening here.\n\nSame data, no polling, instant updates.",
+    body: "This just opened in your browser \u{2014}\nthe live web dashboard.\n\nIt shows everything from the right panel\nin a full web page: design notes, specs,\nand a real-time feed of what\u{2019}s happening.\n\nSame data, no polling, instant updates.\n\nPress Tab to continue.",
     anchor: Anchor::Center,
     trigger: Trigger::Tab,
     highlight: None,
+    on_enter: SideEffect::OpenDashboard,
 };
 
 // ─── Demo mode STEPS (pre-seeded project, specific content) ─────────────────
@@ -109,6 +124,7 @@ and why they must be fixed in separate branches (no file conflicts between fixes
 Finally, confirm what each bug does to the user experience."
         ),
         highlight: Some(Highlight::InstrumentPanel),
+    on_enter: SideEffect::None,
     },
     Step {
         title: "Making a Design Decision",
@@ -124,6 +140,7 @@ Then use design_tree_update with action 'add_research' to record your findings, 
 and action 'add_decision' to record a decision with clear rationale."
         ),
         highlight: Some(Highlight::Dashboard),
+    on_enter: SideEffect::None,
     },
 
     // Act 3 — The Fix (spec → parallel fix → verify)
@@ -142,6 +159,7 @@ Explain clearly and concisely: \
 (5) the exact command to execute: /cleave fix-board-bugs"
         ),
         highlight: None,
+    on_enter: SideEffect::None,
     },
     Step {
         title: "Fix All 4 Bugs",
@@ -149,6 +167,7 @@ Explain clearly and concisely: \
         anchor: Anchor::Center,
         trigger: Trigger::Command("cleave"),
         highlight: Some(Highlight::InstrumentPanel),
+    on_enter: SideEffect::None,
     },
 
     // Act 4 — Verify, celebrate, explore
@@ -167,6 +186,7 @@ run bash command 'open ./index.html 2>/dev/null || xdg-open ./index.html 2>/dev/
 Finally, briefly explain what was fixed and that the user can now use the board."
         ),
         highlight: None,
+    on_enter: SideEffect::None,
     },
     STEP_WEB_DASHBOARD,
     Step {
@@ -175,6 +195,7 @@ Finally, briefly explain what was fixed and that the user can now use the board.
         anchor: Anchor::Center,
         trigger: Trigger::Tab,
         highlight: None,
+    on_enter: SideEffect::None,
     },
 ];
 
@@ -204,6 +225,7 @@ Then store exactly 3 memory facts using memory_store: \
 Be specific — these facts will be loaded in future sessions."
         ),
         highlight: Some(Highlight::InstrumentPanel),
+    on_enter: SideEffect::None,
     },
     Step {
         title: "Design Notes",
@@ -221,6 +243,7 @@ If the design tree is empty, create a first node using action 'create' with: \
 Explain what you did and why this node matters for the project."
         ),
         highlight: Some(Highlight::Dashboard),
+    on_enter: SideEffect::None,
     },
 
     // Act 3 — Spec before code
@@ -239,6 +262,7 @@ Keep it focused: one clear requirement, 2-3 scenarios. \
 This creates a real ai/openspec/ entry in your project."
         ),
         highlight: None,
+    on_enter: SideEffect::None,
     },
     STEP_WEB_DASHBOARD,
     Step {
@@ -247,6 +271,7 @@ This creates a real ai/openspec/ entry in your project."
         anchor: Anchor::Center,
         trigger: Trigger::Tab,
         highlight: None,
+    on_enter: SideEffect::None,
     },
 ];
 
@@ -355,6 +380,14 @@ impl Tutorial {
             self.active = false;
             false
         }
+    }
+
+    /// Check if the current step has a side effect that should fire on entry.
+    pub fn pending_side_effect(&self) -> SideEffect {
+        if !self.active { return SideEffect::None; }
+        self.steps().get(self.current)
+            .map(|s| s.on_enter.clone())
+            .unwrap_or(SideEffect::None)
     }
 
     /// Go back one step.

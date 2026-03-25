@@ -3174,6 +3174,16 @@ pub async fn run_tui(
                                 match &step_trigger {
                                     tutorial::Trigger::Tab => {
                                         overlay.advance();
+                                        // Fire side effects for the new step
+                                        match overlay.pending_side_effect() {
+                                            tutorial::SideEffect::OpenDashboard => {
+                                                let _ = command_tx.send(TuiCommand::BusCommand {
+                                                    name: "open_dashboard".to_string(),
+                                                    args: String::new(),
+                                                }).await;
+                                            }
+                                            tutorial::SideEffect::None => {}
+                                        }
                                         // After advancing, check if the new step has an auto-prompt
                                         if let Some(prompt) = overlay.pending_auto_prompt() {
                                             let prompt = prompt.to_string();

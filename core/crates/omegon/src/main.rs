@@ -899,12 +899,29 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                             let _ = events_tx.send(AgentEvent::SystemNotification { message });
                         }
                         "auth_login" => {
-                            let provider = args.trim();
-                            let provider = if provider.is_empty() { "anthropic" } else { provider };
+                            // Parse "provider [oauth]" — e.g. "anthropic oauth" or just "anthropic"
+                            let parts: Vec<&str> = args.trim().split_whitespace().collect();
+                            let provider = if parts.is_empty() { "anthropic" } else { parts[0] };
+                            let wants_oauth = parts.get(1) == Some(&"oauth");
                             
-                            // Run the login in a background task. Progress updates go
-                            // through SystemNotification instead of eprintln (which
-                            // would corrupt the ratatui display).
+                            // OAuth is only supported for Anthropic right now.
+                            // OpenAI OAuth gives Codex JWT tokens that the native client can't use.
+                            if wants_oauth && provider != "anthropic" {
+                                let _ = events_tx.send(AgentEvent::SystemNotification {
+                                    message: format!("⚠ OAuth login not yet supported for {}. Use API key instead.", provider),
+                                });
+                                continue;
+                            }
+
+                            // Non-OAuth /login <provider> via the bus is only for OAuth flows.
+                            // API key entry goes through the TUI secret input mode, not here.
+                            if !wants_oauth && !matches!(provider, "anthropic" | "claude") {
+                                let _ = events_tx.send(AgentEvent::SystemNotification {
+                                    message: format!("Use the /login selector to enter an API key for {}.", provider),
+                                });
+                                continue;
+                            }
+
                             let events_tx_clone = events_tx.clone();
                             let progress_tx = events_tx.clone();
                             let provider_clone = provider.to_string();
@@ -921,10 +938,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                     "anthropic" | "claude" => {
                                         auth::login_anthropic_with_progress(progress).await
                                     }
-                                    "openai" | "chatgpt" => {
-                                        auth::login_openai_with_progress(progress).await
-                                    }
-                                    _ => Err(anyhow::anyhow!("Unknown provider: {}. Use: anthropic, openai", provider_clone)),
+                                    _ => Err(anyhow::anyhow!("OAuth not supported for {}.", provider_clone)),
                                 };
                                 let message = match &result {
                                     Ok(_) => format!("✓ Successfully logged in to {}", provider_clone),
@@ -932,15 +946,29 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                 };
                                 let _ = events_tx_clone.send(AgentEvent::SystemNotification { message });
 
-                                // Hot-swap the bridge if login succeeded and current bridge is NullBridge
+                                // Hot-swap the bridge after successful login
                                 if result.is_ok() {
-                                    if let Some(new_bridge) = providers::auto_detect_bridge(&model_for_redetect).await {
+                                    // Re-detect with the provider that just logged in, not the
+                                    // configured model (which might be anthropic while we just
+                                    // logged into openai)
+                                    let detect_model = format!("{}:auto", provider_clone);
+                                    if let Some(new_bridge) = providers::auto_detect_bridge(&detect_model).await {
                                         let mut guard = bridge_clone.write().await;
                                         *guard = new_bridge;
                                         if let Ok(mut s) = settings_for_login.lock() { s.provider_connected = true; }
-                                        tracing::info!("bridge hot-swapped after successful login");
+                                        tracing::info!("bridge hot-swapped after successful login to {}", provider_clone);
                                         let _ = events_tx_clone.send(AgentEvent::SystemNotification {
                                             message: "Provider connected — you can send messages now.".to_string(),
+                                        });
+                                    } else {
+                                        // Login succeeded but we can't use the token (e.g. Codex OAuth JWT)
+                                        let _ = events_tx_clone.send(AgentEvent::SystemNotification {
+                                            message: format!(
+                                                "⚠ {} login saved, but this token type isn't supported yet by the native client.\n\
+                                                 ChatGPT OAuth tokens use the Codex Responses API (not yet implemented).\n\
+                                                 Use /login anthropic or /login openrouter instead.",
+                                                provider_clone
+                                            ),
                                         });
                                     }
                                 }

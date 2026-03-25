@@ -491,25 +491,21 @@ impl App {
                 // OAuth providers go through the auth login flow (opens browser)
                 // API key providers go through secret input mode (hidden input)
                 match value.as_str() {
-                    "anthropic" | "openai" => {
-                        let _ = tx.try_send(TuiCommand::BusCommand {
-                            name: "auth_login".to_string(),
-                            args: value.clone(),
-                        });
-                        Some(format!("Opening browser for {} login…", value))
-                    }
-                    "openrouter" | "brave" | "tavily" | "serper" | "huggingface" => {
-                        // Map to the correct env var name for storage
-                        let key_name = match value.as_str() {
-                            "openrouter" => "OPENROUTER_API_KEY",
-                            "brave" => "BRAVE_API_KEY",
-                            "tavily" => "TAVILY_API_KEY",
-                            "serper" => "SERPER_API_KEY",
-                            "huggingface" => "HUGGING_FACE_TOKEN",
-                            _ => unreachable!(),
-                        };
+                    // All LLM/search providers use API key input from the selector.
+                    // OAuth is available for Anthropic via `/login anthropic oauth`.
+                    "anthropic" | "openai" | "openrouter" | "brave" | "tavily" | "serper" | "huggingface" => {
+                        // Use canonical provider map to find the right env var
+                        let key_name = crate::auth::PROVIDERS.iter()
+                            .find(|p| p.id == value)
+                            .and_then(|p| p.env_vars.iter().find(|v| !v.contains("OAUTH")))
+                            .copied()
+                            .unwrap_or("API_KEY");
                         self.editor.start_secret_input(key_name);
-                        Some(format!("🔒 Paste your {} API key (input is hidden):", value))
+                        let oauth_hint = match value.as_str() {
+                            "anthropic" => "\n  Or: /login anthropic oauth (Claude Pro/Max subscription)",
+                            _ => "",
+                        };
+                        Some(format!("🔒 Paste your {} API key (input is hidden):{oauth_hint}", value))
                     }
                     "github" => {
                         // GitHub uses dynamic resolution via gh CLI

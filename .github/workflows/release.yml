@@ -49,7 +49,7 @@ jobs:
       - name: Build release binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cd core && cross build --release --target ${{ matrix.target }} -p omegon
+            cross build --manifest-path core/Cargo.toml --release --target ${{ matrix.target }} -p omegon
           else
             cd core && cargo build --release --target ${{ matrix.target }} -p omegon
           fi
@@ -74,7 +74,11 @@ jobs:
 
       - name: Generate SHA256 checksum
         run: |
-          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

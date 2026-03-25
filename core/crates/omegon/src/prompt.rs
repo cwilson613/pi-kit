@@ -60,6 +60,48 @@ Available tools: {tool_list}
 - Modes: quick (single provider, fast), deep (more results), compare (fan out to all providers).
 - Use compare mode for research requiring cross-source verification.
 - Available when search API keys are configured (Brave, Tavily, Serper).
+
+## speculate_start / speculate_check / speculate_commit / speculate_rollback
+- Transactional editing: start a speculative branch, make changes, check if they compile/pass, then commit or rollback.
+- Use when a change is risky or complex — try it speculatively before committing to the working tree.
+- speculate_check runs a verification command (e.g. `cargo check`, `npx tsc --noEmit`). If it fails, rollback cleanly.
+- Better than "edit, hope it works" — gives you an undo boundary.
+
+## commit
+- Structured git commit with Conventional Commits format enforcement.
+- Use this instead of `bash git commit` — it ensures proper type(scope): description format.
+- Only commit when the change is complete and tested. Do NOT push.
+
+## view
+- Rich rendering: images display inline, PDFs render as pages, documents convert to markdown.
+- Use for visual inspection of images, diagrams, and formatted documents.
+- For code files, provides syntax highlighting. For PDFs, use the page parameter.
+
+## delegate
+- Spawn a background subagent for independent tasks (research, long-running operations, parallel work).
+- Use when a subtask is independent and would block the main conversation.
+- delegate_result retrieves completed work. delegate_status checks progress.
+- Don't delegate trivial tasks — the overhead isn't worth it for quick operations.
+
+## set_model_tier / set_thinking_level
+- Adjust your own capability dynamically. Downgrade for mechanical tasks (file reads, formatting), upgrade for architecture decisions and complex debugging.
+- set_model_tier: local (cheapest) → retribution (boilerplate) → victory (routine) → gloriana (deep reasoning).
+- set_thinking_level: off (fastest) → minimal → low → medium → high (most reasoning tokens).
+- Both are orthogonal — victory+high is cheaper than gloriana+medium for moderate reasoning.
+
+# Testing
+
+- Every non-trivial code change must include tests. Untested code is incomplete.
+- Write tests alongside implementation, not as an afterthought. If you're writing a function, write its test in the same commit.
+- Tests must be falsifiable — they should fail if the implementation is wrong. A test that always passes tests nothing.
+- Run existing tests before AND after changes: `cargo test`, `npm test`, `pytest` — catch regressions early.
+- Co-locate tests: Rust uses `#[cfg(test)] mod tests` in the same file. TypeScript uses `*.test.ts` next to the source.
+
+# Domain Expertise
+
+- When facing an unfamiliar domain, check if a /persona exists before doing a raw web search. Personas load domain-expert knowledge (Rust idioms, security patterns, Python conventions) as system context — faster and more reliable than searching.
+- Use /persona to list available personas. Activate one with /persona <name>.
+- Personas complement web search — use the persona for patterns and conventions, web search for specific API docs or recent changes.
 {lex_imperialis}{lifecycle_context}{global_directives}{project_directives}{project_conventions}
 Current date: {date}
 Current working directory: {cwd}"#,
@@ -502,6 +544,12 @@ mod tests {
         assert!(prompt.contains("## edit"), "should have edit guidelines");
         assert!(prompt.contains("## write"), "should have write guidelines");
         assert!(prompt.contains("## web_search"), "should have web_search guidelines");
+        // Extended tools
+        assert!(prompt.contains("## speculate_start"), "should have speculate guidelines");
+        assert!(prompt.contains("## commit"), "should have commit guidelines");
+        assert!(prompt.contains("## view"), "should have view guidelines");
+        assert!(prompt.contains("## delegate"), "should have delegate guidelines");
+        assert!(prompt.contains("## set_model_tier"), "should have model tier guidelines");
     }
 
     #[test]
@@ -509,10 +557,29 @@ mod tests {
         let tools = vec![];
         let prompt = build_base_prompt(Path::new("/tmp"), &tools);
         // Not just names — actual guidance
-        assert!(prompt.contains("read a file before editing"), "bash should advise read-before-edit");
+        assert!(prompt.contains("read a file before editing"), "read should advise read-before-edit");
         assert!(prompt.contains("oldText must match"), "edit should warn about exact matching");
         assert!(prompt.contains("Never use cat"), "bash should redirect to read tool");
         assert!(prompt.contains("surgical changes"), "edit should describe its use case");
         assert!(prompt.contains("compare mode"), "web_search should describe compare mode");
+    }
+
+    #[test]
+    fn testing_methodology_in_prompt() {
+        let tools = vec![];
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        assert!(prompt.contains("# Testing"), "should have Testing section");
+        assert!(prompt.contains("falsifiable"), "should mention falsifiability");
+        assert!(prompt.contains("alongside implementation"), "should advise TDD-adjacent");
+        assert!(prompt.contains("Run existing tests"), "should advise regression testing");
+    }
+
+    #[test]
+    fn domain_expertise_in_prompt() {
+        let tools = vec![];
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        assert!(prompt.contains("# Domain Expertise"), "should have Domain Expertise section");
+        assert!(prompt.contains("/persona"), "should reference persona system");
+        assert!(prompt.contains("before doing a raw web search"), "should advise persona before search");
     }
 }

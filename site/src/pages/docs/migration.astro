@@ -11,21 +11,25 @@ import Docs from "../../layouts/Docs.astro";
 
   <h2>From Claude Code</h2>
   <pre><code>/migrate claude-code</code></pre>
-  <p>Imports: <code>CLAUDE.md</code> project instructions → project memory facts.</p>
+  <p>Imports <code>CLAUDE.md</code> project instructions into persistent project memory facts.</p>
 
   <h3>Concept Mapping</h3>
   <table>
     <thead><tr><th>Claude Code</th><th>Omegon</th></tr></thead>
     <tbody>
-      <tr><td>CLAUDE.md</td><td>Project memory (persistent facts with semantic search)</td></tr>
-      <tr><td>Model picker</td><td><code>/model</code> — 10 providers, tier-based routing</td></tr>
-      <tr><td>Extended thinking toggle</td><td><code>/think off|low|medium|high</code></td></tr>
-      <tr><td>Conversation history</td><td>Sessions — auto-save, <code>--resume</code>, full replay</td></tr>
-      <tr><td>—</td><td>Design tree (knowledge graph)</td></tr>
-      <tr><td>—</td><td>Parallel execution (cleave into git worktrees)</td></tr>
-      <tr><td>—</td><td>Spec-driven development (OpenSpec lifecycle)</td></tr>
-      <tr><td>—</td><td>Personas with organic memory growth</td></tr>
-      <tr><td>—</td><td>Instrument panel &amp; web dashboard</td></tr>
+      <tr><td>CLAUDE.md</td><td>Project memory — persistent facts with semantic search, knowledge graph, episodic recall. Not a flat file.</td></tr>
+      <tr><td>Model picker</td><td><code>/model</code> — 10 providers with tier-based routing and automatic failover</td></tr>
+      <tr><td>Extended thinking toggle</td><td><code>/think off|low|medium|high</code> — five levels, agent self-adjusts per task</td></tr>
+      <tr><td>Custom slash commands (.md)</td><td>12 skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
+      <tr><td>Conversation history</td><td>Sessions — auto-save, <code>--resume</code>, full replay with segment metadata</td></tr>
+      <tr><td>Anthropic only</td><td>10 inference providers — Anthropic, OpenAI, Codex, OpenRouter, Groq, xAI, Mistral, Cerebras, HuggingFace, Ollama</td></tr>
+      <tr><td>—</td><td>Design tree — knowledge graph for tracking architecture decisions and dependencies</td></tr>
+      <tr><td>—</td><td>Parallel execution — cleave tasks into isolated git worktree branches with automatic merge</td></tr>
+      <tr><td>—</td><td>OpenSpec — spec-driven development lifecycle (propose, specify, execute, verify, archive)</td></tr>
+      <tr><td>—</td><td>Personas — cognitive profiles with dedicated organic memory that grows across sessions</td></tr>
+      <tr><td>—</td><td>Instrument panel and live web dashboard over WebSocket</td></tr>
+      <tr><td>—</td><td>Secrets management — system keychain, HashiCorp Vault integration, encrypted storage</td></tr>
+      <tr><td>—</td><td>OCI tooling — first-class Containerfile authoring, multi-arch builds, registry auth, security scanning</td></tr>
     </tbody>
   </table>
 
@@ -38,26 +42,46 @@ import Docs from "../../layouts/Docs.astro";
 
   <h3>What's Different</h3>
   <ul>
-    <li>Memory is a knowledge base, not a markdown file. Facts persist, get superseded, get archived.</li>
-    <li>The agent actively manages its own inference — switching models, thinking levels, and context classes based on task complexity.</li>
+    <li>Memory is a knowledge base, not a markdown file. Facts persist, get superseded, get archived. Semantic search finds relevant context without loading everything.</li>
+    <li>The agent actively manages its own inference — switching models, thinking levels, and context classes based on task complexity. You set policy; it executes.</li>
     <li>Multi-file changes can be parallelized across git worktrees instead of executing sequentially.</li>
-    <li>Design decisions are tracked in a graph, not just discussed in conversation.</li>
+    <li>Design decisions are tracked in a graph with typed relationships, not just discussed in conversation and forgotten.</li>
+    <li>Skills are specialized instruction sets (git conventions, security checklists, OCI best practices) that load contextually — not static markdown files you maintain by hand.</li>
   </ul>
 
   <h2>From OpenAI Codex CLI</h2>
   <pre><code>/migrate codex</code></pre>
-  <p>Imports: <code>AGENTS.md</code> instructions, <code>codex.json</code> configuration.</p>
+  <p>Imports <code>AGENTS.md</code> instructions and <code>codex.json</code> configuration into project memory.</p>
 
-  <h3>Key Differences</h3>
+  <h3>Concept Mapping</h3>
   <table>
     <thead><tr><th>Codex CLI</th><th>Omegon</th></tr></thead>
     <tbody>
-      <tr><td>Cloud-dependent orchestration</td><td>Fully local orchestration — cloud only for inference</td></tr>
-      <tr><td>OpenAI models only</td><td>10 providers including Ollama (fully offline capable)</td></tr>
-      <tr><td>AGENTS.md</td><td>Project memory + AGENTS.md support</td></tr>
-      <tr><td>Sandbox execution</td><td>Direct execution (operator trusts the agent, or doesn't)</td></tr>
+      <tr><td>AGENTS.md</td><td>Project memory + AGENTS.md support (both formats recognized)</td></tr>
+      <tr><td>OpenAI models only</td><td>10 inference providers — including Ollama for fully offline operation</td></tr>
+      <tr><td>Cloud-dependent orchestration</td><td>Fully local orchestration — cloud is only used for inference, and even that is optional with Ollama</td></tr>
+      <tr><td>Sandbox execution</td><td>OCI-based isolation available via the OCI skill — Containerfile authoring, multi-arch builds, registry auth, and security scanning are first-class. Plus secrets management through system keychain and HashiCorp Vault, so credentials never touch environment variables or disk in plaintext.</td></tr>
+      <tr><td>Single-turn execution</td><td>Multi-turn sessions with auto-save and resume. The agent maintains context across turns and sessions.</td></tr>
+      <tr><td>—</td><td>Parallel execution — cleave decomposes tasks into git worktree branches, executes in parallel, merges with conflict detection</td></tr>
+      <tr><td>—</td><td>Design tree — architecture decisions tracked in a knowledge graph, not lost in conversation</td></tr>
+      <tr><td>—</td><td>OpenSpec lifecycle — specs define correctness before code is written, verified after implementation</td></tr>
+      <tr><td>—</td><td>Project memory — persistent semantic knowledge base, not a flat file that gets stale</td></tr>
+      <tr><td>—</td><td>12 skills — specialized instruction sets for git, security, OCI, Rust, Python, TypeScript, etc.</td></tr>
+      <tr><td>—</td><td>Instrument panel and web dashboard for real-time session telemetry</td></tr>
     </tbody>
   </table>
+
+  <h3>Security Posture</h3>
+  <p>
+    Codex CLI relies on a cloud sandbox for execution safety. Omegon takes a different approach:
+    the operator controls the execution environment, with tooling to make that environment secure.
+  </p>
+  <ul>
+    <li><strong>OCI skill</strong> — first-class support for building and running containers. Containerfile authoring, multi-arch builds, registry authentication, image tagging, and security scanning are built into the agent's skill set. You can run the agent's work inside containers as a matter of course, not as an afterthought.</li>
+    <li><strong>Secrets management</strong> — credentials stored in the system keychain (macOS Keychain, Linux Secret Service) or HashiCorp Vault. Never in environment variables, never in plaintext on disk. The agent manages secrets through <code>/secrets</code> and <code>/vault</code> commands.</li>
+    <li><strong>Signed releases</strong> — every binary is signed with Sigstore cosign (keyless OIDC), includes a CycloneDX SBOM, and carries GitHub Attestations for build provenance. You can verify the supply chain from source to binary.</li>
+    <li><strong>Process control</strong> — <code>Esc</code> or <code>Ctrl+C</code> cancels any operation immediately. <code>--max-turns</code> limits agent autonomy. Session logs provide full audit trail.</li>
+  </ul>
 
   <h2>From Cursor / Aider / Continue / Windsurf</h2>
   <pre><code>/migrate cursor   # or: aider
@@ -65,18 +89,19 @@ import Docs from "../../layouts/Docs.astro";
   <p>
     These are IDE-integrated tools. Omegon is terminal-native by design.
     They're not mutually exclusive — use your IDE tool for inline completions and GUI diffs,
-    use Omegon for heavy lifting: architecture, multi-file refactors, parallel execution,
+    use Omegon for the heavy lifting: architecture, multi-file refactors, parallel execution,
     design tracking, spec-driven development.
   </p>
 
   <h3>What You Gain</h3>
   <ul>
     <li>Persistent project memory that survives across sessions and tools</li>
-    <li>Parallel task execution via git worktrees</li>
-    <li>Design tree for tracking architecture decisions</li>
-    <li>Spec-driven development lifecycle</li>
-    <li>10 inference providers with automatic routing</li>
-    <li>No IDE dependency — works over SSH, in tmux, in CI</li>
+    <li>Parallel task execution via git worktrees with automatic merge and conflict detection</li>
+    <li>Design tree for tracking architecture decisions across the life of a project</li>
+    <li>Spec-driven development lifecycle with verification</li>
+    <li>10 inference providers with automatic routing and failover</li>
+    <li>No IDE dependency — works over SSH, in tmux, in CI, on any machine with a terminal</li>
+    <li>Secrets management and OCI tooling for production-grade security posture</li>
   </ul>
 
   <h2>From Earlier Omegon Versions</h2>

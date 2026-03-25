@@ -44,6 +44,8 @@ pub struct FooterData {
     pub model_tier: String,
     /// Whether a live LLM provider is connected. False when NullBridge is active.
     pub provider_connected: bool,
+    /// Available update version (if any).
+    pub update_available: Option<String>,
 }
 
 impl FooterData {

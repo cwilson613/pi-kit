@@ -149,6 +149,8 @@ pub struct App {
     /// Tutorial overlay — game-style first-play advisor.
     /// Renders on top of the UI and guides the operator through steps.
     tutorial_overlay: Option<tutorial::Tutorial>,
+    /// Update checker — receives notification when a newer version is available.
+    update_rx: Option<crate::update::UpdateReceiver>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -244,6 +246,7 @@ impl App {
             capability_tier: None,
             tutorial: None,
             tutorial_overlay: None,
+            update_rx: None,
         }
     }
 
@@ -1049,6 +1052,26 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        // Check for available update (non-blocking)
+        let update_toast: Option<String> = self.update_rx.as_ref().and_then(|rx| {
+            let info = rx.borrow();
+            let info = info.as_ref()?;
+            if info.is_newer && self.footer_data.update_available.is_none() {
+                Some(format!("🆕 Update available: v{} → v{} — run /update", info.current, info.latest))
+            } else {
+                None
+            }
+        });
+        if let Some(msg) = update_toast {
+            // Extract version before mutable borrow
+            let version = self.update_rx.as_ref()
+                .and_then(|rx| rx.borrow().as_ref().map(|i| i.latest.clone()));
+            if let Some(v) = version {
+                self.footer_data.update_available = Some(v);
+            }
+            self.show_toast(&msg, ratatui_toaster::ToastType::Info);
+        }
+
         // Update dashboard stats
         self.dashboard.turns = self.turn;
         self.dashboard.tool_calls = self.tool_calls;
@@ -1424,6 +1447,7 @@ impl App {
         ("auth",     "authentication management",             &["status", "login", "logout", "unlock"]),
         ("chronos",  "date/time context",                      &["week", "month", "quarter", "relative", "iso", "epoch", "tz", "range", "all"]),
         ("init",     "initialize project — scan & migrate agent conventions", &["scan", "migrate"]),
+        ("update",   "check for and install updates",          &[]),
         ("migrate",  "import from other tools",               &["auto", "claude-code", "pi", "codex", "cursor", "aider"]),
         ("dash",     "open web dashboard in browser",          &["status"]),
         ("secrets",  "manage stored secrets",                 &["list", "set", "get", "delete"]),
@@ -1764,6 +1788,25 @@ impl App {
                             ))
                         }
                     }
+                }
+            }
+
+            "update" => {
+                // Check if an update is available
+                let info = self.update_rx.as_ref()
+                    .and_then(|rx| rx.borrow().clone());
+                match info {
+                    Some(info) if info.is_newer => {
+                        SlashResult::Display(format!(
+                            "🆕 Update available: v{} → v{}\n\n{}\n\nDownload: {}",
+                            info.current, info.latest,
+                            if info.release_notes.is_empty() { "(no release notes)".into() }
+                            else { info.release_notes.lines().take(20).collect::<Vec<_>>().join("\n") },
+                            if info.download_url.is_empty() { "No binary available for this platform".into() }
+                            else { format!("Run `/update install` to download and restart") },
+                        ))
+                    }
+                    _ => SlashResult::Display("✓ You're up to date.".into()),
                 }
             }
 
@@ -2847,6 +2890,11 @@ pub async fn run_tui(
     app.bus_commands = config.bus_commands;
     app.dashboard_handles = config.dashboard_handles;
     app.cancel = cancel;
+
+    // Spawn background update check
+    let (update_tx, update_rx) = crate::update::channel();
+    crate::update::spawn_check(update_tx);
+    app.update_rx = Some(update_rx);
 
     // Pre-populate from initial state so first frame isn't empty
     app.footer_data.total_facts = config.initial.total_facts;

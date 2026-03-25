@@ -22,6 +22,8 @@ mod cleave;
 pub mod features;
 mod context;
 mod migrate;
+mod smoke;
+mod update;
 mod switch;
 
 mod conversation;
@@ -127,6 +129,11 @@ struct Cli {
     /// Start with the tutorial overlay active (demo mode).
     #[arg(long)]
     tutorial: bool,
+
+    /// Run headless smoke tests — validates operator features work end-to-end.
+    /// Requires LLM auth (any provider) or local inference (Ollama).
+    #[arg(long)]
+    smoke: bool,
 
     /// Queue an initial prompt in the TUI (interactive mode, not headless).
     /// The prompt is sent automatically after startup. The TUI stays open.
@@ -408,7 +415,9 @@ async fn main() -> anyhow::Result<()> {
         }
         None => {
             // No subcommand: interactive if no --prompt, headless if --prompt given
-            if cli.prompt.is_some() || cli.prompt_file.is_some() {
+            if cli.smoke {
+                run_smoke_command(&cli).await
+            } else if cli.prompt.is_some() || cli.prompt_file.is_some() {
                 run_agent_command(&cli).await
             } else {
                 run_interactive_command(&cli).await
@@ -1170,6 +1179,22 @@ fn format_agent_error(e: &anyhow::Error) -> String {
     // Fallback: truncate
     let truncated = crate::util::truncate_str(&raw, 500);
     format!("⚠ {truncated}")
+}
+
+async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
+    eprintln!("omegon {} — smoke test mode", env!("CARGO_PKG_VERSION"));
+
+    // ─── LLM provider (native Rust clients only) ─────────────────────
+    let bridge: Box<dyn bridge::LlmBridge> = match providers::auto_detect_bridge(&cli.model).await {
+        Some(native) => native,
+        None => {
+            anyhow::bail!("No LLM provider available. Set ANTHROPIC_API_KEY or another provider credential.");
+        }
+    };
+    let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(bridge));
+
+    let exit_code = smoke::run(bridge).await;
+    std::process::exit(exit_code);
 }
 
 async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {

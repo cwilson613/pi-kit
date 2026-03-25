@@ -58,6 +58,7 @@ jobs:
           context: core/site
           file: core/site/Containerfile
           push: true
+          no-cache: true
           tags: |
             ghcr.io/styrene-lab/omegon-site:sha-${{ github.sha }}
             ghcr.io/styrene-lab/omegon-site:latest

@@ -48,6 +48,10 @@ pub struct Settings {
     #[serde(default)]
     pub provider_order: Vec<String>,
 
+    /// Update channel for in-app self-update.
+    #[serde(default = "default_update_channel")]
+    pub update_channel: String,
+
     /// Whether a live LLM provider is connected. Set to false when NullBridge
     /// is active (no credentials available). The TUI uses this to show
     /// "no provider" instead of a model name that can't actually be used.
@@ -228,6 +232,10 @@ impl ContextMode {
     }
 }
 
+fn default_update_channel() -> String {
+    "stable".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let context_window = 200_000;
@@ -241,6 +249,7 @@ impl Default for Settings {
             context_mode: ContextMode::Standard,
             tool_detail: ToolDetail::Detailed,
             provider_order: Vec::new(),
+            update_channel: default_update_channel(),
             provider_connected: true, // optimistic default — set false when NullBridge
         }
     }

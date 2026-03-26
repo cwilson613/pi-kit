@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::settings::{ContextClass, Settings, ThinkingLevel};
+use crate::update::{UpdateChannel, UpdateInfo};
 use tokio::sync::mpsc;
 
 fn test_settings() -> crate::settings::SharedSettings {
@@ -25,6 +26,51 @@ fn test_tx() -> mpsc::Sender<TuiCommand> {
 // ═══════════════════════════════════════════════════════════════════
 // Slash command routing
 // ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn slash_update_channel_changes_setting() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/update channel rc", &tx);
+    assert!(matches!(result, SlashResult::Display(_)));
+    assert_eq!(app.settings.lock().unwrap().update_channel, "rc");
+}
+
+#[test]
+fn slash_update_reports_available_version() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let (update_tx, update_rx) = crate::update::channel();
+    let _ = update_tx.send(Some(UpdateInfo {
+        current: "0.15.2".into(),
+        latest: "0.15.3-rc.7".into(),
+        download_url: "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz".into(),
+        release_notes: "notes".into(),
+        is_newer: true,
+    }));
+    app.update_rx = Some(update_rx);
+    app.settings.lock().unwrap().update_channel = UpdateChannel::Rc.as_str().to_string();
+    let result = app.handle_slash_command("/update", &tx);
+    if let SlashResult::Display(text) = result {
+        assert!(text.contains("0.15.3-rc.7"), "{text}");
+        assert!(text.contains("/update install"), "{text}");
+        assert!(text.contains("rc"), "{text}");
+    } else {
+        panic!("expected Display result");
+    }
+}
+
+#[test]
+fn slash_update_install_requires_update_info() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/update install", &tx);
+    if let SlashResult::Display(text) = result {
+        assert!(text.contains("No update information") || text.contains("No downloadable update"), "{text}");
+    } else {
+        panic!("expected Display result");
+    }
+}
 
 #[test]
 fn slash_help_returns_display() {

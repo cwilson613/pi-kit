@@ -18,6 +18,29 @@ pub struct UpdateInfo {
     pub is_newer: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateChannel {
+    Stable,
+    Rc,
+}
+
+impl UpdateChannel {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "stable" => Some(Self::Stable),
+            "rc" => Some(Self::Rc),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Rc => "rc",
+        }
+    }
+}
+
 /// Shared state for the update checker.
 pub type UpdateReceiver = watch::Receiver<Option<UpdateInfo>>;
 pub type UpdateSender = watch::Sender<Option<UpdateInfo>>;
@@ -28,72 +51,96 @@ pub fn channel() -> (UpdateSender, UpdateReceiver) {
 }
 
 /// GitHub release info (minimal subset).
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct GitHubRelease {
     tag_name: String,
     body: Option<String>,
     assets: Vec<GitHubAsset>,
+    prerelease: bool,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct GitHubAsset {
     name: String,
     browser_download_url: String,
 }
 
 /// Spawn the background update check.
-pub fn spawn_check(tx: UpdateSender) {
+pub fn spawn_check(tx: UpdateSender, channel: UpdateChannel) {
     let current = env!("CARGO_PKG_VERSION").to_string();
     tokio::spawn(async move {
         // Delay slightly so startup isn't blocked
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        match check_latest(&current).await {
+        match check_latest_for_channel(&current, channel).await {
             Ok(Some(info)) => {
                 tracing::info!(
                     current = %info.current,
                     latest = %info.latest,
+                    channel = channel.as_str(),
                     "new version available"
                 );
                 let _ = tx.send(Some(info));
             }
             Ok(None) => {
-                tracing::debug!("up to date");
+                tracing::debug!(channel = channel.as_str(), "up to date");
+                let _ = tx.send(None);
             }
             Err(e) => {
-                tracing::debug!("update check failed (non-fatal): {e}");
+                tracing::debug!(channel = channel.as_str(), "update check failed (non-fatal): {e}");
             }
         }
     });
 }
 
-/// Check GitHub Releases for a newer version.
-async fn check_latest(current: &str) -> anyhow::Result<Option<UpdateInfo>> {
+/// Check GitHub Releases for a newer version on the selected channel.
+pub async fn check_latest_for_channel(
+    current: &str,
+    channel: UpdateChannel,
+) -> anyhow::Result<Option<UpdateInfo>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(format!("omegon/{current}"))
         .build()?;
 
-    let resp: GitHubRelease = client
-        .get("https://api.github.com/repos/styrene-lab/omegon/releases/latest")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let releases: Vec<GitHubRelease> = if matches!(channel, UpdateChannel::Stable) {
+        vec![client
+            .get("https://api.github.com/repos/styrene-lab/omegon/releases/latest")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?]
+    } else {
+        client
+            .get("https://api.github.com/repos/styrene-lab/omegon/releases")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?
+    };
+
+    let target = platform_archive_target();
+    let selected = releases.into_iter().find(|resp| {
+        let latest = resp.tag_name.trim_start_matches('v');
+        let channel_match = match channel {
+            UpdateChannel::Stable => !resp.prerelease,
+            UpdateChannel::Rc => resp.prerelease,
+        };
+        channel_match && is_newer(latest, current)
+    });
+
+    let Some(resp) = selected else {
+        return Ok(None);
+    };
 
     let latest = resp.tag_name.trim_start_matches('v').to_string();
 
-    if !is_newer(&latest, current) {
-        return Ok(None);
-    }
-
-    // Find the right asset for this platform
-    let target = platform_asset_name();
     let download_url = resp
         .assets
         .iter()
-        .find(|a| a.name.contains(&target))
+        .find(|a| a.name.contains(&target) && a.name.ends_with(".tar.gz"))
         .map(|a| a.browser_download_url.clone())
         .unwrap_or_default();
 
@@ -126,22 +173,18 @@ fn is_newer(latest: &str, current: &str) -> bool {
 }
 
 /// Platform-specific asset name pattern.
-fn platform_asset_name() -> String {
-    let os = if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(target_os = "linux") {
-        "linux"
+fn platform_archive_target() -> String {
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "aarch64-apple-darwin".into()
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        "x86_64-apple-darwin".into()
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        "aarch64-unknown-linux-gnu".into()
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        "x86_64-unknown-linux-gnu".into()
     } else {
-        "unknown"
-    };
-    let arch = if cfg!(target_arch = "aarch64") {
-        "aarch64"
-    } else if cfg!(target_arch = "x86_64") {
-        "x86_64"
-    } else {
-        "unknown"
-    };
-    format!("omegon-{os}-{arch}")
+        "unknown".into()
+    }
 }
 
 /// Download, verify, and replace the current binary, then exec() into it.
@@ -153,9 +196,10 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
 
     let current_exe = std::env::current_exe()?;
     let tmp_path = current_exe.with_extension("new");
+    let archive_path = current_exe.with_extension("tar.gz");
     let backup_path = current_exe.with_extension("bak");
 
-    tracing::info!(url = %info.download_url, "downloading update");
+    tracing::info!(url = %info.download_url, "downloading update archive");
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -170,8 +214,33 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         .bytes()
         .await?;
 
-    // Write to temp file
-    tokio::fs::write(&tmp_path, &bytes).await?;
+    tokio::fs::write(&archive_path, &bytes).await?;
+
+    let archive_path_clone = archive_path.clone();
+    let tmp_path_clone = tmp_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let file = std::fs::File::open(&archive_path_clone)?;
+        let gz = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+        let mut extracted = false;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            if path.file_name().and_then(|n| n.to_str()) == Some("omegon") {
+                let mut out = std::fs::File::create(&tmp_path_clone)?;
+                std::io::copy(&mut entry, &mut out)?;
+                extracted = true;
+                break;
+            }
+        }
+        if !extracted {
+            anyhow::bail!("Downloaded archive did not contain omegon binary");
+        }
+        Ok(())
+    })
+    .await??;
+
+    tokio::fs::remove_file(&archive_path).await.ok();
 
     // Make executable
     #[cfg(unix)]
@@ -242,15 +311,13 @@ mod tests {
         // RC versions: strip suffix for comparison
         assert!(is_newer("0.15.2", "0.15.2-rc.3"));
         assert!(!is_newer("0.15.1", "0.15.2-rc.3"));
+        assert!(is_newer("0.15.3-rc.7", "0.15.2"));
     }
 
     #[test]
-    fn platform_asset_name_is_valid() {
-        let name = platform_asset_name();
-        assert!(name.starts_with("omegon-"), "got: {name}");
-        assert!(
-            name.contains("darwin") || name.contains("linux"),
-            "got: {name}"
-        );
+    fn platform_archive_target_is_valid() {
+        let name = platform_archive_target();
+        assert!(name.contains("darwin") || name.contains("linux"), "got: {name}");
+        assert!(name.contains("aarch64") || name.contains("x86_64"), "got: {name}");
     }
 }

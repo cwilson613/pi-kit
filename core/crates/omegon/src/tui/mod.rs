@@ -155,6 +155,8 @@ pub struct App {
     tutorial_overlay: Option<tutorial::Tutorial>,
     /// Update checker — receives notification when a newer version is available.
     update_rx: Option<crate::update::UpdateReceiver>,
+    /// Update checker sender — allows re-checking when channel changes.
+    update_tx: Option<crate::update::UpdateSender>,
     /// Whether we enabled the Kitty keyboard protocol (must pop on cleanup).
     keyboard_enhancement: bool,
 }
@@ -255,6 +257,7 @@ impl App {
             tutorial: None,
             tutorial_overlay: None,
             update_rx: None,
+            update_tx: None,
             keyboard_enhancement: false,
         }
     }
@@ -1706,7 +1709,7 @@ impl App {
             "initialize project — scan & migrate agent conventions",
             &["scan", "migrate"],
         ),
-        ("update", "check for and install updates", &[]),
+        ("update", "check for and install updates", &["install", "channel"]),
         (
             "migrate",
             "import from other tools",
@@ -2175,29 +2178,82 @@ impl App {
             }
 
             "update" => {
-                // Check if an update is available
-                let info = self.update_rx.as_ref().and_then(|rx| rx.borrow().clone());
-                match info {
-                    Some(info) if info.is_newer => SlashResult::Display(format!(
-                        "🆕 Update available: v{} → v{}\n\n{}\n\nDownload: {}",
-                        info.current,
-                        info.latest,
-                        if info.release_notes.is_empty() {
-                            "(no release notes)".into()
-                        } else {
-                            info.release_notes
-                                .lines()
-                                .take(20)
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        },
-                        if info.download_url.is_empty() {
-                            "No binary available for this platform".into()
-                        } else {
-                            format!("Run `/update install` to download and restart")
-                        },
-                    )),
-                    _ => SlashResult::Display("✓ You're up to date.".into()),
+                let trimmed = args.trim();
+                if trimmed == "install" {
+                    let info = self.update_rx.as_ref().and_then(|rx| rx.borrow().clone());
+                    match info {
+                        Some(info) if info.is_newer && !info.download_url.is_empty() => {
+                            let args: Vec<String> = std::env::args().skip(1).collect();
+                            let keyboard_enhancement = self.keyboard_enhancement;
+                            let latest = info.latest.clone();
+                            tokio::spawn(async move {
+                                match crate::update::download_and_replace(&info).await {
+                                    Ok(binary) => {
+                                        #[cfg(unix)]
+                                        {
+                                            let _ = io::stdout().execute(crossterm::event::DisableMouseCapture);
+                                            if keyboard_enhancement {
+                                                let _ = io::stdout().execute(PopKeyboardEnhancementFlags);
+                                            }
+                                            let _ = disable_raw_mode();
+                                            let _ = io::stdout().execute(LeaveAlternateScreen);
+                                        }
+                                        let _ = crate::update::exec_restart(&binary, &args);
+                                    }
+                                    Err(e) => tracing::error!("update install failed: {e}"),
+                                }
+                            });
+                            SlashResult::Display(format!(
+                                "Installing v{} and restarting... If replacement fails, relaunch Omegon manually.",
+                                latest
+                            ))
+                        }
+                        Some(_) => SlashResult::Display("No downloadable update is available for this platform.".into()),
+                        None => SlashResult::Display("No update information available yet. Run `/update` after the background check completes.".into()),
+                    }
+                } else if let Some(channel_arg) = trimmed.strip_prefix("channel") {
+                    let channel_arg = channel_arg.trim();
+                    if channel_arg.is_empty() {
+                        let channel = self.settings().update_channel;
+                        SlashResult::Display(format!("Update channel: {channel}"))
+                    } else if let Some(channel) = crate::update::UpdateChannel::parse(channel_arg) {
+                        self.update_settings(|s| s.update_channel = channel.as_str().to_string());
+                        if let Some(tx) = self.update_tx.clone() {
+                            crate::update::spawn_check(tx, channel);
+                        }
+                        SlashResult::Display(format!(
+                            "Update channel set to {}. Rechecking for updates now.",
+                            channel.as_str()
+                        ))
+                    } else {
+                        SlashResult::Display("Usage: /update channel [stable|rc]".into())
+                    }
+                } else {
+                    // Check if an update is available
+                    let info = self.update_rx.as_ref().and_then(|rx| rx.borrow().clone());
+                    let channel = self.settings().update_channel;
+                    match info {
+                        Some(info) if info.is_newer => SlashResult::Display(format!(
+                            "🆕 Update available on {channel}: v{} → v{}\n\n{}\n\n{}",
+                            info.current,
+                            info.latest,
+                            if info.release_notes.is_empty() {
+                                "(no release notes)".into()
+                            } else {
+                                info.release_notes
+                                    .lines()
+                                    .take(20)
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            },
+                            if info.download_url.is_empty() {
+                                String::from("No binary available for this platform")
+                            } else {
+                                String::from("Run `/update install` to download and restart")
+                            },
+                        )),
+                        _ => SlashResult::Display(format!("✓ You're up to date on the {channel} channel.")),
+                    }
                 }
             }
 
@@ -3521,8 +3577,12 @@ pub async fn run_tui(
 
     // Spawn background update check
     let (update_tx, update_rx) = crate::update::channel();
-    crate::update::spawn_check(update_tx);
+    let update_channel = app.settings().update_channel;
+    let channel = crate::update::UpdateChannel::parse(&update_channel)
+        .unwrap_or(crate::update::UpdateChannel::Stable);
+    crate::update::spawn_check(update_tx.clone(), channel);
     app.update_rx = Some(update_rx);
+    app.update_tx = Some(update_tx);
 
     // Pre-populate from initial state so first frame isn't empty
     app.footer_data.total_facts = config.initial.total_facts;

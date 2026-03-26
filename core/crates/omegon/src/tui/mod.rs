@@ -85,6 +85,13 @@ pub enum TuiCommand {
 /// the agent loop checks it. Arc so both tasks can access it.
 pub type SharedCancel = std::sync::Arc<std::sync::Mutex<Option<CancellationToken>>>;
 
+struct OperatorEvent {
+    message: String,
+    color: Color,
+    icon: &'static str,
+    expires_at: std::time::Instant,
+}
+
 /// Application state for the TUI.
 pub struct App {
     editor: Editor,
@@ -142,8 +149,8 @@ pub struct App {
     web_server_addr: Option<std::net::SocketAddr>,
     /// Prompt queued while agent was busy — sent on next AgentEnd.
     queued_prompt: Option<String>,
-    /// Toast notification engine.
-    toasts: ratatui_toaster::ToastEngine<()>,
+    /// Inline operator-facing transient events (replaces floating toasts).
+    operator_events: std::collections::VecDeque<OperatorEvent>,
     /// Pending image attachment from clipboard paste.
     pending_image: Option<std::path::PathBuf>,
     /// Previous harness status for diffing on HarnessStatusChanged.
@@ -259,9 +266,7 @@ impl App {
             dashboard_refresh_turn: u32::MAX, // force refresh on first frame
             web_server_addr: None,
             queued_prompt: None,
-            toasts: ratatui_toaster::ToastEngineBuilder::new(ratatui::prelude::Rect::default())
-                .default_duration(std::time::Duration::from_secs(4))
-                .build(),
+            operator_events: std::collections::VecDeque::new(),
             pending_image: None,
             previous_harness_status: None,
             capability_tier: None,
@@ -1624,8 +1629,19 @@ impl App {
         }
 
         // ── Toast notifications — rendered last, on top of everything ──
-        self.toasts.set_area(frame.area());
-        frame.render_widget(&self.toasts, frame.area());
+        let now = std::time::Instant::now();
+        self.operator_events.retain(|e| e.expires_at > now);
+        self.footer_data.operator_events = self
+            .operator_events
+            .iter()
+            .rev()
+            .take(2)
+            .map(|e| crate::tui::footer::OperatorEventLine {
+                icon: e.icon,
+                message: e.message.clone(),
+                color: e.color,
+            })
+            .collect();
 
         // ── Final bg cleanup pass ───────────────────────────────────
         // Force every cell to have a known-good background color.
@@ -1688,12 +1704,21 @@ impl App {
     }
 
     fn show_toast(&mut self, message: &str, toast_type: ratatui_toaster::ToastType) {
-        use ratatui_toaster::{ToastBuilder, ToastPosition};
-        self.toasts.show_toast(
-            ToastBuilder::new(std::borrow::Cow::Owned(message.to_string()))
-                .toast_type(toast_type)
-                .position(ToastPosition::TopRight),
-        );
+        let (icon, color) = match toast_type {
+            ratatui_toaster::ToastType::Error => ("✖", self.theme.error()),
+            ratatui_toaster::ToastType::Warning => ("⚠", self.theme.warning()),
+            ratatui_toaster::ToastType::Success => ("✓", self.theme.success()),
+            _ => ("ℹ", self.theme.accent_muted()),
+        };
+        self.operator_events.push_back(OperatorEvent {
+            message: message.to_string(),
+            color,
+            icon,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(5),
+        });
+        while self.operator_events.len() > 8 {
+            self.operator_events.pop_front();
+        }
     }
 
     /// Command registry: (name, description, subcommands).

@@ -12,6 +12,13 @@ use super::widgets::{self, GaugeConfig};
 use crate::settings::{ContextClass, ContextMode};
 use crate::status::HarnessStatus;
 
+#[derive(Clone, Debug)]
+pub struct OperatorEventLine {
+    pub icon: &'static str,
+    pub message: String,
+    pub color: Color,
+}
+
 /// Footer data — updated by the TUI on every event and rendered each frame.
 #[derive(Default)]
 pub struct FooterData {
@@ -46,6 +53,8 @@ pub struct FooterData {
     pub provider_connected: bool,
     /// Available update version (if any).
     pub update_available: Option<String>,
+    /// Inline operator-facing transient events shown under engine version info.
+    pub operator_events: Vec<OperatorEventLine>,
 }
 
 impl FooterData {
@@ -305,6 +314,14 @@ impl FooterData {
                 Span::styled("→", Style::default().fg(t.accent_muted())),
                 Span::styled(format!(" v{next_ver}"), Style::default().fg(t.accent())),
             ]));
+
+            // Line 8+: inline operator event queue (replaces top-right toasts)
+            for event in self.operator_events.iter().take(2) {
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {} ", event.icon), Style::default().fg(event.color)),
+                    Span::styled(event.message.clone(), Style::default().fg(event.color)),
+                ]));
+            }
         } // close else (provider_connected)
 
         let widget = Paragraph::new(lines).style(Style::default().bg(bg));

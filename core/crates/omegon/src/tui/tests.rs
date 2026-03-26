@@ -100,6 +100,31 @@ fn editor_height_expands_for_wrapped_input() {
 }
 
 #[test]
+fn operator_event_queue_keeps_most_recent_entries() {
+    let mut app = test_app();
+    app.show_toast("first", ratatui_toaster::ToastType::Info);
+    app.show_toast("second", ratatui_toaster::ToastType::Warning);
+
+    let now = std::time::Instant::now();
+    app.operator_events.retain(|e| e.expires_at > now);
+    app.footer_data.operator_events = app
+        .operator_events
+        .iter()
+        .rev()
+        .take(2)
+        .map(|e| crate::tui::footer::OperatorEventLine {
+            icon: e.icon,
+            message: e.message.clone(),
+            color: e.color,
+        })
+        .collect();
+
+    assert_eq!(app.footer_data.operator_events.len(), 2);
+    assert_eq!(app.footer_data.operator_events[0].message, "second");
+    assert_eq!(app.footer_data.operator_events[1].message, "first");
+}
+
+#[test]
 fn slash_update_channel_without_args_shows_helpful_usage() {
     let mut app = test_app();
     let tx = test_tx();

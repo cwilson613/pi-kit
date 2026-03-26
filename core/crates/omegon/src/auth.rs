@@ -257,7 +257,7 @@ impl OAuthCredentials {
 
 /// Path to auth.json.
 pub fn auth_json_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".pi/agent/auth.json"))
+    dirs::home_dir().map(|h| h.join(".config").join("omegon").join("auth.json"))
 }
 
 /// Read credentials for a provider from auth.json.
@@ -1132,7 +1132,7 @@ mod tests {
     fn write_and_read_credentials_roundtrip() {
         // Write creds to a temp dir, then read them back
         let dir = tempfile::tempdir().unwrap();
-        let auth_path = dir.path().join(".pi/agent/auth.json");
+        let auth_path = dir.path().join(".config/omegon/auth.json");
         std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
 
         let creds = OAuthCredentials {
@@ -1152,7 +1152,7 @@ mod tests {
         }));
         std::fs::write(&auth_path, serde_json::to_string_pretty(&auth_data).unwrap()).unwrap();
 
-        // read_credentials reads from ~/.pi/agent/auth.json which won't
+        // read_credentials reads from ~/.config/omegon/auth.json which won't
         // find our temp dir, so we just verify the JSON format is correct
         let contents: Value = serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
         assert_eq!(contents["test-provider"]["access"], "test-access-token");

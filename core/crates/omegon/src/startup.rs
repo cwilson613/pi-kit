@@ -301,8 +301,8 @@ fn probe_hardware() -> ProbeResult {
 fn probe_memory(cwd: &str) -> ProbeResult {
     // Check for facts.jsonl
     let facts_paths = [
-        Path::new(cwd).join(".pi/memory/facts.jsonl"),
         Path::new(cwd).join("ai/memory/facts.jsonl"),
+        Path::new(cwd).join(".omegon/memory/facts.jsonl"),
     ];
 
     for path in &facts_paths {
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn probe_memory_with_facts() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let pi_dir = tmp.path().join(".pi/memory");
+        let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
         std::fs::write(pi_dir.join("facts.jsonl"), "{\"id\":\"1\"}\n{\"id\":\"2\"}\n").unwrap();
         let result = probe_memory(tmp.path().to_str().unwrap());

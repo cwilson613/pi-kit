@@ -47,7 +47,7 @@ Structure directories so the hierarchy IS the navigation:
 
 ```
 project/
-  .pi/
+  ai/
     design/           ← design tree nodes
     memory/           ← memory index (generated)
   openspec/

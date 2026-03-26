@@ -246,17 +246,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         assert!(facts_jsonl(tmp.path()).is_none());
 
-        // Create .pi/memory/facts.jsonl
-        let pi_dir = tmp.path().join(".pi/memory");
+        // Create ai/memory/facts.jsonl (canonical)
+        let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
         std::fs::write(pi_dir.join("facts.jsonl"), "{}").unwrap();
         assert_eq!(facts_jsonl(tmp.path()), Some(pi_dir.join("facts.jsonl")));
 
-        // ai/memory takes priority
-        let ai_dir = tmp.path().join("ai/memory");
-        std::fs::create_dir_all(&ai_dir).unwrap();
-        std::fs::write(ai_dir.join("facts.jsonl"), "{}").unwrap();
-        assert_eq!(facts_jsonl(tmp.path()), Some(ai_dir.join("facts.jsonl")));
+        // .omegon/memory also resolves (fallback)
+        let omegon_dir = tmp.path().join(".omegon/memory");
+        std::fs::create_dir_all(&omegon_dir).unwrap();
+        // ai/memory still wins
+        assert_eq!(facts_jsonl(tmp.path()), Some(pi_dir.join("facts.jsonl")));
     }
 
     #[test]

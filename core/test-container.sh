@@ -3,7 +3,7 @@
 #
 # Prerequisites:
 #   - Docker or Podman
-#   - API key: ANTHROPIC_API_KEY env var, or ~/.pi/agent/auth.json with OAuth token
+#   - API key: ANTHROPIC_API_KEY env var, or ~/.config/omegon/auth.json with OAuth token
 #
 # Usage:
 #   ./test-container.sh
@@ -26,8 +26,8 @@ echo "=== Test 2: Headless prompt with API key ==="
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   AUTH_MOUNT=""
   ENV_FLAG="-e ANTHROPIC_API_KEY"
-elif [ -f "$HOME/.pi/agent/auth.json" ]; then
-  AUTH_MOUNT="-v $HOME/.pi/agent:/root/.pi/agent:ro"
+elif [ -f "$HOME/.config/omegon/auth.json" ]; then
+  AUTH_MOUNT="-v $HOME/.config/omegon:/root/.config/omegon:ro"
   ENV_FLAG=""
 else
   echo "SKIP: No API key or auth.json found"
@@ -58,7 +58,7 @@ echo "=== Test 4: Session save ==="
 $RUNTIME run --rm \
   $AUTH_MOUNT $ENV_FLAG \
   -v "$WORKSPACE:/workspace" \
-  -v "$WORKSPACE/.sessions:/root/.pi/agent/sessions" \
+  -v "$WORKSPACE/.sessions:/root/.config/omegon/sessions" \
   "$IMAGE" \
   --prompt "What is 7*8? Just the number." \
   --cwd /workspace \

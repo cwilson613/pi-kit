@@ -207,13 +207,13 @@ cargo build --profile dev-release -p omegon
 
 ## Configuration
 
-Omegon stores mutable state under `~/.pi/agent/`:
+Omegon stores mutable state under `~/.config/omegon/`:
 
 | Path | Contents |
 |------|----------|
-| `~/.pi/agent/auth.json` | API keys and provider credentials |
-| `~/.pi/agent/settings.json` | User preferences |
-| `~/.pi/agent/AGENTS.md` | Global operator directives (apply to all projects) |
+| `~/.config/omegon/auth.json` | API keys and provider credentials |
+| `~/.config/omegon/settings.json` | User preferences |
+| `~/.config/omegon/AGENTS.md` | Global operator directives (apply to all projects) |
 
 Project-level configuration lives in the repository:
 
@@ -221,7 +221,7 @@ Project-level configuration lives in the repository:
 |------|----------|
 | `AGENTS.md` | Project-specific agent directives |
 | `.omegon-version` | Pinned Omegon version |
-| `.pi/memory/facts.jsonl` | Project memory (tracked in git) |
+| `ai/memory/facts.jsonl` | Project memory (tracked in git) |
 
 ---
 

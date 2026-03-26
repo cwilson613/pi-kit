@@ -12,7 +12,7 @@ omegon-agent (Rust)
   ├── Lifecycle Engine — explore → specify → decompose → implement → verify
   │     ├── Ambient capture (omg: XML tags from agent reasoning)
   │     ├── Autonomous decomposition (above complexity threshold)
-  │     └── sqlite lifecycle store (.pi/lifecycle.db)
+  │     └── sqlite lifecycle store (ai/lifecycle.db)
   ├── ContextManager — dynamic per-turn system prompt injection
   ├── ConversationState — context decay, IntentDocument
   ├── Core Tools — understand, change, execute, remember, speculate

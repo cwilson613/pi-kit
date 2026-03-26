@@ -24,7 +24,7 @@ Settings persist per-project in `.omegon/profile.json`. The profile is automatic
 
 ### Global directives
 
-Create `~/.pi/agent/AGENTS.md` for directives that apply to all sessions:
+Create `~/.config/omegon/AGENTS.md` for directives that apply to all sessions:
 
 ```markdown
 # Global Operator Directives

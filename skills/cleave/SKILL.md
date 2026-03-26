@@ -236,8 +236,8 @@ extensions/cleave/
   skills.ts       — Skill matching, resolution, model tier hints
   conflicts.ts    — 4-step conflict detection (file overlap, decision
                     contradiction, interface mismatch, assumption violation)
-  workspace.ts    — Workspace management under ~/.pi/cleave/
-  worktree.ts     — Git worktree create/merge/cleanup under ~/.pi/cleave/wt/
+  workspace.ts    — Workspace management under ~/.config/omegon/cleave/
+  worktree.ts     — Git worktree create/merge/cleanup under ~/.config/omegon/cleave/wt/
   types.ts        — Shared type definitions (includes RpcChildEvent, RpcProgressUpdate)
 ```
 
@@ -256,7 +256,7 @@ cleave process and child agent processes. Communication is bidirectional:
 Workspaces and worktrees live outside the target repo:
 
 ```
-~/.pi/cleave/
+~/.config/omegon/cleave/
   <slug>/              — Workspace per run
     state.json         — Serialized CleaveState
     0-task.md          — Child task files

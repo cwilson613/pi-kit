@@ -305,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
 
     // Interactive mode: tracing MUST NOT go to stderr (ratatui owns it).
-    // Logs go to --log-file or ~/.pi/agent/omegon.log as default.
+    // Logs go to --log-file or ~/.config/omegon/omegon.log as default.
     // Headless mode: stderr is fine.
     let _guard: Option<tracing_appender::non_blocking::WorkerGuard>;
 
@@ -313,7 +313,7 @@ async fn main() -> anyhow::Result<()> {
         let log_path = cli.log_file.clone().unwrap_or_else(|| {
             let dir = dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".pi/agent");
+                .join(".config/omegon");
             let _ = std::fs::create_dir_all(&dir);
             dir.join("omegon.log")
         });
@@ -1355,7 +1355,7 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
                 tracing::debug!("Cleave session save failed (non-fatal): {e}");
             }
         } else {
-            // Standalone agent: save to ~/.pi/agent/sessions/
+            // Standalone agent: save to ~/.config/omegon/sessions/
             match session::save_session(&agent.conversation, &agent.cwd, agent.resume_info.as_ref().map(|r| r.session_id.as_str())) {
                 Ok(path) => tracing::info!(path = %path.display(), "Session saved"),
                 Err(e) => tracing::debug!("Session save failed (non-fatal): {e}"),

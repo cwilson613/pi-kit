@@ -200,7 +200,7 @@ impl RepoModel {
     /// When jj is co-located, this is a **no-op** — jj's working copy
     /// automatically tracks all file changes. No manual bookkeeping needed.
     ///
-    /// When git-only, lifecycle paths (openspec/, docs/, .pi/) are classified
+    /// When git-only, lifecycle paths (openspec/, docs/, ai/) are classified
     /// as lifecycle writes for batching into the next real commit.
     pub fn record_edit(&self, path: &str) {
         if self.jj_colocated {
@@ -229,7 +229,7 @@ impl RepoModel {
             || path.starts_with("openspec/")  // legacy
             || path.starts_with("docs/")      // legacy
             || path.starts_with(".omegon/")   // tool config
-            || path.starts_with(".pi/")       // legacy compat
+            || path.starts_with(".pi/")       // legacy migration path — keep for old repos
     }
 
     /// Record a lifecycle file write (OpenSpec, design-tree).

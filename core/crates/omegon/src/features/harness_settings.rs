@@ -164,9 +164,13 @@ impl Feature for HarnessSettings {
             }
 
             "memory_stats" => {
-                // Read from .pi/memory/facts.db if accessible
+                // Read from ai/memory/facts.db if accessible
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let db_path = cwd.join(".pi").join("memory").join("facts.db");
+                let db_path = {
+                    let ai = cwd.join("ai").join("memory").join("facts.db");
+                    let legacy = cwd.join(".omegon").join("memory").join("facts.db");
+                    if legacy.exists() && !ai.exists() { legacy } else { ai }
+                };
                 if db_path.exists() {
                     match rusqlite::Connection::open_with_flags(
                         &db_path,
@@ -198,13 +202,13 @@ impl Feature for HarnessSettings {
                         Err(e) => Ok(error_result(&format!("Cannot read memory DB: {e}"))),
                     }
                 } else {
-                    Ok(text_result("No memory database found at .pi/memory/facts.db"))
+                    Ok(text_result("No memory database found"))
                 }
             }
 
             "sessions" => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let sessions_dir = cwd.join(".pi").join("sessions");
+                let sessions_dir = cwd.join("ai").join("sessions");
                 if !sessions_dir.is_dir() {
                     return Ok(text_result("No saved sessions."));
                 }

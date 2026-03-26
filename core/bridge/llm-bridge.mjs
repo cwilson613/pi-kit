@@ -293,7 +293,7 @@ function resolveApiKey(provider) {
   // 2. pi's auth.json — contains OAuth access tokens
   try {
     const home = process.env.HOME || process.env.USERPROFILE || "~";
-    const authPath = resolve(home, ".pi", "agent", "auth.json");
+    const authPath = resolve(home, ".config", "omegon", "auth.json");
     if (existsSync(authPath)) {
       const auth = JSON.parse(readFileSync(authPath, "utf8"));
       const entry = auth[provider];

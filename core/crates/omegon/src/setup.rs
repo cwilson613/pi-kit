@@ -181,7 +181,12 @@ impl AgentSetup {
         // ─── Memory ─────────────────────────────────────────────────────
         let mind = "default".to_string();
         let project_root = find_project_root(&cwd);
-        let memory_dir = project_root.join(".pi").join("memory");
+        let memory_dir = {
+            // Canonical: ai/memory/, fallback: .omegon/memory/
+            let ai = project_root.join("ai").join("memory");
+            let omegon = project_root.join(".omegon").join("memory");
+            if omegon.exists() && !ai.exists() { omegon } else { ai }
+        };
         let _ = std::fs::create_dir_all(&memory_dir);
         let db_path = memory_dir.join("facts.db");
         let jsonl_path = memory_dir.join("facts.jsonl");

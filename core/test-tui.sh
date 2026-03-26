@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - tmux
 #   - omegon binary (built or on PATH)
-#   - ANTHROPIC_API_KEY or ~/.pi/agent/auth.json
+#   - ANTHROPIC_API_KEY or ~/.config/omegon/auth.json
 #
 # Usage:
 #   ./test-tui.sh [path-to-binary]

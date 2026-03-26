@@ -88,7 +88,7 @@ omegon --model anthropic:claude-opus-4-6
 
 ### Global directives
 
-Create `~/.pi/agent/AGENTS.md` with directives that apply to all sessions across all projects.
+Create `~/.config/omegon/AGENTS.md` with directives that apply to all sessions across all projects.
 
 ### Project directives
 

@@ -49,9 +49,34 @@ fn main() {
         format!("\ngit: {describe}")
     };
 
+    // Compute the next milestone version from CARGO_PKG_VERSION.
+    // - RC build  "0.15.3-rc.1" → next milestone is "0.15.3" (strip suffix)
+    // - Stable    "0.15.2"       → next milestone is "0.15.3" (bump patch)
+    let next_version = {
+        let v = &cargo_version;
+        if let Some(base) = v.split('-').next() {
+            if v.contains("-rc") {
+                // Already targeting this version; the stable is the base
+                base.to_string()
+            } else {
+                // Stable — next milestone is patch+1
+                let parts: Vec<&str> = base.splitn(3, '.').collect();
+                if parts.len() == 3 {
+                    let patch: u32 = parts[2].parse().unwrap_or(0);
+                    format!("{}.{}.{}", parts[0], parts[1], patch + 1)
+                } else {
+                    base.to_string()
+                }
+            }
+        } else {
+            v.clone()
+        }
+    };
+
     println!("cargo:rustc-env=OMEGON_GIT_SHA={sha}{dirty}");
     println!("cargo:rustc-env=OMEGON_BUILD_DATE={date}");
     println!("cargo:rustc-env=OMEGON_GIT_DESCRIBE={describe_display}");
+    println!("cargo:rustc-env=OMEGON_NEXT_VERSION={next_version}");
 
     // Only re-run when the commit changes (HEAD moves), not on every
     // git status/stage/stash. Watching .git/index causes full recompiles

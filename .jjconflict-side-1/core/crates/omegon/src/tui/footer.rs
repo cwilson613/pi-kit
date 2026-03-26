@@ -226,6 +226,20 @@ impl FooterData {
             Span::styled(format!("↻ {}", self.compactions), Style::default().fg(t.dim())),
         ]));
 
+        // Line 7: next milestone version (baked in at build time from CARGO_PKG_VERSION)
+        let next_ver = env!("OMEGON_NEXT_VERSION");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" v{} ", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(t.dim()),
+            ),
+            Span::styled("→", Style::default().fg(t.accent_muted())),
+            Span::styled(
+                format!(" v{next_ver}"),
+                Style::default().fg(t.accent()),
+            ),
+        ]));
+
         } // close else (provider_connected)
 
         let widget = Paragraph::new(lines).style(Style::default().bg(bg));

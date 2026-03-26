@@ -25,9 +25,9 @@
     "nodes": [],
     "frozen": false,
     "opened": "2026-03-26T01:28:41Z",
-    "last_rc": "2026-03-26T09:30:01Z",
-    "rc_version": "0.15.3-rc.1",
-    "rc_count": 2,
+    "last_rc": "2026-03-26T09:37:43Z",
+    "rc_version": "0.15.3-rc.2",
+    "rc_count": 3,
     "released": null,
     "notes": [
       "feat(release): milestone-update.sh — automated milestone tracking in rc/release lifecycle",

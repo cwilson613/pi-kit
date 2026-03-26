@@ -60,7 +60,7 @@ impl SecretsManager {
         let audit = AuditLog::new(config_dir);
         let path_guard = PathGuard::new();
 
-        let mut mgr = Self {
+        let mgr = Self {
             redaction_set: Arc::new(RwLock::new(HashMap::new())),
             redactor: Arc::new(RwLock::new(Redactor::build(&HashMap::new()))),
             recipes: RwLock::new(recipes),
@@ -265,12 +265,13 @@ impl SecretsManager {
     /// so legacy env-based integrations (web search, provider clients) can use
     /// secrets stored in Omegon's keyring/recipe system.
     pub fn hydrate_process_env(&self) {
+        let set = self.redaction_set.read().unwrap();
         for env_name in resolve::WELL_KNOWN_SECRET_ENVS {
-            if let Some(value) = self.resolve(env_name) {
+            if let Some(value) = set.get(*env_name) {
                 // SAFETY: Omegon mutates process env only on the main runtime thread
                 // during setup or in direct response to operator secret changes.
                 // We do not concurrently iterate the environment while doing this.
-                unsafe { std::env::set_var(env_name, value) };
+                unsafe { std::env::set_var(env_name, value.expose_secret()) };
             }
         }
     }
@@ -281,6 +282,7 @@ impl SecretsManager {
             .write()
             .unwrap()
             .set_string(name.to_string(), recipe_str.to_string())?;
+        self.refresh_redaction_set();
         self.hydrate_process_env();
         Ok(())
     }
@@ -306,6 +308,7 @@ impl SecretsManager {
             let _ = entry.delete_credential(); // best-effort
         }
         self.recipes.write().unwrap().remove(name).map(|_| ())?;
+        self.refresh_redaction_set();
         if resolve::WELL_KNOWN_SECRET_ENVS.contains(&name) {
             // SAFETY: same reasoning as hydrate_process_env().
             unsafe { std::env::remove_var(name) };
@@ -314,7 +317,7 @@ impl SecretsManager {
     }
 
     /// Re-resolve all secrets and rebuild the redaction automaton.
-    fn refresh_redaction_set(&mut self) {
+    fn refresh_redaction_set(&self) {
         let mut set = self.redaction_set.write().unwrap();
         set.clear();
 

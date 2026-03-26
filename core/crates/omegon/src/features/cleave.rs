@@ -280,14 +280,17 @@ pub struct CleaveFeature {
     progress: Arc<Mutex<CleaveProgress>>,
     /// Provider inventory for per-child routing.
     pub inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
+    /// Startup-approved secret env inherited by child runs.
+    session_secret_env: Vec<(String, String)>,
 }
 
 impl CleaveFeature {
-    pub fn new(repo_path: &std::path::Path) -> Self {
+    pub fn new(repo_path: &std::path::Path, session_secret_env: Vec<(String, String)>) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
             progress: Arc::new(Mutex::new(CleaveProgress::default())),
             inventory: None,
+            session_secret_env,
         }
     }
 
@@ -372,7 +375,7 @@ impl CleaveFeature {
                     crate::routing::ProviderInventory::probe(),
                 )))
             }),
-            inherited_env: vec![],
+            inherited_env: self.session_secret_env.clone(),
         };
 
         let result = cleave::run_cleave(
@@ -672,7 +675,7 @@ mod tests {
     #[test]
     fn feature_provides_tools() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path());
+        let feature = CleaveFeature::new(dir.path(), vec![]);
         let tools = feature.tools();
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.name == "cleave_assess"));
@@ -682,7 +685,7 @@ mod tests {
     #[test]
     fn cleave_status_no_active_run() {
         let dir = tempfile::tempdir().unwrap();
-        let mut feature = CleaveFeature::new(dir.path());
+        let mut feature = CleaveFeature::new(dir.path(), vec![]);
         let result = feature.handle_command("cleave", "status");
         assert!(matches!(result, CommandResult::Display(ref s) if s.contains("No active")));
     }
@@ -690,7 +693,7 @@ mod tests {
     #[test]
     fn progress_default_inactive() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path());
+        let feature = CleaveFeature::new(dir.path(), vec![]);
         let prog = feature.progress();
         assert!(!prog.active);
         assert_eq!(prog.total_children, 0);
@@ -699,7 +702,7 @@ mod tests {
     #[tokio::test]
     async fn assess_tool_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path());
+        let feature = CleaveFeature::new(dir.path(), vec![]);
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute(

@@ -270,7 +270,7 @@ impl AgentSetup {
         bus.register(Box::new(lifecycle_feature));
 
         // ─── Cleave (decomposition + dispatch) ─────────────────────────
-        let cleave_feature = features::cleave::CleaveFeature::new(&cwd);
+        let cleave_feature = features::cleave::CleaveFeature::new(&cwd, secrets.session_env());
         let cleave_handle = cleave_feature.shared_progress();
         bus.register(Box::new(cleave_feature));
 

@@ -353,11 +353,9 @@ impl VaultClient {
     /// Authenticate using AppRole method.
     async fn authenticate_approle(&mut self, role_id: &str, secret_id_key: &str) -> Result<()> {
         // Get secret_id from keyring
-        let entry = keyring::Entry::new("omegon", secret_id_key)
-            .context("failed to create keyring entry")?;
-        let secret_id = entry
-            .get_password()
-            .with_context(|| format!("secret_id not found in keyring: {}", secret_id_key))?;
+        let secret_id = crate::resolve::keyring_get("omegon", secret_id_key)
+            .context("failed to create keyring entry")?
+            .ok_or_else(|| anyhow!("secret_id not found in keyring: {}", secret_id_key))?;
 
         let login_data = serde_json::json!({
             "role_id": role_id,
@@ -955,23 +953,15 @@ mod tests {
         // Use a unique keyring key per test run to avoid polluting real keyring
         let test_key = format!("vault-test-approle-{}", std::process::id());
 
-        // Set up keyring entry — skip if keyring unavailable (CI, headless)
-        let entry = match keyring::Entry::new("omegon", &test_key) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        if entry.set_password("secret123").is_err() {
-            return;
-        }
+        crate::resolve::keyring_set("omegon", &test_key, "secret123").unwrap();
 
-        // Ensure cleanup runs even on panic
-        struct KeyringCleanup(keyring::Entry);
+        struct KeyringCleanup(String);
         impl Drop for KeyringCleanup {
             fn drop(&mut self) {
-                let _ = self.0.delete_credential();
+                let _ = crate::resolve::keyring_delete("omegon", &self.0);
             }
         }
-        let _cleanup = KeyringCleanup(keyring::Entry::new("omegon", &test_key).unwrap());
+        let _cleanup = KeyringCleanup(test_key.clone());
 
         let mut server = Server::new_async().await;
         let _m = server

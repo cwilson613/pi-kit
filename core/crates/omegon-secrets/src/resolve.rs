@@ -41,7 +41,7 @@ pub const WELL_KNOWN_SECRET_ENVS: &[&str] = &[
 const KEYRING_SERVICE: &str = "omegon";
 
 #[cfg(not(test))]
-fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Error> {
+pub(crate) fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Error> {
     let entry = keyring::Entry::new(service, name)?;
     match entry.get_password() {
         Ok(val) if !val.is_empty() => Ok(Some(val)),
@@ -52,7 +52,7 @@ fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Err
 }
 
 #[cfg(test)]
-fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Error> {
+pub(crate) fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Error> {
     Ok(TEST_KEYRING
         .lock()
         .unwrap()
@@ -61,13 +61,13 @@ fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Err
 }
 
 #[cfg(not(test))]
-fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Error> {
+pub(crate) fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(service, name)?;
     entry.set_password(value)
 }
 
 #[cfg(test)]
-fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Error> {
+pub(crate) fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Error> {
     TEST_KEYRING.lock().unwrap().insert(
         (service.to_string(), name.to_string()),
         value.to_string(),
@@ -76,13 +76,13 @@ fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Er
 }
 
 #[cfg(not(test))]
-fn keyring_delete(service: &str, name: &str) -> Result<(), keyring::Error> {
+pub(crate) fn keyring_delete(service: &str, name: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(service, name)?;
     entry.delete_credential()
 }
 
 #[cfg(test)]
-fn keyring_delete(service: &str, name: &str) -> Result<(), keyring::Error> {
+pub(crate) fn keyring_delete(service: &str, name: &str) -> Result<(), keyring::Error> {
     TEST_KEYRING
         .lock()
         .unwrap()

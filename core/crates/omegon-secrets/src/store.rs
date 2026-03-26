@@ -74,10 +74,7 @@ impl SecretStore {
     pub fn init_keyring(path: &Path) -> anyhow::Result<Self> {
         let key = generate_random_key();
 
-        let entry = keyring::Entry::new("omegon-secrets", "store-key")
-            .map_err(|e| anyhow::anyhow!("keyring init failed: {e}"))?;
-        entry
-            .set_password(&hex::encode(key))
+        crate::resolve::keyring_set("omegon-secrets", "store-key", &hex::encode(key))
             .map_err(|e| anyhow::anyhow!("keyring store failed: {e}"))?;
 
         Self::create(path, key, KeyBackend::Keyring, None)
@@ -101,11 +98,9 @@ impl SecretStore {
             );
         }
 
-        let entry = keyring::Entry::new("omegon-secrets", "store-key")
-            .map_err(|e| anyhow::anyhow!("keyring access failed: {e}"))?;
-        let hex_key = entry
-            .get_password()
-            .map_err(|e| anyhow::anyhow!("keyring read failed: {e}"))?;
+        let hex_key = crate::resolve::keyring_get("omegon-secrets", "store-key")
+            .map_err(|e| anyhow::anyhow!("keyring read failed: {e}"))?
+            .ok_or_else(|| anyhow::anyhow!("keyring read failed: no entry"))?;
         let key = hex_to_key(&hex_key)?;
 
         Ok(Self {

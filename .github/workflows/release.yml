@@ -221,20 +221,19 @@ jobs:
 
       - name: Create nightly GitHub Release
         if: ${{ contains(github.ref_name, '-nightly.') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-          prerelease: true
-          draft: true
-          files: |
-            artifacts/omegon-*.tar.gz
-            artifacts/omegon-*.tar.gz.sha256
-            artifacts/omegon-*.tar.gz.sig
-            artifacts/omegon-*.tar.gz.pem
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --draft \
+            --prerelease \
+            artifacts/omegon-*.tar.gz \
+            artifacts/omegon-*.tar.gz.sha256 \
+            artifacts/omegon-*.tar.gz.sig \
+            artifacts/omegon-*.tar.gz.pem \
             artifacts/checksums.sha256
 
       - name: Create stable/rc GitHub Release

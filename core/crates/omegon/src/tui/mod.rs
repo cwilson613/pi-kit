@@ -41,7 +41,8 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use crossterm::event::{EnableMouseCapture, DisableMouseCapture, MouseEventKind};
+use crossterm::event::{EnableMouseCapture, DisableMouseCapture, MouseEventKind,
+    KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tokio::sync::{broadcast, mpsc};
@@ -153,6 +154,8 @@ pub struct App {
     tutorial_overlay: Option<tutorial::Tutorial>,
     /// Update checker — receives notification when a newer version is available.
     update_rx: Option<crate::update::UpdateReceiver>,
+    /// Whether we enabled the Kitty keyboard protocol (must pop on cleanup).
+    keyboard_enhancement: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -249,6 +252,7 @@ impl App {
             tutorial: None,
             tutorial_overlay: None,
             update_rx: None,
+            keyboard_enhancement: false,
         }
     }
 
@@ -1311,9 +1315,9 @@ impl App {
         let hint_text = if self.agent_active {
             String::new()
         } else if self.editor.is_empty() {
-            "Shift+Enter: newline  Ctrl+D: tree  /: commands ".into()
+            "⏎ send  ⇧⏎/⌥⏎ newline  ^D tree  / commands ".into()
         } else {
-            "Enter: send  Shift+Enter: newline ".into()
+            "⏎ send  ⇧⏎/⌥⏎ newline ".into()
         };
 
         let editor_block = Block::default()
@@ -2918,6 +2922,19 @@ pub async fn run_tui(
     // OSC 52 clipboard is tracked in design node: mouse-text-selection.
     io::stdout().execute(EnableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
+
+    // Enable Kitty keyboard protocol when the terminal supports it.
+    // This lets crossterm distinguish Shift+Enter from Enter, which is
+    // required for multiline input. Terminals that don't support it
+    // silently ignore the escape sequence.
+    let has_keyboard_enhancement = crossterm::terminal::supports_keyboard_enhancement()
+        .unwrap_or(false);
+    if has_keyboard_enhancement {
+        io::stdout().execute(PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ))?;
+    }
+
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -2926,6 +2943,9 @@ pub async fn run_tui(
     std::panic::set_hook(Box::new(move |info| {
         let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
         let _ = io::stdout().execute(DisableMouseCapture);
+        if has_keyboard_enhancement {
+            let _ = io::stdout().execute(PopKeyboardEnhancementFlags);
+        }
         let _ = disable_raw_mode();
         let _ = io::stdout().execute(LeaveAlternateScreen);
         original_hook(info);
@@ -2938,6 +2958,7 @@ pub async fn run_tui(
         .unwrap_or(42));
 
     let mut app = App::new(settings);
+    app.keyboard_enhancement = has_keyboard_enhancement;
     app.history = App::load_history(&config.cwd);
     app.footer_data.cwd = config.cwd.clone();
     app.footer_data.is_oauth = config.is_oauth;
@@ -3671,6 +3692,9 @@ pub async fn run_tui(
     // Restore terminal
     io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
     io::stdout().execute(DisableMouseCapture)?;
+    if app.keyboard_enhancement {
+        io::stdout().execute(PopKeyboardEnhancementFlags)?;
+    }
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())

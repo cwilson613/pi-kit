@@ -37,20 +37,46 @@ fn epoch_to_iso(secs: u64, ms: u32) -> String {
     let mut y = 1970i64;
     let mut rem = days as i64;
     loop {
-        let yd = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if rem < yd { break; }
+        let yd = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if rem < yd {
+            break;
+        }
         rem -= yd;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let md: [i64; 12] = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let md: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 0usize;
     for (i, &days_in_month) in md.iter().enumerate() {
-        if rem < days_in_month { mo = i; break; }
+        if rem < days_in_month {
+            mo = i;
+            break;
+        }
         rem -= days_in_month;
     }
 
-    format!("{y}-{:02}-{:02}T{h:02}:{m:02}:{s:02}.{ms:03}Z", mo + 1, rem + 1)
+    format!(
+        "{y}-{:02}-{:02}T{h:02}:{m:02}:{s:02}.{ms:03}Z",
+        mo + 1,
+        rem + 1
+    )
 }
 
 #[cfg(test)]
@@ -68,7 +94,12 @@ mod tests {
     fn gen_id_no_collisions_sequential() {
         let ids: Vec<String> = (0..1000).map(|_| gen_id()).collect();
         let unique: std::collections::HashSet<&String> = ids.iter().collect();
-        assert_eq!(unique.len(), 1000, "expected 1000 unique IDs, got {}", unique.len());
+        assert_eq!(
+            unique.len(),
+            1000,
+            "expected 1000 unique IDs, got {}",
+            unique.len()
+        );
     }
 
     #[test]

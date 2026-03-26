@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-
 /// Discovered project context for a child's scope.
 #[derive(Debug, Default)]
 pub struct ChildContext {
@@ -21,10 +20,7 @@ pub struct ChildContext {
 }
 
 /// Build context for a child given its scope and the repo path.
-pub fn discover_child_context(
-    repo_path: &Path,
-    scope: &[String],
-) -> ChildContext {
+pub fn discover_child_context(repo_path: &Path, scope: &[String]) -> ChildContext {
     let submodules = detect_submodule_names(repo_path);
     let dependency_snippets = extract_dependency_versions(repo_path, scope);
     let test_example = sample_test_convention(repo_path, scope);
@@ -44,18 +40,23 @@ pub fn format_context_sections(ctx: &ChildContext) -> String {
 
     if !ctx.submodules.is_empty() {
         sections.push_str("## Repository Structure\n\n");
-        sections.push_str("This repo uses git submodules. Your scope files live inside a submodule.\n");
+        sections
+            .push_str("This repo uses git submodules. Your scope files live inside a submodule.\n");
         sections.push_str("Submodules: ");
         sections.push_str(&ctx.submodules.join(", "));
         sections.push_str("\n\n");
-        sections.push_str("**Important**: When you modify files inside a submodule, you must commit\n");
-        sections.push_str("inside the submodule first, then update the pointer in the parent repo.\n");
+        sections
+            .push_str("**Important**: When you modify files inside a submodule, you must commit\n");
+        sections
+            .push_str("inside the submodule first, then update the pointer in the parent repo.\n");
         sections.push_str("See the Finalization section below for exact steps.\n\n");
     }
 
     if !ctx.dependency_snippets.is_empty() {
         sections.push_str("## Dependency Versions\n\n");
-        sections.push_str("Use these exact versions — do not rely on training data for API shapes:\n\n");
+        sections.push_str(
+            "Use these exact versions — do not rely on training data for API shapes:\n\n",
+        );
         for snippet in &ctx.dependency_snippets {
             sections.push_str("```toml\n");
             sections.push_str(snippet);
@@ -134,16 +135,21 @@ pub fn extract_testing_directives(task_content: &str) -> TestingDirectives {
         }
 
         if let Some(tier) = current_tier
-            && let Some(item) = trimmed.strip_prefix("- ") {
-                // Skip checkbox items (task lines like "- [ ] 1.3 Tests for...")
-                if !item.is_empty() && !item.starts_with("[ ]") && !item.starts_with("[x]") && !item.starts_with("[X]") {
-                    match tier {
-                        "scenarios" => directives.spec_scenarios.push(item.to_string()),
-                        "edge_cases" => directives.edge_cases.push(item.to_string()),
-                        _ => {}
-                    }
+            && let Some(item) = trimmed.strip_prefix("- ")
+        {
+            // Skip checkbox items (task lines like "- [ ] 1.3 Tests for...")
+            if !item.is_empty()
+                && !item.starts_with("[ ]")
+                && !item.starts_with("[x]")
+                && !item.starts_with("[X]")
+            {
+                match tier {
+                    "scenarios" => directives.spec_scenarios.push(item.to_string()),
+                    "edge_cases" => directives.edge_cases.push(item.to_string()),
+                    _ => {}
                 }
             }
+        }
     }
 
     directives
@@ -151,10 +157,7 @@ pub fn extract_testing_directives(task_content: &str) -> TestingDirectives {
 
 /// Format testing directives as a markdown section for the task file.
 /// Returns empty string when no directives are present.
-pub fn format_testing_section(
-    directives: &TestingDirectives,
-    test_convention: &str,
-) -> String {
+pub fn format_testing_section(directives: &TestingDirectives, test_convention: &str) -> String {
     if directives.is_empty() {
         return String::new();
     }
@@ -163,7 +166,8 @@ pub fn format_testing_section(
 
     if !directives.spec_scenarios.is_empty() {
         section.push_str("### Spec Scenarios (must pass)\n\n");
-        section.push_str("These scenarios from the spec MUST have corresponding passing tests:\n\n");
+        section
+            .push_str("These scenarios from the spec MUST have corresponding passing tests:\n\n");
         for s in &directives.spec_scenarios {
             section.push_str(&format!("- {s}\n"));
         }
@@ -267,25 +271,26 @@ fn extract_dependency_versions(repo_path: &Path, scope: &[String]) -> Vec<String
             let pkg = d.join("package.json");
             if pkg.exists() {
                 if let Ok(content) = std::fs::read_to_string(&pkg)
-                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let relative = pkg.strip_prefix(repo_path).unwrap_or(&pkg);
-                        let mut parts = vec![format!("# {}", relative.display())];
-                        if let Some(deps) = v.get("dependencies").and_then(|d| d.as_object()) {
-                            parts.push("[dependencies]".to_string());
-                            for (k, ver) in deps {
-                                parts.push(format!("{k} = {ver}"));
-                            }
-                        }
-                        if let Some(deps) = v.get("devDependencies").and_then(|d| d.as_object()) {
-                            parts.push("[devDependencies]".to_string());
-                            for (k, ver) in deps {
-                                parts.push(format!("{k} = {ver}"));
-                            }
-                        }
-                        if parts.len() > 1 {
-                            snippets.push(parts.join("\n"));
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
+                {
+                    let relative = pkg.strip_prefix(repo_path).unwrap_or(&pkg);
+                    let mut parts = vec![format!("# {}", relative.display())];
+                    if let Some(deps) = v.get("dependencies").and_then(|d| d.as_object()) {
+                        parts.push("[dependencies]".to_string());
+                        for (k, ver) in deps {
+                            parts.push(format!("{k} = {ver}"));
                         }
                     }
+                    if let Some(deps) = v.get("devDependencies").and_then(|d| d.as_object()) {
+                        parts.push("[devDependencies]".to_string());
+                        for (k, ver) in deps {
+                            parts.push(format!("{k} = {ver}"));
+                        }
+                    }
+                    if parts.len() > 1 {
+                        snippets.push(parts.join("\n"));
+                    }
+                }
                 break;
             }
             if d == repo_path {
@@ -317,7 +322,9 @@ fn sample_test_convention(repo_path: &Path, scope: &[String]) -> Option<String> 
                 d.join("src")
             } else {
                 dir = d.parent().map(|p| p.to_path_buf());
-                if d == repo_path { break; }
+                if d == repo_path {
+                    break;
+                }
                 continue;
             };
 
@@ -338,7 +345,9 @@ fn find_test_sample(src_dir: &Path) -> Option<String> {
 }
 
 fn find_test_sample_recursive(src_dir: &Path, root: &Path, depth: usize) -> Option<String> {
-    if depth > 3 { return None; }
+    if depth > 3 {
+        return None;
+    }
     let entries = std::fs::read_dir(src_dir).ok()?;
 
     // First pass: check .rs files in this directory
@@ -349,12 +358,11 @@ fn find_test_sample_recursive(src_dir: &Path, root: &Path, depth: usize) -> Opti
             subdirs.push(path);
         } else if path.extension().is_some_and(|e| e == "rs")
             && let Ok(content) = std::fs::read_to_string(&path)
-                && let Some(sample) = extract_first_test(&content) {
-                    let relative = path.strip_prefix(root)
-                        .unwrap_or(&path)
-                        .to_string_lossy();
-                    return Some(format!("// From {relative}\n{sample}"));
-                }
+            && let Some(sample) = extract_first_test(&content)
+        {
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+            return Some(format!("// From {relative}\n{sample}"));
+        }
     }
 
     // Second pass: recurse into subdirectories
@@ -379,9 +387,7 @@ fn extract_first_test(source: &str) -> Option<String> {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
-        if start.is_none()
-            && (trimmed == "#[test]" || trimmed == "#[tokio::test]")
-        {
+        if start.is_none() && (trimmed == "#[test]" || trimmed == "#[tokio::test]") {
             start = Some(i);
             brace_depth = 0;
             continue;
@@ -461,7 +467,9 @@ fn build_finalization_section(submodules: &[String]) -> String {
         section.push_str("4. Verify clean state: `git status` should show nothing to commit\n");
         section.push_str("5. Update the Result section below with status=COMPLETED\n");
     } else {
-        section.push_str("3. Commit with a clear message: `git commit -m \"feat(<label>): <summary>\"`\n");
+        section.push_str(
+            "3. Commit with a clear message: `git commit -m \"feat(<label>): <summary>\"`\n",
+        );
         section.push_str("4. Verify clean state: `git status` should show nothing to commit\n");
         section.push_str("5. Update the Result section below with status=COMPLETED\n");
     }
@@ -614,7 +622,9 @@ async fn test_async() {
     fn dependency_extraction_from_cargo_toml() {
         let dir = tempfile::tempdir().unwrap();
         let cargo = dir.path().join("Cargo.toml");
-        std::fs::write(&cargo, r#"
+        std::fs::write(
+            &cargo,
+            r#"
 [package]
 name = "test-crate"
 version = "0.1.0"
@@ -629,12 +639,11 @@ tokio-test = "0.4"
 
 [build-dependencies]
 cc = "1"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        let snippets = extract_dependency_versions(
-            dir.path(),
-            &["src/lib.rs".to_string()],
-        );
+        let snippets = extract_dependency_versions(dir.path(), &["src/lib.rs".to_string()]);
         assert!(!snippets.is_empty());
         let snippet = &snippets[0];
         assert!(snippet.contains("serde"));

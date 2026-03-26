@@ -7,9 +7,9 @@
 //!
 //! The `state` field is private — all mutations go through methods.
 
-use crate::types::*;
-use crate::store::{LifecycleState, StateStore};
 use crate::error::OpsxError;
+use crate::store::{LifecycleState, StateStore};
+use crate::types::*;
 
 /// Maximum audit log entries before rotation. Oldest entries are trimmed
 /// on save when the log exceeds this limit.
@@ -34,7 +34,11 @@ impl<S: StateStore> Lifecycle<S> {
         // Rotate audit log if it exceeds the limit
         if self.state.audit_log.len() > AUDIT_LOG_MAX {
             let trim = self.state.audit_log.len() - AUDIT_LOG_MAX;
-            tracing::debug!(trimmed = trim, max = AUDIT_LOG_MAX, "audit log rotation — oldest entries trimmed");
+            tracing::debug!(
+                trimmed = trim,
+                max = AUDIT_LOG_MAX,
+                "audit log rotation — oldest entries trimmed"
+            );
             self.state.audit_log.drain(..trim);
         }
         self.store.save(&self.state)
@@ -70,7 +74,12 @@ impl<S: StateStore> Lifecycle<S> {
     // ─── Design node operations ─────────────────────────────────────
 
     /// Create a new design node.
-    pub fn create_node(&mut self, id: &str, title: &str, parent: Option<&str>) -> Result<&DesignNode, OpsxError> {
+    pub fn create_node(
+        &mut self,
+        id: &str,
+        title: &str,
+        parent: Option<&str>,
+    ) -> Result<&DesignNode, OpsxError> {
         if self.state.nodes.iter().any(|n| n.id == id) {
             return Err(OpsxError::AlreadyExists(format!("node '{id}'")));
         }
@@ -107,7 +116,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Transition a design node to a new state (FSM-validated).
     pub fn transition_node(&mut self, id: &str, target: NodeState) -> Result<(), OpsxError> {
-        let idx = self.state.nodes.iter().position(|n| n.id == id)
+        let idx = self
+            .state
+            .nodes
+            .iter()
+            .position(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
 
         let from = self.state.nodes[idx].state;
@@ -124,17 +137,19 @@ impl<S: StateStore> Lifecycle<S> {
         match target {
             NodeState::Decided => {
                 if !self.state.nodes[idx].open_questions.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("node '{}' has {} open questions — resolve before deciding",
-                            id, self.state.nodes[idx].open_questions.len())
-                    ));
+                    return Err(OpsxError::PreconditionFailed(format!(
+                        "node '{}' has {} open questions — resolve before deciding",
+                        id,
+                        self.state.nodes[idx].open_questions.len()
+                    )));
                 }
             }
             NodeState::Implementing => {
                 if from != NodeState::Decided && from != NodeState::Blocked {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("node '{}' must be decided (or blocked) before implementing", id)
-                    ));
+                    return Err(OpsxError::PreconditionFailed(format!(
+                        "node '{}' must be decided (or blocked) before implementing",
+                        id
+                    )));
                 }
             }
             _ => {}
@@ -162,8 +177,17 @@ impl<S: StateStore> Lifecycle<S> {
     /// in the audit trail with a mandatory reason.
     ///
     /// This is the "break glass" operator override — it should be rare and visible.
-    pub fn force_transition_node(&mut self, id: &str, target: NodeState, reason: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+    pub fn force_transition_node(
+        &mut self,
+        id: &str,
+        target: NodeState,
+        reason: &str,
+    ) -> Result<(), OpsxError> {
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
 
         let from_str = node.state.as_str().to_string();
@@ -181,7 +205,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Add an open question to a node.
     pub fn add_question(&mut self, id: &str, question: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.open_questions.push(question.into());
         node.updated_at = iso_now();
@@ -190,7 +218,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Remove an open question from a node.
     pub fn remove_question(&mut self, id: &str, question: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.open_questions.retain(|q| q != question);
         node.updated_at = iso_now();
@@ -199,7 +231,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Set a node's title.
     pub fn set_title(&mut self, id: &str, title: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.title = title.into();
         node.updated_at = iso_now();
@@ -208,7 +244,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Set a node's overview.
     pub fn set_overview(&mut self, id: &str, overview: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.overview = overview.into();
         node.updated_at = iso_now();
@@ -217,7 +257,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Add a tag to a node.
     pub fn add_tag(&mut self, id: &str, tag: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         if !node.tags.contains(&tag.to_string()) {
             node.tags.push(tag.into());
@@ -228,7 +272,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Remove a tag from a node.
     pub fn remove_tag(&mut self, id: &str, tag: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.tags.retain(|t| t != tag);
         node.updated_at = iso_now();
@@ -237,7 +285,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Set a node's priority.
     pub fn set_priority(&mut self, id: &str, priority: Priority) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.priority = Some(priority);
         node.updated_at = iso_now();
@@ -246,7 +298,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Set a node's issue type.
     pub fn set_issue_type(&mut self, id: &str, issue_type: IssueType) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.issue_type = Some(issue_type);
         node.updated_at = iso_now();
@@ -255,7 +311,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Bind a node to an OpenSpec change.
     pub fn bind_change(&mut self, node_id: &str, change_name: &str) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == node_id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == node_id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{node_id}'")))?;
         node.bound_change = Some(change_name.into());
         node.updated_at = iso_now();
@@ -264,7 +324,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Add a decision to a node.
     pub fn add_decision(&mut self, id: &str, decision: Decision) -> Result<(), OpsxError> {
-        let node = self.state.nodes.iter_mut().find(|n| n.id == id)
+        let node = self
+            .state
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         node.decisions.push(decision);
         node.updated_at = iso_now();
@@ -274,24 +338,41 @@ impl<S: StateStore> Lifecycle<S> {
     /// Delete a node. Returns the removed node. Fails if the node has children.
     pub fn delete_node(&mut self, id: &str) -> Result<DesignNode, OpsxError> {
         // Check for children
-        let has_children = self.state.nodes.iter().any(|n| n.parent.as_deref() == Some(id));
+        let has_children = self
+            .state
+            .nodes
+            .iter()
+            .any(|n| n.parent.as_deref() == Some(id));
         if has_children {
-            return Err(OpsxError::PreconditionFailed(
-                format!("node '{}' has children — delete or reparent them first", id)
-            ));
+            return Err(OpsxError::PreconditionFailed(format!(
+                "node '{}' has children — delete or reparent them first",
+                id
+            )));
         }
         // Check for milestone membership
         for ms in &self.state.milestones {
             if ms.nodes.contains(&id.to_string()) {
-                return Err(OpsxError::PreconditionFailed(
-                    format!("node '{}' belongs to milestone '{}' — remove it first", id, ms.name)
-                ));
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "node '{}' belongs to milestone '{}' — remove it first",
+                    id, ms.name
+                )));
             }
         }
-        let idx = self.state.nodes.iter().position(|n| n.id == id)
+        let idx = self
+            .state
+            .nodes
+            .iter()
+            .position(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         let node = self.state.nodes.remove(idx);
-        self.audit_and_save("node", id, node.state.as_str(), "(deleted)", Some("node deleted"), false)?;
+        self.audit_and_save(
+            "node",
+            id,
+            node.state.as_str(),
+            "(deleted)",
+            Some("node deleted"),
+            false,
+        )?;
         Ok(node)
     }
 
@@ -301,11 +382,22 @@ impl<S: StateStore> Lifecycle<S> {
         for ms in &mut self.state.milestones {
             ms.nodes.retain(|n| n != id);
         }
-        let idx = self.state.nodes.iter().position(|n| n.id == id)
+        let idx = self
+            .state
+            .nodes
+            .iter()
+            .position(|n| n.id == id)
             .ok_or_else(|| OpsxError::NotFound(format!("node '{id}'")))?;
         let node = self.state.nodes.remove(idx);
         tracing::warn!(node_id = id, reason = reason, "FORCED node deletion");
-        self.audit_and_save("node", id, node.state.as_str(), "(force-deleted)", Some(reason), true)?;
+        self.audit_and_save(
+            "node",
+            id,
+            node.state.as_str(),
+            "(force-deleted)",
+            Some(reason),
+            true,
+        )?;
         Ok(node)
     }
 
@@ -327,7 +419,12 @@ impl<S: StateStore> Lifecycle<S> {
     // ─── Change operations ──────────────────────────────────────────
 
     /// Create a new OpenSpec change.
-    pub fn create_change(&mut self, name: &str, title: &str, bound_node: Option<&str>) -> Result<(), OpsxError> {
+    pub fn create_change(
+        &mut self,
+        name: &str,
+        title: &str,
+        bound_node: Option<&str>,
+    ) -> Result<(), OpsxError> {
         if self.state.changes.iter().any(|c| c.name == name) {
             return Err(OpsxError::AlreadyExists(format!("change '{name}'")));
         }
@@ -349,7 +446,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Transition a change to a new state (FSM-validated).
     pub fn transition_change(&mut self, name: &str, target: ChangeState) -> Result<(), OpsxError> {
-        let idx = self.state.changes.iter().position(|c| c.name == name)
+        let idx = self
+            .state
+            .changes
+            .iter()
+            .position(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
 
         let from = self.state.changes[idx].state;
@@ -373,9 +474,10 @@ impl<S: StateStore> Lifecycle<S> {
             }
             ChangeState::Planned => {
                 if change.specs.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("change '{}' has no specs — specs are required before planning", name)
-                    ));
+                    return Err(OpsxError::PreconditionFailed(format!(
+                        "change '{}' has no specs — specs are required before planning",
+                        name
+                    )));
                 }
                 if change.tasks_total == 0 {
                     return Err(OpsxError::PreconditionFailed(
@@ -414,8 +516,17 @@ impl<S: StateStore> Lifecycle<S> {
     }
 
     /// 🔓 ESCAPE HATCH: Force a change state transition.
-    pub fn force_transition_change(&mut self, name: &str, target: ChangeState, reason: &str) -> Result<(), OpsxError> {
-        let change = self.state.changes.iter_mut().find(|c| c.name == name)
+    pub fn force_transition_change(
+        &mut self,
+        name: &str,
+        target: ChangeState,
+        reason: &str,
+    ) -> Result<(), OpsxError> {
+        let change = self
+            .state
+            .changes
+            .iter_mut()
+            .find(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
 
         let from_str = change.state.as_str().to_string();
@@ -428,12 +539,23 @@ impl<S: StateStore> Lifecycle<S> {
         );
         change.state = target;
         change.updated_at = iso_now();
-        self.audit_and_save("change", name, &from_str, target.as_str(), Some(reason), true)
+        self.audit_and_save(
+            "change",
+            name,
+            &from_str,
+            target.as_str(),
+            Some(reason),
+            true,
+        )
     }
 
     /// Register a spec domain on a change (e.g. "auth", "auth/tokens").
     pub fn add_spec(&mut self, name: &str, domain: &str) -> Result<(), OpsxError> {
-        let change = self.state.changes.iter_mut().find(|c| c.name == name)
+        let change = self
+            .state
+            .changes
+            .iter_mut()
+            .find(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
         if !change.specs.contains(&domain.to_string()) {
             change.specs.push(domain.into());
@@ -444,7 +566,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Register a test file on a change (TDD — stubs written before implementation).
     pub fn add_test_file(&mut self, name: &str, path: &str) -> Result<(), OpsxError> {
-        let change = self.state.changes.iter_mut().find(|c| c.name == name)
+        let change = self
+            .state
+            .changes
+            .iter_mut()
+            .find(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
         if !change.test_files.contains(&path.to_string()) {
             change.test_files.push(path.into());
@@ -455,7 +581,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Delete a change.
     pub fn delete_change(&mut self, name: &str) -> Result<Change, OpsxError> {
-        let idx = self.state.changes.iter().position(|c| c.name == name)
+        let idx = self
+            .state
+            .changes
+            .iter()
+            .position(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
         let change = self.state.changes.remove(idx);
         // Unbind from any node
@@ -464,13 +594,29 @@ impl<S: StateStore> Lifecycle<S> {
                 node.bound_change = None;
             }
         }
-        self.audit_and_save("change", name, change.state.as_str(), "(deleted)", Some("change deleted"), false)?;
+        self.audit_and_save(
+            "change",
+            name,
+            change.state.as_str(),
+            "(deleted)",
+            Some("change deleted"),
+            false,
+        )?;
         Ok(change)
     }
 
     /// Update change task progress.
-    pub fn update_change_progress(&mut self, name: &str, total: usize, done: usize) -> Result<(), OpsxError> {
-        let change = self.state.changes.iter_mut().find(|c| c.name == name)
+    pub fn update_change_progress(
+        &mut self,
+        name: &str,
+        total: usize,
+        done: usize,
+    ) -> Result<(), OpsxError> {
+        let change = self
+            .state
+            .changes
+            .iter_mut()
+            .find(|c| c.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("change '{name}'")))?;
         change.tasks_total = total;
         change.tasks_done = done;
@@ -506,7 +652,12 @@ impl<S: StateStore> Lifecycle<S> {
             self.create_milestone(milestone)?;
         }
 
-        let ms = self.state.milestones.iter_mut().find(|m| m.name == milestone).unwrap();
+        let ms = self
+            .state
+            .milestones
+            .iter_mut()
+            .find(|m| m.name == milestone)
+            .unwrap();
 
         if ms.state == MilestoneState::Frozen {
             return Err(OpsxError::MilestoneFrozen(milestone.into()));
@@ -521,7 +672,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Remove a node from a milestone.
     pub fn milestone_remove(&mut self, milestone: &str, node_id: &str) -> Result<(), OpsxError> {
-        let ms = self.state.milestones.iter_mut().find(|m| m.name == milestone)
+        let ms = self
+            .state
+            .milestones
+            .iter_mut()
+            .find(|m| m.name == milestone)
             .ok_or_else(|| OpsxError::NotFound(format!("milestone '{milestone}'")))?;
         ms.nodes.retain(|n| n != node_id);
         ms.updated_at = iso_now();
@@ -530,7 +685,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Freeze a milestone.
     pub fn milestone_freeze(&mut self, name: &str) -> Result<(), OpsxError> {
-        let ms = self.state.milestones.iter_mut().find(|m| m.name == name)
+        let ms = self
+            .state
+            .milestones
+            .iter_mut()
+            .find(|m| m.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("milestone '{name}'")))?;
         let from_str = ms.state.to_string();
         ms.state = MilestoneState::Frozen;
@@ -540,7 +699,11 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Unfreeze a milestone.
     pub fn milestone_unfreeze(&mut self, name: &str) -> Result<(), OpsxError> {
-        let ms = self.state.milestones.iter_mut().find(|m| m.name == name)
+        let ms = self
+            .state
+            .milestones
+            .iter_mut()
+            .find(|m| m.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("milestone '{name}'")))?;
         let from_str = ms.state.to_string();
         ms.state = MilestoneState::Open;
@@ -550,16 +713,31 @@ impl<S: StateStore> Lifecycle<S> {
 
     /// Delete a milestone.
     pub fn delete_milestone(&mut self, name: &str) -> Result<Milestone, OpsxError> {
-        let idx = self.state.milestones.iter().position(|m| m.name == name)
+        let idx = self
+            .state
+            .milestones
+            .iter()
+            .position(|m| m.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("milestone '{name}'")))?;
         let ms = self.state.milestones.remove(idx);
-        self.audit_and_save("milestone", name, &ms.state.to_string(), "(deleted)", Some("milestone deleted"), false)?;
+        self.audit_and_save(
+            "milestone",
+            name,
+            &ms.state.to_string(),
+            "(deleted)",
+            Some("milestone deleted"),
+            false,
+        )?;
         Ok(ms)
     }
 
     /// Get milestone readiness report.
     pub fn milestone_status(&self, name: &str) -> Result<MilestoneStatus, OpsxError> {
-        let ms = self.state.milestones.iter().find(|m| m.name == name)
+        let ms = self
+            .state
+            .milestones
+            .iter()
+            .find(|m| m.name == name)
             .ok_or_else(|| OpsxError::NotFound(format!("milestone '{name}'")))?;
 
         let mut status = MilestoneStatus {
@@ -607,7 +785,11 @@ pub struct MilestoneStatus {
 
 impl MilestoneStatus {
     pub fn progress_pct(&self) -> usize {
-        if self.total == 0 { 0 } else { self.implemented * 100 / self.total }
+        if self.total == 0 {
+            0
+        } else {
+            self.implemented * 100 / self.total
+        }
     }
 }
 
@@ -685,7 +867,10 @@ mod tests {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_node("parent", "Parent", None).unwrap();
         lc.create_node("child", "Child", Some("parent")).unwrap();
-        assert_eq!(lc.get_node("child").unwrap().parent.as_deref(), Some("parent"));
+        assert_eq!(
+            lc.get_node("child").unwrap().parent.as_deref(),
+            Some("parent")
+        );
     }
 
     #[test]
@@ -713,7 +898,8 @@ mod tests {
     fn force_transition_bypasses_fsm() {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_node("test", "Test", None).unwrap();
-        lc.force_transition_node("test", NodeState::Implemented, "corrupted state").unwrap();
+        lc.force_transition_node("test", NodeState::Implemented, "corrupted state")
+            .unwrap();
         assert_eq!(lc.get_node("test").unwrap().state, NodeState::Implemented);
         let last = lc.audit_log().last().unwrap();
         assert!(last.forced);
@@ -779,10 +965,16 @@ mod tests {
         assert!(lc.get_node("test").unwrap().tags.is_empty());
 
         lc.set_priority("test", Priority::new(2)).unwrap();
-        assert_eq!(lc.get_node("test").unwrap().priority, Some(Priority::new(2)));
+        assert_eq!(
+            lc.get_node("test").unwrap().priority,
+            Some(Priority::new(2))
+        );
 
         lc.set_issue_type("test", IssueType::Feature).unwrap();
-        assert_eq!(lc.get_node("test").unwrap().issue_type, Some(IssueType::Feature));
+        assert_eq!(
+            lc.get_node("test").unwrap().issue_type,
+            Some(IssueType::Feature)
+        );
     }
 
     #[test]
@@ -833,23 +1025,34 @@ mod tests {
 
         // 1. Specs before specced
         lc.add_spec("my-change", "core").unwrap();
-        lc.transition_change("my-change", ChangeState::Specced).unwrap();
+        lc.transition_change("my-change", ChangeState::Specced)
+            .unwrap();
 
         // 2. Tasks before planned
         lc.update_change_progress("my-change", 3, 0).unwrap();
-        lc.transition_change("my-change", ChangeState::Planned).unwrap();
+        lc.transition_change("my-change", ChangeState::Planned)
+            .unwrap();
 
         // 3. TDD: test stubs before implementing
-        lc.transition_change("my-change", ChangeState::Testing).unwrap();
+        lc.transition_change("my-change", ChangeState::Testing)
+            .unwrap();
         lc.add_test_file("my-change", "src/core.test.ts").unwrap();
-        lc.transition_change("my-change", ChangeState::Implementing).unwrap();
+        lc.transition_change("my-change", ChangeState::Implementing)
+            .unwrap();
 
         // 4. Complete tasks before verifying
         lc.update_change_progress("my-change", 3, 3).unwrap();
-        lc.transition_change("my-change", ChangeState::Verifying).unwrap();
-        lc.transition_change("my-change", ChangeState::Archived).unwrap();
+        lc.transition_change("my-change", ChangeState::Verifying)
+            .unwrap();
+        lc.transition_change("my-change", ChangeState::Archived)
+            .unwrap();
 
-        let change = lc.state().changes.iter().find(|c| c.name == "my-change").unwrap();
+        let change = lc
+            .state()
+            .changes
+            .iter()
+            .find(|c| c.name == "my-change")
+            .unwrap();
         assert_eq!(change.state, ChangeState::Archived);
     }
 
@@ -862,7 +1065,10 @@ mod tests {
         let err = lc.transition_change("no-specs", ChangeState::Specced);
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("no specs"), "should mention missing specs: {msg}");
+        assert!(
+            msg.contains("no specs"),
+            "should mention missing specs: {msg}"
+        );
     }
 
     #[test]
@@ -870,13 +1076,17 @@ mod tests {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_change("no-tasks", "No Tasks", None).unwrap();
         lc.add_spec("no-tasks", "core").unwrap();
-        lc.transition_change("no-tasks", ChangeState::Specced).unwrap();
+        lc.transition_change("no-tasks", ChangeState::Specced)
+            .unwrap();
 
         // Try to go to planned without tasks
         let err = lc.transition_change("no-tasks", ChangeState::Planned);
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("no tasks"), "should mention missing tasks: {msg}");
+        assert!(
+            msg.contains("no tasks"),
+            "should mention missing tasks: {msg}"
+        );
     }
 
     #[test]
@@ -884,22 +1094,34 @@ mod tests {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_change("impl-test", "Impl Test", None).unwrap();
         lc.add_spec("impl-test", "core").unwrap();
-        lc.transition_change("impl-test", ChangeState::Specced).unwrap();
+        lc.transition_change("impl-test", ChangeState::Specced)
+            .unwrap();
         lc.update_change_progress("impl-test", 2, 0).unwrap();
-        lc.transition_change("impl-test", ChangeState::Planned).unwrap();
-        lc.transition_change("impl-test", ChangeState::Testing).unwrap();
+        lc.transition_change("impl-test", ChangeState::Planned)
+            .unwrap();
+        lc.transition_change("impl-test", ChangeState::Testing)
+            .unwrap();
 
         // Try implementing without test files — TDD rejects
         let err = lc.transition_change("impl-test", ChangeState::Implementing);
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("no test files"), "should mention missing test files: {msg}");
+        assert!(
+            msg.contains("no test files"),
+            "should mention missing test files: {msg}"
+        );
 
         // Add test stubs and try again
         lc.add_test_file("impl-test", "src/core.test.ts").unwrap();
-        lc.transition_change("impl-test", ChangeState::Implementing).unwrap();
+        lc.transition_change("impl-test", ChangeState::Implementing)
+            .unwrap();
         assert_eq!(
-            lc.state().changes.iter().find(|c| c.name == "impl-test").unwrap().state,
+            lc.state()
+                .changes
+                .iter()
+                .find(|c| c.name == "impl-test")
+                .unwrap()
+                .state,
             ChangeState::Implementing
         );
     }
@@ -910,43 +1132,64 @@ mod tests {
         lc.create_change("test-test", "Test Test", None).unwrap();
         // Force to Planned without proper preconditions to test Testing gate
         lc.add_spec("test-test", "core").unwrap();
-        lc.transition_change("test-test", ChangeState::Specced).unwrap();
+        lc.transition_change("test-test", ChangeState::Specced)
+            .unwrap();
         lc.update_change_progress("test-test", 1, 0).unwrap();
-        lc.transition_change("test-test", ChangeState::Planned).unwrap();
+        lc.transition_change("test-test", ChangeState::Planned)
+            .unwrap();
 
         // Testing should succeed (specs exist)
-        lc.transition_change("test-test", ChangeState::Testing).unwrap();
+        lc.transition_change("test-test", ChangeState::Testing)
+            .unwrap();
     }
 
     #[test]
     fn verifying_requires_completed_tasks() {
         let (_tmp, mut lc) = test_lifecycle();
-        lc.create_change("verify-test", "Verify Test", None).unwrap();
+        lc.create_change("verify-test", "Verify Test", None)
+            .unwrap();
         lc.add_spec("verify-test", "core").unwrap();
-        lc.transition_change("verify-test", ChangeState::Specced).unwrap();
+        lc.transition_change("verify-test", ChangeState::Specced)
+            .unwrap();
         lc.update_change_progress("verify-test", 2, 0).unwrap();
-        lc.transition_change("verify-test", ChangeState::Planned).unwrap();
-        lc.transition_change("verify-test", ChangeState::Testing).unwrap();
+        lc.transition_change("verify-test", ChangeState::Planned)
+            .unwrap();
+        lc.transition_change("verify-test", ChangeState::Testing)
+            .unwrap();
         lc.add_test_file("verify-test", "test.rs").unwrap();
-        lc.transition_change("verify-test", ChangeState::Implementing).unwrap();
+        lc.transition_change("verify-test", ChangeState::Implementing)
+            .unwrap();
 
         // Try to verify with zero completed tasks
         let err = lc.transition_change("verify-test", ChangeState::Verifying);
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("no completed tasks"), "should mention incomplete tasks: {msg}");
+        assert!(
+            msg.contains("no completed tasks"),
+            "should mention incomplete tasks: {msg}"
+        );
 
         // Complete tasks and try again
         lc.update_change_progress("verify-test", 2, 2).unwrap();
-        lc.transition_change("verify-test", ChangeState::Verifying).unwrap();
+        lc.transition_change("verify-test", ChangeState::Verifying)
+            .unwrap();
     }
 
     #[test]
     fn change_can_be_abandoned_from_any_active_state() {
-        for start_state in [ChangeState::Proposed, ChangeState::Specced, ChangeState::Planned,
-                            ChangeState::Testing, ChangeState::Implementing, ChangeState::Verifying] {
-            assert!(start_state.can_transition_to(ChangeState::Abandoned),
-                    "{:?} should be able to transition to Abandoned", start_state);
+        for start_state in [
+            ChangeState::Proposed,
+            ChangeState::Specced,
+            ChangeState::Planned,
+            ChangeState::Testing,
+            ChangeState::Implementing,
+            ChangeState::Verifying,
+        ] {
+            assert!(
+                start_state.can_transition_to(ChangeState::Abandoned),
+                "{:?} should be able to transition to Abandoned",
+                start_state
+            );
         }
     }
 
@@ -955,23 +1198,31 @@ mod tests {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_change("reopen", "Reopen Test", None).unwrap();
         lc.add_spec("reopen", "core").unwrap();
-        lc.transition_change("reopen", ChangeState::Specced).unwrap();
+        lc.transition_change("reopen", ChangeState::Specced)
+            .unwrap();
         lc.update_change_progress("reopen", 1, 0).unwrap();
-        lc.transition_change("reopen", ChangeState::Planned).unwrap();
-        lc.transition_change("reopen", ChangeState::Testing).unwrap();
+        lc.transition_change("reopen", ChangeState::Planned)
+            .unwrap();
+        lc.transition_change("reopen", ChangeState::Testing)
+            .unwrap();
         lc.add_test_file("reopen", "test.rs").unwrap();
-        lc.transition_change("reopen", ChangeState::Implementing).unwrap();
+        lc.transition_change("reopen", ChangeState::Implementing)
+            .unwrap();
         lc.update_change_progress("reopen", 1, 1).unwrap();
-        lc.transition_change("reopen", ChangeState::Verifying).unwrap();
-        lc.transition_change("reopen", ChangeState::Archived).unwrap();
-        lc.transition_change("reopen", ChangeState::Proposed).unwrap();
+        lc.transition_change("reopen", ChangeState::Verifying)
+            .unwrap();
+        lc.transition_change("reopen", ChangeState::Archived)
+            .unwrap();
+        lc.transition_change("reopen", ChangeState::Proposed)
+            .unwrap();
     }
 
     #[test]
     fn delete_change_unbinds_node() {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_node("feat", "Feature", None).unwrap();
-        lc.create_change("feat-change", "Feature Change", Some("feat")).unwrap();
+        lc.create_change("feat-change", "Feature Change", Some("feat"))
+            .unwrap();
         lc.bind_change("feat", "feat-change").unwrap();
         assert!(lc.get_node("feat").unwrap().bound_change.is_some());
 
@@ -984,7 +1235,12 @@ mod tests {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_change("prog", "Progress", None).unwrap();
         lc.update_change_progress("prog", 10, 7).unwrap();
-        let change = lc.state().changes.iter().find(|c| c.name == "prog").unwrap();
+        let change = lc
+            .state()
+            .changes
+            .iter()
+            .find(|c| c.name == "prog")
+            .unwrap();
         assert_eq!(change.tasks_total, 10);
         assert_eq!(change.tasks_done, 7);
     }
@@ -1057,7 +1313,8 @@ mod tests {
         let (_tmp, mut lc) = test_lifecycle();
         lc.create_node("a", "A", None).unwrap();
         lc.transition_node("a", NodeState::Exploring).unwrap();
-        lc.force_transition_node("a", NodeState::Implemented, "test").unwrap();
+        lc.force_transition_node("a", NodeState::Implemented, "test")
+            .unwrap();
         assert_eq!(lc.audit_log().len(), 3);
         assert!(!lc.audit_log()[0].forced);
         assert!(!lc.audit_log()[1].forced);

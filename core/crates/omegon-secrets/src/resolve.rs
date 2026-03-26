@@ -9,8 +9,6 @@ use crate::vault::VaultClient;
 use secrecy::{ExposeSecret, SecretString};
 use std::process::Command;
 
-
-
 /// Well-known environment variables that commonly contain secrets.
 pub const WELL_KNOWN_SECRET_ENVS: &[&str] = &[
     "ANTHROPIC_API_KEY",
@@ -56,9 +54,9 @@ pub fn resolve_secret(name: &str, recipes: &RecipeStore) -> Option<SecretString>
 /// Resolve a secret by name with async vault support.
 /// This is the preferred method when vault recipes might be present.
 pub async fn resolve_secret_async(
-    name: &str, 
-    recipes: &RecipeStore, 
-    vault_client: Option<&VaultClient>
+    name: &str,
+    recipes: &RecipeStore,
+    vault_client: Option<&VaultClient>,
 ) -> Option<SecretString> {
     // 1. Check environment variable
     if let Ok(val) = std::env::var(name) {
@@ -80,7 +78,10 @@ pub fn execute_recipe(name: &str, recipe: &Recipe) -> Option<SecretString> {
     match recipe {
         Recipe::String(recipe_str) => execute_string_recipe(name, recipe_str),
         Recipe::Vault { .. } => {
-            tracing::warn!(name = name, "vault recipe requires async resolution - use execute_recipe_async");
+            tracing::warn!(
+                name = name,
+                "vault recipe requires async resolution - use execute_recipe_async"
+            );
             None
         }
     }
@@ -88,9 +89,9 @@ pub fn execute_recipe(name: &str, recipe: &Recipe) -> Option<SecretString> {
 
 /// Execute a recipe to resolve a secret value with async vault support.
 pub async fn execute_recipe_async(
-    name: &str, 
-    recipe: &Recipe, 
-    vault_client: Option<&VaultClient>
+    name: &str,
+    recipe: &Recipe,
+    vault_client: Option<&VaultClient>,
 ) -> Option<SecretString> {
     match recipe {
         Recipe::String(recipe_str) => execute_string_recipe(name, recipe_str),
@@ -103,7 +104,7 @@ pub async fn execute_recipe_async(
 }
 
 /// Execute a string-based recipe to resolve a secret value.
-/// 
+///
 /// Recipe formats:
 /// - `env:VAR_NAME` — read from environment variable
 /// - `cmd:some command` — execute shell command, trim output
@@ -121,10 +122,7 @@ pub fn execute_string_recipe(name: &str, recipe: &str) -> Option<SecretString> {
             .map(SecretString::from),
 
         "cmd" => {
-            let output = Command::new("sh")
-                .args(["-c", payload])
-                .output()
-                .ok()?;
+            let output = Command::new("sh").args(["-c", payload]).output().ok()?;
             if output.status.success() {
                 let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if val.is_empty() {
@@ -139,26 +137,24 @@ pub fn execute_string_recipe(name: &str, recipe: &str) -> Option<SecretString> {
         }
 
         // Cross-platform keyring via the `keyring` crate
-        "keyring" | "keychain" => {
-            match keyring::Entry::new(KEYRING_SERVICE, payload) {
-                Ok(entry) => match entry.get_password() {
-                    Ok(val) if !val.is_empty() => Some(SecretString::from(val)),
-                    Ok(_) => None,
-                    Err(keyring::Error::NoEntry) => {
-                        tracing::debug!(name = name, "no keyring entry found");
-                        None
-                    }
-                    Err(e) => {
-                        tracing::warn!(name = name, error = %e, "keyring access failed");
-                        None
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(name = name, error = %e, "keyring entry creation failed");
+        "keyring" | "keychain" => match keyring::Entry::new(KEYRING_SERVICE, payload) {
+            Ok(entry) => match entry.get_password() {
+                Ok(val) if !val.is_empty() => Some(SecretString::from(val)),
+                Ok(_) => None,
+                Err(keyring::Error::NoEntry) => {
+                    tracing::debug!(name = name, "no keyring entry found");
                     None
                 }
+                Err(e) => {
+                    tracing::warn!(name = name, error = %e, "keyring access failed");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(name = name, error = %e, "keyring entry creation failed");
+                None
             }
-        }
+        },
 
         "file" => {
             let content = std::fs::read_to_string(payload).ok()?;
@@ -173,7 +169,10 @@ pub fn execute_string_recipe(name: &str, recipe: &str) -> Option<SecretString> {
         "vault" => {
             // String vault recipes are handled asynchronously in SecretsManager
             // This function is for synchronous resolution only
-            tracing::warn!(recipe = recipe, "vault recipes require async resolution - use execute_recipe_async");
+            tracing::warn!(
+                recipe = recipe,
+                "vault recipes require async resolution - use execute_recipe_async"
+            );
             None
         }
 
@@ -187,8 +186,8 @@ pub fn execute_string_recipe(name: &str, recipe: &str) -> Option<SecretString> {
 /// Resolve a secret from Vault using the vault: recipe format.
 /// Format: "vault:path#key" where path is the Vault path and key is the field name.
 pub async fn resolve_vault_secret(
-    vault_client: Option<&VaultClient>, 
-    recipe: &str
+    vault_client: Option<&VaultClient>,
+    recipe: &str,
 ) -> Option<SecretString> {
     // Parse vault:path#key format — validation before client access
     let (_kind, payload) = recipe.split_once(':')?;
@@ -203,7 +202,10 @@ pub async fn resolve_vault_secret(
         tracing::warn!(recipe = recipe, "path traversal in vault recipe — rejected");
         return None;
     }
-    if path.contains('\0') || path.chars().any(|c| c.is_control()) || path.to_ascii_lowercase().contains("%2e%2e") {
+    if path.contains('\0')
+        || path.chars().any(|c| c.is_control())
+        || path.to_ascii_lowercase().contains("%2e%2e")
+    {
         tracing::warn!(recipe = recipe, "invalid characters in vault recipe path");
         return None;
     }
@@ -214,7 +216,10 @@ pub async fn resolve_vault_secret(
         return None;
     }
     if key.contains('/') || key.contains('\\') {
-        tracing::warn!(recipe = recipe, "path separators in vault recipe key — rejected");
+        tracing::warn!(
+            recipe = recipe,
+            "path separators in vault recipe key — rejected"
+        );
         return None;
     }
 
@@ -274,20 +279,29 @@ mod tests {
         // Use CARGO_PKG_NAME which is always set during cargo test
         let recipes = RecipeStore::empty();
         let val = resolve_secret("CARGO_PKG_NAME", &recipes);
-        assert_eq!(val.map(|s| s.expose_secret().to_string()), Some("omegon-secrets".to_string()));
+        assert_eq!(
+            val.map(|s| s.expose_secret().to_string()),
+            Some("omegon-secrets".to_string())
+        );
     }
 
     #[test]
     fn execute_env_recipe() {
         // Use CARGO_PKG_NAME (always "omegon-secrets" during test)
         let val = execute_string_recipe("test", "env:CARGO_PKG_NAME");
-        assert_eq!(val.map(|s| s.expose_secret().to_string()), Some("omegon-secrets".to_string()));
+        assert_eq!(
+            val.map(|s| s.expose_secret().to_string()),
+            Some("omegon-secrets".to_string())
+        );
     }
 
     #[test]
     fn execute_cmd_recipe() {
         let val = execute_string_recipe("test", "cmd:echo hello");
-        assert_eq!(val.map(|s| s.expose_secret().to_string()), Some("hello".to_string()));
+        assert_eq!(
+            val.map(|s| s.expose_secret().to_string()),
+            Some("hello".to_string())
+        );
     }
 
     #[test]
@@ -296,7 +310,10 @@ mod tests {
         let path = dir.path().join("secret.txt");
         std::fs::write(&path, "my_secret\nextra_line\n").unwrap();
         let val = execute_string_recipe("test", &format!("file:{}", path.display()));
-        assert_eq!(val.map(|s| s.expose_secret().to_string()), Some("my_secret".to_string()));
+        assert_eq!(
+            val.map(|s| s.expose_secret().to_string()),
+            Some("my_secret".to_string())
+        );
     }
 
     #[test]
@@ -307,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_vault_secret_test() {
-        use crate::vault::{VaultClient, VaultConfig, AuthConfig};
+        use crate::vault::{AuthConfig, VaultClient, VaultConfig};
         use mockito::Server;
         use secrecy::SecretString;
 
@@ -329,14 +346,20 @@ mod tests {
         let mut client = VaultClient::new(config).unwrap();
         client.set_token(SecretString::from("hvs.test"));
 
-        let secret = resolve_vault_secret(Some(&client), "vault:secret/data/omegon/api-keys#anthropic").await;
-        assert_eq!(secret.map(|s| s.expose_secret().to_string()), Some("sk-ant-test123".to_string()));
+        let secret =
+            resolve_vault_secret(Some(&client), "vault:secret/data/omegon/api-keys#anthropic")
+                .await;
+        assert_eq!(
+            secret.map(|s| s.expose_secret().to_string()),
+            Some("sk-ant-test123".to_string())
+        );
     }
 
     #[tokio::test]
     async fn vault_recipe_rejects_path_traversal() {
         // Defense-in-depth: resolve.rs rejects before VaultClient sees the path
-        let result = resolve_vault_secret(None, "vault:secret/data/../../sys/seal-status#key").await;
+        let result =
+            resolve_vault_secret(None, "vault:secret/data/../../sys/seal-status#key").await;
         assert!(result.is_none());
     }
 
@@ -381,8 +404,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_vault_recipe() {
-        use crate::vault::{VaultClient, VaultConfig, AuthConfig};
         use crate::recipes::Recipe;
+        use crate::vault::{AuthConfig, VaultClient, VaultConfig};
         use mockito::Server;
         use secrecy::SecretString;
 
@@ -407,13 +430,16 @@ mod tests {
         // Test the new vault recipe format
         let recipe = Recipe::vault("secret/data/omegon/api-keys#anthropic".to_string());
         let secret = execute_recipe_async("test", &recipe, Some(&client)).await;
-        assert_eq!(secret.map(|s| s.expose_secret().to_string()), Some("sk-ant-test123".to_string()));
+        assert_eq!(
+            secret.map(|s| s.expose_secret().to_string()),
+            Some("sk-ant-test123".to_string())
+        );
     }
 
     #[tokio::test]
     async fn resolve_secret_async_test() {
         use crate::recipes::RecipeStore;
-        use crate::vault::{VaultClient, VaultConfig, AuthConfig};
+        use crate::vault::{AuthConfig, VaultClient, VaultConfig};
         use mockito::Server;
         use secrecy::SecretString;
 
@@ -438,12 +464,20 @@ mod tests {
         // Set up test recipe store with proper temp directory
         let temp_dir = tempfile::tempdir().unwrap();
         let mut recipes = RecipeStore::load(temp_dir.path()).unwrap();
-        recipes.set_vault("ANTHROPIC_API_KEY".to_string(), "secret/data/omegon/api-keys#anthropic".to_string()).unwrap();
+        recipes
+            .set_vault(
+                "ANTHROPIC_API_KEY".to_string(),
+                "secret/data/omegon/api-keys#anthropic".to_string(),
+            )
+            .unwrap();
 
         // Test async resolution
         let secret = resolve_secret_async("ANTHROPIC_API_KEY", &recipes, Some(&client)).await;
-        assert_eq!(secret.map(|s| s.expose_secret().to_string()), Some("sk-ant-test123".to_string()));
-        
+        assert_eq!(
+            secret.map(|s| s.expose_secret().to_string()),
+            Some("sk-ant-test123".to_string())
+        );
+
         // Env var priority: if ANTHROPIC_API_KEY is set in the real env,
         // it wins over the vault recipe. We don't set/unset it here
         // because that's racy. The vault test above proves vault resolution
@@ -453,7 +487,7 @@ mod tests {
     #[test]
     fn vault_recipe_warns_on_sync_execution() {
         use crate::recipes::Recipe;
-        
+
         let recipe = Recipe::vault("secret/data/omegon/api-keys#anthropic".to_string());
         let secret = execute_recipe("test", &recipe);
         assert!(secret.is_none()); // Should return None and log warning

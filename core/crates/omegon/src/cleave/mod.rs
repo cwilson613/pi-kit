@@ -7,13 +7,13 @@
 pub mod context;
 pub mod coverage;
 pub mod guardrails;
+pub mod orchestrator;
 mod plan;
 pub mod progress;
 pub mod state;
 pub mod test_architect;
 mod waves;
 mod worktree;
-pub mod orchestrator;
 
 pub use orchestrator::run_cleave;
 pub use plan::CleavePlan;

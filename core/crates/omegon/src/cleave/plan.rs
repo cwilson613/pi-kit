@@ -34,7 +34,8 @@ impl CleavePlan {
                 if !labels.contains(&dep.as_str()) {
                     anyhow::bail!(
                         "Child '{}' depends on '{}' which is not in the plan",
-                        child.label, dep
+                        child.label,
+                        dep
                     );
                 }
             }

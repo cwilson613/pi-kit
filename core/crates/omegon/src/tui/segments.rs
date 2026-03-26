@@ -7,7 +7,7 @@
 use std::sync::OnceLock;
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, BorderType, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
 use tui_syntax_highlight::Highlighter;
 
 use super::theme::Theme;
@@ -24,7 +24,10 @@ fn syntax_cache() -> &'static SyntaxCache {
         let ss = syntect::parsing::SyntaxSet::load_defaults_newlines();
         let ts = syntect::highlighting::ThemeSet::load_defaults();
         let theme = ts.themes["base16-ocean.dark"].clone();
-        SyntaxCache { syntax_set: ss, theme }
+        SyntaxCache {
+            syntax_set: ss,
+            theme,
+        }
     })
 }
 
@@ -118,32 +121,66 @@ pub enum SegmentContent {
 /// Call sites that have model info should set meta fields after construction.
 impl Segment {
     pub fn user_prompt(text: impl Into<String>) -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::UserPrompt { text: text.into() } }
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::UserPrompt { text: text.into() },
+        }
     }
     pub fn assistant_text() -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::AssistantText {
-            text: String::new(), thinking: String::new(), complete: false,
-        }}
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::AssistantText {
+                text: String::new(),
+                thinking: String::new(),
+                complete: false,
+            },
+        }
     }
     pub fn tool_card(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: id.into(), name: name.into(),
-            args_summary: None, detail_args: None,
-            result_summary: None, detail_result: None,
-            is_error: false, complete: false, expanded: false,
-        }}
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: id.into(),
+                name: name.into(),
+                args_summary: None,
+                detail_args: None,
+                result_summary: None,
+                detail_result: None,
+                is_error: false,
+                complete: false,
+                expanded: false,
+            },
+        }
     }
     pub fn system(text: impl Into<String>) -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::SystemNotification { text: text.into() } }
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::SystemNotification { text: text.into() },
+        }
     }
     pub fn lifecycle(icon: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::LifecycleEvent { icon: icon.into(), text: text.into() } }
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::LifecycleEvent {
+                icon: icon.into(),
+                text: text.into(),
+            },
+        }
     }
     pub fn image(path: std::path::PathBuf, alt: impl Into<String>) -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::Image { path, alt: alt.into() } }
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::Image {
+                path,
+                alt: alt.into(),
+            },
+        }
     }
     pub fn separator() -> Self {
-        Self { meta: SegmentMeta::default(), content: SegmentContent::TurnSeparator }
+        Self {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::TurnSeparator,
+        }
     }
 }
 
@@ -157,14 +194,33 @@ impl Segment {
         use SegmentContent::*;
         match &self.content {
             UserPrompt { text } => render_user_prompt(text, area, buf, t),
-            AssistantText { text, thinking, complete } => {
+            AssistantText {
+                text,
+                thinking,
+                complete,
+            } => {
                 render_assistant_text(text, thinking, *complete, &self.meta, area, buf, t);
             }
             ToolCard {
-                name, detail_args, detail_result, is_error, complete, expanded, ..
+                name,
+                detail_args,
+                detail_result,
+                is_error,
+                complete,
+                expanded,
+                ..
             } => {
-                render_tool_card(name, detail_args.as_deref(), detail_result.as_deref(),
-                    *is_error, *complete, *expanded, area, buf, t);
+                render_tool_card(
+                    name,
+                    detail_args.as_deref(),
+                    detail_result.as_deref(),
+                    *is_error,
+                    *complete,
+                    *expanded,
+                    area,
+                    buf,
+                    t,
+                );
             }
             SystemNotification { text } => render_system(text, area, buf, t),
             LifecycleEvent { icon, text } => render_lifecycle(icon, text, area, buf, t),
@@ -177,7 +233,9 @@ impl Segment {
     /// Renders into a temp buffer to get the exact height — matches
     /// Paragraph's word-aware wrapping precisely.
     pub fn height(&self, width: u16, t: &dyn Theme) -> u16 {
-        if width == 0 { return 1; }
+        if width == 0 {
+            return 1;
+        }
         use SegmentContent::*;
 
         // Quick paths for fixed-height types
@@ -192,13 +250,25 @@ impl Segment {
         let estimate = match &self.content {
             UserPrompt { text } => (text.len() / width.max(1) as usize) as u16 + 4,
             AssistantText { text, thinking, .. } => {
-                let meta_line = if self.meta.model_id.is_some() || self.meta.provider.is_some() { 1u16 } else { 0 };
+                let meta_line = if self.meta.model_id.is_some() || self.meta.provider.is_some() {
+                    1u16
+                } else {
+                    0
+                };
                 (text.lines().count() + thinking.lines().count()) as u16 + 6 + meta_line
             }
-            ToolCard { detail_args, detail_result, expanded, .. } => {
+            ToolCard {
+                detail_args,
+                detail_result,
+                expanded,
+                ..
+            } => {
                 let max_r = if *expanded { 200 } else { 12 };
                 let a = detail_args.as_ref().map(|a| a.lines().count()).unwrap_or(0);
-                let r = detail_result.as_ref().map(|r| r.lines().count().min(max_r)).unwrap_or(0);
+                let r = detail_result
+                    .as_ref()
+                    .map(|r| r.lines().count().min(max_r))
+                    .unwrap_or(0);
                 // 3 = border top + title + border bottom. Compact cards.
                 (a + r + 3) as u16
             }
@@ -217,7 +287,9 @@ impl Segment {
         // and background-only cells. Only count rows with real text INSIDE
         // the card borders.
         let mut last_used: u16 = 0;
-        let _border_chars: &[char] = &['│', '─', '╭', '╮', '╰', '╯', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼'];
+        let _border_chars: &[char] = &[
+            '│', '─', '╭', '╮', '╰', '╯', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼',
+        ];
         for y in (0..h).rev() {
             let mut has_content = false;
             // Check interior columns only (skip first 2 and last 2 for borders + padding)
@@ -247,12 +319,13 @@ impl Segment {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn render_user_prompt(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
-    if area.width < 3 || area.height == 0 { return; }
+    if area.width < 3 || area.height == 0 {
+        return;
+    }
 
     // Subtle tinted background for the user prompt region
     let bg = t.user_msg_bg();
-    let block = Block::default()
-        .style(Style::default().bg(bg));
+    let block = Block::default().style(Style::default().bg(bg));
     block.render(area, buf);
 
     // Accent bar on the left edge
@@ -273,7 +346,13 @@ fn render_user_prompt(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
 
     let content = Line::from(vec![
         Span::styled("▸ ", Style::default().fg(t.accent()).bg(bg)),
-        Span::styled(text.to_string(), Style::default().fg(t.fg()).bg(bg).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(t.fg())
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     Paragraph::new(content)
         .wrap(Wrap { trim: false })
@@ -308,11 +387,17 @@ fn build_meta_tag(meta: &SegmentMeta) -> String {
 }
 
 fn render_assistant_text(
-    text: &str, thinking: &str, complete: bool,
+    text: &str,
+    thinking: &str,
+    complete: bool,
     meta: &SegmentMeta,
-    area: Rect, buf: &mut Buffer, t: &dyn Theme,
+    area: Rect,
+    buf: &mut Buffer,
+    t: &dyn Theme,
 ) {
-    if area.width < 3 || area.height == 0 { return; }
+    if area.width < 3 || area.height == 0 {
+        return;
+    }
 
     // Left gutter — accent-colored bar for the full height of the response
     for row in 0..area.height {
@@ -348,7 +433,10 @@ fn render_assistant_text(
         let show = think_lines.len().min(6);
         lines.push(Line::from(vec![
             Span::styled("◌ ", Style::default().fg(t.border())),
-            Span::styled("thinking ", Style::default().fg(t.dim()).add_modifier(Modifier::ITALIC)),
+            Span::styled(
+                "thinking ",
+                Style::default().fg(t.dim()).add_modifier(Modifier::ITALIC),
+            ),
             Span::styled(
                 format!("({} lines)", think_lines.len()),
                 Style::default().fg(t.border_dim()),
@@ -357,7 +445,9 @@ fn render_assistant_text(
         for line in think_lines.iter().take(show) {
             lines.push(Line::from(Span::styled(
                 format!("  {line}"),
-                Style::default().fg(t.border()).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(t.border())
+                    .add_modifier(Modifier::ITALIC),
             )));
         }
         if think_lines.len() > show {
@@ -392,11 +482,18 @@ fn render_assistant_text(
         } else if is_table_line(line) {
             // Track table context: header → separator → body
             let is_header = match table_state {
-                TableState::None => { table_state = TableState::Header; true }
-                TableState::Header if is_table_separator(line) => {
-                    table_state = TableState::Body; false
+                TableState::None => {
+                    table_state = TableState::Header;
+                    true
                 }
-                _ => { table_state = TableState::Body; false }
+                TableState::Header if is_table_separator(line) => {
+                    table_state = TableState::Body;
+                    false
+                }
+                _ => {
+                    table_state = TableState::Body;
+                    false
+                }
             };
             lines.push(render_table_line(line, is_header, t));
         } else {
@@ -416,12 +513,22 @@ fn render_assistant_text(
 }
 
 fn render_tool_card(
-    name: &str, detail_args: Option<&str>, detail_result: Option<&str>,
-    is_error: bool, complete: bool, expanded: bool,
-    area: Rect, buf: &mut Buffer, t: &dyn Theme,
+    name: &str,
+    detail_args: Option<&str>,
+    detail_result: Option<&str>,
+    is_error: bool,
+    complete: bool,
+    expanded: bool,
+    area: Rect,
+    buf: &mut Buffer,
+    t: &dyn Theme,
 ) {
     let (icon, status_color) = if complete {
-        if is_error { ("✗", t.error()) } else { ("✓", t.success()) }
+        if is_error {
+            ("✗", t.error())
+        } else {
+            ("✓", t.success())
+        }
     } else {
         ("⟳", t.warning())
     };
@@ -472,7 +579,9 @@ fn render_tool_card(
         Span::styled(format!(" {icon} "), Style::default().fg(status_color)),
         Span::styled(
             format!("{display_name} "),
-            Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
 
@@ -525,7 +634,11 @@ fn render_tool_card(
                 // Try to extract just the file path from JSON args
                 let file_path = serde_json::from_str::<serde_json::Value>(args)
                     .ok()
-                    .and_then(|v| v.get("file").or(v.get("path")).and_then(|f| f.as_str().map(String::from)));
+                    .and_then(|v| {
+                        v.get("file")
+                            .or(v.get("path"))
+                            .and_then(|f| f.as_str().map(String::from))
+                    });
                 if let Some(path) = file_path {
                     lines.push(Line::from(vec![
                         Span::styled("▸ ", Style::default().fg(t.accent_muted()).bg(bg)),
@@ -545,7 +658,10 @@ fn render_tool_card(
                 // File path — will be rendered as clickable link post-render
                 lines.push(Line::from(Span::styled(
                     args.to_string(),
-                    Style::default().fg(t.accent_muted()).bg(bg).add_modifier(Modifier::UNDERLINED),
+                    Style::default()
+                        .fg(t.accent_muted())
+                        .bg(bg)
+                        .add_modifier(Modifier::UNDERLINED),
                 )));
             }
             _ => {
@@ -573,7 +689,11 @@ fn render_tool_card(
         if !lines.is_empty() {
             // Separator line — matches card border color (red on error)
             let sep_color = if is_error { t.error() } else { t.border_dim() };
-            let sep_bg = if is_error { t.tool_error_bg() } else { t.surface_bg() };
+            let sep_bg = if is_error {
+                t.tool_error_bg()
+            } else {
+                t.surface_bg()
+            };
             lines.push(Line::from(Span::styled(
                 "─".repeat(card_inner.width as usize),
                 Style::default().fg(sep_color).bg(sep_bg),
@@ -582,16 +702,17 @@ fn render_tool_card(
 
         // Pretty-print JSON results — tool outputs often arrive as compact JSON
         // with literal \n inside string values (e.g. commit messages).
-        let pretty_result: std::borrow::Cow<'_, str> = if result.starts_with('{') || result.starts_with('[') {
-            match serde_json::from_str::<serde_json::Value>(result) {
-                Ok(val) => std::borrow::Cow::Owned(
-                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| result.to_string())
-                ),
-                Err(_) => std::borrow::Cow::Borrowed(result),
-            }
-        } else {
-            std::borrow::Cow::Borrowed(result)
-        };
+        let pretty_result: std::borrow::Cow<'_, str> =
+            if result.starts_with('{') || result.starts_with('[') {
+                match serde_json::from_str::<serde_json::Value>(result) {
+                    Ok(val) => std::borrow::Cow::Owned(
+                        serde_json::to_string_pretty(&val).unwrap_or_else(|_| result.to_string()),
+                    ),
+                    Err(_) => std::borrow::Cow::Borrowed(result),
+                }
+            } else {
+                std::borrow::Cow::Borrowed(result)
+            };
         let result_lines: Vec<&str> = pretty_result.lines().collect();
         let max_lines = if expanded { 200 } else { 12 };
         let show = result_lines.len().min(max_lines);
@@ -607,10 +728,14 @@ fn render_tool_card(
         if let Some(highlighted_lines) = highlighted {
             for line in highlighted_lines {
                 // Apply surface_bg to each span
-                let spans: Vec<Span<'_>> = line.spans.into_iter().map(|mut s| {
-                    s.style = s.style.bg(t.surface_bg());
-                    s
-                }).collect();
+                let spans: Vec<Span<'_>> = line
+                    .spans
+                    .into_iter()
+                    .map(|mut s| {
+                        s.style = s.style.bg(t.surface_bg());
+                        s
+                    })
+                    .collect();
                 lines.push(Line::from(spans));
             }
         } else {
@@ -628,30 +753,30 @@ fn render_tool_card(
                 use ansi_to_tui::IntoText as _;
                 if let Ok(text) = joined.into_text() {
                     for line in text.lines {
-                        let spans: Vec<Span<'_>> = line.spans.into_iter().map(|mut s| {
-                            // Preserve ANSI foreground, apply surface_bg
-                            s.style = s.style.bg(t.surface_bg());
-                            // If no foreground was set by ANSI, use muted
-                            if s.style.fg.is_none() {
-                                s.style = s.style.fg(t.muted());
-                            }
-                            s
-                        }).collect();
+                        let spans: Vec<Span<'_>> = line
+                            .spans
+                            .into_iter()
+                            .map(|mut s| {
+                                // Preserve ANSI foreground, apply surface_bg
+                                s.style = s.style.bg(t.surface_bg());
+                                // If no foreground was set by ANSI, use muted
+                                if s.style.fg.is_none() {
+                                    s.style = s.style.fg(t.muted());
+                                }
+                                s
+                            })
+                            .collect();
                         lines.push(Line::from(spans));
                     }
                 } else {
                     // ANSI parse failed — fall back to plain
                     for line in &result_lines[..show] {
-                        lines.push(Line::from(Span::styled(
-                            line.to_string(), result_style,
-                        )));
+                        lines.push(Line::from(Span::styled(line.to_string(), result_style)));
                     }
                 }
             } else {
                 for line in &result_lines[..show] {
-                    lines.push(Line::from(Span::styled(
-                        line.to_string(), result_style,
-                    )));
+                    lines.push(Line::from(Span::styled(line.to_string(), result_style)));
                 }
             }
         }
@@ -660,7 +785,10 @@ fn render_tool_card(
             let hint = if expanded {
                 format!("  ── {} lines ── Tab to collapse", result_lines.len())
             } else {
-                format!("  ── {} more lines ── Ctrl+O to expand", result_lines.len() - show)
+                format!(
+                    "  ── {} more lines ── Ctrl+O to expand",
+                    result_lines.len() - show
+                )
             };
             lines.push(Line::from(Span::styled(
                 hint,
@@ -679,17 +807,21 @@ fn render_tool_card(
     {
         let file_path = args.lines().next().unwrap_or(args).trim();
         if !file_path.is_empty() && card_inner.height > 0 {
-                let url = format!("file://{file_path}");
-                let link_area = Rect {
-                    x: card_inner.x,
-                    y: card_inner.y, // first line is the file path
-                    width: card_inner.width.min(file_path.len() as u16),
-                    height: 1,
-                };
-                let link = hyperrat::Link::new(file_path, url)
-                    .style(Style::default().fg(t.accent_muted()).bg(bg).add_modifier(Modifier::UNDERLINED));
-                link.render(link_area, buf);
-            }
+            let url = format!("file://{file_path}");
+            let link_area = Rect {
+                x: card_inner.x,
+                y: card_inner.y, // first line is the file path
+                width: card_inner.width.min(file_path.len() as u16),
+                height: 1,
+            };
+            let link = hyperrat::Link::new(file_path, url).style(
+                Style::default()
+                    .fg(t.accent_muted())
+                    .bg(bg)
+                    .add_modifier(Modifier::UNDERLINED),
+            );
+            link.render(link_area, buf);
+        }
     }
 }
 
@@ -746,24 +878,41 @@ fn try_highlight<'a>(
         "read" | "edit" | "write" => true,
         "bash" => detail_args.is_some_and(|cmd| {
             let first_word = cmd.split_whitespace().next().unwrap_or("");
-            matches!(first_word, "cat" | "head" | "tail" | "sed" | "awk" | "less" | "bat" | "nl")
+            matches!(
+                first_word,
+                "cat" | "head" | "tail" | "sed" | "awk" | "less" | "bat" | "nl"
+            )
         }),
         _ => false,
     };
-    let highlighter = Highlighter::new(cache.theme.clone())
-        .line_numbers(show_line_numbers);
+    let highlighter = Highlighter::new(cache.theme.clone()).line_numbers(show_line_numbers);
     let text_lines: Vec<&str> = text.lines().collect();
-    let highlighted = highlighter.highlight_lines(text_lines, syntax, &cache.syntax_set).ok()?;
-    Some(highlighted.lines.into_iter().map(|line| {
-        Line::from(line.spans.into_iter().map(|span| {
-            Span::styled(span.content.to_string(), span.style)
-        }).collect::<Vec<_>>())
-    }).collect())
+    let highlighted = highlighter
+        .highlight_lines(text_lines, syntax, &cache.syntax_set)
+        .ok()?;
+    Some(
+        highlighted
+            .lines
+            .into_iter()
+            .map(|line| {
+                Line::from(
+                    line.spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.content.to_string(), span.style))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Table parsing state — tracks whether we're in header, separator, or body rows.
 #[derive(Clone, Copy, PartialEq)]
-enum TableState { None, Header, Body }
+enum TableState {
+    None,
+    Header,
+    Body,
+}
 
 /// Detect markdown table lines: `| cell | cell |` or `|---|---|`
 fn is_table_line(line: &str) -> bool {
@@ -774,14 +923,21 @@ fn is_table_line(line: &str) -> bool {
 /// Detect table separator: `|---|---|` or `| --- | --- |`
 fn is_table_separator(line: &str) -> bool {
     let trimmed = line.trim();
-    trimmed.starts_with('|') && trimmed.ends_with('|')
-        && trimmed.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
+    trimmed.starts_with('|')
+        && trimmed.ends_with('|')
+        && trimmed
+            .chars()
+            .all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
 }
 
 /// Render a markdown table line with cell highlighting.
 fn render_table_line<'a>(line: &str, is_header: bool, t: &dyn Theme) -> Line<'a> {
     let trimmed = line.trim();
-    let row_bg = if is_header { t.card_bg() } else { t.surface_bg() };
+    let row_bg = if is_header {
+        t.card_bg()
+    } else {
+        t.surface_bg()
+    };
 
     // Separator row: |---|---| → render as a thin rule
     if is_table_separator(trimmed) {
@@ -792,7 +948,10 @@ fn render_table_line<'a>(line: &str, is_header: bool, t: &dyn Theme) -> Line<'a>
         spans.push(Span::styled("├", Style::default().fg(sep_fg).bg(sep_bg)));
         for (i, cell) in cells.iter().enumerate() {
             let w = cell.len().max(1);
-            spans.push(Span::styled("─".repeat(w), Style::default().fg(sep_fg).bg(sep_bg)));
+            spans.push(Span::styled(
+                "─".repeat(w),
+                Style::default().fg(sep_fg).bg(sep_bg),
+            ));
             if i < cells.len() - 1 {
                 spans.push(Span::styled("┼", Style::default().fg(sep_fg).bg(sep_bg)));
             }
@@ -803,9 +962,7 @@ fn render_table_line<'a>(line: &str, is_header: bool, t: &dyn Theme) -> Line<'a>
 
     // Content row: | cell | cell |
     let mut spans: Vec<Span<'a>> = Vec::new();
-    let cells: Vec<&str> = trimmed.split('|')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let cells: Vec<&str> = trimmed.split('|').filter(|s| !s.is_empty()).collect();
 
     let pipe = Style::default().fg(t.border()).bg(row_bg);
 
@@ -816,7 +973,10 @@ fn render_table_line<'a>(line: &str, is_header: bool, t: &dyn Theme) -> Line<'a>
             // Header cells: bright accent, bold, slightly different background
             spans.push(Span::styled(
                 format!(" {cell_text} "),
-                Style::default().fg(t.accent_bright()).bg(row_bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(t.accent_bright())
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
             // Content cells: inline highlighting (bold, code, etc.)
@@ -838,11 +998,12 @@ fn render_table_line<'a>(line: &str, is_header: bool, t: &dyn Theme) -> Line<'a>
 }
 
 fn render_system(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
-    if area.width < 3 || area.height == 0 { return; }
+    if area.width < 3 || area.height == 0 {
+        return;
+    }
 
     let bg = t.card_bg();
-    let block = Block::default()
-        .style(Style::default().bg(bg));
+    let block = Block::default().style(Style::default().bg(bg));
     block.render(area, buf);
 
     // Accent bar on left edge — muted cyan for system messages
@@ -863,10 +1024,14 @@ fn render_system(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
     let mut lines: Vec<Line<'_>> = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let style = if i == 0 && line.starts_with('Ω') {
-            Style::default().fg(t.accent()).bg(bg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(t.accent())
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
         } else if i == 0 && (line.starts_with('⚠') || line.starts_with('⟳')) {
             Style::default().fg(t.warning()).bg(bg)
-        } else if line.starts_with("  ▸") || line.starts_with("  /") || line.starts_with("  Ctrl") {
+        } else if line.starts_with("  ▸") || line.starts_with("  /") || line.starts_with("  Ctrl")
+        {
             Style::default().fg(t.muted()).bg(bg)
         } else {
             Style::default().fg(t.accent_muted()).bg(bg)
@@ -881,7 +1046,9 @@ fn render_system(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
 }
 
 fn render_lifecycle(icon: &str, text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme) {
-    if area.width < 4 || area.height == 0 { return; }
+    if area.width < 4 || area.height == 0 {
+        return;
+    }
     let line = Line::from(vec![
         Span::styled("  ", Style::default()),
         Span::styled(format!("{icon} "), Style::default().fg(t.border())),
@@ -893,13 +1060,17 @@ fn render_lifecycle(icon: &str, text: &str, area: Rect, buf: &mut Buffer, t: &dy
 /// Render a placeholder for an image (used when StatefulProtocol isn't available).
 /// The actual image rendering happens in conv_widget.rs via ratatui-image.
 fn render_image_placeholder(
-    path: &std::path::Path, alt: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme,
+    path: &std::path::Path,
+    alt: &str,
+    area: Rect,
+    buf: &mut Buffer,
+    t: &dyn Theme,
 ) {
-    if area.height == 0 { return; }
+    if area.height == 0 {
+        return;
+    }
 
-    let filename = path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("image");
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
     let label = if alt.is_empty() || alt == "clipboard paste" {
         format!(" 📎 {filename} ")
     } else {
@@ -919,7 +1090,9 @@ fn render_image_placeholder(
 }
 
 fn render_separator(area: Rect, buf: &mut Buffer, t: &dyn Theme) {
-    if area.height == 0 || area.width < 4 { return; }
+    if area.height == 0 || area.width < 4 {
+        return;
+    }
     // Thin ruled divider with faded edges
     let pad = 2;
     let rule_w = (area.width as usize).saturating_sub(pad * 2);
@@ -968,31 +1141,48 @@ mod tests {
 
     #[test]
     fn tool_card_has_borders() {
-        let seg = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "1".into(), name: "bash".into(),
-            args_summary: Some("ls -la".into()),
-            detail_args: Some("ls -la".into()),
-            result_summary: Some("total 42".into()),
-            detail_result: Some("total 42\ndrwxr-xr-x  5 user staff".into()),
-            is_error: false, complete: true, expanded: false,
-        }};
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "bash".into(),
+                args_summary: Some("ls -la".into()),
+                detail_args: Some("ls -la".into()),
+                result_summary: Some("total 42".into()),
+                detail_result: Some("total 42\ndrwxr-xr-x  5 user staff".into()),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
         let (area, mut buf) = make_buf(60, 10);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
         assert!(text.contains("╭"), "should have top border: {text}");
         assert!(text.contains("╰"), "should have bottom border: {text}");
-        assert!(text.contains("list"), "should have display name for ls: {text}");
+        assert!(
+            text.contains("list"),
+            "should have display name for ls: {text}"
+        );
         assert!(text.contains("✓"), "should have checkmark: {text}");
     }
 
     #[test]
     fn tool_card_error_styling() {
-        let seg = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "1".into(), name: "write".into(),
-            args_summary: None, detail_args: Some("/tmp/test".into()),
-            result_summary: None, detail_result: Some("permission denied".into()),
-            is_error: true, complete: true, expanded: false,
-        }};
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "write".into(),
+                args_summary: None,
+                detail_args: Some("/tmp/test".into()),
+                result_summary: None,
+                detail_result: Some("permission denied".into()),
+                is_error: true,
+                complete: true,
+                expanded: false,
+            },
+        };
         let (area, mut buf) = make_buf(60, 8);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
@@ -1001,11 +1191,14 @@ mod tests {
 
     #[test]
     fn assistant_text_with_code_fence() {
-        let seg = Segment { meta: SegmentMeta::default(), content: SegmentContent::AssistantText {
-            text: "Here's code:\n```rust\nfn main() {}\n```\nDone.".into(),
-            thinking: String::new(),
-            complete: true,
-        }};
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::AssistantText {
+                text: "Here's code:\n```rust\nfn main() {}\n```\nDone.".into(),
+                thinking: String::new(),
+                complete: true,
+            },
+        };
         let (area, mut buf) = make_buf(60, 10);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
@@ -1022,12 +1215,20 @@ mod tests {
         let h = user.height(80, &t);
         assert!(h >= 2 && h <= 5, "user prompt height: {h}");
 
-        let tool = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "1".into(), name: "bash".into(),
-            args_summary: None, detail_args: Some("echo hello".into()),
-            result_summary: None, detail_result: Some("hello".into()),
-            is_error: false, complete: true, expanded: false,
-        }};
+        let tool = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "bash".into(),
+                args_summary: None,
+                detail_args: Some("echo hello".into()),
+                result_summary: None,
+                detail_result: Some("hello".into()),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
         let h = tool.height(80, &t);
         assert!(h >= 4, "tool card height should be >= 4, got {h}");
     }
@@ -1063,83 +1264,134 @@ mod tests {
     fn table_line_renders() {
         let line = render_table_line("| Name | Value |", true, &Alpharius);
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(text.contains("Name"), "header should contain cell text: {text}");
-        assert!(text.contains("│"), "should contain box drawing separator: {text}");
+        assert!(
+            text.contains("Name"),
+            "header should contain cell text: {text}"
+        );
+        assert!(
+            text.contains("│"),
+            "should contain box drawing separator: {text}"
+        );
 
         let body = render_table_line("| foo | bar |", false, &Alpharius);
         let body_text: String = body.spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(body_text.contains("foo"), "body should contain cell text: {body_text}");
+        assert!(
+            body_text.contains("foo"),
+            "body should contain cell text: {body_text}"
+        );
 
         let sep = render_table_line("|---|---|", false, &Alpharius);
         let sep_text: String = sep.spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(sep_text.contains("─"), "separator should use rule chars: {sep_text}");
-        assert!(sep_text.contains("┼"), "separator should have cross: {sep_text}");
+        assert!(
+            sep_text.contains("─"),
+            "separator should use rule chars: {sep_text}"
+        );
+        assert!(
+            sep_text.contains("┼"),
+            "separator should have cross: {sep_text}"
+        );
     }
 
     #[test]
     fn expanded_tool_card_shows_more() {
-        let long_result = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let seg_collapsed = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "1".into(), name: "read".into(),
-            args_summary: None, detail_args: Some("file.rs".into()),
-            result_summary: None, detail_result: Some(long_result.clone()),
-            is_error: false, complete: true, expanded: false,
-        }};
-        let seg_expanded = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "1".into(), name: "read".into(),
-            args_summary: None, detail_args: Some("file.rs".into()),
-            result_summary: None, detail_result: Some(long_result),
-            is_error: false, complete: true, expanded: true,
-        }};
+        let long_result = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let seg_collapsed = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "read".into(),
+                args_summary: None,
+                detail_args: Some("file.rs".into()),
+                result_summary: None,
+                detail_result: Some(long_result.clone()),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
+        let seg_expanded = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "read".into(),
+                args_summary: None,
+                detail_args: Some("file.rs".into()),
+                result_summary: None,
+                detail_result: Some(long_result),
+                is_error: false,
+                complete: true,
+                expanded: true,
+            },
+        };
 
         let h_collapsed = seg_collapsed.height(80, &Alpharius);
         let h_expanded = seg_expanded.height(80, &Alpharius);
-        assert!(h_expanded > h_collapsed,
-            "expanded ({h_expanded}) should be taller than collapsed ({h_collapsed})");
+        assert!(
+            h_expanded > h_collapsed,
+            "expanded ({h_expanded}) should be taller than collapsed ({h_collapsed})"
+        );
     }
 
     #[test]
     fn ansi_colored_tool_output_preserves_colors() {
         // Simulate cargo output with ANSI red error
         let ansi_result = "\x1b[31merror\x1b[0m: expected `;`\n  --> src/main.rs:5:10";
-        let seg = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "t1".into(),
-            name: "bash".into(),
-            args_summary: Some("cargo check".into()),
-            detail_args: Some("cargo check".into()),
-            result_summary: None,
-            detail_result: Some(ansi_result.into()),
-            is_error: false,
-            complete: true,
-            expanded: false,
-        }};
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "t1".into(),
+                name: "bash".into(),
+                args_summary: Some("cargo check".into()),
+                detail_args: Some("cargo check".into()),
+                result_summary: None,
+                detail_result: Some(ansi_result.into()),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
         let (area, mut buf) = make_buf(80, 12);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
         // The ANSI escape should be parsed, not rendered as raw escape
-        assert!(!text.contains("\x1b"), "ANSI escapes should be parsed, not raw: {text}");
+        assert!(
+            !text.contains("\x1b"),
+            "ANSI escapes should be parsed, not raw: {text}"
+        );
         assert!(text.contains("error"), "should contain error text: {text}");
-        assert!(text.contains("main.rs"), "should contain file reference: {text}");
+        assert!(
+            text.contains("main.rs"),
+            "should contain file reference: {text}"
+        );
     }
 
     #[test]
     fn non_ansi_tool_output_renders_plain() {
         let plain_result = "hello world\nline 2";
-        let seg = Segment { meta: SegmentMeta::default(), content: SegmentContent::ToolCard {
-            id: "t1".into(),
-            name: "bash".into(),
-            args_summary: Some("echo hi".into()),
-            detail_args: Some("echo hi".into()),
-            result_summary: None,
-            detail_result: Some(plain_result.into()),
-            is_error: false,
-            complete: true,
-            expanded: false,
-        }};
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "t1".into(),
+                name: "bash".into(),
+                args_summary: Some("echo hi".into()),
+                detail_args: Some("echo hi".into()),
+                result_summary: None,
+                detail_result: Some(plain_result.into()),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
         let (area, mut buf) = make_buf(80, 10);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
-        assert!(text.contains("hello world"), "should render plain text: {text}");
+        assert!(
+            text.contains("hello world"),
+            "should render plain text: {text}"
+        );
     }
 
     #[test]
@@ -1152,10 +1404,16 @@ mod tests {
             ..Default::default()
         };
         let tag = build_meta_tag(&meta);
-        assert!(tag.contains("claude-sonnet-4-6"), "should strip provider prefix: {tag}");
+        assert!(
+            tag.contains("claude-sonnet-4-6"),
+            "should strip provider prefix: {tag}"
+        );
         assert!(tag.contains("anthropic"), "should include provider: {tag}");
         assert!(tag.contains("victory"), "should include tier: {tag}");
-        assert!(tag.contains("think:medium"), "should include thinking level: {tag}");
+        assert!(
+            tag.contains("think:medium"),
+            "should include thinking level: {tag}"
+        );
     }
 
     #[test]

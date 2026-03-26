@@ -11,12 +11,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use omegon_traits::{
-    BusEvent, BusRequest, CommandDefinition, CommandResult,
-    ContextInjection, ContextProvider, ContextSignals, Feature,
-    ToolDefinition, ToolResult, ContentBlock,
+    BusEvent, BusRequest, CommandDefinition, CommandResult, ContentBlock, ContextInjection,
+    ContextProvider, ContextSignals, Feature, ToolDefinition, ToolResult,
 };
 
 use crate::lifecycle::context::LifecycleContextProvider;
@@ -70,12 +69,13 @@ impl LifecycleFeature {
     /// Bootstrap a markdown design node into opsx-core.
     /// Creates the node and syncs state + open questions from the markdown source.
     fn bootstrap_node_to_opsx(&self, opsx: &mut OpsxLifecycle<JsonFileStore>, node: &DesignNode) {
-        let current_opsx = OpsxNodeState::parse(node.status.as_str())
-            .unwrap_or(OpsxNodeState::Seed);
+        let current_opsx =
+            OpsxNodeState::parse(node.status.as_str()).unwrap_or(OpsxNodeState::Seed);
         // Create (parent validation is skipped — parent may not be in opsx yet)
         let _ = opsx.create_node(&node.id, &node.title, None);
         if current_opsx != OpsxNodeState::Seed {
-            let _ = opsx.force_transition_node(&node.id, current_opsx, "bootstrap sync from markdown");
+            let _ =
+                opsx.force_transition_node(&node.id, current_opsx, "bootstrap sync from markdown");
         }
         // Sync open questions
         for q in &node.open_questions {
@@ -93,35 +93,39 @@ impl LifecycleFeature {
         match action {
             "list" => {
                 let nodes = p.all_nodes();
-                let list: Vec<Value> = nodes.values().map(|n| {
-                    let children_count = design::get_children(nodes, &n.id).len();
-                    json!({
-                        "id": n.id,
-                        "title": n.title,
-                        "status": n.status.as_str(),
-                        "parent": n.parent,
-                        "tags": n.tags,
-                        "open_questions": n.open_questions.len(),
-                        "dependencies": n.dependencies,
-                        "branches": n.branches,
-                        "openspec_change": n.openspec_change,
-                        "priority": n.priority,
-                        "issue_type": n.issue_type.map(|t| match t {
-                            IssueType::Epic => "epic",
-                            IssueType::Feature => "feature",
-                            IssueType::Task => "task",
-                            IssueType::Bug => "bug",
-                            IssueType::Chore => "chore",
-                        }),
-                        "children": children_count,
+                let list: Vec<Value> = nodes
+                    .values()
+                    .map(|n| {
+                        let children_count = design::get_children(nodes, &n.id).len();
+                        json!({
+                            "id": n.id,
+                            "title": n.title,
+                            "status": n.status.as_str(),
+                            "parent": n.parent,
+                            "tags": n.tags,
+                            "open_questions": n.open_questions.len(),
+                            "dependencies": n.dependencies,
+                            "branches": n.branches,
+                            "openspec_change": n.openspec_change,
+                            "priority": n.priority,
+                            "issue_type": n.issue_type.map(|t| match t {
+                                IssueType::Epic => "epic",
+                                IssueType::Feature => "feature",
+                                IssueType::Task => "task",
+                                IssueType::Bug => "bug",
+                                IssueType::Chore => "chore",
+                            }),
+                            "children": children_count,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Ok(text_result(&serde_json::to_string_pretty(&list)?))
             }
 
             "node" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let node = p.get_node(id)
+                let node = p
+                    .get_node(id)
                     .ok_or_else(|| anyhow::anyhow!("Node '{id}' not found"))?;
                 let sections = design::read_node_sections(node);
                 let children = design::get_children(p.all_nodes(), id);
@@ -147,20 +151,35 @@ impl LifecycleFeature {
 
                 if let Some(ref s) = sections {
                     result["overview"] = json!(s.overview);
-                    result["research"] = json!(s.research.iter().map(|r| json!({
-                        "heading": r.heading,
-                        "content": r.content,
-                    })).collect::<Vec<_>>());
-                    result["decisions"] = json!(s.decisions.iter().map(|d| json!({
-                        "title": d.title,
-                        "status": d.status,
-                        "rationale": d.rationale,
-                    })).collect::<Vec<_>>());
-                    result["impl_file_scope"] = json!(s.impl_file_scope.iter().map(|f| json!({
-                        "path": f.path,
-                        "description": f.description,
-                        "action": f.action,
-                    })).collect::<Vec<_>>());
+                    result["research"] = json!(
+                        s.research
+                            .iter()
+                            .map(|r| json!({
+                                "heading": r.heading,
+                                "content": r.content,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                    result["decisions"] = json!(
+                        s.decisions
+                            .iter()
+                            .map(|d| json!({
+                                "title": d.title,
+                                "status": d.status,
+                                "rationale": d.rationale,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                    result["impl_file_scope"] = json!(
+                        s.impl_file_scope
+                            .iter()
+                            .map(|f| json!({
+                                "path": f.path,
+                                "description": f.description,
+                                "action": f.action,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
                     result["impl_constraints"] = json!(s.impl_constraints);
 
                     // Knowledge quadrant readiness
@@ -177,14 +196,17 @@ impl LifecycleFeature {
 
             "frontier" => {
                 let nodes = p.all_nodes();
-                let frontier: Vec<Value> = nodes.values()
+                let frontier: Vec<Value> = nodes
+                    .values()
                     .filter(|n| !n.open_questions.is_empty())
-                    .map(|n| json!({
-                        "id": n.id,
-                        "title": n.title,
-                        "status": n.status.as_str(),
-                        "open_questions": n.open_questions,
-                    }))
+                    .map(|n| {
+                        json!({
+                            "id": n.id,
+                            "title": n.title,
+                            "status": n.status.as_str(),
+                            "open_questions": n.open_questions,
+                        })
+                    })
                     .collect();
                 Ok(text_result(&serde_json::to_string_pretty(&frontier)?))
             }
@@ -192,57 +214,83 @@ impl LifecycleFeature {
             "children" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
                 let children = design::get_children(p.all_nodes(), id);
-                let list: Vec<Value> = children.iter().map(|c| json!({
-                    "id": c.id,
-                    "title": c.title,
-                    "status": c.status.as_str(),
-                })).collect();
+                let list: Vec<Value> = children
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "id": c.id,
+                            "title": c.title,
+                            "status": c.status.as_str(),
+                        })
+                    })
+                    .collect();
                 Ok(text_result(&serde_json::to_string_pretty(&list)?))
             }
 
             "dependencies" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let node = p.get_node(id)
+                let node = p
+                    .get_node(id)
                     .ok_or_else(|| anyhow::anyhow!("Node '{id}' not found"))?;
-                let deps: Vec<Value> = node.dependencies.iter().filter_map(|dep_id| {
-                    p.get_node(dep_id).map(|d| json!({
-                        "id": d.id,
-                        "title": d.title,
-                        "status": d.status.as_str(),
-                    }))
-                }).collect();
+                let deps: Vec<Value> = node
+                    .dependencies
+                    .iter()
+                    .filter_map(|dep_id| {
+                        p.get_node(dep_id).map(|d| {
+                            json!({
+                                "id": d.id,
+                                "title": d.title,
+                                "status": d.status.as_str(),
+                            })
+                        })
+                    })
+                    .collect();
                 Ok(text_result(&serde_json::to_string_pretty(&deps)?))
             }
 
             "ready" => {
                 let nodes = p.all_nodes();
-                let ready: Vec<Value> = nodes.values()
+                let ready: Vec<Value> = nodes
+                    .values()
                     .filter(|n| matches!(n.status, NodeStatus::Decided))
-                    .filter(|n| n.dependencies.iter().all(|dep_id| {
-                        nodes.get(dep_id).is_some_and(|d| matches!(d.status, NodeStatus::Implemented))
-                    }))
-                    .map(|n| json!({
-                        "id": n.id,
-                        "title": n.title,
-                        "priority": n.priority,
-                    }))
+                    .filter(|n| {
+                        n.dependencies.iter().all(|dep_id| {
+                            nodes
+                                .get(dep_id)
+                                .is_some_and(|d| matches!(d.status, NodeStatus::Implemented))
+                        })
+                    })
+                    .map(|n| {
+                        json!({
+                            "id": n.id,
+                            "title": n.title,
+                            "priority": n.priority,
+                        })
+                    })
                     .collect();
                 Ok(text_result(&serde_json::to_string_pretty(&ready)?))
             }
 
             "blocked" => {
                 let nodes = p.all_nodes();
-                let blocked: Vec<Value> = nodes.values()
+                let blocked: Vec<Value> = nodes
+                    .values()
                     .filter(|n| {
                         matches!(n.status, NodeStatus::Blocked)
                             || n.dependencies.iter().any(|dep_id| {
-                                nodes.get(dep_id).is_none_or(|d| !matches!(d.status, NodeStatus::Implemented))
+                                nodes
+                                    .get(dep_id)
+                                    .is_none_or(|d| !matches!(d.status, NodeStatus::Implemented))
                             })
                     })
                     .map(|n| {
-                        let blockers: Vec<String> = n.dependencies.iter()
+                        let blockers: Vec<String> = n
+                            .dependencies
+                            .iter()
                             .filter(|dep_id| {
-                                nodes.get(*dep_id).is_none_or(|d| !matches!(d.status, NodeStatus::Implemented))
+                                nodes
+                                    .get(*dep_id)
+                                    .is_none_or(|d| !matches!(d.status, NodeStatus::Implemented))
                             })
                             .cloned()
                             .collect();
@@ -257,7 +305,9 @@ impl LifecycleFeature {
                 Ok(text_result(&serde_json::to_string_pretty(&blocked)?))
             }
 
-            _ => anyhow::bail!("Unknown action: {action}. Valid: list, node, frontier, children, dependencies, ready, blocked"),
+            _ => anyhow::bail!(
+                "Unknown action: {action}. Valid: list, node, frontier, children, dependencies, ready, blocked"
+            ),
         }
     }
 
@@ -276,11 +326,18 @@ impl LifecycleFeature {
         match action {
             "create" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let title = args["title"].as_str().ok_or_else(|| anyhow::anyhow!("title required"))?;
+                let title = args["title"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("title required"))?;
                 let parent = args["parent"].as_str();
                 let status = args["status"].as_str();
-                let tags: Vec<String> = args["tags"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                let tags: Vec<String> = args["tags"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let overview = args["overview"].as_str().unwrap_or("");
 
@@ -295,20 +352,30 @@ impl LifecycleFeature {
                         if let Some(target) = OpsxNodeState::parse(status_str) {
                             if target != OpsxNodeState::Seed {
                                 // Use force_transition for bootstrap — the node was just created
-                                let _ = opsx.force_transition_node(id, target, "initial status on create");
+                                let _ = opsx.force_transition_node(
+                                    id,
+                                    target,
+                                    "initial status on create",
+                                );
                             }
                         }
                     }
                 }
 
-                let node = design::create_node(&docs_dir, id, title, parent, status, &tags, overview)?;
+                let node =
+                    design::create_node(&docs_dir, id, title, parent, status, &tags, overview)?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Created design node '{id}' at {}", node.file_path.display())))
+                Ok(text_result(&format!(
+                    "Created design node '{id}' at {}",
+                    node.file_path.display()
+                )))
             }
 
             "set_status" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let status_str = args["status"].as_str().ok_or_else(|| anyhow::anyhow!("status required"))?;
+                let status_str = args["status"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("status required"))?;
                 let status = NodeStatus::parse(status_str)
                     .ok_or_else(|| anyhow::anyhow!("Invalid status: {status_str}"))?;
 
@@ -328,14 +395,18 @@ impl LifecycleFeature {
 
                 // FSM approved — now write the markdown
                 let mut node = get_node_clone(id)?;
-                design::update_node(&mut node, |n| { n.status = status; })?;
+                design::update_node(&mut node, |n| {
+                    n.status = status;
+                })?;
                 self.provider.lock().unwrap().refresh();
                 Ok(text_result(&format!("Set '{id}' status to {status_str}")))
             }
 
             "add_question" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let question = args["question"].as_str().ok_or_else(|| anyhow::anyhow!("question required"))?;
+                let question = args["question"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("question required"))?;
 
                 let mut node = get_node_clone(id)?;
                 design::update_node(&mut node, |n| {
@@ -347,7 +418,9 @@ impl LifecycleFeature {
 
             "remove_question" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let question = args["question"].as_str().ok_or_else(|| anyhow::anyhow!("question required"))?;
+                let question = args["question"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("question required"))?;
 
                 let mut node = get_node_clone(id)?;
                 design::update_node(&mut node, |n| {
@@ -359,19 +432,27 @@ impl LifecycleFeature {
 
             "add_research" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let heading = args["heading"].as_str().ok_or_else(|| anyhow::anyhow!("heading required"))?;
-                let content = args["content"].as_str().ok_or_else(|| anyhow::anyhow!("content required"))?;
+                let heading = args["heading"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("heading required"))?;
+                let content = args["content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("content required"))?;
 
                 let node = get_node_clone(id)?;
                 let node = &node;
                 design::add_research(node, heading, content)?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Added research '{heading}' to '{id}'")))
+                Ok(text_result(&format!(
+                    "Added research '{heading}' to '{id}'"
+                )))
             }
 
             "add_decision" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let title = args["decision_title"].as_str().ok_or_else(|| anyhow::anyhow!("decision_title required"))?;
+                let title = args["decision_title"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("decision_title required"))?;
                 let status = args["decision_status"].as_str().unwrap_or("exploring");
                 let rationale = args["rationale"].as_str().unwrap_or("");
 
@@ -384,7 +465,9 @@ impl LifecycleFeature {
 
             "add_dependency" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let target = args["target_id"].as_str().ok_or_else(|| anyhow::anyhow!("target_id required"))?;
+                let target = args["target_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("target_id required"))?;
 
                 let mut node = get_node_clone(id)?;
                 design::update_node(&mut node, |n| {
@@ -393,12 +476,16 @@ impl LifecycleFeature {
                     }
                 })?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Added dependency '{id}' → '{target}'")))
+                Ok(text_result(&format!(
+                    "Added dependency '{id}' → '{target}'"
+                )))
             }
 
             "add_related" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let target = args["target_id"].as_str().ok_or_else(|| anyhow::anyhow!("target_id required"))?;
+                let target = args["target_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("target_id required"))?;
 
                 let mut node = get_node_clone(id)?;
                 design::update_node(&mut node, |n| {
@@ -415,29 +502,48 @@ impl LifecycleFeature {
                 let node = get_node_clone(id)?;
                 let node = &node;
 
-                let file_scope: Vec<FileScope> = args["file_scope"].as_array()
-                    .map(|arr| arr.iter().filter_map(|v| {
-                        Some(FileScope {
-                            path: v["path"].as_str()?.to_string(),
-                            description: v["description"].as_str().unwrap_or("").to_string(),
-                            action: v["action"].as_str().map(String::from),
-                        })
-                    }).collect())
+                let file_scope: Vec<FileScope> = args["file_scope"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| {
+                                Some(FileScope {
+                                    path: v["path"].as_str()?.to_string(),
+                                    description: v["description"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    action: v["action"].as_str().map(String::from),
+                                })
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
 
-                let constraints: Vec<String> = args["constraints"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                let constraints: Vec<String> = args["constraints"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 design::add_impl_notes(node, &file_scope, &constraints)?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Added implementation notes to '{id}'")))
+                Ok(text_result(&format!(
+                    "Added implementation notes to '{id}'"
+                )))
             }
 
             "branch" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let question = args["question"].as_str().ok_or_else(|| anyhow::anyhow!("question required"))?;
-                let child_id = args["child_id"].as_str().ok_or_else(|| anyhow::anyhow!("child_id required"))?;
+                let question = args["question"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("question required"))?;
+                let child_id = args["child_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("child_id required"))?;
                 let child_title = args["child_title"].as_str().unwrap_or(question);
 
                 // Create child node
@@ -449,7 +555,9 @@ impl LifecycleFeature {
                     n.open_questions.retain(|q| q != question);
                 })?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Branched '{child_id}' from '{id}', removed question")))
+                Ok(text_result(&format!(
+                    "Branched '{child_id}' from '{id}', removed question"
+                )))
             }
 
             "focus" => {
@@ -457,7 +565,10 @@ impl LifecycleFeature {
                 if self.provider.lock().unwrap().get_node(id).is_none() {
                     anyhow::bail!("Node '{id}' not found");
                 }
-                self.provider.lock().unwrap().set_focus(Some(id.to_string()));
+                self.provider
+                    .lock()
+                    .unwrap()
+                    .set_focus(Some(id.to_string()));
                 Ok(text_result(&format!("Focused on design node '{id}'")))
             }
 
@@ -470,7 +581,10 @@ impl LifecycleFeature {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
                 let mut node = get_node_clone(id)?;
                 if !matches!(node.status, NodeStatus::Decided) {
-                    anyhow::bail!("Node '{id}' must be in 'decided' status to implement (current: {})", node.status.as_str());
+                    anyhow::bail!(
+                        "Node '{id}' must be in 'decided' status to implement (current: {})",
+                        node.status.as_str()
+                    );
                 }
 
                 // Validate transition via opsx-core FSM — this enforces milestone freeze
@@ -487,7 +601,8 @@ impl LifecycleFeature {
                 let change_name = id;
                 let title = node.title.clone();
                 let sections = design::read_node_sections(&node);
-                let intent = sections.as_ref()
+                let intent = sections
+                    .as_ref()
                     .map(|s| s.overview.clone())
                     .unwrap_or_else(|| format!("Implement {title}"));
 
@@ -507,26 +622,33 @@ impl LifecycleFeature {
 
             "set_priority" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let priority = args["priority"].as_u64()
+                let priority = args["priority"]
+                    .as_u64()
                     .ok_or_else(|| anyhow::anyhow!("priority required (1-5)"))?;
                 if !(1..=5).contains(&priority) {
                     anyhow::bail!("Priority must be 1-5, got {priority}");
                 }
 
                 let mut node = get_node_clone(id)?;
-                design::update_node(&mut node, |n| { n.priority = Some(priority as u8); })?;
+                design::update_node(&mut node, |n| {
+                    n.priority = Some(priority as u8);
+                })?;
                 self.provider.lock().unwrap().refresh();
                 Ok(text_result(&format!("Set '{id}' priority to {priority}")))
             }
 
             "set_issue_type" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let type_str = args["issue_type"].as_str().ok_or_else(|| anyhow::anyhow!("issue_type required"))?;
+                let type_str = args["issue_type"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("issue_type required"))?;
                 let issue_type = IssueType::parse(type_str)
                     .ok_or_else(|| anyhow::anyhow!("Invalid issue_type: {type_str}"))?;
 
                 let mut node = get_node_clone(id)?;
-                design::update_node(&mut node, |n| { n.issue_type = Some(issue_type); })?;
+                design::update_node(&mut node, |n| {
+                    n.issue_type = Some(issue_type);
+                })?;
                 self.provider.lock().unwrap().refresh();
                 Ok(text_result(&format!("Set '{id}' issue_type to {type_str}")))
             }
@@ -546,20 +668,27 @@ impl LifecycleFeature {
                 if changes.is_empty() {
                     return Ok(text_result("No active OpenSpec changes."));
                 }
-                let list: Vec<Value> = changes.iter().map(|c| json!({
-                    "name": c.name,
-                    "stage": c.stage.as_str(),
-                    "has_proposal": c.has_proposal,
-                    "has_specs": c.has_specs,
-                    "has_tasks": c.has_tasks,
-                    "total_tasks": c.total_tasks,
-                    "done_tasks": c.done_tasks,
-                })).collect();
+                let list: Vec<Value> = changes
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "name": c.name,
+                            "stage": c.stage.as_str(),
+                            "has_proposal": c.has_proposal,
+                            "has_specs": c.has_specs,
+                            "has_tasks": c.has_tasks,
+                            "total_tasks": c.total_tasks,
+                            "done_tasks": c.done_tasks,
+                        })
+                    })
+                    .collect();
                 Ok(text_result(&serde_json::to_string_pretty(&list)?))
             }
 
             "get" => {
-                let name = args["change_name"].as_str().ok_or_else(|| anyhow::anyhow!("change_name required"))?;
+                let name = args["change_name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("change_name required"))?;
                 let change = spec::get_change(&self.repo_path, name)
                     .ok_or_else(|| anyhow::anyhow!("Change '{name}' not found"))?;
 
@@ -584,35 +713,56 @@ impl LifecycleFeature {
             }
 
             "propose" => {
-                let name = args["name"].as_str()
+                let name = args["name"]
+                    .as_str()
                     .or_else(|| args["change_name"].as_str())
                     .ok_or_else(|| anyhow::anyhow!("name required"))?;
-                let title = args["title"].as_str().ok_or_else(|| anyhow::anyhow!("title required"))?;
-                let intent = args["intent"].as_str().ok_or_else(|| anyhow::anyhow!("intent required"))?;
+                let title = args["title"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("title required"))?;
+                let intent = args["intent"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("intent required"))?;
 
                 let change = spec::propose_change(&self.repo_path, name, title, intent)?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Proposed change '{name}' at {}", change.path.display())))
+                Ok(text_result(&format!(
+                    "Proposed change '{name}' at {}",
+                    change.path.display()
+                )))
             }
 
             "add_spec" => {
-                let name = args["change_name"].as_str().ok_or_else(|| anyhow::anyhow!("change_name required"))?;
-                let domain = args["domain"].as_str().ok_or_else(|| anyhow::anyhow!("domain required"))?;
-                let content = args["spec_content"].as_str().ok_or_else(|| anyhow::anyhow!("spec_content required"))?;
+                let name = args["change_name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("change_name required"))?;
+                let domain = args["domain"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("domain required"))?;
+                let content = args["spec_content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("spec_content required"))?;
 
                 let path = spec::add_spec(&self.repo_path, name, domain, content)?;
                 self.provider.lock().unwrap().refresh();
-                Ok(text_result(&format!("Added spec '{domain}' to '{name}' at {}", path.display())))
+                Ok(text_result(&format!(
+                    "Added spec '{domain}' to '{name}' at {}",
+                    path.display()
+                )))
             }
 
             "archive" => {
-                let name = args["change_name"].as_str().ok_or_else(|| anyhow::anyhow!("change_name required"))?;
+                let name = args["change_name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("change_name required"))?;
                 spec::archive_change(&self.repo_path, name)?;
                 self.provider.lock().unwrap().refresh();
                 Ok(text_result(&format!("Archived change '{name}'")))
             }
 
-            _ => anyhow::bail!("Unknown action: {action}. Valid: status, get, propose, add_spec, archive"),
+            _ => anyhow::bail!(
+                "Unknown action: {action}. Valid: status, get, propose, add_spec, archive"
+            ),
         }
     }
 }
@@ -713,7 +863,9 @@ impl Feature for LifecycleFeature {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::lifecycle::DESIGN_TREE => self.execute_design_tree(&args),
-            crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE => self.execute_design_tree_update(&args),
+            crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE => {
+                self.execute_design_tree_update(&args)
+            }
             crate::tool_registry::lifecycle::OPENSPEC_MANAGE => self.execute_openspec_manage(&args),
             _ => anyhow::bail!("Unknown tool: {tool_name}"),
         }
@@ -748,16 +900,26 @@ impl Feature for LifecycleFeature {
                     if let Some(focused) = p.focused_node_id() {
                         return CommandResult::Display(format!("Currently focused on: {focused}"));
                     }
-                    return CommandResult::Display("No node focused. Usage: design-focus <node-id>".into());
+                    return CommandResult::Display(
+                        "No node focused. Usage: design-focus <node-id>".into(),
+                    );
                 }
                 let display = {
                     let p = self.provider.lock().unwrap();
                     let Some(node) = p.get_node(id) else {
                         return CommandResult::Display(format!("Node '{id}' not found"));
                     };
-                    format!("Focused → {} {} — {}", node.status.icon(), node.id, node.title)
+                    format!(
+                        "Focused → {} {} — {}",
+                        node.status.icon(),
+                        node.id,
+                        node.title
+                    )
                 };
-                self.provider.lock().unwrap().set_focus(Some(id.to_string()));
+                self.provider
+                    .lock()
+                    .unwrap()
+                    .set_focus(Some(id.to_string()));
                 CommandResult::Display(display)
             }
 
@@ -807,7 +969,9 @@ impl Feature for LifecycleFeature {
                 // Check Vault health if configured — with a short timeout
                 // to avoid blocking the event loop.
                 let mut requests = vec![];
-                if std::env::var("VAULT_ADDR").is_ok() || self.repo_path.join(".omegon/vault.json").exists() {
+                if std::env::var("VAULT_ADDR").is_ok()
+                    || self.repo_path.join(".omegon/vault.json").exists()
+                {
                     match std::process::Command::new("vault")
                         .args(["status", "-format=json"])
                         .env("VAULT_CLIENT_TIMEOUT", "5")
@@ -851,7 +1015,9 @@ impl Feature for LifecycleFeature {
 
 fn text_result(text: &str) -> ToolResult {
     ToolResult {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         details: json!(null),
     }
 }
@@ -902,7 +1068,9 @@ mod tests {
     fn design_tree_list() {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
-        let result = feature.execute_design_tree(&json!({"action": "list"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "list"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("test-node"), "should list the node: {text}");
     }
@@ -911,28 +1079,37 @@ mod tests {
     fn design_tree_node() {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "test-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "test-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("Test Node"), "should show title: {text}");
-        assert!(text.contains("What about X"), "should show questions: {text}");
+        assert!(
+            text.contains("What about X"),
+            "should show questions: {text}"
+        );
     }
 
     #[test]
     fn design_tree_create() {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
-        let result = feature.execute_design_tree_update(&json!({
-            "action": "create",
-            "node_id": "new-node",
-            "title": "New Node",
-            "parent": "test-node",
-            "tags": ["new"],
-        })).unwrap();
+        let result = feature
+            .execute_design_tree_update(&json!({
+                "action": "create",
+                "node_id": "new-node",
+                "title": "New Node",
+                "parent": "test-node",
+                "tags": ["new"],
+            }))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("Created"), "{text}");
 
         // Verify it's readable
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "new-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "new-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("New Node"), "{text}");
         assert!(text.contains("test-node"), "should show parent: {text}");
@@ -944,19 +1121,25 @@ mod tests {
         let feature = LifecycleFeature::new(&repo);
 
         // Remove open questions first — FSM requires no open questions for decided
-        feature.execute_design_tree_update(&json!({
-            "action": "remove_question",
-            "node_id": "test-node",
-            "question": "What about X?",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "remove_question",
+                "node_id": "test-node",
+                "question": "What about X?",
+            }))
+            .unwrap();
 
-        feature.execute_design_tree_update(&json!({
-            "action": "set_status",
-            "node_id": "test-node",
-            "status": "decided",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "set_status",
+                "node_id": "test-node",
+                "status": "decided",
+            }))
+            .unwrap();
 
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "test-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "test-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("decided"), "should show new status: {text}");
     }
@@ -965,40 +1148,56 @@ mod tests {
     fn design_tree_add_decision() {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
-        feature.execute_design_tree_update(&json!({
-            "action": "add_decision",
-            "node_id": "test-node",
-            "decision_title": "Use approach A",
-            "decision_status": "decided",
-            "rationale": "Because it's simpler",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "add_decision",
+                "node_id": "test-node",
+                "decision_title": "Use approach A",
+                "decision_status": "decided",
+                "rationale": "Because it's simpler",
+            }))
+            .unwrap();
 
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "test-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "test-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(text.contains("Use approach A"), "should show decision: {text}");
+        assert!(
+            text.contains("Use approach A"),
+            "should show decision: {text}"
+        );
     }
 
     #[test]
     fn design_tree_branch() {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
-        feature.execute_design_tree_update(&json!({
-            "action": "branch",
-            "node_id": "test-node",
-            "question": "What about X?",
-            "child_id": "child-node",
-            "child_title": "Child from question",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "branch",
+                "node_id": "test-node",
+                "question": "What about X?",
+                "child_id": "child-node",
+                "child_title": "Child from question",
+            }))
+            .unwrap();
 
         // Child exists
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "child-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "child-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("Child from question"), "{text}");
 
         // Question removed from parent
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "test-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "test-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(!text.contains("What about X"), "question should be removed from parent: {text}");
+        assert!(
+            !text.contains("What about X"),
+            "question should be removed from parent: {text}"
+        );
     }
 
     #[test]
@@ -1008,7 +1207,15 @@ mod tests {
 
         let result = feature.handle_command("design-focus", "test-node");
         assert!(matches!(result, CommandResult::Display(ref s) if s.contains("Focused")));
-        assert_eq!(feature.provider.lock().unwrap().focused_node_id().map(String::from), Some("test-node".to_string()));
+        assert_eq!(
+            feature
+                .provider
+                .lock()
+                .unwrap()
+                .focused_node_id()
+                .map(String::from),
+            Some("test-node".to_string())
+        );
 
         let result = feature.handle_command("design-unfocus", "");
         assert!(matches!(result, CommandResult::Display(ref s) if s.contains("cleared")));
@@ -1020,14 +1227,18 @@ mod tests {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
 
-        feature.execute_openspec_manage(&json!({
-            "action": "propose",
-            "name": "my-change",
-            "title": "My Change",
-            "intent": "Do the thing",
-        })).unwrap();
+        feature
+            .execute_openspec_manage(&json!({
+                "action": "propose",
+                "name": "my-change",
+                "title": "My Change",
+                "intent": "Do the thing",
+            }))
+            .unwrap();
 
-        let result = feature.execute_openspec_manage(&json!({"action": "status"})).unwrap();
+        let result = feature
+            .execute_openspec_manage(&json!({"action": "status"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("my-change"), "should list the change: {text}");
     }
@@ -1038,12 +1249,14 @@ mod tests {
         let feature = LifecycleFeature::new(&repo);
 
         // First propose
-        feature.execute_openspec_manage(&json!({
-            "action": "propose",
-            "name": "spec-test",
-            "title": "Spec Test",
-            "intent": "Test specs",
-        })).unwrap();
+        feature
+            .execute_openspec_manage(&json!({
+                "action": "propose",
+                "name": "spec-test",
+                "title": "Spec Test",
+                "intent": "Test specs",
+            }))
+            .unwrap();
 
         // Then add spec
         feature.execute_openspec_manage(&json!({
@@ -1054,10 +1267,12 @@ mod tests {
         })).unwrap();
 
         // Verify via get
-        let result = feature.execute_openspec_manage(&json!({
-            "action": "get",
-            "change_name": "spec-test",
-        })).unwrap();
+        let result = feature
+            .execute_openspec_manage(&json!({
+                "action": "get",
+                "change_name": "spec-test",
+            }))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("auth"), "should list spec domain: {text}");
     }
@@ -1068,32 +1283,43 @@ mod tests {
         let feature = LifecycleFeature::new(&repo);
 
         // Remove open questions first — FSM requires no open questions for decided
-        feature.execute_design_tree_update(&json!({
-            "action": "remove_question",
-            "node_id": "test-node",
-            "question": "What about X?",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "remove_question",
+                "node_id": "test-node",
+                "question": "What about X?",
+            }))
+            .unwrap();
 
         // Set to decided first
-        feature.execute_design_tree_update(&json!({
-            "action": "set_status",
-            "node_id": "test-node",
-            "status": "decided",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "set_status",
+                "node_id": "test-node",
+                "status": "decided",
+            }))
+            .unwrap();
 
         // Implement
-        let result = feature.execute_design_tree_update(&json!({
-            "action": "implement",
-            "node_id": "test-node",
-        })).unwrap();
+        let result = feature
+            .execute_design_tree_update(&json!({
+                "action": "implement",
+                "node_id": "test-node",
+            }))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("Scaffolded"), "{text}");
         assert!(text.contains("implementing"), "{text}");
 
         // OpenSpec change exists
-        let result = feature.execute_openspec_manage(&json!({"action": "status"})).unwrap();
+        let result = feature
+            .execute_openspec_manage(&json!({"action": "status"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(text.contains("test-node"), "openspec should have the change: {text}");
+        assert!(
+            text.contains("test-node"),
+            "openspec should have the change: {text}"
+        );
     }
 
     #[test]
@@ -1109,8 +1335,10 @@ mod tests {
         }));
         assert!(result.is_err(), "FSM should reject exploring → implemented");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("invalid transition") || err.contains("cannot go from"),
-            "error should mention invalid transition: {err}");
+        assert!(
+            err.contains("invalid transition") || err.contains("cannot go from"),
+            "error should mention invalid transition: {err}"
+        );
     }
 
     #[test]
@@ -1119,20 +1347,26 @@ mod tests {
         let feature = LifecycleFeature::new(&repo);
 
         // exploring → decided (valid, no open questions after removing them)
-        feature.execute_design_tree_update(&json!({
-            "action": "remove_question",
-            "node_id": "test-node",
-            "question": "What about X?",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "remove_question",
+                "node_id": "test-node",
+                "question": "What about X?",
+            }))
+            .unwrap();
 
-        feature.execute_design_tree_update(&json!({
-            "action": "set_status",
-            "node_id": "test-node",
-            "status": "decided",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "set_status",
+                "node_id": "test-node",
+                "status": "decided",
+            }))
+            .unwrap();
 
         // Verify status changed
-        let result = feature.execute_design_tree(&json!({"action": "node", "node_id": "test-node"})).unwrap();
+        let result = feature
+            .execute_design_tree(&json!({"action": "node", "node_id": "test-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("decided"), "should be decided: {text}");
     }
@@ -1148,9 +1382,15 @@ mod tests {
             "node_id": "test-node",
             "status": "decided",
         }));
-        assert!(result.is_err(), "FSM should reject decided with open questions");
+        assert!(
+            result.is_err(),
+            "FSM should reject decided with open questions"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("open questions"), "error should mention open questions: {err}");
+        assert!(
+            err.contains("open questions"),
+            "error should mention open questions: {err}"
+        );
     }
 
     #[test]
@@ -1158,11 +1398,13 @@ mod tests {
         let (_dir, repo) = setup_test_repo();
         let feature = LifecycleFeature::new(&repo);
 
-        feature.execute_design_tree_update(&json!({
-            "action": "create",
-            "node_id": "fsm-test",
-            "title": "FSM Test Node",
-        })).unwrap();
+        feature
+            .execute_design_tree_update(&json!({
+                "action": "create",
+                "node_id": "fsm-test",
+                "title": "FSM Test Node",
+            }))
+            .unwrap();
 
         // The node should be in the FSM — trying an invalid transition should fail
         let result = feature.execute_design_tree_update(&json!({
@@ -1170,6 +1412,9 @@ mod tests {
             "node_id": "fsm-test",
             "status": "implemented",
         }));
-        assert!(result.is_err(), "seed → implemented should be rejected by FSM");
+        assert!(
+            result.is_err(),
+            "seed → implemented should be rejected by FSM"
+        );
     }
 }

@@ -80,10 +80,7 @@ pub async fn run(bridge: Arc<RwLock<Box<dyn LlmBridge>>>) -> i32 {
     }
 
     eprintln!("\n  ─────────────────────────────");
-    eprintln!(
-        "  {} passed, {} failed, {} total",
-        passed, failed, total
-    );
+    eprintln!("  {} passed, {} failed, {} total", passed, failed, total);
 
     if failed > 0 {
         eprintln!("\n  ✗ SMOKE TESTS FAILED\n");
@@ -115,7 +112,12 @@ async fn run_single(
 
     let bridge_guard = bridge.read().await;
     let mut event_rx = bridge_guard
-        .stream("You are a helpful assistant. Be concise.", &messages, &tools, &opts)
+        .stream(
+            "You are a helpful assistant. Be concise.",
+            &messages,
+            &tools,
+            &opts,
+        )
         .await?;
     drop(bridge_guard);
 
@@ -133,9 +135,14 @@ async fn run_single(
                     LlmEvent::Done { message } => {
                         // Extract text from the done message if we missed deltas
                         if response_text.is_empty() {
-                            if let Some(text) = message.get("content")
+                            if let Some(text) = message
+                                .get("content")
                                 .and_then(|c| c.as_array())
-                                .and_then(|arr| arr.iter().find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text")))
+                                .and_then(|arr| {
+                                    arr.iter().find(|b| {
+                                        b.get("type").and_then(|t| t.as_str()) == Some("text")
+                                    })
+                                })
                                 .and_then(|b| b.get("text"))
                                 .and_then(|t| t.as_str())
                             {

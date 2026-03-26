@@ -67,8 +67,14 @@ impl LifecycleSnapshot {
             lp.get_node(id).map(|n| {
                 let sections = lifecycle::design::read_node_sections(n);
                 let assumptions = n.assumption_count();
-                let decisions_count = sections.as_ref().map(|s| s.decisions.iter().filter(|d| d.status == "decided").count()).unwrap_or(0);
-                let readiness = sections.as_ref().map(|s| s.readiness_score()).unwrap_or(0.0);
+                let decisions_count = sections
+                    .as_ref()
+                    .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
+                    .unwrap_or(0);
+                let readiness = sections
+                    .as_ref()
+                    .map(|s| s.readiness_score())
+                    .unwrap_or(0.0);
                 crate::tui::dashboard::FocusedNodeSummary {
                     id: n.id.clone(),
                     title: n.title.clone(),
@@ -185,7 +191,11 @@ impl AgentSetup {
             // Canonical: ai/memory/, fallback: .omegon/memory/
             let ai = project_root.join("ai").join("memory");
             let omegon = project_root.join(".omegon").join("memory");
-            if omegon.exists() && !ai.exists() { omegon } else { ai }
+            if omegon.exists() && !ai.exists() {
+                omegon
+            } else {
+                ai
+            }
         };
         let _ = std::fs::create_dir_all(&memory_dir);
         let db_path = memory_dir.join("facts.db");
@@ -218,7 +228,8 @@ impl AgentSetup {
             }
 
             // Register MemoryFeature with Arc<dyn MemoryBackend>
-            let memory_backend: std::sync::Arc<dyn omegon_memory::MemoryBackend> = std::sync::Arc::new(backend);
+            let memory_backend: std::sync::Arc<dyn omegon_memory::MemoryBackend> =
+                std::sync::Arc::new(backend);
             bus.register(Box::new(features::memory::MemoryFeature::new(
                 memory_backend,
                 mind,
@@ -241,14 +252,18 @@ impl AgentSetup {
 
         // ─── Delegate (subagent system) ─────────────────────────────────
         let agents = crate::features::delegate::scan_agents(&cwd);
-        bus.register(Box::new(features::delegate::DelegateFeature::new(&cwd, agents)));
+        bus.register(Box::new(features::delegate::DelegateFeature::new(
+            &cwd, agents,
+        )));
 
         // ─── Session log (context injection) ────────────────────────────
         bus.register(Box::new(features::session_log::SessionLog::new(&cwd)));
 
         // ─── Model budget (tier switching + thinking) ───────────────────
         if let Some(ref settings) = settings {
-            bus.register(Box::new(features::model_budget::ModelBudget::new(settings.clone())));
+            bus.register(Box::new(features::model_budget::ModelBudget::new(
+                settings.clone(),
+            )));
         }
 
         // ─── Tool management ─────────────────────────────────────────────
@@ -261,21 +276,24 @@ impl AgentSetup {
 
         // ─── Native features ────────────────────────────────────────────
         // ─── Persona system ────────────────────────────────────────────
-        let persona_registry = crate::plugins::registry::PluginRegistry::new(
-            crate::prompt::load_lex_imperialis(),
-        );
-        bus.register(Box::new(features::persona::PersonaFeature::new(persona_registry)));
+        let persona_registry =
+            crate::plugins::registry::PluginRegistry::new(crate::prompt::load_lex_imperialis());
+        bus.register(Box::new(features::persona::PersonaFeature::new(
+            persona_registry,
+        )));
 
         if let Some(ref settings) = settings {
-            bus.register(Box::new(features::harness_settings::HarnessSettings::new(settings.clone())));
+            bus.register(Box::new(features::harness_settings::HarnessSettings::new(
+                settings.clone(),
+            )));
         }
         bus.register(Box::new(features::auto_compact::AutoCompact::new()));
         bus.register(Box::new(features::terminal_title::TerminalTitle::new(
             &cwd.to_string_lossy(),
         )));
-        bus.register(Box::new(features::version_check::VersionCheck::new(
-            env!("CARGO_PKG_VERSION"),
-        )));
+        bus.register(Box::new(features::version_check::VersionCheck::new(env!(
+            "CARGO_PKG_VERSION"
+        ))));
 
         // ─── External plugins (TOML manifests) ────────────────────────
         let plugins = crate::plugins::discover_plugins(&cwd).await;

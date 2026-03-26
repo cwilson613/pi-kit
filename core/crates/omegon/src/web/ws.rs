@@ -25,10 +25,10 @@ use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{WebCommand, WebState};
 use super::api::build_snapshot;
+use super::{WebCommand, WebState};
 use omegon_traits::AgentEvent;
 
 #[derive(Deserialize)]
@@ -57,7 +57,8 @@ pub async fn ws_handler(
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
     }
-    ws.on_upgrade(|socket| handle_socket(socket, state)).into_response()
+    ws.on_upgrade(|socket| handle_socket(socket, state))
+        .into_response()
 }
 
 /// Handle a single WebSocket connection.
@@ -73,7 +74,11 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
     });
     let snapshot_json = init_msg.to_string();
     tracing::debug!(bytes = snapshot_json.len(), "sending initial snapshot");
-    if ws_tx.send(Message::Text(snapshot_json.into())).await.is_err() {
+    if ws_tx
+        .send(Message::Text(snapshot_json.into()))
+        .await
+        .is_err()
+    {
         tracing::warn!("WebSocket: initial snapshot send failed — client disconnected");
         return;
     }
@@ -124,7 +129,8 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
             match msg {
                 Message::Text(text) => {
                     if let Ok(cmd) = serde_json::from_str::<Value>(&text) {
-                        handle_client_command(&cmd, &command_tx, &state_for_cmds, &snapshot_tx).await;
+                        handle_client_command(&cmd, &command_tx, &state_for_cmds, &snapshot_tx)
+                            .await;
                     }
                 }
                 Message::Close(_) => break,
@@ -153,13 +159,17 @@ async fn handle_client_command(
     match cmd_type {
         "user_prompt" => {
             if let Some(text) = cmd["text"].as_str() {
-                let _ = command_tx.send(WebCommand::UserPrompt(text.to_string())).await;
+                let _ = command_tx
+                    .send(WebCommand::UserPrompt(text.to_string()))
+                    .await;
             }
         }
         "slash_command" => {
             let name = cmd["name"].as_str().unwrap_or("").to_string();
             let args = cmd["args"].as_str().unwrap_or("").to_string();
-            let _ = command_tx.send(WebCommand::SlashCommand { name, args }).await;
+            let _ = command_tx
+                .send(WebCommand::SlashCommand { name, args })
+                .await;
         }
         "cancel" => {
             let _ = command_tx.send(WebCommand::Cancel).await;
@@ -217,7 +227,9 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "args": args,
         }),
         AgentEvent::ToolUpdate { id, partial } => {
-            let text = partial.content.iter()
+            let text = partial
+                .content
+                .iter()
                 .filter_map(|c| c.as_text())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -227,11 +239,13 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
                 "partial": escape_html(&text),
             })
         }
-        AgentEvent::ToolEnd { id, result, is_error } => {
+        AgentEvent::ToolEnd {
+            id,
+            result,
+            is_error,
+        } => {
             // Serialize ALL content blocks, not just the first
-            let texts: Vec<&str> = result.content.iter()
-                .filter_map(|c| c.as_text())
-                .collect();
+            let texts: Vec<&str> = result.content.iter().filter_map(|c| c.as_text()).collect();
             let result_text = texts.join("\n");
             json!({
                 "type": "tool_end",
@@ -289,7 +303,9 @@ mod tests {
 
     #[test]
     fn serialize_message_chunk_escapes_html() {
-        let event = AgentEvent::MessageChunk { text: "<script>alert(1)</script>".into() };
+        let event = AgentEvent::MessageChunk {
+            text: "<script>alert(1)</script>".into(),
+        };
         let json = serialize_agent_event(&event);
         assert_eq!(json["type"], "message_chunk");
         assert!(!json["text"].as_str().unwrap().contains("<script>"));
@@ -302,8 +318,12 @@ mod tests {
             id: "tc1".into(),
             result: omegon_traits::ToolResult {
                 content: vec![
-                    omegon_traits::ContentBlock::Text { text: "first".into() },
-                    omegon_traits::ContentBlock::Text { text: "second".into() },
+                    omegon_traits::ContentBlock::Text {
+                        text: "first".into(),
+                    },
+                    omegon_traits::ContentBlock::Text {
+                        text: "second".into(),
+                    },
                 ],
                 details: serde_json::json!(null),
             },
@@ -322,15 +342,23 @@ mod tests {
         let events = vec![
             AgentEvent::TurnStart { turn: 1 },
             AgentEvent::TurnEnd { turn: 1 },
-            AgentEvent::MessageStart { role: "assistant".into() },
+            AgentEvent::MessageStart {
+                role: "assistant".into(),
+            },
             AgentEvent::MessageChunk { text: "hi".into() },
             AgentEvent::ThinkingChunk { text: "hmm".into() },
             AgentEvent::MessageEnd,
-            AgentEvent::ToolStart { id: "1".into(), name: "read".into(), args: serde_json::json!({}) },
+            AgentEvent::ToolStart {
+                id: "1".into(),
+                name: "read".into(),
+                args: serde_json::json!({}),
+            },
             AgentEvent::ToolUpdate {
                 id: "1".into(),
                 partial: omegon_traits::ToolResult {
-                    content: vec![omegon_traits::ContentBlock::Text { text: "partial".into() }],
+                    content: vec![omegon_traits::ContentBlock::Text {
+                        text: "partial".into(),
+                    }],
                     details: serde_json::json!(null),
                 },
             },
@@ -343,11 +371,20 @@ mod tests {
                 is_error: false,
             },
             AgentEvent::AgentEnd,
-            AgentEvent::PhaseChanged { phase: omegon_traits::LifecyclePhase::Idle },
-            AgentEvent::DecompositionStarted { children: vec!["a".into()] },
-            AgentEvent::DecompositionChildCompleted { label: "a".into(), success: true },
+            AgentEvent::PhaseChanged {
+                phase: omegon_traits::LifecyclePhase::Idle,
+            },
+            AgentEvent::DecompositionStarted {
+                children: vec!["a".into()],
+            },
+            AgentEvent::DecompositionChildCompleted {
+                label: "a".into(),
+                success: true,
+            },
             AgentEvent::DecompositionCompleted { merged: true },
-            AgentEvent::SystemNotification { message: "test".into() },
+            AgentEvent::SystemNotification {
+                message: "test".into(),
+            },
         ];
         for event in &events {
             let json = serialize_agent_event(event);
@@ -366,7 +403,9 @@ mod tests {
 
     #[test]
     fn system_notification_escapes_html() {
-        let event = AgentEvent::SystemNotification { message: "use <br> for newlines".into() };
+        let event = AgentEvent::SystemNotification {
+            message: "use <br> for newlines".into(),
+        };
         let json = serialize_agent_event(&event);
         assert!(!json["message"].as_str().unwrap().contains("<br>"));
     }

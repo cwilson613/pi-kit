@@ -94,7 +94,10 @@ pub async fn run(
 
         // ─── Turn limit enforcement ─────────────────────────────────
         if config.max_turns > 0 && turn > config.max_turns {
-            tracing::warn!("Hard turn limit reached ({} turns). Stopping.", config.max_turns);
+            tracing::warn!(
+                "Hard turn limit reached ({} turns). Stopping.",
+                config.max_turns
+            );
             let _ = events.send(AgentEvent::TurnStart { turn });
             bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
             let _ = events.send(AgentEvent::TurnEnd { turn });
@@ -124,26 +127,29 @@ pub async fn run(
         // If context is getting large, try LLM-driven compaction.
         // The context_window default is 200k tokens (Anthropic models).
         // Trigger at 75% utilization.
-        let context_window = config.settings.as_ref()
+        let context_window = config
+            .settings
+            .as_ref()
             .and_then(|s| s.lock().ok().map(|g| g.context_window))
             .unwrap_or(200_000);
         if conversation.needs_compaction(context_window, 0.75)
-            && let Some((payload, evict_count)) = conversation.build_compaction_payload() {
-                tracing::info!(
-                    estimated_tokens = conversation.estimate_tokens(),
-                    evict_count,
-                    "Context utilization high — requesting LLM compaction"
-                );
-                // Use the bridge to summarize the evictable messages
-                match compact_via_llm(bridge, &payload, &base_stream_options).await {
-                    Ok(summary) => {
-                        conversation.apply_compaction(summary);
-                    }
-                    Err(e) => {
-                        tracing::warn!("LLM compaction failed: {e} — continuing with decay only");
-                    }
+            && let Some((payload, evict_count)) = conversation.build_compaction_payload()
+        {
+            tracing::info!(
+                estimated_tokens = conversation.estimate_tokens(),
+                evict_count,
+                "Context utilization high — requesting LLM compaction"
+            );
+            // Use the bridge to summarize the evictable messages
+            match compact_via_llm(bridge, &payload, &base_stream_options).await {
+                Ok(summary) => {
+                    conversation.apply_compaction(summary);
+                }
+                Err(e) => {
+                    tracing::warn!("LLM compaction failed: {e} — continuing with decay only");
                 }
             }
+        }
 
         // ─── Inject IntentDocument if meaningful ─────────────────────
         if conversation.intent.stats.tool_calls > 0
@@ -203,9 +209,11 @@ pub async fn run(
                 }
             });
             // Also re-read model (can change via /sonnet, /opus, etc.)
-            opts.model = config.settings.as_ref().and_then(|s| {
-                s.lock().ok().map(|g| g.model.clone())
-            }).or_else(|| Some(config.model.clone()));
+            opts.model = config
+                .settings
+                .as_ref()
+                .and_then(|s| s.lock().ok().map(|g| g.model.clone()))
+                .or_else(|| Some(config.model.clone()));
             opts
         };
 
@@ -270,9 +278,15 @@ pub async fn run(
         }
 
         // ─── Dispatch tool calls ────────────────────────────────────
-        let results =
-            dispatch_tools(bus, tool_calls, events, cancel.clone(), &config.cwd,
-                config.secrets.as_deref()).await;
+        let results = dispatch_tools(
+            bus,
+            tool_calls,
+            events,
+            cancel.clone(),
+            &config.cwd,
+            config.secrets.as_deref(),
+        )
+        .await;
 
         // Push tool results to conversation and update intent
         for result in &results {
@@ -381,9 +395,7 @@ async fn compact_via_llm(
         images: vec![],
     }];
 
-    let mut rx = bridge
-        .stream(system, &messages, &[], options)
-        .await?;
+    let mut rx = bridge.stream(system, &messages, &[], options).await?;
 
     let mut summary = String::new();
     let summary_idle = std::time::Duration::from_secs(120);
@@ -439,9 +451,7 @@ async fn stream_with_retry(
 
                 if !is_transient || attempt > config.max_retries {
                     if attempt > 1 {
-                        tracing::error!(
-                            "LLM error after {attempt} attempts: {err_msg}"
-                        );
+                        tracing::error!("LLM error after {attempt} attempts: {err_msg}");
                     }
                     return Err(e);
                 }
@@ -455,10 +465,11 @@ async fn stream_with_retry(
                 // Notify the TUI so the user knows why it's paused.
                 // First retry shows in conversation (persistent); subsequent are toasts.
                 let short_err = crate::util::truncate_str(&err_msg, 300);
-                let msg = format!("⚠ LLM error (attempt {attempt}/{}): {short_err}", config.max_retries);
-                let _ = events.send(AgentEvent::SystemNotification {
-                    message: msg,
-                });
+                let msg = format!(
+                    "⚠ LLM error (attempt {attempt}/{}): {short_err}",
+                    config.max_retries
+                );
+                let _ = events.send(AgentEvent::SystemNotification { message: msg });
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 delay = (delay * 2).min(30_000); // exponential backoff, cap at 30s
             }
@@ -553,7 +564,9 @@ async fn consume_llm_stream(
             LlmEvent::Start => {} // Initial partial message — ignored
             LlmEvent::TextStart => {}
             LlmEvent::TextDelta { delta } => {
-                let _ = events.send(AgentEvent::MessageChunk { text: delta.clone() });
+                let _ = events.send(AgentEvent::MessageChunk {
+                    text: delta.clone(),
+                });
                 if let Some(last) = text_parts.last_mut() {
                     last.push_str(&delta);
                 } else {
@@ -565,7 +578,9 @@ async fn consume_llm_stream(
             }
             LlmEvent::ThinkingStart => {}
             LlmEvent::ThinkingDelta { delta } => {
-                let _ = events.send(AgentEvent::ThinkingChunk { text: delta.clone() });
+                let _ = events.send(AgentEvent::ThinkingChunk {
+                    text: delta.clone(),
+                });
                 if let Some(last) = thinking_parts.last_mut() {
                     last.push_str(&delta);
                 } else {
@@ -603,9 +618,7 @@ async fn consume_llm_stream(
     // probably died. An empty message with no text and no tool calls is
     // almost certainly a dropped connection, not a valid LLM response.
     if final_raw == Value::Null && text_parts.is_empty() && tool_calls.is_empty() {
-        anyhow::bail!(
-            "LLM stream ended without a completion event — the bridge may have crashed"
-        );
+        anyhow::bail!("LLM stream ended without a completion event — the bridge may have crashed");
     }
 
     // Clean up empty trailing parts
@@ -662,19 +675,21 @@ async fn dispatch_tools(
     if batch_mode {
         for call in tool_calls {
             if is_mutation_tool(&call.name)
-                && let Some(path_str) = extract_mutation_path(&call.arguments) {
-                    // Resolve against cwd — same as tools/mod.rs resolve_path
-                    let full = cwd.join(&path_str);
-                    if full.exists() {
-                        if !snapshots.contains_key(&full)
-                            && let Ok(content) = tokio::fs::read_to_string(&full).await {
-                                snapshots.insert(full, content);
-                            }
-                    } else {
-                        // File doesn't exist yet — mark for deletion on rollback
-                        created_files.push(full);
+                && let Some(path_str) = extract_mutation_path(&call.arguments)
+            {
+                // Resolve against cwd — same as tools/mod.rs resolve_path
+                let full = cwd.join(&path_str);
+                if full.exists() {
+                    if !snapshots.contains_key(&full)
+                        && let Ok(content) = tokio::fs::read_to_string(&full).await
+                    {
+                        snapshots.insert(full, content);
                     }
+                } else {
+                    // File doesn't exist yet — mark for deletion on rollback
+                    created_files.push(full);
                 }
+            }
         }
         if !snapshots.is_empty() {
             tracing::info!(
@@ -693,30 +708,32 @@ async fn dispatch_tools(
         // ── Tool guard check ────────────────────────────────────────
         if let Some(sm) = secrets
             && let Some(decision) = sm.check_guard(&call.name, &call.arguments)
-                && decision.is_block() {
-                    let msg = match &decision {
-                        omegon_secrets::GuardDecision::Block { reason, path } =>
-                            format!("Blocked: {reason} ({path})"),
-                        _ => unreachable!(),
-                    };
-                    tracing::warn!(tool = call.name, %msg, "tool guard blocked");
-                    let _ = events.send(AgentEvent::ToolEnd {
-                        id: call.id.clone(),
-                        result: omegon_traits::ToolResult {
-                            content: vec![ContentBlock::Text { text: msg.clone() }],
-                            details: Value::Null,
-                        },
-                        is_error: true,
-                    });
-                    results.push(ToolResultEntry {
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        content: vec![ContentBlock::Text { text: msg }],
-                        is_error: true,
-                        args_summary: summarize_tool_args(&call.name, &call.arguments),
-                    });
-                    continue;
+            && decision.is_block()
+        {
+            let msg = match &decision {
+                omegon_secrets::GuardDecision::Block { reason, path } => {
+                    format!("Blocked: {reason} ({path})")
                 }
+                _ => unreachable!(),
+            };
+            tracing::warn!(tool = call.name, %msg, "tool guard blocked");
+            let _ = events.send(AgentEvent::ToolEnd {
+                id: call.id.clone(),
+                result: omegon_traits::ToolResult {
+                    content: vec![ContentBlock::Text { text: msg.clone() }],
+                    details: Value::Null,
+                },
+                is_error: true,
+            });
+            results.push(ToolResultEntry {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content: vec![ContentBlock::Text { text: msg }],
+                is_error: true,
+                args_summary: summarize_tool_args(&call.name, &call.arguments),
+            });
+            continue;
+        }
 
         let _ = events.send(AgentEvent::ToolStart {
             id: call.id.clone(),
@@ -741,10 +758,12 @@ async fn dispatch_tools(
         };
 
         // Track which files were successfully mutated (for rollback)
-        if !is_error && is_mutation_tool(&call.name)
-            && let Some(path_str) = extract_mutation_path(&call.arguments) {
-                mutated_files.push(cwd.join(&path_str));
-            }
+        if !is_error
+            && is_mutation_tool(&call.name)
+            && let Some(path_str) = extract_mutation_path(&call.arguments)
+        {
+            mutated_files.push(cwd.join(&path_str));
+        }
 
         // ── Auto-batch rollback on mutation failure ─────────────────
         if is_error && batch_mode && is_mutation_tool(&call.name) && !mutated_files.is_empty() {
@@ -761,19 +780,23 @@ async fn dispatch_tools(
                 if let Some(original) = snapshots.get(file) {
                     match tokio::fs::write(file, original).await {
                         Ok(_) => rollback_report.push(format!("  ✓ restored {}", file.display())),
-                        Err(e) => rollback_report.push(format!("  ✗ rollback failed {}: {e}", file.display())),
+                        Err(e) => rollback_report
+                            .push(format!("  ✗ rollback failed {}: {e}", file.display())),
                     }
                 } else if created_files.contains(file) {
                     // File was newly created — delete it
                     match tokio::fs::remove_file(file).await {
                         Ok(_) => rollback_report.push(format!("  ✓ removed {}", file.display())),
-                        Err(e) => rollback_report.push(format!("  ✗ remove failed {}: {e}", file.display())),
+                        Err(e) => rollback_report
+                            .push(format!("  ✗ remove failed {}: {e}", file.display())),
                     }
                 }
             }
 
             // Append rollback info to the error result
-            let mut error_text = result.content.iter()
+            let mut error_text = result
+                .content
+                .iter()
                 .filter_map(|c| c.as_text())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -783,7 +806,9 @@ async fn dispatch_tools(
             let _ = events.send(AgentEvent::ToolEnd {
                 id: call.id.clone(),
                 result: omegon_traits::ToolResult {
-                    content: vec![ContentBlock::Text { text: error_text.clone() }],
+                    content: vec![ContentBlock::Text {
+                        text: error_text.clone(),
+                    }],
                     details: Value::Null,
                 },
                 is_error: true,
@@ -811,7 +836,9 @@ async fn dispatch_tools(
             let _ = events.send(AgentEvent::ToolEnd {
                 id: call.id.clone(),
                 result: omegon_traits::ToolResult {
-                    content: vec![ContentBlock::Text { text: skip_text.clone() }],
+                    content: vec![ContentBlock::Text {
+                        text: skip_text.clone(),
+                    }],
                     details: Value::Null,
                 },
                 is_error: true,
@@ -871,8 +898,6 @@ fn has_mutations(conversation: &ConversationState) -> bool {
     !conversation.intent.files_modified.is_empty()
 }
 
-
-
 // ─── Stuck detection ────────────────────────────────────────────────────────
 
 /// Detects pathological tool-call patterns that indicate the agent is stuck.
@@ -894,8 +919,7 @@ impl StuckDetector {
     /// Record a tool call for pattern analysis.
     fn record(&mut self, call: &ToolCall, is_error: bool) {
         let args_hash = hash_value(&call.arguments);
-        self.recent
-            .push((call.name.clone(), args_hash, is_error));
+        self.recent.push((call.name.clone(), args_hash, is_error));
         if self.recent.len() > self.window * 2 {
             self.recent.drain(..self.window);
         }
@@ -920,10 +944,7 @@ impl StuckDetector {
         }
 
         // Pattern 2: Edit failures — repeated error on the same tool
-        let recent_errors: Vec<_> = window
-            .iter()
-            .filter(|(_, _, err)| *err)
-            .collect();
+        let recent_errors: Vec<_> = window.iter().filter(|(_, _, err)| *err).collect();
         if recent_errors.len() >= 3 {
             let names: Vec<_> = recent_errors.iter().map(|(n, _, _)| n.as_str()).collect();
             if names.windows(3).any(|w| w[0] == w[1] && w[1] == w[2]) {
@@ -960,7 +981,11 @@ impl StuckDetector {
     }
 
     /// Find a (tool_name, count) where the same tool+args appears N+ times in the window.
-    fn find_repeated_call(&self, window: &[(String, u64, bool)], threshold: usize) -> Option<(String, usize)> {
+    fn find_repeated_call(
+        &self,
+        window: &[(String, u64, bool)],
+        threshold: usize,
+    ) -> Option<(String, usize)> {
         let mut counts: HashMap<(String, u64), usize> = HashMap::new();
         for (name, hash, _) in window {
             let key = (name.clone(), *hash);
@@ -984,7 +1009,10 @@ pub fn summarize_tool_args(tool_name: &str, args: &Value) -> Option<String> {
                     .map(|d| d.to_string_lossy().to_string())
                     .unwrap_or_default();
                 if !cwd.is_empty() && p.starts_with(&cwd) {
-                    p[cwd.len()..].strip_prefix('/').unwrap_or(&p[cwd.len()..]).to_string()
+                    p[cwd.len()..]
+                        .strip_prefix('/')
+                        .unwrap_or(&p[cwd.len()..])
+                        .to_string()
                 } else {
                     p.to_string()
                 }
@@ -1015,32 +1043,30 @@ pub fn summarize_tool_args(tool_name: &str, args: &Value) -> Option<String> {
         }
         "change" => {
             let edits = args.get("edits").and_then(|v| v.as_array())?;
-            let files: Vec<&str> = edits.iter()
+            let files: Vec<&str> = edits
+                .iter()
                 .filter_map(|e| e.get("file").and_then(|v| v.as_str()))
                 .collect();
             Some(files.join(", "))
         }
-        "web_search" => {
-            args.get("query").and_then(|v| v.as_str()).map(|q| {
-                if q.len() > 60 {
-                    crate::util::truncate(q, 60)
+        "web_search" => args.get("query").and_then(|v| v.as_str()).map(|q| {
+            if q.len() > 60 {
+                crate::util::truncate(q, 60)
+            } else {
+                q.to_string()
+            }
+        }),
+        "memory_recall" | "memory_store" | "memory_query" => args
+            .get("query")
+            .or_else(|| args.get("content"))
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                if s.len() > 60 {
+                    crate::util::truncate(s, 60)
                 } else {
-                    q.to_string()
+                    s.to_string()
                 }
-            })
-        }
-        "memory_recall" | "memory_store" | "memory_query" => {
-            args.get("query")
-                .or_else(|| args.get("content"))
-                .and_then(|v| v.as_str())
-                .map(|s| {
-                    if s.len() > 60 {
-                        crate::util::truncate(s, 60)
-                    } else {
-                        s.to_string()
-                    }
-                })
-        }
+            }),
         _ => None,
     }
 }
@@ -1065,7 +1091,9 @@ mod tests {
         assert!(is_transient_error("Request rate limit exceeded"));
         assert!(is_transient_error("Server is overloaded"));
         assert!(is_transient_error("transient_server_error"));
-        assert!(is_transient_error("temporarily unavailable, try again later"));
+        assert!(is_transient_error(
+            "temporarily unavailable, try again later"
+        ));
         assert!(is_transient_error("HTTP 500 Internal Server Error"));
         assert!(is_transient_error("error 529: capacity exceeded"));
         assert!(is_transient_error("502 Bad Gateway"));
@@ -1074,7 +1102,9 @@ mod tests {
         // Should NOT match: permanent errors
         assert!(!is_transient_error("Invalid API key"));
         assert!(!is_transient_error("Model not found"));
-        assert!(!is_transient_error("400 Bad Request: Input should be a valid dictionary"));
+        assert!(!is_transient_error(
+            "400 Bad Request: Input should be a valid dictionary"
+        ));
         assert!(!is_transient_error("401 Unauthorized"));
 
         // Should NOT match: status codes embedded in non-error contexts
@@ -1170,35 +1200,50 @@ mod tests {
             Some("cargo test")
         );
         assert_eq!(
-            summarize_tool_args("change", &serde_json::json!({
-                "edits": [{"file": "a.rs"}, {"file": "b.rs"}]
-            })).as_deref(),
+            summarize_tool_args(
+                "change",
+                &serde_json::json!({
+                    "edits": [{"file": "a.rs"}, {"file": "b.rs"}]
+                })
+            )
+            .as_deref(),
             Some("a.rs, b.rs")
         );
         // Memory tools
         assert_eq!(
-            summarize_tool_args("memory_recall", &serde_json::json!({"query": "auth architecture"})).as_deref(),
+            summarize_tool_args(
+                "memory_recall",
+                &serde_json::json!({"query": "auth architecture"})
+            )
+            .as_deref(),
             Some("auth architecture")
         );
         assert_eq!(
-            summarize_tool_args("memory_store", &serde_json::json!({"content": "Omegon uses ratatui"})).as_deref(),
+            summarize_tool_args(
+                "memory_store",
+                &serde_json::json!({"content": "Omegon uses ratatui"})
+            )
+            .as_deref(),
             Some("Omegon uses ratatui")
         );
 
         // Long command gets truncated
         let long_cmd = "x".repeat(100);
-        let summary = summarize_tool_args("bash", &serde_json::json!({"command": long_cmd})).unwrap();
+        let summary =
+            summarize_tool_args("bash", &serde_json::json!({"command": long_cmd})).unwrap();
         assert!(summary.len() <= 84, "got len {}", summary.len()); // 80 + "…" (3 bytes UTF-8)
         assert!(summary.ends_with('…'));
     }
 
     #[tokio::test]
     async fn auto_batch_rollback_on_second_edit_failure() {
-        use std::io::Write as IoWrite;
         use omegon_traits::ToolResult;
+        use std::io::Write as IoWrite;
 
         // Create a mock tool provider that does real file I/O
-        struct FileEditProvider { dir: std::path::PathBuf }
+        struct FileEditProvider {
+            dir: std::path::PathBuf,
+        }
 
         #[async_trait::async_trait]
         impl ToolProvider for FileEditProvider {
@@ -1241,13 +1286,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        std::fs::File::create(&file_a).unwrap().write_all(b"hello world").unwrap();
-        std::fs::File::create(&file_b).unwrap().write_all(b"foo bar baz").unwrap();
+        std::fs::File::create(&file_a)
+            .unwrap()
+            .write_all(b"hello world")
+            .unwrap();
+        std::fs::File::create(&file_b)
+            .unwrap()
+            .write_all(b"foo bar baz")
+            .unwrap();
 
-        let provider = FileEditProvider { dir: dir.path().to_path_buf() };
+        let provider = FileEditProvider {
+            dir: dir.path().to_path_buf(),
+        };
         let mut bus = crate::bus::EventBus::new();
         bus.register(Box::new(crate::features::adapter::ToolAdapter::new(
-            "test-edit", Box::new(provider),
+            "test-edit",
+            Box::new(provider),
         )));
         bus.finalize();
 
@@ -1283,11 +1337,17 @@ mod tests {
 
         // The first file should be ROLLED BACK to original content
         let a_content = std::fs::read_to_string(&file_a).unwrap();
-        assert_eq!(a_content, "hello world", "file_a should be rolled back, got: {a_content}");
+        assert_eq!(
+            a_content, "hello world",
+            "file_a should be rolled back, got: {a_content}"
+        );
 
         // The error message should mention the rollback
         let error_text = results[1].content[0].as_text().unwrap();
-        assert!(error_text.contains("Auto-rollback"), "should mention rollback, got: {error_text}");
+        assert!(
+            error_text.contains("Auto-rollback"),
+            "should mention rollback, got: {error_text}"
+        );
     }
 
     #[tokio::test]
@@ -1316,7 +1376,9 @@ mod tests {
                 _cancel: CancellationToken,
             ) -> anyhow::Result<ToolResult> {
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: "Edited ok".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Edited ok".into(),
+                    }],
                     details: Value::Null,
                 })
             }
@@ -1324,7 +1386,8 @@ mod tests {
 
         let mut bus = crate::bus::EventBus::new();
         bus.register(Box::new(crate::features::adapter::ToolAdapter::new(
-            "test-pass", Box::new(PassProvider),
+            "test-pass",
+            Box::new(PassProvider),
         )));
         bus.finalize();
 
@@ -1340,7 +1403,10 @@ mod tests {
         let results = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
         assert!(!results[0].is_error);
         let text = results[0].content[0].as_text().unwrap();
-        assert!(!text.contains("rollback"), "single edit should have no batch overhead");
+        assert!(
+            !text.contains("rollback"),
+            "single edit should have no batch overhead"
+        );
     }
 
     // ── Turn limit + config tests ──────────────────────────────────────
@@ -1393,22 +1459,49 @@ mod tests {
     fn stuck_detector_resets_on_different_tool() {
         let mut detector = StuckDetector::new();
         // Call read 3 times (not stuck — different is_error flags don't matter)
-        detector.record(&ToolCall { id: "1".into(), name: "read".into(), arguments: Value::Null }, false);
-        detector.record(&ToolCall { id: "2".into(), name: "read".into(), arguments: Value::Null }, false);
+        detector.record(
+            &ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                arguments: Value::Null,
+            },
+            false,
+        );
+        detector.record(
+            &ToolCall {
+                id: "2".into(),
+                name: "read".into(),
+                arguments: Value::Null,
+            },
+            false,
+        );
         // Switch to a different tool — resets the counter
-        detector.record(&ToolCall { id: "3".into(), name: "write".into(), arguments: Value::Null }, false);
-        assert!(detector.check().is_none(), "different tools should not trigger stuck");
+        detector.record(
+            &ToolCall {
+                id: "3".into(),
+                name: "write".into(),
+                arguments: Value::Null,
+            },
+            false,
+        );
+        assert!(
+            detector.check().is_none(),
+            "different tools should not trigger stuck"
+        );
     }
 
     #[test]
     fn stuck_detector_fires_on_same_tool_repeated() {
         let mut detector = StuckDetector::new();
         for i in 0..10 {
-            detector.record(&ToolCall {
-                id: format!("{i}"),
-                name: "bash".into(),
-                arguments: serde_json::json!({"command": "cat /dev/null"}),
-            }, true);
+            detector.record(
+                &ToolCall {
+                    id: format!("{i}"),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "cat /dev/null"}),
+                },
+                true,
+            );
         }
         // After enough repeated error calls, should flag as stuck
         let result = detector.check();

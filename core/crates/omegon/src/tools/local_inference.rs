@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use omegon_traits::{ContentBlock, ToolDefinition, ToolProvider, ToolResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::env;
 use std::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -82,19 +82,21 @@ impl LocalInferenceProvider {
 
     async fn ollama_status(&self) -> String {
         match self.client.get(base_url()).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match self.list_models().await {
-                    Ok(models) => {
-                        if models.is_empty() {
-                            "Ollama is running but no models are loaded.".into()
-                        } else {
-                            let names: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
-                            format!("Ollama is running. {} model(s): {}", models.len(), names.join(", "))
-                        }
+            Ok(resp) if resp.status().is_success() => match self.list_models().await {
+                Ok(models) => {
+                    if models.is_empty() {
+                        "Ollama is running but no models are loaded.".into()
+                    } else {
+                        let names: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+                        format!(
+                            "Ollama is running. {} model(s): {}",
+                            models.len(),
+                            names.join(", ")
+                        )
                     }
-                    Err(_) => "Ollama is running but model listing failed.".into(),
                 }
-            }
+                Err(_) => "Ollama is running but model listing failed.".into(),
+            },
             _ => "Ollama is not running or not reachable.".into(),
         }
     }
@@ -117,7 +119,13 @@ impl LocalInferenceProvider {
 
     async fn ollama_pull(&self, model: &str) -> String {
         let url = format!("{}/api/pull", base_url());
-        match self.client.post(&url).json(&json!({"name": model, "stream": false})).send().await {
+        match self
+            .client
+            .post(&url)
+            .json(&json!({"name": model, "stream": false}))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => format!("Pulled model: {model}"),
             Ok(resp) => format!("Pull failed ({})", resp.status()),
             Err(e) => format!("Pull failed: {e}"),
@@ -127,7 +135,13 @@ impl LocalInferenceProvider {
     async fn auto_select_model(&self) -> Option<String> {
         let models = self.list_models().await.ok()?;
         // Prefer larger models, known good ones
-        let preferred = ["devstral-small", "qwen3:30b", "qwen3:14b", "qwen3:8b", "llama3"];
+        let preferred = [
+            "devstral-small",
+            "qwen3:30b",
+            "qwen3:14b",
+            "qwen3:8b",
+            "llama3",
+        ];
         for pref in preferred {
             if let Some(m) = models.iter().find(|m| m.id.contains(pref)) {
                 return Some(m.id.clone());
@@ -215,16 +229,27 @@ impl ToolProvider for LocalInferenceProvider {
             "ask_local_model" => {
                 let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                 let system = args.get("system").and_then(|v| v.as_str());
-                let temperature = args.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-                let max_tokens = args.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
+                let temperature = args
+                    .get("temperature")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.3) as f32;
+                let max_tokens = args
+                    .get("max_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2048) as u32;
 
                 let model = if let Some(m) = args.get("model").and_then(|v| v.as_str()) {
                     m.to_string()
                 } else {
-                    self.auto_select_model().await.unwrap_or_else(|| "qwen3:8b".into())
+                    self.auto_select_model()
+                        .await
+                        .unwrap_or_else(|| "qwen3:8b".into())
                 };
 
-                match self.chat_completion(&model, prompt, system, temperature, max_tokens).await {
+                match self
+                    .chat_completion(&model, prompt, system, temperature, max_tokens)
+                    .await
+                {
                     Ok(response) => Ok(ToolResult {
                         content: vec![ContentBlock::Text {
                             text: format!("[Model: {model}]\n\n{response}"),
@@ -239,36 +264,40 @@ impl ToolProvider for LocalInferenceProvider {
                     }),
                 }
             }
-            "list_local_models" => {
-                match self.list_models().await {
-                    Ok(models) => {
-                        let text = if models.is_empty() {
-                            "No models available. Run `manage_ollama` with action 'pull' to download a model.".into()
-                        } else {
-                            let list: Vec<_> = models.iter().map(|m| format!("- {}", m.id)).collect();
-                            format!("{} model(s) available:\n{}", models.len(), list.join("\n"))
-                        };
-                        Ok(ToolResult {
-                            content: vec![ContentBlock::Text { text }],
-                            details: json!({"count": models.len()}),
-                        })
-                    }
-                    Err(e) => Ok(ToolResult {
-                        content: vec![ContentBlock::Text {
-                            text: format!("Cannot list models: {e}. Is Ollama running?"),
-                        }],
-                        details: json!({"error": true}),
-                    }),
+            "list_local_models" => match self.list_models().await {
+                Ok(models) => {
+                    let text = if models.is_empty() {
+                        "No models available. Run `manage_ollama` with action 'pull' to download a model.".into()
+                    } else {
+                        let list: Vec<_> = models.iter().map(|m| format!("- {}", m.id)).collect();
+                        format!("{} model(s) available:\n{}", models.len(), list.join("\n"))
+                    };
+                    Ok(ToolResult {
+                        content: vec![ContentBlock::Text { text }],
+                        details: json!({"count": models.len()}),
+                    })
                 }
-            }
+                Err(e) => Ok(ToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("Cannot list models: {e}. Is Ollama running?"),
+                    }],
+                    details: json!({"error": true}),
+                }),
+            },
             "manage_ollama" => {
-                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("status");
+                let action = args
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("status");
                 let text = match action {
                     "status" => self.ollama_status().await,
                     "start" => self.ollama_start(),
                     "stop" => self.ollama_stop(),
                     "pull" => {
-                        let model = args.get("model").and_then(|v| v.as_str()).unwrap_or("qwen3:8b");
+                        let model = args
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("qwen3:8b");
                         self.ollama_pull(model).await
                     }
                     _ => format!("Unknown action: {action}. Use: start, stop, status, pull"),

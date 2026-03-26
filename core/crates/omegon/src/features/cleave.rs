@@ -13,11 +13,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use omegon_traits::{
-    BusEvent, BusRequest, CommandDefinition, CommandResult,
-    Feature, ToolDefinition, ToolResult, ContentBlock,
+    BusEvent, BusRequest, CommandDefinition, CommandResult, ContentBlock, Feature, ToolDefinition,
+    ToolResult,
 };
 
 use crate::cleave::{self, CleavePlan, state::ChildStatus};
@@ -35,25 +35,150 @@ struct Pattern {
 }
 
 const PATTERNS: &[Pattern] = &[
-    Pattern { id: "crud-api", label: "CRUD / API Endpoint", keywords: &["endpoint", "api", "handler", "route", "crud", "rest"], systems: 2 },
-    Pattern { id: "data-pipeline", label: "Data Pipeline / ETL", keywords: &["pipeline", "etl", "transform", "ingest", "export"], systems: 3 },
-    Pattern { id: "ui-feature", label: "UI Feature / Component", keywords: &["component", "widget", "view", "form", "dialog", "panel", "ui"], systems: 2 },
-    Pattern { id: "refactor", label: "Refactor / Rename", keywords: &["refactor", "rename", "extract", "inline", "dedup", "consolidat"], systems: 1 },
-    Pattern { id: "infra-tooling", label: "Infrastructure & Tooling", keywords: &["ci", "cd", "docker", "deploy", "container", "workflow", "script", "tool", "config", "lint", "format"], systems: 1 },
-    Pattern { id: "auth-security", label: "Auth / Security", keywords: &["auth", "login", "permission", "rbac", "oauth", "token", "secret", "encrypt"], systems: 3 },
-    Pattern { id: "multi-service", label: "Multi-Service Integration", keywords: &["service", "microservice", "grpc", "queue", "message", "event-driven", "kafka", "nats"], systems: 4 },
-    Pattern { id: "migration", label: "Data Migration / Schema Change", keywords: &["migration", "schema", "alter", "migrate", "upgrade", "backward"], systems: 2 },
-    Pattern { id: "test-coverage", label: "Test Coverage / Quality", keywords: &["test", "coverage", "spec", "assert", "mock", "fixture"], systems: 1 },
-    Pattern { id: "cross-cutting", label: "Cross-Cutting Concern", keywords: &["logging", "tracing", "metrics", "telemetry", "i18n", "l10n", "error-handling"], systems: 3 },
+    Pattern {
+        id: "crud-api",
+        label: "CRUD / API Endpoint",
+        keywords: &["endpoint", "api", "handler", "route", "crud", "rest"],
+        systems: 2,
+    },
+    Pattern {
+        id: "data-pipeline",
+        label: "Data Pipeline / ETL",
+        keywords: &["pipeline", "etl", "transform", "ingest", "export"],
+        systems: 3,
+    },
+    Pattern {
+        id: "ui-feature",
+        label: "UI Feature / Component",
+        keywords: &[
+            "component",
+            "widget",
+            "view",
+            "form",
+            "dialog",
+            "panel",
+            "ui",
+        ],
+        systems: 2,
+    },
+    Pattern {
+        id: "refactor",
+        label: "Refactor / Rename",
+        keywords: &[
+            "refactor",
+            "rename",
+            "extract",
+            "inline",
+            "dedup",
+            "consolidat",
+        ],
+        systems: 1,
+    },
+    Pattern {
+        id: "infra-tooling",
+        label: "Infrastructure & Tooling",
+        keywords: &[
+            "ci",
+            "cd",
+            "docker",
+            "deploy",
+            "container",
+            "workflow",
+            "script",
+            "tool",
+            "config",
+            "lint",
+            "format",
+        ],
+        systems: 1,
+    },
+    Pattern {
+        id: "auth-security",
+        label: "Auth / Security",
+        keywords: &[
+            "auth",
+            "login",
+            "permission",
+            "rbac",
+            "oauth",
+            "token",
+            "secret",
+            "encrypt",
+        ],
+        systems: 3,
+    },
+    Pattern {
+        id: "multi-service",
+        label: "Multi-Service Integration",
+        keywords: &[
+            "service",
+            "microservice",
+            "grpc",
+            "queue",
+            "message",
+            "event-driven",
+            "kafka",
+            "nats",
+        ],
+        systems: 4,
+    },
+    Pattern {
+        id: "migration",
+        label: "Data Migration / Schema Change",
+        keywords: &[
+            "migration",
+            "schema",
+            "alter",
+            "migrate",
+            "upgrade",
+            "backward",
+        ],
+        systems: 2,
+    },
+    Pattern {
+        id: "test-coverage",
+        label: "Test Coverage / Quality",
+        keywords: &["test", "coverage", "spec", "assert", "mock", "fixture"],
+        systems: 1,
+    },
+    Pattern {
+        id: "cross-cutting",
+        label: "Cross-Cutting Concern",
+        keywords: &[
+            "logging",
+            "tracing",
+            "metrics",
+            "telemetry",
+            "i18n",
+            "l10n",
+            "error-handling",
+        ],
+        systems: 3,
+    },
 ];
 
 /// Modifiers that increase complexity.
 const MODIFIERS: &[(&str, &[&str])] = &[
-    ("validation", &["validate", "constraint", "schema", "boundary"]),
-    ("backward-compat", &["backward", "compatible", "deprecat", "legacy"]),
-    ("multi-platform", &["platform", "cross-platform", "os-specific", "arch"]),
-    ("performance", &["performance", "benchmark", "optimize", "cache", "latency"]),
-    ("concurrent", &["concurrent", "parallel", "async", "thread", "lock", "mutex"]),
+    (
+        "validation",
+        &["validate", "constraint", "schema", "boundary"],
+    ),
+    (
+        "backward-compat",
+        &["backward", "compatible", "deprecat", "legacy"],
+    ),
+    (
+        "multi-platform",
+        &["platform", "cross-platform", "os-specific", "arch"],
+    ),
+    (
+        "performance",
+        &["performance", "benchmark", "optimize", "cache", "latency"],
+    ),
+    (
+        "concurrent",
+        &["concurrent", "parallel", "async", "thread", "lock", "mutex"],
+    ),
 ];
 
 fn assess_directive(directive: &str, threshold: f64) -> Value {
@@ -70,7 +195,9 @@ fn assess_directive(directive: &str, threshold: f64) -> Value {
 
     let mut best: Option<(&Pattern, f64)> = None;
     for pattern in PATTERNS {
-        let matches = pattern.keywords.iter()
+        let matches = pattern
+            .keywords
+            .iter()
             .filter(|kw| words.iter().any(|w| word_matches(w, kw)))
             .count();
         if matches > 0 {
@@ -82,8 +209,12 @@ fn assess_directive(directive: &str, threshold: f64) -> Value {
     }
 
     // Count modifiers (same word-boundary matching)
-    let active_modifiers: Vec<&str> = MODIFIERS.iter()
-        .filter(|(_, kws)| kws.iter().any(|kw| words.iter().any(|w| word_matches(w, kw))))
+    let active_modifiers: Vec<&str> = MODIFIERS
+        .iter()
+        .filter(|(_, kws)| {
+            kws.iter()
+                .any(|kw| words.iter().any(|w| word_matches(w, kw)))
+        })
         .map(|(name, _)| *name)
         .collect();
 
@@ -97,7 +228,11 @@ fn assess_directive(directive: &str, threshold: f64) -> Value {
     let complexity = systems * (1.0 + 0.5 * modifier_count);
     let effective = complexity + 1.0; // +1 for validation offset
 
-    let decision = if effective > threshold { "cleave" } else { "execute" };
+    let decision = if effective > threshold {
+        "cleave"
+    } else {
+        "execute"
+    };
 
     json!({
         "decision": decision,
@@ -167,7 +302,8 @@ impl CleaveFeature {
     }
 
     fn execute_assess(&self, args: &Value) -> anyhow::Result<ToolResult> {
-        let directive = args["directive"].as_str()
+        let directive = args["directive"]
+            .as_str()
             .ok_or_else(|| anyhow::anyhow!("directive required"))?;
         let threshold = args["threshold"].as_f64().unwrap_or(2.0);
 
@@ -185,9 +321,11 @@ impl CleaveFeature {
         args: &Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let directive = args["directive"].as_str()
+        let directive = args["directive"]
+            .as_str()
             .ok_or_else(|| anyhow::anyhow!("directive required"))?;
-        let plan_json = args["plan_json"].as_str()
+        let plan_json = args["plan_json"]
+            .as_str()
             .ok_or_else(|| anyhow::anyhow!("plan_json required"))?;
         let max_parallel = args["max_parallel"].as_u64().unwrap_or(4) as usize;
 
@@ -207,18 +345,23 @@ impl CleaveFeature {
             prog.total_children = plan.children.len();
             prog.completed = 0;
             prog.failed = 0;
-            prog.children = plan.children.iter().map(|c| ChildProgress {
-                label: c.label.clone(),
-                status: "pending".into(),
-                duration_secs: None,
-            }).collect();
+            prog.children = plan
+                .children
+                .iter()
+                .map(|c| ChildProgress {
+                    label: c.label.clone(),
+                    status: "pending".into(),
+                    duration_secs: None,
+                })
+                .collect();
         }
 
         let config = cleave::orchestrator::CleaveConfig {
             agent_binary,
             bridge_path: PathBuf::new(), // Not used in native mode
             node: String::new(),
-            model: std::env::var("OMEGON_MODEL").unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into()),
+            model: std::env::var("OMEGON_MODEL")
+                .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into()),
             max_parallel,
             timeout_secs: 900,
             idle_timeout_secs: 180,
@@ -232,17 +375,31 @@ impl CleaveFeature {
         };
 
         let result = cleave::run_cleave(
-            &plan, directive, &self.repo_path, &workspace, &config, cancel,
-        ).await?;
+            &plan,
+            directive,
+            &self.repo_path,
+            &workspace,
+            &config,
+            cancel,
+        )
+        .await?;
 
         // Update progress to final state
         {
             let mut prog = self.progress.lock().unwrap();
             prog.active = false;
-            prog.completed = result.state.children.iter()
-                .filter(|c| c.status == ChildStatus::Completed).count();
-            prog.failed = result.state.children.iter()
-                .filter(|c| c.status == ChildStatus::Failed).count();
+            prog.completed = result
+                .state
+                .children
+                .iter()
+                .filter(|c| c.status == ChildStatus::Completed)
+                .count();
+            prog.failed = result
+                .state
+                .children
+                .iter()
+                .filter(|c| c.status == ChildStatus::Failed)
+                .count();
             for (i, child) in result.state.children.iter().enumerate() {
                 if let Some(p) = prog.children.get_mut(i) {
                     p.status = match child.status {
@@ -257,14 +414,26 @@ impl CleaveFeature {
         }
 
         // Build report
-        let completed = result.state.children.iter()
-            .filter(|c| c.status == ChildStatus::Completed).count();
-        let failed = result.state.children.iter()
-            .filter(|c| c.status == ChildStatus::Failed).count();
+        let completed = result
+            .state
+            .children
+            .iter()
+            .filter(|c| c.status == ChildStatus::Completed)
+            .count();
+        let failed = result
+            .state
+            .children
+            .iter()
+            .filter(|c| c.status == ChildStatus::Failed)
+            .count();
 
         let mut report = format!(
             "## Cleave Report: {}\n**Duration:** {:.0}s\n**Children:** {} completed, {} failed of {}\n\n",
-            result.state.run_id, result.duration_secs, completed, failed, result.state.children.len()
+            result.state.run_id,
+            result.duration_secs,
+            completed,
+            failed,
+            result.state.children.len()
         );
 
         for child in &result.state.children {
@@ -274,7 +443,10 @@ impl CleaveFeature {
                 ChildStatus::Running => "⏳",
                 ChildStatus::Pending => "○",
             };
-            let dur = child.duration_secs.map(|d| format!(" ({:.0}s)", d)).unwrap_or_default();
+            let dur = child
+                .duration_secs
+                .map(|d| format!(" ({:.0}s)", d))
+                .unwrap_or_default();
             report.push_str(&format!("  {} **{}**{}\n", icon, child.label, dur));
             if let Some(err) = &child.error {
                 report.push_str(&format!("    Error: {}\n", err));
@@ -288,10 +460,18 @@ impl CleaveFeature {
                     report.push_str(&format!("  ✓ {} merged\n", label));
                 }
                 cleave::orchestrator::MergeOutcome::Conflict(d) => {
-                    report.push_str(&format!("  ✗ {} CONFLICT: {}\n", label, d.lines().next().unwrap_or("")));
+                    report.push_str(&format!(
+                        "  ✗ {} CONFLICT: {}\n",
+                        label,
+                        d.lines().next().unwrap_or("")
+                    ));
                 }
                 cleave::orchestrator::MergeOutcome::Failed(d) => {
-                    report.push_str(&format!("  ✗ {} FAILED: {}\n", label, d.lines().next().unwrap_or("")));
+                    report.push_str(&format!(
+                        "  ✗ {} FAILED: {}\n",
+                        label,
+                        d.lines().next().unwrap_or("")
+                    ));
                 }
                 cleave::orchestrator::MergeOutcome::Skipped(d) => {
                     report.push_str(&format!("  ○ {} skipped: {}\n", label, d));
@@ -383,13 +563,11 @@ impl Feature for CleaveFeature {
     }
 
     fn commands(&self) -> Vec<CommandDefinition> {
-        vec![
-            CommandDefinition {
-                name: "cleave".into(),
-                description: "Show cleave status or trigger decomposition".into(),
-                subcommands: vec!["status".into()],
-            },
-        ]
+        vec![CommandDefinition {
+            name: "cleave".into(),
+            description: "Show cleave status or trigger decomposition".into(),
+            subcommands: vec!["status".into()],
+        }]
     }
 
     fn handle_command(&mut self, name: &str, args: &str) -> CommandResult {
@@ -403,9 +581,16 @@ impl Feature for CleaveFeature {
                     }
                     let mut lines = Vec::new();
                     if prog.active {
-                        lines.push(format!("Cleave active: {}/{} children", prog.completed + prog.failed, prog.total_children));
+                        lines.push(format!(
+                            "Cleave active: {}/{} children",
+                            prog.completed + prog.failed,
+                            prog.total_children
+                        ));
                     } else {
-                        lines.push(format!("Last cleave: {} completed, {} failed of {}", prog.completed, prog.failed, prog.total_children));
+                        lines.push(format!(
+                            "Last cleave: {} completed, {} failed of {}",
+                            prog.completed, prog.failed, prog.total_children
+                        ));
                     }
                     for child in &prog.children {
                         let icon = match child.status.as_str() {
@@ -414,7 +599,10 @@ impl Feature for CleaveFeature {
                             "running" => "⏳",
                             _ => "○",
                         };
-                        let dur = child.duration_secs.map(|d| format!(" ({:.0}s)", d)).unwrap_or_default();
+                        let dur = child
+                            .duration_secs
+                            .map(|d| format!(" ({:.0}s)", d))
+                            .unwrap_or_default();
                         lines.push(format!("  {} {}{}", icon, child.label, dur));
                     }
                     CommandResult::Display(lines.join("\n"))
@@ -433,7 +621,9 @@ impl Feature for CleaveFeature {
 
 fn text_result(text: &str) -> ToolResult {
     ToolResult {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         details: json!(null),
     }
 }
@@ -445,7 +635,10 @@ mod tests {
     #[test]
     fn assess_simple_directive() {
         let result = assess_directive("Refactor the utils module to extract helpers", 2.0);
-        assert_eq!(result["decision"], "execute", "simple refactor should be execute: {result}");
+        assert_eq!(
+            result["decision"], "execute",
+            "simple refactor should be execute: {result}"
+        );
         assert!(result["complexity"].as_f64().unwrap() >= 1.0);
     }
 
@@ -467,7 +660,10 @@ mod tests {
 
     #[test]
     fn assess_with_modifiers() {
-        let result = assess_directive("Deploy a containerized service with performance optimization and backward compatibility", 2.0);
+        let result = assess_directive(
+            "Deploy a containerized service with performance optimization and backward compatibility",
+            2.0,
+        );
         let mods = result["modifiers"].as_array().unwrap();
         assert!(!mods.is_empty(), "should detect modifiers");
     }
@@ -504,13 +700,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let feature = CleaveFeature::new(dir.path());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute(
-            "cleave_assess", "tc1",
-            json!({"directive": "Refactor the auth module", "threshold": 2.0}),
-            cancel,
-        ).await.unwrap();
+        let result = feature
+            .execute(
+                "cleave_assess",
+                "tc1",
+                json!({"directive": "Refactor the auth module", "threshold": 2.0}),
+                cancel,
+            )
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(text.contains("decision"), "should return assessment: {text}");
+        assert!(
+            text.contains("decision"),
+            "should return assessment: {text}"
+        );
     }
 }
 
@@ -556,26 +759,38 @@ mod assessment_tests {
     fn all_modifiers_stack() {
         let r = assess_directive(
             "concurrent performance optimization with backward compatibility for cross-platform validation",
-            100.0  // High threshold so we can just check complexity
+            100.0, // High threshold so we can just check complexity
         );
         let mods = r["modifiers"].as_array().unwrap();
-        assert!(mods.len() >= 3, "should detect multiple modifiers: {mods:?}");
+        assert!(
+            mods.len() >= 3,
+            "should detect multiple modifiers: {mods:?}"
+        );
         assert!(r["complexity"].as_f64().unwrap() > 1.0);
     }
 
     #[test]
     fn custom_threshold() {
         let r = assess_directive("simple refactor extract helpers", 100.0);
-        assert_eq!(r["decision"], "execute", "high threshold should always execute");
+        assert_eq!(
+            r["decision"], "execute",
+            "high threshold should always execute"
+        );
 
         let r = assess_directive("simple refactor extract helpers", 0.5);
-        assert_eq!(r["decision"], "cleave", "low threshold should always cleave");
+        assert_eq!(
+            r["decision"], "cleave",
+            "low threshold should always cleave"
+        );
     }
 
     #[test]
     fn confidence_between_0_and_1() {
         let r = assess_directive("Deploy a containerized service", 2.0);
         let conf = r["confidence"].as_f64().unwrap();
-        assert!(conf > 0.0 && conf <= 1.0, "confidence should be (0,1]: {conf}");
+        assert!(
+            conf > 0.0 && conf <= 1.0,
+            "confidence should be (0,1]: {conf}"
+        );
     }
 }

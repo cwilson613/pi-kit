@@ -12,11 +12,11 @@
 //! The store is never in git, never synced, never archived without explicit operator action.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
 use argon2::Argon2;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -108,7 +108,11 @@ impl SecretStore {
             .map_err(|e| anyhow::anyhow!("keyring read failed: {e}"))?;
         let key = hex_to_key(&hex_key)?;
 
-        Ok(Self { db, key, backend: KeyBackend::Keyring })
+        Ok(Self {
+            db,
+            key,
+            backend: KeyBackend::Keyring,
+        })
     }
 
     /// Open an existing store using a passphrase.
@@ -122,15 +126,19 @@ impl SecretStore {
             );
         }
 
-        let salt = meta.salt.ok_or_else(|| {
-            anyhow::anyhow!("passphrase store missing salt in metadata")
-        })?;
+        let salt = meta
+            .salt
+            .ok_or_else(|| anyhow::anyhow!("passphrase store missing salt in metadata"))?;
         let key = derive_key_argon2id(passphrase.as_bytes(), &salt);
 
         // Verify the key by attempting to decrypt the canary
         Self::verify_canary(&db, &key)?;
 
-        Ok(Self { db, key, backend: KeyBackend::Passphrase })
+        Ok(Self {
+            db,
+            key,
+            backend: KeyBackend::Passphrase,
+        })
     }
 
     /// Store a secret. Atomic via SQLite transaction.
@@ -145,9 +153,9 @@ impl SecretStore {
 
     /// Retrieve a secret.
     pub fn get(&self, name: &str) -> anyhow::Result<Option<SecretString>> {
-        let mut stmt = self.db.prepare(
-            "SELECT value FROM secrets WHERE name = ?1"
-        )?;
+        let mut stmt = self
+            .db
+            .prepare("SELECT value FROM secrets WHERE name = ?1")?;
         let result = stmt.query_row(params![name], |row| {
             let encrypted: Vec<u8> = row.get(0)?;
             Ok(encrypted)
@@ -167,17 +175,17 @@ impl SecretStore {
 
     /// Delete a secret. Returns true if it existed.
     pub fn delete(&self, name: &str) -> anyhow::Result<bool> {
-        let changes = self.db.execute(
-            "DELETE FROM secrets WHERE name = ?1",
-            params![name],
-        )?;
+        let changes = self
+            .db
+            .execute("DELETE FROM secrets WHERE name = ?1", params![name])?;
         Ok(changes > 0)
     }
 
     /// List all stored secret names (not values).
     pub fn list(&self) -> anyhow::Result<Vec<String>> {
         let mut stmt = self.db.prepare("SELECT name FROM secrets ORDER BY name")?;
-        let names = stmt.query_map([], |row| row.get(0))?
+        let names = stmt
+            .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
         Ok(names)
     }
@@ -229,7 +237,7 @@ impl SecretStore {
             CREATE TABLE IF NOT EXISTS secrets (
                 name TEXT PRIMARY KEY,
                 value BLOB NOT NULL
-            );"
+            );",
         )?;
 
         // Store metadata
@@ -267,8 +275,12 @@ impl SecretStore {
             // Also restrict the WAL and SHM files if they exist
             let wal = path.with_extension("db-wal");
             let shm = path.with_extension("db-shm");
-            if wal.exists() { let _ = std::fs::set_permissions(&wal, std::fs::Permissions::from_mode(0o600)); }
-            if shm.exists() { let _ = std::fs::set_permissions(&shm, std::fs::Permissions::from_mode(0o600)); }
+            if wal.exists() {
+                let _ = std::fs::set_permissions(&wal, std::fs::Permissions::from_mode(0o600));
+            }
+            if shm.exists() {
+                let _ = std::fs::set_permissions(&shm, std::fs::Permissions::from_mode(0o600));
+            }
         }
 
         Ok(store)
@@ -282,11 +294,11 @@ impl SecretStore {
     }
 
     fn read_meta(db: &Connection) -> anyhow::Result<StoreMeta> {
-        let backend_str: String = db.query_row(
-            "SELECT value FROM meta WHERE key = 'backend'",
-            [],
-            |row| row.get(0),
-        ).map_err(|_| anyhow::anyhow!("store metadata missing — is this a valid secrets.db?"))?;
+        let backend_str: String = db
+            .query_row("SELECT value FROM meta WHERE key = 'backend'", [], |row| {
+                row.get(0)
+            })
+            .map_err(|_| anyhow::anyhow!("store metadata missing — is this a valid secrets.db?"))?;
 
         let backend = match backend_str.as_str() {
             "keyring" => KeyBackend::Keyring,
@@ -294,28 +306,29 @@ impl SecretStore {
             other => anyhow::bail!("unknown backend: {other}"),
         };
 
-        let salt = db.query_row(
-            "SELECT value FROM meta WHERE key = 'salt'",
-            [],
-            |row| row.get::<_, String>(0),
-        ).ok().and_then(|h| hex::decode(h).ok());
+        let salt = db
+            .query_row("SELECT value FROM meta WHERE key = 'salt'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .ok()
+            .and_then(|h| hex::decode(h).ok());
 
         Ok(StoreMeta { backend, salt })
     }
 
     /// Verify that the encryption key is correct by decrypting the canary value.
     fn verify_canary(db: &Connection, key: &[u8; KEY_LENGTH]) -> anyhow::Result<()> {
-        let canary_hex: String = db.query_row(
-            "SELECT value FROM meta WHERE key = 'canary'",
-            [],
-            |row| row.get(0),
-        ).map_err(|_| anyhow::anyhow!("store missing canary — may be corrupted"))?;
+        let canary_hex: String = db
+            .query_row("SELECT value FROM meta WHERE key = 'canary'", [], |row| {
+                row.get(0)
+            })
+            .map_err(|_| anyhow::anyhow!("store missing canary — may be corrupted"))?;
 
-        let canary_encrypted = hex::decode(&canary_hex)
-            .map_err(|_| anyhow::anyhow!("corrupted canary value"))?;
+        let canary_encrypted =
+            hex::decode(&canary_hex).map_err(|_| anyhow::anyhow!("corrupted canary value"))?;
 
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
 
         if canary_encrypted.len() < NONCE_LENGTH {
             anyhow::bail!("corrupted canary — too short");
@@ -348,8 +361,11 @@ impl SecretStore {
 
     fn decrypt(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
         if data.len() < NONCE_LENGTH {
-            anyhow::bail!("encrypted data too short ({} bytes, need at least {})",
-                data.len(), NONCE_LENGTH);
+            anyhow::bail!(
+                "encrypted data too short ({} bytes, need at least {})",
+                data.len(),
+                NONCE_LENGTH
+            );
         }
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_LENGTH);
         let cipher = Aes256Gcm::new_from_slice(&self.key)
@@ -425,8 +441,7 @@ fn derive_key_argon2id(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LENGTH] {
 }
 
 fn hex_to_key(hex_str: &str) -> anyhow::Result<[u8; KEY_LENGTH]> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| anyhow::anyhow!("invalid hex key: {e}"))?;
+    let bytes = hex::decode(hex_str).map_err(|e| anyhow::anyhow!("invalid hex key: {e}"))?;
     if bytes.len() != KEY_LENGTH {
         anyhow::bail!("key length {} != expected {}", bytes.len(), KEY_LENGTH);
     }
@@ -462,7 +477,9 @@ mod tests {
         let (_dir, path) = temp_store_path();
         let store = SecretStore::init_passphrase(&path, "hunter2").unwrap();
 
-        store.put("API_KEY", &SecretString::from("sk-secret-123")).unwrap();
+        store
+            .put("API_KEY", &SecretString::from("sk-secret-123"))
+            .unwrap();
 
         let retrieved = store.get("API_KEY").unwrap().unwrap();
         assert_eq!(retrieved.expose_secret(), "sk-secret-123");
@@ -486,9 +503,15 @@ mod tests {
 
         // Wrong passphrase should fail at open time (canary check), not at get time
         let result = SecretStore::open_passphrase(&path, "wrong-passphrase");
-        assert!(result.is_err(), "wrong passphrase should fail canary verification");
+        assert!(
+            result.is_err(),
+            "wrong passphrase should fail canary verification"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("wrong passphrase"), "error should mention wrong passphrase: {err}");
+        assert!(
+            err.contains("wrong passphrase"),
+            "error should mention wrong passphrase: {err}"
+        );
     }
 
     #[test]
@@ -500,9 +523,18 @@ mod tests {
         store.put("KEY_2", &SecretString::from("value-2")).unwrap();
         store.put("KEY_3", &SecretString::from("value-3")).unwrap();
 
-        assert_eq!(store.get("KEY_1").unwrap().unwrap().expose_secret(), "value-1");
-        assert_eq!(store.get("KEY_2").unwrap().unwrap().expose_secret(), "value-2");
-        assert_eq!(store.get("KEY_3").unwrap().unwrap().expose_secret(), "value-3");
+        assert_eq!(
+            store.get("KEY_1").unwrap().unwrap().expose_secret(),
+            "value-1"
+        );
+        assert_eq!(
+            store.get("KEY_2").unwrap().unwrap().expose_secret(),
+            "value-2"
+        );
+        assert_eq!(
+            store.get("KEY_3").unwrap().unwrap().expose_secret(),
+            "value-3"
+        );
 
         let names = store.list().unwrap();
         assert_eq!(names, vec!["KEY_1", "KEY_2", "KEY_3"]); // ordered by SQLite
@@ -516,7 +548,10 @@ mod tests {
         store.put("KEY", &SecretString::from("old-value")).unwrap();
         store.put("KEY", &SecretString::from("new-value")).unwrap();
 
-        assert_eq!(store.get("KEY").unwrap().unwrap().expose_secret(), "new-value");
+        assert_eq!(
+            store.get("KEY").unwrap().unwrap().expose_secret(),
+            "new-value"
+        );
         assert_eq!(store.list().unwrap().len(), 1);
     }
 
@@ -526,7 +561,9 @@ mod tests {
 
         {
             let store = SecretStore::init_passphrase(&path, "pass").unwrap();
-            store.put("PERSIST_KEY", &SecretString::from("persist-value")).unwrap();
+            store
+                .put("PERSIST_KEY", &SecretString::from("persist-value"))
+                .unwrap();
         }
 
         {
@@ -553,7 +590,9 @@ mod tests {
 
     #[test]
     fn nonexistent_store_not_exists() {
-        assert!(!SecretStore::exists(Path::new("/tmp/nonexistent/secrets.db")));
+        assert!(!SecretStore::exists(Path::new(
+            "/tmp/nonexistent/secrets.db"
+        )));
     }
 
     #[test]
@@ -588,7 +627,12 @@ mod tests {
 
         // Write 100 secrets to exercise SQLite WAL
         for i in 0..100 {
-            store.put(&format!("KEY_{i}"), &SecretString::from(format!("value-{i}"))).unwrap();
+            store
+                .put(
+                    &format!("KEY_{i}"),
+                    &SecretString::from(format!("value-{i}")),
+                )
+                .unwrap();
         }
 
         assert_eq!(store.list().unwrap().len(), 100);

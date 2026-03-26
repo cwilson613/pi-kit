@@ -20,8 +20,6 @@
 //!   r      Reset all
 //!   q      Quit
 
-use std::io;
-use std::time::{Duration, Instant};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode, KeyEvent},
@@ -29,6 +27,8 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::io;
+use std::time::{Duration, Instant};
 
 fn main() -> io::Result<()> {
     terminal::enable_raw_mode()?;
@@ -101,7 +101,11 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('3') => state.context_fill = 0.50,
                     KeyCode::Char('4') => state.context_fill = 0.70,
                     KeyCode::Char('5') => state.fire_tool("bash"),
-                    KeyCode::Char('6') => { state.fire_tool("write"); state.fire_tool("write"); state.fire_tool("write"); }
+                    KeyCode::Char('6') => {
+                        state.fire_tool("write");
+                        state.fire_tool("write");
+                        state.fire_tool("write");
+                    }
                     KeyCode::Char('7') => state.fire_tool("read"),
                     KeyCode::Char('8') => state.fire_tool("memory_store"),
                     KeyCode::Char('9') => state.thinking_active = true,
@@ -110,7 +114,13 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('=') => state.pluck_mind(0, WaveDirection::Left),  // recall ←
                     KeyCode::Char('\\') => state.pluck_mind(0, WaveDirection::Center), // supersede ↔
                     KeyCode::Char('[') => state.toggle_mind(1),
-                    KeyCode::Char(']') => { if state.minds[1].active { state.toggle_mind(1); } else { state.toggle_mind(2); } }
+                    KeyCode::Char(']') => {
+                        if state.minds[1].active {
+                            state.toggle_mind(1);
+                        } else {
+                            state.toggle_mind(2);
+                        }
+                    }
                     KeyCode::Char('r') => state = LabState::default(),
                     _ => {}
                 }
@@ -126,38 +136,60 @@ fn main() -> io::Result<()> {
 // ─── Color ramp (CIE L* perceptual) ────────────────────────────────────
 
 fn intensity_color(intensity: f64) -> Color {
-    if intensity < 0.005 { return Color::Rgb(0, 1, 3); }
+    if intensity < 0.005 {
+        return Color::Rgb(0, 1, 3);
+    }
     let linear = intensity.clamp(0.0, 1.0);
-    let i = if linear > 0.008856 { linear.cbrt() } else { linear * 7.787 + 16.0 / 116.0 };
+    let i = if linear > 0.008856 {
+        linear.cbrt()
+    } else {
+        linear * 7.787 + 16.0 / 116.0
+    };
     let i = ((i - 0.138) / (1.0 - 0.138)).clamp(0.0, 1.0);
 
     if i < 0.3 {
         let t = i / 0.3;
-        Color::Rgb((1.0 + t * 3.0) as u8, (4.0 + t * 34.0) as u8, (6.0 + t * 30.0) as u8)
+        Color::Rgb(
+            (1.0 + t * 3.0) as u8,
+            (4.0 + t * 34.0) as u8,
+            (6.0 + t * 30.0) as u8,
+        )
     } else if i < 0.5 {
         let t = (i - 0.3) / 0.2;
-        Color::Rgb((4.0 + t * 4.0) as u8, (38.0 + t * 10.0) as u8, (36.0 + t * 6.0) as u8)
+        Color::Rgb(
+            (4.0 + t * 4.0) as u8,
+            (38.0 + t * 10.0) as u8,
+            (36.0 + t * 6.0) as u8,
+        )
     } else {
         let t = (i - 0.5) / 0.5;
-        Color::Rgb((8.0 + t * 82.0) as u8, (48.0 - t * 2.0) as u8, (42.0 - t * 34.0) as u8)
+        Color::Rgb(
+            (8.0 + t * 82.0) as u8,
+            (48.0 - t * 2.0) as u8,
+            (42.0 - t * 34.0) as u8,
+        )
     }
 }
 
-fn bg_color() -> Color { Color::Rgb(0, 1, 3) }
+fn bg_color() -> Color {
+    Color::Rgb(0, 1, 3)
+}
 
 // ─── CRT noise glyphs ──────────────────────────────────────────────────
 
 const NOISE_CHARS: &[char] = &[
-    '▏', '▎', '▍', '░',
-    '▌', '▐', '▒', '┤', '├', '│', '─',
-    '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫',
+    '▏', '▎', '▍', '░', '▌', '▐', '▒', '┤', '├', '│', '─', '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫',
     '█', '╬', '■', '◆',
 ];
 
 // ─── State ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum WaveDirection { Left, Right, Center }
+enum WaveDirection {
+    Left,
+    Right,
+    Center,
+}
 
 struct MindState {
     name: &'static str,
@@ -173,7 +205,13 @@ struct MindState {
 impl MindState {
     fn new(name: &'static str, active: bool) -> Self {
         let w = 60;
-        Self { name, active, wave: vec![0.0; w], velocity: vec![0.0; w], damping: 0.96 }
+        Self {
+            name,
+            active,
+            wave: vec![0.0; w],
+            velocity: vec![0.0; w],
+            damping: 0.96,
+        }
     }
 
     /// Pluck the string — inject a wave packet traveling in a direction
@@ -213,7 +251,9 @@ impl MindState {
     /// Update wave physics — simple 1D wave equation with damping
     fn update(&mut self, _dt: f64) {
         let w = self.wave.len();
-        if w < 3 { return; }
+        if w < 3 {
+            return;
+        }
 
         // Wave equation: acceleration = c² * (left + right - 2*center)
         let c2 = 0.3; // wave speed squared
@@ -243,18 +283,20 @@ struct ToolEntry {
     name: String,
     last_called: f64, // time since epoch
     call_count: u32,
-    #[allow(dead_code)] is_error: bool,
+    #[allow(dead_code)]
+    is_error: bool,
 }
 
 struct LabState {
-    context_fill: f64,       // 0-1
+    context_fill: f64, // 0-1
     thinking_active: bool,
     thinking_intensity: f64, // smoothed 0-1
     minds: Vec<MindState>,
     tools: Vec<ToolEntry>,
     time: f64,
     /// RNG for glitch characters
-    #[allow(dead_code)] rng: u64,
+    #[allow(dead_code)]
+    rng: u64,
 }
 
 impl Default for LabState {
@@ -270,14 +312,54 @@ impl Default for LabState {
                 MindState::new("archive", false),
             ],
             tools: vec![
-                ToolEntry { name: "bash".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "read".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "write".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "edit".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "memory_store".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "memory_recall".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "design_tree".into(), last_called: -999.0, call_count: 0, is_error: false },
-                ToolEntry { name: "web_search".into(), last_called: -999.0, call_count: 0, is_error: false },
+                ToolEntry {
+                    name: "bash".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "read".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "write".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "edit".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "memory_store".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "memory_recall".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "design_tree".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
+                ToolEntry {
+                    name: "web_search".into(),
+                    last_called: -999.0,
+                    call_count: 0,
+                    is_error: false,
+                },
             ],
             time: 0.0,
             rng: 0xdeadbeef,
@@ -340,26 +422,45 @@ fn render_inference_panel(state: &LabState, time: f64, area: Rect, buf: &mut Buf
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(20, 40, 55)))
-        .title(Span::styled(" inference ", Style::default().fg(Color::Rgb(64, 88, 112))));
+        .title(Span::styled(
+            " inference ",
+            Style::default().fg(Color::Rgb(64, 88, 112)),
+        ));
     let inner = block.inner(area);
     block.render(area, buf);
 
-    if inner.width < 10 || inner.height < 4 { return; }
+    if inner.width < 10 || inner.height < 4 {
+        return;
+    }
 
     // Layout: context bar (2 rows) + tree connector + mind waves
-    let active_minds: Vec<usize> = state.minds.iter().enumerate()
-        .filter(|(_, m)| m.active).map(|(i, _)| i).collect();
-    
+    let active_minds: Vec<usize> = state
+        .minds
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.active)
+        .map(|(i, _)| i)
+        .collect();
 
     // Context bar: top 2 rows
-    let bar_area = Rect { x: inner.x, y: inner.y, width: inner.width, height: 2.min(inner.height) };
+    let bar_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 2.min(inner.height),
+    };
     render_context_bar(state, time, bar_area, buf);
 
     // Tree connector + mind waves: remaining rows
     if inner.height > 3 && !active_minds.is_empty() {
         let tree_y = inner.y + 2;
         let tree_h = inner.height.saturating_sub(2);
-        let tree_area = Rect { x: inner.x, y: tree_y, width: inner.width, height: tree_h };
+        let tree_area = Rect {
+            x: inner.x,
+            y: tree_y,
+            width: inner.width,
+            height: tree_h,
+        };
         render_memory_strings(state, &active_minds, tree_area, buf);
     }
 }
@@ -407,7 +508,9 @@ fn render_context_bar(state: &LabState, _time: f64, area: Rect, buf: &mut Buffer
         let label = format!(" {}% / 200k", pct);
         let label_color = intensity_color((state.context_fill / 0.7).min(1.0));
         for (i, ch) in label.chars().enumerate() {
-            if i >= w { break; }
+            if i >= w {
+                break;
+            }
             if let Some(cell) = buf.cell_mut(Position::new(area.x + i as u16, area.y + 1)) {
                 cell.set_char(ch);
                 cell.set_fg(label_color);
@@ -423,7 +526,9 @@ fn render_memory_strings(state: &LabState, active_minds: &[usize], area: Rect, b
 
     for (row_idx, &mind_idx) in active_minds.iter().enumerate() {
         let y = area.y + row_idx as u16;
-        if y >= area.bottom() { break; }
+        if y >= area.bottom() {
+            break;
+        }
 
         let mind = &state.minds[mind_idx];
         let is_last = row_idx == n - 1;
@@ -460,10 +565,16 @@ fn render_memory_strings(state: &LabState, active_minds: &[usize], area: Rect, b
         let name = mind.name;
         for (i, ch) in name.chars().enumerate() {
             let x = name_start + i;
-            if x >= w { break; }
+            if x >= w {
+                break;
+            }
             if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
                 cell.set_char(ch);
-                cell.set_fg(if mind.max_amplitude() > 0.1 { Color::Rgb(42, 180, 200) } else { Color::Rgb(64, 88, 112) });
+                cell.set_fg(if mind.max_amplitude() > 0.1 {
+                    Color::Rgb(42, 180, 200)
+                } else {
+                    Color::Rgb(64, 88, 112)
+                });
                 cell.set_bg(bg_color());
             }
         }
@@ -481,12 +592,16 @@ fn render_memory_strings(state: &LabState, active_minds: &[usize], area: Rect, b
 
         let wave_start = (name_start + mind.name.len() + 1).min(w / 3);
         let wave_w = w.saturating_sub(wave_start);
-        if wave_w == 0 { continue; }
+        if wave_w == 0 {
+            continue;
+        }
 
         let wave_len = mind.wave.len();
         for wx in 0..wave_w {
             let x = wave_start + wx;
-            if x >= w { break; }
+            if x >= w {
+                break;
+            }
 
             // Sample two adjacent wave points (one per braille column)
             let pos0 = (wx as f64 * 2.0 / (wave_w as f64 * 2.0)) * wave_len as f64;
@@ -500,8 +615,18 @@ fn render_memory_strings(state: &LabState, active_minds: &[usize], area: Rect, b
             let row1 = (1.5 - d1 * 0.8).clamp(0.0, 3.0) as u8;
 
             // Set braille dots for each column at the wave's row
-            let bit0 = match row0 { 0 => 0x01, 1 => 0x02, 2 => 0x04, _ => 0x40 };
-            let bit1 = match row1 { 0 => 0x08, 1 => 0x10, 2 => 0x20, _ => 0x80 };
+            let bit0 = match row0 {
+                0 => 0x01,
+                1 => 0x02,
+                2 => 0x04,
+                _ => 0x40,
+            };
+            let bit1 = match row1 {
+                0 => 0x08,
+                1 => 0x10,
+                2 => 0x20,
+                _ => 0x80,
+            };
 
             let mut dots = bit0 | bit1;
 
@@ -534,15 +659,24 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(20, 40, 55)))
-        .title(Span::styled(" tools ", Style::default().fg(Color::Rgb(64, 88, 112))));
+        .title(Span::styled(
+            " tools ",
+            Style::default().fg(Color::Rgb(64, 88, 112)),
+        ));
     let inner = block.inner(area);
     block.render(area, buf);
 
-    if inner.width < 15 || inner.height < 3 { return; }
+    if inner.width < 15 || inner.height < 3 {
+        return;
+    }
 
     // Sort tools by recency (most recent first)
     let mut sorted: Vec<(usize, &ToolEntry)> = state.tools.iter().enumerate().collect();
-    sorted.sort_by(|a, b| b.1.last_called.partial_cmp(&a.1.last_called).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.1.last_called
+            .partial_cmp(&a.1.last_called)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let w = inner.width as usize;
     let name_w = 15.min(w / 2);
@@ -550,14 +684,24 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
 
     for (row, (_, tool)) in sorted.iter().enumerate() {
         let y = inner.y + row as u16;
-        if y >= inner.bottom() { break; }
+        if y >= inner.bottom() {
+            break;
+        }
 
         let age = (state.time - tool.last_called).max(0.0);
-        let recency = if age > 120.0 { 0.0 } else { (1.0 - age / 120.0).max(0.0) };
+        let recency = if age > 120.0 {
+            0.0
+        } else {
+            (1.0 - age / 120.0).max(0.0)
+        };
 
         // Indicator
         let indicator = if age < 2.0 { "▸ " } else { "  " };
-        let indicator_color = if age < 2.0 { Color::Rgb(42, 180, 200) } else { Color::Rgb(20, 40, 55) };
+        let indicator_color = if age < 2.0 {
+            Color::Rgb(42, 180, 200)
+        } else {
+            Color::Rgb(20, 40, 55)
+        };
 
         // Name
         let name_color = if recency > 0.3 {
@@ -571,9 +715,13 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
         let bar_color = intensity_color(recency);
 
         // Time since last call
-        let time_str = if age > 999.0 { "   ·".to_string() }
-            else if age > 60.0 { format!("{:>3.0}m", age / 60.0) }
-            else { format!("{:>3.0}s", age) };
+        let time_str = if age > 999.0 {
+            "   ·".to_string()
+        } else if age > 60.0 {
+            format!("{:>3.0}m", age / 60.0)
+        } else {
+            format!("{:>3.0}s", age)
+        };
 
         // Render the row
         let mut x = inner.x;
@@ -595,7 +743,9 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
             &tool.name
         };
         for ch in display_name.chars() {
-            if x >= inner.right() { break; }
+            if x >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                 cell.set_char(ch);
                 cell.set_fg(name_color);
@@ -605,7 +755,9 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
         }
         // Pad name
         while x < inner.x + 2 + name_w as u16 {
-            if x >= inner.right() { break; }
+            if x >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                 cell.set_char(' ');
                 cell.set_bg(bg_color());
@@ -615,9 +767,15 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
 
         // Bar
         for i in 0..bar_w {
-            if x >= inner.right() { break; }
+            if x >= inner.right() {
+                break;
+            }
             let ch = if i < bar_filled { '█' } else { '░' };
-            let c = if i < bar_filled { bar_color } else { Color::Rgb(10, 16, 24) };
+            let c = if i < bar_filled {
+                bar_color
+            } else {
+                Color::Rgb(10, 16, 24)
+            };
             if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                 cell.set_char(ch);
                 cell.set_fg(c);
@@ -628,7 +786,9 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
 
         // Time
         for ch in time_str.chars() {
-            if x >= inner.right() { break; }
+            if x >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                 cell.set_char(ch);
                 cell.set_fg(Color::Rgb(48, 64, 80));
@@ -641,12 +801,18 @@ fn render_tool_panel(state: &LabState, area: Rect, buf: &mut Buffer) {
     // Footer: active/total count
     let footer_y = inner.bottom() - 1;
     if footer_y > inner.y + sorted.len() as u16 {
-        let active = state.tools.iter().filter(|t| state.time - t.last_called < 120.0).count();
+        let active = state
+            .tools
+            .iter()
+            .filter(|t| state.time - t.last_called < 120.0)
+            .count();
         let total = state.tools.len();
         let footer = format!("  {active}/{total} active");
         for (i, ch) in footer.chars().enumerate() {
             let x = inner.x + i as u16;
-            if x >= inner.right() { break; }
+            if x >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut(Position::new(x, footer_y)) {
                 cell.set_char(ch);
                 cell.set_fg(Color::Rgb(48, 64, 80));

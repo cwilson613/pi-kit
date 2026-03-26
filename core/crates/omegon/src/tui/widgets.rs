@@ -41,13 +41,25 @@ pub struct BoxChars {
 }
 
 pub const BOX_UNICODE: BoxChars = BoxChars {
-    tl: "╭", tr: "╮", bl: "╰", br: "╯",
-    h: "─", v: "│", vr: "├", vl: "┤",
+    tl: "╭",
+    tr: "╮",
+    bl: "╰",
+    br: "╯",
+    h: "─",
+    v: "│",
+    vr: "├",
+    vl: "┤",
 };
 
 pub const BOX_ASCII: BoxChars = BoxChars {
-    tl: "+", tr: "+", bl: "+", br: "+",
-    h: "-", v: "|", vr: "+", vl: "+",
+    tl: "+",
+    tr: "+",
+    bl: "+",
+    br: "+",
+    h: "-",
+    v: "|",
+    vr: "+",
+    vl: "+",
 };
 
 /// Select box chars based on environment.
@@ -55,14 +67,20 @@ pub fn box_chars() -> &'static BoxChars {
     use std::sync::OnceLock;
     static CHARS: OnceLock<bool> = OnceLock::new();
     let use_ascii = *CHARS.get_or_init(|| {
-        if std::env::var("PI_ASCII").as_deref() == Ok("1") { return true; }
-        if std::env::var("TERM").as_deref() == Ok("dumb") { return true; }
+        if std::env::var("PI_ASCII").as_deref() == Ok("1") {
+            return true;
+        }
+        if std::env::var("TERM").as_deref() == Ok("dumb") {
+            return true;
+        }
         let locale = std::env::var("LC_ALL")
             .or_else(|_| std::env::var("LC_CTYPE"))
             .or_else(|_| std::env::var("LANG"))
             .unwrap_or_default()
             .to_uppercase();
-        if !locale.is_empty() && !locale.contains("UTF") { return true; }
+        if !locale.is_empty() && !locale.contains("UTF") {
+            return true;
+        }
         false
     });
     if use_ascii { &BOX_ASCII } else { &BOX_UNICODE }
@@ -131,7 +149,12 @@ pub fn section_divider<'a>(label: &str, width: usize, t: &dyn Theme) -> Line<'a>
 
 /// Render left-aligned and right-aligned text on one line within `width`.
 /// If both don't fit, truncates `left` to make room for `right`.
-pub fn left_right<'a>(left: Vec<Span<'a>>, right: Vec<Span<'a>>, width: usize, t: &dyn Theme) -> Line<'a> {
+pub fn left_right<'a>(
+    left: Vec<Span<'a>>,
+    right: Vec<Span<'a>>,
+    width: usize,
+    t: &dyn Theme,
+) -> Line<'a> {
     let left_w: usize = left.iter().map(|s| visible_width(&s.content)).sum();
     let right_w: usize = right.iter().map(|s| visible_width(&s.content)).sum();
     let gap = width.saturating_sub(left_w + right_w);
@@ -237,19 +260,32 @@ pub fn gauge_bar<'a>(cfg: &GaugeConfig, t: &dyn Theme) -> Vec<Span<'a>> {
     let memory_blocks = cfg.memory_blocks.min(filled);
     let other_blocks = filled.saturating_sub(memory_blocks);
 
-    let bar_color = if pct > 70.0 { t.error() } else if pct > 45.0 { t.warning() } else { t.accent_muted() };
+    let bar_color = if pct > 70.0 {
+        t.error()
+    } else if pct > 45.0 {
+        t.warning()
+    } else {
+        t.accent_muted()
+    };
 
-    let mut spans = vec![
-        Span::styled("▐", Style::default().fg(t.dim())),
-    ];
+    let mut spans = vec![Span::styled("▐", Style::default().fg(t.dim()))];
     if memory_blocks > 0 {
-        spans.push(Span::styled("▓".repeat(memory_blocks), Style::default().fg(t.accent())));
+        spans.push(Span::styled(
+            "▓".repeat(memory_blocks),
+            Style::default().fg(t.accent()),
+        ));
     }
     if other_blocks > 0 {
-        spans.push(Span::styled("█".repeat(other_blocks), Style::default().fg(bar_color)));
+        spans.push(Span::styled(
+            "█".repeat(other_blocks),
+            Style::default().fg(bar_color),
+        ));
     }
     if empty > 0 {
-        spans.push(Span::styled("░".repeat(empty), Style::default().fg(t.border())));
+        spans.push(Span::styled(
+            "░".repeat(empty),
+            Style::default().fg(t.border()),
+        ));
     }
     spans.push(Span::styled("▌", Style::default().fg(t.dim())));
 
@@ -258,7 +294,13 @@ pub fn gauge_bar<'a>(cfg: &GaugeConfig, t: &dyn Theme) -> Vec<Span<'a>> {
 
 /// Color for a percentage value (green/yellow/red thresholds).
 pub fn percent_color(percent: f32, t: &dyn Theme) -> ratatui::style::Color {
-    if percent > 70.0 { t.error() } else if percent > 45.0 { t.warning() } else { t.muted() }
+    if percent > 70.0 {
+        t.error()
+    } else if percent > 45.0 {
+        t.warning()
+    } else {
+        t.muted()
+    }
 }
 
 // ─── Semantic primitives ────────────────────────────────────────────
@@ -281,15 +323,28 @@ pub fn tool_card<'a>(
     t: &dyn Theme,
 ) -> Line<'a> {
     let (icon, color) = if complete {
-        if is_error { ("✗", t.error()) } else { ("✓", t.success()) }
+        if is_error {
+            ("✗", t.error())
+        } else {
+            ("✓", t.success())
+        }
     } else {
         ("⟳", t.warning())
     };
 
     let mut spans = vec![
         Span::styled("▎", Style::default().fg(color)),
-        Span::styled(format!(" {icon} "), Style::default().fg(color).bg(t.card_bg())),
-        Span::styled(name.to_string(), Style::default().fg(color).bg(t.card_bg()).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {icon} "),
+            Style::default().fg(color).bg(t.card_bg()),
+        ),
+        Span::styled(
+            name.to_string(),
+            Style::default()
+                .fg(color)
+                .bg(t.card_bg())
+                .add_modifier(Modifier::BOLD),
+        ),
     ];
 
     if let Some(args) = args_summary {
@@ -298,7 +353,10 @@ pub fn tool_card<'a>(
         } else {
             format!(" {args}")
         };
-        spans.push(Span::styled(display, Style::default().fg(t.dim()).bg(t.card_bg())));
+        spans.push(Span::styled(
+            display,
+            Style::default().fg(t.dim()).bg(t.card_bg()),
+        ));
     }
 
     if let Some(summary) = result_summary {
@@ -307,7 +365,10 @@ pub fn tool_card<'a>(
         } else {
             format!("  {summary}")
         };
-        spans.push(Span::styled(display, Style::default().fg(t.muted()).bg(t.card_bg())));
+        spans.push(Span::styled(
+            display,
+            Style::default().fg(t.muted()).bg(t.card_bg()),
+        ));
     }
 
     Line::from(spans)
@@ -329,7 +390,11 @@ pub fn tool_card_detailed<'a>(
     t: &dyn Theme,
 ) -> Vec<Line<'a>> {
     let (icon, bar_color) = if complete {
-        if is_error { ("✗", t.error()) } else { ("✓", t.success()) }
+        if is_error {
+            ("✗", t.error())
+        } else {
+            ("✓", t.success())
+        }
     } else {
         ("⟳", t.warning())
     };
@@ -375,7 +440,10 @@ pub fn tool_card_detailed<'a>(
                 // Show file path with edit-specific formatting
                 lines.push(Line::from(vec![
                     Span::styled("│ ", border),
-                    Span::styled("▸ edit ", Style::default().fg(t.accent_muted()).bg(t.card_bg())),
+                    Span::styled(
+                        "▸ edit ",
+                        Style::default().fg(t.accent_muted()).bg(t.card_bg()),
+                    ),
                     Span::styled(args.to_string(), card_dim),
                 ]));
             }
@@ -395,7 +463,10 @@ pub fn tool_card_detailed<'a>(
         if detail_args.is_some() {
             lines.push(Line::from(vec![
                 Span::styled("├─", border),
-                Span::styled("─".repeat(60), Style::default().fg(t.border_dim()).bg(t.surface_bg())),
+                Span::styled(
+                    "─".repeat(60),
+                    Style::default().fg(t.border_dim()).bg(t.surface_bg()),
+                ),
             ]));
         }
 
@@ -484,16 +555,17 @@ pub fn boxed_region<'a>(
     let mut lines = vec![Line::from(vec![
         Span::styled(b.tl.to_string(), border_style),
         Span::styled(b.h.to_string(), border_style),
-        Span::styled(title_str, Style::default().fg(t.accent()).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            title_str,
+            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(b.h.repeat(top_fill), border_style),
         Span::styled(b.tr.to_string(), border_style),
     ])];
 
     // Content lines: │ content │
     let wrap_line = |line: Line<'a>| -> Line<'a> {
-        let mut spans = vec![
-            Span::styled(format!("{} ", b.v), border_style),
-        ];
+        let mut spans = vec![Span::styled(format!("{} ", b.v), border_style)];
         spans.extend(line.spans);
         // Pad to inner_width + closing border
         // (We can't easily measure the line width here without cloning,
@@ -566,9 +638,7 @@ pub fn highlight_line<'a>(line: &str, t: &dyn Theme) -> Line<'a> {
 
     // List items: - or *
     if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-        let mut spans = vec![
-            Span::styled("• ", Style::default().fg(t.accent())),
-        ];
+        let mut spans = vec![Span::styled("• ", Style::default().fg(t.accent()))];
         spans.extend(highlight_inline(rest, t));
         return Line::from(spans);
     }
@@ -576,13 +646,15 @@ pub fn highlight_line<'a>(line: &str, t: &dyn Theme) -> Line<'a> {
     // Numbered lists: 1. 2. etc.
     if line.len() > 2
         && line.as_bytes()[0].is_ascii_digit()
-        && let Some(rest) = line.strip_prefix(|c: char| c.is_ascii_digit())
+        && let Some(rest) = line
+            .strip_prefix(|c: char| c.is_ascii_digit())
             .and_then(|s| s.strip_prefix(". "))
     {
         let num_part = &line[..line.len() - rest.len() - 2];
-        let mut spans = vec![
-            Span::styled(format!("{num_part}. "), Style::default().fg(t.accent())),
-        ];
+        let mut spans = vec![Span::styled(
+            format!("{num_part}. "),
+            Style::default().fg(t.accent()),
+        )];
         spans.extend(highlight_inline(rest, t));
         return Line::from(spans);
     }
@@ -616,7 +688,10 @@ pub fn highlight_inline<'a>(text: &str, t: &dyn Theme) -> Vec<Span<'a>> {
                 let mut code = String::new();
                 let mut closed = false;
                 for (_j, c) in chars.by_ref() {
-                    if c == '`' { closed = true; break; }
+                    if c == '`' {
+                        closed = true;
+                        break;
+                    }
                     code.push(c);
                 }
                 if closed && !code.is_empty() {
@@ -657,7 +732,10 @@ pub fn highlight_inline<'a>(text: &str, t: &dyn Theme) -> Vec<Span<'a>> {
                     let mut ital_text = String::new();
                     let mut closed = false;
                     for (_j, c) in chars.by_ref() {
-                        if c == '*' { closed = true; break; }
+                        if c == '*' {
+                            closed = true;
+                            break;
+                        }
                         ital_text.push(c);
                     }
                     if closed && !ital_text.is_empty() {
@@ -775,7 +853,14 @@ mod tests {
     #[test]
     fn tool_card_complete() {
         let t = Alpharius;
-        let line = tool_card("read", false, true, Some("src/main.rs"), Some("245 lines"), &t);
+        let line = tool_card(
+            "read",
+            false,
+            true,
+            Some("src/main.rs"),
+            Some("245 lines"),
+            &t,
+        );
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("✓"));
         assert!(text.contains("read"));
@@ -795,7 +880,14 @@ mod tests {
     #[test]
     fn tool_card_error() {
         let t = Alpharius;
-        let line = tool_card("edit", true, true, Some("lib.rs"), Some("oldText not found"), &t);
+        let line = tool_card(
+            "edit",
+            true,
+            true,
+            Some("lib.rs"),
+            Some("oldText not found"),
+            &t,
+        );
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("✗"));
     }
@@ -817,7 +909,13 @@ mod tests {
         // The bold span should have BOLD modifier
         let bold_span = line.spans.iter().find(|s| s.content.as_ref() == "bold");
         assert!(bold_span.is_some());
-        assert!(bold_span.unwrap().style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            bold_span
+                .unwrap()
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]
@@ -827,7 +925,10 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("cargo test"));
         // Code span should have surface_bg
-        let code_span = line.spans.iter().find(|s| s.content.as_ref() == "cargo test");
+        let code_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "cargo test");
         assert!(code_span.is_some());
         assert_eq!(code_span.unwrap().style.bg, Some(t.surface_bg()));
     }
@@ -859,7 +960,11 @@ mod tests {
         let result = boxed_region("Title", content, vec![], 40, &t);
         // Top border + 2 content + bottom border = 4 lines
         assert_eq!(result.len(), 4);
-        let top: String = result[0].spans.iter().map(|s| s.content.to_string()).collect();
+        let top: String = result[0]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(top.contains("╭") || top.contains("+"));
         assert!(top.contains("Title"));
     }
@@ -877,13 +982,8 @@ mod tests {
     #[test]
     fn merge_columns_basic() {
         let t = Alpharius;
-        let left = vec![
-            vec![Span::raw("a1")],
-            vec![Span::raw("a2")],
-        ];
-        let right = vec![
-            vec![Span::raw("b1")],
-        ];
+        let left = vec![vec![Span::raw("a1")], vec![Span::raw("a2")]];
+        let right = vec![vec![Span::raw("b1")]];
         let result = merge_columns(&left, &right, 10, 10, &t);
         assert_eq!(result.len(), 2); // max of left/right lengths
     }
@@ -900,7 +1000,11 @@ mod tests {
         let t = Alpharius;
         let lines = error_block("something\nwent wrong", &t);
         assert_eq!(lines.len(), 2);
-        let first: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
+        let first: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(first.contains("✗"));
     }
 

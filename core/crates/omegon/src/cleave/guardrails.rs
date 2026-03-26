@@ -21,23 +21,29 @@ pub fn discover_guardrails(cwd: &Path) -> Vec<GuardrailCheck> {
     let mut checks: Vec<GuardrailCheck> = Vec::new();
 
     fn add(checks: &mut Vec<GuardrailCheck>, name: &str, cmd: &str) {
-        if checks.iter().any(|c| c.name == name) { return; }
-        checks.push(GuardrailCheck { name: name.to_string(), cmd: cmd.to_string() });
+        if checks.iter().any(|c| c.name == name) {
+            return;
+        }
+        checks.push(GuardrailCheck {
+            name: name.to_string(),
+            cmd: cmd.to_string(),
+        });
     }
 
     // 1. package.json scripts
     let pkg_path = cwd.join("package.json");
     if pkg_path.exists()
         && let Ok(content) = std::fs::read_to_string(&pkg_path)
-            && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) {
-                    if let Some(tc) = scripts.get("typecheck").and_then(|v| v.as_str()) {
-                        add(&mut checks, "typecheck", tc);
-                    }
-                    if let Some(lint) = scripts.get("lint").and_then(|v| v.as_str()) {
-                        add(&mut checks, "lint", lint);
-                    }
-                }
+        && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object())
+    {
+        if let Some(tc) = scripts.get("typecheck").and_then(|v| v.as_str()) {
+            add(&mut checks, "typecheck", tc);
+        }
+        if let Some(lint) = scripts.get("lint").and_then(|v| v.as_str()) {
+            add(&mut checks, "lint", lint);
+        }
+    }
 
     // 2. Auto-detection
     if !checks.iter().any(|c| c.name == "typecheck") && cwd.join("tsconfig.json").exists() {
@@ -55,13 +61,16 @@ pub fn discover_guardrails(cwd: &Path) -> Vec<GuardrailCheck> {
 
 /// Format guardrails as a markdown section for task files.
 pub fn format_guardrail_section(checks: &[GuardrailCheck]) -> String {
-    if checks.is_empty() { return String::new(); }
+    if checks.is_empty() {
+        return String::new();
+    }
 
     let mut lines = vec![
         String::new(),
         "## Project Guardrails".to_string(),
         String::new(),
-        "Before reporting success, run these deterministic checks and fix any failures:".to_string(),
+        "Before reporting success, run these deterministic checks and fix any failures:"
+            .to_string(),
         String::new(),
     ];
 
@@ -128,11 +137,19 @@ pub fn run_guardrails(cwd: &Path, checks: &[GuardrailCheck]) -> String {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let detail = if !stderr.is_empty() { stderr } else { stdout };
                 let truncated = if detail.lines().count() > 20 {
-                    format!("{}\n... (truncated)", detail.lines().take(20).collect::<Vec<_>>().join("\n"))
+                    format!(
+                        "{}\n... (truncated)",
+                        detail.lines().take(20).collect::<Vec<_>>().join("\n")
+                    )
                 } else {
                     detail.to_string()
                 };
-                lines.push(format!("✗ **{}**: failed (exit {})\n```\n{}\n```", check.name, out.status.code().unwrap_or(-1), truncated.trim()));
+                lines.push(format!(
+                    "✗ **{}**: failed (exit {})\n```\n{}\n```",
+                    check.name,
+                    out.status.code().unwrap_or(-1),
+                    truncated.trim()
+                ));
             }
             Err(e) => {
                 lines.push(format!("⚠ **{}**: could not run ({})", check.name, e));
@@ -158,8 +175,12 @@ mod tests {
         std::fs::write(dir.join("tsconfig.json"), "{}").unwrap();
 
         let checks = discover_guardrails(&dir);
-        assert!(checks.iter().any(|c| c.name == "typecheck" && c.cmd.contains("tsc")),
-            "should detect tsc from tsconfig.json: {checks:?}");
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.name == "typecheck" && c.cmd.contains("tsc")),
+            "should detect tsc from tsconfig.json: {checks:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -171,8 +192,10 @@ mod tests {
         std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
 
         let checks = discover_guardrails(&dir);
-        assert!(checks.iter().any(|c| c.name == "clippy"),
-            "should detect clippy from Cargo.toml: {checks:?}");
+        assert!(
+            checks.iter().any(|c| c.name == "clippy"),
+            "should detect clippy from Cargo.toml: {checks:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -182,11 +205,18 @@ mod tests {
         let dir = std::env::temp_dir().join("omegon-test-guardrails-pkg");
         let _ = std::fs::create_dir_all(&dir);
         std::fs::write(dir.join("tsconfig.json"), "{}").unwrap();
-        std::fs::write(dir.join("package.json"), r#"{"scripts":{"typecheck":"npm run tc"}}"#).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"typecheck":"npm run tc"}}"#,
+        )
+        .unwrap();
 
         let checks = discover_guardrails(&dir);
         let tc = checks.iter().find(|c| c.name == "typecheck").unwrap();
-        assert_eq!(tc.cmd, "npm run tc", "package.json script should win over auto-detect");
+        assert_eq!(
+            tc.cmd, "npm run tc",
+            "package.json script should win over auto-detect"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -198,9 +228,10 @@ mod tests {
 
     #[test]
     fn format_section_with_checks() {
-        let section = format_guardrail_section(&[
-            GuardrailCheck { name: "typecheck".into(), cmd: "tsc".into() },
-        ]);
+        let section = format_guardrail_section(&[GuardrailCheck {
+            name: "typecheck".into(),
+            cmd: "tsc".into(),
+        }]);
         assert!(section.contains("## Project Guardrails"));
         assert!(section.contains("**typecheck**: `tsc`"));
     }

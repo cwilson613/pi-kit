@@ -25,8 +25,5 @@ pub enum OpsxError {
     StoreError(String),
 
     #[error("schema version mismatch: expected {expected}, got {got}")]
-    SchemaMismatch {
-        expected: u32,
-        got: u32,
-    },
+    SchemaMismatch { expected: u32, got: u32 },
 }

@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use omegon_traits::{ContentBlock, ToolDefinition, ToolProvider, ToolResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::env;
 use tokio_util::sync::CancellationToken;
 
@@ -258,7 +258,9 @@ fn format_results(results: &[SearchResult]) -> String {
         out.push('\n');
         if let Some(content) = &r.content {
             let truncated = crate::util::truncate_str(content, 2000);
-            out.push_str(&format!("\n<extracted_content>\n{truncated}\n</extracted_content>\n"));
+            out.push_str(&format!(
+                "\n<extracted_content>\n{truncated}\n</extracted_content>\n"
+            ));
         }
         out.push('\n');
     }
@@ -295,11 +297,29 @@ impl ToolProvider for WebSearchProvider {
         args: Value,
         _cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("quick").to_string();
-        let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("general").to_string();
-        let max_results = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(if mode == "deep" { 10 } else { 5 }) as usize;
-        let requested_provider = args.get("provider").and_then(|v| v.as_str()).map(String::from);
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mode = args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("quick")
+            .to_string();
+        let topic = args
+            .get("topic")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general")
+            .to_string();
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(if mode == "deep" { 10 } else { 5 }) as usize;
+        let requested_provider = args
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         {
             let available = self.available_providers();
@@ -317,7 +337,10 @@ impl ToolProvider for WebSearchProvider {
 
             if mode == "compare" {
                 for provider in &available {
-                    match self.search_provider(provider, &query, max_results, &topic).await {
+                    match self
+                        .search_provider(provider, &query, max_results, &topic)
+                        .await
+                    {
                         Ok(r) => {
                             results.extend(r);
                             providers_used.push(provider.to_string());
@@ -335,7 +358,10 @@ impl ToolProvider for WebSearchProvider {
                     } else {
                         return Ok(ToolResult {
                             content: vec![ContentBlock::Text {
-                                text: format!("Provider \"{p}\" not available. Configured: {}", available.join(", ")),
+                                text: format!(
+                                    "Provider \"{p}\" not available. Configured: {}",
+                                    available.join(", ")
+                                ),
                             }],
                             details: json!({"error": true}),
                         });
@@ -350,7 +376,10 @@ impl ToolProvider for WebSearchProvider {
                         .to_string()
                 };
 
-                match self.search_provider(&provider, &query, max_results, &topic).await {
+                match self
+                    .search_provider(&provider, &query, max_results, &topic)
+                    .await
+                {
                     Ok(r) => {
                         results = r;
                         providers_used.push(provider);
@@ -401,9 +430,27 @@ mod tests {
     #[test]
     fn deduplicate_by_url() {
         let mut results = vec![
-            SearchResult { title: "A".into(), url: "https://example.com/".into(), snippet: "short".into(), content: None, provider: "brave".into() },
-            SearchResult { title: "A".into(), url: "https://example.com".into(), snippet: "longer snippet".into(), content: None, provider: "tavily".into() },
-            SearchResult { title: "B".into(), url: "https://other.com".into(), snippet: "other".into(), content: None, provider: "brave".into() },
+            SearchResult {
+                title: "A".into(),
+                url: "https://example.com/".into(),
+                snippet: "short".into(),
+                content: None,
+                provider: "brave".into(),
+            },
+            SearchResult {
+                title: "A".into(),
+                url: "https://example.com".into(),
+                snippet: "longer snippet".into(),
+                content: None,
+                provider: "tavily".into(),
+            },
+            SearchResult {
+                title: "B".into(),
+                url: "https://other.com".into(),
+                snippet: "other".into(),
+                content: None,
+                provider: "brave".into(),
+            },
         ];
         deduplicate(&mut results);
         assert_eq!(results.len(), 2);

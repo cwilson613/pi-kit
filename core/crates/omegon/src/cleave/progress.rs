@@ -174,7 +174,8 @@ pub fn count_task_items(content: &str) -> usize {
         {
             break;
         }
-        if trimmed.starts_with("- [ ]") || trimmed.starts_with("- [x]")
+        if trimmed.starts_with("- [ ]")
+            || trimmed.starts_with("- [x]")
             || trimmed.starts_with("- [X]")
         {
             count += 1;
@@ -222,7 +223,12 @@ mod tests {
     fn test_parse_tool_call_bare() {
         let event = parse_child_activity("ch1", "→ write tmp/foo.txt").unwrap();
         match event {
-            ProgressEvent::ChildActivity { child, tool, target, turn } => {
+            ProgressEvent::ChildActivity {
+                child,
+                tool,
+                target,
+                turn,
+            } => {
                 assert_eq!(child, "ch1");
                 assert_eq!(tool.unwrap(), "write");
                 assert_eq!(target.unwrap(), "tmp/foo.txt");
@@ -296,7 +302,9 @@ mod tests {
     #[test]
     fn test_parse_no_match() {
         assert!(parse_child_activity("ch1", "just some random output").is_none());
-        assert!(parse_child_activity("ch1", "2026-03-18T02:22:24Z  INFO LLM bridge ready").is_none());
+        assert!(
+            parse_child_activity("ch1", "2026-03-18T02:22:24Z  INFO LLM bridge ready").is_none()
+        );
     }
 
     #[test]

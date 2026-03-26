@@ -3,8 +3,8 @@
 //! These catch visual regressions: layout changes, text truncation, missing sections.
 //! Run `cargo insta review` to inspect and approve snapshot changes.
 
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use super::dashboard::*;
 use super::footer::FooterData;
@@ -45,7 +45,9 @@ fn snapshot_dashboard_empty() {
     let mut state = DashboardState::default();
     let backend = TestBackend::new(36, 20);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| state.render_themed(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| state.render_themed(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -64,7 +66,9 @@ fn snapshot_dashboard_with_focused_node() {
     });
     let backend = TestBackend::new(36, 25);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| state.render_themed(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| state.render_themed(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -79,7 +83,9 @@ fn snapshot_dashboard_with_openspec_change() {
     }];
     let backend = TestBackend::new(36, 25);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| state.render_themed(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| state.render_themed(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -100,15 +106,13 @@ fn snapshot_dashboard_with_harness_status() {
             name: "Concise".into(),
             intensity_mode: "full".into(),
         }),
-        mcp_servers: vec![
-            McpServerStatus {
-                name: "filesystem".into(),
-                transport_mode: McpTransportMode::LocalProcess,
-                tool_count: 5,
-                connected: true,
-                error: None,
-            },
-        ],
+        mcp_servers: vec![McpServerStatus {
+            name: "filesystem".into(),
+            transport_mode: McpTransportMode::LocalProcess,
+            tool_count: 5,
+            connected: true,
+            error: None,
+        }],
         secret_backend: Some(SecretBackendStatus {
             backend: "keyring".into(),
             stored_count: 3,
@@ -120,7 +124,9 @@ fn snapshot_dashboard_with_harness_status() {
     });
     let backend = TestBackend::new(36, 40);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| state.render_themed(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| state.render_themed(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -133,7 +139,9 @@ fn snapshot_footer_default() {
     let footer = FooterData::default();
     let backend = TestBackend::new(120, 5);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| footer.render(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| footer.render(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -155,7 +163,9 @@ fn snapshot_footer_with_model_and_context() {
     };
     let backend = TestBackend::new(120, 5);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| footer.render(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| footer.render(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -214,7 +224,9 @@ fn snapshot_footer_with_persona_and_mcp() {
     };
     let backend = TestBackend::new(120, 5);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| footer.render(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| footer.render(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }
 
@@ -250,13 +262,11 @@ fn snapshot_bootstrap_full() {
             name: "Ollama".into(),
             kind: InferenceKind::External,
             available: true,
-            models: vec![
-                InferenceModelInfo {
-                    name: "qwen3:30b".into(),
-                    params: Some("30B".into()),
-                    context_window: Some(262144),
-                },
-            ],
+            models: vec![InferenceModelInfo {
+                name: "qwen3:30b".into(),
+                params: Some("30B".into()),
+                context_window: Some(262144),
+            }],
         }],
         mcp_servers: vec![McpServerStatus {
             name: "filesystem".into(),
@@ -313,15 +323,40 @@ fn snapshot_bootstrap_full() {
 
 #[test]
 fn snapshot_context_selector() {
-    use super::selector::{Selector, SelectOption};
-    let selector = Selector::new("Context Class", vec![
-        SelectOption { label: "Squad (128k)".into(), value: "Squad".into(), description: "Standard sessions".into(), active: true },
-        SelectOption { label: "Maniple (272k)".into(), value: "Maniple".into(), description: "Extended analysis".into(), active: false },
-        SelectOption { label: "Clan (400k)".into(), value: "Clan".into(), description: "Large codebase".into(), active: false },
-        SelectOption { label: "Legion (1M+)".into(), value: "Legion".into(), description: "Massive context".into(), active: false },
-    ]);
+    use super::selector::{SelectOption, Selector};
+    let selector = Selector::new(
+        "Context Class",
+        vec![
+            SelectOption {
+                label: "Squad (128k)".into(),
+                value: "Squad".into(),
+                description: "Standard sessions".into(),
+                active: true,
+            },
+            SelectOption {
+                label: "Maniple (272k)".into(),
+                value: "Maniple".into(),
+                description: "Extended analysis".into(),
+                active: false,
+            },
+            SelectOption {
+                label: "Clan (400k)".into(),
+                value: "Clan".into(),
+                description: "Large codebase".into(),
+                active: false,
+            },
+            SelectOption {
+                label: "Legion (1M+)".into(),
+                value: "Legion".into(),
+                description: "Massive context".into(),
+                active: false,
+            },
+        ],
+    );
     let backend = TestBackend::new(40, 12);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| selector.render(f.area(), f, &Alpharius)).unwrap();
+    terminal
+        .draw(|f| selector.render(f.area(), f, &Alpharius))
+        .unwrap();
     insta::assert_snapshot!(render_to_string(&terminal));
 }

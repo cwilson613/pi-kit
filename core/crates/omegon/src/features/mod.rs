@@ -19,11 +19,11 @@
 //! - `ctx.ui.notify()` → return `BusRequest::Notify` from `on_event()`
 //! - Context injection → `Feature::provide_context()`
 
-pub mod auto_compact;
+pub mod adapter;
 pub mod auth;
+pub mod auto_compact;
 pub mod cleave;
 pub mod delegate;
-pub mod adapter;
 pub mod harness_settings;
 pub mod lifecycle;
 pub mod manage_tools;

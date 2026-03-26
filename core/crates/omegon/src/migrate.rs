@@ -15,7 +15,7 @@
 //!   2. Extracts auth, model preferences, MCP servers, project instructions
 //!   3. Writes to .omegon/profile.json and ~/.config/omegon/
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 use crate::settings::{Profile, ProfileModel};
@@ -34,11 +34,18 @@ pub struct MigrationItem {
 
 impl MigrationReport {
     fn new(source: &str) -> Self {
-        Self { source: source.into(), items: vec![], warnings: vec![] }
+        Self {
+            source: source.into(),
+            items: vec![],
+            warnings: vec![],
+        }
     }
 
     fn add(&mut self, kind: &'static str, detail: impl Into<String>) {
-        self.items.push(MigrationItem { kind, detail: detail.into() });
+        self.items.push(MigrationItem {
+            kind,
+            detail: detail.into(),
+        });
     }
 
     fn warn(&mut self, msg: impl Into<String>) {
@@ -60,20 +67,38 @@ impl MigrationReport {
     }
 }
 
-fn home() -> PathBuf { dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")) }
+fn home() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
 
 /// Detect which migration sources are present on this machine.
 pub fn detect_sources() -> Vec<(&'static str, &'static str, bool)> {
     let h = home();
     vec![
-        ("claude-code", "Claude Code",     h.join(".claude").is_dir()),
-        ("pi",          "pi / Omegon TS",  h.join(".pi/agent").is_dir()),
-        ("codex",       "OpenAI Codex CLI", h.join(".codex").is_dir() || h.join(".config/codex").is_dir()),
-        ("cursor",      "Cursor IDE",      cursor_settings_path().is_some()),
-        ("aider",       "Aider",           h.join(".aider.conf.yml").exists()),
-        ("continue",    "Continue.dev",    h.join(".continue/config.json").exists()),
-        ("copilot",     "GitHub Copilot",  h.join(".config/github-copilot/hosts.json").exists()),
-        ("windsurf",    "Windsurf IDE",    windsurf_settings_path().is_some()),
+        ("claude-code", "Claude Code", h.join(".claude").is_dir()),
+        ("pi", "pi / Omegon TS", h.join(".pi/agent").is_dir()),
+        (
+            "codex",
+            "OpenAI Codex CLI",
+            h.join(".codex").is_dir() || h.join(".config/codex").is_dir(),
+        ),
+        ("cursor", "Cursor IDE", cursor_settings_path().is_some()),
+        ("aider", "Aider", h.join(".aider.conf.yml").exists()),
+        (
+            "continue",
+            "Continue.dev",
+            h.join(".continue/config.json").exists(),
+        ),
+        (
+            "copilot",
+            "GitHub Copilot",
+            h.join(".config/github-copilot/hosts.json").exists(),
+        ),
+        (
+            "windsurf",
+            "Windsurf IDE",
+            windsurf_settings_path().is_some(),
+        ),
     ]
 }
 
@@ -81,14 +106,14 @@ pub fn detect_sources() -> Vec<(&'static str, &'static str, bool)> {
 pub fn run(source: &str, cwd: &Path) -> MigrationReport {
     match source {
         "claude-code" | "claude" => migrate_claude_code(cwd),
-        "pi" | "omegon"         => migrate_pi(cwd),
-        "codex"                 => migrate_codex(cwd),
-        "cursor"                => migrate_cursor(cwd),
-        "aider"                 => migrate_aider(cwd),
-        "continue"              => migrate_continue(cwd),
-        "copilot"               => migrate_copilot(cwd),
-        "windsurf"              => migrate_windsurf(cwd),
-        "auto"                  => migrate_auto(cwd),
+        "pi" | "omegon" => migrate_pi(cwd),
+        "codex" => migrate_codex(cwd),
+        "cursor" => migrate_cursor(cwd),
+        "aider" => migrate_aider(cwd),
+        "continue" => migrate_continue(cwd),
+        "copilot" => migrate_copilot(cwd),
+        "windsurf" => migrate_windsurf(cwd),
+        "auto" => migrate_auto(cwd),
         _ => {
             let mut r = MigrationReport::new(source);
             r.warn(format!("Unknown source: {source}. Try: auto, claude-code, pi, codex, cursor, aider, continue, copilot, windsurf"));
@@ -113,12 +138,25 @@ fn migrate_auto(cwd: &Path) -> MigrationReport {
     }
 
     // Migrate in priority order — later sources override earlier ones
-    let priority = ["aider", "continue", "copilot", "cursor", "windsurf", "codex", "pi", "claude-code"];
+    let priority = [
+        "aider",
+        "continue",
+        "copilot",
+        "cursor",
+        "windsurf",
+        "codex",
+        "pi",
+        "claude-code",
+    ];
     for source in &priority {
         if available.iter().any(|(id, _, _)| id == source) {
             let sub = run(source, cwd);
-            for item in sub.items { report.items.push(item); }
-            for w in sub.warnings { report.warnings.push(w); }
+            for item in sub.items {
+                report.items.push(item);
+            }
+            for w in sub.warnings {
+                report.warnings.push(w);
+            }
         }
     }
 
@@ -139,33 +177,36 @@ fn migrate_claude_code(cwd: &Path) -> MigrationReport {
                 oauth.get("accessToken").and_then(|v| v.as_str()),
                 oauth.get("refreshToken").and_then(|v| v.as_str()),
                 oauth.get("expiresAt").and_then(|v| v.as_i64()),
-            ) {
-                let creds = crate::auth::OAuthCredentials {
-                    cred_type: "oauth".into(),
-                    access: access.into(),
-                    refresh: refresh.into(),
-                    expires: expires as u64,
-                };
-                match crate::auth::write_credentials("anthropic", &creds) {
-                    Ok(_) => r.add("auth", "Anthropic OAuth from Claude Code"),
-                    Err(e) => r.warn(format!("Failed to import auth: {e}")),
-                }
+            )
+        {
+            let creds = crate::auth::OAuthCredentials {
+                cred_type: "oauth".into(),
+                access: access.into(),
+                refresh: refresh.into(),
+                expires: expires as u64,
+            };
+            match crate::auth::write_credentials("anthropic", &creds) {
+                Ok(_) => r.add("auth", "Anthropic OAuth from Claude Code"),
+                Err(e) => r.warn(format!("Failed to import auth: {e}")),
             }
+        }
 
         // MCP servers
         if let Some(servers) = data.get("mcpServers").and_then(|v| v.as_object())
-            && !servers.is_empty() {
-                write_mcp_config(servers, &mut r);
-            }
+            && !servers.is_empty()
+        {
+            write_mcp_config(servers, &mut r);
+        }
     }
 
     // Settings from ~/.claude/settings.json
     if let Some(data) = read_json(&h.join(".claude/settings.json"))
-        && let Some(model) = data.get("model").and_then(|v| v.as_str()) {
-            let full = expand_anthropic_model(model);
-            r.add("model", &full);
-            save_model_to_profile(cwd, &full);
-        }
+        && let Some(model) = data.get("model").and_then(|v| v.as_str())
+    {
+        let full = expand_anthropic_model(model);
+        r.add("model", &full);
+        save_model_to_profile(cwd, &full);
+    }
 
     // Project: CLAUDE.md → .omegon/AGENTS.md
     import_project_instructions(cwd, &cwd.join(".claude/CLAUDE.md"), &mut r);
@@ -181,11 +222,12 @@ fn migrate_pi(cwd: &Path) -> MigrationReport {
 
     // Auth — already in auth.json, we read it natively. Just report.
     if let Some(data) = read_json(&pi_dir.join("auth.json"))
-        && let Some(obj) = data.as_object() {
-            for key in obj.keys() {
-                r.add("auth", format!("{key} (already in auth.json)"));
-            }
+        && let Some(obj) = data.as_object()
+    {
+        for key in obj.keys() {
+            r.add("auth", format!("{key} (already in auth.json)"));
         }
+    }
 
     // Settings
     if let Some(data) = read_json(&pi_dir.join("settings.json")) {
@@ -205,20 +247,22 @@ fn migrate_pi(cwd: &Path) -> MigrationReport {
 
     // MCP servers
     if let Some(data) = read_json(&pi_dir.join("mcp.json"))
-        && let Some(servers) = data.get("servers").and_then(|v| v.as_object()) {
-            write_mcp_config(servers, &mut r);
-        }
+        && let Some(servers) = data.get("servers").and_then(|v| v.as_object())
+    {
+        write_mcp_config(servers, &mut r);
+    }
 
     // Project config
     if let Some(data) = read_json(&cwd.join(".pi/config.json"))
         && let Some(model) = data.get("lastUsedModel")
-            && let (Some(p), Some(m)) = (
-                model.get("provider").and_then(|v| v.as_str()),
-                model.get("modelId").and_then(|v| v.as_str()),
-            ) {
-                r.add("project-model", format!("{p}:{m}"));
-                save_model_to_profile(cwd, &format!("{p}:{m}"));
-            }
+        && let (Some(p), Some(m)) = (
+            model.get("provider").and_then(|v| v.as_str()),
+            model.get("modelId").and_then(|v| v.as_str()),
+        )
+    {
+        r.add("project-model", format!("{p}:{m}"));
+        save_model_to_profile(cwd, &format!("{p}:{m}"));
+    }
 
     r
 }
@@ -233,11 +277,12 @@ fn migrate_codex(cwd: &Path) -> MigrationReport {
     for dir in [h.join(".codex"), h.join(".config/codex")] {
         if let Some(data) = read_json(&dir.join("config.json"))
             .or_else(|| read_yaml_as_json(&dir.join("config.yaml")))
-            && let Some(model) = data.get("model").and_then(|v| v.as_str()) {
-                let full = format!("openai:{model}");
-                r.add("model", &full);
-                save_model_to_profile(cwd, &full);
-            }
+            && let Some(model) = data.get("model").and_then(|v| v.as_str())
+        {
+            let full = format!("openai:{model}");
+            r.add("model", &full);
+            save_model_to_profile(cwd, &full);
+        }
     }
 
     // OpenAI auth from env
@@ -258,15 +303,16 @@ fn migrate_cursor(cwd: &Path) -> MigrationReport {
     let mut r = MigrationReport::new("Cursor IDE");
 
     if let Some(settings_path) = cursor_settings_path()
-        && let Some(data) = read_json(&settings_path) {
-            // Cursor stores AI model in various keys
-            for key in ["cursor.aiModel", "cursor.model", "ai.model"] {
-                if let Some(model) = data.get(key).and_then(|v| v.as_str()) {
-                    r.add("model", model);
-                    break;
-                }
+        && let Some(data) = read_json(&settings_path)
+    {
+        // Cursor stores AI model in various keys
+        for key in ["cursor.aiModel", "cursor.model", "ai.model"] {
+            if let Some(model) = data.get(key).and_then(|v| v.as_str()) {
+                r.add("model", model);
+                break;
             }
         }
+    }
 
     // Project: .cursor/rules or .cursorrules → .omegon/AGENTS.md
     import_project_instructions(cwd, &cwd.join(".cursor/rules"), &mut r);
@@ -283,20 +329,22 @@ fn migrate_aider(cwd: &Path) -> MigrationReport {
     // Global config
     for path in [home().join(".aider.conf.yml"), cwd.join(".aider.conf.yml")] {
         if let Some(data) = read_yaml_as_json(&path)
-            && let Some(model) = data.get("model").and_then(|v| v.as_str()) {
-                // Aider uses bare model names like "claude-3-opus-20240229"
-                let full = if model.contains('/') || model.contains(':') {
-                    model.to_string()
-                } else if model.starts_with("claude") {
-                    format!("anthropic:{model}")
-                } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
-                    format!("openai:{model}")
-                } else {
-                    model.to_string()
-                };
-                r.add("model", &full);
-                save_model_to_profile(cwd, &full);
-            }
+            && let Some(model) = data.get("model").and_then(|v| v.as_str())
+        {
+            // Aider uses bare model names like "claude-3-opus-20240229"
+            let full = if model.contains('/') || model.contains(':') {
+                model.to_string()
+            } else if model.starts_with("claude") {
+                format!("anthropic:{model}")
+            } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3")
+            {
+                format!("openai:{model}")
+            } else {
+                model.to_string()
+            };
+            r.add("model", &full);
+            save_model_to_profile(cwd, &full);
+        }
     }
 
     // Aider uses env vars for auth
@@ -319,12 +367,13 @@ fn migrate_continue(cwd: &Path) -> MigrationReport {
         // Continue stores models in a "models" array
         if let Some(models) = data.get("models").and_then(|v| v.as_array())
             && let Some(first) = models.first()
-                && let (Some(provider), Some(model)) = (
-                    first.get("provider").and_then(|v| v.as_str()),
-                    first.get("model").and_then(|v| v.as_str()),
-                ) {
-                    r.add("model", format!("{provider}:{model}"));
-                }
+            && let (Some(provider), Some(model)) = (
+                first.get("provider").and_then(|v| v.as_str()),
+                first.get("model").and_then(|v| v.as_str()),
+            )
+        {
+            r.add("model", format!("{provider}:{model}"));
+        }
     }
 
     // Project: .continuerc.json
@@ -342,11 +391,12 @@ fn migrate_copilot(_cwd: &Path) -> MigrationReport {
 
     let hosts = home().join(".config/github-copilot/hosts.json");
     if let Some(data) = read_json(&hosts)
-        && let Some(obj) = data.as_object() {
-            for (host, _) in obj {
-                r.add("auth", format!("GitHub OAuth ({host})"));
-            }
+        && let Some(obj) = data.as_object()
+    {
+        for (host, _) in obj {
+            r.add("auth", format!("GitHub OAuth ({host})"));
         }
+    }
 
     r
 }
@@ -357,9 +407,10 @@ fn migrate_windsurf(cwd: &Path) -> MigrationReport {
     let mut r = MigrationReport::new("Windsurf IDE");
 
     if let Some(settings_path) = windsurf_settings_path()
-        && settings_path.exists() {
-            r.add("detected", settings_path.display().to_string());
-        }
+        && settings_path.exists()
+    {
+        r.add("detected", settings_path.display().to_string());
+    }
 
     // Project: .windsurfrules → .omegon/AGENTS.md
     import_project_instructions(cwd, &cwd.join(".windsurfrules"), &mut r);
@@ -380,14 +431,24 @@ fn read_yaml_as_json(path: &Path) -> Option<Value> {
     let mut map = serde_json::Map::new();
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim().to_string();
-            let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+            let value = value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
             map.insert(key, Value::String(value));
         }
     }
-    if map.is_empty() { None } else { Some(Value::Object(map)) }
+    if map.is_empty() {
+        None
+    } else {
+        Some(Value::Object(map))
+    }
 }
 
 fn expand_anthropic_model(short: &str) -> String {
@@ -396,30 +457,43 @@ fn expand_anthropic_model(short: &str) -> String {
         "sonnet" | "sonnet4" | "sonnet4.6" => "anthropic:claude-sonnet-4-6",
         "haiku" | "haiku4.5" => "anthropic:claude-haiku-4-5-20251001",
         other => {
-            if other.contains(':') { return other.to_string(); }
-            if other.starts_with("claude") { return format!("anthropic:{other}"); }
+            if other.contains(':') {
+                return other.to_string();
+            }
+            if other.starts_with("claude") {
+                return format!("anthropic:{other}");
+            }
             other
         }
-    }.to_string()
+    }
+    .to_string()
 }
 
 fn cursor_settings_path() -> Option<PathBuf> {
     let h = home();
     // macOS
     let mac = h.join("Library/Application Support/Cursor/User/settings.json");
-    if mac.exists() { return Some(mac); }
+    if mac.exists() {
+        return Some(mac);
+    }
     // Linux
     let linux = h.join(".config/Cursor/User/settings.json");
-    if linux.exists() { return Some(linux); }
+    if linux.exists() {
+        return Some(linux);
+    }
     None
 }
 
 fn windsurf_settings_path() -> Option<PathBuf> {
     let h = home();
     let mac = h.join("Library/Application Support/Windsurf/User/settings.json");
-    if mac.exists() { return Some(mac); }
+    if mac.exists() {
+        return Some(mac);
+    }
     let linux = h.join(".config/Windsurf/User/settings.json");
-    if linux.exists() { return Some(linux); }
+    if linux.exists() {
+        return Some(linux);
+    }
     None
 }
 
@@ -436,17 +510,29 @@ fn write_mcp_config(servers: &serde_json::Map<String, Value>, r: &mut MigrationR
 }
 
 fn import_project_instructions(cwd: &Path, source: &Path, r: &mut MigrationReport) {
-    if !source.exists() { return; }
+    if !source.exists() {
+        return;
+    }
     let target = cwd.join(".omegon/AGENTS.md");
     if target.exists() {
-        r.warn(format!(".omegon/AGENTS.md exists — skipped {}", source.file_name().unwrap_or_default().to_string_lossy()));
+        r.warn(format!(
+            ".omegon/AGENTS.md exists — skipped {}",
+            source.file_name().unwrap_or_default().to_string_lossy()
+        ));
         return;
     }
     let _ = std::fs::create_dir_all(target.parent().unwrap());
     if let Ok(content) = std::fs::read_to_string(source)
-        && std::fs::write(&target, &content).is_ok() {
-            r.add("project-config", format!("{} → .omegon/AGENTS.md", source.file_name().unwrap_or_default().to_string_lossy()));
-        }
+        && std::fs::write(&target, &content).is_ok()
+    {
+        r.add(
+            "project-config",
+            format!(
+                "{} → .omegon/AGENTS.md",
+                source.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        );
+    }
 }
 
 fn save_model_to_profile(cwd: &Path, model: &str) {
@@ -502,8 +588,12 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
     } else {
         lines.push(format!("Found {} agent convention(s):\n", detected.len()));
         for d in &detected {
-            lines.push(format!("  • **{}** — {} (`{}`)", d.source, d.description,
-                d.path.strip_prefix(cwd).unwrap_or(&d.path).display()));
+            lines.push(format!(
+                "  • **{}** — {} (`{}`)",
+                d.source,
+                d.description,
+                d.path.strip_prefix(cwd).unwrap_or(&d.path).display()
+            ));
         }
         lines.push(String::new());
     }
@@ -513,19 +603,21 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
     let omegon_agents = cwd.join(".omegon/AGENTS.md");
     if !agents_md.exists() && !omegon_agents.exists() {
         // Find the best instructions file to convert
-        let instructions: Vec<&DetectedConvention> = detected.iter()
+        let instructions: Vec<&DetectedConvention> = detected
+            .iter()
             .filter(|d| matches!(d.kind, ConventionKind::Instructions))
             .collect();
         if let Some(best) = instructions.first()
-            && let Ok(content) = std::fs::read_to_string(&best.path) {
-                let header = format!(
-                    "# Project Directives\n\n> Migrated from {} by Omegon /init\n\n",
-                    best.source
-                );
-                let _ = std::fs::write(&agents_md, format!("{header}{content}"));
-                lines.push(format!("✓ Created `AGENTS.md` from {}", best.source));
-                actions += 1;
-            }
+            && let Ok(content) = std::fs::read_to_string(&best.path)
+        {
+            let header = format!(
+                "# Project Directives\n\n> Migrated from {} by Omegon /init\n\n",
+                best.source
+            );
+            let _ = std::fs::write(&agents_md, format!("{header}{content}"));
+            lines.push(format!("✓ Created `AGENTS.md` from {}", best.source));
+            actions += 1;
+        }
     } else if agents_md.exists() {
         lines.push("✓ `AGENTS.md` already exists".into());
     }
@@ -566,14 +658,15 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
     let legacy_docs = cwd.join("docs");
     if !ai_docs.exists() && legacy_docs.is_dir() {
         // Check if docs/ actually has design tree markdown (frontmatter with status:)
-        let has_design_docs = std::fs::read_dir(&legacy_docs).ok()
+        let has_design_docs = std::fs::read_dir(&legacy_docs)
+            .ok()
             .map(|entries| {
-                entries.filter_map(|e| e.ok())
-                    .any(|e| {
-                        e.path().extension().is_some_and(|ext| ext == "md")
-                            && std::fs::read_to_string(e.path()).ok()
-                                .is_some_and(|c| c.starts_with("---") && c.contains("status:"))
-                    })
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    e.path().extension().is_some_and(|ext| ext == "md")
+                        && std::fs::read_to_string(e.path())
+                            .ok()
+                            .is_some_and(|c| c.starts_with("---") && c.contains("status:"))
+                })
             })
             .unwrap_or(false);
 
@@ -587,7 +680,9 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
                     lines.push("⚠ Failed to move docs/ → ai/docs/ (check permissions)".into());
                 }
             } else {
-                let count = std::fs::read_dir(&legacy_docs).map(|e| e.count()).unwrap_or(0);
+                let count = std::fs::read_dir(&legacy_docs)
+                    .map(|e| e.count())
+                    .unwrap_or(0);
                 lines.push(format!(
                     "📋 Design docs in `docs/` ({count} files) — Omegon reads from here.\n\
                      Run `/init migrate` to move to `ai/docs/`."
@@ -611,7 +706,8 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
         } else {
             lines.push(
                 "📋 OpenSpec in `openspec/` — Omegon reads from here.\n\
-                 Run `/init migrate` to move to `ai/openspec/`.".into()
+                 Run `/init migrate` to move to `ai/openspec/`."
+                    .into(),
             );
         }
     }
@@ -676,7 +772,13 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
     if ai_exists {
         lines.push("```".into());
         lines.push("ai/".into());
-        for sub in ["docs/", "openspec/", "memory/", "lifecycle/", "milestones.json"] {
+        for sub in [
+            "docs/",
+            "openspec/",
+            "memory/",
+            "lifecycle/",
+            "milestones.json",
+        ] {
             let path = cwd.join("ai").join(sub);
             let marker = if path.exists() { "✓" } else { " " };
             lines.push(format!("  {marker} {sub}"));
@@ -685,8 +787,12 @@ pub fn init_project(cwd: &Path, move_all: bool) -> String {
         lines.push("AGENTS.md         (project directives)".into());
         lines.push("```".into());
     } else {
-        lines.push("No `ai/` directory yet. Legacy paths (`docs/`, `openspec/`) are supported.".into());
-        lines.push("To adopt the `ai/` convention, move your design docs and OpenSpec there.".into());
+        lines.push(
+            "No `ai/` directory yet. Legacy paths (`docs/`, `openspec/`) are supported.".into(),
+        );
+        lines.push(
+            "To adopt the `ai/` convention, move your design docs and OpenSpec there.".into(),
+        );
     }
 
     lines.join("\n")
@@ -711,10 +817,9 @@ fn migrate_user_config() -> Vec<String> {
     // MCP config: ~/.pi/agent/mcp.json → ~/.config/omegon/mcp.json
     let omegon_mcp = h.join(".config/omegon/mcp.json");
     let pi_mcp = h.join(".pi/agent/mcp.json");
-    if !omegon_mcp.exists() && pi_mcp.exists()
-        && std::fs::copy(&pi_mcp, &omegon_mcp).is_ok() {
-            actions.push("✓ Migrated mcp.json from ~/.pi/agent/ → ~/.config/omegon/".into());
-        }
+    if !omegon_mcp.exists() && pi_mcp.exists() && std::fs::copy(&pi_mcp, &omegon_mcp).is_ok() {
+        actions.push("✓ Migrated mcp.json from ~/.pi/agent/ → ~/.config/omegon/".into());
+    }
 
     actions
 }
@@ -849,8 +954,10 @@ mod tests {
     fn run_unknown_source() {
         let dir = tempfile::tempdir().unwrap();
         let report = run("nonexistent", dir.path());
-        assert!(!report.warnings.is_empty() || report.items.is_empty(),
-            "unknown source should warn or have no items");
+        assert!(
+            !report.warnings.is_empty() || report.items.is_empty(),
+            "unknown source should warn or have no items"
+        );
     }
 
     #[test]
@@ -869,8 +976,10 @@ mod tests {
         let mut report = MigrationReport::new("test");
         report.warnings.push("Config file malformed".into());
         let summary = report.summary();
-        assert!(summary.contains("malformed") || summary.contains("warning"),
-            "should surface warnings: {summary}");
+        assert!(
+            summary.contains("malformed") || summary.contains("warning"),
+            "should surface warnings: {summary}"
+        );
     }
 
     #[test]
@@ -898,7 +1007,11 @@ mod tests {
     #[test]
     fn migrate_windsurf_with_rules() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".windsurfrules"), "Always use TypeScript\nPrefer functional style\n").unwrap();
+        std::fs::write(
+            dir.path().join(".windsurfrules"),
+            "Always use TypeScript\nPrefer functional style\n",
+        )
+        .unwrap();
         let report = migrate_windsurf(dir.path());
         assert!(!report.items.is_empty(), "should find windsurf rules");
     }
@@ -920,7 +1033,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("CLAUDE.md"), "# My Rules\nBe nice").unwrap();
         let found = scan_conventions(dir.path());
-        assert!(found.iter().any(|d| d.source == "Claude Code"), "should detect CLAUDE.md");
+        assert!(
+            found.iter().any(|d| d.source == "Claude Code"),
+            "should detect CLAUDE.md"
+        );
     }
 
     #[test]
@@ -928,9 +1044,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gh = dir.path().join(".github");
         std::fs::create_dir_all(&gh).unwrap();
-        std::fs::write(gh.join("copilot-instructions.md"), "# Copilot\nUse TypeScript").unwrap();
+        std::fs::write(
+            gh.join("copilot-instructions.md"),
+            "# Copilot\nUse TypeScript",
+        )
+        .unwrap();
         let found = scan_conventions(dir.path());
-        assert!(found.iter().any(|d| d.source == "GitHub Copilot"), "should detect copilot-instructions.md");
+        assert!(
+            found.iter().any(|d| d.source == "GitHub Copilot"),
+            "should detect copilot-instructions.md"
+        );
     }
 
     #[test]
@@ -938,7 +1061,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".clinerules"), "use strict mode").unwrap();
         let found = scan_conventions(dir.path());
-        assert!(found.iter().any(|d| d.source == "Cline"), "should detect .clinerules");
+        assert!(
+            found.iter().any(|d| d.source == "Cline"),
+            "should detect .clinerules"
+        );
     }
 
     #[test]
@@ -948,14 +1074,20 @@ mod tests {
         std::fs::create_dir_all(&mem).unwrap();
         std::fs::write(mem.join("facts.jsonl"), r#"{"_type":"fact"}"#).unwrap();
         let found = scan_conventions(dir.path());
-        assert!(found.iter().any(|d| d.source == "pi (Omegon TS)"), "should detect .pi/memory");
+        assert!(
+            found.iter().any(|d| d.source == "pi (Omegon TS)"),
+            "should detect .pi/memory"
+        );
     }
 
     #[test]
     fn init_empty_project_creates_config() {
         let dir = tempfile::tempdir().unwrap();
         let report = init_project(dir.path(), false);
-        assert!(report.contains("Created `.omegon/` config directory"), "{report}");
+        assert!(
+            report.contains("Created `.omegon/` config directory"),
+            "{report}"
+        );
         assert!(dir.path().join(".omegon").is_dir());
     }
 

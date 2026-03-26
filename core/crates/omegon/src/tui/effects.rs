@@ -10,7 +10,7 @@
 use std::time::Instant;
 
 use ratatui::prelude::*;
-use tachyonfx::{fx, EffectManager, EffectTimer, Interpolation};
+use tachyonfx::{EffectManager, EffectTimer, Interpolation, fx};
 
 use super::theme::Theme;
 
@@ -68,7 +68,8 @@ impl Effects {
         self.last_frame = now;
 
         let duration = tachyonfx::Duration::from_millis(delta.as_millis() as u32);
-        self.conversation.process_effects(duration, buf, conversation_area);
+        self.conversation
+            .process_effects(duration, buf, conversation_area);
         self.footer.process_effects(duration, buf, footer_area);
         self.editor.process_effects(duration, buf, editor_area);
     }
@@ -109,9 +110,7 @@ impl Effects {
 
     /// True if any effects are active (drives render timing).
     pub fn has_active(&self) -> bool {
-        self.conversation.is_running()
-            || self.footer.is_running()
-            || self.editor.is_running()
+        self.conversation.is_running() || self.footer.is_running() || self.editor.is_running()
     }
 }
 

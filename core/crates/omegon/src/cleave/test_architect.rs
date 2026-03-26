@@ -122,7 +122,10 @@ pub fn parse_test_plan(child_label: &str, content: &str) -> TestPlan {
             in_required = false;
             in_edge_cases = false;
             // Parse count from "## Expected Test Count: N" or "## Expected Test Count\n\nN"
-            if let Some(n) = rest.strip_prefix(':').and_then(|s| s.trim().parse::<usize>().ok()) {
+            if let Some(n) = rest
+                .strip_prefix(':')
+                .and_then(|s| s.trim().parse::<usize>().ok())
+            {
                 plan.expected_test_count = n;
             }
             continue;
@@ -201,10 +204,19 @@ mod tests {
     #[test]
     fn build_prompt_includes_all_children() {
         let children = vec![
-            ("vault-client".into(), "Implement Vault HTTP client".into(), vec!["src/vault.rs".into()]),
-            ("tui-command".into(), "Add /vault command".into(), vec!["src/tui/mod.rs".into()]),
+            (
+                "vault-client".into(),
+                "Implement Vault HTTP client".into(),
+                vec!["src/vault.rs".into()],
+            ),
+            (
+                "tui-command".into(),
+                "Add /vault command".into(),
+                vec!["src/tui/mod.rs".into()],
+            ),
         ];
-        let prompt = build_test_architect_prompt("spec content here", "design content here", &children);
+        let prompt =
+            build_test_architect_prompt("spec content here", "design content here", &children);
         assert!(prompt.contains("vault-client"));
         assert!(prompt.contains("tui-command"));
         assert!(prompt.contains("spec content here"));

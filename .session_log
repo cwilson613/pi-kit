@@ -1,3 +1,8 @@
 # Session Log
 
 Append-only record of development sessions. Read recent entries for context.
+
+## 2026-03-26T10:51:40.574Z
+Session: 11 file operations
+Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/settings.rs, core/crates/omegon/src/main.rs, core/crates/omegon/src/main.rs, core/crates/omegon/src/main.rs, core/crates/omegon/src/main.rs, core/crates/omegon/src/features/model_budget.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/settings.rs, core/crates/omegon/src/features/model_budget.rs
+

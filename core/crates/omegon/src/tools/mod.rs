@@ -49,7 +49,10 @@ impl CoreTools {
     }
 
     /// Create with a RepoModel for git-aware operations.
-    pub fn with_repo_model(cwd: PathBuf, repo_model: std::sync::Arc<omegon_git::RepoModel>) -> Self {
+    pub fn with_repo_model(
+        cwd: PathBuf,
+        repo_model: std::sync::Arc<omegon_git::RepoModel>,
+    ) -> Self {
         Self {
             cwd,
             repo_model: Some(repo_model),
@@ -69,7 +72,9 @@ impl CoreTools {
         } else if let Some(parent) = joined.parent() {
             // Create parent dirs if needed (write tool does this), then canonicalize
             if parent.exists() {
-                parent.canonicalize()?.join(joined.file_name().unwrap_or_default())
+                parent
+                    .canonicalize()?
+                    .join(joined.file_name().unwrap_or_default())
             } else {
                 // Parent doesn't exist — resolve what we can. The write tool
                 // will create parents. For now, use lexical normalization.
@@ -102,9 +107,10 @@ fn lexical_normalize(path: &Path) -> PathBuf {
         match component {
             std::path::Component::ParentDir => {
                 // Only pop if there's a normal component to pop
-                if components.last().is_some_and(|c| {
-                    matches!(c, std::path::Component::Normal(_))
-                }) {
+                if components
+                    .last()
+                    .is_some_and(|c| matches!(c, std::path::Component::Normal(_)))
+                {
                     components.pop();
                 } else {
                     components.push(component);
@@ -438,7 +444,8 @@ impl ToolProvider for CoreTools {
                     let cmd_lower = command.to_lowercase();
                     if cmd_lower.contains("git commit")
                         || cmd_lower.contains("git add ")
-                        || (cmd_lower.contains("git stash") && !cmd_lower.contains("git stash list"))
+                        || (cmd_lower.contains("git stash")
+                            && !cmd_lower.contains("git stash list"))
                     {
                         tracing::warn!(
                             command = command,
@@ -469,9 +476,10 @@ impl ToolProvider for CoreTools {
                 let path = self.resolve_path(path_str)?;
                 let result = write::execute(&path, content, &self.cwd).await;
                 if result.is_ok()
-                    && let Some(ref model) = self.repo_model {
-                        model.record_edit(path_str);
-                    }
+                    && let Some(ref model) = self.repo_model
+                {
+                    model.record_edit(path_str);
+                }
                 result
             }
             reg::EDIT => {
@@ -487,37 +495,37 @@ impl ToolProvider for CoreTools {
                 let path = self.resolve_path(path_str)?;
                 let result = edit::execute(&path, old_text, new_text, &self.cwd).await;
                 if result.is_ok()
-                    && let Some(ref model) = self.repo_model {
-                        model.record_edit(path_str);
-                    }
+                    && let Some(ref model) = self.repo_model
+                {
+                    model.record_edit(path_str);
+                }
                 result
             }
             reg::CHANGE => {
-                let edits_val = args.get("edits")
+                let edits_val = args
+                    .get("edits")
                     .ok_or_else(|| anyhow::anyhow!("missing 'edits' argument"))?;
                 let edits: Vec<change::EditSpec> = serde_json::from_value(edits_val.clone())?;
-                let validate_mode = args.get("validate")
+                let validate_mode = args
+                    .get("validate")
                     .and_then(|v| v.as_str())
                     .map(change::ValidationMode::parse)
                     .unwrap_or(change::ValidationMode::Standard);
                 let cwd = self.cwd.clone();
                 let cwd2 = cwd.clone();
-                let result = change::execute(
-                    &edits,
-                    validate_mode,
-                    &cwd,
-                    move |p: &str| {
-                        let tools = CoreTools::new(cwd2.clone());
-                        tools.resolve_path(p)
-                    },
-                ).await;
+                let result = change::execute(&edits, validate_mode, &cwd, move |p: &str| {
+                    let tools = CoreTools::new(cwd2.clone());
+                    tools.resolve_path(p)
+                })
+                .await;
                 // Track all edited files in the working set
                 if result.is_ok()
-                    && let Some(ref model) = self.repo_model {
-                        for edit in &edits {
-                            model.record_edit(&edit.file);
-                        }
+                    && let Some(ref model) = self.repo_model
+                {
+                    for edit in &edits {
+                        model.record_edit(&edit.file);
                     }
+                }
                 result
             }
             reg::COMMIT => {
@@ -585,25 +593,27 @@ impl ToolProvider for CoreTools {
                 let sub_paths = self
                     .repo_model
                     .as_ref()
-                    .map(|m| m.submodules().into_iter().map(|s| s.path).collect::<Vec<_>>())
+                    .map(|m| {
+                        m.submodules()
+                            .into_iter()
+                            .map(|s| s.path)
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_else(|| {
-                        omegon_git::submodule::list_submodule_paths(&self.cwd)
-                            .unwrap_or_default()
+                        omegon_git::submodule::list_submodule_paths(&self.cwd).unwrap_or_default()
                     });
 
                 let mut submodule_commits = 0;
                 for sub_path in &sub_paths {
                     let sub_prefix = format!("{}/", sub_path);
-                    let touches_sub = paths.is_empty()
-                        || paths.iter().any(|p| p.starts_with(&sub_prefix));
+                    let touches_sub =
+                        paths.is_empty() || paths.iter().any(|p| p.starts_with(&sub_prefix));
                     if touches_sub
-                        && let Ok(n) = omegon_git::commit::commit_in_submodule(
-                            &self.cwd,
-                            sub_path,
-                            message,
-                        ) {
-                            submodule_commits += n;
-                        }
+                        && let Ok(n) =
+                            omegon_git::commit::commit_in_submodule(&self.cwd, sub_path, message)
+                    {
+                        submodule_commits += n;
+                    }
                 }
 
                 let include_lifecycle = !lifecycle_paths.is_empty();
@@ -624,10 +634,8 @@ impl ToolProvider for CoreTools {
                     }
                 }
 
-                let mut summary = format!(
-                    "Committed {} file(s): {}",
-                    result.files_staged, result.sha
-                );
+                let mut summary =
+                    format!("Committed {} file(s): {}", result.files_staged, result.sha);
                 if submodule_commits > 0 {
                     summary.push_str(&format!(
                         "\n({} file(s) committed inside submodule(s) first)",
@@ -657,18 +665,10 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'label' argument"))?;
                 speculate::start(label, &self.cwd).await
             }
-            reg::SPECULATE_CHECK => {
-                speculate::check(&self.cwd).await
-            }
-            reg::SPECULATE_COMMIT => {
-                speculate::commit(&self.cwd).await
-            }
-            reg::SPECULATE_ROLLBACK => {
-                speculate::rollback(&self.cwd).await
-            }
-            reg::WHOAMI => {
-                whoami::execute().await
-            }
+            reg::SPECULATE_CHECK => speculate::check(&self.cwd).await,
+            reg::SPECULATE_COMMIT => speculate::commit(&self.cwd).await,
+            reg::SPECULATE_ROLLBACK => speculate::rollback(&self.cwd).await,
+            reg::WHOAMI => whoami::execute().await,
             reg::CHRONOS => {
                 let sub = args["subcommand"].as_str().unwrap_or("week");
                 let expr = args["expression"].as_str();
@@ -735,34 +735,32 @@ mod tests {
         let result = lexical_normalize(Path::new("/a/./b/./c"));
         assert_eq!(result, PathBuf::from("/a/b/c"));
     }
-    
+
     #[test]
     fn all_expected_tools_are_registered() {
         let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
         let all_tools = tools.tools();
-        let tool_names: std::collections::HashSet<&str> = all_tools
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect();
-        
+        let tool_names: std::collections::HashSet<&str> =
+            all_tools.iter().map(|t| t.name.as_str()).collect();
+
         // Primitive tools
         assert!(tool_names.contains("bash"));
         assert!(tool_names.contains("read"));
         assert!(tool_names.contains("write"));
         assert!(tool_names.contains("edit"));
         assert!(tool_names.contains("change"));
-        
+
         // Git/speculation tools
         assert!(tool_names.contains("commit"));
         assert!(tool_names.contains("speculate_start"));
         assert!(tool_names.contains("speculate_check"));
         assert!(tool_names.contains("speculate_commit"));
         assert!(tool_names.contains("speculate_rollback"));
-        
+
         // Utility tools
         assert!(tool_names.contains("whoami"));
         assert!(tool_names.contains("chronos"));
-        
+
         // view, web_search, render_*, local_inference tools are provided
         // by dedicated providers, NOT by CoreTools (to avoid duplicates).
         assert!(!tool_names.contains("view"));
@@ -772,12 +770,17 @@ mod tests {
         assert!(!tool_names.contains("ask_local_model"));
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
-        
+
         // Should have 11 core tools (bash, read, write, edit, change,
         // speculate_start/check/commit/rollback, commit, whoami, chronos)
-        assert_eq!(tool_names.len(), 13, "Expected 13 core tools, got {}", tool_names.len());
+        assert_eq!(
+            tool_names.len(),
+            13,
+            "Expected 13 core tools, got {}",
+            tool_names.len()
+        );
     }
-    
+
     #[test]
     fn core_tools_do_not_include_provider_tools() {
         // Dedicated providers (ViewProvider, WebSearchProvider, etc.) own these
@@ -785,16 +788,23 @@ mod tests {
         // in the API request.
         let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
         let all_tools = tools.tools();
-        let tool_names: std::collections::HashSet<&str> = all_tools
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect();
-        
-        let provider_tools = ["view", "web_search", "render_diagram",
-            "generate_image_local", "ask_local_model", "list_local_models", "manage_ollama"];
+        let tool_names: std::collections::HashSet<&str> =
+            all_tools.iter().map(|t| t.name.as_str()).collect();
+
+        let provider_tools = [
+            "view",
+            "web_search",
+            "render_diagram",
+            "generate_image_local",
+            "ask_local_model",
+            "list_local_models",
+            "manage_ollama",
+        ];
         for name in &provider_tools {
-            assert!(!tool_names.contains(name),
-                "CoreTools should not include '{name}' — it belongs to a dedicated provider");
+            assert!(
+                !tool_names.contains(name),
+                "CoreTools should not include '{name}' — it belongs to a dedicated provider"
+            );
         }
     }
 }

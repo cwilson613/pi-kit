@@ -43,7 +43,9 @@ impl HttpPluginFeature {
     /// Fire-and-forget event POST (best-effort, no error propagation).
     async fn post_event(&self, endpoint: &str, payload: &Value) {
         let url = resolve_template(endpoint, &HashMap::new());
-        match self.client.post(&url)
+        match self
+            .client
+            .post(&url)
             .json(payload)
             .timeout(Duration::from_secs(5))
             .send()
@@ -67,12 +69,16 @@ impl Feature for HttpPluginFeature {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        self.manifest.tools.iter().map(|t| ToolDefinition {
-            name: t.name.clone(),
-            label: t.name.clone(),
-            description: t.description.clone(),
-            parameters: t.parameters.clone(),
-        }).collect()
+        self.manifest
+            .tools
+            .iter()
+            .map(|t| ToolDefinition {
+                name: t.name.clone(),
+                label: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.parameters.clone(),
+            })
+            .collect()
     }
 
     async fn execute(
@@ -82,43 +88,43 @@ impl Feature for HttpPluginFeature {
         args: Value,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let tool = self.manifest.tools.iter()
+        let tool = self
+            .manifest
+            .tools
+            .iter()
             .find(|t| t.name == tool_name)
             .ok_or_else(|| anyhow::anyhow!("unknown plugin tool: {tool_name}"))?;
 
         let url = self.resolve_url(&tool.endpoint, &args);
-        let method = tool.method.as_deref().unwrap_or(
-            if args.as_object().is_some_and(|o| !o.is_empty()) { "POST" } else { "GET" }
-        );
+        let method =
+            tool.method
+                .as_deref()
+                .unwrap_or(if args.as_object().is_some_and(|o| !o.is_empty()) {
+                    "POST"
+                } else {
+                    "GET"
+                });
         let timeout = Duration::from_secs(tool.timeout_secs);
 
         let resp = match method.to_uppercase().as_str() {
-            "GET" => {
-                self.client.get(&url)
-                    .timeout(timeout)
-                    .send()
-                    .await
-            }
+            "GET" => self.client.get(&url).timeout(timeout).send().await,
             "POST" => {
-                self.client.post(&url)
+                self.client
+                    .post(&url)
                     .json(&args)
                     .timeout(timeout)
                     .send()
                     .await
             }
             "PUT" => {
-                self.client.put(&url)
+                self.client
+                    .put(&url)
                     .json(&args)
                     .timeout(timeout)
                     .send()
                     .await
             }
-            "DELETE" => {
-                self.client.delete(&url)
-                    .timeout(timeout)
-                    .send()
-                    .await
-            }
+            "DELETE" => self.client.delete(&url).timeout(timeout).send().await,
             other => anyhow::bail!("unsupported HTTP method: {other}"),
         };
 
@@ -164,15 +170,18 @@ impl Feature for HttpPluginFeature {
                 let path = dir.join(local_file);
                 if path.exists()
                     && let Ok(content) = std::fs::read_to_string(&path)
-                        && !content.trim().is_empty() {
-                            return Some(ContextInjection {
-                                source: format!("plugin:{}", self.manifest.plugin.name),
-                                content,
-                                ttl_turns: ctx_config.ttl_turns,
-                                priority: ctx_config.priority as u8,
-                            });
-                        }
-                if !dir.pop() { break; }
+                    && !content.trim().is_empty()
+                {
+                    return Some(ContextInjection {
+                        source: format!("plugin:{}", self.manifest.plugin.name),
+                        content,
+                        ttl_turns: ctx_config.ttl_turns,
+                        priority: ctx_config.priority as u8,
+                    });
+                }
+                if !dir.pop() {
+                    break;
+                }
             }
         }
 
@@ -197,7 +206,8 @@ impl Feature for HttpPluginFeature {
                     let payload = serde_json::json!({ "event": "turn_end", "turn": turn });
                     // Fire-and-forget — spawn a task for the HTTP POST
                     tokio::spawn(async move {
-                        let _ = client.post(&url)
+                        let _ = client
+                            .post(&url)
                             .json(&payload)
                             .timeout(Duration::from_secs(5))
                             .send()
@@ -211,7 +221,8 @@ impl Feature for HttpPluginFeature {
                     let url = resolve_template(endpoint, &HashMap::new());
                     let payload = serde_json::json!({ "event": "session_start" });
                     tokio::spawn(async move {
-                        let _ = client.post(&url)
+                        let _ = client
+                            .post(&url)
                             .json(&payload)
                             .timeout(Duration::from_secs(5))
                             .send()
@@ -232,7 +243,8 @@ mod tests {
     use crate::plugins::manifest::*;
 
     fn test_manifest() -> PluginManifest {
-        toml::from_str(r#"
+        toml::from_str(
+            r#"
             [plugin]
             name = "test-plugin"
 
@@ -240,7 +252,9 @@ mod tests {
             name = "test_tool"
             description = "A test tool"
             endpoint = "http://localhost:9999/api/test"
-        "#).unwrap()
+        "#,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -265,19 +279,29 @@ mod tests {
         manifest.tools[0].timeout_secs = 1;
         let feature = HttpPluginFeature::new(manifest);
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("test_tool", "tc1", serde_json::json!({}), cancel).await.unwrap();
+        let result = feature
+            .execute("test_tool", "tc1", serde_json::json!({}), cancel)
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(text.contains("unreachable") || text.contains("error"),
-            "should gracefully degrade: {text}");
+        assert!(
+            text.contains("unreachable") || text.contains("error"),
+            "should gracefully degrade: {text}"
+        );
     }
 
     #[test]
     fn context_from_local_file() {
         let dir = tempfile::tempdir().unwrap();
         let scribe_file = dir.path().join(".scribe");
-        std::fs::write(&scribe_file, "partnership: acme\nengagement: widget-rewrite").unwrap();
+        std::fs::write(
+            &scribe_file,
+            "partnership: acme\nengagement: widget-rewrite",
+        )
+        .unwrap();
 
-        let manifest: PluginManifest = toml::from_str(r#"
+        let manifest: PluginManifest = toml::from_str(
+            r#"
             [plugin]
             name = "test"
 
@@ -285,7 +309,9 @@ mod tests {
             local_file = ".scribe"
             ttl_turns = 15
             priority = 30
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let feature = HttpPluginFeature::new(manifest);
         // Set cwd to the temp dir so the local file is found

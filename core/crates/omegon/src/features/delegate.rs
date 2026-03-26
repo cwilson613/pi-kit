@@ -15,12 +15,12 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use omegon_traits::{
-    BusEvent, BusRequest, CommandDefinition, CommandResult, ContextInjection, ContextSignals,
-    ContentBlock, Feature, NotifyLevel, ToolDefinition, ToolResult,
+    BusEvent, BusRequest, CommandDefinition, CommandResult, ContentBlock, ContextInjection,
+    ContextSignals, Feature, NotifyLevel, ToolDefinition, ToolResult,
 };
 
 /// Agent specification loaded from .omegon/agents/*.md
@@ -89,12 +89,20 @@ impl DelegateResultStore {
         tasks.get(task_id).cloned()
     }
 
-    pub fn update_task_status(&self, task_id: &str, status: DelegateTaskStatus, result: Option<String>) {
+    pub fn update_task_status(
+        &self,
+        task_id: &str,
+        status: DelegateTaskStatus,
+        result: Option<String>,
+    ) {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(task_id) {
             task.status = status;
             task.result = result;
-            if matches!(task.status, DelegateTaskStatus::Completed { .. } | DelegateTaskStatus::Failed { .. }) {
+            if matches!(
+                task.status,
+                DelegateTaskStatus::Completed { .. } | DelegateTaskStatus::Failed { .. }
+            ) {
                 task.completed_at = Some(SystemTime::now());
             }
         }
@@ -134,24 +142,35 @@ impl DelegateRunner {
         if let Some(ref persona_id) = mind {
             // Try to find the persona in installed plugins and load its directive + facts
             let (personas, _) = crate::plugins::persona_loader::scan_available();
-            if let Some(available) = personas.iter().find(|p| p.id.contains(persona_id) || p.name.to_lowercase().contains(&persona_id.to_lowercase()))
-                && let Ok(persona) = crate::plugins::persona_loader::load_persona(&available.path) {
-                    field_kit_context.push_str(&format!("\n## Persona: {}\n{}\n", persona.name, persona.directive));
-                    if !persona.mind_facts.is_empty() {
-                        field_kit_context.push_str(&format!("\n## Mind Facts ({} facts)\n", persona.mind_facts.len()));
-                        for fact in &persona.mind_facts {
-                            field_kit_context.push_str(&format!("- [{}] {}\n", fact.section, fact.content));
-                        }
+            if let Some(available) = personas.iter().find(|p| {
+                p.id.contains(persona_id)
+                    || p.name.to_lowercase().contains(&persona_id.to_lowercase())
+            }) && let Ok(persona) = crate::plugins::persona_loader::load_persona(&available.path)
+            {
+                field_kit_context.push_str(&format!(
+                    "\n## Persona: {}\n{}\n",
+                    persona.name, persona.directive
+                ));
+                if !persona.mind_facts.is_empty() {
+                    field_kit_context.push_str(&format!(
+                        "\n## Mind Facts ({} facts)\n",
+                        persona.mind_facts.len()
+                    ));
+                    for fact in &persona.mind_facts {
+                        field_kit_context
+                            .push_str(&format!("- [{}] {}\n", fact.section, fact.content));
                     }
                 }
+            }
         }
         if let Some(ref fact_list) = facts
-            && !fact_list.is_empty() {
-                field_kit_context.push_str("\n## Injected Facts\n");
-                for f in fact_list {
-                    field_kit_context.push_str(&format!("- {f}\n"));
-                }
+            && !fact_list.is_empty()
+        {
+            field_kit_context.push_str("\n## Injected Facts\n");
+            for f in fact_list {
+                field_kit_context.push_str(&format!("- {f}\n"));
             }
+        }
 
         let task_entry = DelegateTask {
             task_id: task_id.clone(),
@@ -162,7 +181,7 @@ impl DelegateRunner {
             started_at: SystemTime::now(),
             completed_at: None,
         };
-        
+
         self.result_store.store_task(task_entry);
 
         // Spawn a background task that simulates work
@@ -171,7 +190,7 @@ impl DelegateRunner {
         let field_kit = field_kit_context;
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            
+
             let result = if field_kit.is_empty() {
                 format!("Task completed: {task}")
             } else {
@@ -193,7 +212,8 @@ impl DelegateRunner {
         _cancel: CancellationToken,
     ) -> anyhow::Result<String> {
         // Poll for completion (in real implementation, this would be more sophisticated)
-        for _ in 0..30 { // 30 second timeout
+        for _ in 0..30 {
+            // 30 second timeout
             if let Some(task) = self.result_store.get_task(task_id) {
                 match task.status {
                     DelegateTaskStatus::Completed { success: true } => {
@@ -228,7 +248,7 @@ impl DelegateFeature {
     pub fn new(cwd: &PathBuf, agents: Vec<AgentSpec>) -> Self {
         let result_store = Arc::new(DelegateResultStore::new());
         let runner = Arc::new(DelegateRunner::new(cwd.clone(), result_store.clone()));
-        
+
         Self {
             result_store,
             available_agents: agents,
@@ -327,42 +347,65 @@ impl Feature for DelegateFeature {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::delegate::DELEGATE => {
-                let task: String = args.get("task")
+                let task: String = args
+                    .get("task")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("task parameter is required"))?
                     .to_string();
-                
-                let agent = args.get("agent").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let scope = args.get("scope")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
-                let model = args.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let thinking_level = args.get("thinking_level").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let facts = args.get("facts")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
-                let mind = args.get("mind").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let background = args.get("background").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                let agent = args
+                    .get("agent")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let scope = args.get("scope").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                });
+                let model = args
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let thinking_level = args
+                    .get("thinking_level")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let facts = args.get("facts").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                });
+                let mind = args
+                    .get("mind")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let background = args
+                    .get("background")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
 
                 // Validate agent if specified
                 if let Some(ref agent_name) = agent
-                    && !self.available_agents.iter().any(|a| a.name == *agent_name) {
-                        return Err(anyhow::anyhow!("Unknown agent: {}", agent_name));
-                    }
+                    && !self.available_agents.iter().any(|a| a.name == *agent_name)
+                {
+                    return Err(anyhow::anyhow!("Unknown agent: {}", agent_name));
+                }
 
                 let task_id = self.result_store.generate_task_id();
 
                 // Spawn the delegate
-                self.runner.spawn_delegate(
-                    task_id.clone(),
-                    agent,
-                    task,
-                    scope,
-                    model,
-                    thinking_level,
-                    facts,
-                    mind,
-                ).await?;
+                self.runner
+                    .spawn_delegate(
+                        task_id.clone(),
+                        agent,
+                        task,
+                        scope,
+                        model,
+                        thinking_level,
+                        facts,
+                        mind,
+                    )
+                    .await?;
 
                 if background {
                     // Return task ID for background execution
@@ -383,45 +426,38 @@ impl Feature for DelegateFeature {
             }
 
             crate::tool_registry::delegate::DELEGATE_RESULT => {
-                let task_id: String = args.get("task_id")
+                let task_id: String = args
+                    .get("task_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("task_id parameter is required"))?
                     .to_string();
 
                 match self.result_store.get_task(&task_id) {
                     Some(task) => match task.status {
-                        DelegateTaskStatus::Running => {
-                            Ok(ToolResult {
-                                content: vec![ContentBlock::Text {
-                                    text: "Task still running".to_string(),
-                                }],
-                                details: json!({ "status": "running", "task_id": task_id }),
-                            })
-                        }
-                        DelegateTaskStatus::Completed { success: true } => {
-                            Ok(ToolResult {
-                                content: vec![ContentBlock::Text {
-                                    text: task.result.unwrap_or_else(|| "Task completed".to_string()),
-                                }],
-                                details: json!({ "status": "completed", "success": true, "task_id": task_id }),
-                            })
-                        }
-                        DelegateTaskStatus::Completed { success: false } => {
-                            Ok(ToolResult {
-                                content: vec![ContentBlock::Text {
-                                    text: "Task completed with failure".to_string(),
-                                }],
-                                details: json!({ "status": "completed", "success": false, "task_id": task_id }),
-                            })
-                        }
-                        DelegateTaskStatus::Failed { error } => {
-                            Ok(ToolResult {
-                                content: vec![ContentBlock::Text {
-                                    text: format!("Task failed: {}", error),
-                                }],
-                                details: json!({ "status": "failed", "error": error, "task_id": task_id }),
-                            })
-                        }
+                        DelegateTaskStatus::Running => Ok(ToolResult {
+                            content: vec![ContentBlock::Text {
+                                text: "Task still running".to_string(),
+                            }],
+                            details: json!({ "status": "running", "task_id": task_id }),
+                        }),
+                        DelegateTaskStatus::Completed { success: true } => Ok(ToolResult {
+                            content: vec![ContentBlock::Text {
+                                text: task.result.unwrap_or_else(|| "Task completed".to_string()),
+                            }],
+                            details: json!({ "status": "completed", "success": true, "task_id": task_id }),
+                        }),
+                        DelegateTaskStatus::Completed { success: false } => Ok(ToolResult {
+                            content: vec![ContentBlock::Text {
+                                text: "Task completed with failure".to_string(),
+                            }],
+                            details: json!({ "status": "completed", "success": false, "task_id": task_id }),
+                        }),
+                        DelegateTaskStatus::Failed { error } => Ok(ToolResult {
+                            content: vec![ContentBlock::Text {
+                                text: format!("Task failed: {}", error),
+                            }],
+                            details: json!({ "status": "failed", "error": error, "task_id": task_id }),
+                        }),
                     },
                     None => Err(anyhow::anyhow!("Task not found: {}", task_id)),
                 }
@@ -429,13 +465,17 @@ impl Feature for DelegateFeature {
 
             crate::tool_registry::delegate::DELEGATE_STATUS => {
                 let tasks = self.result_store.list_all_tasks();
-                let mut status_text = String::from("# Delegate Tasks\n\n| Task ID | Agent | Status | Description |\n|---------|-------|--------|-------------|\n");
-                
+                let mut status_text = String::from(
+                    "# Delegate Tasks\n\n| Task ID | Agent | Status | Description |\n|---------|-------|--------|-------------|\n",
+                );
+
                 for task in tasks {
                     let agent = task.agent_name.as_deref().unwrap_or("default");
                     let status = match task.status {
                         DelegateTaskStatus::Running => "🔄 Running".to_string(),
-                        DelegateTaskStatus::Completed { success: true } => "✅ Completed".to_string(),
+                        DelegateTaskStatus::Completed { success: true } => {
+                            "✅ Completed".to_string()
+                        }
                         DelegateTaskStatus::Completed { success: false } => "❌ Failed".to_string(),
                         DelegateTaskStatus::Failed { .. } => "❌ Error".to_string(),
                     };
@@ -444,11 +484,13 @@ impl Feature for DelegateFeature {
                     } else {
                         task.task_description.clone()
                     };
-                    
-                    status_text.push_str(&format!("| {} | {} | {} | {} |\n", 
-                        task.task_id, agent, status, description));
+
+                    status_text.push_str(&format!(
+                        "| {} | {} | {} | {} |\n",
+                        task.task_id, agent, status, description
+                    ));
                 }
-                
+
                 if self.result_store.list_all_tasks().is_empty() {
                     status_text.push_str("\nNo delegate tasks found.\n");
                 }
@@ -477,7 +519,7 @@ impl Feature for DelegateFeature {
                 "status" | "" => {
                     let tasks = self.result_store.list_all_tasks();
                     let mut result = format!("Delegate Tasks ({} total):\n\n", tasks.len());
-                    
+
                     if tasks.is_empty() {
                         result.push_str("No delegate tasks found.\n");
                     } else {
@@ -489,12 +531,14 @@ impl Feature for DelegateFeature {
                                 DelegateTaskStatus::Failed { .. } => "❌ Error",
                             };
                             let agent = task.agent_name.as_deref().unwrap_or("default");
-                            
-                            result.push_str(&format!("  {} - {} - {} ({})\n", 
-                                task.task_id, status, task.task_description, agent));
+
+                            result.push_str(&format!(
+                                "  {} - {} - {} ({})\n",
+                                task.task_id, status, task.task_description, agent
+                            ));
                         }
                     }
-                    
+
                     CommandResult::Display(result)
                 }
                 _ => CommandResult::NotHandled,
@@ -509,7 +553,8 @@ impl Feature for DelegateFeature {
             return None;
         }
 
-        let agents_list = self.available_agents
+        let agents_list = self
+            .available_agents
             .iter()
             .map(|agent| format!("  {} - {}", agent.name, agent.description))
             .collect::<Vec<_>>()
@@ -532,21 +577,32 @@ impl Feature for DelegateFeature {
 
                 for task in tasks {
                     if let DelegateTaskStatus::Completed { success } = task.status
-                        && let Some(completed_at) = task.completed_at {
-                            // Only notify if completed recently (within last 5 seconds)
-                            if completed_at.elapsed().unwrap_or_default().as_secs() < 5 {
-                                let message = if success {
-                                    format!("✅ Delegate {} completed: {}", task.task_id, task.task_description)
+                        && let Some(completed_at) = task.completed_at
+                    {
+                        // Only notify if completed recently (within last 5 seconds)
+                        if completed_at.elapsed().unwrap_or_default().as_secs() < 5 {
+                            let message = if success {
+                                format!(
+                                    "✅ Delegate {} completed: {}",
+                                    task.task_id, task.task_description
+                                )
+                            } else {
+                                format!(
+                                    "❌ Delegate {} failed: {}",
+                                    task.task_id, task.task_description
+                                )
+                            };
+
+                            requests.push(BusRequest::Notify {
+                                message,
+                                level: if success {
+                                    NotifyLevel::Info
                                 } else {
-                                    format!("❌ Delegate {} failed: {}", task.task_id, task.task_description)
-                                };
-                                
-                                requests.push(BusRequest::Notify {
-                                    message,
-                                    level: if success { NotifyLevel::Info } else { NotifyLevel::Warning },
-                                });
-                            }
+                                    NotifyLevel::Warning
+                                },
+                            });
                         }
+                    }
                 }
 
                 requests
@@ -565,10 +621,11 @@ pub fn scan_agents(cwd: &PathBuf) -> Vec<AgentSpec> {
         for entry in entries.flatten() {
             if let Some(extension) = entry.path().extension()
                 && extension == "md"
-                    && let Ok(content) = std::fs::read_to_string(entry.path())
-                        && let Some(agent) = parse_agent_spec(&content) {
-                            agents.push(agent);
-                        }
+                && let Ok(content) = std::fs::read_to_string(entry.path())
+                && let Some(agent) = parse_agent_spec(&content)
+            {
+                agents.push(agent);
+            }
         }
     }
 
@@ -631,10 +688,10 @@ mod tests {
             description: "Test agent".to_string(),
             is_write_agent: true,
         }];
-        
+
         let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents);
         let tools = feature.tools();
-        
+
         assert_eq!(tools.len(), 3);
         assert!(tools.iter().any(|t| t.name == "delegate"));
         assert!(tools.iter().any(|t| t.name == "delegate_result"));
@@ -645,16 +702,18 @@ mod tests {
     async fn test_sync_delegate_unknown_agent() {
         let temp_dir = TempDir::new().unwrap();
         let agents = vec![];
-        
+
         let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents);
-        
+
         let args = json!({
             "task": "test task",
             "agent": "unknown_agent",
             "background": false
         });
-        
-        let result = feature.execute("delegate", "test_call", args, CancellationToken::new()).await;
+
+        let result = feature
+            .execute("delegate", "test_call", args, CancellationToken::new())
+            .await;
         assert!(result.is_err());
     }
 
@@ -662,10 +721,17 @@ mod tests {
     async fn test_delegate_result_nonexistent() {
         let temp_dir = TempDir::new().unwrap();
         let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![]);
-        
+
         let args = json!({ "task_id": "nonexistent_task" });
-        
-        let result = feature.execute("delegate_result", "test_call", args, CancellationToken::new()).await;
+
+        let result = feature
+            .execute(
+                "delegate_result",
+                "test_call",
+                args,
+                CancellationToken::new(),
+            )
+            .await;
         assert!(result.is_err());
     }
 
@@ -684,9 +750,9 @@ mod tests {
                 is_write_agent: false,
             },
         ];
-        
+
         let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents);
-        
+
         let signals = ContextSignals {
             user_prompt: "test",
             recent_tools: &[],
@@ -695,10 +761,10 @@ mod tests {
             turn_number: 1,
             context_budget_tokens: 1000,
         };
-        
+
         let context = feature.provide_context(&signals);
         assert!(context.is_some());
-        
+
         let context = context.unwrap();
         assert!(context.content.contains("agent1"));
         assert!(context.content.contains("agent2"));
@@ -714,10 +780,10 @@ mod tests {
 
 This agent runs in write mode and can modify files.
 "#;
-        
+
         let spec = parse_agent_spec(content);
         assert!(spec.is_some());
-        
+
         let spec = spec.unwrap();
         assert_eq!(spec.name, "TestAgent");
         assert_eq!(spec.description, "A test agent for testing purposes");
@@ -729,29 +795,31 @@ This agent runs in write mode and can modify files.
         let temp_dir = TempDir::new().unwrap();
         let agents_dir = temp_dir.path().join(".omegon").join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
-        
+
         // Create test agent files
         std::fs::write(
             agents_dir.join("test1.md"),
-            "# TestAgent1\n\n> Test agent 1\n\nwrite agent capabilities"
-        ).unwrap();
-        
+            "# TestAgent1\n\n> Test agent 1\n\nwrite agent capabilities",
+        )
+        .unwrap();
+
         std::fs::write(
-            agents_dir.join("test2.md"), 
-            "# TestAgent2\n\n> Test agent 2\n\nread-only analysis"
-        ).unwrap();
-        
+            agents_dir.join("test2.md"),
+            "# TestAgent2\n\n> Test agent 2\n\nread-only analysis",
+        )
+        .unwrap();
+
         let agents = scan_agents(&temp_dir.path().to_path_buf());
         assert_eq!(agents.len(), 2);
-        
+
         let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"TestAgent1"));
         assert!(names.contains(&"TestAgent2"));
-        
+
         // Check write agent detection
         let write_agent = agents.iter().find(|a| a.name == "TestAgent1").unwrap();
         assert!(write_agent.is_write_agent);
-        
+
         let read_agent = agents.iter().find(|a| a.name == "TestAgent2").unwrap();
         assert!(!read_agent.is_write_agent);
     }

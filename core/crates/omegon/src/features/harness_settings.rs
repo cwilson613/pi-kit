@@ -13,13 +13,10 @@
 //! - `sessions` — list saved sessions
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use omegon_traits::{
-    BusEvent, BusRequest, ContentBlock, Feature,
-    ToolDefinition, ToolResult,
-};
+use omegon_traits::{BusEvent, BusRequest, ContentBlock, Feature, ToolDefinition, ToolResult};
 
 use crate::settings::SharedSettings;
 
@@ -83,9 +80,7 @@ impl Feature for HarnessSettings {
         args: Value,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let action = args.get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("get");
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("get");
 
         match action {
             "get" => {
@@ -99,7 +94,8 @@ impl Feature for HarnessSettings {
                      - **Max turns**: {}\n\
                      - **Tool display**: {}",
                     s.model,
-                    s.thinking.icon(), s.thinking.as_str(),
+                    s.thinking.icon(),
+                    s.thinking.as_str(),
                     s.context_class.short(),
                     s.context_window,
                     s.max_turns,
@@ -109,9 +105,7 @@ impl Feature for HarnessSettings {
             }
 
             "set_context_class" => {
-                let value = args.get("value")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let value = args.get("value").and_then(|v| v.as_str()).unwrap_or("");
 
                 if let Some(class) = crate::settings::ContextClass::parse(value) {
                     let window = class.nominal_tokens();
@@ -119,13 +113,14 @@ impl Feature for HarnessSettings {
                     s.context_class = class;
                     s.context_window = window;
                     drop(s);
-                    
+
                     // Set flag for status refresh on next turn
                     self.refresh_status_pending.store(true, Ordering::Relaxed);
-                    
+
                     Ok(text_result(&format!(
                         "Context class → {} ({} tokens)",
-                        class.short(), window,
+                        class.short(),
+                        window,
                     )))
                 } else {
                     Ok(error_result(&format!(
@@ -137,14 +132,20 @@ impl Feature for HarnessSettings {
 
             "compact" => {
                 // Signal intent — the bus will deliver RequestCompaction
-                Ok(text_result("Context compaction requested. Will execute before the next turn."))
+                Ok(text_result(
+                    "Context compaction requested. Will execute before the next turn.",
+                ))
             }
 
             "stats" => {
                 let s = self.settings.lock().unwrap();
                 let elapsed = self.session_start.elapsed();
                 let time = if elapsed.as_secs() >= 3600 {
-                    format!("{}h{}m", elapsed.as_secs() / 3600, (elapsed.as_secs() % 3600) / 60)
+                    format!(
+                        "{}h{}m",
+                        elapsed.as_secs() / 3600,
+                        (elapsed.as_secs() % 3600) / 60
+                    )
                 } else if elapsed.as_secs() >= 60 {
                     format!("{}m{}s", elapsed.as_secs() / 60, elapsed.as_secs() % 60)
                 } else {
@@ -157,8 +158,11 @@ impl Feature for HarnessSettings {
                      - **Tool calls**: {}\n\
                      - **Model**: {}\n\
                      - **Thinking**: {} {}",
-                    self.turns, self.tool_calls,
-                    s.model, s.thinking.icon(), s.thinking.as_str(),
+                    self.turns,
+                    self.tool_calls,
+                    s.model,
+                    s.thinking.icon(),
+                    s.thinking.as_str(),
                 );
                 Ok(text_result(&out))
             }
@@ -169,26 +173,35 @@ impl Feature for HarnessSettings {
                 let db_path = {
                     let ai = cwd.join("ai").join("memory").join("facts.db");
                     let legacy = cwd.join(".omegon").join("memory").join("facts.db");
-                    if legacy.exists() && !ai.exists() { legacy } else { ai }
+                    if legacy.exists() && !ai.exists() {
+                        legacy
+                    } else {
+                        ai
+                    }
                 };
                 if db_path.exists() {
                     match rusqlite::Connection::open_with_flags(
                         &db_path,
-                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
                     ) {
                         Ok(conn) => {
-                            let total: i64 = conn.query_row(
-                                "SELECT COUNT(*) FROM facts", [], |r| r.get(0)
-                            ).unwrap_or(0);
-                            let active: i64 = conn.query_row(
-                                "SELECT COUNT(*) FROM facts WHERE status = 'active'", [], |r| r.get(0)
-                            ).unwrap_or(0);
-                            let episodes: i64 = conn.query_row(
-                                "SELECT COUNT(*) FROM episodes", [], |r| r.get(0)
-                            ).unwrap_or(0);
-                            let edges: i64 = conn.query_row(
-                                "SELECT COUNT(*) FROM edges", [], |r| r.get(0)
-                            ).unwrap_or(0);
+                            let total: i64 = conn
+                                .query_row("SELECT COUNT(*) FROM facts", [], |r| r.get(0))
+                                .unwrap_or(0);
+                            let active: i64 = conn
+                                .query_row(
+                                    "SELECT COUNT(*) FROM facts WHERE status = 'active'",
+                                    [],
+                                    |r| r.get(0),
+                                )
+                                .unwrap_or(0);
+                            let episodes: i64 = conn
+                                .query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))
+                                .unwrap_or(0);
+                            let edges: i64 = conn
+                                .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
+                                .unwrap_or(0);
                             Ok(text_result(&format!(
                                 "## Memory Stats\n\n\
                                  - **Total facts**: {total}\n\
@@ -213,22 +226,34 @@ impl Feature for HarnessSettings {
                     return Ok(text_result("No saved sessions."));
                 }
                 let mut entries: Vec<_> = std::fs::read_dir(&sessions_dir)
-                    .map(|rd| rd.filter_map(|e| e.ok())
-                        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-                        .collect())
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                entries.sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
+                entries.sort_by_key(|e| {
+                    std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok()))
+                });
 
-                let lines: Vec<String> = entries.iter().take(10).map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-                    format!("- {} ({:.1}KB)", name, size as f64 / 1024.0)
-                }).collect();
+                let lines: Vec<String> = entries
+                    .iter()
+                    .take(10)
+                    .map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                        format!("- {} ({:.1}KB)", name, size as f64 / 1024.0)
+                    })
+                    .collect();
 
                 Ok(text_result(&format!(
                     "## Recent Sessions ({})\n\n{}",
                     entries.len(),
-                    if lines.is_empty() { "None.".into() } else { lines.join("\n") }
+                    if lines.is_empty() {
+                        "None.".into()
+                    } else {
+                        lines.join("\n")
+                    }
                 )))
             }
 
@@ -261,14 +286,18 @@ impl Feature for HarnessSettings {
 
 fn text_result(text: &str) -> ToolResult {
     ToolResult {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         details: json!({}),
     }
 }
 
 fn error_result(text: &str) -> ToolResult {
     ToolResult {
-        content: vec![ContentBlock::Text { text: format!("Error: {text}") }],
+        content: vec![ContentBlock::Text {
+            text: format!("Error: {text}"),
+        }],
         details: json!({ "error": true }),
     }
 }
@@ -294,7 +323,10 @@ mod tests {
     async fn action_get() {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("harness_settings", "c1", json!({"action": "get"}), cancel).await.unwrap();
+        let result = feature
+            .execute("harness_settings", "c1", json!({"action": "get"}), cancel)
+            .await
+            .unwrap();
         let text = result_text(&result);
         assert!(text.contains("Model"));
         assert!(text.contains("Thinking"));
@@ -306,11 +338,15 @@ mod tests {
         let settings = test_settings();
         let feature = HarnessSettings::new(settings.clone());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute(
-            "harness_settings", "c1",
-            json!({"action": "set_context_class", "value": "Clan"}),
-            cancel,
-        ).await.unwrap();
+        let result = feature
+            .execute(
+                "harness_settings",
+                "c1",
+                json!({"action": "set_context_class", "value": "Clan"}),
+                cancel,
+            )
+            .await
+            .unwrap();
         let text = result_text(&result);
         assert!(text.contains("Clan"), "should confirm: {text}");
 
@@ -322,11 +358,15 @@ mod tests {
     async fn action_set_context_class_invalid() {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute(
-            "harness_settings", "c1",
-            json!({"action": "set_context_class", "value": "Mega"}),
-            cancel,
-        ).await.unwrap();
+        let result = feature
+            .execute(
+                "harness_settings",
+                "c1",
+                json!({"action": "set_context_class", "value": "Mega"}),
+                cancel,
+            )
+            .await
+            .unwrap();
         let text = result_text(&result);
         assert!(text.contains("Unknown"), "should error: {text}");
     }
@@ -335,7 +375,10 @@ mod tests {
     async fn action_stats() {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("harness_settings", "c1", json!({"action": "stats"}), cancel).await.unwrap();
+        let result = feature
+            .execute("harness_settings", "c1", json!({"action": "stats"}), cancel)
+            .await
+            .unwrap();
         let text = result_text(&result);
         assert!(text.contains("Duration"));
         assert!(text.contains("Turns"));
@@ -345,7 +388,10 @@ mod tests {
     async fn action_unknown() {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("harness_settings", "c1", json!({"action": "bogus"}), cancel).await.unwrap();
+        let result = feature
+            .execute("harness_settings", "c1", json!({"action": "bogus"}), cancel)
+            .await
+            .unwrap();
         let text = result_text(&result);
         assert!(text.contains("Unknown action"));
     }
@@ -356,8 +402,12 @@ mod tests {
         feature.on_event(&BusEvent::TurnEnd { turn: 1 });
         feature.on_event(&BusEvent::TurnEnd { turn: 2 });
         feature.on_event(&BusEvent::ToolEnd {
-            id: "x".into(), name: "bash".into(),
-            result: omegon_traits::ToolResult { content: vec![], details: json!({}) },
+            id: "x".into(),
+            name: "bash".into(),
+            result: omegon_traits::ToolResult {
+                content: vec![],
+                details: json!({}),
+            },
             is_error: false,
         });
         assert_eq!(feature.turns, 2);
@@ -368,9 +418,20 @@ mod tests {
     async fn action_compact_returns_confirmation() {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("harness_settings", "c1", json!({"action": "compact"}), cancel).await.unwrap();
+        let result = feature
+            .execute(
+                "harness_settings",
+                "c1",
+                json!({"action": "compact"}),
+                cancel,
+            )
+            .await
+            .unwrap();
         let text = result_text(&result);
-        assert!(text.to_lowercase().contains("compaction"), "should confirm compaction: {text}");
+        assert!(
+            text.to_lowercase().contains("compaction"),
+            "should confirm compaction: {text}"
+        );
     }
 
     #[tokio::test]
@@ -378,7 +439,15 @@ mod tests {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
         // May or may not find sessions — just shouldn't panic
-        let result = feature.execute("harness_settings", "c1", json!({"action": "sessions"}), cancel).await.unwrap();
+        let result = feature
+            .execute(
+                "harness_settings",
+                "c1",
+                json!({"action": "sessions"}),
+                cancel,
+            )
+            .await
+            .unwrap();
         let text = result_text(&result);
         assert!(text.contains("Session") || text.contains("session") || text.contains("None"));
     }
@@ -387,14 +456,24 @@ mod tests {
     async fn action_memory_stats_does_not_panic() {
         let feature = HarnessSettings::new(test_settings());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("harness_settings", "c1", json!({"action": "memory_stats"}), cancel).await.unwrap();
+        let result = feature
+            .execute(
+                "harness_settings",
+                "c1",
+                json!({"action": "memory_stats"}),
+                cancel,
+            )
+            .await
+            .unwrap();
         let text = result_text(&result);
         // Either finds the db or reports it missing — both are valid
         assert!(!text.is_empty());
     }
 
     fn result_text(result: &ToolResult) -> String {
-        result.content.iter()
+        result
+            .content
+            .iter()
             .filter_map(|c| c.as_text())
             .collect::<Vec<_>>()
             .join("")

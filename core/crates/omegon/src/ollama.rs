@@ -44,8 +44,8 @@ pub struct HardwareProfile {
 impl OllamaManager {
     /// Create a new OllamaManager, reading OLLAMA_HOST or defaulting to localhost:11434.
     pub fn new() -> Self {
-        let host = std::env::var("OLLAMA_HOST")
-            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let host =
+            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(300))
             .build()
@@ -136,7 +136,8 @@ mod tests {
 
     #[test]
     fn test_parse_ps_response() {
-        let json = r#"{"models":[{"name":"qwen3:32b","size":19000000000,"size_vram":19000000000}]}"#;
+        let json =
+            r#"{"models":[{"name":"qwen3:32b","size":19000000000,"size_vram":19000000000}]}"#;
         let resp: PsResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.models.len(), 1);
         assert_eq!(resp.models[0].name, "qwen3:32b");

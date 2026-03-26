@@ -35,14 +35,30 @@ pub trait Theme: Send + Sync {
     fn caution(&self) -> Color;
 
     // ─── Extended (semantic tool/diff colors) ───────────────────────
-    fn footer_bg(&self) -> Color { Color::Rgb(3, 7, 14) }
-    fn user_msg_bg(&self) -> Color { self.card_bg() }
-    fn tool_success_bg(&self) -> Color { self.card_bg() }
-    fn tool_error_bg(&self) -> Color { Color::Rgb(30, 8, 16) }
-    fn diff_added(&self) -> Color { self.success() }
-    fn diff_removed(&self) -> Color { self.error() }
-    fn diff_added_bg(&self) -> Color { Color::Rgb(4, 22, 12) }
-    fn diff_removed_bg(&self) -> Color { Color::Rgb(22, 4, 4) }
+    fn footer_bg(&self) -> Color {
+        Color::Rgb(3, 7, 14)
+    }
+    fn user_msg_bg(&self) -> Color {
+        self.card_bg()
+    }
+    fn tool_success_bg(&self) -> Color {
+        self.card_bg()
+    }
+    fn tool_error_bg(&self) -> Color {
+        Color::Rgb(30, 8, 16)
+    }
+    fn diff_added(&self) -> Color {
+        self.success()
+    }
+    fn diff_removed(&self) -> Color {
+        self.error()
+    }
+    fn diff_added_bg(&self) -> Color {
+        Color::Rgb(4, 22, 12)
+    }
+    fn diff_removed_bg(&self) -> Color {
+        Color::Rgb(22, 4, 4)
+    }
 
     // ─── Derived styles ─────────────────────────────────────────────
 
@@ -59,7 +75,9 @@ pub trait Theme: Send + Sync {
         Style::default().fg(self.accent())
     }
     fn style_accent_bold(&self) -> Style {
-        Style::default().fg(self.accent()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.accent())
+            .add_modifier(Modifier::BOLD)
     }
     fn style_success(&self) -> Style {
         Style::default().fg(self.success())
@@ -71,7 +89,9 @@ pub trait Theme: Send + Sync {
         Style::default().fg(self.warning())
     }
     fn style_heading(&self) -> Style {
-        Style::default().fg(self.accent_bright()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.accent_bright())
+            .add_modifier(Modifier::BOLD)
     }
     fn style_user_input(&self) -> Style {
         Style::default().fg(self.fg()).add_modifier(Modifier::BOLD)
@@ -90,7 +110,9 @@ pub trait Theme: Send + Sync {
 /// Parse a hex color string (#RRGGBB or RRGGBB) to a ratatui Color.
 fn parse_hex(hex: &str) -> Option<Color> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 { return None; }
+    if hex.len() != 6 {
+        return None;
+    }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
     let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
@@ -167,40 +189,90 @@ impl JsonTheme {
 }
 
 impl Theme for JsonTheme {
-    fn bg(&self) -> Color { self.get("bg") }
-    fn card_bg(&self) -> Color { self.get("cardBg") }
-    fn surface_bg(&self) -> Color { self.get("surfaceBg") }
-    fn border(&self) -> Color { self.get("borderColor") }
-    fn border_dim(&self) -> Color { self.get("borderDim") }
+    fn bg(&self) -> Color {
+        self.get("bg")
+    }
+    fn card_bg(&self) -> Color {
+        self.get("cardBg")
+    }
+    fn surface_bg(&self) -> Color {
+        self.get("surfaceBg")
+    }
+    fn border(&self) -> Color {
+        self.get("borderColor")
+    }
+    fn border_dim(&self) -> Color {
+        self.get("borderDim")
+    }
 
-    fn fg(&self) -> Color { self.get("fg") }
-    fn muted(&self) -> Color { self.get("mutedFg") }
-    fn dim(&self) -> Color { self.get("dimFg") }
+    fn fg(&self) -> Color {
+        self.get("fg")
+    }
+    fn muted(&self) -> Color {
+        self.get("mutedFg")
+    }
+    fn dim(&self) -> Color {
+        self.get("dimFg")
+    }
 
-    fn accent(&self) -> Color { self.get("primary") }
-    fn accent_muted(&self) -> Color { self.get("primaryMuted") }
-    fn accent_bright(&self) -> Color { self.get("primaryBright") }
+    fn accent(&self) -> Color {
+        self.get("primary")
+    }
+    fn accent_muted(&self) -> Color {
+        self.get("primaryMuted")
+    }
+    fn accent_bright(&self) -> Color {
+        self.get("primaryBright")
+    }
 
-    fn success(&self) -> Color { self.get("green") }
-    fn error(&self) -> Color { self.get("red") }
-    fn warning(&self) -> Color { self.get("orange") }
-    fn caution(&self) -> Color { self.get("yellow") }
+    fn success(&self) -> Color {
+        self.get("green")
+    }
+    fn error(&self) -> Color {
+        self.get("red")
+    }
+    fn warning(&self) -> Color {
+        self.get("orange")
+    }
+    fn caution(&self) -> Color {
+        self.get("yellow")
+    }
 
     fn footer_bg(&self) -> Color {
-        self.vars.get("footerBg").copied().unwrap_or(Color::Rgb(1, 3, 6))
+        self.vars
+            .get("footerBg")
+            .copied()
+            .unwrap_or(Color::Rgb(1, 3, 6))
     }
-    fn user_msg_bg(&self) -> Color { self.get("userMsgBg") }
+    fn user_msg_bg(&self) -> Color {
+        self.get("userMsgBg")
+    }
     fn tool_success_bg(&self) -> Color {
-        self.vars.get("toolSuccessBg").copied().unwrap_or_else(|| self.card_bg())
+        self.vars
+            .get("toolSuccessBg")
+            .copied()
+            .unwrap_or_else(|| self.card_bg())
     }
-    fn tool_error_bg(&self) -> Color { self.get("toolErrorBg") }
-    fn diff_added(&self) -> Color { self.get("toolDiffAdded") }
-    fn diff_removed(&self) -> Color { self.get("toolDiffRemoved") }
+    fn tool_error_bg(&self) -> Color {
+        self.get("toolErrorBg")
+    }
+    fn diff_added(&self) -> Color {
+        self.get("toolDiffAdded")
+    }
+    fn diff_removed(&self) -> Color {
+        self.get("toolDiffRemoved")
+    }
     fn diff_added_bg(&self) -> Color {
-        self.vars.get("toolDiffAddedBg").copied().unwrap_or(Color::Rgb(4, 22, 12))
+        self.vars
+            .get("toolDiffAddedBg")
+            .copied()
+            .unwrap_or(Color::Rgb(4, 22, 12))
     }
     fn diff_removed_bg(&self) -> Color {
-        self.vars.get("toolDiffRemovedBg").copied().unwrap_or(Color::Rgb(22, 4, 4))
+        self.vars
+            .get("toolDiffRemovedBg")
+            .copied()
+            .unwrap_or(Color::Rgb(22, 4, 4))
     }
 }
 
@@ -208,24 +280,54 @@ impl Theme for JsonTheme {
 pub struct Alpharius;
 
 impl Theme for Alpharius {
-    fn bg(&self) -> Color { Color::Rgb(2, 4, 8) }          // Thunderhawk-tinted near-black
-    fn card_bg(&self) -> Color { Color::Rgb(4, 10, 18) }   // subtle lift for conversation cards
-    fn surface_bg(&self) -> Color { Color::Rgb(2, 4, 8) }  // matches bg
-    fn border(&self) -> Color { Color::Rgb(48, 112, 140) }
-    fn border_dim(&self) -> Color { Color::Rgb(36, 80, 104) } // brighter than before (was 32,72,96)
+    fn bg(&self) -> Color {
+        Color::Rgb(2, 4, 8)
+    } // Thunderhawk-tinted near-black
+    fn card_bg(&self) -> Color {
+        Color::Rgb(4, 10, 18)
+    } // subtle lift for conversation cards
+    fn surface_bg(&self) -> Color {
+        Color::Rgb(2, 4, 8)
+    } // matches bg
+    fn border(&self) -> Color {
+        Color::Rgb(48, 112, 140)
+    }
+    fn border_dim(&self) -> Color {
+        Color::Rgb(36, 80, 104)
+    } // brighter than before (was 32,72,96)
 
-    fn fg(&self) -> Color { Color::Rgb(196, 216, 228) }
-    fn muted(&self) -> Color { Color::Rgb(108, 136, 152) } // brighter (was 96,120,136)
-    fn dim(&self) -> Color { Color::Rgb(72, 100, 124) }    // brighter (was 64,88,112)
+    fn fg(&self) -> Color {
+        Color::Rgb(196, 216, 228)
+    }
+    fn muted(&self) -> Color {
+        Color::Rgb(108, 136, 152)
+    } // brighter (was 96,120,136)
+    fn dim(&self) -> Color {
+        Color::Rgb(72, 100, 124)
+    } // brighter (was 64,88,112)
 
-    fn accent(&self) -> Color { Color::Rgb(42, 180, 200) }
-    fn accent_muted(&self) -> Color { Color::Rgb(26, 136, 152) }
-    fn accent_bright(&self) -> Color { Color::Rgb(110, 202, 216) }
+    fn accent(&self) -> Color {
+        Color::Rgb(42, 180, 200)
+    }
+    fn accent_muted(&self) -> Color {
+        Color::Rgb(26, 136, 152)
+    }
+    fn accent_bright(&self) -> Color {
+        Color::Rgb(110, 202, 216)
+    }
 
-    fn success(&self) -> Color { Color::Rgb(26, 184, 120) }
-    fn error(&self) -> Color { Color::Rgb(224, 72, 72) }
-    fn warning(&self) -> Color { Color::Rgb(200, 100, 24) }
-    fn caution(&self) -> Color { Color::Rgb(120, 184, 32) }
+    fn success(&self) -> Color {
+        Color::Rgb(26, 184, 120)
+    }
+    fn error(&self) -> Color {
+        Color::Rgb(224, 72, 72)
+    }
+    fn warning(&self) -> Color {
+        Color::Rgb(200, 100, 24)
+    }
+    fn caution(&self) -> Color {
+        Color::Rgb(120, 184, 32)
+    }
 }
 
 /// Load the theme — try alpharius.json first, fall back to hardcoded.
@@ -239,7 +341,8 @@ pub fn default_theme() -> Box<dyn Theme> {
     // Also check relative to the project root via .git
     let mut project_root = std::env::current_dir().unwrap_or_default();
     for _ in 0..5 {
-        if project_root.join(".git").exists() || project_root.join("themes/alpharius.json").exists() {
+        if project_root.join(".git").exists() || project_root.join("themes/alpharius.json").exists()
+        {
             let theme_path = project_root.join("themes/alpharius.json");
             if let Some(theme) = JsonTheme::load(&theme_path) {
                 tracing::info!(path = %theme_path.display(), "loaded theme from JSON");
@@ -247,7 +350,9 @@ pub fn default_theme() -> Box<dyn Theme> {
             }
             break;
         }
-        if !project_root.pop() { break; }
+        if !project_root.pop() {
+            break;
+        }
     }
 
     for path in &search_paths {
@@ -297,7 +402,11 @@ mod tests {
             assert_ne!(theme.bg(), Color::Reset, "bg should be loaded");
             assert_ne!(theme.accent(), Color::Reset, "accent should be loaded");
             // Verify known values from the file
-            assert_eq!(theme.accent(), Color::Rgb(42, 180, 200), "primary should be #2ab4c8");
+            assert_eq!(
+                theme.accent(),
+                Color::Rgb(42, 180, 200),
+                "primary should be #2ab4c8"
+            );
         }
     }
 }

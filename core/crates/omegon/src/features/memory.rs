@@ -24,8 +24,8 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 use omegon_memory::{
-    MemoryBackend, ContextRenderer, MarkdownRenderer,
-    StoreFact, FactFilter, CreateEdge, Section, DecayProfileName, StoreAction,
+    ContextRenderer, CreateEdge, DecayProfileName, FactFilter, MarkdownRenderer, MemoryBackend,
+    Section, StoreAction, StoreFact,
 };
 
 /// Memory feature that provides all memory_* tools and context injection.
@@ -275,13 +275,17 @@ impl Feature for MemoryFeature {
                 let section: Section = serde_json::from_value(Value::String(section_str.into()))
                     .unwrap_or(Section::Architecture);
 
-                let result = self.backend.store_fact(StoreFact {
-                    mind: self.mind.clone(),
-                    content: content.clone(),
-                    section,
-                    decay_profile: DecayProfileName::Standard,
-                    source: Some("manual".into()),
-                }).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let result = self
+                    .backend
+                    .store_fact(StoreFact {
+                        mind: self.mind.clone(),
+                        content: content.clone(),
+                        section,
+                        decay_profile: DecayProfileName::Standard,
+                        source: Some("manual".into()),
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
                 let msg = match result.action {
                     StoreAction::Stored => format!("Stored in {}: {}", section_str, content),
@@ -298,12 +302,17 @@ impl Feature for MemoryFeature {
                 let k = args["k"].as_u64().unwrap_or(10) as usize;
 
                 // Use FTS search (vector search requires embeddings which may not be available)
-                let results = self.backend.fts_search(&self.mind, &query, k)
-                    .await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let results = self
+                    .backend
+                    .fts_search(&self.mind, &query, k)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
                 if results.is_empty() {
                     return Ok(ToolResult {
-                        content: vec![ContentBlock::Text { text: "No matching facts found.".into() }],
+                        content: vec![ContentBlock::Text {
+                            text: "No matching facts found.".into(),
+                        }],
                         details: Value::Null,
                     });
                 }
@@ -320,27 +329,39 @@ impl Feature for MemoryFeature {
                     };
                     lines.push(format!(
                         "{}. [{}] ({}, {:.0}%) {}",
-                        i + 1, sf.fact.id, section, sf.similarity * 100.0, content,
+                        i + 1,
+                        sf.fact.id,
+                        section,
+                        sf.similarity * 100.0,
+                        content,
                     ));
                 }
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: lines.join("\n") }],
+                    content: vec![ContentBlock::Text {
+                        text: lines.join("\n"),
+                    }],
                     details: serde_json::json!({ "count": results.len() }),
                 })
             }
             crate::tool_registry::memory::MEMORY_QUERY => {
-                let facts = self.backend.list_facts(&self.mind, FactFilter::default())
-                    .await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let facts = self
+                    .backend
+                    .list_facts(&self.mind, FactFilter::default())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
                 if facts.is_empty() {
                     return Ok(ToolResult {
-                        content: vec![ContentBlock::Text { text: "No facts in memory.".into() }],
+                        content: vec![ContentBlock::Text {
+                            text: "No facts in memory.".into(),
+                        }],
                         details: serde_json::json!({ "count": 0 }),
                     });
                 }
 
                 // Group by section, show counts + sample facts (capped to avoid overwhelming the model)
-                let mut sections: std::collections::BTreeMap<String, Vec<&omegon_memory::Fact>> = std::collections::BTreeMap::new();
+                let mut sections: std::collections::BTreeMap<String, Vec<&omegon_memory::Fact>> =
+                    std::collections::BTreeMap::new();
                 for fact in &facts {
                     let section = serde_json::to_string(&fact.section).unwrap_or_default();
                     let section = section.trim_matches('"').to_string();
@@ -348,7 +369,11 @@ impl Feature for MemoryFeature {
                 }
 
                 let mut lines = Vec::new();
-                lines.push(format!("{} facts across {} sections:\n", facts.len(), sections.len()));
+                lines.push(format!(
+                    "{} facts across {} sections:\n",
+                    facts.len(),
+                    sections.len()
+                ));
 
                 let max_per_section = 8;
                 for (section, section_facts) in &sections {
@@ -363,26 +388,40 @@ impl Feature for MemoryFeature {
                         lines.push(format!("  [{}] {}", fact.id, content));
                     }
                     if section_facts.len() > max_per_section {
-                        lines.push(format!("  … +{} more (use memory_recall for targeted search)",
-                            section_facts.len() - max_per_section));
+                        lines.push(format!(
+                            "  … +{} more (use memory_recall for targeted search)",
+                            section_facts.len() - max_per_section
+                        ));
                     }
                     lines.push(String::new());
                 }
 
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: lines.join("\n") }],
+                    content: vec![ContentBlock::Text {
+                        text: lines.join("\n"),
+                    }],
                     details: serde_json::json!({ "count": facts.len(), "sections": sections.len() }),
                 })
             }
             crate::tool_registry::memory::MEMORY_ARCHIVE => {
-                let ids: Vec<String> = args["fact_ids"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                let ids: Vec<String> = args["fact_ids"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-                let count = self.backend.archive_facts(&id_refs)
-                    .await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let count = self
+                    .backend
+                    .archive_facts(&id_refs)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: format!("Archived {count} fact(s).") }],
+                    content: vec![ContentBlock::Text {
+                        text: format!("Archived {count} fact(s)."),
+                    }],
                     details: serde_json::json!({ "archived": count }),
                 })
             }
@@ -393,60 +432,88 @@ impl Feature for MemoryFeature {
                 let section: Section = serde_json::from_value(Value::String(section_str.into()))
                     .unwrap_or(Section::Architecture);
 
-                let new_fact = self.backend.supersede_fact(&fact_id, StoreFact {
-                    mind: self.mind.clone(),
-                    content,
-                    section,
-                    decay_profile: DecayProfileName::Standard,
-                    source: Some("manual".into()),
-                }).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let new_fact = self
+                    .backend
+                    .supersede_fact(
+                        &fact_id,
+                        StoreFact {
+                            mind: self.mind.clone(),
+                            content,
+                            section,
+                            decay_profile: DecayProfileName::Standard,
+                            source: Some("manual".into()),
+                        },
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
-                        text: format!("Superseded {} → new fact {}", fact_id, new_fact.id)
+                        text: format!("Superseded {} → new fact {}", fact_id, new_fact.id),
                     }],
                     details: serde_json::json!({ "old_id": fact_id, "new_id": new_fact.id }),
                 })
             }
             crate::tool_registry::memory::MEMORY_CONNECT => {
-                let edge = self.backend.create_edge(CreateEdge {
-                    source_id: args["source_fact_id"].as_str().unwrap_or("").into(),
-                    target_id: args["target_fact_id"].as_str().unwrap_or("").into(),
-                    relation: args["relation"].as_str().unwrap_or("").into(),
-                    description: args["description"].as_str().map(String::from),
-                }).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let edge = self
+                    .backend
+                    .create_edge(CreateEdge {
+                        source_id: args["source_fact_id"].as_str().unwrap_or("").into(),
+                        target_id: args["target_fact_id"].as_str().unwrap_or("").into(),
+                        relation: args["relation"].as_str().unwrap_or("").into(),
+                        description: args["description"].as_str().map(String::from),
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
-                        text: format!("Connected {} → {} ({})", edge.source_id, edge.target_id, edge.relation)
+                        text: format!(
+                            "Connected {} → {} ({})",
+                            edge.source_id, edge.target_id, edge.relation
+                        ),
                     }],
                     details: serde_json::json!({ "edge_id": edge.id }),
                 })
             }
             crate::tool_registry::memory::MEMORY_FOCUS => {
-                let ids: Vec<String> = args["fact_ids"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                let ids: Vec<String> = args["fact_ids"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let count = ids.len();
                 self.working_memory.lock().unwrap().extend(ids);
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: format!("Pinned {count} fact(s) to working memory.") }],
+                    content: vec![ContentBlock::Text {
+                        text: format!("Pinned {count} fact(s) to working memory."),
+                    }],
                     details: Value::Null,
                 })
             }
             crate::tool_registry::memory::MEMORY_RELEASE => {
                 self.working_memory.lock().unwrap().clear();
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: "Working memory cleared.".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Working memory cleared.".into(),
+                    }],
                     details: Value::Null,
                 })
             }
             crate::tool_registry::memory::MEMORY_EPISODES => {
                 let query = args["query"].as_str().unwrap_or("").to_string();
                 let k = args["k"].as_u64().unwrap_or(5) as usize;
-                let episodes = self.backend.search_episodes(&self.mind, &query, k).await
+                let episodes = self
+                    .backend
+                    .search_episodes(&self.mind, &query, k)
+                    .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if episodes.is_empty() {
                     return Ok(ToolResult {
-                        content: vec![ContentBlock::Text { text: "No matching episodes found.".into() }],
+                        content: vec![ContentBlock::Text {
+                            text: "No matching episodes found.".into(),
+                        }],
                         details: Value::Null,
                     });
                 }
@@ -457,7 +524,9 @@ impl Feature for MemoryFeature {
                     lines.push(String::new());
                 }
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: lines.join("\n") }],
+                    content: vec![ContentBlock::Text {
+                        text: lines.join("\n"),
+                    }],
                     details: Value::Null,
                 })
             }
@@ -475,11 +544,16 @@ impl Feature for MemoryFeature {
                 let query = args["query"].as_str().unwrap_or("").to_string();
                 // Search archived facts using FTS - for now this searches all facts,
                 // we'd need to update the backend to filter for archived specifically
-                let results = self.backend.fts_search(&self.mind, &query, 20).await
+                let results = self
+                    .backend
+                    .fts_search(&self.mind, &query, 20)
+                    .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if results.is_empty() {
                     return Ok(ToolResult {
-                        content: vec![ContentBlock::Text { text: "No matching archived facts found.".into() }],
+                        content: vec![ContentBlock::Text {
+                            text: "No matching archived facts found.".into(),
+                        }],
                         details: Value::Null,
                     });
                 }
@@ -489,7 +563,9 @@ impl Feature for MemoryFeature {
                     lines.push(format!("[{}] ({:?}) {}", f.id, f.section, f.content));
                 }
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text: lines.join("\n") }],
+                    content: vec![ContentBlock::Text {
+                        text: lines.join("\n"),
+                    }],
                     details: Value::Null,
                 })
             }
@@ -502,18 +578,27 @@ impl Feature for MemoryFeature {
                 let authority = args["authority"].as_str().unwrap_or("inferred");
                 let source_kind = args["source_kind"].as_str().unwrap_or("unknown");
 
-                let result = self.backend.store_fact(StoreFact {
-                    mind: self.mind.clone(),
-                    content: content.clone(),
-                    section,
-                    decay_profile: DecayProfileName::Standard,
-                    source: Some(format!("lifecycle:{source_kind}")),
-                }).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let result = self
+                    .backend
+                    .store_fact(StoreFact {
+                        mind: self.mind.clone(),
+                        content: content.clone(),
+                        section,
+                        decay_profile: DecayProfileName::Standard,
+                        source: Some(format!("lifecycle:{source_kind}")),
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
                 let msg = match result.action {
-                    StoreAction::Stored => format!("Ingested ({authority}/{source_kind}): {}", content.chars().take(80).collect::<String>()),
+                    StoreAction::Stored => format!(
+                        "Ingested ({authority}/{source_kind}): {}",
+                        content.chars().take(80).collect::<String>()
+                    ),
                     StoreAction::Reinforced => "Reinforced lifecycle fact".to_string(),
-                    StoreAction::Deduplicated => "Duplicate lifecycle fact — already exists".to_string(),
+                    StoreAction::Deduplicated => {
+                        "Duplicate lifecycle fact — already exists".to_string()
+                    }
                 };
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text: msg }],
@@ -535,32 +620,39 @@ impl Feature for MemoryFeature {
         let renderer = &self.renderer;
 
         std::thread::scope(|scope| {
-            scope.spawn(|| {
-                handle.block_on(async {
-                    let facts = backend.list_facts(&mind, FactFilter::default()).await.ok()?;
-                    let episodes = backend.list_episodes(&mind, 1).await.ok()?;
+            scope
+                .spawn(|| {
+                    handle.block_on(async {
+                        let facts = backend
+                            .list_facts(&mind, FactFilter::default())
+                            .await
+                            .ok()?;
+                        let episodes = backend.list_episodes(&mind, 1).await.ok()?;
 
-                    // Resolve working memory facts
-                    let mut wm_facts = Vec::new();
-                    for id in &wm_ids {
-                        if let Ok(Some(f)) = backend.get_fact(id).await {
-                            wm_facts.push(f);
+                        // Resolve working memory facts
+                        let mut wm_facts = Vec::new();
+                        for id in &wm_ids {
+                            if let Ok(Some(f)) = backend.get_fact(id).await {
+                                wm_facts.push(f);
+                            }
                         }
-                    }
 
-                    let rendered = renderer.render_context(&facts, &episodes, &wm_facts, 12_000);
-                    if rendered.markdown.is_empty() {
-                        return None;
-                    }
+                        let rendered =
+                            renderer.render_context(&facts, &episodes, &wm_facts, 12_000);
+                        if rendered.markdown.is_empty() {
+                            return None;
+                        }
 
-                    Some(ContextInjection {
-                        source: "memory".into(),
-                        content: rendered.markdown,
-                        priority: 200, // high — memory is important context
-                        ttl_turns: 1,  // re-injected every turn
+                        Some(ContextInjection {
+                            source: "memory".into(),
+                            content: rendered.markdown,
+                            priority: 200, // high — memory is important context
+                            ttl_turns: 1,  // re-injected every turn
+                        })
                     })
                 })
-            }).join().ok()?
+                .join()
+                .ok()?
         })
     }
 }
@@ -577,7 +669,7 @@ mod tests {
         let feature = MemoryFeature::new(backend, "test".into());
         let tools = feature.tools();
         assert_eq!(tools.len(), 12, "Should have exactly 12 memory tools");
-        
+
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"memory_store"));
         assert!(names.contains(&"memory_recall"));
@@ -608,13 +700,15 @@ mod tests {
         assert!(result.content[0].as_text().unwrap().contains("Stored"));
 
         // Query all facts
-        let result = feature.execute(
-            "memory_query", "c2",
-            serde_json::json!({}),
-            cancel.clone(),
-        ).await.unwrap();
+        let result = feature
+            .execute("memory_query", "c2", serde_json::json!({}), cancel.clone())
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(text.contains("microservices"), "query should return stored fact: {text}");
+        assert!(
+            text.contains("microservices"),
+            "query should return stored fact: {text}"
+        );
     }
 
     #[tokio::test]
@@ -631,13 +725,20 @@ mod tests {
         ).await.unwrap();
 
         // Search for it
-        let result = feature.execute(
-            "memory_recall", "c2",
-            serde_json::json!({"query": "OAuth authentication"}),
-            cancel.clone(),
-        ).await.unwrap();
+        let result = feature
+            .execute(
+                "memory_recall",
+                "c2",
+                serde_json::json!({"query": "OAuth authentication"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
-        assert!(text.contains("OAuth2"), "recall should find auth fact: {text}");
+        assert!(
+            text.contains("OAuth2"),
+            "recall should find auth fact: {text}"
+        );
     }
 
     #[tokio::test]
@@ -647,11 +748,15 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
 
         // Focus some fact IDs
-        feature.execute(
-            "memory_focus", "c1",
-            serde_json::json!({"fact_ids": ["f1", "f2", "f3"]}),
-            cancel.clone(),
-        ).await.unwrap();
+        feature
+            .execute(
+                "memory_focus",
+                "c1",
+                serde_json::json!({"fact_ids": ["f1", "f2", "f3"]}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
 
         {
             let wm = feature.working_memory.lock().unwrap();
@@ -662,11 +767,15 @@ mod tests {
         }
 
         // Release working memory
-        feature.execute(
-            "memory_release", "c2",
-            serde_json::json!({}),
-            cancel.clone(),
-        ).await.unwrap();
+        feature
+            .execute(
+                "memory_release",
+                "c2",
+                serde_json::json!({}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
 
         {
             let wm = feature.working_memory.lock().unwrap();
@@ -681,30 +790,43 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
 
         // Store a fact first
-        let store_result = feature.execute(
-            "memory_store", "c1",
-            serde_json::json!({"section": "Architecture", "content": "Test fact to archive"}),
-            cancel.clone(),
-        ).await.unwrap();
+        let store_result = feature
+            .execute(
+                "memory_store",
+                "c1",
+                serde_json::json!({"section": "Architecture", "content": "Test fact to archive"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
 
         // Extract fact ID from store result
         let fact_id = store_result.details["id"].as_str().unwrap();
 
         // Archive it
-        let archive_result = feature.execute(
-            "memory_archive", "c2",
-            serde_json::json!({"fact_ids": [fact_id]}),
-            cancel.clone(),
-        ).await.unwrap();
+        let archive_result = feature
+            .execute(
+                "memory_archive",
+                "c2",
+                serde_json::json!({"fact_ids": [fact_id]}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
 
-        assert!(archive_result.content[0].as_text().unwrap().contains("Archived 1 fact(s)"));
+        assert!(
+            archive_result.content[0]
+                .as_text()
+                .unwrap()
+                .contains("Archived 1 fact(s)")
+        );
     }
 
     #[test]
     fn backend_accessor() {
         let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
         let feature = MemoryFeature::new(backend.clone(), "test".into());
-        
+
         // Should be able to access the backend
         let _backend_ref = feature.backend();
         assert_eq!(feature.mind(), "test");

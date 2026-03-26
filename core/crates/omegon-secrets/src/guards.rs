@@ -33,32 +33,116 @@ enum Action {
 
 const SENSITIVE_PATTERNS: &[SensitivePattern] = &[
     // Credentials & secrets
-    SensitivePattern { pattern: ".env", description: "Environment variables file", action: Action::Warn },
-    SensitivePattern { pattern: ".env.local", description: "Local environment overrides", action: Action::Warn },
-    SensitivePattern { pattern: ".env.production", description: "Production environment", action: Action::Block },
-    SensitivePattern { pattern: ".netrc", description: "Network credentials", action: Action::Block },
-    SensitivePattern { pattern: ".npmrc", description: "npm credentials", action: Action::Warn },
-    SensitivePattern { pattern: ".pypirc", description: "PyPI credentials", action: Action::Block },
+    SensitivePattern {
+        pattern: ".env",
+        description: "Environment variables file",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: ".env.local",
+        description: "Local environment overrides",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: ".env.production",
+        description: "Production environment",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".netrc",
+        description: "Network credentials",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".npmrc",
+        description: "npm credentials",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: ".pypirc",
+        description: "PyPI credentials",
+        action: Action::Block,
+    },
     // SSH & GPG
-    SensitivePattern { pattern: ".ssh/id_", description: "SSH private key", action: Action::Block },
-    SensitivePattern { pattern: ".ssh/config", description: "SSH config", action: Action::Warn },
-    SensitivePattern { pattern: ".gnupg/", description: "GPG keyring", action: Action::Block },
+    SensitivePattern {
+        pattern: ".ssh/id_",
+        description: "SSH private key",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".ssh/config",
+        description: "SSH config",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: ".gnupg/",
+        description: "GPG keyring",
+        action: Action::Block,
+    },
     // Git internals
-    SensitivePattern { pattern: ".git/config", description: "Git config (may contain tokens)", action: Action::Warn },
+    SensitivePattern {
+        pattern: ".git/config",
+        description: "Git config (may contain tokens)",
+        action: Action::Warn,
+    },
     // Cloud credentials
-    SensitivePattern { pattern: ".aws/credentials", description: "AWS credentials", action: Action::Block },
-    SensitivePattern { pattern: ".kube/config", description: "Kubernetes config", action: Action::Warn },
-    SensitivePattern { pattern: ".docker/config.json", description: "Docker credentials", action: Action::Warn },
+    SensitivePattern {
+        pattern: ".aws/credentials",
+        description: "AWS credentials",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".kube/config",
+        description: "Kubernetes config",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: ".docker/config.json",
+        description: "Docker credentials",
+        action: Action::Warn,
+    },
     // Secrets files
-    SensitivePattern { pattern: "secrets.json", description: "Secrets configuration", action: Action::Warn },
-    SensitivePattern { pattern: "secrets.yaml", description: "Secrets configuration", action: Action::Warn },
-    SensitivePattern { pattern: "secrets.yml", description: "Secrets configuration", action: Action::Warn },
+    SensitivePattern {
+        pattern: "secrets.json",
+        description: "Secrets configuration",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: "secrets.yaml",
+        description: "Secrets configuration",
+        action: Action::Warn,
+    },
+    SensitivePattern {
+        pattern: "secrets.yml",
+        description: "Secrets configuration",
+        action: Action::Warn,
+    },
     // Vault/keystore
-    SensitivePattern { pattern: "vault.json", description: "Vault configuration (may contain auth)", action: Action::Block },
-    SensitivePattern { pattern: ".vault-token", description: "Vault token", action: Action::Block },
-    SensitivePattern { pattern: "keystore.jks", description: "Java keystore", action: Action::Block },
-    SensitivePattern { pattern: ".p12", description: "PKCS#12 certificate", action: Action::Block },
-    SensitivePattern { pattern: ".pem", description: "PEM certificate/key", action: Action::Warn },
+    SensitivePattern {
+        pattern: "vault.json",
+        description: "Vault configuration (may contain auth)",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".vault-token",
+        description: "Vault token",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: "keystore.jks",
+        description: "Java keystore",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".p12",
+        description: "PKCS#12 certificate",
+        action: Action::Block,
+    },
+    SensitivePattern {
+        pattern: ".pem",
+        description: "PEM certificate/key",
+        action: Action::Warn,
+    },
 ];
 
 /// Path guard — checks tool arguments for sensitive file paths.
@@ -174,7 +258,10 @@ mod tests {
     #[test]
     fn warn_bash_keychain_access() {
         let guard = PathGuard::new();
-        let decision = guard.check("bash", &json!({"command": "security find-generic-password -s myapp -w"}));
+        let decision = guard.check(
+            "bash",
+            &json!({"command": "security find-generic-password -s myapp -w"}),
+        );
         assert!(decision.is_some());
     }
 

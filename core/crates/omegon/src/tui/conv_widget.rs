@@ -104,11 +104,7 @@ impl ConvState {
 
     /// Compute on-screen areas for Image segments visible in the viewport.
     /// Called after render to know where to overlay actual images.
-    pub fn visible_image_areas(
-        &self,
-        segments: &[Segment],
-        viewport: Rect,
-    ) -> Vec<(usize, Rect)> {
+    pub fn visible_image_areas(&self, segments: &[Segment], viewport: Rect) -> Vec<(usize, Rect)> {
         if self.heights.len() != segments.len() {
             return vec![];
         }
@@ -118,7 +114,11 @@ impl ConvState {
         let top_offset = if total_height <= viewport_height {
             0
         } else {
-            total_height - viewport_height - self.scroll_offset.min(total_height.saturating_sub(viewport_height))
+            total_height
+                - viewport_height
+                - self
+                    .scroll_offset
+                    .min(total_height.saturating_sub(viewport_height))
         };
 
         let mut result = Vec::new();
@@ -129,20 +129,27 @@ impl ConvState {
             let seg_bottom = y_cursor + seg_height;
             y_cursor = seg_bottom;
 
-            if seg_bottom <= top_offset { continue; }
-            if seg_top >= top_offset + viewport_height { break; }
+            if seg_bottom <= top_offset {
+                continue;
+            }
+            if seg_top >= top_offset + viewport_height {
+                break;
+            }
 
             if matches!(segment.content, SegmentContent::Image { .. }) && seg_top >= top_offset {
                 let render_y = viewport.y + (seg_top - top_offset);
                 let available_height = viewport.bottom().saturating_sub(render_y);
                 if available_height > 2 {
                     // Leave 2 rows for border top/bottom, render image inside
-                    result.push((i, Rect {
-                        x: viewport.x + 1,
-                        y: render_y + 1, // skip top border
-                        width: viewport.width.saturating_sub(2),
-                        height: seg_height.saturating_sub(3).min(available_height - 2),
-                    }));
+                    result.push((
+                        i,
+                        Rect {
+                            x: viewport.x + 1,
+                            y: render_y + 1, // skip top border
+                            width: viewport.width.saturating_sub(2),
+                            height: seg_height.saturating_sub(3).min(available_height - 2),
+                        },
+                    ));
                 }
             }
         }
@@ -151,7 +158,9 @@ impl ConvState {
 }
 
 impl Default for ConvState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// The conversation widget — renders segments into a scrollable viewport.
@@ -219,7 +228,9 @@ impl<'a> StatefulWidget for ConversationWidget<'a> {
                 // Segment starts within the viewport — render directly
                 let render_y = area.y + (seg_top - top_offset);
                 let available_height = area.bottom().saturating_sub(render_y);
-                if available_height == 0 { continue; }
+                if available_height == 0 {
+                    continue;
+                }
 
                 let seg_area = Rect {
                     x: area.x,
@@ -234,7 +245,9 @@ impl<'a> StatefulWidget for ConversationWidget<'a> {
                 // visible portion into the main buffer.
                 let clip_rows = top_offset - seg_top; // rows clipped from the top
                 let visible_rows = seg_height.saturating_sub(clip_rows).min(viewport_height);
-                if visible_rows == 0 { continue; }
+                if visible_rows == 0 {
+                    continue;
+                }
 
                 let temp_area = Rect::new(0, 0, area.width, seg_height);
                 let mut temp_buf = Buffer::empty(temp_area);
@@ -255,7 +268,9 @@ impl<'a> StatefulWidget for ConversationWidget<'a> {
                 for row in 0..visible_rows {
                     let src_y = clip_rows + row;
                     let dst_y = area.y + row;
-                    if dst_y >= area.bottom() { break; }
+                    if dst_y >= area.bottom() {
+                        break;
+                    }
                     for x in 0..area.width {
                         if src_y < seg_height
                             && let Some(cell) = buf.cell_mut((area.x + x, dst_y))
@@ -287,9 +302,7 @@ mod tests {
 
     #[test]
     fn single_segment_renders() {
-        let segments = vec![
-            Segment::user_prompt("hello"),
-        ];
+        let segments = vec![Segment::user_prompt("hello")];
         let widget = ConversationWidget::new(&segments, &Alpharius);
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
@@ -357,13 +370,28 @@ mod tests {
     fn multiple_segments_render() {
         let segments = vec![
             Segment::user_prompt("first"),
-            Segment { meta: Default::default(), content: SegmentContent::AssistantText { text: "response".into(), thinking: String::new(), complete: true }},
-            Segment { meta: Default::default(), content: SegmentContent::ToolCard {
-                id: "1".into(), name: "bash".into(),
-                args_summary: None, detail_args: Some("echo hi".into()),
-                result_summary: None, detail_result: Some("hi".into()),
-                is_error: false, complete: true, expanded: false,
-            }},
+            Segment {
+                meta: Default::default(),
+                content: SegmentContent::AssistantText {
+                    text: "response".into(),
+                    thinking: String::new(),
+                    complete: true,
+                },
+            },
+            Segment {
+                meta: Default::default(),
+                content: SegmentContent::ToolCard {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    args_summary: None,
+                    detail_args: Some("echo hi".into()),
+                    result_summary: None,
+                    detail_result: Some("hi".into()),
+                    is_error: false,
+                    complete: true,
+                    expanded: false,
+                },
+            },
         ];
         let widget = ConversationWidget::new(&segments, &Alpharius);
         let area = Rect::new(0, 0, 80, 40);

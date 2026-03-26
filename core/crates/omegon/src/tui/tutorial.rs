@@ -94,7 +94,6 @@ pub const STEPS_DEMO: &[Step] = &[
     // Act 1 — Quick orientation (1 passive step, then action)
     STEP_WELCOME_DEMO,
     STEP_COCKPIT,
-
     // Act 2 — The Agent Works (watch the agent do real things)
     Step {
         title: "Reading the Code",
@@ -106,7 +105,7 @@ src/board.js carefully — pay attention to the four BUG comments. \
 Read index.html to understand the HTML structure. \
 Then store 1 additional memory fact: summarize the relationship between the four bugs \
 and why they must be fixed in separate branches (no file conflicts between fixes). \
-Finally, confirm what each bug does to the user experience."
+Finally, confirm what each bug does to the user experience.",
         ),
         highlight: Some(Highlight::InstrumentPanel),
     },
@@ -121,11 +120,10 @@ Research this: consider the user experience for a task list (most users type par
 how browsers handle input events for live filtering, and what 'Array.filter + String.includes' vs \
 'fuzzy-match' implementations look like. \
 Then use design_tree_update with action 'add_research' to record your findings, \
-and action 'add_decision' to record a decision with clear rationale."
+and action 'add_decision' to record a decision with clear rationale.",
         ),
         highlight: Some(Highlight::Dashboard),
     },
-
     // Act 3 — The Fix (spec → parallel fix → verify)
     Step {
         title: "The Fix Plan",
@@ -139,7 +137,7 @@ Explain clearly and concisely: \
 (2) which function in src/board.js each task touches, \
 (3) why these 4 tasks can safely run as parallel branches (no file conflicts), \
 (4) what the user will see in their browser once all fixes are applied, \
-(5) the exact command to execute: /cleave fix-board-bugs"
+(5) the exact command to execute: /cleave fix-board-bugs",
         ),
         highlight: None,
     },
@@ -150,7 +148,6 @@ Explain clearly and concisely: \
         trigger: Trigger::Command("cleave"),
         highlight: Some(Highlight::InstrumentPanel),
     },
-
     // Act 4 — Verify, celebrate, explore
     Step {
         title: "Verify and Launch",
@@ -164,7 +161,7 @@ Explain clearly and concisely: \
 (4) confirm addTask and updateTaskStatus both call saveTasks(). \
 Then open the sprint board in the default browser: \
 run bash command 'open ./index.html 2>/dev/null || xdg-open ./index.html 2>/dev/null || echo \"Open index.html in your browser to see the fixed sprint board\"'. \
-Finally, briefly explain what was fixed and that the user can now use the board."
+Finally, briefly explain what was fixed and that the user can now use the board.",
         ),
         highlight: None,
     },
@@ -187,7 +184,6 @@ pub const STEPS_HANDS_ON: &[Step] = &[
     // Act 1 — Quick orientation
     STEP_WELCOME_HANDS_ON,
     STEP_COCKPIT,
-
     // Act 2 — The Agent Works on YOUR project
     Step {
         title: "Reading Your Code",
@@ -201,7 +197,7 @@ Then store exactly 3 memory facts using memory_store: \
 (1) what this project does and its primary purpose, \
 (2) the key code structure (main modules, important files, language/framework), \
 (3) testing practices and coverage (or lack thereof). \
-Be specific — these facts will be loaded in future sessions."
+Be specific — these facts will be loaded in future sessions.",
         ),
         highlight: Some(Highlight::InstrumentPanel),
     },
@@ -218,11 +214,10 @@ If the design tree is empty, create a first node using action 'create' with: \
   - title: a clear description of the project\u{2019}s main architectural decision \
   - overview: 2-3 sentences about the architecture based on what you read \
   - status: 'exploring' \
-Explain what you did and why this node matters for the project."
+Explain what you did and why this node matters for the project.",
         ),
         highlight: Some(Highlight::Dashboard),
     },
-
     // Act 3 — Spec before code
     Step {
         title: "Writing a Spec",
@@ -236,7 +231,7 @@ Use openspec_manage with action 'propose' to create a change (pick a descriptive
 Then use action 'generate_spec' to write Given/When/Then scenarios for it \
 (domain name can match the slug). \
 Keep it focused: one clear requirement, 2-3 scenarios. \
-This creates a real ai/openspec/ entry in your project."
+This creates a real ai/openspec/ entry in your project.",
         ),
         highlight: None,
     },
@@ -249,8 +244,6 @@ This creates a real ai/openspec/ entry in your project."
         highlight: None,
     },
 ];
-
-
 
 /// Which option is highlighted in the project-choice widget.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -311,7 +304,11 @@ impl Tutorial {
 
     /// The active steps array — STEPS_DEMO in demo mode, STEPS_HANDS_ON otherwise.
     pub fn steps(&self) -> &'static [Step] {
-        if self.is_demo { STEPS_DEMO } else { STEPS_HANDS_ON }
+        if self.is_demo {
+            STEPS_DEMO
+        } else {
+            STEPS_HANDS_ON
+        }
     }
 
     /// Whether the project-choice widget is active (step 0, empty project).
@@ -388,7 +385,9 @@ impl Tutorial {
     /// Called when the agent finishes a turn. If the current step is an
     /// AutoPrompt that was sent, advance to the next step.
     pub fn on_agent_turn_complete(&mut self) {
-        if !self.active { return; }
+        if !self.active {
+            return;
+        }
         if self.auto_prompt_sent {
             if let Trigger::AutoPrompt(_) = &self.step().trigger {
                 self.advance();
@@ -403,7 +402,9 @@ impl Tutorial {
 
     /// Check if a slash command matches the current step's trigger.
     pub fn check_command(&mut self, cmd: &str) -> bool {
-        if !self.active { return false; }
+        if !self.active {
+            return false;
+        }
         if let Trigger::Command(expected) = &self.step().trigger {
             if cmd == *expected {
                 self.advance();
@@ -415,7 +416,9 @@ impl Tutorial {
 
     /// Check if any user input satisfies the current step's trigger.
     pub fn check_any_input(&mut self) -> bool {
-        if !self.active { return false; }
+        if !self.active {
+            return false;
+        }
         if self.step().trigger == Trigger::AnyInput {
             self.advance();
             return true;
@@ -425,7 +428,9 @@ impl Tutorial {
 
     /// Check if Tab was pressed and the current step accepts it.
     pub fn check_enter(&mut self) -> bool {
-        if !self.active { return false; }
+        if !self.active {
+            return false;
+        }
         if self.step().trigger == Trigger::Tab {
             self.advance();
             return true;
@@ -435,15 +440,25 @@ impl Tutorial {
 
     /// Get the highlight for the current step (if any).
     pub fn current_highlight(&self) -> Option<Highlight> {
-        if !self.active { return None; }
+        if !self.active {
+            return None;
+        }
         self.step().highlight
     }
 
     /// Render the tutorial overlay into the given area.
     /// `footer_height` is the actual footer height so we can position above it.
     /// Highlighting is handled by the widgets themselves — see tutorial_highlight field on App.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, footer_height: u16) {
-        if !self.active { return; }
+    pub fn render(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &dyn super::theme::Theme,
+        footer_height: u16,
+    ) {
+        if !self.active {
+            return;
+        }
 
         // Step 0 on an empty project shows a project-choice widget
         // instead of the normal passive welcome step.
@@ -457,8 +472,8 @@ impl Tutorial {
         // Smart positioning: avoid covering highlighted areas.
         // AutoPrompt steps that are running get a larger overlay to cover
         // the conversation chaos while the agent works behind the scenes.
-        let auto_prompt_active = self.auto_prompt_sent
-            && matches!(step.trigger, Trigger::AutoPrompt(_));
+        let auto_prompt_active =
+            self.auto_prompt_sent && matches!(step.trigger, Trigger::AutoPrompt(_));
 
         let overlay = if auto_prompt_active {
             // Agent is working — large centered overlay covers the conversation
@@ -483,7 +498,12 @@ impl Tutorial {
                     let h = area.height.saturating_sub(footer_height + 4).min(16);
                     let x = area.x + (conv_width.saturating_sub(w)) / 2;
                     let y = area.y + 2;
-                    Rect { x, y, width: w, height: h }
+                    Rect {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    }
                 }
                 // Center for steps with no highlight or Center anchor
                 (Anchor::Center, _) => centered_rect(area),
@@ -511,7 +531,12 @@ impl Tutorial {
         let cta = match &step.trigger {
             Trigger::Tab => "  \u{25b6} Press Tab to continue",
             Trigger::Command(cmd) => {
-                return self.render_with_cta(overlay, buf, theme, &format!("  \u{25b6} Type /{cmd} in the input bar below"));
+                return self.render_with_cta(
+                    overlay,
+                    buf,
+                    theme,
+                    &format!("  \u{25b6} Type /{cmd} in the input bar below"),
+                );
             }
             Trigger::AnyInput => "  \u{25b6} Type a message in the input bar below",
             Trigger::AutoPrompt(_) => {
@@ -526,7 +551,13 @@ impl Tutorial {
         self.render_with_cta(overlay, buf, theme, cta);
     }
 
-    fn render_with_cta(&self, overlay: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, cta: &str) {
+    fn render_with_cta(
+        &self,
+        overlay: Rect,
+        buf: &mut Buffer,
+        theme: &dyn super::theme::Theme,
+        cta: &str,
+    ) {
         let step = self.step();
         let progress = format!(" {}/{} ", self.current + 1, self.steps().len());
         let title_line = format!("\u{1f4d8} {} ", step.title);
@@ -535,7 +566,7 @@ impl Tutorial {
 
         // Forward key hint — only shown when Tab actually does something
         let forward_hint = match &step.trigger {
-            Trigger::AutoPrompt(_) if self.auto_prompt_sent => "",  // waiting for agent
+            Trigger::AutoPrompt(_) if self.auto_prompt_sent => "", // waiting for agent
             _ => "[Tab]",
         };
 
@@ -546,17 +577,27 @@ impl Tutorial {
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent()).bg(overlay_bg))
             .style(Style::default().bg(overlay_bg))
-            .title(Span::styled(&title_line, Style::default().fg(theme.accent()).bg(overlay_bg).bold()))
-            .title_bottom(
-                Line::from(vec![
-                    Span::styled(
-                        forward_label.as_str(),
-                        Style::default().fg(theme.accent_bright()).bg(overlay_bg).bold()
-                    ),
-                    Span::styled(" [Esc] skip  [\u{21e7}Tab] back", Style::default().fg(theme.muted()).bg(overlay_bg)),
-                    Span::styled(progress_label.as_str(), Style::default().fg(theme.muted()).bg(overlay_bg)),
-                ])
-            );
+            .title(Span::styled(
+                &title_line,
+                Style::default().fg(theme.accent()).bg(overlay_bg).bold(),
+            ))
+            .title_bottom(Line::from(vec![
+                Span::styled(
+                    forward_label.as_str(),
+                    Style::default()
+                        .fg(theme.accent_bright())
+                        .bg(overlay_bg)
+                        .bold(),
+                ),
+                Span::styled(
+                    " [Esc] skip  [\u{21e7}Tab] back",
+                    Style::default().fg(theme.muted()).bg(overlay_bg),
+                ),
+                Span::styled(
+                    progress_label.as_str(),
+                    Style::default().fg(theme.muted()).bg(overlay_bg),
+                ),
+            ]));
 
         let inner = block.inner(overlay);
         block.render(overlay, buf);
@@ -594,7 +635,13 @@ impl Tutorial {
         }
     }
 
-    fn render_choice(&self, area: Rect, buf: &mut Buffer, theme: &dyn super::theme::Theme, footer_height: u16) {
+    fn render_choice(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &dyn super::theme::Theme,
+        footer_height: u16,
+    ) {
         let overlay = large_centered_rect(area, footer_height);
         let overlay_bg = theme.card_bg();
 
@@ -617,22 +664,21 @@ impl Tutorial {
             .style(Style::default().bg(overlay_bg))
             .title(Span::styled(
                 "\u{1f4d8} Welcome to Omegon ",
-                Style::default().fg(theme.accent()).bg(overlay_bg).bold()
+                Style::default().fg(theme.accent()).bg(overlay_bg).bold(),
             ))
             .title_bottom(
-                Line::from(vec![
-                    Span::styled(
-                        " [\u{2190}/\u{2192}] select  [Tab] confirm  [Esc] exit ",
-                        Style::default().fg(theme.muted()).bg(overlay_bg)
-                    ),
-                ]).centered()
+                Line::from(vec![Span::styled(
+                    " [\u{2190}/\u{2192}] select  [Tab] confirm  [Esc] exit ",
+                    Style::default().fg(theme.muted()).bg(overlay_bg),
+                )])
+                .centered(),
             );
 
         let inner = block.inner(overlay);
         block.render(overlay, buf);
 
         // Layout: intro text on top, two side-by-side option boxes below
-        use ratatui::layout::{Direction, Layout, Constraint};
+        use ratatui::layout::{Constraint, Direction, Layout};
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -649,10 +695,7 @@ impl Tutorial {
         // Two option columns
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[1]);
 
         self.render_choice_option(
@@ -683,7 +726,10 @@ impl Tutorial {
         let (border_style, title_style) = if selected {
             (
                 Style::default().fg(theme.accent_bright()).bg(overlay_bg),
-                Style::default().fg(theme.accent_bright()).bg(overlay_bg).bold(),
+                Style::default()
+                    .fg(theme.accent_bright())
+                    .bg(overlay_bg)
+                    .bold(),
             )
         } else {
             (
@@ -710,7 +756,11 @@ impl Tutorial {
         block.render(padded, buf);
 
         Paragraph::new(body)
-            .style(Style::default().fg(if selected { theme.fg() } else { theme.muted() }).bg(overlay_bg))
+            .style(
+                Style::default()
+                    .fg(if selected { theme.fg() } else { theme.muted() })
+                    .bg(overlay_bg),
+            )
             .wrap(Wrap { trim: false })
             .render(inner, buf);
     }
@@ -847,11 +897,20 @@ mod tests {
     #[test]
     fn all_steps_have_content() {
         for (i, step) in STEPS_HANDS_ON.iter().enumerate() {
-            assert!(!step.title.is_empty(), "STEPS_HANDS_ON step {i} has empty title");
-            assert!(!step.body.is_empty(), "STEPS_HANDS_ON step {i} has empty body");
+            assert!(
+                !step.title.is_empty(),
+                "STEPS_HANDS_ON step {i} has empty title"
+            );
+            assert!(
+                !step.body.is_empty(),
+                "STEPS_HANDS_ON step {i} has empty body"
+            );
         }
         for (i, step) in STEPS_DEMO.iter().enumerate() {
-            assert!(!step.title.is_empty(), "STEPS_DEMO step {i} has empty title");
+            assert!(
+                !step.title.is_empty(),
+                "STEPS_DEMO step {i} has empty title"
+            );
             assert!(!step.body.is_empty(), "STEPS_DEMO step {i} has empty body");
         }
     }
@@ -864,18 +923,27 @@ mod tests {
         // Demo steps do NOT send user to /tutorial demo — they are in the demo.
         // Hands-on steps MAY reference /tutorial demo (it's the upsell).
         for step in STEPS_DEMO {
-            assert!(!step.body.contains("/tutorial demo"),
+            assert!(
+                !step.body.contains("/tutorial demo"),
                 "STEPS_DEMO step '{}' tells user to run /tutorial demo — they're already in it",
-                step.title);
+                step.title
+            );
         }
         // Verify demo steps before the wrapup don't reference "YOUR project"
         // (the final wrapup step may say "try this on YOUR project" as a CTA)
-        let wrapup_idx = STEPS_DEMO.iter().position(|s| s.title == "What Just Happened").unwrap();
+        let wrapup_idx = STEPS_DEMO
+            .iter()
+            .position(|s| s.title == "What Just Happened")
+            .unwrap();
         for (i, step) in STEPS_DEMO.iter().enumerate() {
-            if i >= wrapup_idx { break; }
-            assert!(!step.body.contains("YOUR project"),
+            if i >= wrapup_idx {
+                break;
+            }
+            assert!(
+                !step.body.contains("YOUR project"),
                 "STEPS_DEMO step '{}' references 'YOUR project' before wrapup — demo uses its own project",
-                step.title);
+                step.title
+            );
         }
     }
 
@@ -889,12 +957,27 @@ mod tests {
     #[test]
     fn hands_on_steps_order_is_correct() {
         // Verify key narrative beats in hands-on mode
-        let read_idx = STEPS_HANDS_ON.iter().position(|s| s.title == "Reading Your Code");
-        let design_idx = STEPS_HANDS_ON.iter().position(|s| s.title == "Design Notes");
-        let spec_idx = STEPS_HANDS_ON.iter().position(|s| s.title == "Writing a Spec");
-        assert!(read_idx.is_some(), "Reading Your Code step missing from STEPS_HANDS_ON");
-        assert!(design_idx.is_some(), "Design Notes step missing from STEPS_HANDS_ON");
-        assert!(spec_idx.is_some(), "Writing a Spec step missing from STEPS_HANDS_ON");
+        let read_idx = STEPS_HANDS_ON
+            .iter()
+            .position(|s| s.title == "Reading Your Code");
+        let design_idx = STEPS_HANDS_ON
+            .iter()
+            .position(|s| s.title == "Design Notes");
+        let spec_idx = STEPS_HANDS_ON
+            .iter()
+            .position(|s| s.title == "Writing a Spec");
+        assert!(
+            read_idx.is_some(),
+            "Reading Your Code step missing from STEPS_HANDS_ON"
+        );
+        assert!(
+            design_idx.is_some(),
+            "Design Notes step missing from STEPS_HANDS_ON"
+        );
+        assert!(
+            spec_idx.is_some(),
+            "Writing a Spec step missing from STEPS_HANDS_ON"
+        );
         assert!(
             read_idx.unwrap() < design_idx.unwrap(),
             "Reading Your Code must come before Design Notes in STEPS_HANDS_ON"
@@ -908,21 +991,36 @@ mod tests {
     #[test]
     fn demo_steps_order_is_correct() {
         // Verify step order: key narrative beats appear in the right sequence
-        let verify_idx = STEPS_DEMO.iter().position(|s| s.title == "Verify and Launch");
-        let wrapup_idx = STEPS_DEMO.iter().position(|s| s.title == "What Just Happened");
+        let verify_idx = STEPS_DEMO
+            .iter()
+            .position(|s| s.title == "Verify and Launch");
+        let wrapup_idx = STEPS_DEMO
+            .iter()
+            .position(|s| s.title == "What Just Happened");
         let fix_idx = STEPS_DEMO.iter().position(|s| s.title == "Fix All 4 Bugs");
-        assert!(fix_idx.is_some(), "Fix All 4 Bugs step missing from STEPS_DEMO");
-        assert!(verify_idx.is_some(), "Verify and Launch step missing from STEPS_DEMO");
-        assert!(wrapup_idx.is_some(), "What Just Happened step missing from STEPS_DEMO");
+        assert!(
+            fix_idx.is_some(),
+            "Fix All 4 Bugs step missing from STEPS_DEMO"
+        );
+        assert!(
+            verify_idx.is_some(),
+            "Verify and Launch step missing from STEPS_DEMO"
+        );
+        assert!(
+            wrapup_idx.is_some(),
+            "What Just Happened step missing from STEPS_DEMO"
+        );
         assert!(
             fix_idx.unwrap() < verify_idx.unwrap(),
             "Fix All 4 Bugs ({}) must come before Verify and Launch ({}) in STEPS_DEMO",
-            fix_idx.unwrap(), verify_idx.unwrap()
+            fix_idx.unwrap(),
+            verify_idx.unwrap()
         );
         assert!(
             verify_idx.unwrap() < wrapup_idx.unwrap(),
             "Verify and Launch ({}) must come before What Just Happened ({}) in STEPS_DEMO",
-            verify_idx.unwrap(), wrapup_idx.unwrap()
+            verify_idx.unwrap(),
+            wrapup_idx.unwrap()
         );
     }
 
@@ -942,8 +1040,12 @@ mod tests {
         let footer_h = 12;
         let r = upper_rect(parent, footer_h);
         // The overlay should not overlap the footer region
-        assert!(r.bottom() <= parent.height - footer_h,
-            "overlay bottom {} should be above footer at {}", r.bottom(), parent.height - footer_h);
+        assert!(
+            r.bottom() <= parent.height - footer_h,
+            "overlay bottom {} should be above footer at {}",
+            r.bottom(),
+            parent.height - footer_h
+        );
     }
 
     #[test]
@@ -1039,15 +1141,21 @@ mod tests {
         for _ in 0..total {
             tut.advance();
         }
-        assert!(!tut.active, "advancing past last step should dismiss tutorial");
+        assert!(
+            !tut.active,
+            "advancing past last step should dismiss tutorial"
+        );
     }
 
     #[test]
     fn demo_all_auto_prompts_are_non_empty() {
         for step in STEPS_DEMO {
             if let Trigger::AutoPrompt(prompt) = step.trigger {
-                assert!(!prompt.is_empty(),
-                    "STEPS_DEMO step '{}' has empty auto-prompt", step.title);
+                assert!(
+                    !prompt.is_empty(),
+                    "STEPS_DEMO step '{}' has empty auto-prompt",
+                    step.title
+                );
             }
         }
     }
@@ -1061,7 +1169,11 @@ mod tests {
             assert!(tut.advance(), "should have a Command step in STEPS_DEMO");
         }
         let idx = tut.step_index();
-        let expected_cmd = if let Trigger::Command(cmd) = tut.step().trigger { cmd } else { unreachable!() };
+        let expected_cmd = if let Trigger::Command(cmd) = tut.step().trigger {
+            cmd
+        } else {
+            unreachable!()
+        };
 
         // Wrong command doesn't advance
         assert!(!tut.check_command("nonexistent"));

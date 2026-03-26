@@ -17,7 +17,10 @@ pub fn compute_waves(children: &[ChildPlan]) -> Vec<Vec<usize>> {
             if assigned.contains(&i) {
                 continue;
             }
-            let deps_met = child.depends_on.iter().all(|d| completed.contains(d.as_str()));
+            let deps_met = child
+                .depends_on
+                .iter()
+                .all(|d| completed.contains(d.as_str()));
             if deps_met {
                 wave.push(i);
             }

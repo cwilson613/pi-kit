@@ -56,12 +56,7 @@ impl RepoStatus {
     pub fn staged_paths(&self) -> Vec<&str> {
         self.entries
             .iter()
-            .filter(|e| {
-                matches!(
-                    e.status,
-                    FileStatus::Staged | FileStatus::StagedAndModified
-                )
-            })
+            .filter(|e| matches!(e.status, FileStatus::Staged | FileStatus::StagedAndModified))
             .map(|e| e.path.as_str())
             .collect()
     }
@@ -87,7 +82,9 @@ pub fn query_status(repo_path: &Path) -> Result<RepoStatus> {
         .include_unmodified(false)
         .exclude_submodules(false);
 
-    let statuses = repo.statuses(Some(&mut opts)).context("git status failed")?;
+    let statuses = repo
+        .statuses(Some(&mut opts))
+        .context("git status failed")?;
 
     let mut entries = Vec::with_capacity(statuses.len());
 
@@ -97,18 +94,17 @@ pub fn query_status(repo_path: &Path) -> Result<RepoStatus> {
 
         // Submodule detection via status flags — git2 sets SUBMODULE flags
         // when the entry is a submodule with modified/dirty content.
-        let is_submodule = s.intersects(
-            git2::Status::WT_TYPECHANGE | git2::Status::INDEX_TYPECHANGE,
-        ) || {
-            // Check if old file mode indicates a submodule (commit mode = 0o160000)
-            entry.index_to_workdir().map_or(false, |d| {
-                matches!(d.old_file().mode(), git2::FileMode::Commit)
-                    || matches!(d.new_file().mode(), git2::FileMode::Commit)
-            }) || entry.head_to_index().map_or(false, |d| {
-                matches!(d.old_file().mode(), git2::FileMode::Commit)
-                    || matches!(d.new_file().mode(), git2::FileMode::Commit)
-            })
-        };
+        let is_submodule =
+            s.intersects(git2::Status::WT_TYPECHANGE | git2::Status::INDEX_TYPECHANGE) || {
+                // Check if old file mode indicates a submodule (commit mode = 0o160000)
+                entry.index_to_workdir().map_or(false, |d| {
+                    matches!(d.old_file().mode(), git2::FileMode::Commit)
+                        || matches!(d.new_file().mode(), git2::FileMode::Commit)
+                }) || entry.head_to_index().map_or(false, |d| {
+                    matches!(d.old_file().mode(), git2::FileMode::Commit)
+                        || matches!(d.new_file().mode(), git2::FileMode::Commit)
+                })
+            };
 
         let file_status = if is_submodule {
             FileStatus::SubmoduleModified

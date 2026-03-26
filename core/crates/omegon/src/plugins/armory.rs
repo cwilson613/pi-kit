@@ -120,7 +120,9 @@ pub struct ToolEntry {
 fn default_params() -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
-fn default_tool_timeout() -> u64 { 30 }
+fn default_tool_timeout() -> u64 {
+    30
+}
 
 impl ToolEntry {
     /// Is this a script-backed tool (python/node/bash)?
@@ -212,7 +214,9 @@ pub struct ContextEntry {
     pub ttl_turns: u32,
 }
 
-fn default_context_ttl() -> u32 { 20 }
+fn default_context_ttl() -> u32 {
+    20
+}
 
 /// Required metadata for every plugin.
 #[derive(Debug, Deserialize)]
@@ -330,8 +334,12 @@ pub struct ToneIntensity {
     pub coding: String,
 }
 
-fn default_full() -> String { "full".into() }
-fn default_muted() -> String { "muted".into() }
+fn default_full() -> String {
+    "full".into()
+}
+fn default_muted() -> String {
+    "muted".into()
+}
 
 /// Skill-specific configuration.
 #[derive(Debug, Deserialize)]
@@ -400,9 +408,12 @@ impl ArmoryManifest {
                 if self.persona.is_none() {
                     errors.push("persona plugin must have a [persona] section".into());
                 } else if let Some(ref p) = self.persona
-                    && p.identity.is_none() {
-                        errors.push("persona plugin must have [persona.identity] with a directive".into());
-                    }
+                    && p.identity.is_none()
+                {
+                    errors.push(
+                        "persona plugin must have [persona.identity] with a directive".into(),
+                    );
+                }
             }
             PluginType::Tone => {
                 if self.tone.is_none() {
@@ -411,13 +422,18 @@ impl ArmoryManifest {
             }
             PluginType::Skill => {
                 if self.skill.is_none() {
-                    errors.push("skill plugin must have a [skill] section with a guidance path".into());
+                    errors.push(
+                        "skill plugin must have a [skill] section with a guidance path".into(),
+                    );
                 }
             }
             PluginType::Extension => {
                 // Extensions must have at least one tool or context entry
                 if self.tools.is_empty() && self.context.is_none() {
-                    errors.push("extension plugin must have at least one [[tools]] entry or [context]".into());
+                    errors.push(
+                        "extension plugin must have at least one [[tools]] entry or [context]"
+                            .into(),
+                    );
                 }
             }
         }
@@ -460,11 +476,17 @@ mod tests {
         let manifest = ArmoryManifest::parse(toml).unwrap();
         assert_eq!(manifest.plugin.plugin_type, PluginType::Persona);
         assert_eq!(manifest.plugin.id, "dev.styrene.omegon.tutor");
-        assert!(manifest.validate().is_empty(), "should have no validation errors");
+        assert!(
+            manifest.validate().is_empty(),
+            "should have no validation errors"
+        );
 
         let persona = manifest.persona.unwrap();
         assert_eq!(persona.identity.unwrap().directive, "PERSONA.md");
-        assert_eq!(persona.mind.unwrap().seed_facts.unwrap(), "mind/facts.jsonl");
+        assert_eq!(
+            persona.mind.unwrap().seed_facts.unwrap(),
+            "mind/facts.jsonl"
+        );
         assert_eq!(persona.tools.unwrap().disable, vec!["bash", "write"]);
         assert_eq!(persona.style.unwrap().badge.unwrap(), "📚");
     }
@@ -799,8 +821,10 @@ mod tests {
         "#;
         let manifest = ArmoryManifest::parse(toml).unwrap();
         let errors = manifest.validate();
-        assert!(errors.iter().any(|e| e.contains("must have either")),
-            "errors: {errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("must have either")),
+            "errors: {errors:?}"
+        );
     }
 
     // ── OCI container tool tests ─────────────────────────
@@ -829,7 +853,10 @@ mod tests {
 
         let tool = &manifest.tools[0];
         assert_eq!(tool.runner, Some(ToolRunner::Oci));
-        assert_eq!(tool.image.as_deref(), Some("ghcr.io/styrene-lab/omegon-tool-analyze:latest"));
+        assert_eq!(
+            tool.image.as_deref(),
+            Some("ghcr.io/styrene-lab/omegon-tool-analyze:latest")
+        );
         assert!(tool.mount_cwd);
         assert!(!tool.network);
         assert!(tool.is_oci());
@@ -879,8 +906,10 @@ mod tests {
         "#;
         let manifest = ArmoryManifest::parse(toml).unwrap();
         let errors = manifest.validate();
-        assert!(errors.iter().any(|e| e.contains("image or build")),
-            "errors: {errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("image or build")),
+            "errors: {errors:?}"
+        );
     }
 
     #[test]
@@ -950,8 +979,8 @@ mod tests {
     #[test]
     fn parse_real_armory_manifests() {
         // Parse the actual armory plugin.toml files to validate compatibility
-        let armory_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../omegon-armory");
+        let armory_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../omegon-armory");
 
         // Skip if armory isn't present (CI environments)
         if !armory_dir.exists() {
@@ -960,18 +989,26 @@ mod tests {
 
         for category in ["personas", "tones", "skills"] {
             let cat_dir = armory_dir.join(category);
-            if !cat_dir.is_dir() { continue; }
+            if !cat_dir.is_dir() {
+                continue;
+            }
             for entry in std::fs::read_dir(cat_dir).unwrap() {
                 let entry = entry.unwrap();
                 let toml_path = entry.path().join("plugin.toml");
-                if !toml_path.exists() { continue; }
+                if !toml_path.exists() {
+                    continue;
+                }
 
                 let content = std::fs::read_to_string(&toml_path).unwrap();
                 let manifest = ArmoryManifest::parse(&content)
                     .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", toml_path.display()));
                 let errors = manifest.validate();
-                assert!(errors.is_empty(),
-                    "Validation errors in {}: {:?}", toml_path.display(), errors);
+                assert!(
+                    errors.is_empty(),
+                    "Validation errors in {}: {:?}",
+                    toml_path.display(),
+                    errors
+                );
             }
         }
     }

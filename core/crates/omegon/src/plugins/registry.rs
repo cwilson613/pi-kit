@@ -254,14 +254,18 @@ mod tests {
             mind_facts: vec![
                 MindFact {
                     section: "Domain".into(),
-                    content: "Conway's Law: system architecture mirrors org communication structure".into(),
+                    content:
+                        "Conway's Law: system architecture mirrors org communication structure"
+                            .into(),
                     confidence: 0.95,
                     source: Some("conway-1968".into()),
                     tags: vec!["architecture".into()],
                 },
                 MindFact {
                     section: "Domain".into(),
-                    content: "CAP theorem: at most two of Consistency, Availability, Partition tolerance".into(),
+                    content:
+                        "CAP theorem: at most two of Consistency, Availability, Partition tolerance"
+                            .into(),
                     confidence: 0.95,
                     source: Some("brewer-2000".into()),
                     tags: vec!["distributed".into()],
@@ -284,7 +288,8 @@ mod tests {
         LoadedTone {
             id: "dev.styrene.omegon.tone.alan-watts".into(),
             name: "Alan Watts".into(),
-            directive: "# Alan Watts\n\nSpeak with gentle irreverence and philosophical depth.".into(),
+            directive: "# Alan Watts\n\nSpeak with gentle irreverence and philosophical depth."
+                .into(),
             exemplars: vec!["A distributed system is like a jazz ensemble.".into()],
             intensity: ToneIntensity::default(),
         }
@@ -321,7 +326,12 @@ mod tests {
         reg.activate_persona(tutor_persona());
 
         assert_eq!(reg.memory().persona.len(), 2);
-        assert!(reg.memory().persona.iter().any(|f| f.content.contains("Bloom")));
+        assert!(
+            reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("Bloom"))
+        );
     }
 
     #[test]
@@ -417,11 +427,26 @@ mod tests {
     fn switch_replaces_mind_facts() {
         let mut reg = PluginRegistry::new(LEX.into());
         reg.activate_persona(tutor_persona());
-        assert!(reg.memory().persona.iter().any(|f| f.content.contains("Bloom")));
+        assert!(
+            reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("Bloom"))
+        );
 
         reg.activate_persona(engineer_persona());
-        assert!(!reg.memory().persona.iter().any(|f| f.content.contains("Bloom")));
-        assert!(reg.memory().persona.iter().any(|f| f.content.contains("Conway")));
+        assert!(
+            !reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("Bloom"))
+        );
+        assert!(
+            reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("Conway"))
+        );
     }
 
     #[test]
@@ -463,9 +488,24 @@ mod tests {
         .unwrap();
 
         reg.activate_persona(engineer_persona());
-        assert!(!reg.memory().persona.iter().any(|f| f.content.contains("recursion")));
-        assert!(!reg.memory().persona.iter().any(|f| f.content.contains("Bloom")));
-        assert!(reg.memory().persona.iter().any(|f| f.content.contains("Conway")));
+        assert!(
+            !reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("recursion"))
+        );
+        assert!(
+            !reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("Bloom"))
+        );
+        assert!(
+            reg.memory()
+                .persona
+                .iter()
+                .any(|f| f.content.contains("Conway"))
+        );
     }
 
     // ── Tone activation ──────────────────────────────────────

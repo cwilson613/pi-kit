@@ -68,17 +68,23 @@ impl LlmMessage {
     pub fn char_count(&self) -> usize {
         match self {
             LlmMessage::User { content, .. } => content.len(),
-            LlmMessage::Assistant { text, thinking, tool_calls, .. } => {
+            LlmMessage::Assistant {
+                text,
+                thinking,
+                tool_calls,
+                ..
+            } => {
                 let text_len: usize = text.iter().map(|t| t.len()).sum();
                 let think_len: usize = thinking.iter().map(|t| t.len()).sum();
-                let tc_len: usize = tool_calls.iter().map(|tc| {
-                    tc.name.len() + tc.arguments.to_string().len()
-                }).sum();
+                let tc_len: usize = tool_calls
+                    .iter()
+                    .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                    .sum();
                 text_len + think_len + tc_len
             }
-            LlmMessage::ToolResult { content, tool_name, .. } => {
-                content.len() + tool_name.len()
-            }
+            LlmMessage::ToolResult {
+                content, tool_name, ..
+            } => content.len() + tool_name.len(),
         }
     }
 }
@@ -234,7 +240,10 @@ mod tests {
 
     #[test]
     fn llm_message_user_round_trip() {
-        let msg = LlmMessage::User { content: "hello".into(), images: vec![] };
+        let msg = LlmMessage::User {
+            content: "hello".into(),
+            images: vec![],
+        };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""role":"user"#));
         let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -285,7 +294,9 @@ mod tests {
         assert!(json.contains(r#""role":"tool_result"#));
         let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
         match parsed {
-            LlmMessage::ToolResult { call_id, is_error, .. } => {
+            LlmMessage::ToolResult {
+                call_id, is_error, ..
+            } => {
                 assert_eq!(call_id, "tc1");
                 assert!(!is_error);
             }
@@ -355,6 +366,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("/login"), "should mention /login: {err}");
-        assert!(err.contains("No LLM provider"), "should explain no provider: {err}");
+        assert!(
+            err.contains("No LLM provider"),
+            "should explain no provider: {err}"
+        );
     }
 }

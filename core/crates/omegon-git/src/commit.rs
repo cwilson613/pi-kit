@@ -54,11 +54,15 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
         // can behave inconsistently across git2 versions).
         let mut staged_count: usize = 0;
         index
-            .add_all(["."].iter(), IndexAddOption::DEFAULT, Some(&mut |_path: &Path, _spec: &[u8]| {
-                // Callback returns 0 = add, 1 = skip. We count adds.
-                staged_count += 1;
-                0 // add
-            }))
+            .add_all(
+                ["."].iter(),
+                IndexAddOption::DEFAULT,
+                Some(&mut |_path: &Path, _spec: &[u8]| {
+                    // Callback returns 0 = add, 1 = skip. We count adds.
+                    staged_count += 1;
+                    0 // add
+                }),
+            )
             .context("git add -A failed")?;
         files_staged = staged_count;
     } else {
@@ -88,10 +92,7 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
         .context("failed to find tree from index")?;
 
     // Get parent commit (HEAD)
-    let parent = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok());
+    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
 
     // Create signature from git config
     let sig = repo
@@ -121,19 +122,14 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
 /// Stage and commit inside a submodule, then stage the pointer in the parent.
 ///
 /// Returns the number of files committed inside the submodule (0 if clean).
-pub fn commit_in_submodule(
-    repo_path: &Path,
-    submodule_path: &str,
-    message: &str,
-) -> Result<usize> {
+pub fn commit_in_submodule(repo_path: &Path, submodule_path: &str, message: &str) -> Result<usize> {
     let sub_full_path = repo_path.join(submodule_path);
     if !sub_full_path.join(".git").exists() && !sub_full_path.join(".git").is_file() {
         // Submodule not initialized
         return Ok(0);
     }
 
-    let sub_repo =
-        Repository::open(&sub_full_path).context("failed to open submodule repo")?;
+    let sub_repo = Repository::open(&sub_full_path).context("failed to open submodule repo")?;
 
     // Check if submodule has changes
     let statuses = sub_repo.statuses(None).context("submodule status failed")?;
@@ -174,7 +170,11 @@ pub fn commit_in_submodule(
         .context("failed to stage submodule pointer")?;
     if !stage_output.status.success() {
         let stderr = String::from_utf8_lossy(&stage_output.stderr);
-        tracing::warn!(submodule = submodule_path, "pointer staging warning: {}", stderr.trim());
+        tracing::warn!(
+            submodule = submodule_path,
+            "pointer staging warning: {}",
+            stderr.trim()
+        );
     }
 
     Ok(file_count)
@@ -286,45 +286,70 @@ mod tests {
         let _ = std::process::Command::new("git")
             .args(["clone", &remote_dir.path().to_string_lossy(), "."])
             .current_dir(clone_dir.path())
-            .output().unwrap();
+            .output()
+            .unwrap();
         let _ = std::process::Command::new("git")
             .args(["config", "user.email", "test@test.com"])
-            .current_dir(clone_dir.path()).output();
+            .current_dir(clone_dir.path())
+            .output();
         let _ = std::process::Command::new("git")
             .args(["config", "user.name", "Test"])
-            .current_dir(clone_dir.path()).output();
+            .current_dir(clone_dir.path())
+            .output();
         std::fs::write(clone_dir.path().join("sub_file.txt"), "initial").unwrap();
         let _ = std::process::Command::new("git")
-            .args(["add", "-A"]).current_dir(clone_dir.path()).output();
+            .args(["add", "-A"])
+            .current_dir(clone_dir.path())
+            .output();
         let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "init sub"]).current_dir(clone_dir.path()).output();
+            .args(["commit", "-m", "init sub"])
+            .current_dir(clone_dir.path())
+            .output();
         let _ = std::process::Command::new("git")
-            .args(["push"]).current_dir(clone_dir.path()).output();
+            .args(["push"])
+            .current_dir(clone_dir.path())
+            .output();
 
         // Init parent repo with the submodule
         let _ = std::process::Command::new("git")
-            .args(["init"]).current_dir(parent_dir.path()).output();
+            .args(["init"])
+            .current_dir(parent_dir.path())
+            .output();
         let _ = std::process::Command::new("git")
             .args(["config", "user.email", "test@test.com"])
-            .current_dir(parent_dir.path()).output();
+            .current_dir(parent_dir.path())
+            .output();
         let _ = std::process::Command::new("git")
             .args(["config", "user.name", "Test"])
-            .current_dir(parent_dir.path()).output();
+            .current_dir(parent_dir.path())
+            .output();
         std::fs::write(parent_dir.path().join("parent.txt"), "parent").unwrap();
         let _ = std::process::Command::new("git")
-            .args(["add", "-A"]).current_dir(parent_dir.path()).output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "init parent"]).current_dir(parent_dir.path()).output();
-        let add_sub = std::process::Command::new("git")
-            .args(["submodule", "add", &remote_dir.path().to_string_lossy(), "sub"])
+            .args(["add", "-A"])
             .current_dir(parent_dir.path())
-            .output().unwrap();
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init parent"])
+            .current_dir(parent_dir.path())
+            .output();
+        let add_sub = std::process::Command::new("git")
+            .args([
+                "submodule",
+                "add",
+                &remote_dir.path().to_string_lossy(),
+                "sub",
+            ])
+            .current_dir(parent_dir.path())
+            .output()
+            .unwrap();
         if !add_sub.status.success() {
             // Submodule setup failed — skip
             return;
         }
         let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "add submodule"]).current_dir(parent_dir.path()).output();
+            .args(["commit", "-m", "add submodule"])
+            .current_dir(parent_dir.path())
+            .output();
 
         // Make the submodule dirty
         let sub_dir = parent_dir.path().join("sub");
@@ -332,7 +357,11 @@ mod tests {
 
         // Commit inside the submodule
         let result = commit_in_submodule(parent_dir.path(), "sub", "feat: sub change");
-        assert!(result.is_ok(), "commit_in_submodule failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "commit_in_submodule failed: {:?}",
+            result.err()
+        );
         let count = result.unwrap();
         assert!(count > 0, "should have committed files inside submodule");
 
@@ -340,9 +369,12 @@ mod tests {
         let sub_status = std::process::Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&sub_dir)
-            .output().unwrap();
+            .output()
+            .unwrap();
         assert!(
-            String::from_utf8_lossy(&sub_status.stdout).trim().is_empty(),
+            String::from_utf8_lossy(&sub_status.stdout)
+                .trim()
+                .is_empty(),
             "submodule should be clean after commit"
         );
     }
@@ -356,16 +388,26 @@ mod tests {
 
         // Init sub with a commit so it's clean
         let _ = std::process::Command::new("git")
-            .args(["init"]).current_dir(&sub_dir).output();
+            .args(["init"])
+            .current_dir(&sub_dir)
+            .output();
         let _ = std::process::Command::new("git")
-            .args(["config", "user.email", "t@t.com"]).current_dir(&sub_dir).output();
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(&sub_dir)
+            .output();
         let _ = std::process::Command::new("git")
-            .args(["config", "user.name", "T"]).current_dir(&sub_dir).output();
+            .args(["config", "user.name", "T"])
+            .current_dir(&sub_dir)
+            .output();
         std::fs::write(sub_dir.join("file.txt"), "content").unwrap();
         let _ = std::process::Command::new("git")
-            .args(["add", "-A"]).current_dir(&sub_dir).output();
+            .args(["add", "-A"])
+            .current_dir(&sub_dir)
+            .output();
         let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "init"]).current_dir(&sub_dir).output();
+            .args(["commit", "-m", "init"])
+            .current_dir(&sub_dir)
+            .output();
 
         // Sub is clean — should return 0
         let result = commit_in_submodule(parent_dir.path(), "sub", "nothing").unwrap();

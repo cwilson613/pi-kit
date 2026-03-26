@@ -3,9 +3,9 @@
 //! This module holds the data model. Rendering is handled by
 //! `conv_widget::ConversationWidget`.
 
+use super::conv_widget::ConvState;
 use super::image::ImageCache;
 use super::segments::{Segment, SegmentContent, SegmentMeta};
-use super::conv_widget::ConvState;
 
 /// Conversation view state — segment list + scroll.
 pub struct ConversationView {
@@ -86,7 +86,10 @@ impl ConversationView {
         // dropped.
         let needs_new_seg = !matches!(
             self.segments.last(),
-            Some(Segment { content: SegmentContent::AssistantText { .. }, .. })
+            Some(Segment {
+                content: SegmentContent::AssistantText { .. },
+                ..
+            })
         );
         if needs_new_seg {
             self.segments.push(Segment::assistant_text());
@@ -106,7 +109,10 @@ impl ConversationView {
         // Same guard as append_streaming — don't append into a ToolCard.
         let needs_new_seg = !matches!(
             self.segments.last(),
-            Some(Segment { content: SegmentContent::AssistantText { .. }, .. })
+            Some(Segment {
+                content: SegmentContent::AssistantText { .. },
+                ..
+            })
         );
         if needs_new_seg {
             self.segments.push(Segment::assistant_text());
@@ -122,11 +128,20 @@ impl ConversationView {
         self.conv_state.auto_scroll_to_bottom();
     }
 
-    pub fn push_tool_start(&mut self, id: &str, name: &str, args_summary: Option<&str>, detail_args: Option<&str>) {
+    pub fn push_tool_start(
+        &mut self,
+        id: &str,
+        name: &str,
+        args_summary: Option<&str>,
+        detail_args: Option<&str>,
+    ) {
         let mut seg = Segment::tool_card(id, name);
         if let SegmentContent::ToolCard {
-            args_summary: ref mut a, detail_args: ref mut d, ..
-        } = seg.content {
+            args_summary: ref mut a,
+            detail_args: ref mut d,
+            ..
+        } = seg.content
+        {
             *a = args_summary.map(|s| s.to_string());
             *d = detail_args.map(|s| s.to_string());
         }
@@ -145,20 +160,27 @@ impl ConversationView {
                 detail_result: dr,
                 ..
             } = &mut seg.content
-                && tool_id == id && !*c
+                && tool_id == id
+                && !*c
             {
                 *c = true;
                 *e = is_error;
                 *r = result_text.and_then(|text| {
-                    let line = text.lines()
+                    let line = text
+                        .lines()
                         .find(|l| {
                             let t = l.trim();
                             !t.is_empty() && !t.starts_with("```") && !t.starts_with("---")
                         })
-                        .unwrap_or("").trim();
-                    if line.is_empty() { None }
-                    else if line.chars().count() > 100 { Some(crate::util::truncate(line, 99)) }
-                    else { Some(line.to_string()) }
+                        .unwrap_or("")
+                        .trim();
+                    if line.is_empty() {
+                        None
+                    } else if line.chars().count() > 100 {
+                        Some(crate::util::truncate(line, 99))
+                    } else {
+                        Some(line.to_string())
+                    }
                 });
                 // Store the full result — truncation happens at render time
                 // based on the card's expanded/collapsed state.
@@ -243,7 +265,10 @@ impl ConversationView {
         let offset = self.conv_state.scroll_offset;
         let heights = &self.conv_state.heights;
         if heights.len() != self.segments.len() {
-            return self.segments.iter().rposition(|s| matches!(s.content, SegmentContent::ToolCard { .. }));
+            return self
+                .segments
+                .iter()
+                .rposition(|s| matches!(s.content, SegmentContent::ToolCard { .. }));
         }
 
         let total: u16 = heights.iter().sum();
@@ -259,7 +284,9 @@ impl ConversationView {
                 return Some(i);
             }
         }
-        self.segments.iter().rposition(|s| matches!(s.content, SegmentContent::ToolCard { .. }))
+        self.segments
+            .iter()
+            .rposition(|s| matches!(s.content, SegmentContent::ToolCard { .. }))
     }
 
     /// Clear all segments (for /clear command).
@@ -283,7 +310,9 @@ mod tests {
         cv.push_user("hello");
         // First user message: just the prompt (no separator)
         assert_eq!(cv.segments.len(), 1);
-        assert!(matches!(&cv.segments[0], Segment { content: SegmentContent::UserPrompt { text }, .. } if text == "hello"));
+        assert!(
+            matches!(&cv.segments[0], Segment { content: SegmentContent::UserPrompt { text }, .. } if text == "hello")
+        );
     }
 
     #[test]
@@ -293,7 +322,13 @@ mod tests {
         cv.push_user("second");
         // separator + prompt
         assert_eq!(cv.segments.len(), 3);
-        assert!(matches!(&cv.segments[1], Segment { content: SegmentContent::TurnSeparator, .. }));
+        assert!(matches!(
+            &cv.segments[1],
+            Segment {
+                content: SegmentContent::TurnSeparator,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -325,7 +360,13 @@ mod tests {
         let mut cv = ConversationView::new();
         cv.push_tool_start("tc1", "read", Some("src/main.rs"), Some("src/main.rs"));
         cv.push_tool_end("tc1", false, Some("fn main() {}\n// 245 lines"));
-        if let SegmentContent::ToolCard { complete, is_error, detail_result, .. } = &cv.segments[0].content {
+        if let SegmentContent::ToolCard {
+            complete,
+            is_error,
+            detail_result,
+            ..
+        } = &cv.segments[0].content
+        {
             assert!(complete);
             assert!(!is_error);
             assert!(detail_result.is_some());
@@ -378,9 +419,15 @@ mod tests {
         let mut found_bash = false;
         for y in 0..40 {
             let mut row = String::new();
-            for x in 0..80 { row.push_str(buf[(x, y)].symbol()); }
-            if row.contains("hello") { found_hello = true; }
-            if row.contains("echo") { found_bash = true; } // "echo" from args renders in card
+            for x in 0..80 {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            if row.contains("hello") {
+                found_hello = true;
+            }
+            if row.contains("echo") {
+                found_bash = true;
+            } // "echo" from args renders in card
         }
         assert!(found_hello, "should render user prompt");
         assert!(found_bash, "should render tool card");
@@ -420,7 +467,10 @@ mod tests {
     #[test]
     fn expanded_card_has_more_height() {
         let mut cv = ConversationView::new();
-        let long_result = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_result = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         cv.push_tool_start("t1", "read", Some("file.rs"), Some("file.rs"));
         cv.push_tool_end("t1", false, Some(&long_result));
 
@@ -428,8 +478,10 @@ mod tests {
         let collapsed_h = cv.segments[0].height(80, &t);
         cv.toggle_expand(0);
         let expanded_h = cv.segments[0].height(80, &t);
-        assert!(expanded_h > collapsed_h,
-            "expanded ({expanded_h}) should be taller than collapsed ({collapsed_h})");
+        assert!(
+            expanded_h > collapsed_h,
+            "expanded ({expanded_h}) should be taller than collapsed ({collapsed_h})"
+        );
     }
 
     #[test]
@@ -445,7 +497,10 @@ mod tests {
         let result = cv.focused_tool_card();
         assert!(result.is_some(), "should find a tool card");
         let idx = result.unwrap();
-        assert!(matches!(&cv.segments[idx].content, SegmentContent::ToolCard { .. }));
+        assert!(matches!(
+            &cv.segments[idx].content,
+            SegmentContent::ToolCard { .. }
+        ));
     }
 
     /// Regression test: text emitted after tool cards must appear in a new
@@ -472,13 +527,22 @@ mod tests {
         cv.finalize_message();
 
         // Should be: AssistantText, ToolCard, AssistantText
-        let segment_types: Vec<&str> = cv.segments.iter().map(|s| match &s.content {
-            SegmentContent::AssistantText { .. } => "AssistantText",
-            SegmentContent::ToolCard { .. } => "ToolCard",
-            _ => "other",
-        }).collect();
-        assert_eq!(cv.segments.len(), 3, "expected 3 segments, got {}: {:?}",
-            cv.segments.len(), segment_types);
+        let segment_types: Vec<&str> = cv
+            .segments
+            .iter()
+            .map(|s| match &s.content {
+                SegmentContent::AssistantText { .. } => "AssistantText",
+                SegmentContent::ToolCard { .. } => "ToolCard",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            cv.segments.len(),
+            3,
+            "expected 3 segments, got {}: {:?}",
+            cv.segments.len(),
+            segment_types
+        );
 
         // Third segment must contain the post-tool text
         if let SegmentContent::AssistantText { text, complete, .. } = &cv.segments[2].content {
@@ -513,13 +577,20 @@ mod tests {
     #[test]
     fn full_result_stored_not_truncated() {
         let mut cv = ConversationView::new();
-        let long_result = (0..50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_result = (0..50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         cv.push_tool_start("t1", "read", Some("file.rs"), Some("file.rs"));
         cv.push_tool_end("t1", false, Some(&long_result));
 
         if let SegmentContent::ToolCard { detail_result, .. } = &cv.segments[0].content {
             let dr = detail_result.as_ref().unwrap();
-            assert_eq!(dr.lines().count(), 50, "full result should be stored, not truncated");
+            assert_eq!(
+                dr.lines().count(),
+                50,
+                "full result should be stored, not truncated"
+            );
         }
     }
 

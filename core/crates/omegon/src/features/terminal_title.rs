@@ -27,11 +27,7 @@ pub struct TerminalTitle {
 
 impl TerminalTitle {
     pub fn new(cwd: &str) -> Self {
-        let project = cwd
-            .rsplit('/')
-            .next()
-            .unwrap_or("project")
-            .to_string();
+        let project = cwd.rsplit('/').next().unwrap_or("project").to_string();
         Self {
             project,
             idle: true,
@@ -62,7 +58,9 @@ impl TerminalTitle {
 
 #[async_trait]
 impl Feature for TerminalTitle {
-    fn name(&self) -> &str { "terminal-title" }
+    fn name(&self) -> &str {
+        "terminal-title"
+    }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
@@ -129,9 +127,21 @@ mod tests {
     fn tool_chain_tracks_last_two() {
         let mut tt = TerminalTitle::new("/tmp/test");
         tt.on_event(&BusEvent::TurnStart { turn: 1 });
-        tt.on_event(&BusEvent::ToolStart { id: "1".into(), name: "read".into(), args: serde_json::json!({}) });
-        tt.on_event(&BusEvent::ToolStart { id: "2".into(), name: "edit".into(), args: serde_json::json!({}) });
-        tt.on_event(&BusEvent::ToolStart { id: "3".into(), name: "bash".into(), args: serde_json::json!({}) });
+        tt.on_event(&BusEvent::ToolStart {
+            id: "1".into(),
+            name: "read".into(),
+            args: serde_json::json!({}),
+        });
+        tt.on_event(&BusEvent::ToolStart {
+            id: "2".into(),
+            name: "edit".into(),
+            args: serde_json::json!({}),
+        });
+        tt.on_event(&BusEvent::ToolStart {
+            id: "3".into(),
+            name: "bash".into(),
+            args: serde_json::json!({}),
+        });
         assert_eq!(tt.tool_chain, vec!["Edit", "Bash"]); // last 2
     }
 }

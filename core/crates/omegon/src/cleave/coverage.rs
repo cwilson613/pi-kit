@@ -59,10 +59,14 @@ impl CoverageReport {
         )];
 
         if !self.missing.is_empty() {
-            lines.push(format!("Missing: {}", self.missing.iter()
-                .map(|m| m.test_name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")));
+            lines.push(format!(
+                "Missing: {}",
+                self.missing
+                    .iter()
+                    .map(|m| m.test_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
 
         if !self.unplanned.is_empty() {
@@ -174,7 +178,10 @@ fn find_test_functions(repo_path: &Path, scope_files: &[String]) -> Vec<String> 
             let mut prev_is_test_attr = false;
             for line in content.lines() {
                 let trimmed = line.trim();
-                if trimmed == "#[test]" || trimmed.starts_with("#[tokio::test") || trimmed.starts_with("#[rstest") {
+                if trimmed == "#[test]"
+                    || trimmed.starts_with("#[tokio::test")
+                    || trimmed.starts_with("#[rstest")
+                {
                     prev_is_test_attr = true;
                     continue;
                 }
@@ -197,7 +204,8 @@ fn find_test_functions(repo_path: &Path, scope_files: &[String]) -> Vec<String> 
             // Python: def test_name(...)
             for line in content.lines() {
                 let trimmed = line.trim();
-                if let Some(name) = trimmed.strip_prefix("def test_")
+                if let Some(name) = trimmed
+                    .strip_prefix("def test_")
                     .and_then(|n| n.find('(').map(|p| &n[..p]))
                 {
                     test_names.push(format!("test_{name}"));
@@ -211,10 +219,11 @@ fn find_test_functions(repo_path: &Path, scope_files: &[String]) -> Vec<String> 
 
 /// Extract a Rust function name from a line like `fn test_something() {`
 fn extract_rust_fn_name(line: &str) -> Option<String> {
-    let trimmed = line.trim().strip_prefix("pub ")
+    let trimmed = line
+        .trim()
+        .strip_prefix("pub ")
         .or_else(|| Some(line.trim()))?;
-    let trimmed = trimmed.strip_prefix("async ")
-        .unwrap_or(trimmed);
+    let trimmed = trimmed.strip_prefix("async ").unwrap_or(trimmed);
     let rest = trimmed.strip_prefix("fn ")?;
     let name_end = rest.find('(')?;
     Some(rest[..name_end].trim().to_string())
@@ -273,13 +282,15 @@ fn fuzzy_match(planned: &str, actual: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_architect::{TestDescription, TestPlan};
+    use super::*;
 
     #[test]
     fn coverage_report_all_found() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.rs"), r#"
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            r#"
 #[test]
 fn test_read_secret() {
     assert!(true);
@@ -289,13 +300,21 @@ fn test_read_secret() {
 fn test_write_secret() {
     assert!(true);
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let plans = vec![TestPlan {
             child_label: "vault".into(),
             required_tests: vec![
-                TestDescription { name: "test_read_secret".into(), description: "Read a secret".into() },
-                TestDescription { name: "test_write_secret".into(), description: "Write a secret".into() },
+                TestDescription {
+                    name: "test_read_secret".into(),
+                    description: "Read a secret".into(),
+                },
+                TestDescription {
+                    name: "test_write_secret".into(),
+                    description: "Write a secret".into(),
+                },
             ],
             edge_cases: vec![],
             expected_test_count: 2,
@@ -311,16 +330,26 @@ fn test_write_secret() {
     #[test]
     fn coverage_report_missing_tests() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.rs"), r#"
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            r#"
 #[test]
 fn test_read_secret() { assert!(true); }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let plans = vec![TestPlan {
             child_label: "vault".into(),
             required_tests: vec![
-                TestDescription { name: "test_read_secret".into(), description: "exists".into() },
-                TestDescription { name: "test_write_secret".into(), description: "missing".into() },
+                TestDescription {
+                    name: "test_read_secret".into(),
+                    description: "exists".into(),
+                },
+                TestDescription {
+                    name: "test_write_secret".into(),
+                    description: "missing".into(),
+                },
             ],
             edge_cases: vec!["Empty path → error".into()],
             expected_test_count: 3,
@@ -336,19 +365,24 @@ fn test_read_secret() { assert!(true); }
     #[test]
     fn coverage_report_unplanned_tests() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.rs"), r#"
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            r#"
 #[test]
 fn test_read_secret() { assert!(true); }
 
 #[test]
 fn test_bonus_test() { assert!(true); }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let plans = vec![TestPlan {
             child_label: "vault".into(),
-            required_tests: vec![
-                TestDescription { name: "test_read_secret".into(), description: "Read".into() },
-            ],
+            required_tests: vec![TestDescription {
+                name: "test_read_secret".into(),
+                description: "Read".into(),
+            }],
             edge_cases: vec![],
             expected_test_count: 1,
         }];
@@ -369,21 +403,39 @@ fn test_bonus_test() { assert!(true); }
     #[test]
     fn edge_case_to_test_name_conversion() {
         assert_eq!(edge_case_to_test_name("Empty path → error"), "empty_path");
-        assert_eq!(edge_case_to_test_name("Token with invalid signature → 401"), "token_with_invalid_signature");
+        assert_eq!(
+            edge_case_to_test_name("Token with invalid signature → 401"),
+            "token_with_invalid_signature"
+        );
     }
 
     #[test]
     fn extract_rust_fn_name_variants() {
-        assert_eq!(extract_rust_fn_name("fn test_something() {"), Some("test_something".into()));
-        assert_eq!(extract_rust_fn_name("async fn test_async() {"), Some("test_async".into()));
-        assert_eq!(extract_rust_fn_name("pub fn test_pub() {"), Some("test_pub".into()));
+        assert_eq!(
+            extract_rust_fn_name("fn test_something() {"),
+            Some("test_something".into())
+        );
+        assert_eq!(
+            extract_rust_fn_name("async fn test_async() {"),
+            Some("test_async".into())
+        );
+        assert_eq!(
+            extract_rust_fn_name("pub fn test_pub() {"),
+            Some("test_pub".into())
+        );
         assert_eq!(extract_rust_fn_name("let x = 5;"), None);
     }
 
     #[test]
     fn extract_ts_test_name_variants() {
-        assert_eq!(extract_ts_test_name(r#"it("should do something", () => {"#), Some("should do something".into()));
-        assert_eq!(extract_ts_test_name(r#"test("my test", () => {"#), Some("my test".into()));
+        assert_eq!(
+            extract_ts_test_name(r#"it("should do something", () => {"#),
+            Some("should do something".into())
+        );
+        assert_eq!(
+            extract_ts_test_name(r#"test("my test", () => {"#),
+            Some("my test".into())
+        );
         assert_eq!(extract_ts_test_name("const x = 5;"), None);
     }
 

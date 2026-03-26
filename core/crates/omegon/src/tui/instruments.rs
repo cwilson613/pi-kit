@@ -14,9 +14,9 @@
 //!
 //! All use unified navy→teal→amber CIE L* perceptual color ramp.
 
+use super::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders};
-use super::theme::Theme;
 
 /// Scale an RGB color's brightness.
 fn dim_color(c: Color, factor: f64) -> Color {
@@ -34,80 +34,84 @@ fn dim_color(c: Color, factor: f64) -> Color {
 // ─── Color ramp (CIE L* perceptual) ────────────────────────────────────
 
 fn intensity_color(intensity: f64) -> Color {
-    if intensity < 0.005 { return Color::Rgb(0, 1, 3); }
+    if intensity < 0.005 {
+        return Color::Rgb(0, 1, 3);
+    }
     // Alpharius teal ramp — avoids the green/olive mid-range of the old CIE L* curve.
     // sqrt for perceptual evenness: dim values get more color range.
     let i = intensity.clamp(0.0, 1.0).sqrt();
     Color::Rgb(
-        (1.0 + i * 41.0) as u8,    // 1 → 42
-        (2.0 + i * 178.0) as u8,   // 2 → 180
-        (3.0 + i * 197.0) as u8,   // 3 → 200
+        (1.0 + i * 41.0) as u8,  // 1 → 42
+        (2.0 + i * 178.0) as u8, // 2 → 180
+        (3.0 + i * 197.0) as u8, // 3 → 200
     )
 }
 
-fn bg_color() -> Color { Color::Rgb(0, 1, 3) }
+fn bg_color() -> Color {
+    Color::Rgb(0, 1, 3)
+}
 
 /// Compact glyph+label for the instrument panel. Keeps tool rows readable
 /// even in narrow terminals. Format: "⌘ label" — 2-char glyph prefix + short name.
 fn tool_short_name(name: &str) -> String {
     let (glyph, label) = match name {
         // ── Core file ops ──
-        "bash"              => ("⌘", "sh"),
-        "read" | "Read"     => ("◇", "read"),
-        "write" | "Write"   => ("◆", "write"),
-        "edit" | "Edit"     => ("✎", "edit"),
-        "view"              => ("◈", "view"),
+        "bash" => ("⌘", "sh"),
+        "read" | "Read" => ("◇", "read"),
+        "write" | "Write" => ("◆", "write"),
+        "edit" | "Edit" => ("✎", "edit"),
+        "view" => ("◈", "view"),
         // ── Git / speculate ──
-        "commit"            => ("⊕", "commit"),
-        "speculate_start"   => ("⊘", "spec∘"),
-        "speculate_check"   => ("⊘", "spec?"),
-        "speculate_commit"  => ("⊘", "spec✓"),
-        "speculate_rollback"=> ("⊘", "spec✗"),
+        "commit" => ("⊕", "commit"),
+        "speculate_start" => ("⊘", "spec∘"),
+        "speculate_check" => ("⊘", "spec?"),
+        "speculate_commit" => ("⊘", "spec✓"),
+        "speculate_rollback" => ("⊘", "spec✗"),
         // ── Memory ──
-        "memory_store"      => ("▪", "mem+"),
-        "memory_recall"     => ("▫", "recall"),
-        "memory_query"      => ("▫", "memq"),
-        "memory_archive"    => ("▪", "mem⌫"),
-        "memory_supersede"  => ("▪", "mem↻"),
-        "memory_connect"    => ("▪", "mem⊷"),
-        "memory_focus"      => ("▪", "focus"),
-        "memory_release"    => ("▪", "unfoc"),
-        "memory_episodes"   => ("▫", "epis"),
-        "memory_compact"    => ("▪", "compct"),
+        "memory_store" => ("▪", "mem+"),
+        "memory_recall" => ("▫", "recall"),
+        "memory_query" => ("▫", "memq"),
+        "memory_archive" => ("▪", "mem⌫"),
+        "memory_supersede" => ("▪", "mem↻"),
+        "memory_connect" => ("▪", "mem⊷"),
+        "memory_focus" => ("▪", "focus"),
+        "memory_release" => ("▪", "unfoc"),
+        "memory_episodes" => ("▫", "epis"),
+        "memory_compact" => ("▪", "compct"),
         "memory_search_archive" => ("▫", "marcv"),
         "memory_ingest_lifecycle" => ("▪", "mingt"),
         // ── Design + lifecycle ──
-        "design_tree"       => ("△", "d.tree"),
-        "design_tree_update"=> ("▲", "d.tree↑"),
-        "openspec_manage"   => ("◎", "opsx"),
+        "design_tree" => ("△", "d.tree"),
+        "design_tree_update" => ("▲", "d.tree↑"),
+        "openspec_manage" => ("◎", "opsx"),
         // ── Cleave / decomposition ──
-        "cleave_assess"     => ("⟁", "assess"),
-        "cleave_run"        => ("⟁", "cleave"),
-        "delegate"          => ("⇉", "deleg"),
-        "delegate_result"   => ("⇉", "d.res"),
-        "delegate_status"   => ("⇉", "d.stat"),
+        "cleave_assess" => ("⟁", "assess"),
+        "cleave_run" => ("⟁", "cleave"),
+        "delegate" => ("⇉", "deleg"),
+        "delegate_result" => ("⇉", "d.res"),
+        "delegate_status" => ("⇉", "d.stat"),
         // ── Web / render ──
-        "web_search"        => ("⊕", "search"),
-        "render_diagram"    => ("⬡", "diag"),
+        "web_search" => ("⊕", "search"),
+        "render_diagram" => ("⬡", "diag"),
         "generate_image_local" => ("⬡", "img"),
         // ── Local inference ──
-        "ask_local_model"   => ("⊛", "local"),
+        "ask_local_model" => ("⊛", "local"),
         "list_local_models" => ("⊛", "l.list"),
-        "manage_ollama"     => ("⊛", "ollama"),
+        "manage_ollama" => ("⊛", "ollama"),
         // ── Settings / meta ──
-        "set_model_tier"    => ("⚙", "tier"),
-        "set_thinking_level"=> ("⚙", "think"),
+        "set_model_tier" => ("⚙", "tier"),
+        "set_thinking_level" => ("⚙", "think"),
         "switch_to_offline_driver" => ("⚙", "offln"),
-        "manage_tools"      => ("⚙", "tools"),
-        "whoami"            => ("⚙", "whoami"),
-        "chronos"           => ("⚙", "chrono"),
-        "change"            => ("⚙", "change"),
+        "manage_tools" => ("⚙", "tools"),
+        "whoami" => ("⚙", "whoami"),
+        "chronos" => ("⚙", "chrono"),
+        "change" => ("⚙", "change"),
         // ── Auth / persona ──
-        "auth_status"       => ("⚿", "auth"),
-        "harness_settings"  => ("⚿", "hrnss"),
-        "switch_persona"    => ("⚿", "persna"),
-        "switch_tone"       => ("⚿", "tone"),
-        "list_personas"     => ("⚿", "pers?"),
+        "auth_status" => ("⚿", "auth"),
+        "harness_settings" => ("⚿", "hrnss"),
+        "switch_persona" => ("⚿", "persna"),
+        "switch_tone" => ("⚿", "tone"),
+        "list_personas" => ("⚿", "pers?"),
         // ── Fallback: truncate ──
         other => return other.to_string(),
     };
@@ -115,8 +119,8 @@ fn tool_short_name(name: &str) -> String {
 }
 
 const NOISE_CHARS: &[char] = &[
-    '▏', '▎', '▍', '░', '▌', '▐', '▒', '┤', '├', '│', '─',
-    '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫', '█', '╬', '■', '◆',
+    '▏', '▎', '▍', '░', '▌', '▐', '▒', '┤', '├', '│', '─', '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫',
+    '█', '╬', '■', '◆',
 ];
 
 // ─── Wave direction ─────────────────────────────────────────────────────
@@ -142,7 +146,14 @@ struct MindState {
 impl MindState {
     fn new(name: &str, active: bool) -> Self {
         let w = 80;
-        Self { name: name.into(), active, fact_count: 0, wave: vec![0.0; w], velocity: vec![0.0; w], damping: 0.92 }
+        Self {
+            name: name.into(),
+            active,
+            fact_count: 0,
+            wave: vec![0.0; w],
+            velocity: vec![0.0; w],
+            damping: 0.92,
+        }
     }
 
     fn pluck(&mut self, direction: WaveDirection) {
@@ -176,7 +187,9 @@ impl MindState {
 
     fn update(&mut self) {
         let w = self.wave.len();
-        if w < 3 { return; }
+        if w < 3 {
+            return;
+        }
         let c2 = 0.3;
         let mut accel = vec![0.0; w];
         for i in 1..w - 1 {
@@ -243,8 +256,12 @@ impl Default for InstrumentPanel {
 impl InstrumentPanel {
     /// Update mind fact counts from footer data.
     pub fn update_mind_facts(&mut self, total_facts: usize, working_memory: usize) {
-        if !self.minds.is_empty() { self.minds[0].fact_count = total_facts; }
-        if self.minds.len() > 1 { self.minds[1].fact_count = working_memory; }
+        if !self.minds.is_empty() {
+            self.minds[0].fact_count = total_facts;
+        }
+        if self.minds.len() > 1 {
+            self.minds[1].fact_count = working_memory;
+        }
     }
 
     /// Update telemetry from harness state.
@@ -267,9 +284,15 @@ impl InstrumentPanel {
         self.thinking_active = agent_active;
         let target = if agent_active {
             match thinking_level {
-                "high" => 0.85, "medium" => 0.6, "low" => 0.35, "minimal" => 0.15, _ => 0.1,
+                "high" => 0.85,
+                "medium" => 0.6,
+                "low" => 0.35,
+                "minimal" => 0.15,
+                _ => 0.1,
             }
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         self.thinking_intensity += (target - self.thinking_intensity) * dt * 3.0;
 
         // Tool: register call
@@ -279,7 +302,10 @@ impl InstrumentPanel {
         if let Some(name) = tool_name {
             if let Some(entry) = self.tools.iter_mut().find(|t| t.name == name) {
                 entry.last_called = self.time;
-                if tool_error { entry.is_error = true; entry.error_ttl = 5.0; }
+                if tool_error {
+                    entry.is_error = true;
+                    entry.error_ttl = 5.0;
+                }
             } else {
                 self.tools.push(ToolEntry {
                     name: name.to_string(),
@@ -293,7 +319,9 @@ impl InstrumentPanel {
         for tool in &mut self.tools {
             if tool.is_error {
                 tool.error_ttl -= dt;
-                if tool.error_ttl <= 0.0 { tool.is_error = false; }
+                if tool.error_ttl <= 0.0 {
+                    tool.is_error = false;
+                }
             }
         }
 
@@ -311,7 +339,9 @@ impl InstrumentPanel {
 
         // Update wave physics
         for mind in &mut self.minds {
-            if mind.active { mind.update(); }
+            if mind.active {
+                mind.update();
+            }
         }
     }
 
@@ -322,10 +352,14 @@ impl InstrumentPanel {
         }
     }
 
-    pub fn toggle_focus(&mut self) { self.focus_mode = !self.focus_mode; }
+    pub fn toggle_focus(&mut self) {
+        self.focus_mode = !self.focus_mode;
+    }
 
     pub fn render(&mut self, area: Rect, frame: &mut Frame, t: &dyn Theme) {
-        if area.width < 20 || area.height < 4 { return; }
+        if area.width < 20 || area.height < 4 {
+            return;
+        }
 
         // Dim borders at idle, theme-bright after first tool call
         let (border, label) = if self.has_ever_fired {
@@ -334,10 +368,8 @@ impl InstrumentPanel {
             (dim_color(t.border_dim(), 0.5), dim_color(t.dim(), 0.55))
         };
 
-        let panels = Layout::horizontal([
-            Constraint::Percentage(55),
-            Constraint::Percentage(45),
-        ]).split(area);
+        let panels = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area);
 
         self.render_inference(panels[0], frame, border, label);
         self.render_tools(panels[1], frame, border, label);
@@ -351,15 +383,27 @@ impl InstrumentPanel {
             .title(Span::styled(" inference ", Style::default().fg(label)));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        if inner.width < 10 || inner.height < 3 { return; }
+        if inner.width < 10 || inner.height < 3 {
+            return;
+        }
 
         let buf = frame.buffer_mut();
-        let active_minds: Vec<usize> = self.minds.iter().enumerate()
-            .filter(|(_, m)| m.active).map(|(i, _)| i).collect();
+        let active_minds: Vec<usize> = self
+            .minds
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.active)
+            .map(|(i, _)| i)
+            .collect();
 
         // Context bar: top 2 rows
         let bar_h = 2u16.min(inner.height);
-        let bar_area = Rect { x: inner.x, y: inner.y, width: inner.width, height: bar_h };
+        let bar_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: bar_h,
+        };
         self.render_context_bar(bar_area, buf);
 
         // Tree + memory strings: break through the left border
@@ -367,7 +411,8 @@ impl InstrumentPanel {
             // Start at the panel's left BORDER (area.x, not inner.x)
             // so the tree trunk overlays the border character
             let tree_area = Rect {
-                x: area.x, y: inner.y + bar_h,
+                x: area.x,
+                y: inner.y + bar_h,
                 width: inner.width + 1, // include border column
                 height: inner.height - bar_h,
             };
@@ -385,7 +430,9 @@ impl InstrumentPanel {
             for x in 0..w {
                 let intensity = if x < fill_cols {
                     (x as f64 / fill_cols.max(1) as f64) * self.context_fill
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
 
                 let is_glitch = thinking && {
                     // Offset hash by row for visual variance between rows
@@ -395,8 +442,10 @@ impl InstrumentPanel {
 
                 let y = area.y + row as u16;
                 if is_glitch {
-                    let idx = ((x * 7 + row * 23 + (self.time * 12.0) as usize) * 13) % NOISE_CHARS.len();
-                    let color = intensity_color((intensity + self.thinking_intensity * 0.3).min(1.0));
+                    let idx =
+                        ((x * 7 + row * 23 + (self.time * 12.0) as usize) * 13) % NOISE_CHARS.len();
+                    let color =
+                        intensity_color((intensity + self.thinking_intensity * 0.3).min(1.0));
                     if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
                         cell.set_char(NOISE_CHARS[idx]);
                         cell.set_fg(color);
@@ -423,7 +472,9 @@ impl InstrumentPanel {
             let label = format!(" {}%", pct);
             let color = intensity_color(self.context_fill);
             for (i, ch) in label.chars().enumerate() {
-                if i >= w { break; }
+                if i >= w {
+                    break;
+                }
                 let pos = Position::new(area.x + i as u16, area.y + 1);
                 // Only write label if the cell wasn't already glitched
                 if let Some(cell) = buf.cell_mut(pos) {
@@ -443,7 +494,9 @@ impl InstrumentPanel {
 
         for (row_idx, &mind_idx) in active_minds.iter().enumerate() {
             let y = area.y + row_idx as u16;
-            if y >= area.bottom() { break; }
+            if y >= area.bottom() {
+                break;
+            }
             let mind = &self.minds[mind_idx];
             let is_last = row_idx == n - 1;
 
@@ -481,7 +534,9 @@ impl InstrumentPanel {
             };
             for (i, ch) in label.chars().enumerate() {
                 let x = name_start + i;
-                if x >= w { break; }
+                if x >= w {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
                     cell.set_char(ch);
                     cell.set_fg(name_color);
@@ -497,7 +552,9 @@ impl InstrumentPanel {
             let wave_len = mind.wave.len();
             for wx in 0..wave_w {
                 let x = wave_start + wx;
-                if x >= w { break; }
+                if x >= w {
+                    break;
+                }
 
                 // Sample two adjacent wave points (one per braille column)
                 let pos0 = (wx as f64 * 2.0 / (wave_w as f64 * 2.0)) * wave_len as f64;
@@ -510,8 +567,18 @@ impl InstrumentPanel {
                 let row1 = (1.5 - d1 * 0.8).clamp(0.0, 3.0) as u8;
 
                 // Braille dot bits: col0=[0x01,0x02,0x04,0x40] col1=[0x08,0x10,0x20,0x80]
-                let bit0 = match row0 { 0 => 0x01, 1 => 0x02, 2 => 0x04, _ => 0x40 };
-                let bit1 = match row1 { 0 => 0x08, 1 => 0x10, 2 => 0x20, _ => 0x80 };
+                let bit0 = match row0 {
+                    0 => 0x01,
+                    1 => 0x02,
+                    2 => 0x04,
+                    _ => 0x40,
+                };
+                let bit1 = match row1 {
+                    0 => 0x08,
+                    1 => 0x10,
+                    2 => 0x20,
+                    _ => 0x80,
+                };
 
                 let amp = d0.abs().max(d1.abs());
                 let dots = if amp < 0.02 {
@@ -522,7 +589,11 @@ impl InstrumentPanel {
 
                 let ch = char::from_u32(0x2800 + dots as u32).unwrap_or('·');
                 let intensity = (amp * 0.5).min(1.0);
-                let color = if intensity > 0.01 { intensity_color(intensity) } else { Color::Rgb(20, 40, 55) };
+                let color = if intensity > 0.01 {
+                    intensity_color(intensity)
+                } else {
+                    Color::Rgb(20, 40, 55)
+                };
                 if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
                     cell.set_char(ch);
                     cell.set_fg(color);
@@ -540,7 +611,9 @@ impl InstrumentPanel {
             .title(Span::styled(" tools ", Style::default().fg(label)));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        if inner.width < 15 || inner.height < 2 { return; }
+        if inner.width < 15 || inner.height < 2 {
+            return;
+        }
 
         let buf = frame.buffer_mut();
         let w = inner.width as usize;
@@ -549,82 +622,150 @@ impl InstrumentPanel {
 
         // Sort by recency
         let mut sorted: Vec<&ToolEntry> = self.tools.iter().collect();
-        sorted.sort_by(|a, b| b.last_called.partial_cmp(&a.last_called).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.last_called
+                .partial_cmp(&a.last_called)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for (row, tool) in sorted.iter().enumerate() {
             let y = inner.y + row as u16;
-            if y >= inner.bottom().saturating_sub(1) { break; } // leave room for footer
+            if y >= inner.bottom().saturating_sub(1) {
+                break;
+            } // leave room for footer
 
             let age = (self.time - tool.last_called).max(0.0);
-            let recency = if age > 120.0 { 0.0 } else { (1.0 - age / 120.0).max(0.0) };
+            let recency = if age > 120.0 {
+                0.0
+            } else {
+                (1.0 - age / 120.0).max(0.0)
+            };
 
             let indicator = if age < 2.0 { "▸ " } else { "  " };
-            let ind_color = if tool.is_error { Color::Rgb(224, 72, 72) }
-                else if age < 2.0 { Color::Rgb(42, 180, 200) }
-                else { Color::Rgb(20, 40, 55) };
+            let ind_color = if tool.is_error {
+                Color::Rgb(224, 72, 72)
+            } else if age < 2.0 {
+                Color::Rgb(42, 180, 200)
+            } else {
+                Color::Rgb(20, 40, 55)
+            };
             // Tool colors: dim teal → bright teal/cyan (alpharius palette)
             let tool_color = |r: f64| -> Color {
-                if r < 0.01 { return Color::Rgb(12, 24, 32); }
+                if r < 0.01 {
+                    return Color::Rgb(12, 24, 32);
+                }
                 let r = r.clamp(0.0, 1.0);
                 // Dark teal at low recency, bright alpharius teal at high
                 // Matches primary (#2ab4c8) at full intensity
                 Color::Rgb(
-                    (12.0 + r * 30.0) as u8,    // 12 → 42
-                    (24.0 + r * 156.0) as u8,   // 24 → 180
-                    (32.0 + r * 168.0) as u8,    // 32 → 200
+                    (12.0 + r * 30.0) as u8,  // 12 → 42
+                    (24.0 + r * 156.0) as u8, // 24 → 180
+                    (32.0 + r * 168.0) as u8, // 32 → 200
                 )
             };
-            let name_color = if tool.is_error { Color::Rgb(224, 72, 72) }
-                else if recency > 0.1 { tool_color(recency) }
-                else { Color::Rgb(48, 64, 80) };
+            let name_color = if tool.is_error {
+                Color::Rgb(224, 72, 72)
+            } else if recency > 0.1 {
+                tool_color(recency)
+            } else {
+                Color::Rgb(48, 64, 80)
+            };
             let bar_filled = (recency * bar_w as f64) as usize;
-            let bar_color = if tool.is_error { Color::Rgb(224, 72, 72) } else { tool_color(recency) };
+            let bar_color = if tool.is_error {
+                Color::Rgb(224, 72, 72)
+            } else {
+                tool_color(recency)
+            };
 
-            let time_str = if age > 999.0 { "   ·".to_string() }
-                else if age > 60.0 { format!("{:>3.0}m", age / 60.0) }
-                else { format!("{:>3.0}s", age) };
+            let time_str = if age > 999.0 {
+                "   ·".to_string()
+            } else if age > 60.0 {
+                format!("{:>3.0}m", age / 60.0)
+            } else {
+                format!("{:>3.0}s", age)
+            };
 
             let mut x = inner.x;
             for ch in indicator.chars() {
-                if x >= inner.right() { break; }
+                if x >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
-                    cell.set_char(ch); cell.set_fg(ind_color); cell.set_bg(bg_color());
+                    cell.set_char(ch);
+                    cell.set_fg(ind_color);
+                    cell.set_bg(bg_color());
                 }
                 x += 1;
             }
             let short = tool_short_name(&tool.name);
-            let display_name = if short.len() > name_w - 2 { &short[..name_w - 2] } else { short.as_str() };
+            let display_name = if short.len() > name_w - 2 {
+                &short[..name_w - 2]
+            } else {
+                short.as_str()
+            };
             for ch in display_name.chars() {
-                if x >= inner.right() { break; }
+                if x >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
-                    cell.set_char(ch); cell.set_fg(name_color); cell.set_bg(bg_color());
+                    cell.set_char(ch);
+                    cell.set_fg(name_color);
+                    cell.set_bg(bg_color());
                 }
                 x += 1;
             }
             while x < inner.x + 2 + name_w as u16 {
-                if x >= inner.right() { break; }
-                if let Some(cell) = buf.cell_mut(Position::new(x, y)) { cell.set_char(' '); cell.set_bg(bg_color()); }
+                if x >= inner.right() {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(bg_color());
+                }
                 x += 1;
             }
             // Bar character degrades with recency — three visual channels:
             // fill length (how much bar), color (teal intensity), character (signal density)
-            let bar_char = if recency > 0.7 { '≋' }      // strong — just fired
-                else if recency > 0.3 { '≈' }             // recent — decaying
-                else if recency > 0.05 { '∿' }            // fading echo
-                else { '·' };                              // nearly silent
+            let bar_char = if recency > 0.7 {
+                '≋'
+            }
+            // strong — just fired
+            else if recency > 0.3 {
+                '≈'
+            }
+            // recent — decaying
+            else if recency > 0.05 {
+                '∿'
+            }
+            // fading echo
+            else {
+                '·'
+            }; // nearly silent
             for i in 0..bar_w {
-                if x >= inner.right() { break; }
+                if x >= inner.right() {
+                    break;
+                }
                 let ch = if i < bar_filled { bar_char } else { '·' };
-                let c = if i < bar_filled { bar_color } else { Color::Rgb(16, 28, 36) };
+                let c = if i < bar_filled {
+                    bar_color
+                } else {
+                    Color::Rgb(16, 28, 36)
+                };
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
-                    cell.set_char(ch); cell.set_fg(c); cell.set_bg(bg_color());
+                    cell.set_char(ch);
+                    cell.set_fg(c);
+                    cell.set_bg(bg_color());
                 }
                 x += 1;
             }
             for ch in time_str.chars() {
-                if x >= inner.right() { break; }
+                if x >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
-                    cell.set_char(ch); cell.set_fg(Color::Rgb(48, 64, 80)); cell.set_bg(bg_color());
+                    cell.set_char(ch);
+                    cell.set_fg(Color::Rgb(48, 64, 80));
+                    cell.set_bg(bg_color());
                 }
                 x += 1;
             }
@@ -633,14 +774,22 @@ impl InstrumentPanel {
         // Footer
         let footer_y = inner.bottom().saturating_sub(1);
         if footer_y > inner.y + sorted.len() as u16 {
-            let active = self.tools.iter().filter(|t| self.time - t.last_called < 120.0).count();
+            let active = self
+                .tools
+                .iter()
+                .filter(|t| self.time - t.last_called < 120.0)
+                .count();
             let total = self.tools.len();
             let footer = format!("  {active}/{total} active");
             for (i, ch) in footer.chars().enumerate() {
                 let x = inner.x + i as u16;
-                if x >= inner.right() { break; }
+                if x >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut(Position::new(x, footer_y)) {
-                    cell.set_char(ch); cell.set_fg(Color::Rgb(48, 64, 80)); cell.set_bg(bg_color());
+                    cell.set_char(ch);
+                    cell.set_fg(Color::Rgb(48, 64, 80));
+                    cell.set_bg(bg_color());
                 }
             }
         }
@@ -673,13 +822,23 @@ mod tests {
         let mut mind = MindState::new("test", true);
         mind.pluck(WaveDirection::Right);
         // Let wave build up from velocity
-        for _ in 0..20 { mind.update(); }
+        for _ in 0..20 {
+            mind.update();
+        }
         let peak = mind.max_amplitude();
-        assert!(peak > 0.01, "wave should have amplitude after pluck: {peak:.3}");
+        assert!(
+            peak > 0.01,
+            "wave should have amplitude after pluck: {peak:.3}"
+        );
         // Let it dampen
-        for _ in 0..500 { mind.update(); }
+        for _ in 0..500 {
+            mind.update();
+        }
         let final_amp = mind.max_amplitude();
-        assert!(final_amp < peak * 0.5, "wave should dampen: peak={peak:.3} final={final_amp:.3}");
+        assert!(
+            final_amp < peak * 0.5,
+            "wave should dampen: peak={peak:.3} final={final_amp:.3}"
+        );
     }
 
     #[test]

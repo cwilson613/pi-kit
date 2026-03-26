@@ -69,7 +69,9 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
         tokio::join!(
             // Network probes run immediately (they have real latency)
-            async { let _ = tx2.send(probe_local().await); },
+            async {
+                let _ = tx2.send(probe_local().await);
+            },
             // Fast probes stagger at ~50ms intervals for visual cascade
             async {
                 let _ = tx1.send(probe_cloud());
@@ -89,7 +91,8 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
                 let _ = tx9.send(probe_mcp(&cwd3));
             },
         )
-    }).await;
+    })
+    .await;
 }
 
 /// Classify probe results into a capability tier.
@@ -100,18 +103,23 @@ pub fn classify_tier(results: &[ProbeResult]) -> CapabilityTier {
 
     // Full cloud: any major cloud provider key present
     if let Some(r) = cloud
-        && r.state == ProbeState::Done && (r.summary.contains("anthropic") || r.summary.contains("openai")) {
-            return CapabilityTier::FullCloud;
-        }
+        && r.state == ProbeState::Done
+        && (r.summary.contains("anthropic") || r.summary.contains("openai"))
+    {
+        return CapabilityTier::FullCloud;
+    }
 
     // Beefy local: Ollama with models + sufficient RAM
-    let has_good_local = local
-        .is_some_and(|r| r.state == ProbeState::Done && !r.summary.contains("no models"));
-    let has_beefy_hw = hw
-        .is_some_and(|r| r.state == ProbeState::Done && (
-            r.summary.contains("32GB") || r.summary.contains("64GB")
-            || r.summary.contains("96GB") || r.summary.contains("128GB")
-            || r.summary.contains("192GB")));
+    let has_good_local =
+        local.is_some_and(|r| r.state == ProbeState::Done && !r.summary.contains("no models"));
+    let has_beefy_hw = hw.is_some_and(|r| {
+        r.state == ProbeState::Done
+            && (r.summary.contains("32GB")
+                || r.summary.contains("64GB")
+                || r.summary.contains("96GB")
+                || r.summary.contains("128GB")
+                || r.summary.contains("192GB"))
+    });
 
     if has_good_local && has_beefy_hw {
         return CapabilityTier::BeefyLocal;
@@ -119,9 +127,11 @@ pub fn classify_tier(results: &[ProbeResult]) -> CapabilityTier {
 
     // Free cloud: OpenRouter key present
     if let Some(r) = cloud
-        && r.state == ProbeState::Done && r.summary.contains("openrouter") {
-            return CapabilityTier::FreeCloud;
-        }
+        && r.state == ProbeState::Done
+        && r.summary.contains("openrouter")
+    {
+        return CapabilityTier::FreeCloud;
+    }
 
     // Small local: Ollama running with any model
     if has_good_local {
@@ -178,18 +188,28 @@ fn probe_cloud() -> ProbeResult {
 
     // Also check stored credentials using canonical provider map
     for p in crate::auth::PROVIDERS {
-        if matches!(p.auth_method, crate::auth::AuthMethod::OAuth | crate::auth::AuthMethod::ApiKey)
-            && crate::auth::read_credentials(p.auth_key)
-                .is_some_and(|c| !c.access.is_empty())
-                && !providers.contains(&p.id) {
-                    providers.push(p.id);
-                }
+        if matches!(
+            p.auth_method,
+            crate::auth::AuthMethod::OAuth | crate::auth::AuthMethod::ApiKey
+        ) && crate::auth::read_credentials(p.auth_key).is_some_and(|c| !c.access.is_empty())
+            && !providers.contains(&p.id)
+        {
+            providers.push(p.id);
+        }
     }
 
     if providers.is_empty() {
-        ProbeResult { label: "cloud", state: ProbeState::Failed, summary: "none".into() }
+        ProbeResult {
+            label: "cloud",
+            state: ProbeState::Failed,
+            summary: "none".into(),
+        }
     } else {
-        ProbeResult { label: "cloud", state: ProbeState::Done, summary: providers.join(", ") }
+        ProbeResult {
+            label: "cloud",
+            state: ProbeState::Done,
+            summary: providers.join(", "),
+        }
     }
 }
 
@@ -211,8 +231,11 @@ async fn probe_local() -> ProbeResult {
                 Ok(resp) => match resp.text().await {
                     Ok(body) => {
                         let count = body.matches("\"name\"").count();
-                        if count > 0 { Some(format!("ollama: {count}")) }
-                        else { Some("ollama: no models".into()) }
+                        if count > 0 {
+                            Some(format!("ollama: {count}"))
+                        } else {
+                            Some("ollama: no models".into())
+                        }
                     }
                     Err(_) => None,
                 },
@@ -220,21 +243,37 @@ async fn probe_local() -> ProbeResult {
             }
         },
         async {
-            c2.get("http://localhost:1234/v1/models").send().await
-                .ok().filter(|r| r.status().is_success()).map(|_| "lmstudio".to_string())
+            c2.get("http://localhost:1234/v1/models")
+                .send()
+                .await
+                .ok()
+                .filter(|r| r.status().is_success())
+                .map(|_| "lmstudio".to_string())
         },
         async {
-            c3.get("http://localhost:8080/v1/models").send().await
-                .ok().filter(|r| r.status().is_success()).map(|_| "vllm".to_string())
+            c3.get("http://localhost:8080/v1/models")
+                .send()
+                .await
+                .ok()
+                .filter(|r| r.status().is_success())
+                .map(|_| "vllm".to_string())
         },
     );
 
     let found: Vec<String> = [ollama, lmstudio, vllm].into_iter().flatten().collect();
 
     if found.is_empty() {
-        ProbeResult { label: "local", state: ProbeState::Failed, summary: "not found".into() }
+        ProbeResult {
+            label: "local",
+            state: ProbeState::Failed,
+            summary: "not found".into(),
+        }
     } else {
-        ProbeResult { label: "local", state: ProbeState::Done, summary: found.join(", ") }
+        ProbeResult {
+            label: "local",
+            state: ProbeState::Done,
+            summary: found.join(", "),
+        }
     }
 }
 
@@ -254,18 +293,24 @@ fn probe_hardware() -> ProbeResult {
 
         // RAM via sysctl
         if let Some(out) = timed_command("sysctl", &["-n", "hw.memsize"], 500)
-            && let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
-                let gb = bytes / (1024 * 1024 * 1024);
-                parts.push(format!("{gb}GB"));
-            }
+            && let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>()
+        {
+            let gb = bytes / (1024 * 1024 * 1024);
+            parts.push(format!("{gb}GB"));
+        }
     }
 
     #[cfg(target_os = "linux")]
     {
         // GPU via nvidia-smi (500ms timeout — nvidia-smi can be slow)
-        if let Some(out) = timed_command("nvidia-smi",
-            &["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"], 500)
-        {
+        if let Some(out) = timed_command(
+            "nvidia-smi",
+            &[
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            500,
+        ) {
             if out.status.success() {
                 let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if let Some((name, vram)) = line.split_once(',') {
@@ -307,19 +352,27 @@ fn probe_memory(cwd: &str) -> ProbeResult {
 
     for path in &facts_paths {
         if path.exists()
-            && let Ok(content) = std::fs::read_to_string(path) {
-                let count = content.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count();
-                if count > 0 {
-                    return ProbeResult {
-                        label: "memory",
-                        state: ProbeState::Done,
-                        summary: format!("{count} facts"),
-                    };
-                }
+            && let Ok(content) = std::fs::read_to_string(path)
+        {
+            let count = content
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .count();
+            if count > 0 {
+                return ProbeResult {
+                    label: "memory",
+                    state: ProbeState::Done,
+                    summary: format!("{count} facts"),
+                };
             }
+        }
     }
 
-    ProbeResult { label: "memory", state: ProbeState::Done, summary: "empty".into() }
+    ProbeResult {
+        label: "memory",
+        state: ProbeState::Done,
+        summary: "empty".into(),
+    }
 }
 
 fn probe_tools() -> ProbeResult {
@@ -335,34 +388,53 @@ fn probe_tools() -> ProbeResult {
 fn probe_design(cwd: &str) -> ProbeResult {
     let docs_dir = Path::new(cwd).join("docs");
     if !docs_dir.is_dir() {
-        return ProbeResult { label: "design", state: ProbeState::Done, summary: "empty".into() };
+        return ProbeResult {
+            label: "design",
+            state: ProbeState::Done,
+            summary: "empty".into(),
+        };
     }
 
     // Count .md files that have design-node frontmatter (id: field)
     let count = std::fs::read_dir(&docs_dir)
-        .map(|entries| entries.filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path().extension().is_some_and(|ext| ext == "md")
-                    && std::fs::read_to_string(e.path())
-                        .is_ok_and(|c| c.starts_with("---") && c.contains("\nid:"))
-            })
-            .count())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path().extension().is_some_and(|ext| ext == "md")
+                        && std::fs::read_to_string(e.path())
+                            .is_ok_and(|c| c.starts_with("---") && c.contains("\nid:"))
+                })
+                .count()
+        })
         .unwrap_or(0);
 
     ProbeResult {
         label: "design",
         state: ProbeState::Done,
-        summary: if count > 0 { format!("{count} nodes") } else { "empty".into() },
+        summary: if count > 0 {
+            format!("{count} nodes")
+        } else {
+            "empty".into()
+        },
     }
 }
 
 fn probe_secrets() -> ProbeResult {
     // Check vault availability with timeout (vault status can hang)
     if timed_command("vault", &["version"], 500).is_some() {
-        ProbeResult { label: "secrets", state: ProbeState::Done, summary: "vault".into() }
+        ProbeResult {
+            label: "secrets",
+            state: ProbeState::Done,
+            summary: "vault".into(),
+        }
     } else {
         // No vault — report keyring as fallback (always available on macOS/Linux)
-        ProbeResult { label: "secrets", state: ProbeState::Done, summary: "keyring".into() }
+        ProbeResult {
+            label: "secrets",
+            state: ProbeState::Done,
+            summary: "keyring".into(),
+        }
     }
 }
 
@@ -370,38 +442,50 @@ fn probe_container() -> ProbeResult {
     // Try podman first, then docker — with timeout (Docker Desktop can be slow)
     for (cmd, name) in &[("podman", "podman"), ("docker", "docker")] {
         if let Some(out) = timed_command(cmd, &["--version"], 1000)
-            && out.status.success() {
-                let ver = String::from_utf8_lossy(&out.stdout);
-                let version = ver.split_whitespace()
-                    .find(|s| s.chars().next().is_some_and(|c| c.is_ascii_digit()))
-                    .unwrap_or("unknown");
-                return ProbeResult {
-                    label: "container",
-                    state: ProbeState::Done,
-                    summary: format!("{name} {version}"),
-                };
-            }
+            && out.status.success()
+        {
+            let ver = String::from_utf8_lossy(&out.stdout);
+            let version = ver
+                .split_whitespace()
+                .find(|s| s.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .unwrap_or("unknown");
+            return ProbeResult {
+                label: "container",
+                state: ProbeState::Done,
+                summary: format!("{name} {version}"),
+            };
+        }
     }
 
-    ProbeResult { label: "container", state: ProbeState::Failed, summary: "not found".into() }
+    ProbeResult {
+        label: "container",
+        state: ProbeState::Failed,
+        summary: "not found".into(),
+    }
 }
 
 fn probe_mcp(cwd: &str) -> ProbeResult {
     // Count MCP server configs from plugin manifests
     let plugin_dir = Path::new(cwd).join(".omegon/plugins");
     if !plugin_dir.is_dir() {
-        return ProbeResult { label: "mcp", state: ProbeState::Done, summary: "none".into() };
+        return ProbeResult {
+            label: "mcp",
+            state: ProbeState::Done,
+            summary: "none".into(),
+        };
     }
 
     // Simple: count TOML files that contain [mcp]
     let count = std::fs::read_dir(&plugin_dir)
-        .map(|entries| entries.filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path().extension().is_some_and(|ext| ext == "toml")
-                    && std::fs::read_to_string(e.path())
-                        .is_ok_and(|c| c.contains("[mcp"))
-            })
-            .count())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path().extension().is_some_and(|ext| ext == "toml")
+                        && std::fs::read_to_string(e.path()).is_ok_and(|c| c.contains("[mcp"))
+                })
+                .count()
+        })
         .unwrap_or(0);
 
     if count > 0 {
@@ -411,7 +495,11 @@ fn probe_mcp(cwd: &str) -> ProbeResult {
             summary: format!("{count} server{}", if count == 1 { "" } else { "s" }),
         }
     } else {
-        ProbeResult { label: "mcp", state: ProbeState::Done, summary: "none".into() }
+        ProbeResult {
+            label: "mcp",
+            state: ProbeState::Done,
+            summary: "none".into(),
+        }
     }
 }
 
@@ -450,7 +538,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
-        std::fs::write(pi_dir.join("facts.jsonl"), "{\"id\":\"1\"}\n{\"id\":\"2\"}\n").unwrap();
+        std::fs::write(
+            pi_dir.join("facts.jsonl"),
+            "{\"id\":\"1\"}\n{\"id\":\"2\"}\n",
+        )
+        .unwrap();
         let result = probe_memory(tmp.path().to_str().unwrap());
         assert_eq!(result.summary, "2 facts");
     }
@@ -468,8 +560,16 @@ mod tests {
         let docs = tmp.path().join("docs");
         std::fs::create_dir_all(&docs).unwrap();
         // Real design nodes have frontmatter with id:
-        std::fs::write(docs.join("node-a.md"), "---\nid: node-a\ntitle: A\n---\n# A").unwrap();
-        std::fs::write(docs.join("node-b.md"), "---\nid: node-b\ntitle: B\n---\n# B").unwrap();
+        std::fs::write(
+            docs.join("node-a.md"),
+            "---\nid: node-a\ntitle: A\n---\n# A",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.join("node-b.md"),
+            "---\nid: node-b\ntitle: B\n---\n# B",
+        )
+        .unwrap();
         // These should NOT count
         std::fs::write(docs.join("readme.md"), "# Just a readme").unwrap();
         std::fs::write(docs.join("readme.txt"), "not md").unwrap();
@@ -480,9 +580,21 @@ mod tests {
     #[test]
     fn classify_tier_full_cloud() {
         let results = vec![
-            ProbeResult { label: "cloud", state: ProbeState::Done, summary: "anthropic, openai".into() },
-            ProbeResult { label: "local", state: ProbeState::Failed, summary: "not found".into() },
-            ProbeResult { label: "hardware", state: ProbeState::Done, summary: "M2 Pro, 32GB".into() },
+            ProbeResult {
+                label: "cloud",
+                state: ProbeState::Done,
+                summary: "anthropic, openai".into(),
+            },
+            ProbeResult {
+                label: "local",
+                state: ProbeState::Failed,
+                summary: "not found".into(),
+            },
+            ProbeResult {
+                label: "hardware",
+                state: ProbeState::Done,
+                summary: "M2 Pro, 32GB".into(),
+            },
         ];
         assert_eq!(classify_tier(&results), CapabilityTier::FullCloud);
     }
@@ -490,9 +602,21 @@ mod tests {
     #[test]
     fn classify_tier_beefy_local() {
         let results = vec![
-            ProbeResult { label: "cloud", state: ProbeState::Failed, summary: "none".into() },
-            ProbeResult { label: "local", state: ProbeState::Done, summary: "ollama: 7".into() },
-            ProbeResult { label: "hardware", state: ProbeState::Done, summary: "M2 Pro, 32GB".into() },
+            ProbeResult {
+                label: "cloud",
+                state: ProbeState::Failed,
+                summary: "none".into(),
+            },
+            ProbeResult {
+                label: "local",
+                state: ProbeState::Done,
+                summary: "ollama: 7".into(),
+            },
+            ProbeResult {
+                label: "hardware",
+                state: ProbeState::Done,
+                summary: "M2 Pro, 32GB".into(),
+            },
         ];
         assert_eq!(classify_tier(&results), CapabilityTier::BeefyLocal);
     }
@@ -500,9 +624,21 @@ mod tests {
     #[test]
     fn classify_tier_free_cloud() {
         let results = vec![
-            ProbeResult { label: "cloud", state: ProbeState::Done, summary: "openrouter".into() },
-            ProbeResult { label: "local", state: ProbeState::Failed, summary: "not found".into() },
-            ProbeResult { label: "hardware", state: ProbeState::Done, summary: "16GB".into() },
+            ProbeResult {
+                label: "cloud",
+                state: ProbeState::Done,
+                summary: "openrouter".into(),
+            },
+            ProbeResult {
+                label: "local",
+                state: ProbeState::Failed,
+                summary: "not found".into(),
+            },
+            ProbeResult {
+                label: "hardware",
+                state: ProbeState::Done,
+                summary: "16GB".into(),
+            },
         ];
         assert_eq!(classify_tier(&results), CapabilityTier::FreeCloud);
     }
@@ -510,9 +646,21 @@ mod tests {
     #[test]
     fn classify_tier_small_local() {
         let results = vec![
-            ProbeResult { label: "cloud", state: ProbeState::Failed, summary: "none".into() },
-            ProbeResult { label: "local", state: ProbeState::Done, summary: "ollama: 1".into() },
-            ProbeResult { label: "hardware", state: ProbeState::Done, summary: "16GB".into() },
+            ProbeResult {
+                label: "cloud",
+                state: ProbeState::Failed,
+                summary: "none".into(),
+            },
+            ProbeResult {
+                label: "local",
+                state: ProbeState::Done,
+                summary: "ollama: 1".into(),
+            },
+            ProbeResult {
+                label: "hardware",
+                state: ProbeState::Done,
+                summary: "16GB".into(),
+            },
         ];
         assert_eq!(classify_tier(&results), CapabilityTier::SmallLocal);
     }
@@ -520,9 +668,21 @@ mod tests {
     #[test]
     fn classify_tier_offline() {
         let results = vec![
-            ProbeResult { label: "cloud", state: ProbeState::Failed, summary: "none".into() },
-            ProbeResult { label: "local", state: ProbeState::Failed, summary: "not found".into() },
-            ProbeResult { label: "hardware", state: ProbeState::Done, summary: "8GB".into() },
+            ProbeResult {
+                label: "cloud",
+                state: ProbeState::Failed,
+                summary: "none".into(),
+            },
+            ProbeResult {
+                label: "local",
+                state: ProbeState::Failed,
+                summary: "not found".into(),
+            },
+            ProbeResult {
+                label: "hardware",
+                state: ProbeState::Done,
+                summary: "8GB".into(),
+            },
         ];
         assert_eq!(classify_tier(&results), CapabilityTier::Offline);
     }

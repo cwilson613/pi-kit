@@ -72,9 +72,7 @@ fn chrono_lite_timestamp() -> String {
     // Approximate date from days since epoch (1970-01-01)
     // Using a simplified algorithm — good enough for session IDs
     let (year, month, day) = days_to_ymd(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}-{minutes:02}-{seconds:02}"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}-{minutes:02}-{seconds:02}")
 }
 
 /// Convert days since Unix epoch to (year, month, day).
@@ -95,8 +93,13 @@ pub fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 }
 
 /// Save a session after the agent loop completes.
-pub fn save_session(conversation: &ConversationState, cwd: &Path, resume_id: Option<&str>) -> anyhow::Result<PathBuf> {
-    let dir = sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+pub fn save_session(
+    conversation: &ConversationState,
+    cwd: &Path,
+    resume_id: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    let dir =
+        sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     fs::create_dir_all(&dir)?;
 
     // When resuming, overwrite the original session file so the chain stays clean.
@@ -214,13 +217,16 @@ pub fn find_session(cwd: &Path, resume_arg: Option<&str>) -> Option<PathBuf> {
         }
         Some(id) => {
             // Match by session_id prefix or filename prefix
-            sessions.iter().find(|s| {
-                s.meta.session_id.starts_with(id)
-                    || s.path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with(id))
-            }).map(|s| s.path.clone())
+            sessions
+                .iter()
+                .find(|s| {
+                    s.meta.session_id.starts_with(id)
+                        || s.path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with(id))
+                })
+                .map(|s| s.path.clone())
         }
     }
 }
@@ -323,11 +329,19 @@ mod tests {
         for entry in fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
             let name = path.file_name().unwrap().to_str().unwrap().to_string();
-            if !name.ends_with(".meta.json") { continue; }
+            if !name.ends_with(".meta.json") {
+                continue;
+            }
             let session_path = path.with_file_name(name.replace(".meta.json", ".json"));
-            if !session_path.exists() { continue; }
-            let meta: SessionMeta = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-            entries.push(SessionEntry { path: session_path, meta });
+            if !session_path.exists() {
+                continue;
+            }
+            let meta: SessionMeta =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            entries.push(SessionEntry {
+                path: session_path,
+                meta,
+            });
         }
         entries
     }
@@ -379,6 +393,9 @@ mod tests {
 
     #[test]
     fn truncate_snippet_multiline() {
-        assert_eq!(truncate_snippet("first line\nsecond line", 80), "first line");
+        assert_eq!(
+            truncate_snippet("first line\nsecond line", 80),
+            "first line"
+        );
     }
 }

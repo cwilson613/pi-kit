@@ -68,12 +68,25 @@ mod tests {
             reason: "sensitive path".into(),
             path: "/etc/passwd".into(),
         };
-        audit.log_guard("bash", &serde_json::json!({"command": "cat /etc/passwd"}), &decision);
+        audit.log_guard(
+            "bash",
+            &serde_json::json!({"command": "cat /etc/passwd"}),
+            &decision,
+        );
 
         let content = std::fs::read_to_string(dir.path().join("secrets-audit.jsonl")).unwrap();
-        assert!(content.contains("\"tool\":\"bash\""), "should log tool name: {content}");
-        assert!(content.contains("\"decision\":\"block\""), "should log decision: {content}");
-        assert!(content.contains("/etc/passwd"), "should log path: {content}");
+        assert!(
+            content.contains("\"tool\":\"bash\""),
+            "should log tool name: {content}"
+        );
+        assert!(
+            content.contains("\"decision\":\"block\""),
+            "should log decision: {content}"
+        );
+        assert!(
+            content.contains("/etc/passwd"),
+            "should log path: {content}"
+        );
     }
 
     #[test]

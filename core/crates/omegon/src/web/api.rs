@@ -3,8 +3,8 @@
 //! GET /api/state — full agent state snapshot.
 //! Designed to be the canonical state shape that any web UI consumes.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Serialize;
 
 use super::WebState;
@@ -117,7 +117,7 @@ pub struct GraphNode {
     pub id: String,
     pub title: String,
     pub status: String,
-    pub group: u8,         // 0=seed, 1=exploring, 2=decided, 3=implementing, 4=implemented, 5=blocked
+    pub group: u8, // 0=seed, 1=exploring, 2=decided, 3=implementing, 4=implemented, 5=blocked
     pub questions: usize,
     pub has_openspec: bool,
 }
@@ -127,7 +127,7 @@ pub struct GraphLink {
     pub source: String,
     pub target: String,
     #[serde(rename = "type")]
-    pub link_type: String,  // "parent", "dependency", "related"
+    pub link_type: String, // "parent", "dependency", "related"
 }
 
 /// GET /api/graph — graph data for force-directed layout.
@@ -191,8 +191,15 @@ pub async fn get_state(State(state): State<WebState>) -> Json<StateSnapshot> {
 pub fn build_snapshot(state: &WebState) -> StateSnapshot {
     let mut design = DesignSnapshot {
         counts: DesignCounts {
-            total: 0, seed: 0, exploring: 0, resolved: 0, decided: 0,
-            implementing: 0, implemented: 0, blocked: 0, deferred: 0,
+            total: 0,
+            seed: 0,
+            exploring: 0,
+            resolved: 0,
+            decided: 0,
+            implementing: 0,
+            implemented: 0,
+            blocked: 0,
+            deferred: 0,
             open_questions: 0,
         },
         focused: None,
@@ -209,75 +216,79 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
 
     // Read lifecycle state
     if let Some(ref lp_lock) = state.handles.lifecycle
-        && let Ok(lp) = lp_lock.lock() {
-            let nodes = lp.all_nodes();
-            design.counts.total = nodes.len();
+        && let Ok(lp) = lp_lock.lock()
+    {
+        let nodes = lp.all_nodes();
+        design.counts.total = nodes.len();
 
-            for node in nodes.values() {
-                match node.status {
-                    NodeStatus::Seed => design.counts.seed += 1,
-                    NodeStatus::Exploring => design.counts.exploring += 1,
-                    NodeStatus::Resolved => design.counts.resolved += 1,
-                    NodeStatus::Decided => design.counts.decided += 1,
-                    NodeStatus::Implementing => design.counts.implementing += 1,
-                    NodeStatus::Implemented => design.counts.implemented += 1,
-                    NodeStatus::Blocked => design.counts.blocked += 1,
-                    NodeStatus::Deferred => design.counts.deferred += 1,
-                }
-                design.counts.open_questions += node.open_questions.len();
-
-                let brief = NodeBrief {
-                    id: node.id.clone(),
-                    title: node.title.clone(),
-                    status: node.status.as_str().to_string(),
-                    parent: node.parent.clone(),
-                    open_questions: node.open_questions.len(),
-                    openspec_change: node.openspec_change.clone(),
-                    dependencies: node.dependencies.clone(),
-                    branches: node.branches.clone(),
-                    tags: node.tags.clone(),
-                };
-
-                if matches!(node.status, NodeStatus::Implementing) {
-                    design.implementing.push(brief.clone());
-                }
-                if matches!(node.status, NodeStatus::Seed | NodeStatus::Exploring)
-                    && !node.open_questions.is_empty()
-                {
-                    design.actionable.push(brief.clone());
-                }
-                design.all_nodes.push(brief);
+        for node in nodes.values() {
+            match node.status {
+                NodeStatus::Seed => design.counts.seed += 1,
+                NodeStatus::Exploring => design.counts.exploring += 1,
+                NodeStatus::Resolved => design.counts.resolved += 1,
+                NodeStatus::Decided => design.counts.decided += 1,
+                NodeStatus::Implementing => design.counts.implementing += 1,
+                NodeStatus::Implemented => design.counts.implemented += 1,
+                NodeStatus::Blocked => design.counts.blocked += 1,
+                NodeStatus::Deferred => design.counts.deferred += 1,
             }
+            design.counts.open_questions += node.open_questions.len();
 
-            // Focused node
-            if let Some(id) = lp.focused_node_id()
-                && let Some(node) = lp.get_node(id) {
-                    let sections = crate::lifecycle::design::read_node_sections(node);
-                    let children = crate::lifecycle::design::get_children(nodes, id);
-                    design.focused = Some(FocusedNode {
-                        id: node.id.clone(),
-                        title: node.title.clone(),
-                        status: node.status.as_str().to_string(),
-                        open_questions: node.open_questions.clone(),
-                        decisions: sections.map(|s| s.decisions.len()).unwrap_or(0),
-                        children: children.len(),
-                    });
-            }
+            let brief = NodeBrief {
+                id: node.id.clone(),
+                title: node.title.clone(),
+                status: node.status.as_str().to_string(),
+                parent: node.parent.clone(),
+                open_questions: node.open_questions.len(),
+                openspec_change: node.openspec_change.clone(),
+                dependencies: node.dependencies.clone(),
+                branches: node.branches.clone(),
+                tags: node.tags.clone(),
+            };
 
-            // OpenSpec changes
-            for change in lp.changes() {
-                if matches!(change.stage, ChangeStage::Archived) { continue; }
-                openspec.total_tasks += change.total_tasks;
-                openspec.done_tasks += change.done_tasks;
-                openspec.changes.push(ChangeSnapshot {
-                    name: change.name.clone(),
-                    stage: change.stage.as_str().to_string(),
-                    has_specs: change.has_specs,
-                    has_tasks: change.has_tasks,
-                    total_tasks: change.total_tasks,
-                    done_tasks: change.done_tasks,
-                });
+            if matches!(node.status, NodeStatus::Implementing) {
+                design.implementing.push(brief.clone());
             }
+            if matches!(node.status, NodeStatus::Seed | NodeStatus::Exploring)
+                && !node.open_questions.is_empty()
+            {
+                design.actionable.push(brief.clone());
+            }
+            design.all_nodes.push(brief);
+        }
+
+        // Focused node
+        if let Some(id) = lp.focused_node_id()
+            && let Some(node) = lp.get_node(id)
+        {
+            let sections = crate::lifecycle::design::read_node_sections(node);
+            let children = crate::lifecycle::design::get_children(nodes, id);
+            design.focused = Some(FocusedNode {
+                id: node.id.clone(),
+                title: node.title.clone(),
+                status: node.status.as_str().to_string(),
+                open_questions: node.open_questions.clone(),
+                decisions: sections.map(|s| s.decisions.len()).unwrap_or(0),
+                children: children.len(),
+            });
+        }
+
+        // OpenSpec changes
+        for change in lp.changes() {
+            if matches!(change.stage, ChangeStage::Archived) {
+                continue;
+            }
+            openspec.total_tasks += change.total_tasks;
+            openspec.done_tasks += change.done_tasks;
+            openspec.changes.push(ChangeSnapshot {
+                name: change.name.clone(),
+                stage: change.stage.as_str().to_string(),
+                has_specs: change.has_specs,
+                has_tasks: change.has_tasks,
+                total_tasks: change.total_tasks,
+                done_tasks: change.done_tasks,
+            });
+        }
     }
 
     // Read cleave state
@@ -288,17 +299,33 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
                 total_children: cp.total_children,
                 completed: cp.completed,
                 failed: cp.failed,
-                children: cp.children.iter().map(|c| ChildSnapshot {
-                    label: c.label.clone(),
-                    status: c.status.clone(),
-                    duration_secs: c.duration_secs,
-                }).collect(),
+                children: cp
+                    .children
+                    .iter()
+                    .map(|c| ChildSnapshot {
+                        label: c.label.clone(),
+                        status: c.status.clone(),
+                        duration_secs: c.duration_secs,
+                    })
+                    .collect(),
             }
         } else {
-            CleaveSnapshot { active: false, total_children: 0, completed: 0, failed: 0, children: Vec::new() }
+            CleaveSnapshot {
+                active: false,
+                total_children: 0,
+                completed: 0,
+                failed: 0,
+                children: Vec::new(),
+            }
         }
     } else {
-        CleaveSnapshot { active: false, total_children: 0, completed: 0, failed: 0, children: Vec::new() }
+        CleaveSnapshot {
+            active: false,
+            total_children: 0,
+            completed: 0,
+            failed: 0,
+            children: Vec::new(),
+        }
     };
 
     // Read session stats from shared handle
@@ -309,7 +336,11 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
             compactions: ss.compactions,
         }
     } else {
-        SessionSnapshot { turns: 0, tool_calls: 0, compactions: 0 }
+        SessionSnapshot {
+            turns: 0,
+            tool_calls: 0,
+            compactions: 0,
+        }
     };
 
     StateSnapshot {
@@ -346,8 +377,12 @@ mod tests {
     #[test]
     fn graph_node_serializes() {
         let node = GraphNode {
-            id: "test".into(), title: "Test".into(), status: "exploring".into(),
-            group: 1, questions: 2, has_openspec: false,
+            id: "test".into(),
+            title: "Test".into(),
+            status: "exploring".into(),
+            group: 1,
+            questions: 2,
+            has_openspec: false,
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("\"group\":1"));
@@ -357,7 +392,9 @@ mod tests {
     #[test]
     fn graph_link_type_field_name() {
         let link = GraphLink {
-            source: "a".into(), target: "b".into(), link_type: "parent".into(),
+            source: "a".into(),
+            target: "b".into(),
+            link_type: "parent".into(),
         };
         let json = serde_json::to_string(&link).unwrap();
         // "type" not "link_type" due to #[serde(rename)]

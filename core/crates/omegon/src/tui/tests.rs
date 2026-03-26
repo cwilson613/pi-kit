@@ -8,7 +8,9 @@ use crate::settings::{ContextClass, Settings, ThinkingLevel};
 use tokio::sync::mpsc;
 
 fn test_settings() -> crate::settings::SharedSettings {
-    std::sync::Arc::new(std::sync::Mutex::new(Settings::new("anthropic:claude-sonnet-4-6")))
+    std::sync::Arc::new(std::sync::Mutex::new(Settings::new(
+        "anthropic:claude-sonnet-4-6",
+    )))
 }
 
 fn test_app() -> App {
@@ -155,12 +157,17 @@ fn slash_auth_no_args_shows_status() {
     let result = app.handle_slash_command("/auth", &tx);
     if let SlashResult::Display(text) = result {
         assert!(
-            text.to_lowercase().contains("auth") || text.contains("Provider") || text.contains("status"),
+            text.to_lowercase().contains("auth")
+                || text.contains("Provider")
+                || text.contains("status"),
             "should show auth info: {text}"
         );
     } else {
         // May return Handled if it opens an overlay
-        assert!(matches!(result, SlashResult::Handled | SlashResult::Display(_)));
+        assert!(matches!(
+            result,
+            SlashResult::Handled | SlashResult::Display(_)
+        ));
     }
 }
 
@@ -171,11 +178,16 @@ fn slash_memory_returns_stats() {
     let result = app.handle_slash_command("/memory", &tx);
     if let SlashResult::Display(text) = result {
         assert!(
-            text.to_lowercase().contains("memory") || text.contains("facts") || text.contains("Facts"),
+            text.to_lowercase().contains("memory")
+                || text.contains("facts")
+                || text.contains("Facts"),
             "should show memory info: {text}"
         );
     } else {
-        panic!("expected Display result, got {:?}", std::mem::discriminant(&result));
+        panic!(
+            "expected Display result, got {:?}",
+            std::mem::discriminant(&result)
+        );
     }
 }
 
@@ -185,7 +197,10 @@ fn slash_think_with_level_changes_settings() {
     let tx = test_tx();
     let result = app.handle_slash_command("/think high", &tx);
     if let SlashResult::Display(text) = result {
-        assert!(text.to_lowercase().contains("high"), "should confirm high: {text}");
+        assert!(
+            text.to_lowercase().contains("high"),
+            "should confirm high: {text}"
+        );
     }
     let s = app.settings.lock().unwrap();
     assert_eq!(s.thinking, ThinkingLevel::High);
@@ -196,9 +211,15 @@ fn slash_think_no_args_opens_selector() {
     let mut app = test_app();
     let tx = test_tx();
     let result = app.handle_slash_command("/think", &tx);
-    assert!(matches!(result, SlashResult::Handled), "should open selector");
+    assert!(
+        matches!(result, SlashResult::Handled),
+        "should open selector"
+    );
     assert!(app.selector.is_some(), "selector should be open");
-    assert!(matches!(app.selector_kind, Some(SelectorKind::ThinkingLevel)));
+    assert!(matches!(
+        app.selector_kind,
+        Some(SelectorKind::ThinkingLevel)
+    ));
 }
 
 #[test]
@@ -226,7 +247,10 @@ fn thinking_selector_opens() {
     let mut app = test_app();
     app.open_thinking_selector();
     assert!(app.selector.is_some());
-    assert!(matches!(app.selector_kind, Some(SelectorKind::ThinkingLevel)));
+    assert!(matches!(
+        app.selector_kind,
+        Some(SelectorKind::ThinkingLevel)
+    ));
 }
 
 #[test]
@@ -234,7 +258,10 @@ fn context_selector_opens() {
     let mut app = test_app();
     app.open_context_selector();
     assert!(app.selector.is_some());
-    assert!(matches!(app.selector_kind, Some(SelectorKind::ContextClass)));
+    assert!(matches!(
+        app.selector_kind,
+        Some(SelectorKind::ContextClass)
+    ));
 }
 
 #[test]
@@ -252,7 +279,11 @@ fn context_selector_confirm_changes_settings() {
     // Check that settings were updated
     let s = app.settings.lock().unwrap();
     // Should be Maniple (second option) or whatever the selector landed on
-    assert_ne!(s.context_class, ContextClass::Squad, "should have changed from default Squad");
+    assert_ne!(
+        s.context_class,
+        ContextClass::Squad,
+        "should have changed from default Squad"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -278,13 +309,19 @@ fn harness_status_changed_updates_footer() {
     };
 
     let status_json = serde_json::to_value(&status).unwrap();
-    app.handle_agent_event(omegon_traits::AgentEvent::HarnessStatusChanged {
-        status_json,
-    });
+    app.handle_agent_event(omegon_traits::AgentEvent::HarnessStatusChanged { status_json });
 
     // Footer should now reflect the new status
     assert!(app.footer_data.harness.active_persona.is_some());
-    assert_eq!(app.footer_data.harness.active_persona.as_ref().unwrap().name, "Test Persona");
+    assert_eq!(
+        app.footer_data
+            .harness
+            .active_persona
+            .as_ref()
+            .unwrap()
+            .name,
+        "Test Persona"
+    );
     assert_eq!(app.footer_data.harness.context_class, "Clan");
 }
 
@@ -350,16 +387,19 @@ fn handled_commands_are_in_commands_table() {
     let mut app = test_app();
     let tx = test_tx();
 
-    let known_names: std::collections::HashSet<&str> = App::COMMANDS.iter()
-        .map(|(name, _, _)| *name)
-        .collect();
+    let known_names: std::collections::HashSet<&str> =
+        App::COMMANDS.iter().map(|(name, _, _)| *name).collect();
 
     // Test a set of plausible undocumented command names
-    let undocumented = ["config", "debug", "reload", "undo", "redo",
-        "run", "build", "deploy", "test", "profile", "env", "reset"];
+    let undocumented = [
+        "config", "debug", "reload", "undo", "redo", "run", "build", "deploy", "test", "profile",
+        "env", "reset",
+    ];
 
     for name in undocumented {
-        if known_names.contains(name) { continue; } // skip if it's actually documented
+        if known_names.contains(name) {
+            continue;
+        } // skip if it's actually documented
         let cmd = format!("/{name}");
         let result = app.handle_slash_command(&cmd, &tx);
         // Unknown commands should either be NotACommand (not /-prefixed)
@@ -379,13 +419,17 @@ fn slash_command_aliases_dispatch_correctly() {
 
     // /dashboard should resolve (alias for /dash open)
     let result = app.handle_slash_command("/dashboard", &tx);
-    assert!(!matches!(result, SlashResult::NotACommand),
-        "/dashboard should be handled, not fall through");
+    assert!(
+        !matches!(result, SlashResult::NotACommand),
+        "/dashboard should be handled, not fall through"
+    );
 
     // /version should display build info
     let result = app.handle_slash_command("/version", &tx);
-    assert!(matches!(result, SlashResult::Display(_)),
-        "/version should display version info");
+    assert!(
+        matches!(result, SlashResult::Display(_)),
+        "/version should display version info"
+    );
 
     // /q should quit
     let result = app.handle_slash_command("/q", &tx);
@@ -399,13 +443,17 @@ fn unknown_slash_commands_show_error() {
 
     // Unknown commands must NOT return NotACommand (which sends to agent)
     let result = app.handle_slash_command("/foobar", &tx);
-    assert!(matches!(result, SlashResult::Display(_)),
-        "/foobar should show error, not go to agent");
+    assert!(
+        matches!(result, SlashResult::Display(_)),
+        "/foobar should show error, not go to agent"
+    );
 
     // /secret now prefix-matches to /secrets (valid command)
     let result = app.handle_slash_command("/zzz_nonexistent", &tx);
-    assert!(matches!(result, SlashResult::Display(_)),
-        "/zzz_nonexistent should show error, not go to agent");
+    assert!(
+        matches!(result, SlashResult::Display(_)),
+        "/zzz_nonexistent should show error, not go to agent"
+    );
 }
 
 #[test]
@@ -415,8 +463,10 @@ fn slash_prefix_matching_unique() {
 
     // /hel should uniquely prefix-match /help
     let result = app.handle_slash_command("/hel", &tx);
-    assert!(matches!(result, SlashResult::Display(_)),
-        "/hel should prefix-match /help and show help text");
+    assert!(
+        matches!(result, SlashResult::Display(_)),
+        "/hel should prefix-match /help and show help text"
+    );
 }
 
 #[test]
@@ -428,8 +478,10 @@ fn slash_prefix_matching_ambiguous() {
     let result = app.handle_slash_command("/s", &tx);
     match result {
         SlashResult::Display(msg) => {
-            assert!(msg.contains("Did you mean") || msg.contains("Ambiguous"),
-                "/s should show ambiguous message, got: {msg}");
+            assert!(
+                msg.contains("Did you mean") || msg.contains("Ambiguous"),
+                "/s should show ambiguous message, got: {msg}"
+            );
         }
         _ => panic!("/s should be ambiguous, got: {result:?}"),
     }
@@ -458,9 +510,21 @@ fn tutorial_state_load_and_advance() {
     let tutorial_dir = tmp.path().join(".omegon").join("tutorial");
     std::fs::create_dir_all(&tutorial_dir).unwrap();
 
-    std::fs::write(tutorial_dir.join("01-first.md"), "---\ntitle: \"First\"\n---\nLesson one.").unwrap();
-    std::fs::write(tutorial_dir.join("02-second.md"), "---\ntitle: \"Second\"\n---\nLesson two.").unwrap();
-    std::fs::write(tutorial_dir.join("03-third.md"), "---\ntitle: \"Third\"\n---\nLesson three.").unwrap();
+    std::fs::write(
+        tutorial_dir.join("01-first.md"),
+        "---\ntitle: \"First\"\n---\nLesson one.",
+    )
+    .unwrap();
+    std::fs::write(
+        tutorial_dir.join("02-second.md"),
+        "---\ntitle: \"Second\"\n---\nLesson two.",
+    )
+    .unwrap();
+    std::fs::write(
+        tutorial_dir.join("03-third.md"),
+        "---\ntitle: \"Third\"\n---\nLesson three.",
+    )
+    .unwrap();
 
     let mut tut = super::TutorialState::load(&tutorial_dir).unwrap();
     assert_eq!(tut.total(), 3);
@@ -525,8 +589,16 @@ fn tutorial_status_line() {
     let tmp = tempfile::TempDir::new().unwrap();
     let tutorial_dir = tmp.path();
 
-    std::fs::write(tutorial_dir.join("01-intro.md"), "---\ntitle: Introduction\n---\nHello").unwrap();
-    std::fs::write(tutorial_dir.join("02-end.md"), "---\ntitle: Finale\n---\nBye").unwrap();
+    std::fs::write(
+        tutorial_dir.join("01-intro.md"),
+        "---\ntitle: Introduction\n---\nHello",
+    )
+    .unwrap();
+    std::fs::write(
+        tutorial_dir.join("02-end.md"),
+        "---\ntitle: Finale\n---\nBye",
+    )
+    .unwrap();
 
     let mut tut = super::TutorialState::load(tutorial_dir).unwrap();
     assert!(tut.status_line().contains("1/2"));
@@ -545,7 +617,10 @@ fn clipboard_format_matching() {
     // Real osascript output from a screenshot
     let info = "«class PNGf», 29460, «class AVIF», 14396, «class 8BPS», 141278, GIF picture, 9009, «class jp2 », 39826, JPEG picture, 27092, TIFF picture, 792990, «class BMP », 792202, «class TPIC», 58310";
     let result = match_clipboard_image_format(info);
-    assert!(result.is_some(), "should match PNGf in real clipboard output");
+    assert!(
+        result.is_some(),
+        "should match PNGf in real clipboard output"
+    );
     let (ext, pb) = result.unwrap();
     assert_eq!(ext, "png");
     assert_eq!(pb, "«class PNGf»");
@@ -582,8 +657,10 @@ fn clipboard_format_matching() {
     // This should NOT match PNGf (it contains "public.png" not "PNGf")
     // But wait — "png" is not in our markers. This correctly returns None.
     // The old code would have matched "public.png" → that was the bug.
-    assert!(match_clipboard_image_format(info_with_uti).is_none(),
-        "UTI strings should not match — osascript never outputs them");
+    assert!(
+        match_clipboard_image_format(info_with_uti).is_none(),
+        "UTI strings should not match — osascript never outputs them"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -609,8 +686,14 @@ fn slash_note_with_text_persists_to_disk() {
     // Verify file exists and contains the note
     let notes_path = tmp.path().join(".omegon").join("notes.md");
     let content = std::fs::read_to_string(&notes_path).expect("notes file should exist");
-    assert!(content.contains("look into this later"), "note text should be persisted: {content}");
-    assert!(content.starts_with("- ["), "should have timestamp prefix: {content}");
+    assert!(
+        content.contains("look into this later"),
+        "note text should be persisted: {content}"
+    );
+    assert!(
+        content.starts_with("- ["),
+        "should have timestamp prefix: {content}"
+    );
 
     // Write a second note and verify count
     let result2 = app.handle_slash_command("/note second thing", &tx);
@@ -666,7 +749,10 @@ fn slash_checkin_with_notes_shows_note_count() {
     // Now checkin should show the note count
     let result2 = app.handle_slash_command("/checkin", &tx);
     if let SlashResult::Display(text) = result2 {
-        assert!(text.contains("1 pending note"), "should show note count: {text}");
+        assert!(
+            text.contains("1 pending note"),
+            "should show note count: {text}"
+        );
     } else {
         panic!("expected Display result");
     }
@@ -680,13 +766,23 @@ fn slash_checkin_with_opsx_changes_shows_them() {
     let tx = test_tx();
 
     // Create a fake OpenSpec change directory
-    let change_dir = tmp.path().join("openspec").join("changes").join("my-feature");
+    let change_dir = tmp
+        .path()
+        .join("openspec")
+        .join("changes")
+        .join("my-feature");
     std::fs::create_dir_all(&change_dir).unwrap();
 
     let result = app.handle_slash_command("/checkin", &tx);
     if let SlashResult::Display(text) = result {
-        assert!(text.contains("OpenSpec"), "should show OpenSpec changes: {text}");
-        assert!(text.contains("my-feature"), "should name the change: {text}");
+        assert!(
+            text.contains("OpenSpec"),
+            "should show OpenSpec changes: {text}"
+        );
+        assert!(
+            text.contains("my-feature"),
+            "should name the change: {text}"
+        );
     } else {
         panic!("expected Display result");
     }
@@ -702,7 +798,11 @@ fn slash_login_selector_opens_with_provider_catalog() {
     app.open_login_selector();
     assert!(app.selector.is_some(), "selector should be open");
     let selector = app.selector.as_ref().unwrap();
-    assert!(selector.options.len() >= 9, "should have at least 9 providers, got {}", selector.options.len());
+    assert!(
+        selector.options.len() >= 9,
+        "should have at least 9 providers, got {}",
+        selector.options.len()
+    );
     // Verify structure: each option has a value and label
     for opt in &selector.options {
         assert!(!opt.value.is_empty(), "option value should not be empty");
@@ -710,7 +810,10 @@ fn slash_login_selector_opens_with_provider_catalog() {
     }
     // Unconfigured providers should NOT have checkmark
     let has_unconfigured = selector.options.iter().any(|o| !o.active);
-    assert!(has_unconfigured, "at least some providers should be unconfigured in test env");
+    assert!(
+        has_unconfigured,
+        "at least some providers should be unconfigured in test env"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -720,7 +823,10 @@ fn slash_login_selector_opens_with_provider_catalog() {
 #[test]
 fn recovery_hint_rate_limit() {
     let hint = App::recovery_hint(None, "Error: 429 Too Many Requests");
-    assert!(hint.contains("Rate limited"), "should suggest rate limit recovery: {hint}");
+    assert!(
+        hint.contains("Rate limited"),
+        "should suggest rate limit recovery: {hint}"
+    );
 }
 
 #[test]
@@ -733,13 +839,19 @@ fn recovery_hint_unauthorized() {
 fn recovery_hint_no_false_positive_on_status_codes() {
     // A path containing "401" should NOT trigger the auth hint
     let hint = App::recovery_hint(None, "Error reading /var/lib/app/401/config.json");
-    assert!(hint.is_empty(), "path with 401 should not trigger auth hint: {hint}");
+    assert!(
+        hint.is_empty(),
+        "path with 401 should not trigger auth hint: {hint}"
+    );
 }
 
 #[test]
 fn recovery_hint_ollama_connection() {
     let hint = App::recovery_hint(None, "Connection refused to ollama at localhost:11434");
-    assert!(hint.contains("ollama serve"), "should suggest starting ollama: {hint}");
+    assert!(
+        hint.contains("ollama serve"),
+        "should suggest starting ollama: {hint}"
+    );
 }
 
 #[test]

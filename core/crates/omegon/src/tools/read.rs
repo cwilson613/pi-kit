@@ -26,7 +26,12 @@ pub async fn execute(
     if is_image(path) {
         let data = tokio::time::timeout(timeout, tokio::fs::read(path))
             .await
-            .map_err(|_| anyhow::anyhow!("Read timed out after {READ_TIMEOUT_SECS}s: {}", path.display()))??;
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Read timed out after {READ_TIMEOUT_SECS}s: {}",
+                    path.display()
+                )
+            })??;
         let base64 = base64_encode(&data);
         let media_type = mime_from_ext(path);
         return Ok(ToolResult {
@@ -43,19 +48,19 @@ pub async fn execute(
 
     let content = tokio::time::timeout(timeout, tokio::fs::read_to_string(path))
         .await
-        .map_err(|_| anyhow::anyhow!("Read timed out after {READ_TIMEOUT_SECS}s: {}", path.display()))??;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Read timed out after {READ_TIMEOUT_SECS}s: {}",
+                path.display()
+            )
+        })??;
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
 
     let start = offset.unwrap_or(1).saturating_sub(1); // 1-indexed to 0-indexed
     let max = limit.unwrap_or(MAX_LINES).min(MAX_LINES);
 
-    let selected: Vec<&str> = lines
-        .iter()
-        .skip(start)
-        .take(max)
-        .copied()
-        .collect();
+    let selected: Vec<&str> = lines.iter().skip(start).take(max).copied().collect();
 
     let mut text = selected.join("\n");
 
@@ -142,7 +147,10 @@ mod tests {
         assert_eq!(mime_from_ext(Path::new("a.gif")), "image/gif");
         assert_eq!(mime_from_ext(Path::new("a.webp")), "image/webp");
         assert_eq!(mime_from_ext(Path::new("a.svg")), "image/svg+xml");
-        assert_eq!(mime_from_ext(Path::new("a.txt")), "application/octet-stream");
+        assert_eq!(
+            mime_from_ext(Path::new("a.txt")),
+            "application/octet-stream"
+        );
     }
 
     #[test]
@@ -213,7 +221,10 @@ mod tests {
             ContentBlock::Text { text } => text.clone(),
             _ => panic!("expected text"),
         };
-        assert!(text.contains("more lines in file"), "should show remaining: {text}");
+        assert!(
+            text.contains("more lines in file"),
+            "should show remaining: {text}"
+        );
         assert!(text.contains("offset=6"), "should suggest next offset");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -230,7 +241,11 @@ const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 
 impl<W: std::io::Write> Base64Encoder<W> {
     fn new(writer: W) -> Self {
-        Self { writer, buf: [0; 3], len: 0 }
+        Self {
+            writer,
+            buf: [0; 3],
+            len: 0,
+        }
     }
 
     fn finish(mut self) -> std::io::Result<W> {

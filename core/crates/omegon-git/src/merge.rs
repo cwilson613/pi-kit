@@ -32,11 +32,7 @@ pub enum MergeResult {
 /// All commits on `source_branch` since the merge-base are squashed
 /// into a single commit on the current branch. The source branch is
 /// NOT deleted — the caller decides cleanup.
-pub fn squash_merge(
-    repo_path: &Path,
-    source_branch: &str,
-    message: &str,
-) -> Result<MergeResult> {
+pub fn squash_merge(repo_path: &Path, source_branch: &str, message: &str) -> Result<MergeResult> {
     let repo = Repository::open(repo_path).context("failed to open repo")?;
 
     let source_ref = repo
@@ -66,8 +62,12 @@ pub fn squash_merge(
     let mut checkout_opts = git2::build::CheckoutBuilder::new();
     checkout_opts.safe();
 
-    repo.merge(&[&annotated], Some(&mut merge_opts), Some(&mut checkout_opts))
-        .context("merge failed")?;
+    repo.merge(
+        &[&annotated],
+        Some(&mut merge_opts),
+        Some(&mut checkout_opts),
+    )
+    .context("merge failed")?;
 
     let index = repo.index().context("failed to read index after merge")?;
     if index.has_conflicts() {
@@ -99,14 +99,7 @@ pub fn squash_merge(
 
     // Single parent = squash commit (not a merge commit)
     let commit_oid = repo
-        .commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            message,
-            &tree,
-            &[&head_commit],
-        )
+        .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])
         .context("failed to create squash commit")?;
 
     repo.cleanup_state().ok();
@@ -131,11 +124,7 @@ pub fn squash_merge(
 /// Merge a branch into HEAD with a merge commit (--no-ff equivalent).
 ///
 /// Uses git2 for the entire operation — no CLI fallback needed.
-pub fn merge_no_ff(
-    repo_path: &Path,
-    source_branch: &str,
-    message: &str,
-) -> Result<MergeResult> {
+pub fn merge_no_ff(repo_path: &Path, source_branch: &str, message: &str) -> Result<MergeResult> {
     let repo = Repository::open(repo_path).context("failed to open repo")?;
 
     let source_ref = repo
@@ -165,8 +154,12 @@ pub fn merge_no_ff(
     let mut checkout_opts = git2::build::CheckoutBuilder::new();
     checkout_opts.safe();
 
-    repo.merge(&[&annotated], Some(&mut merge_opts), Some(&mut checkout_opts))
-        .context("merge failed")?;
+    repo.merge(
+        &[&annotated],
+        Some(&mut merge_opts),
+        Some(&mut checkout_opts),
+    )
+    .context("merge failed")?;
 
     let index = repo.index().context("failed to read index after merge")?;
     if index.has_conflicts() {
@@ -348,9 +341,7 @@ fn cleanup_branch_helper(
     // Checkout the cleanup branch
     let refname = format!("refs/heads/{}", cleanup_branch);
     repo.set_head(&refname)?;
-    repo.checkout_head(Some(
-        git2::build::CheckoutBuilder::new().safe(),
-    ))?;
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().safe()))?;
 
     // Cherry-pick each non-ceremony commit
     for (oid, msg) in commits {
@@ -368,11 +359,7 @@ fn cleanup_branch_helper(
                 .args(["cherry-pick", "--abort"])
                 .current_dir(repo_path)
                 .output();
-            anyhow::bail!(
-                "cherry-pick failed for '{}': {}",
-                first_line,
-                stderr.trim()
-            );
+            anyhow::bail!("cherry-pick failed for '{}': {}", first_line, stderr.trim());
         }
     }
 
@@ -489,10 +476,22 @@ mod tests {
         let repo = init_repo(dir.path());
         let default_branch = create_feature_branch(&repo, "conflict-feature");
 
-        add_commit(&repo, dir.path(), "init.txt", "feature version", "feat: change init");
+        add_commit(
+            &repo,
+            dir.path(),
+            "init.txt",
+            "feature version",
+            "feat: change init",
+        );
 
         switch_branch(&repo, &default_branch);
-        add_commit(&repo, dir.path(), "init.txt", "main version", "diverge on main");
+        add_commit(
+            &repo,
+            dir.path(),
+            "init.txt",
+            "main version",
+            "diverge on main",
+        );
 
         let result = squash_merge(dir.path(), "conflict-feature", "should conflict").unwrap();
         assert!(
@@ -525,21 +524,31 @@ mod tests {
 
     #[test]
     fn ceremony_detection() {
-        assert!(is_ceremony_commit("chore(cleave): checkpoint before cleave"));
+        assert!(is_ceremony_commit(
+            "chore(cleave): checkpoint before cleave"
+        ));
         assert!(is_ceremony_commit("chore: checkpoint before cleave"));
         assert!(is_ceremony_commit("cleave: merge cleave/0-token-handling"));
-        assert!(is_ceremony_commit("chore: archive cleave-submodule-worktree change"));
+        assert!(is_ceremony_commit(
+            "chore: archive cleave-submodule-worktree change"
+        ));
         assert!(is_ceremony_commit(
             "docs(vault-fail-closed): mark all tasks complete"
         ));
         assert!(is_ceremony_commit("docs: mark all tasks complete"));
 
         assert!(!is_ceremony_commit("feat(vault): add VaultClient"));
-        assert!(!is_ceremony_commit("fix: address adversarial review findings"));
+        assert!(!is_ceremony_commit(
+            "fix: address adversarial review findings"
+        ));
         assert!(!is_ceremony_commit(
             "docs: consolidated vault security assessment report"
         ));
-        assert!(!is_ceremony_commit("refactor: extract salvage_worktree_changes"));
-        assert!(!is_ceremony_commit("chore: update core submodule to v0.14.0"));
+        assert!(!is_ceremony_commit(
+            "refactor: extract salvage_worktree_changes"
+        ));
+        assert!(!is_ceremony_commit(
+            "chore: update core submodule to v0.14.0"
+        ));
     }
 }

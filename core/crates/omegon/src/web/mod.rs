@@ -91,7 +91,10 @@ pub async fn start_server(
     let bound = listener.local_addr()?;
 
     let token = token_for_query.to_string();
-    tracing::debug!(port = bound.port(), "web dashboard at http://{bound}/?token={token}");
+    tracing::debug!(
+        port = bound.port(),
+        "web dashboard at http://{bound}/?token={token}"
+    );
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -118,7 +121,10 @@ async fn bind_with_fallback(preferred: u16) -> anyhow::Result<tokio::net::TcpLis
             Err(_) => continue,
         }
     }
-    anyhow::bail!("No available port found in range {preferred}-{}", preferred + 9)
+    anyhow::bail!(
+        "No available port found in range {preferred}-{}",
+        preferred + 9
+    )
 }
 
 /// Generate a random auth token for the web server.

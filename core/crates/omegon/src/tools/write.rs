@@ -10,15 +10,21 @@ const WRITE_TIMEOUT_SECS: u64 = 30;
 pub async fn execute(path: &Path, content: &str, cwd: &Path) -> Result<ToolResult> {
     // Create parent directories if needed
     if let Some(parent) = path.parent()
-        && !parent.exists() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        && !parent.exists()
+    {
+        tokio::fs::create_dir_all(parent).await?;
+    }
 
     let timeout = std::time::Duration::from_secs(WRITE_TIMEOUT_SECS);
     let created = !path.exists();
     tokio::time::timeout(timeout, tokio::fs::write(path, content))
         .await
-        .map_err(|_| anyhow::anyhow!("Write timed out after {WRITE_TIMEOUT_SECS}s: {}", path.display()))??;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Write timed out after {WRITE_TIMEOUT_SECS}s: {}",
+                path.display()
+            )
+        })??;
 
     let line_count = content.lines().count();
     let byte_count = content.len();

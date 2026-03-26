@@ -167,7 +167,9 @@ impl std::fmt::Display for MilestoneState {
 pub struct Priority(pub u8);
 
 impl Priority {
-    pub fn new(level: u8) -> Self { Self(level.clamp(1, 5)) }
+    pub fn new(level: u8) -> Self {
+        Self(level.clamp(1, 5))
+    }
 }
 
 /// Issue classification.
@@ -223,7 +225,7 @@ pub struct Change {
     pub title: String,
     pub state: ChangeState,
     pub bound_node: Option<String>,
-    pub specs: Vec<String>,  // spec domain names
+    pub specs: Vec<String>, // spec domain names
     /// Test file paths — registered when test stubs are written (TDD).
     #[serde(default)]
     pub test_files: Vec<String>,
@@ -299,8 +301,14 @@ mod tests {
 
     #[test]
     fn node_state_parse_roundtrip() {
-        for state in [NodeState::Seed, NodeState::Exploring, NodeState::Decided,
-                       NodeState::Implementing, NodeState::Implemented, NodeState::Blocked] {
+        for state in [
+            NodeState::Seed,
+            NodeState::Exploring,
+            NodeState::Decided,
+            NodeState::Implementing,
+            NodeState::Implemented,
+            NodeState::Blocked,
+        ] {
             assert_eq!(NodeState::parse(state.as_str()), Some(state));
         }
     }

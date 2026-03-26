@@ -134,7 +134,10 @@ mod tests {
 
     #[test]
     fn truncate_tail_by_lines() {
-        let output = (0..3000).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let output = (0..3000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = truncate_tail(&output);
         assert!(result.was_truncated);
         assert_eq!(result.total_lines, 3000);
@@ -145,7 +148,10 @@ mod tests {
 
     #[test]
     fn truncate_tail_by_bytes() {
-        let output = (0..100).map(|_| "x".repeat(1000)).collect::<Vec<_>>().join("\n");
+        let output = (0..100)
+            .map(|_| "x".repeat(1000))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = truncate_tail(&output);
         assert!(result.was_truncated);
         assert!(result.content.len() <= MAX_OUTPUT_BYTES);
@@ -161,7 +167,9 @@ mod tests {
     #[tokio::test]
     async fn execute_echo() {
         let cancel = CancellationToken::new();
-        let result = execute("echo hello", Path::new("."), None, cancel).await.unwrap();
+        let result = execute("echo hello", Path::new("."), None, cancel)
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("hello"), "should contain output: {text}");
         assert_eq!(result.details["exitCode"], 0);
@@ -170,7 +178,9 @@ mod tests {
     #[tokio::test]
     async fn execute_nonzero_exit() {
         let cancel = CancellationToken::new();
-        let result = execute("exit 42", Path::new("."), None, cancel).await.unwrap();
+        let result = execute("exit 42", Path::new("."), None, cancel)
+            .await
+            .unwrap();
         assert_eq!(result.details["exitCode"], 42);
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("42"), "should mention exit code: {text}");
@@ -179,7 +189,9 @@ mod tests {
     #[tokio::test]
     async fn execute_stderr() {
         let cancel = CancellationToken::new();
-        let result = execute("echo err >&2", Path::new("."), None, cancel).await.unwrap();
+        let result = execute("echo err >&2", Path::new("."), None, cancel)
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("err"), "should capture stderr: {text}");
     }

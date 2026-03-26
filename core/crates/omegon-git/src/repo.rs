@@ -59,10 +59,7 @@ impl RepoModel {
             Err(e) => return Err(e).context("git repo discovery failed"),
         };
 
-        let repo_path = repo
-            .workdir()
-            .unwrap_or_else(|| repo.path())
-            .to_path_buf();
+        let repo_path = repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf();
 
         let branch = Self::read_branch(&repo);
         let head_sha = Self::read_head_sha(&repo);
@@ -132,12 +129,18 @@ impl RepoModel {
 
     /// Current branch name (None if detached HEAD).
     pub fn branch(&self) -> Option<String> {
-        self.branch.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.branch
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// HEAD commit SHA.
     pub fn head_sha(&self) -> Option<String> {
-        self.head_sha.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.head_sha
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Check if a path is inside a submodule.
@@ -163,7 +166,12 @@ impl RepoModel {
 
     /// Get all submodule infos.
     pub fn submodules(&self) -> Vec<SubmoduleInfo> {
-        self.submodules.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
+        self.submodules
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Get the current working set (files touched since last commit).
@@ -190,7 +198,10 @@ impl RepoModel {
 
     /// Get pending lifecycle files.
     pub fn pending_lifecycle_files(&self) -> HashSet<String> {
-        self.pending_lifecycle.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.pending_lifecycle
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     // ── Mutations ──────────────────────────────────────────────────────
@@ -229,7 +240,7 @@ impl RepoModel {
             || path.starts_with("openspec/")  // legacy
             || path.starts_with("docs/")      // legacy
             || path.starts_with(".omegon/")   // tool config
-            || path.starts_with(".pi/")       // legacy migration path — keep for old repos
+            || path.starts_with(".pi/") // legacy migration path — keep for old repos
     }
 
     /// Record a lifecycle file write (OpenSpec, design-tree).
@@ -246,8 +257,14 @@ impl RepoModel {
     /// When jj is active, this updates the jj change ID (jj new creates
     /// a fresh change, so the ID changes).
     pub fn clear_working_set(&self) {
-        self.working_set.write().unwrap_or_else(|e| e.into_inner()).clear();
-        self.pending_lifecycle.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.working_set
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.pending_lifecycle
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Refresh branch, HEAD, and jj state from the repo.

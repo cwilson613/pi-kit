@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use omegon_traits::{ContentBlock, ToolDefinition, ToolProvider, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,23 +52,28 @@ fn classify(path: &Path) -> FileKind {
         "svg" => FileKind::Svg,
         "pdf" => FileKind::Pdf,
         "docx" | "xlsx" | "pptx" | "epub" | "odt" | "rtf" => FileKind::Document,
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "cpp" | "h" | "hpp"
-        | "java" | "rb" | "sh" | "bash" | "zsh" | "fish" | "toml" | "yaml" | "yml"
-        | "json" | "xml" | "html" | "css" | "scss" | "sql" | "md" | "lua" | "zig"
-        | "swift" | "kt" | "scala" | "r" | "jl" | "ex" | "exs" | "erl" | "hs"
-        | "ml" | "mli" | "nix" | "tf" | "hcl" | "proto" | "graphql" | "Dockerfile"
-        | "Makefile" | "cmake" | "gradle" => FileKind::Code,
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "cpp" | "h" | "hpp" | "java"
+        | "rb" | "sh" | "bash" | "zsh" | "fish" | "toml" | "yaml" | "yml" | "json" | "xml"
+        | "html" | "css" | "scss" | "sql" | "md" | "lua" | "zig" | "swift" | "kt" | "scala"
+        | "r" | "jl" | "ex" | "exs" | "erl" | "hs" | "ml" | "mli" | "nix" | "tf" | "hcl"
+        | "proto" | "graphql" | "Dockerfile" | "Makefile" | "cmake" | "gradle" => FileKind::Code,
         _ => FileKind::Unknown,
     }
 }
 
 fn has_cmd(cmd: &str) -> bool {
-    Command::new("which").arg(cmd).output().is_ok_and(|o| o.status.success())
+    Command::new("which")
+        .arg(cmd)
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 fn file_header(path: &Path) -> String {
     let meta = fs::metadata(path).ok();
-    let size = meta.as_ref().map(|m| format_size(m.len())).unwrap_or_default();
+    let size = meta
+        .as_ref()
+        .map(|m| format_size(m.len()))
+        .unwrap_or_default();
     format!("**{}** ({})", path.display(), size)
 }
 
@@ -98,7 +103,9 @@ fn view_image(path: &Path) -> ToolResult {
             let data_uri = format!("data:{mime};base64,{b64}");
             ToolResult {
                 content: vec![
-                    ContentBlock::Text { text: file_header(path) },
+                    ContentBlock::Text {
+                        text: file_header(path),
+                    },
                     ContentBlock::Image {
                         url: data_uri,
                         media_type: mime.into(),
@@ -108,7 +115,9 @@ fn view_image(path: &Path) -> ToolResult {
             }
         }
         Err(e) => ToolResult {
-            content: vec![ContentBlock::Text { text: format!("Cannot read image: {e}") }],
+            content: vec![ContentBlock::Text {
+                text: format!("Cannot read image: {e}"),
+            }],
             details: json!({"error": true}),
         },
     }
@@ -151,10 +160,16 @@ const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 
 impl<W: std::io::Write> Base64Encoder<W> {
     fn new(writer: W) -> Self {
-        Self { writer, buf: [0; 3], buf_len: 0 }
+        Self {
+            writer,
+            buf: [0; 3],
+            buf_len: 0,
+        }
     }
     fn flush_buf(&mut self) {
-        if self.buf_len == 0 { return; }
+        if self.buf_len == 0 {
+            return;
+        }
         let b = &self.buf;
         let out = match self.buf_len {
             3 => [
@@ -196,14 +211,19 @@ impl<W: std::io::Write> std::io::Write for Base64Encoder<W> {
         }
         Ok(data.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn view_pdf(path: &Path, page: Option<u32>) -> ToolResult {
     if !has_cmd("pdftotext") {
         return ToolResult {
             content: vec![ContentBlock::Text {
-                text: format!("{}\n\npdftotext not found. Install poppler-utils.", file_header(path)),
+                text: format!(
+                    "{}\n\npdftotext not found. Install poppler-utils.",
+                    file_header(path)
+                ),
             }],
             details: json!({"error": true}),
         };
@@ -227,12 +247,17 @@ fn view_pdf(path: &Path, page: Option<u32>) -> ToolResult {
         }
         Ok(output) => ToolResult {
             content: vec![ContentBlock::Text {
-                text: format!("pdftotext error: {}", String::from_utf8_lossy(&output.stderr)),
+                text: format!(
+                    "pdftotext error: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
             }],
             details: json!({"error": true}),
         },
         Err(e) => ToolResult {
-            content: vec![ContentBlock::Text { text: format!("pdftotext failed: {e}") }],
+            content: vec![ContentBlock::Text {
+                text: format!("pdftotext failed: {e}"),
+            }],
             details: json!({"error": true}),
         },
     }
@@ -242,7 +267,10 @@ fn view_document(path: &Path) -> ToolResult {
     if !has_cmd("pandoc") {
         return ToolResult {
             content: vec![ContentBlock::Text {
-                text: format!("{}\n\npandoc not found. Install pandoc to view this file.", file_header(path)),
+                text: format!(
+                    "{}\n\npandoc not found. Install pandoc to view this file.",
+                    file_header(path)
+                ),
             }],
             details: json!({"error": true}),
         };
@@ -290,7 +318,9 @@ fn view_code(path: &Path) -> ToolResult {
             }
         }
         Err(e) => ToolResult {
-            content: vec![ContentBlock::Text { text: format!("Cannot read file: {e}") }],
+            content: vec![ContentBlock::Text {
+                text: format!("Cannot read file: {e}"),
+            }],
             details: json!({"error": true}),
         },
     }
@@ -360,7 +390,10 @@ mod tests {
         assert!(matches!(classify(Path::new("test.pdf")), FileKind::Pdf));
         assert!(matches!(classify(Path::new("test.rs")), FileKind::Code));
         assert!(matches!(classify(Path::new("test.py")), FileKind::Code));
-        assert!(matches!(classify(Path::new("test.docx")), FileKind::Document));
+        assert!(matches!(
+            classify(Path::new("test.docx")),
+            FileKind::Document
+        ));
         assert!(matches!(classify(Path::new("test.xyz")), FileKind::Unknown));
     }
 
@@ -382,6 +415,9 @@ mod tests {
     fn view_nonexistent_file() {
         let _provider = ViewProvider::new(PathBuf::from("/tmp"));
         // Can't call async execute in sync test, but we can test the classify function
-        assert!(matches!(classify(Path::new("nonexistent.rs")), FileKind::Code));
+        assert!(matches!(
+            classify(Path::new("nonexistent.rs")),
+            FileKind::Code
+        ));
     }
 }

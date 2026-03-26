@@ -19,7 +19,7 @@ use rmcp::{
     handler::client::ClientHandler,
     model::*,
     service::{self, RoleClient, RunningService},
-    transport::{TokioChildProcess, StreamableHttpClientTransport},
+    transport::{StreamableHttpClientTransport, TokioChildProcess},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -41,7 +41,7 @@ use tokio::sync::Mutex;
 /// # HTTP transport (remote MCP server)
 /// [mcp_servers.remote_api]
 /// url = "https://api.example.com/mcp"
-/// 
+///
 /// # Local process
 /// [mcp_servers.filesystem]
 /// command = "npx"
@@ -96,8 +96,12 @@ pub struct McpServerConfig {
     pub timeout_secs: u64,
 }
 
-fn default_timeout() -> u64 { 30 }
-fn default_true() -> bool { true }
+fn default_timeout() -> u64 {
+    30
+}
+fn default_true() -> bool {
+    true
+}
 
 /// A discovered tool from an MCP server.
 #[derive(Debug, Clone)]
@@ -181,7 +185,7 @@ impl McpFeature {
             let transport = StreamableHttpClientTransport::from_uri(url.clone());
             service::serve_client(OmegonMcpClient, transport).await?
         } else {
-            // Local process transport mode  
+            // Local process transport mode
             let cmd = Self::build_command(server_name, config)?;
             let transport = TokioChildProcess::new(cmd)?;
             service::serve_client(OmegonMcpClient, transport).await?
@@ -215,19 +219,24 @@ impl McpFeature {
             if url.len() > 8 && !url[8..].is_empty() {
                 Ok(())
             } else {
-                Err(anyhow::anyhow!("Invalid HTTPS URL: must have host after scheme: {}", url))
+                Err(anyhow::anyhow!(
+                    "Invalid HTTPS URL: must have host after scheme: {}",
+                    url
+                ))
             }
         } else if url.starts_with("http://") {
             if url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1") {
                 Ok(())
             } else {
                 Err(anyhow::anyhow!(
-                    "HTTP URLs are only allowed for localhost, got: {}", url
+                    "HTTP URLs are only allowed for localhost, got: {}",
+                    url
                 ))
             }
         } else {
             Err(anyhow::anyhow!(
-                "Only HTTPS and localhost HTTP URLs are supported, got: {}", url
+                "Only HTTPS and localhost HTTP URLs are supported, got: {}",
+                url
             ))
         }
     }
@@ -286,10 +295,11 @@ impl McpFeature {
 
             // Mount cwd if requested
             if config.mount_cwd
-                && let Ok(cwd) = std::env::current_dir() {
-                    cmd.arg(format!("-v={}:/work", cwd.display()));
-                    cmd.args(["-w", "/work"]);
-                }
+                && let Ok(cwd) = std::env::current_dir()
+            {
+                cmd.arg(format!("-v={}:/work", cwd.display()));
+                cmd.args(["-w", "/work"]);
+            }
 
             // Environment variables — validate key names to prevent injection
             for (key, value) in &config.env {
@@ -364,9 +374,9 @@ impl Feature for McpFeature {
         let mcp_name = mcp_name.to_string();
 
         let clients = self.clients.lock().await;
-        let client = clients.get(&server_name).ok_or_else(|| {
-            anyhow::anyhow!("MCP server '{}' not connected", server_name)
-        })?;
+        let client = clients
+            .get(&server_name)
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
 
         let arguments = if args.is_object() {
             Some(args.as_object().unwrap().clone())
@@ -521,7 +531,7 @@ mod tests {
     #[test]
     fn resolve_env_template_value_with_braces() {
         // If the resolved value contains {, it should NOT be re-scanned.
-        // CARGO_MANIFEST_DIR contains path separators but no braces — 
+        // CARGO_MANIFEST_DIR contains path separators but no braces —
         // test the single-pass property by checking it doesn't recurse
         let result = resolve_env_template("{CARGO_MANIFEST_DIR}");
         assert!(result.contains("omegon"), "should resolve: {result}");
@@ -581,7 +591,10 @@ mod tests {
         "#;
         let config: McpServerConfig = toml::from_str(toml).unwrap();
         assert!(config.command.is_none());
-        assert_eq!(config.image.as_deref(), Some("ghcr.io/mcp/server-postgres:latest"));
+        assert_eq!(
+            config.image.as_deref(),
+            Some("ghcr.io/mcp/server-postgres:latest")
+        );
         assert!(config.mount_cwd);
         assert!(config.network);
         assert_eq!(config.env["DATABASE_URL"], "{DATABASE_URL}");
@@ -654,11 +667,23 @@ mod tests {
         let cmd = McpFeature::build_command("test", &config).unwrap();
         let prog = cmd.as_std().get_program().to_str().unwrap();
         // Should use detected runtime (podman or docker)
-        assert!(prog == "podman" || prog == "docker",
-            "expected podman or docker, got: {prog}");
-        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(args.contains(&"--network=none"), "should disable network: {args:?}");
-        assert!(args.contains(&"ghcr.io/mcp/server:latest"), "should include image: {args:?}");
+        assert!(
+            prog == "podman" || prog == "docker",
+            "expected podman or docker, got: {prog}"
+        );
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect();
+        assert!(
+            args.contains(&"--network=none"),
+            "should disable network: {args:?}"
+        );
+        assert!(
+            args.contains(&"ghcr.io/mcp/server:latest"),
+            "should include image: {args:?}"
+        );
     }
 
     #[test]
@@ -678,10 +703,20 @@ mod tests {
         let cmd = McpFeature::build_command("test", &config).unwrap();
         let prog = cmd.as_std().get_program().to_str().unwrap();
         assert_eq!(prog, "docker");
-        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(args.contains(&"mcp"), "should have mcp subcommand: {args:?}");
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect();
+        assert!(
+            args.contains(&"mcp"),
+            "should have mcp subcommand: {args:?}"
+        );
         assert!(args.contains(&"gateway"), "should have gateway: {args:?}");
-        assert!(args.contains(&"github"), "should have server name: {args:?}");
+        assert!(
+            args.contains(&"github"),
+            "should have server name: {args:?}"
+        );
     }
 
     #[test]
@@ -693,7 +728,10 @@ mod tests {
         "#;
         let config: McpServerConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.styrene_dest.as_deref(), Some("a7b3c9d1e5f2..."));
-        assert_eq!(config.command.as_deref(), Some("/opt/mcp-servers/gpu-inference"));
+        assert_eq!(
+            config.command.as_deref(),
+            Some("/opt/mcp-servers/gpu-inference")
+        );
     }
 
     #[test]
@@ -713,10 +751,23 @@ mod tests {
         let cmd = McpFeature::build_command("gpu", &config).unwrap();
         let prog = cmd.as_std().get_program().to_str().unwrap();
         assert_eq!(prog, "styrene");
-        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(args.contains(&"exec"), "should have exec subcommand: {args:?}");
-        assert!(args.contains(&"a7b3c9d1e5f2"), "should have dest hash: {args:?}");
-        assert!(args.contains(&"/opt/mcp/server"), "should have command: {args:?}");
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect();
+        assert!(
+            args.contains(&"exec"),
+            "should have exec subcommand: {args:?}"
+        );
+        assert!(
+            args.contains(&"a7b3c9d1e5f2"),
+            "should have dest hash: {args:?}"
+        );
+        assert!(
+            args.contains(&"/opt/mcp/server"),
+            "should have command: {args:?}"
+        );
     }
 
     #[test]
@@ -734,7 +785,10 @@ mod tests {
             timeout_secs: 30,
         };
         let result = McpFeature::build_command("test", &config);
-        assert!(result.is_err(), "should error without command, image, or docker_mcp");
+        assert!(
+            result.is_err(),
+            "should error without command, image, or docker_mcp"
+        );
     }
 
     #[test]

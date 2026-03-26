@@ -54,7 +54,9 @@ impl Activation {
                 if dir.join(marker).exists() {
                     return true;
                 }
-                if !dir.pop() { break; }
+                if !dir.pop() {
+                    break;
+                }
             }
         }
         // Check env vars
@@ -84,8 +86,12 @@ pub struct ContextConfig {
     pub priority: u32,
 }
 
-fn default_ttl() -> u32 { 20 }
-fn default_priority() -> u32 { 40 }
+fn default_ttl() -> u32 {
+    20
+}
+fn default_priority() -> u32 {
+    40
+}
 
 /// Tool declaration — backed by an HTTP endpoint.
 #[derive(Debug, Deserialize)]
@@ -109,7 +115,9 @@ pub struct ToolConfig {
 fn default_parameters() -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
-fn default_timeout() -> u64 { 10 }
+fn default_timeout() -> u64 {
+    10
+}
 
 /// Event forwarding config — POST agent events to external endpoints.
 #[derive(Debug, Default, Deserialize)]
@@ -137,7 +145,12 @@ pub fn resolve_template(template: &str, args: &HashMap<String, String>) -> Strin
                 .ok()
                 .or_else(|| args.get(var).cloned())
                 .unwrap_or_default();
-            result = format!("{}{}{}", &result[..start], replacement, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                replacement,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -241,7 +254,10 @@ mod tests {
 
     #[test]
     fn activation_always() {
-        let activation = Activation { always: true, ..Default::default() };
+        let activation = Activation {
+            always: true,
+            ..Default::default()
+        };
         assert!(activation.is_active(std::path::Path::new("/nonexistent")));
     }
 

@@ -166,9 +166,7 @@ impl IntentDocument {
     /// Add a constraint, deduplicating against existing entries.
     pub fn add_constraint(&mut self, text: &str) {
         let normalized = text.trim();
-        if !normalized.is_empty()
-            && !self.constraints_discovered.iter().any(|c| c == normalized)
-        {
+        if !normalized.is_empty() && !self.constraints_discovered.iter().any(|c| c == normalized) {
             self.constraints_discovered.push(normalized.to_string());
         }
     }
@@ -176,9 +174,7 @@ impl IntentDocument {
     /// Add an open question, deduplicating against existing entries.
     pub fn add_question(&mut self, text: &str) {
         let normalized = text.trim();
-        if !normalized.is_empty()
-            && !self.open_questions.iter().any(|q| q == normalized)
-        {
+        if !normalized.is_empty() && !self.open_questions.iter().any(|q| q == normalized) {
             self.open_questions.push(normalized.to_string());
         }
     }
@@ -251,7 +247,9 @@ impl ConversationState {
         let current_turn = self.intent.stats.turns;
         // Find messages older than the decay window — these are the ones
         // that are already decayed and should be compacted into a summary.
-        let evictable: Vec<&AgentMessage> = self.canonical.iter()
+        let evictable: Vec<&AgentMessage> = self
+            .canonical
+            .iter()
             .filter(|m| current_turn.saturating_sub(m.turn()) > self.decay_window as u32)
             .collect();
 
@@ -280,7 +278,8 @@ impl ConversationState {
                     };
                     payload.push_str(&format!("[Turn {turn}] Assistant: {truncated}\n"));
                     if !a.tool_calls.is_empty() {
-                        let tools: Vec<_> = a.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+                        let tools: Vec<_> =
+                            a.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
                         payload.push_str(&format!("  Tools called: {}\n", tools.join(", ")));
                     }
                     payload.push('\n');
@@ -299,9 +298,8 @@ impl ConversationState {
     pub fn apply_compaction(&mut self, summary: String) {
         let current_turn = self.intent.stats.turns;
         // Remove all messages older than the decay window
-        self.canonical.retain(|m| {
-            current_turn.saturating_sub(m.turn()) <= self.decay_window as u32
-        });
+        self.canonical
+            .retain(|m| current_turn.saturating_sub(m.turn()) <= self.decay_window as u32);
         self.compaction_summary = Some(summary);
         self.intent.stats.compactions += 1;
         tracing::info!(
@@ -324,17 +322,26 @@ impl ConversationState {
             lines.push(format!("Approach: {approach}"));
         }
         if !intent.files_modified.is_empty() {
-            let files: Vec<_> = intent.files_modified.iter()
-                .map(|p| p.display().to_string()).collect();
+            let files: Vec<_> = intent
+                .files_modified
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
             lines.push(format!("Files modified: {}", files.join(", ")));
         }
         if !intent.constraints_discovered.is_empty() {
-            lines.push(format!("Constraints: {}", intent.constraints_discovered.join("; ")));
+            lines.push(format!(
+                "Constraints: {}",
+                intent.constraints_discovered.join("; ")
+            ));
         }
         if !intent.failed_approaches.is_empty() {
             lines.push("Failed approaches:".to_string());
             for fa in &intent.failed_approaches {
-                lines.push(format!("  - {}: {} (turn {})", fa.description, fa.reason, fa.turn));
+                lines.push(format!(
+                    "  - {}: {} (turn {})",
+                    fa.description, fa.reason, fa.turn
+                ));
             }
         }
         lines.push(format!(
@@ -484,7 +491,10 @@ impl ConversationState {
 
         // Attach pending images to the last user message
         if !self.pending_images.is_empty()
-            && let Some(LlmMessage::User { images, .. }) = messages.iter_mut().rev().find(|m| matches!(m, LlmMessage::User { .. }))
+            && let Some(LlmMessage::User { images, .. }) = messages
+                .iter_mut()
+                .rev()
+                .find(|m| matches!(m, LlmMessage::User { .. }))
         {
             *images = self.pending_images.clone();
         }
@@ -540,9 +550,7 @@ impl ConversationState {
                         "specify" | "specifying" => {
                             omegon_traits::LifecyclePhase::Specifying { change_id: None }
                         }
-                        "decompose" | "decomposing" => {
-                            omegon_traits::LifecyclePhase::Decomposing
-                        }
+                        "decompose" | "decomposing" => omegon_traits::LifecyclePhase::Decomposing,
                         "implement" | "implementing" => {
                             omegon_traits::LifecyclePhase::Implementing { change_id: None }
                         }
@@ -663,34 +671,51 @@ impl ConversationState {
             .map(|msg| {
                 let turn = last_turn;
                 match msg {
-                    LlmMessage::User { content, .. } => AgentMessage::User { text: content, turn },
-                    LlmMessage::Assistant { text, thinking, tool_calls, raw } => {
-                        AgentMessage::Assistant(
-                            AssistantMessage {
-                                text: text.join("\n"),
-                                thinking: if thinking.is_empty() { None } else { Some(thinking.join("\n")) },
-                                tool_calls: tool_calls.into_iter().map(|tc| ToolCall {
+                    LlmMessage::User { content, .. } => AgentMessage::User {
+                        text: content,
+                        turn,
+                    },
+                    LlmMessage::Assistant {
+                        text,
+                        thinking,
+                        tool_calls,
+                        raw,
+                    } => AgentMessage::Assistant(
+                        AssistantMessage {
+                            text: text.join("\n"),
+                            thinking: if thinking.is_empty() {
+                                None
+                            } else {
+                                Some(thinking.join("\n"))
+                            },
+                            tool_calls: tool_calls
+                                .into_iter()
+                                .map(|tc| ToolCall {
                                     id: tc.id,
                                     name: tc.name,
                                     arguments: tc.arguments,
-                                }).collect(),
-                                raw: raw.unwrap_or(Value::Null),
-                            },
-                            turn,
-                        )
-                    }
-                    LlmMessage::ToolResult { call_id, tool_name, content, is_error, args_summary } => {
-                        AgentMessage::ToolResult(
-                            ToolResultEntry {
-                                call_id,
-                                tool_name,
-                                content: vec![omegon_traits::ContentBlock::Text { text: content }],
-                                is_error,
-                                args_summary,
-                            },
-                            turn,
-                        )
-                    }
+                                })
+                                .collect(),
+                            raw: raw.unwrap_or(Value::Null),
+                        },
+                        turn,
+                    ),
+                    LlmMessage::ToolResult {
+                        call_id,
+                        tool_name,
+                        content,
+                        is_error,
+                        args_summary,
+                    } => AgentMessage::ToolResult(
+                        ToolResultEntry {
+                            call_id,
+                            tool_name,
+                            content: vec![omegon_traits::ContentBlock::Text { text: content }],
+                            is_error,
+                            args_summary,
+                        },
+                        turn,
+                    ),
                 }
             })
             .collect();
@@ -783,7 +808,10 @@ impl ConversationState {
                 if lines <= 3 {
                     format!("[{}{ctx_suffix}: {}]", result.tool_name, text.trim())
                 } else {
-                    format!("[{}{ctx_suffix}: {lines} lines. {preview}]", result.tool_name)
+                    format!(
+                        "[{}{ctx_suffix}: {lines} lines. {preview}]",
+                        result.tool_name
+                    )
                 }
             }
         }
@@ -912,7 +940,11 @@ mod tests {
         let view = conv.build_llm_view();
         if let LlmMessage::Assistant { text, .. } = &view[0] {
             let combined: String = text.join("");
-            assert!(combined.len() < 600, "Text should be truncated, got {} bytes", combined.len());
+            assert!(
+                combined.len() < 600,
+                "Text should be truncated, got {} bytes",
+                combined.len()
+            );
             assert!(combined.contains("[truncated]"));
         } else {
             panic!("Expected Assistant message");
@@ -936,10 +968,16 @@ mod tests {
         conv.intent.stats.turns = 1;
 
         let view = conv.build_llm_view();
-        if let LlmMessage::ToolResult { content, tool_name, .. } = &view[0] {
+        if let LlmMessage::ToolResult {
+            content, tool_name, ..
+        } = &view[0]
+        {
             assert_eq!(tool_name, "read");
             // Rich decay skeleton includes line/byte counts
-            assert!(content.contains("Read:") && content.contains("bytes"), "got: {content}");
+            assert!(
+                content.contains("Read:") && content.contains("bytes"),
+                "got: {content}"
+            );
             // Should NOT contain the original bulk content
             assert!(!content.contains("xxxxx"), "should strip bulk content");
         } else {
@@ -964,7 +1002,9 @@ mod tests {
         conv.push_tool_result(ToolResultEntry {
             call_id: "t1".into(),
             tool_name: "read".into(),
-            content: vec![omegon_traits::ContentBlock::Text { text: "big content".repeat(100) }],
+            content: vec![omegon_traits::ContentBlock::Text {
+                text: "big content".repeat(100),
+            }],
             is_error: false,
             args_summary: None,
         });
@@ -972,14 +1012,20 @@ mod tests {
         // Still on turn 1 — everything should be fresh
         let view = conv.build_llm_view();
         if let LlmMessage::Assistant { thinking, .. } = &view[1] {
-            assert!(!thinking.is_empty(), "Turn 1 at turn 1: should NOT be decayed");
+            assert!(
+                !thinking.is_empty(),
+                "Turn 1 at turn 1: should NOT be decayed"
+            );
         }
 
         // Advance to turn 4 — turn 1 is now 3 turns old, outside decay_window=2
         conv.intent.stats.turns = 4;
         let view = conv.build_llm_view();
         if let LlmMessage::Assistant { thinking, .. } = &view[1] {
-            assert!(thinking.is_empty(), "Turn 1 at turn 4: should be decayed (age 3 > window 2)");
+            assert!(
+                thinking.is_empty(),
+                "Turn 1 at turn 4: should be decayed (age 3 > window 2)"
+            );
         }
     }
 
@@ -1000,13 +1046,17 @@ mod tests {
         conv.push_tool_result(ToolResultEntry {
             call_id: "tc1".into(),
             tool_name: "edit".into(),
-            content: vec![omegon_traits::ContentBlock::Text { text: "Edited successfully".into() }],
+            content: vec![omegon_traits::ContentBlock::Text {
+                text: "Edited successfully".into(),
+            }],
             is_error: false,
             args_summary: None,
         });
         conv.intent.stats.turns = 1;
         conv.intent.current_task = Some("Fix the auth bug".into());
-        conv.intent.files_modified.insert(PathBuf::from("src/foo.rs"));
+        conv.intent
+            .files_modified
+            .insert(PathBuf::from("src/foo.rs"));
 
         // Save
         let tmp = std::env::temp_dir().join("omegon-test-session.json");
@@ -1015,8 +1065,16 @@ mod tests {
         // Load
         let loaded = ConversationState::load_session(&tmp).unwrap();
         assert_eq!(loaded.intent.stats.turns, 1);
-        assert_eq!(loaded.intent.current_task.as_deref(), Some("Fix the auth bug"));
-        assert!(loaded.intent.files_modified.contains(&PathBuf::from("src/foo.rs")));
+        assert_eq!(
+            loaded.intent.current_task.as_deref(),
+            Some("Fix the auth bug")
+        );
+        assert!(
+            loaded
+                .intent
+                .files_modified
+                .contains(&PathBuf::from("src/foo.rs"))
+        );
 
         let view = loaded.build_llm_view();
         assert_eq!(view.len(), 3); // user + assistant + tool_result
@@ -1039,10 +1097,16 @@ mod tests {
         let mut conv = ConversationState::new();
         // Push a message under threshold: 400k chars → ~100k tokens, threshold at 150k
         conv.push_user("x".repeat(400_000));
-        assert!(!conv.needs_compaction(200_000, 0.75), "100k tokens should be under 150k threshold");
+        assert!(
+            !conv.needs_compaction(200_000, 0.75),
+            "100k tokens should be under 150k threshold"
+        );
         // Push more to exceed: 800k chars → ~200k tokens, threshold at 150k
         conv.push_user("y".repeat(400_000));
-        assert!(conv.needs_compaction(200_000, 0.75), "200k tokens should exceed 150k threshold");
+        assert!(
+            conv.needs_compaction(200_000, 0.75),
+            "200k tokens should exceed 150k threshold"
+        );
     }
 
     #[test]
@@ -1066,7 +1130,10 @@ mod tests {
         let (payload, count) = conv.build_compaction_payload().unwrap();
         assert_eq!(count, 2, "Should evict 2 old messages");
         assert!(payload.contains("old task"));
-        assert!(!payload.contains("new task"), "Recent messages should not be in payload");
+        assert!(
+            !payload.contains("new task"),
+            "Recent messages should not be in payload"
+        );
     }
 
     #[test]
@@ -1092,7 +1159,11 @@ mod tests {
         assert_eq!(conv.intent.stats.compactions, 1);
         assert!(conv.compaction_summary.is_some());
         // Old messages should be evicted
-        assert_eq!(conv.canonical.len(), 1, "Only the recent message should remain");
+        assert_eq!(
+            conv.canonical.len(),
+            1,
+            "Only the recent message should remain"
+        );
 
         // The LLM view should have the summary + the recent message
         let view = conv.build_llm_view();
@@ -1108,8 +1179,12 @@ mod tests {
         let mut conv = ConversationState::new();
         conv.intent.current_task = Some("Fix auth flow".into());
         conv.intent.approach = Some("Token rotation".into());
-        conv.intent.files_modified.insert(PathBuf::from("src/auth.rs"));
-        conv.intent.constraints_discovered.push("30-minute TTL".into());
+        conv.intent
+            .files_modified
+            .insert(PathBuf::from("src/auth.rs"));
+        conv.intent
+            .constraints_discovered
+            .push("30-minute TTL".into());
         conv.intent.failed_approaches.push(FailedApproach {
             description: "Direct replacement".into(),
             reason: "Cache holds stale refs".into(),
@@ -1131,10 +1206,26 @@ mod tests {
     fn intent_tracks_files_from_tool_calls() {
         let mut intent = IntentDocument::default();
         let calls = vec![
-            ToolCall { id: "1".into(), name: "read".into(), arguments: serde_json::json!({"path": "src/foo.rs"}) },
-            ToolCall { id: "2".into(), name: "edit".into(), arguments: serde_json::json!({"path": "src/bar.rs"}) },
-            ToolCall { id: "3".into(), name: "write".into(), arguments: serde_json::json!({"path": "src/new.rs"}) },
-            ToolCall { id: "4".into(), name: "bash".into(), arguments: serde_json::json!({"command": "ls"}) },
+            ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "src/foo.rs"}),
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "edit".into(),
+                arguments: serde_json::json!({"path": "src/bar.rs"}),
+            },
+            ToolCall {
+                id: "3".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path": "src/new.rs"}),
+            },
+            ToolCall {
+                id: "4".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "ls"}),
+            },
         ];
         intent.update_from_tools(&calls, &[]);
         assert!(intent.files_read.contains(&PathBuf::from("src/foo.rs")));
@@ -1168,10 +1259,16 @@ mod tests {
     fn system_messages_dont_set_task() {
         let mut conv = ConversationState::new();
         conv.push_user("[System: You've been running for 35 turns.]".into());
-        assert!(conv.intent.current_task.is_none(), "system messages should not set task");
+        assert!(
+            conv.intent.current_task.is_none(),
+            "system messages should not set task"
+        );
 
         conv.push_user("Now do the real work".into());
-        assert_eq!(conv.intent.current_task.as_deref(), Some("Now do the real work"));
+        assert_eq!(
+            conv.intent.current_task.as_deref(),
+            Some("Now do the real work")
+        );
     }
 
     #[test]
@@ -1207,7 +1304,10 @@ mod tests {
         let mut conv = ConversationState::new();
         conv.decay_window = 0;
 
-        let output = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let output = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         conv.push_tool_result(ToolResultEntry {
             call_id: "t1".into(),
             tool_name: "bash".into(),
@@ -1219,7 +1319,10 @@ mod tests {
 
         let view = conv.build_llm_view();
         if let LlmMessage::ToolResult { content, .. } = &view[0] {
-            assert!(content.contains("20 lines"), "should report line count, got: {content}");
+            assert!(
+                content.contains("20 lines"),
+                "should report line count, got: {content}"
+            );
             assert!(content.contains("line 20"), "should preserve tail");
             assert!(!content.contains("line 5"), "should strip middle");
         }
@@ -1244,7 +1347,10 @@ mod tests {
         let view = conv.build_llm_view();
         if let LlmMessage::ToolResult { content, .. } = &view[0] {
             assert!(content.contains("ERROR"), "should indicate error");
-            assert!(content.contains("command not found"), "should preserve error text");
+            assert!(
+                content.contains("command not found"),
+                "should preserve error text"
+            );
         }
     }
 
@@ -1266,7 +1372,10 @@ mod tests {
 
         let view = conv.build_llm_view();
         if let LlmMessage::ToolResult { content, .. } = &view[0] {
-            assert!(content.contains("src/auth.rs"), "should preserve path, got: {content}");
+            assert!(
+                content.contains("src/auth.rs"),
+                "should preserve path, got: {content}"
+            );
         }
     }
 
@@ -1297,7 +1406,10 @@ mod tests {
         });
 
         // Turn 1's tool result should now be in referenced_turns
-        assert!(conv.referenced_turns.contains(&1), "turn 1 should be marked as referenced");
+        assert!(
+            conv.referenced_turns.contains(&1),
+            "turn 1 should be marked as referenced"
+        );
 
         // At turn 5 (age 4 for turn-1 result), with decay_window=2:
         // Unreferenced: 4 > 2 → decayed
@@ -1344,9 +1456,9 @@ mod tests {
     #[test]
     fn ambient_phase_capture() {
         let mut conv = ConversationState::new();
-        let captures = vec![
-            crate::lifecycle::capture::AmbientCapture::Phase("implement".into()),
-        ];
+        let captures = vec![crate::lifecycle::capture::AmbientCapture::Phase(
+            "implement".into(),
+        )];
         conv.apply_ambient_captures(&captures);
         assert!(matches!(
             conv.intent.lifecycle_phase,
@@ -1381,7 +1493,9 @@ mod tests {
         conv.push_tool_result(ToolResultEntry {
             call_id: "t1".into(),
             tool_name: "read".into(),
-            content: vec![omegon_traits::ContentBlock::Text { text: "file contents".into() }],
+            content: vec![omegon_traits::ContentBlock::Text {
+                text: "file contents".into(),
+            }],
             is_error: false,
             args_summary: Some("src/auth.rs".into()),
         });
@@ -1394,10 +1508,16 @@ mod tests {
         // After load, verify the args_summary survived
         let view = loaded.build_llm_view();
         // Find the tool result in the view
-        let tool_msg = view.iter().find(|m| matches!(m, LlmMessage::ToolResult { .. }));
+        let tool_msg = view
+            .iter()
+            .find(|m| matches!(m, LlmMessage::ToolResult { .. }));
         assert!(tool_msg.is_some(), "should have a tool result in the view");
         if let Some(LlmMessage::ToolResult { args_summary, .. }) = tool_msg {
-            assert_eq!(args_summary.as_deref(), Some("src/auth.rs"), "args_summary should survive round-trip");
+            assert_eq!(
+                args_summary.as_deref(),
+                Some("src/auth.rs"),
+                "args_summary should survive round-trip"
+            );
         }
 
         // Now advance turns so it decays, verify the skeleton includes the path
@@ -1405,8 +1525,14 @@ mod tests {
         loaded.decay_window = 0;
         loaded.intent.stats.turns = 100; // Force decay
         let view = loaded.build_llm_view();
-        if let Some(LlmMessage::ToolResult { content, .. }) = view.iter().find(|m| matches!(m, LlmMessage::ToolResult { .. })) {
-            assert!(content.contains("src/auth.rs"), "decayed skeleton should include path from args_summary, got: {content}");
+        if let Some(LlmMessage::ToolResult { content, .. }) = view
+            .iter()
+            .find(|m| matches!(m, LlmMessage::ToolResult { .. }))
+        {
+            assert!(
+                content.contains("src/auth.rs"),
+                "decayed skeleton should include path from args_summary, got: {content}"
+            );
         }
 
         let _ = std::fs::remove_file(&tmp);
@@ -1434,7 +1560,10 @@ mod tests {
         if let LlmMessage::Assistant { thinking, .. } = &view[1] {
             // Thinking should be PRESERVED (not decayed) because the message
             // is within the decay window after load
-            assert!(!thinking.is_empty(), "thinking should be preserved after load, got empty");
+            assert!(
+                !thinking.is_empty(),
+                "thinking should be preserved after load, got empty"
+            );
         } else {
             panic!("expected assistant message at index 1");
         }

@@ -43,7 +43,10 @@ pub async fn validate_after_mutation(file_path: &Path, cwd: &Path) -> Option<Str
     };
 
     let child = Command::new("bash")
-        .args(["-c", &format!("{} {}", config.command, config.args.join(" "))])
+        .args([
+            "-c",
+            &format!("{} {}", config.command, config.args.join(" ")),
+        ])
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -106,9 +109,10 @@ fn discover_validators(cwd: &Path) -> HashMap<ValidatorKind, ValidatorConfig> {
 
     // Return cached if cwd matches
     if let Some((ref cached_cwd, ref validators)) = *guard
-        && cached_cwd == cwd {
-            return validators.clone();
-        }
+        && cached_cwd == cwd
+    {
+        return validators.clone();
+    }
 
     // Discover fresh
     let mut validators = HashMap::new();
@@ -189,9 +193,7 @@ fn extract_error_summary(stdout: &str, stderr: &str, kind: &ValidatorKind) -> St
             combined
                 .lines()
                 .filter(|l| {
-                    !l.is_empty()
-                        && !l.starts_with("Found")
-                        && !l.starts_with("All checks")
+                    !l.is_empty() && !l.starts_with("Found") && !l.starts_with("All checks")
                 })
                 .collect::<Vec<_>>()
                 .join("\n")

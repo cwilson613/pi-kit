@@ -22,8 +22,8 @@
 //! needed. The TUI receives events via a separate `tokio::broadcast` channel.
 
 use omegon_traits::{
-    BusEvent, BusRequest, CommandDefinition, CommandResult, ContextInjection,
-    ContextSignals, Feature, ToolDefinition,
+    BusEvent, BusRequest, CommandDefinition, CommandResult, ContextInjection, ContextSignals,
+    Feature, ToolDefinition,
 };
 use serde_json::Value;
 
@@ -91,7 +91,9 @@ impl EventBus {
             }
         }
 
-        let tool_names: Vec<&str> = self.tool_defs.iter()
+        let tool_names: Vec<&str> = self
+            .tool_defs
+            .iter()
             .map(|(_, d)| d.name.as_str())
             .collect();
         tracing::info!(
@@ -133,12 +135,10 @@ impl EventBus {
 
     /// All tool definitions across all features.
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        let disabled = self.disabled_tools.as_ref()
-            .and_then(|d| d.lock().ok());
-        self.tool_defs.iter()
-            .filter(|(_, d)| {
-                disabled.as_ref().is_none_or(|set| !set.contains(&d.name))
-            })
+        let disabled = self.disabled_tools.as_ref().and_then(|d| d.lock().ok());
+        self.tool_defs
+            .iter()
+            .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
             .map(|(_, d)| d.clone())
             .collect()
     }
@@ -188,7 +188,8 @@ impl EventBus {
     /// Returns the result from the first feature that handles it.
     pub fn dispatch_command(&mut self, name: &str, args: &str) -> CommandResult {
         // Find features that registered this command and try them
-        let owning_indices: Vec<usize> = self.command_defs
+        let owning_indices: Vec<usize> = self
+            .command_defs
             .iter()
             .filter(|(_, def)| def.name == name)
             .map(|(idx, _)| *idx)
@@ -226,7 +227,7 @@ impl Default for EventBus {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use omegon_traits::{Feature, ToolDefinition, ToolResult, ContentBlock};
+    use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
     use serde_json::json;
 
     /// Test feature that counts events and provides a tool.
@@ -236,7 +237,9 @@ mod tests {
 
     #[async_trait]
     impl Feature for CounterFeature {
-        fn name(&self) -> &str { "counter" }
+        fn name(&self) -> &str {
+            "counter"
+        }
 
         fn tools(&self) -> Vec<ToolDefinition> {
             vec![ToolDefinition {
@@ -273,7 +276,9 @@ mod tests {
 
     #[async_trait]
     impl Feature for NotifierFeature {
-        fn name(&self) -> &str { "notifier" }
+        fn name(&self) -> &str {
+            "notifier"
+        }
 
         fn commands(&self) -> Vec<CommandDefinition> {
             vec![CommandDefinition {
@@ -349,7 +354,9 @@ mod tests {
         });
         let requests = bus.drain_requests();
         assert_eq!(requests.len(), 1);
-        assert!(matches!(&requests[0], BusRequest::Notify { message, .. } if message == "Session ended"));
+        assert!(
+            matches!(&requests[0], BusRequest::Notify { message, .. } if message == "Session ended")
+        );
     }
 
     #[test]
@@ -372,7 +379,10 @@ mod tests {
         bus.finalize();
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = bus.execute_tool("count", "tc1", json!({}), cancel).await.unwrap();
+        let result = bus
+            .execute_tool("count", "tc1", json!({}), cancel)
+            .await
+            .unwrap();
         assert_eq!(result.content[0].as_text().unwrap(), "count: 42");
     }
 
@@ -380,7 +390,9 @@ mod tests {
     async fn unknown_tool_errors() {
         let bus = EventBus::new();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let err = bus.execute_tool("nonexistent", "tc1", json!({}), cancel).await;
+        let err = bus
+            .execute_tool("nonexistent", "tc1", json!({}), cancel)
+            .await;
         assert!(err.is_err());
     }
 
@@ -417,14 +429,23 @@ mod tests {
         assert_eq!(bus.all_tool_definitions().len(), 1);
 
         // Disable the tool
-        let disabled = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashSet::from(["count".to_string()])
-        ));
+        let disabled =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::from([
+                "count".to_string(),
+            ])));
         bus.set_disabled_tools(disabled);
 
         // After disabling: filtered from tool_definitions but still in all_tool_definitions
-        assert_eq!(bus.tool_definitions().len(), 0, "disabled tool should be filtered");
-        assert_eq!(bus.all_tool_definitions().len(), 1, "all_tool_definitions should still include it");
+        assert_eq!(
+            bus.tool_definitions().len(),
+            0,
+            "disabled tool should be filtered"
+        );
+        assert_eq!(
+            bus.all_tool_definitions().len(),
+            1,
+            "all_tool_definitions should still include it"
+        );
     }
 
     #[test]
@@ -435,9 +456,10 @@ mod tests {
             bus.register(Box::new(CounterFeature { event_count: 0 }));
             bus.finalize();
 
-            let disabled = std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashSet::from(["count".to_string()])
-            ));
+            let disabled =
+                std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::from([
+                    "count".to_string(),
+                ])));
             bus.set_disabled_tools(disabled);
 
             // Tool is filtered from definitions...
@@ -456,7 +478,11 @@ mod tests {
         bus.register(Box::new(NotifierFeature));
         bus.finalize();
 
-        bus.emit(&BusEvent::SessionEnd { turns: 1, tool_calls: 0, duration_secs: 1.0 });
+        bus.emit(&BusEvent::SessionEnd {
+            turns: 1,
+            tool_calls: 0,
+            duration_secs: 1.0,
+        });
         assert_eq!(bus.drain_requests().len(), 1);
         // Second drain should be empty
         assert!(bus.drain_requests().is_empty());

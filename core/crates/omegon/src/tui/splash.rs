@@ -19,8 +19,8 @@ pub const HOLD_FRAMES: u32 = 8;
 
 /// CRT noise glyphs.
 const NOISE_CHARS: &[char] = &[
-    '▓', '▒', '░', '█', '▄', '▀', '▌', '▐', '▊', '▋', '▍', '▎', '▏', '◆', '■', '□', '▪',
-    '◇', '┼', '╬', '╪', '╫', '┤', '├', '┬', '┴', '╱', '╲', '│', '─',
+    '▓', '▒', '░', '█', '▄', '▀', '▌', '▐', '▊', '▋', '▍', '▎', '▏', '◆', '■', '□', '▪', '◇', '┼',
+    '╬', '╪', '╫', '┤', '├', '┬', '┴', '╱', '╲', '│', '─',
 ];
 
 // ─── Seeded RNG — deterministic noise per frame ─────────────────────────────
@@ -236,7 +236,10 @@ fn render_frame_lines<'a>(
         }
 
         if !current_text.is_empty() {
-            spans.push(Span::styled(current_text, current_style.unwrap_or_default()));
+            spans.push(Span::styled(
+                current_text,
+                current_style.unwrap_or_default(),
+            ));
         }
 
         output.push(Line::from(spans));
@@ -267,7 +270,12 @@ pub struct LoadItem {
 const SCAN_GLYPHS: &[&str] = &["░ ", "▒ ", "▓ ", "▒ ", "░ ", "▸ ", "▸ ", "▸ "];
 
 /// Render the checklist as a multi-row grid (3 columns).
-fn render_grid<'a>(items: &[LoadItem], scan_frame: usize, col_width: usize, t: &dyn Theme) -> Vec<Line<'a>> {
+fn render_grid<'a>(
+    items: &[LoadItem],
+    scan_frame: usize,
+    col_width: usize,
+    t: &dyn Theme,
+) -> Vec<Line<'a>> {
     let cols = 3usize;
     let rows = (items.len() + cols - 1) / cols;
     let mut output = Vec::with_capacity(rows);
@@ -334,7 +342,12 @@ enum LogoTier {
 fn select_tier(cols: u16, rows: u16) -> LogoTier {
     let full_width = LOGO_LINES.iter().map(|l| l.len()).max().unwrap_or(80) as u16 + 4;
     let full_height = LOGO_LINES.len() as u16 + 6;
-    let compact_width = COMPACT_LOGO_LINES.iter().map(|l| l.len()).max().unwrap_or(54) as u16 + 4;
+    let compact_width = COMPACT_LOGO_LINES
+        .iter()
+        .map(|l| l.len())
+        .max()
+        .unwrap_or(54) as u16
+        + 4;
     let compact_height = COMPACT_LOGO_LINES.len() as u16 + 6;
 
     if cols >= full_width && rows >= full_height {
@@ -394,15 +407,51 @@ impl SplashScreen {
             anim_done: false,
             dismissed: false,
             items: vec![
-                LoadItem { label: "cloud", state: LoadState::Pending, summary: None },
-                LoadItem { label: "local", state: LoadState::Pending, summary: None },
-                LoadItem { label: "hardware", state: LoadState::Pending, summary: None },
-                LoadItem { label: "memory", state: LoadState::Pending, summary: None },
-                LoadItem { label: "tools", state: LoadState::Pending, summary: None },
-                LoadItem { label: "design", state: LoadState::Pending, summary: None },
-                LoadItem { label: "secrets", state: LoadState::Pending, summary: None },
-                LoadItem { label: "container", state: LoadState::Pending, summary: None },
-                LoadItem { label: "mcp", state: LoadState::Pending, summary: None },
+                LoadItem {
+                    label: "cloud",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "local",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "hardware",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "memory",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "tools",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "design",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "secrets",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "container",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
+                LoadItem {
+                    label: "mcp",
+                    state: LoadState::Pending,
+                    summary: None,
+                },
             ],
             prompt_blink: false,
         })
@@ -433,7 +482,10 @@ impl SplashScreen {
     pub fn ready_to_dismiss(&self) -> bool {
         self.anim_done
             && self.hold_count >= HOLD_FRAMES
-            && self.items.iter().all(|i| matches!(i.state, LoadState::Done | LoadState::Failed))
+            && self
+                .items
+                .iter()
+                .all(|i| matches!(i.state, LoadState::Done | LoadState::Failed))
     }
 
     /// Dismiss the splash (on keypress or auto).
@@ -478,8 +530,7 @@ impl SplashScreen {
         let area = frame.area();
 
         // Fill background
-        let bg_block = ratatui::widgets::Block::default()
-            .style(Style::default().bg(t.bg()));
+        let bg_block = ratatui::widgets::Block::default().style(Style::default().bg(t.bg()));
         frame.render_widget(bg_block, area);
 
         let mut lines: Vec<Line<'_>> = Vec::new();
@@ -536,7 +587,11 @@ impl SplashScreen {
                 lines.push(Line::from(""));
                 let prompt = "press any key to continue";
                 let p_pad = (area.width as usize).saturating_sub(prompt.len()) / 2;
-                let color = if self.prompt_blink { t.dim() } else { t.accent() };
+                let color = if self.prompt_blink {
+                    t.dim()
+                } else {
+                    t.accent()
+                };
                 lines.push(Line::from(vec![
                     Span::raw(" ".repeat(p_pad)),
                     Span::styled(prompt, Style::default().fg(color)),
@@ -682,12 +737,36 @@ mod tests {
     fn grid_renders_without_panic() {
         let t = crate::tui::theme::Alpharius;
         let items = vec![
-            LoadItem { label: "cloud", state: LoadState::Done, summary: Some("anthropic".into()) },
-            LoadItem { label: "local", state: LoadState::Active, summary: None },
-            LoadItem { label: "hardware", state: LoadState::Done, summary: Some("M2, 32GB".into()) },
-            LoadItem { label: "memory", state: LoadState::Failed, summary: Some("not found".into()) },
-            LoadItem { label: "tools", state: LoadState::Done, summary: Some("48 registered".into()) },
-            LoadItem { label: "design", state: LoadState::Pending, summary: None },
+            LoadItem {
+                label: "cloud",
+                state: LoadState::Done,
+                summary: Some("anthropic".into()),
+            },
+            LoadItem {
+                label: "local",
+                state: LoadState::Active,
+                summary: None,
+            },
+            LoadItem {
+                label: "hardware",
+                state: LoadState::Done,
+                summary: Some("M2, 32GB".into()),
+            },
+            LoadItem {
+                label: "memory",
+                state: LoadState::Failed,
+                summary: Some("not found".into()),
+            },
+            LoadItem {
+                label: "tools",
+                state: LoadState::Done,
+                summary: Some("48 registered".into()),
+            },
+            LoadItem {
+                label: "design",
+                state: LoadState::Pending,
+                summary: None,
+            },
         ];
         let lines = render_grid(&items, 0, 24, &t);
         assert_eq!(lines.len(), 2, "6 items / 3 cols = 2 rows");
@@ -700,9 +779,11 @@ mod tests {
     #[test]
     fn grid_single_item() {
         let t = crate::tui::theme::Alpharius;
-        let items = vec![
-            LoadItem { label: "test", state: LoadState::Done, summary: Some("ok".into()) },
-        ];
+        let items = vec![LoadItem {
+            label: "test",
+            state: LoadState::Done,
+            summary: Some("ok".into()),
+        }];
         let lines = render_grid(&items, 0, 20, &t);
         assert_eq!(lines.len(), 1);
     }

@@ -17,9 +17,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::widgets::Scrollbar;
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
-use crate::lifecycle::types::*;
 use super::theme::Theme;
 use super::widgets;
+use crate::lifecycle::types::*;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -88,106 +88,100 @@ impl DashboardHandles {
         }
     }
 
-    fn refresh_from_lifecycle(
-        lp: &LifecycleContextProvider,
-        state: &mut DashboardState,
-    ) {
-            state.focused_node = lp.focused_node_id().and_then(|id| {
-                lp.get_node(id).map(|n| {
-                    let sections = design::read_node_sections(n);
-                    let assumptions = n.assumption_count();
-                    let decisions_count = sections
-                        .as_ref()
-                        .map(|s| {
-                            s.decisions
-                                .iter()
-                                .filter(|d| d.status == "decided")
-                                .count()
-                        })
-                        .unwrap_or(0);
-                    let readiness = sections
-                        .as_ref()
-                        .map(|s| s.readiness_score())
-                        .unwrap_or(0.0);
-                    FocusedNodeSummary {
-                        id: n.id.clone(),
-                        title: n.title.clone(),
-                        status: n.status,
-                        open_questions: n.open_questions.len() - assumptions,
-                        assumptions,
-                        decisions: decisions_count,
-                        readiness,
-                        openspec_change: n.openspec_change.clone(),
-                    }
-                })
-            });
-            state.active_changes = lp
-                .changes()
-                .iter()
-                .filter(|c| !matches!(c.stage, ChangeStage::Archived))
-                .map(|c| ChangeSummary {
-                    name: c.name.clone(),
-                    stage: c.stage,
-                    done_tasks: c.done_tasks,
-                    total_tasks: c.total_tasks,
-                })
-                .collect();
-
-            // Status counts + node lists
-            let nodes = lp.all_nodes();
-            let mut counts = StatusCounts {
-                total: nodes.len(),
-                ..Default::default()
-            };
-            state.implementing_nodes.clear();
-            state.actionable_nodes.clear();
-            state.all_nodes.clear();
-
-            for node in nodes.values() {
-                match node.status {
-                    NodeStatus::Implementing => counts.implementing += 1,
-                    NodeStatus::Decided => counts.decided += 1,
-                    NodeStatus::Exploring => counts.exploring += 1,
-                    NodeStatus::Implemented => counts.implemented += 1,
-                    NodeStatus::Blocked => counts.blocked += 1,
-                    NodeStatus::Deferred => counts.deferred += 1,
-                    _ => {}
+    fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardState) {
+        state.focused_node = lp.focused_node_id().and_then(|id| {
+            lp.get_node(id).map(|n| {
+                let sections = design::read_node_sections(n);
+                let assumptions = n.assumption_count();
+                let decisions_count = sections
+                    .as_ref()
+                    .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
+                    .unwrap_or(0);
+                let readiness = sections
+                    .as_ref()
+                    .map(|s| s.readiness_score())
+                    .unwrap_or(0.0);
+                FocusedNodeSummary {
+                    id: n.id.clone(),
+                    title: n.title.clone(),
+                    status: n.status,
+                    open_questions: n.open_questions.len() - assumptions,
+                    assumptions,
+                    decisions: decisions_count,
+                    readiness,
+                    openspec_change: n.openspec_change.clone(),
                 }
-                counts.open_questions += node.open_questions.len();
+            })
+        });
+        state.active_changes = lp
+            .changes()
+            .iter()
+            .filter(|c| !matches!(c.stage, ChangeStage::Archived))
+            .map(|c| ChangeSummary {
+                name: c.name.clone(),
+                stage: c.stage,
+                done_tasks: c.done_tasks,
+                total_tasks: c.total_tasks,
+            })
+            .collect();
 
-                let summary = NodeSummary {
-                    id: node.id.clone(),
-                    title: node.title.clone(),
-                    status: node.status,
-                    open_questions: node.open_questions.len(),
-                    parent: node.parent.clone(),
-                    priority: node.priority,
-                    issue_type: node.issue_type,
-                    openspec_change: node.openspec_change.clone(),
-                };
+        // Status counts + node lists
+        let nodes = lp.all_nodes();
+        let mut counts = StatusCounts {
+            total: nodes.len(),
+            ..Default::default()
+        };
+        state.implementing_nodes.clear();
+        state.actionable_nodes.clear();
+        state.all_nodes.clear();
 
-                // Collect all non-implemented nodes for tree view
-                if !matches!(node.status, NodeStatus::Implemented) {
-                    state.all_nodes.push(summary.clone());
-                }
-                if matches!(node.status, NodeStatus::Implementing) {
-                    state.implementing_nodes.push(summary.clone());
-                }
-                if matches!(node.status, NodeStatus::Decided) {
-                    state.actionable_nodes.push(summary);
-                }
+        for node in nodes.values() {
+            match node.status {
+                NodeStatus::Implementing => counts.implementing += 1,
+                NodeStatus::Decided => counts.decided += 1,
+                NodeStatus::Exploring => counts.exploring += 1,
+                NodeStatus::Implemented => counts.implemented += 1,
+                NodeStatus::Blocked => counts.blocked += 1,
+                NodeStatus::Deferred => counts.deferred += 1,
+                _ => {}
             }
-            state.status_counts = counts;
+            counts.open_questions += node.open_questions.len();
 
-            // Collect degraded nodes
-            state.degraded_nodes = lp.degraded_nodes().iter().map(|d| {
-                DegradedNodeSummary {
-                    id: d.id.clone(),
-                    title: d.title.clone(),
-                    file_path: d.file_path.display().to_string(),
-                    reason: d.reason.to_string(),
-                }
-            }).collect();
+            let summary = NodeSummary {
+                id: node.id.clone(),
+                title: node.title.clone(),
+                status: node.status,
+                open_questions: node.open_questions.len(),
+                parent: node.parent.clone(),
+                priority: node.priority,
+                issue_type: node.issue_type,
+                openspec_change: node.openspec_change.clone(),
+            };
+
+            // Collect all non-implemented nodes for tree view
+            if !matches!(node.status, NodeStatus::Implemented) {
+                state.all_nodes.push(summary.clone());
+            }
+            if matches!(node.status, NodeStatus::Implementing) {
+                state.implementing_nodes.push(summary.clone());
+            }
+            if matches!(node.status, NodeStatus::Decided) {
+                state.actionable_nodes.push(summary);
+            }
+        }
+        state.status_counts = counts;
+
+        // Collect degraded nodes
+        state.degraded_nodes = lp
+            .degraded_nodes()
+            .iter()
+            .map(|d| DegradedNodeSummary {
+                id: d.id.clone(),
+                title: d.title.clone(),
+                file_path: d.file_path.display().to_string(),
+                reason: d.reason.to_string(),
+            })
+            .collect();
     }
 }
 
@@ -363,10 +357,7 @@ impl DashboardState {
         // Top sections
         let top_h = header_h + focus_h;
         // Tree gets remaining space
-        let tree_h = inner
-            .height
-            .saturating_sub(top_h + bottom_h)
-            .max(3); // minimum 3 rows for tree
+        let tree_h = inner.height.saturating_sub(top_h + bottom_h).max(3); // minimum 3 rows for tree
 
         // Build layout constraints
         let chunks = Layout::vertical([
@@ -416,9 +407,7 @@ impl DashboardState {
         // Title
         lines.push(Line::from(Span::styled(
             " Ω Dashboard",
-            Style::default()
-                .fg(t.accent())
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
         )));
 
         if self.status_counts.total == 0 {
@@ -478,7 +467,7 @@ impl DashboardState {
             };
             // All statuses represented so segments sum to total
             let seed_resolved = c.total.saturating_sub(
-                c.exploring + c.decided + c.implementing + c.implemented + c.blocked + c.deferred
+                c.exploring + c.decided + c.implementing + c.implemented + c.blocked + c.deferred,
             );
             lines.push(Line::from(vec![
                 Span::styled(" ", Style::default()),
@@ -512,9 +501,7 @@ impl DashboardState {
             ),
             Span::styled(
                 widgets::truncate_str(&node.id, w.saturating_sub(4), "…").to_string(),
-                Style::default()
-                    .fg(t.fg())
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -611,12 +598,11 @@ impl DashboardState {
                 Span::styled("⚠ ", Style::default().fg(t.error())),
                 Span::styled(
                     d.id.clone(),
-                    Style::default().fg(t.error()).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(t.error())
+                        .add_modifier(Modifier::ITALIC),
                 ),
-                Span::styled(
-                    format!(" ({})", d.reason),
-                    Style::default().fg(t.dim()),
-                ),
+                Span::styled(format!(" ({})", d.reason), Style::default().fg(t.dim())),
             ]));
             // Use a distinct ID prefix to avoid collisions with valid nodes
             let item = TreeItem::new_leaf(format!("degraded:{}", d.id), text);
@@ -688,18 +674,14 @@ fn build_tree_items<'a>(
 ) -> Vec<TreeItem<'a, String>> {
     // Index children by parent
     let mut children_map: HashMap<Option<&str>, Vec<&NodeSummary>> = HashMap::new();
-    let id_set: std::collections::HashSet<&str> =
-        nodes.iter().map(|n| n.id.as_str()).collect();
+    let id_set: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
 
     for node in nodes {
         let effective_parent = match &node.parent {
             Some(p) if id_set.contains(p.as_str()) => Some(p.as_str()),
             _ => None, // parent not in active set — treat as root
         };
-        children_map
-            .entry(effective_parent)
-            .or_default()
-            .push(node);
+        children_map.entry(effective_parent).or_default().push(node);
     }
 
     // Sort children: by status priority, then alphabetical
@@ -723,8 +705,7 @@ fn build_tree_items<'a>(
         children
             .iter()
             .filter_map(|node| {
-                let child_items =
-                    build_recursive(Some(&node.id), children_map, focused_id, t);
+                let child_items = build_recursive(Some(&node.id), children_map, focused_id, t);
                 let text = node_text(node, focused_id, t);
                 if child_items.is_empty() {
                     Some(TreeItem::new_leaf(node.id.clone(), text))
@@ -745,21 +726,14 @@ fn build_tree_items<'a>(
 /// - id: node id (bold if focused, normal otherwise)
 /// - ?N: question count badge (if > 0)
 /// - P1-P5: priority badge (if set)
-fn node_text<'a>(
-    node: &NodeSummary,
-    focused_id: Option<&str>,
-    t: &dyn Theme,
-) -> Text<'a> {
+fn node_text<'a>(node: &NodeSummary, focused_id: Option<&str>, t: &dyn Theme) -> Text<'a> {
     let (icon, color) = status_icon_color(node.status, t);
     let is_focused = focused_id == Some(node.id.as_str());
 
     let mut spans: Vec<Span<'a>> = Vec::with_capacity(6);
 
     // Status icon
-    spans.push(Span::styled(
-        format!("{icon} "),
-        Style::default().fg(color),
-    ));
+    spans.push(Span::styled(format!("{icon} "), Style::default().fg(color)));
 
     // Node ID
     let id_style = if is_focused {
@@ -978,13 +952,11 @@ mod tests {
             total_children: 3,
             completed: 1,
             failed: 0,
-            children: vec![
-                ChildProgress {
-                    label: "task-a".into(),
-                    status: "completed".into(),
-                    duration_secs: Some(12.0),
-                },
-            ],
+            children: vec![ChildProgress {
+                label: "task-a".into(),
+                status: "completed".into(),
+                duration_secs: Some(12.0),
+            }],
         });
         assert!(state.cleave.as_ref().unwrap().active);
         assert_eq!(state.cleave.as_ref().unwrap().total_children, 3);
@@ -1090,10 +1062,7 @@ mod tests {
             .unwrap();
 
         let text = buf_text(&terminal);
-        assert!(
-            text.contains("rust-tui"),
-            "should show tree node: {text}"
-        );
+        assert!(text.contains("rust-tui"), "should show tree node: {text}");
     }
 
     #[test]
@@ -1178,10 +1147,7 @@ mod tests {
         assert_eq!(items.len(), 1, "should have one root");
         assert_eq!(items[0].children().len(), 2, "root should have 2 children");
         // implementing child comes first
-        assert_eq!(
-            items[0].children()[0].identifier(),
-            &"child-b".to_string()
-        );
+        assert_eq!(items[0].children()[0].identifier(), &"child-b".to_string());
     }
 
     #[test]
@@ -1201,7 +1167,10 @@ mod tests {
         // Not focused
         let text_normal = node_text(&node, None, &t);
         let line = &text_normal.lines[0];
-        assert!(line.spans.len() >= 4, "should have icon, id, questions, priority spans");
+        assert!(
+            line.spans.len() >= 4,
+            "should have icon, id, questions, priority spans"
+        );
 
         // Focused
         let text_focused = node_text(&node, Some("my-node"), &t);
@@ -1411,13 +1380,11 @@ mod tests {
             total_children: 2,
             completed: 1,
             failed: 0,
-            children: vec![
-                ChildProgress {
-                    label: "task-1".into(),
-                    status: "completed".into(),
-                    duration_secs: Some(5.0),
-                },
-            ],
+            children: vec![ChildProgress {
+                label: "task-1".into(),
+                status: "completed".into(),
+                duration_secs: Some(5.0),
+            }],
         });
 
         let backend = TestBackend::new(50, 30);
@@ -1438,18 +1405,16 @@ mod tests {
     #[test]
     fn orphan_nodes_become_roots() {
         let t = super::super::theme::Alpharius;
-        let nodes = vec![
-            NodeSummary {
-                id: "orphan".into(),
-                title: "Orphan".into(),
-                status: NodeStatus::Exploring,
-                open_questions: 0,
-                parent: Some("implemented-parent".into()), // parent not in active set
-                priority: None,
-                issue_type: None,
-                openspec_change: None,
-            },
-        ];
+        let nodes = vec![NodeSummary {
+            id: "orphan".into(),
+            title: "Orphan".into(),
+            status: NodeStatus::Exploring,
+            open_questions: 0,
+            parent: Some("implemented-parent".into()), // parent not in active set
+            priority: None,
+            issue_type: None,
+            openspec_change: None,
+        }];
         let items = build_tree_items(&nodes, None, &t);
         assert_eq!(items.len(), 1, "orphan should become root");
         assert_eq!(items[0].identifier(), &"orphan".to_string());

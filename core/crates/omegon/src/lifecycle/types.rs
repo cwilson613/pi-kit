@@ -112,7 +112,10 @@ pub struct DesignNode {
 impl DesignNode {
     /// Count of open questions tagged as [assumption].
     pub fn assumption_count(&self) -> usize {
-        self.open_questions.iter().filter(|q| q.starts_with("[assumption]")).count()
+        self.open_questions
+            .iter()
+            .filter(|q| q.starts_with("[assumption]"))
+            .count()
     }
 
     /// Count of regular (non-assumption) open questions.
@@ -126,7 +129,9 @@ impl DocumentSections {
     /// Returns 1.0 when all unknowns are resolved, 0.0 when nothing is decided.
     /// Open questions include both regular questions and [assumption]-tagged ones.
     pub fn readiness_score(&self) -> f32 {
-        let decided = self.decisions.iter()
+        let decided = self
+            .decisions
+            .iter()
             .filter(|d| d.status == "decided")
             .count();
         let total = decided + self.open_questions.len();
@@ -138,7 +143,10 @@ impl DocumentSections {
 
     /// Count of open questions tagged as [assumption].
     pub fn assumption_count(&self) -> usize {
-        self.open_questions.iter().filter(|q| q.starts_with("[assumption]")).count()
+        self.open_questions
+            .iter()
+            .filter(|q| q.starts_with("[assumption]"))
+            .count()
     }
 
     /// Count of regular (non-assumption) open questions.
@@ -255,7 +263,16 @@ mod tests {
 
     #[test]
     fn node_status_round_trip() {
-        for s in &["seed", "exploring", "resolved", "decided", "implementing", "implemented", "blocked", "deferred"] {
+        for s in &[
+            "seed",
+            "exploring",
+            "resolved",
+            "decided",
+            "implementing",
+            "implemented",
+            "blocked",
+            "deferred",
+        ] {
             let status = NodeStatus::parse(s).unwrap();
             assert_eq!(status.as_str(), *s);
         }
@@ -277,8 +294,16 @@ mod tests {
     fn readiness_score_all_decided() {
         let sections = DocumentSections {
             decisions: vec![
-                DesignDecision { title: "A".into(), status: "decided".into(), rationale: "".into() },
-                DesignDecision { title: "B".into(), status: "decided".into(), rationale: "".into() },
+                DesignDecision {
+                    title: "A".into(),
+                    status: "decided".into(),
+                    rationale: "".into(),
+                },
+                DesignDecision {
+                    title: "B".into(),
+                    status: "decided".into(),
+                    rationale: "".into(),
+                },
             ],
             open_questions: vec![],
             ..Default::default()
@@ -289,9 +314,11 @@ mod tests {
     #[test]
     fn readiness_score_with_questions() {
         let sections = DocumentSections {
-            decisions: vec![
-                DesignDecision { title: "A".into(), status: "decided".into(), rationale: "".into() },
-            ],
+            decisions: vec![DesignDecision {
+                title: "A".into(),
+                status: "decided".into(),
+                rationale: "".into(),
+            }],
             open_questions: vec![
                 "How does X work?".into(),
                 "[assumption] The operator has git installed".into(),
@@ -314,8 +341,16 @@ mod tests {
     fn readiness_score_rejected_decisions_not_counted() {
         let sections = DocumentSections {
             decisions: vec![
-                DesignDecision { title: "A".into(), status: "decided".into(), rationale: "".into() },
-                DesignDecision { title: "B".into(), status: "rejected".into(), rationale: "".into() },
+                DesignDecision {
+                    title: "A".into(),
+                    status: "decided".into(),
+                    rationale: "".into(),
+                },
+                DesignDecision {
+                    title: "B".into(),
+                    status: "rejected".into(),
+                    rationale: "".into(),
+                },
             ],
             open_questions: vec!["?".into()],
             ..Default::default()

@@ -89,7 +89,9 @@ impl ToolDetail {
 /// Abstracts provider-specific token ceilings into operator-friendly categories.
 /// Internal routing still compares exact token counts; these are the policy
 /// and UX abstraction.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "PascalCase")]
 pub enum ContextClass {
     /// 128k tokens. Compact context for lightweight tasks.
@@ -105,10 +107,10 @@ pub enum ContextClass {
 
 /// Token ceiling thresholds — a model with ceiling ≤ threshold belongs to that class.
 const CONTEXT_CLASS_THRESHOLDS: &[(ContextClass, usize)] = &[
-    (ContextClass::Squad, 131_072),     // 128k
-    (ContextClass::Maniple, 278_528),   // ~272k
-    (ContextClass::Clan, 450_560),      // ~440k (covers 400k models)
-    // Legion: everything above
+    (ContextClass::Squad, 131_072),   // 128k
+    (ContextClass::Maniple, 278_528), // ~272k
+    (ContextClass::Clan, 450_560),    // ~440k (covers 400k models)
+                                      // Legion: everything above
 ];
 
 impl ContextClass {
@@ -273,13 +275,27 @@ impl Settings {
     }
 
     pub fn model_short(&self) -> &str {
-        self.model.split(':').next_back()
+        self.model
+            .split(':')
+            .next_back()
             .or_else(|| self.model.split('/').next_back())
             .unwrap_or(&self.model)
     }
 
     pub fn provider(&self) -> &str {
-        self.model.split(':').next().unwrap_or("anthropic")
+        match crate::providers::infer_provider_id(&self.model).as_str() {
+            "anthropic" => "anthropic",
+            "openai" => "openai",
+            "openai-codex" => "openai-codex",
+            "openrouter" => "openrouter",
+            "groq" => "groq",
+            "xai" => "xai",
+            "mistral" => "mistral",
+            "cerebras" => "cerebras",
+            "huggingface" => "huggingface",
+            "ollama" => "ollama",
+            _ => "anthropic",
+        }
     }
 }
 
@@ -351,7 +367,13 @@ impl ThinkingLevel {
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Off, Self::Minimal, Self::Low, Self::Medium, Self::High]
+        &[
+            Self::Off,
+            Self::Minimal,
+            Self::Low,
+            Self::Medium,
+            Self::High,
+        ]
     }
 }
 
@@ -419,10 +441,18 @@ fn infer_context_window(model: &str) -> usize {
 
     // Fallback heuristics for models not in the matrix
     let name = model_id;
-    if name.contains("opus") || name.contains("sonnet") { return 200_000; }
-    if name.contains("haiku") { return 200_000; }
-    if name.contains("gpt-5") { return 272_000; }
-    if name.contains("gpt-4.1") { return 200_000; }
+    if name.contains("opus") || name.contains("sonnet") {
+        return 200_000;
+    }
+    if name.contains("haiku") {
+        return 200_000;
+    }
+    if name.contains("gpt-5") {
+        return 272_000;
+    }
+    if name.contains("gpt-4.1") {
+        return 200_000;
+    }
 
     131_072 // fail-closed: default to Squad
 }
@@ -449,7 +479,6 @@ pub struct Profile {
     pub max_turns: Option<u32>,
 
     // ── Context class routing ──
-
     /// Provider preference order. First = most preferred.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_order: Vec<String>,
@@ -479,18 +508,20 @@ impl Profile {
         // Project-level first
         let project_path = cwd.join(".omegon/profile.json");
         if let Ok(content) = std::fs::read_to_string(&project_path)
-            && let Ok(profile) = serde_json::from_str(&content) {
-                tracing::debug!(path = %project_path.display(), "project profile loaded");
-                return profile;
-            }
+            && let Ok(profile) = serde_json::from_str(&content)
+        {
+            tracing::debug!(path = %project_path.display(), "project profile loaded");
+            return profile;
+        }
 
         // Global fallback
         if let Some(global_path) = global_profile_path()
             && let Ok(content) = std::fs::read_to_string(&global_path)
-                && let Ok(profile) = serde_json::from_str(&content) {
-                    tracing::debug!(path = %global_path.display(), "global profile loaded");
-                    return profile;
-                }
+            && let Ok(profile) = serde_json::from_str(&content)
+        {
+            tracing::debug!(path = %global_path.display(), "global profile loaded");
+            return profile;
+        }
 
         Self {
             last_used_model: None,
@@ -531,9 +562,10 @@ impl Profile {
             settings.set_model(&format!("{}:{}", m.provider, m.model_id));
         }
         if let Some(ref t) = self.thinking_level
-            && let Some(level) = ThinkingLevel::parse(t) {
-                settings.thinking = level;
-            }
+            && let Some(level) = ThinkingLevel::parse(t)
+        {
+            settings.thinking = level;
+        }
         if let Some(turns) = self.max_turns {
             settings.max_turns = turns;
         }
@@ -571,7 +603,9 @@ impl Profile {
 
     /// Get the pinned context floor, if set.
     pub fn pinned_floor(&self) -> Option<ContextClass> {
-        self.context_floor_pin.as_deref().and_then(ContextClass::parse)
+        self.context_floor_pin
+            .as_deref()
+            .and_then(ContextClass::parse)
     }
 
     /// Pin the context floor.
@@ -605,6 +639,16 @@ mod tests {
     }
 
     #[test]
+    fn provider_infers_bare_local_model_ids() {
+        let s = Settings::new("qwen3:30b");
+        assert_eq!(s.model_short(), "30b");
+        assert_eq!(s.provider(), "ollama");
+
+        let local = Settings::new("local:qwen3:30b");
+        assert_eq!(local.provider(), "ollama");
+    }
+
+    #[test]
     fn thinking_level_round_trip() {
         for level in ThinkingLevel::all() {
             let s = level.as_str();
@@ -624,7 +668,10 @@ mod tests {
     #[test]
     fn thinking_level_parse_mechanicum_names() {
         assert_eq!(ThinkingLevel::parse("servitor"), Some(ThinkingLevel::Off));
-        assert_eq!(ThinkingLevel::parse("functionary"), Some(ThinkingLevel::Minimal));
+        assert_eq!(
+            ThinkingLevel::parse("functionary"),
+            Some(ThinkingLevel::Minimal)
+        );
         assert_eq!(ThinkingLevel::parse("adept"), Some(ThinkingLevel::Low));
         assert_eq!(ThinkingLevel::parse("magos"), Some(ThinkingLevel::Medium));
         assert_eq!(ThinkingLevel::parse("archmagos"), Some(ThinkingLevel::High));
@@ -634,7 +681,10 @@ mod tests {
     fn context_window_from_route_matrix() {
         // These should resolve via the embedded route matrix
         assert_eq!(infer_context_window("anthropic:claude-opus-4-6"), 1_000_000);
-        assert_eq!(infer_context_window("anthropic:claude-sonnet-4-6"), 1_000_000);
+        assert_eq!(
+            infer_context_window("anthropic:claude-sonnet-4-6"),
+            1_000_000
+        );
         assert_eq!(infer_context_window("openai:gpt-5.4"), 272_000);
         assert_eq!(infer_context_window("anthropic:claude-haiku-4-5"), 200_000);
     }

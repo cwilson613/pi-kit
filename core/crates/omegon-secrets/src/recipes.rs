@@ -148,9 +148,14 @@ mod tests {
         let mut store = RecipeStore::load(dir.path()).unwrap();
         assert!(store.is_empty());
 
-        store.set("MY_KEY".into(), Recipe::string("env:MY_KEY".into())).unwrap();
         store
-            .set("KEYCHAIN_KEY".into(), Recipe::string("keychain:myapp".into()))
+            .set("MY_KEY".into(), Recipe::string("env:MY_KEY".into()))
+            .unwrap();
+        store
+            .set(
+                "KEYCHAIN_KEY".into(),
+                Recipe::string("keychain:myapp".into()),
+            )
             .unwrap();
         assert_eq!(store.len(), 2);
 
@@ -167,7 +172,9 @@ mod tests {
     fn remove_recipe() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = RecipeStore::load(dir.path()).unwrap();
-        store.set("X".into(), Recipe::string("env:X".into())).unwrap();
+        store
+            .set("X".into(), Recipe::string("env:X".into()))
+            .unwrap();
         assert!(store.remove("X").unwrap());
         assert!(!store.remove("X").unwrap()); // already gone
         assert!(store.is_empty());
@@ -177,23 +184,33 @@ mod tests {
     fn vault_recipe() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = RecipeStore::load(dir.path()).unwrap();
-        
+
         // Test vault recipe
-        store.set_vault("VAULT_KEY".into(), "secret/data/omegon/api#anthropic".into()).unwrap();
+        store
+            .set_vault(
+                "VAULT_KEY".into(),
+                "secret/data/omegon/api#anthropic".into(),
+            )
+            .unwrap();
         let recipe = store.get("VAULT_KEY").unwrap();
         assert!(recipe.is_vault());
         assert_eq!(recipe.as_string(), "vault:secret/data/omegon/api#anthropic");
-        
+
         // Test roundtrip with mixed recipe types
-        store.set_string("ENV_KEY".into(), "env:MY_VAR".into()).unwrap();
-        
+        store
+            .set_string("ENV_KEY".into(), "env:MY_VAR".into())
+            .unwrap();
+
         let store2 = RecipeStore::load(dir.path()).unwrap();
         let vault_recipe = store2.get("VAULT_KEY").unwrap();
         let env_recipe = store2.get("ENV_KEY").unwrap();
-        
+
         assert!(vault_recipe.is_vault());
         assert!(!env_recipe.is_vault());
-        assert_eq!(vault_recipe.as_string(), "vault:secret/data/omegon/api#anthropic");
+        assert_eq!(
+            vault_recipe.as_string(),
+            "vault:secret/data/omegon/api#anthropic"
+        );
         assert_eq!(env_recipe.as_string(), "env:MY_VAR");
     }
 }

@@ -3,9 +3,9 @@
 //! Omegon uses JsonFileStore (git-native, diffable).
 //! Omega would use a SledStore (ACID, fleet-scale).
 
-use std::path::{Path, PathBuf};
-use crate::types::*;
 use crate::error::OpsxError;
+use crate::types::*;
+use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump when LifecycleState shape changes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -24,7 +24,9 @@ pub struct LifecycleState {
     pub audit_log: Vec<AuditEntry>,
 }
 
-fn default_version() -> u32 { 1 }
+fn default_version() -> u32 {
+    1
+}
 
 /// Trait for state persistence. Implementations determine storage backend.
 pub trait StateStore: Send + Sync {
@@ -137,7 +139,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = JsonFileStore::new(tmp.path());
 
-        let mut state = LifecycleState { version: SCHEMA_VERSION, ..Default::default() };
+        let mut state = LifecycleState {
+            version: SCHEMA_VERSION,
+            ..Default::default()
+        };
         state.nodes.push(DesignNode {
             id: "test-node".into(),
             title: "Test node".into(),
@@ -175,7 +180,10 @@ mod tests {
     fn atomic_write_leaves_no_tmp_file() {
         let tmp = TempDir::new().unwrap();
         let store = JsonFileStore::new(tmp.path());
-        let state = LifecycleState { version: SCHEMA_VERSION, ..Default::default() };
+        let state = LifecycleState {
+            version: SCHEMA_VERSION,
+            ..Default::default()
+        };
         store.save(&state).unwrap();
 
         let tmp_path = store.path().with_extension("json.tmp");

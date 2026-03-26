@@ -135,11 +135,7 @@ pub fn remove_smart(repo_path: &Path, name: &str, workspace_path: &Path) -> Resu
 // ── git worktree operations (fallback) ──────────────────────────────────
 
 /// Create a git worktree with a new branch from HEAD.
-pub fn create(
-    repo_path: &Path,
-    worktree_path: &Path,
-    branch: &str,
-) -> Result<WorktreeInfo> {
+pub fn create(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<WorktreeInfo> {
     let _ = std::process::Command::new("git")
         .args(["branch", "-D", branch])
         .current_dir(repo_path)
@@ -151,8 +147,12 @@ pub fn create(
 
     let output = std::process::Command::new("git")
         .args([
-            "worktree", "add", "-b", branch,
-            &worktree_path.to_string_lossy(), "HEAD",
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            &worktree_path.to_string_lossy(),
+            "HEAD",
         ])
         .current_dir(repo_path)
         .output()
@@ -176,7 +176,9 @@ pub fn create(
 pub fn remove(repo_path: &Path, worktree_path: &Path) -> Result<()> {
     let output = std::process::Command::new("git")
         .args([
-            "worktree", "remove", "--force",
+            "worktree",
+            "remove",
+            "--force",
             &worktree_path.to_string_lossy(),
         ])
         .current_dir(repo_path)
@@ -194,7 +196,10 @@ pub fn remove(repo_path: &Path, worktree_path: &Path) -> Result<()> {
 pub fn list(repo_path: &Path) -> Result<Vec<String>> {
     let repo = Repository::open(repo_path)?;
     let worktrees = repo.worktrees().context("failed to list worktrees")?;
-    Ok(worktrees.iter().filter_map(|w| w.map(String::from)).collect())
+    Ok(worktrees
+        .iter()
+        .filter_map(|w| w.map(String::from))
+        .collect())
 }
 
 /// Delete a git branch.

@@ -24,7 +24,10 @@ pub use audit::AuditLog;
 pub use guards::{GuardDecision, PathGuard};
 pub use recipes::{Recipe, RecipeStore};
 pub use redact::Redactor;
-pub use resolve::{store_in_keyring, delete_from_keyring, resolve_vault_secret, resolve_secret_async, execute_recipe_async};
+pub use resolve::{
+    delete_from_keyring, execute_recipe_async, resolve_secret_async, resolve_vault_secret,
+    store_in_keyring,
+};
 pub use store::{KeyBackend, SecretStore};
 pub use vault::{AuthConfig, VaultClient, VaultConfig};
 
@@ -81,7 +84,7 @@ impl SecretsManager {
     pub async fn init_vault(&self, config_dir: &std::path::Path) -> anyhow::Result<()> {
         if let Some(config) = VaultConfig::load_config(config_dir)? {
             tracing::info!(addr = %config.addr, "initializing vault client");
-            
+
             match VaultClient::new(config) {
                 Ok(mut client) => {
                     // Attempt authentication — fail-closed: only store if auth succeeds
@@ -107,7 +110,7 @@ impl SecretsManager {
         } else {
             tracing::debug!("no vault configuration found - vault recipes disabled");
         }
-        
+
         Ok(())
     }
 
@@ -240,11 +243,7 @@ impl SecretsManager {
     }
 
     /// Check if a tool call should be guarded (sensitive path access).
-    pub fn check_guard(
-        &self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> Option<GuardDecision> {
+    pub fn check_guard(&self, tool_name: &str, args: &serde_json::Value) -> Option<GuardDecision> {
         let decision = self.path_guard.check(tool_name, args);
         if let Some(ref d) = decision {
             self.audit.log_guard(tool_name, args, d);
@@ -254,14 +253,20 @@ impl SecretsManager {
 
     /// List all configured secret recipes with their resolution hints.
     pub fn list_recipes(&self) -> Vec<(String, String)> {
-        self.recipes.read().unwrap().iter()
+        self.recipes
+            .read()
+            .unwrap()
+            .iter()
             .map(|(name, recipe)| (name.clone(), recipe.as_string()))
             .collect()
     }
 
     /// Set a secret recipe (e.g. "env:MY_VAR", "cmd:pass show x", "vault:path").
     pub fn set_recipe(&self, name: &str, recipe_str: &str) -> anyhow::Result<()> {
-        self.recipes.write().unwrap().set_string(name.to_string(), recipe_str.to_string())
+        self.recipes
+            .write()
+            .unwrap()
+            .set_string(name.to_string(), recipe_str.to_string())
     }
 
     /// Store a raw value in the OS keyring and create a keyring: recipe for it.
@@ -269,7 +274,8 @@ impl SecretsManager {
         // Store in keyring
         let entry = keyring::Entry::new("omegon", name)
             .map_err(|e| anyhow::anyhow!("keyring error: {e}"))?;
-        entry.set_password(value)
+        entry
+            .set_password(value)
             .map_err(|e| anyhow::anyhow!("keyring store failed: {e}"))?;
         // Create recipe pointing to keyring
         self.set_recipe(name, &format!("keyring:{name}"))
@@ -299,9 +305,7 @@ impl SecretsManager {
         // Also grab well-known env vars that might contain secrets
         for env_name in resolve::WELL_KNOWN_SECRET_ENVS {
             if let Ok(value) = std::env::var(env_name) {
-                if !value.is_empty()
-                    && !set.values().any(|v| v.expose_secret() == value)
-                {
+                if !value.is_empty() && !set.values().any(|v| v.expose_secret() == value) {
                     set.insert(env_name.to_string(), SecretString::from(value));
                 }
             }
@@ -313,6 +317,9 @@ impl SecretsManager {
         let new_redactor = Redactor::build(&set);
         *self.redactor.write().unwrap() = new_redactor;
 
-        tracing::info!(count = count, "redaction set refreshed (keyring + aho-corasick) - vault recipes require async refresh");
+        tracing::info!(
+            count = count,
+            "redaction set refreshed (keyring + aho-corasick) - vault recipes require async refresh"
+        );
     }
 }

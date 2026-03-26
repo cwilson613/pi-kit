@@ -6,7 +6,12 @@
 use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 
 /// Execute the chronos subcommand and return formatted output.
-pub fn execute(subcommand: &str, expression: Option<&str>, from: Option<&str>, to: Option<&str>) -> Result<String, String> {
+pub fn execute(
+    subcommand: &str,
+    expression: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<String, String> {
     let now = Local::now();
     let today = now.date_naive();
 
@@ -31,15 +36,23 @@ pub fn execute(subcommand: &str, expression: Option<&str>, from: Option<&str>, t
     }
 }
 
-fn ymd(d: NaiveDate) -> String { d.format("%Y-%m-%d").to_string() }
+fn ymd(d: NaiveDate) -> String {
+    d.format("%Y-%m-%d").to_string()
+}
 fn dow(d: NaiveDate) -> &'static str {
     match d.weekday() {
-        Weekday::Mon => "Monday", Weekday::Tue => "Tuesday", Weekday::Wed => "Wednesday",
-        Weekday::Thu => "Thursday", Weekday::Fri => "Friday", Weekday::Sat => "Saturday",
+        Weekday::Mon => "Monday",
+        Weekday::Tue => "Tuesday",
+        Weekday::Wed => "Wednesday",
+        Weekday::Thu => "Thursday",
+        Weekday::Fri => "Friday",
+        Weekday::Sat => "Saturday",
         Weekday::Sun => "Sunday",
     }
 }
-fn short(d: NaiveDate) -> String { d.format("%b %-d").to_string() }
+fn short(d: NaiveDate) -> String {
+    d.format("%b %-d").to_string()
+}
 
 fn week(today: NaiveDate) -> String {
     let days_since_mon = today.weekday().num_days_from_monday() as i64;
@@ -56,8 +69,14 @@ fn week(today: NaiveDate) -> String {
     };
     format!(
         "DATE_CONTEXT:\n  TODAY: {} ({})\n  CURR_WEEK_START: {} (Monday)\n  CURR_WEEK_END: {} (Friday)\n  CURR_WEEK_RANGE: {}\n  PREV_WEEK_START: {} (Monday)\n  PREV_WEEK_END: {} (Friday)\n  PREV_WEEK_RANGE: {}",
-        ymd(today), dow(today), ymd(mon), ymd(fri), range(mon, fri),
-        ymd(prev_mon), ymd(prev_fri), range(prev_mon, prev_fri),
+        ymd(today),
+        dow(today),
+        ymd(mon),
+        ymd(fri),
+        range(mon, fri),
+        ymd(prev_mon),
+        ymd(prev_fri),
+        range(prev_mon, prev_fri),
     )
 }
 
@@ -72,10 +91,19 @@ fn month(today: NaiveDate) -> String {
     let prev_start = NaiveDate::from_ymd_opt(prev.year(), prev.month(), 1).unwrap();
     format!(
         "MONTH_CONTEXT:\n  TODAY: {} ({})\n  CURR_MONTH_START: {}\n  CURR_MONTH_END: {}\n  CURR_MONTH_RANGE: {} - {}, {}\n  PREV_MONTH_START: {}\n  PREV_MONTH_END: {}\n  PREV_MONTH_RANGE: {}, {} - {}, {}",
-        ymd(today), dow(today), ymd(curr_start), ymd(curr_end),
-        short(curr_start), short(curr_end), today.year(),
-        ymd(prev_start), ymd(prev),
-        short(prev_start), prev_start.year(), short(prev), prev.year(),
+        ymd(today),
+        dow(today),
+        ymd(curr_start),
+        ymd(curr_end),
+        short(curr_start),
+        short(curr_end),
+        today.year(),
+        ymd(prev_start),
+        ymd(prev),
+        short(prev_start),
+        prev_start.year(),
+        short(prev),
+        prev.year(),
     )
 }
 
@@ -90,23 +118,46 @@ fn quarter(today: NaiveDate) -> String {
         NaiveDate::from_ymd_opt(today.year(), q_start_m + 3, 1).unwrap() - Duration::days(1)
     };
     let (fy, fy_start, fy_end) = if m >= 10 {
-        (today.year() + 1, format!("{}-10-01", today.year()), format!("{}-09-30", today.year() + 1))
+        (
+            today.year() + 1,
+            format!("{}-10-01", today.year()),
+            format!("{}-09-30", today.year() + 1),
+        )
     } else {
-        (today.year(), format!("{}-10-01", today.year() - 1), format!("{}-09-30", today.year()))
+        (
+            today.year(),
+            format!("{}-10-01", today.year() - 1),
+            format!("{}-09-30", today.year()),
+        )
     };
     let fy_month = if m >= 10 { m - 9 } else { m + 3 };
     let fq = ((fy_month - 1) / 3) + 1;
     format!(
         "QUARTER_CONTEXT:\n  TODAY: {} ({})\n  CALENDAR_QUARTER: Q{} {}\n  QUARTER_START: {}\n  QUARTER_END: {}\n  FISCAL_YEAR: FY{} (Oct-Sep)\n  FISCAL_QUARTER: FQ{}\n  FY_START: {}\n  FY_END: {}",
-        ymd(today), dow(today), q, today.year(), ymd(q_start), ymd(q_end), fy, fq, fy_start, fy_end,
+        ymd(today),
+        dow(today),
+        q,
+        today.year(),
+        ymd(q_start),
+        ymd(q_end),
+        fy,
+        fq,
+        fy_start,
+        fy_end,
     )
 }
 
 fn resolve_relative(expr: &str, today: NaiveDate) -> Result<NaiveDate, String> {
     let e = expr.trim().to_lowercase();
-    if e == "yesterday" { return Ok(today - Duration::days(1)); }
-    if e == "tomorrow" { return Ok(today + Duration::days(1)); }
-    if e == "today" { return Ok(today); }
+    if e == "yesterday" {
+        return Ok(today - Duration::days(1));
+    }
+    if e == "tomorrow" {
+        return Ok(today + Duration::days(1));
+    }
+    if e == "today" {
+        return Ok(today);
+    }
 
     // N days/weeks/months ago
     let re_ago = regex_lite::Regex::new(r"^(\d+)\s+(days?|weeks?|months?)\s+ago$").unwrap();
@@ -121,7 +172,9 @@ fn resolve_relative(expr: &str, today: NaiveDate) -> Result<NaiveDate, String> {
     }
 
     // N days/weeks from now
-    let re_ahead = regex_lite::Regex::new(r"^(\d+)\s+(days?|weeks?)\s+(?:from now|ahead|from today)$").unwrap();
+    let re_ahead =
+        regex_lite::Regex::new(r"^(\d+)\s+(days?|weeks?)\s+(?:from now|ahead|from today)$")
+            .unwrap();
     if let Some(caps) = re_ahead.captures(&e) {
         let n: i64 = caps[1].parse().map_err(|_| "bad number")?;
         return match &caps[2] {
@@ -132,26 +185,40 @@ fn resolve_relative(expr: &str, today: NaiveDate) -> Result<NaiveDate, String> {
     }
 
     // next/last {weekday}
-    let re_day = regex_lite::Regex::new(r"^(next|last)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$").unwrap();
+    let re_day = regex_lite::Regex::new(
+        r"^(next|last)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$",
+    )
+    .unwrap();
     if let Some(caps) = re_day.captures(&e) {
         let target: u32 = match &caps[2] {
-            "monday" => 0, "tuesday" => 1, "wednesday" => 2, "thursday" => 3,
-            "friday" => 4, "saturday" => 5, "sunday" => 6,
+            "monday" => 0,
+            "tuesday" => 1,
+            "wednesday" => 2,
+            "thursday" => 3,
+            "friday" => 4,
+            "saturday" => 5,
+            "sunday" => 6,
             _ => return Err("bad weekday".into()),
         };
         let current = today.weekday().num_days_from_monday();
         if &caps[1] == "next" {
             let mut diff = target as i64 - current as i64;
-            if diff <= 0 { diff += 7; }
+            if diff <= 0 {
+                diff += 7;
+            }
             return Ok(today + Duration::days(diff));
         } else {
             let mut diff = current as i64 - target as i64;
-            if diff <= 0 { diff += 7; }
+            if diff <= 0 {
+                diff += 7;
+            }
             return Ok(today - Duration::days(diff));
         }
     }
 
-    Err(format!("Cannot parse: '{expr}'. Supported: N days/weeks/months ago, N days/weeks from now, yesterday, tomorrow, next/last {{weekday}}."))
+    Err(format!(
+        "Cannot parse: '{expr}'. Supported: N days/weeks/months ago, N days/weeks from now, yesterday, tomorrow, next/last {{weekday}}."
+    ))
 }
 
 fn shift_months(d: NaiveDate, months: i32) -> NaiveDate {
@@ -163,9 +230,17 @@ fn shift_months(d: NaiveDate, months: i32) -> NaiveDate {
 
 fn days_in_month(year: i32, month: u32) -> u32 {
     if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap().pred_opt().unwrap().day()
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)
+            .unwrap()
+            .pred_opt()
+            .unwrap()
+            .day()
     } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap().pred_opt().unwrap().day()
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+            .unwrap()
+            .pred_opt()
+            .unwrap()
+            .day()
     }
 }
 
@@ -173,7 +248,11 @@ fn relative(expr: &str, today: NaiveDate) -> Result<String, String> {
     let resolved = resolve_relative(expr, today)?;
     Ok(format!(
         "RELATIVE_DATE:\n  EXPRESSION: {}\n  RESOLVED: {} ({})\n  TODAY: {} ({})",
-        expr, ymd(resolved), dow(resolved), ymd(today), dow(today),
+        expr,
+        ymd(resolved),
+        dow(resolved),
+        ymd(today),
+        dow(today),
     ))
 }
 
@@ -182,20 +261,30 @@ fn iso(today: NaiveDate) -> String {
     let doy = today.ordinal();
     format!(
         "ISO_CONTEXT:\n  TODAY: {} ({})\n  ISO_WEEK: W{:02}\n  ISO_YEAR: {}\n  ISO_WEEKDATE: {}-W{:02}-{}\n  DAY_OF_YEAR: {:03}",
-        ymd(today), dow(today), iso_week.week(), iso_week.year(),
-        iso_week.year(), iso_week.week(), today.weekday().number_from_monday(), doy,
+        ymd(today),
+        dow(today),
+        iso_week.week(),
+        iso_week.year(),
+        iso_week.year(),
+        iso_week.week(),
+        today.weekday().number_from_monday(),
+        doy,
     )
 }
 
 fn epoch() -> String {
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
     let secs = now.as_secs();
     let millis = now.as_millis();
     let today = Local::now().date_naive();
     format!(
         "EPOCH_CONTEXT:\n  TODAY: {} ({})\n  UNIX_SECONDS: {}\n  UNIX_MILLIS: {}",
-        ymd(today), dow(today), secs, millis,
+        ymd(today),
+        dow(today),
+        secs,
+        millis,
     )
 }
 
@@ -206,7 +295,10 @@ fn tz(now: chrono::DateTime<Local>) -> String {
     let utc_offset = offset.to_string();
     format!(
         "TIMEZONE_CONTEXT:\n  TODAY: {} ({})\n  TIMEZONE: {}\n  UTC_OFFSET: {}",
-        ymd(today), dow(today), tz_abbrev, utc_offset,
+        ymd(today),
+        dow(today),
+        tz_abbrev,
+        utc_offset,
     )
 }
 
@@ -220,7 +312,10 @@ fn range(from: &str, to: &str) -> Result<String, String> {
     let step = if d2 >= d1 { 1 } else { -1 };
     let mut cursor = d1;
     for _ in 0..cal_days {
-        if matches!(cursor.weekday(), Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri) {
+        if matches!(
+            cursor.weekday(),
+            Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
+        ) {
             biz += 1;
         }
         cursor += Duration::days(step);
@@ -232,16 +327,29 @@ fn range(from: &str, to: &str) -> Result<String, String> {
 }
 
 fn all(today: NaiveDate, now: chrono::DateTime<Local>) -> String {
-    [week(today), String::new(), month(today), String::new(), quarter(today),
-     String::new(), iso(today), String::new(), epoch(), String::new(), tz(now)]
-        .join("\n")
+    [
+        week(today),
+        String::new(),
+        month(today),
+        String::new(),
+        quarter(today),
+        String::new(),
+        iso(today),
+        String::new(),
+        epoch(),
+        String::new(),
+        tz(now),
+    ]
+    .join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate { NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap() }
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
 
     #[test]
     fn week_output() {

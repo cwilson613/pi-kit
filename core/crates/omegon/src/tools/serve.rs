@@ -52,19 +52,28 @@ pub async fn execute(action: &str, args: &serde_json::Value, cwd: &Path) -> Resu
         "list" => list().await,
         "logs" => logs(args).await,
         "check" => check(args).await,
-        _ => err(format!("Unknown action: {action}. Valid: start, stop, list, logs, check")),
+        _ => err(format!(
+            "Unknown action: {action}. Valid: start, stop, list, logs, check"
+        )),
     }
 }
 
 async fn start(args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
-    let command = args.get("command").and_then(|v| v.as_str())
+    let command = args
+        .get("command")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("'command' is required"))?;
 
-    let name = args.get("name").and_then(|v| v.as_str())
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
         .map(|s| sanitize_name(s))
         .unwrap_or_else(|| slugify_command(command));
 
-    let persist = args.get("persist").and_then(|v| v.as_bool()).unwrap_or(false);
+    let persist = args
+        .get("persist")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let dir = serve_dir();
     std::fs::create_dir_all(&dir)?;
@@ -123,7 +132,11 @@ async fn start(args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
     std::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)?;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let status = if is_alive(pid) { "running" } else { "exited (check logs)" };
+    let status = if is_alive(pid) {
+        "running"
+    } else {
+        "exited (check logs)"
+    };
 
     ok(format!(
         "Started '{name}' (PID {pid}) — {status}\nCommand: {command}\nLogs: {}",
@@ -132,8 +145,11 @@ async fn start(args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
 }
 
 async fn stop(args: &serde_json::Value) -> Result<ToolResult> {
-    let name = sanitize_name(args.get("name").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("'name' is required"))?);
+    let name = sanitize_name(
+        args.get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("'name' is required"))?,
+    );
 
     let dir = serve_dir();
     let pid_path = dir.join(format!("{name}.pid"));
@@ -145,10 +161,14 @@ async fn stop(args: &serde_json::Value) -> Result<ToolResult> {
     let pid: u32 = std::fs::read_to_string(&pid_path)?.trim().parse()?;
 
     if is_alive(pid) {
-        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         if is_alive(pid) {
-            unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
         }
     }
 
@@ -180,7 +200,11 @@ async fn list() -> Result<ToolResult> {
     for entry in entries {
         if let Ok(content) = std::fs::read_to_string(entry.path()) {
             if let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content) {
-                let status = if is_alive(meta.pid) { "running" } else { "dead" };
+                let status = if is_alive(meta.pid) {
+                    "running"
+                } else {
+                    "dead"
+                };
                 let persist_flag = if meta.persist { " [persist]" } else { "" };
                 lines.push(format!(
                     "  {:<16} PID {:<8} {:<8}{} {}",
@@ -194,8 +218,11 @@ async fn list() -> Result<ToolResult> {
 }
 
 async fn logs(args: &serde_json::Value) -> Result<ToolResult> {
-    let name = sanitize_name(args.get("name").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("'name' is required"))?);
+    let name = sanitize_name(
+        args.get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("'name' is required"))?,
+    );
     let max_lines = args.get("lines").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
     let log_path = serve_dir().join(format!("{name}.log"));
@@ -208,12 +235,19 @@ async fn logs(args: &serde_json::Value) -> Result<ToolResult> {
     let start = all_lines.len().saturating_sub(max_lines);
     let tail = &all_lines[start..];
 
-    ok(format!("Last {} lines of '{name}':\n{}", tail.len(), tail.join("\n")))
+    ok(format!(
+        "Last {} lines of '{name}':\n{}",
+        tail.len(),
+        tail.join("\n")
+    ))
 }
 
 async fn check(args: &serde_json::Value) -> Result<ToolResult> {
-    let name = sanitize_name(args.get("name").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("'name' is required"))?);
+    let name = sanitize_name(
+        args.get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("'name' is required"))?,
+    );
 
     let dir = serve_dir();
     let pid_path = dir.join(format!("{name}.pid"));
@@ -226,7 +260,10 @@ async fn check(args: &serde_json::Value) -> Result<ToolResult> {
     let pid: u32 = std::fs::read_to_string(&pid_path)?.trim().parse()?;
     let alive = is_alive(pid);
 
-    let mut info = format!("Service '{name}': {}\nPID: {pid}", if alive { "running" } else { "dead" });
+    let mut info = format!(
+        "Service '{name}': {}\nPID: {pid}",
+        if alive { "running" } else { "dead" }
+    );
 
     if let Ok(mc) = std::fs::read_to_string(&meta_path) {
         if let Ok(meta) = serde_json::from_str::<ServiceMeta>(&mc) {
@@ -243,15 +280,24 @@ async fn check(args: &serde_json::Value) -> Result<ToolResult> {
 /// Stop all non-persist services. Called on session exit.
 pub fn cleanup_session_services() {
     let dir = serve_dir();
-    if !dir.exists() { return; }
+    if !dir.exists() {
+        return;
+    }
 
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        if entry.path().extension().map(|x| x == "meta").unwrap_or(false) {
+        if entry
+            .path()
+            .extension()
+            .map(|x| x == "meta")
+            .unwrap_or(false)
+        {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {
                 if let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content) {
                     if !meta.persist && is_alive(meta.pid) {
                         tracing::info!(name = %meta.name, pid = meta.pid, "stopping session service");
-                        unsafe { libc::kill(meta.pid as i32, libc::SIGTERM); }
+                        unsafe {
+                            libc::kill(meta.pid as i32, libc::SIGTERM);
+                        }
                         std::fs::remove_file(dir.join(format!("{}.pid", meta.name))).ok();
                         std::fs::remove_file(entry.path()).ok();
                     }
@@ -264,7 +310,9 @@ pub fn cleanup_session_services() {
 /// Get list of running services for TUI display.
 pub fn running_services() -> Vec<(String, u32, bool)> {
     let dir = serve_dir();
-    if !dir.exists() { return Vec::new(); }
+    if !dir.exists() {
+        return Vec::new();
+    }
 
     std::fs::read_dir(&dir)
         .into_iter()
@@ -300,7 +348,8 @@ fn is_alive(pid: u32) -> bool {
 }
 
 fn slugify_command(cmd: &str) -> String {
-    let first_word = cmd.split_whitespace()
+    let first_word = cmd
+        .split_whitespace()
         .find(|w| !w.starts_with('-') && *w != "npx" && *w != "node" && *w != "cargo")
         .unwrap_or("service");
     first_word
@@ -341,7 +390,10 @@ mod tests {
     async fn check_nonexistent_is_error() {
         let args = json!({"name": "nonexistent-test-service-12345"});
         let result = check(&args).await.unwrap();
-        assert_eq!(result.details.get("is_error").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            result.details.get("is_error").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]

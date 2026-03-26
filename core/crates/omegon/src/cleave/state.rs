@@ -125,19 +125,36 @@ mod tests {
     #[test]
     fn from_plan_creates_correct_children() {
         let plan = sample_plan();
-        let state = CleaveState::from_plan("run-1", "fix bugs", Path::new("/repo"), Path::new("/ws"), &plan, "anthropic:sonnet");
+        let state = CleaveState::from_plan(
+            "run-1",
+            "fix bugs",
+            Path::new("/repo"),
+            Path::new("/ws"),
+            &plan,
+            "anthropic:sonnet",
+        );
         assert_eq!(state.children.len(), 2);
         assert_eq!(state.children[0].label, "alpha");
         assert_eq!(state.children[0].branch.as_deref(), Some("cleave/0-alpha"));
         assert_eq!(state.children[0].status, ChildStatus::Pending);
         assert_eq!(state.children[1].depends_on, vec!["alpha"]);
-        assert_eq!(state.children[1].execute_model.as_deref(), Some("anthropic:sonnet"));
+        assert_eq!(
+            state.children[1].execute_model.as_deref(),
+            Some("anthropic:sonnet")
+        );
     }
 
     #[test]
     fn state_save_load_round_trip() {
         let plan = sample_plan();
-        let mut state = CleaveState::from_plan("run-1", "fix bugs", Path::new("/repo"), Path::new("/ws"), &plan, "model");
+        let mut state = CleaveState::from_plan(
+            "run-1",
+            "fix bugs",
+            Path::new("/repo"),
+            Path::new("/ws"),
+            &plan,
+            "model",
+        );
         state.children[0].status = ChildStatus::Completed;
         state.children[0].duration_secs = Some(42.5);
 
@@ -156,7 +173,14 @@ mod tests {
     #[test]
     fn state_serializes_camel_case() {
         let plan = sample_plan();
-        let state = CleaveState::from_plan("run-1", "test", Path::new("/r"), Path::new("/w"), &plan, "m");
+        let state = CleaveState::from_plan(
+            "run-1",
+            "test",
+            Path::new("/r"),
+            Path::new("/w"),
+            &plan,
+            "m",
+        );
         let json = serde_json::to_string(&state).unwrap();
         // camelCase field names
         assert!(json.contains("runId"), "should use camelCase: {json}");

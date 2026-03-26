@@ -163,14 +163,9 @@ pub enum BusEvent {
 #[derive(Debug, Clone)]
 pub enum BusRequest {
     /// Display a notification to the user (TUI hint bar or system message).
-    Notify {
-        message: String,
-        level: NotifyLevel,
-    },
+    Notify { message: String, level: NotifyLevel },
     /// Inject a system message into the conversation.
-    InjectSystemMessage {
-        content: String,
-    },
+    InjectSystemMessage { content: String },
     /// Request context compaction before the next turn.
     RequestCompaction,
     /// Request the harness to refresh and re-emit its status.
@@ -195,11 +190,19 @@ pub enum NotifyLevel {
 pub enum LifecyclePhase {
     #[default]
     Idle,
-    Exploring { node_id: Option<String> },
-    Specifying { change_id: Option<String> },
+    Exploring {
+        node_id: Option<String>,
+    },
+    Specifying {
+        change_id: Option<String>,
+    },
     Decomposing,
-    Implementing { change_id: Option<String> },
-    Verifying { change_id: Option<String> },
+    Implementing {
+        change_id: Option<String>,
+    },
+    Verifying {
+        change_id: Option<String>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -328,25 +331,59 @@ pub trait Feature: Send + Sync {
 /// consumes BusEvent directly.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    TurnStart { turn: u32 },
-    MessageStart { role: String },
-    MessageChunk { text: String },
-    ThinkingChunk { text: String },
+    TurnStart {
+        turn: u32,
+    },
+    MessageStart {
+        role: String,
+    },
+    MessageChunk {
+        text: String,
+    },
+    ThinkingChunk {
+        text: String,
+    },
     MessageEnd,
-    ToolStart { id: String, name: String, args: Value },
-    ToolUpdate { id: String, partial: ToolResult },
-    ToolEnd { id: String, result: ToolResult, is_error: bool },
-    TurnEnd { turn: u32 },
+    ToolStart {
+        id: String,
+        name: String,
+        args: Value,
+    },
+    ToolUpdate {
+        id: String,
+        partial: ToolResult,
+    },
+    ToolEnd {
+        id: String,
+        result: ToolResult,
+        is_error: bool,
+    },
+    TurnEnd {
+        turn: u32,
+    },
     AgentEnd,
-    PhaseChanged { phase: LifecyclePhase },
-    DecompositionStarted { children: Vec<String> },
-    DecompositionChildCompleted { label: String, success: bool },
-    DecompositionCompleted { merged: bool },
+    PhaseChanged {
+        phase: LifecyclePhase,
+    },
+    DecompositionStarted {
+        children: Vec<String>,
+    },
+    DecompositionChildCompleted {
+        label: String,
+        success: bool,
+    },
+    DecompositionCompleted {
+        merged: bool,
+    },
     /// System notification — displayed in TUI but not sent to the LLM.
-    SystemNotification { message: String },
+    SystemNotification {
+        message: String,
+    },
     /// Harness status changed — persona switch, MCP connect, secret unlock, etc.
     /// Serialized HarnessStatus JSON. Web dashboard renders the snapshot.
-    HarnessStatusChanged { status_json: Value },
+    HarnessStatusChanged {
+        status_json: Value,
+    },
     /// Session was reset mid-session via /new. TUI clears its display.
     SessionReset,
 }

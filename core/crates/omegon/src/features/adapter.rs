@@ -5,10 +5,7 @@
 //! (e.g., omegon-memory) participate in the bus without implementing Feature directly.
 
 use async_trait::async_trait;
-use omegon_traits::{
-    ContextInjection, ContextSignals, Feature,
-    ToolDefinition, ToolResult,
-};
+use omegon_traits::{ContextInjection, ContextSignals, Feature, ToolDefinition, ToolResult};
 use serde_json::Value;
 
 /// Wraps a ToolProvider as a Feature.
@@ -43,7 +40,9 @@ impl Feature for ToolAdapter {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        self.provider.execute(tool_name, call_id, args, cancel).await
+        self.provider
+            .execute(tool_name, call_id, args, cancel)
+            .await
     }
 }
 
@@ -111,7 +110,9 @@ impl Feature for ToolContextAdapter {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        self.tool_provider.execute(tool_name, call_id, args, cancel).await
+        self.tool_provider
+            .execute(tool_name, call_id, args, cancel)
+            .await
     }
 
     fn provide_context(&self, signals: &ContextSignals<'_>) -> Option<ContextInjection> {
@@ -138,7 +139,9 @@ mod tests {
         }
         async fn execute(
             &self,
-            _: &str, _: &str, _: Value,
+            _: &str,
+            _: &str,
+            _: Value,
             _: tokio_util::sync::CancellationToken,
         ) -> anyhow::Result<ToolResult> {
             Ok(ToolResult {
@@ -160,7 +163,10 @@ mod tests {
     async fn tool_adapter_executes() {
         let feature = ToolAdapter::new("test", Box::new(DummyTool));
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("dummy", "tc1", json!({}), cancel).await.unwrap();
+        let result = feature
+            .execute("dummy", "tc1", json!({}), cancel)
+            .await
+            .unwrap();
         assert_eq!(result.content[0].as_text().unwrap(), "ok");
     }
 }

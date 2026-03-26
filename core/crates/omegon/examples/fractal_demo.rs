@@ -32,8 +32,6 @@
 //!   [  — Memory: multi-mind activation
 //!   ]  — Memory: compaction/cleanup
 
-use std::io;
-use std::time::{Duration, Instant};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -41,6 +39,8 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::io;
+use std::time::{Duration, Instant};
 
 fn main() -> io::Result<()> {
     terminal::enable_raw_mode()?;
@@ -62,18 +62,22 @@ fn main() -> io::Result<()> {
             let active_count = state.sim.minds_active.iter().filter(|&&a| a).count().max(1);
             let col_w = (22 / active_count).max(2);
             for i in 0..4 {
-                if !state.sim.minds_active[i] { continue; }
+                if !state.sim.minds_active[i] {
+                    continue;
+                }
                 let mind = &state.sim.minds[i];
                 let density = state.ca_density + mind.activity * 0.25;
                 let scroll = state.ca_scroll_rate * (0.5 + mind.activity * 1.5);
                 let rule = if mind.activity > 0.05 {
                     match mind.op {
-                        MindOp::Recall  => 30,
-                        MindOp::Write   => 110,
+                        MindOp::Recall => 30,
+                        MindOp::Write => 110,
                         MindOp::Cleanup => 150,
-                        MindOp::Idle    => 204,
+                        MindOp::Idle => 204,
                     }
-                } else { 204 };
+                } else {
+                    204
+                };
                 state.waterfalls[i].ensure_size(col_w, 5);
                 state.waterfalls[i].tick(dt, scroll, density, rule, state.ca_fade);
             }
@@ -299,14 +303,29 @@ fn main() -> io::Result<()> {
         })?;
 
         if event::poll(Duration::from_millis(33))? {
-            if let Event::Key(KeyEvent { code, modifiers, .. }) = event::read()? {
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
                 let fine = modifiers.contains(KeyModifiers::SHIFT);
                 match code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Tab => { state.selected_instrument = (state.selected_instrument + 1) % 4; state.selected_param = 0; }
-                    KeyCode::BackTab => { state.selected_instrument = (state.selected_instrument + 3) % 4; state.selected_param = 0; }
-                    KeyCode::Up => { let n = state.params_for(state.selected_instrument).len(); state.selected_param = (state.selected_param + n - 1) % n; }
-                    KeyCode::Down => { let n = state.params_for(state.selected_instrument).len(); state.selected_param = (state.selected_param + 1) % n; }
+                    KeyCode::Tab => {
+                        state.selected_instrument = (state.selected_instrument + 1) % 4;
+                        state.selected_param = 0;
+                    }
+                    KeyCode::BackTab => {
+                        state.selected_instrument = (state.selected_instrument + 3) % 4;
+                        state.selected_param = 0;
+                    }
+                    KeyCode::Up => {
+                        let n = state.params_for(state.selected_instrument).len();
+                        state.selected_param = (state.selected_param + n - 1) % n;
+                    }
+                    KeyCode::Down => {
+                        let n = state.params_for(state.selected_instrument).len();
+                        state.selected_param = (state.selected_param + 1) % n;
+                    }
                     KeyCode::Left => state.adjust(-1.0, fine),
                     KeyCode::Right => state.adjust(1.0, fine),
                     KeyCode::Char(' ') => state.paused = !state.paused,
@@ -325,10 +344,10 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('9') => state.sim.thinking_start(),
                     KeyCode::Char('0') => state.sim.thinking_stop(),
                     // Memory: fire events on specific minds
-                    KeyCode::Char('-') => state.sim.memory_recall(),    // recall from project
-                    KeyCode::Char('=') => state.sim.memory_write(),     // write to project
-                    KeyCode::Char('[') => state.sim.memory_multi_mind(),// activate + fire all
-                    KeyCode::Char(']') => state.sim.memory_cleanup(),   // cleanup project
+                    KeyCode::Char('-') => state.sim.memory_recall(), // recall from project
+                    KeyCode::Char('=') => state.sim.memory_write(),  // write to project
+                    KeyCode::Char('[') => state.sim.memory_multi_mind(), // activate + fire all
+                    KeyCode::Char(']') => state.sim.memory_cleanup(), // cleanup project
                     // Toggle individual minds on/off
                     KeyCode::F(1) => state.sim.toggle_mind(0), // project
                     KeyCode::F(2) => state.sim.toggle_mind(1), // working
@@ -372,10 +391,22 @@ struct TelemetrySim {
 }
 
 #[derive(Default, Clone, Copy, PartialEq)]
-enum ToolState { #[default] Idle, Single, Burst, Cleave, Error }
+enum ToolState {
+    #[default]
+    Idle,
+    Single,
+    Burst,
+    Cleave,
+    Error,
+}
 
 #[derive(Clone, Copy, PartialEq)]
-enum MindOp { Idle, Recall, Write, Cleanup }
+enum MindOp {
+    Idle,
+    Recall,
+    Write,
+    Cleanup,
+}
 
 #[derive(Clone)]
 struct MindState {
@@ -385,7 +416,10 @@ struct MindState {
 
 impl Default for MindState {
     fn default() -> Self {
-        Self { activity: 0.0, op: MindOp::Idle }
+        Self {
+            activity: 0.0,
+            op: MindOp::Idle,
+        }
     }
 }
 
@@ -394,9 +428,14 @@ const MIND_NAMES: [&str; 4] = ["project", "working", "episodes", "archive"];
 impl Default for TelemetrySim {
     fn default() -> Self {
         Self {
-            context_fill: 0.0, context_target: 0.0, context_speed_mult: 1.0,
-            tool_activity: 0.0, tool_state: ToolState::Idle, tool_hue_override: None,
-            thinking_level: 0.0, thinking_target: 0.0,
+            context_fill: 0.0,
+            context_target: 0.0,
+            context_speed_mult: 1.0,
+            tool_activity: 0.0,
+            tool_state: ToolState::Idle,
+            tool_hue_override: None,
+            thinking_level: 0.0,
+            thinking_target: 0.0,
             minds: Default::default(),
             minds_active: [true, false, false, false], // only project linked at start
         }
@@ -412,10 +451,10 @@ impl TelemetrySim {
         // Tools: decay rate varies by state
         let tool_decay = match self.tool_state {
             ToolState::Idle => 1.0,
-            ToolState::Single => 0.6,   // quick decay
-            ToolState::Burst => 0.4,    // medium sustain
-            ToolState::Cleave => 0.2,   // long sustain — parallel work
-            ToolState::Error => 0.3,    // medium sustain for visibility
+            ToolState::Single => 0.6, // quick decay
+            ToolState::Burst => 0.4,  // medium sustain
+            ToolState::Cleave => 0.2, // long sustain — parallel work
+            ToolState::Error => 0.3,  // medium sustain for visibility
         };
         self.tool_activity = (self.tool_activity - dt * tool_decay).max(0.0);
         if self.tool_activity < 0.05 {
@@ -429,7 +468,9 @@ impl TelemetrySim {
         // Memory: per-mind independent decay
         for mind in &mut self.minds {
             mind.activity = (mind.activity - dt * 0.5).max(0.0);
-            if mind.activity < 0.05 { mind.op = MindOp::Idle; }
+            if mind.activity < 0.05 {
+                mind.op = MindOp::Idle;
+            }
         }
     }
 
@@ -438,10 +479,13 @@ impl TelemetrySim {
             // Context caps at 0.7 — auto-compaction fires at ~70%,
             // so that's our visual maximum. Full amber = about to compact.
             0 => (self.context_fill / 0.7).min(1.0),
-            1 => self.tool_activity,          // radar = tool activity
-            2 => self.thinking_level,         // thermal = thinking depth
+            1 => self.tool_activity,  // radar = tool activity
+            2 => self.thinking_level, // thermal = thinking depth
             // memory intensity = max across all active minds
-            3 => self.minds.iter().zip(self.minds_active.iter())
+            3 => self
+                .minds
+                .iter()
+                .zip(self.minds_active.iter())
                 .filter(|(_, active)| **active)
                 .map(|(m, _)| m.activity)
                 .fold(0.0_f64, f64::max),
@@ -457,7 +501,7 @@ impl TelemetrySim {
                 ToolState::Single => 0.5,
                 ToolState::Burst => 0.8,
                 ToolState::Cleave => 1.2,
-                ToolState::Error => 0.15,    // SLOW — ominous
+                ToolState::Error => 0.15, // SLOW — ominous
             },
             2 => {
                 // Thinking: color leads, speed follows.
@@ -465,16 +509,21 @@ impl TelemetrySim {
                 // curve — stays slow during ignition, then accelerates
                 // once the color is already established.
                 let level = self.thinking_level;
-                0.2 + level * level * 2.0   // quadratic: slow start, fast finish
-            },
+                0.2 + level * level * 2.0 // quadratic: slow start, fast finish
+            }
             3 => 1.0, // waterfall scroll is handled separately
             _ => 1.0,
         }
     }
 
     // Context scenarios
-    fn set_context(&mut self, fill: f64) { self.context_target = fill.clamp(0.0, 1.0); }
-    fn compaction(&mut self) { self.context_target = 0.30; self.context_fill = self.context_fill.max(0.5); }
+    fn set_context(&mut self, fill: f64) {
+        self.context_target = fill.clamp(0.0, 1.0);
+    }
+    fn compaction(&mut self) {
+        self.context_target = 0.30;
+        self.context_fill = self.context_fill.max(0.5);
+    }
 
     // Tool scenarios — each has distinct intensity + color behavior
     fn tool_call(&mut self) {
@@ -502,8 +551,12 @@ impl TelemetrySim {
     }
 
     // Thinking scenarios
-    fn thinking_start(&mut self) { self.thinking_target = 0.85; }
-    fn thinking_stop(&mut self)  { self.thinking_target = 0.0; }
+    fn thinking_start(&mut self) {
+        self.thinking_target = 0.85;
+    }
+    fn thinking_stop(&mut self) {
+        self.thinking_target = 0.0;
+    }
 
     // Memory scenarios — target specific minds
     fn memory_op(&mut self, mind_idx: usize, op: MindOp, intensity: f64) {
@@ -514,21 +567,31 @@ impl TelemetrySim {
         }
     }
     // Convenience: recall from project
-    fn memory_recall(&mut self) { self.memory_op(0, MindOp::Recall, 0.95); }
+    fn memory_recall(&mut self) {
+        self.memory_op(0, MindOp::Recall, 0.95);
+    }
     // Write to project
-    fn memory_write(&mut self) { self.memory_op(0, MindOp::Write, 0.85); }
+    fn memory_write(&mut self) {
+        self.memory_op(0, MindOp::Write, 0.85);
+    }
     // Multi-mind: activate all, fire project + working + episodes
     fn memory_multi_mind(&mut self) {
-        for i in 0..3 { self.minds_active[i] = true; }
+        for i in 0..3 {
+            self.minds_active[i] = true;
+        }
         self.memory_op(0, MindOp::Recall, 1.0);
         self.memory_op(1, MindOp::Write, 0.8);
         self.memory_op(2, MindOp::Recall, 0.7);
     }
     // Cleanup project memory
-    fn memory_cleanup(&mut self) { self.memory_op(0, MindOp::Cleanup, 0.7); }
+    fn memory_cleanup(&mut self) {
+        self.memory_op(0, MindOp::Cleanup, 0.7);
+    }
     // Toggle a specific mind on/off
     fn toggle_mind(&mut self, idx: usize) {
-        if idx < 4 { self.minds_active[idx] = !self.minds_active[idx]; }
+        if idx < 4 {
+            self.minds_active[idx] = !self.minds_active[idx];
+        }
     }
     // Fire an event on a specific mind
     fn fire_mind(&mut self, idx: usize) {
@@ -548,17 +611,29 @@ impl TelemetrySim {
         }
     }
     fn thinking_label(&self) -> &str {
-        if self.thinking_level > 0.6 { "extended" }
-        else if self.thinking_level > 0.2 { "active" }
-        else { "idle" }
+        if self.thinking_level > 0.6 {
+            "extended"
+        } else if self.thinking_level > 0.2 {
+            "active"
+        } else {
+            "idle"
+        }
     }
     fn memory_label(&self) -> String {
-        let active: Vec<&str> = self.minds_active.iter().enumerate()
+        let active: Vec<&str> = self
+            .minds_active
+            .iter()
+            .enumerate()
             .filter(|(_, a)| **a)
             .map(|(i, _)| MIND_NAMES[i])
             .collect();
-        if active.is_empty() { return "none".to_string(); }
-        let any_active = self.minds.iter().zip(self.minds_active.iter())
+        if active.is_empty() {
+            return "none".to_string();
+        }
+        let any_active = self
+            .minds
+            .iter()
+            .zip(self.minds_active.iter())
             .any(|(m, &a)| a && m.activity > 0.05);
         if any_active {
             format!("{} active", active.join("+"))
@@ -598,45 +673,56 @@ fn intensity_color(intensity: f64) -> Color {
     //   0.5 → 1.0:  teal → amber → hot amber (HALF the range is the hot zone)
     if i < 0.3 {
         let t = i / 0.3;
-        let r = (1.0 + t * 3.0) as u8;            // 1 → 4
-        let g = (4.0 + t * 34.0) as u8;           // 4 → 38
-        let b = (6.0 + t * 30.0) as u8;           // 6 → 36
+        let r = (1.0 + t * 3.0) as u8; // 1 → 4
+        let g = (4.0 + t * 34.0) as u8; // 4 → 38
+        let b = (6.0 + t * 30.0) as u8; // 6 → 36
         Color::Rgb(r, g, b)
     } else if i < 0.5 {
         let t = (i - 0.3) / 0.2;
-        let r = (4.0 + t * 4.0) as u8;            // 4 → 8
-        let g = (38.0 + t * 10.0) as u8;          // 38 → 48
-        let b = (36.0 + t * 6.0) as u8;           // 36 → 42
+        let r = (4.0 + t * 4.0) as u8; // 4 → 8
+        let g = (38.0 + t * 10.0) as u8; // 38 → 48
+        let b = (36.0 + t * 6.0) as u8; // 36 → 42
         Color::Rgb(r, g, b)
     } else {
         // HALF the perceptual range is teal→amber. This gives amber
         // enough room to actually register as amber, not a sliver.
         let t = (i - 0.5) / 0.5;
-        let r = (8.0 + t * 82.0) as u8;           // 8 → 90
-        let g = (48.0 - t * 2.0) as u8;           // 48 → 46
-        let b = (42.0 - t * 34.0) as u8;          // 42 → 8
+        let r = (8.0 + t * 82.0) as u8; // 8 → 90
+        let g = (48.0 - t * 2.0) as u8; // 48 → 46
+        let b = (42.0 - t * 34.0) as u8; // 42 → 8
         Color::Rgb(r, g, b)
     }
 }
 
-fn bg_color() -> Color { Color::Rgb(0, 1, 3) }
+fn bg_color() -> Color {
+    Color::Rgb(0, 1, 3)
+}
 
 fn pixel_color(value: f64, intensity: f64) -> Color {
     let v = value.clamp(0.0, 1.0);
-    if v < 0.01 { return bg_color(); }
+    if v < 0.01 {
+        return bg_color();
+    }
     intensity_color(v * intensity)
 }
 
-fn pixel_color_floor_hue(value: f64, intensity: f64, floor: f64, hue_override: Option<[u8; 3]>) -> Color {
+fn pixel_color_floor_hue(
+    value: f64,
+    intensity: f64,
+    floor: f64,
+    hue_override: Option<[u8; 3]>,
+) -> Color {
     let v = value.clamp(0.0, 1.0);
-    if v < 0.01 { return bg_color(); }
+    if v < 0.01 {
+        return bg_color();
+    }
     let effective = (v * intensity).max(v * floor);
     match hue_override {
         Some([r, g, b]) => {
             // Blend: scale the override color by effective intensity
             let e = effective.clamp(0.0, 1.0);
             Color::Rgb(
-                (r as f64 * e * 0.4) as u8,  // subdued — not full blast
+                (r as f64 * e * 0.4) as u8, // subdued — not full blast
                 (g as f64 * e * 0.3) as u8,
                 (b as f64 * e * 0.3) as u8,
             )
@@ -647,7 +733,9 @@ fn pixel_color_floor_hue(value: f64, intensity: f64, floor: f64, hue_override: O
 
 fn pixel_color_hue(value: f64, intensity: f64, hue_override: Option<[u8; 3]>) -> Color {
     let v = value.clamp(0.0, 1.0);
-    if v < 0.01 { return bg_color(); }
+    if v < 0.01 {
+        return bg_color();
+    }
     match hue_override {
         Some([r, g, b]) => {
             let e = (v * intensity).clamp(0.0, 1.0);
@@ -663,14 +751,32 @@ fn pixel_color_hue(value: f64, intensity: f64, hue_override: Option<[u8; 3]>) ->
 
 // ─── Instrument rendering ──────────────────────────────────────────────
 
-fn render_instrument(idx: usize, time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState) {
+fn render_instrument(
+    idx: usize,
+    time: f64,
+    intensity: f64,
+    area: Rect,
+    buf: &mut Buffer,
+    s: &DemoState,
+) {
     let speed = s.sim.speed_mult(idx);
-    let hue_override = if idx == 1 { s.sim.tool_hue_override } else { None };
+    let hue_override = if idx == 1 {
+        s.sim.tool_hue_override
+    } else {
+        None
+    };
     match idx {
         0 => render_perlin(time * speed, intensity, area, buf, s, None),
         1 => render_lissajous(time * speed, intensity, area, buf, s, hue_override),
         2 => render_plasma(time * speed, intensity, area, buf, s, None),
-        3 => render_waterfall_multi(intensity, area, buf, &s.waterfalls, &s.sim.minds_active, &s.sim.minds),
+        3 => render_waterfall_multi(
+            intensity,
+            area,
+            buf,
+            &s.waterfalls,
+            &s.sim.minds_active,
+            &s.sim.minds,
+        ),
         _ => {}
     }
 }
@@ -685,20 +791,49 @@ fn set_halfblock(buf: &mut Buffer, area: Rect, px: usize, row: usize, top: Color
 
 // ─── Perlin (sonar — context health) ────────────────────────────────────
 
-fn render_perlin(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, hue_override: Option<[u8; 3]>) {
+fn render_perlin(
+    time: f64,
+    intensity: f64,
+    area: Rect,
+    buf: &mut Buffer,
+    s: &DemoState,
+    hue_override: Option<[u8; 3]>,
+) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     for py in (0..h).step_by(2) {
         let row = py / 2;
-        if row >= area.height as usize { break; }
+        if row >= area.height as usize {
+            break;
+        }
         for px in 0..w {
-            if px >= area.width as usize { break; }
-            let top = noise_octaves(px as f64 / s.perlin_scale, py as f64 / s.perlin_scale,
-                                     time, s.perlin_octaves as usize, s.perlin_lacunarity);
-            let bot = noise_octaves(px as f64 / s.perlin_scale, (py+1) as f64 / s.perlin_scale,
-                                     time, s.perlin_octaves as usize, s.perlin_lacunarity);
-            let tc = pixel_color_hue((top * 0.5 + 0.5) * s.perlin_amplitude, intensity, hue_override);
-            let bc = pixel_color_hue((bot * 0.5 + 0.5) * s.perlin_amplitude, intensity, hue_override);
+            if px >= area.width as usize {
+                break;
+            }
+            let top = noise_octaves(
+                px as f64 / s.perlin_scale,
+                py as f64 / s.perlin_scale,
+                time,
+                s.perlin_octaves as usize,
+                s.perlin_lacunarity,
+            );
+            let bot = noise_octaves(
+                px as f64 / s.perlin_scale,
+                (py + 1) as f64 / s.perlin_scale,
+                time,
+                s.perlin_octaves as usize,
+                s.perlin_lacunarity,
+            );
+            let tc = pixel_color_hue(
+                (top * 0.5 + 0.5) * s.perlin_amplitude,
+                intensity,
+                hue_override,
+            );
+            let bc = pixel_color_hue(
+                (bot * 0.5 + 0.5) * s.perlin_amplitude,
+                intensity,
+                hue_override,
+            );
             set_halfblock(buf, area, px, row, tc, bc);
         }
     }
@@ -727,16 +862,27 @@ fn noise_sample(x: f64, y: f64, z: f64) -> f64 {
 
 // ─── Plasma (thermal — thinking state) ──────────────────────────────────
 
-fn render_plasma(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, _hue_override: Option<[u8; 3]>) {
+fn render_plasma(
+    time: f64,
+    intensity: f64,
+    area: Rect,
+    buf: &mut Buffer,
+    s: &DemoState,
+    _hue_override: Option<[u8; 3]>,
+) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     for py in (0..h).step_by(2) {
         let row = py / 2;
-        if row >= area.height as usize { break; }
+        if row >= area.height as usize {
+            break;
+        }
         for px in 0..w {
-            if px >= area.width as usize { break; }
+            if px >= area.width as usize {
+                break;
+            }
             let top = plasma_sample(px as f64, py as f64, time, s);
-            let bot = plasma_sample(px as f64, (py+1) as f64, time, s);
+            let bot = plasma_sample(px as f64, (py + 1) as f64, time, s);
             let tc = pixel_color((top * 0.5 + 0.5) * s.plasma_amplitude, intensity);
             let bc = pixel_color((bot * 0.5 + 0.5) * s.plasma_amplitude, intensity);
             set_halfblock(buf, area, px, row, tc, bc);
@@ -756,7 +902,14 @@ fn plasma_sample(x: f64, y: f64, t: f64, s: &DemoState) -> f64 {
 
 // ─── Lissajous (radar — tool activity) ──────────────────────────────────
 
-fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: &DemoState, hue_override: Option<[u8; 3]>) {
+fn render_lissajous(
+    time: f64,
+    intensity: f64,
+    area: Rect,
+    buf: &mut Buffer,
+    s: &DemoState,
+    hue_override: Option<[u8; 3]>,
+) {
     let w = area.width as usize;
     let h = area.height as usize * 2;
     let mut grid = vec![0u32; w * h];
@@ -765,7 +918,8 @@ fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: 
 
     for curve in 0..nc {
         let fx = s.liss_freq_base + curve as f64 * s.liss_freq_spread / nc.max(1) as f64;
-        let fy = s.liss_freq_base + 1.0 + curve as f64 * (s.liss_freq_spread * 0.8) / nc.max(1) as f64;
+        let fy =
+            s.liss_freq_base + 1.0 + curve as f64 * (s.liss_freq_spread * 0.8) / nc.max(1) as f64;
         let phase = time * (1.0 + curve as f64 * 0.03);
         for i in 0..pts {
             let t = i as f64 / pts as f64 * std::f64::consts::TAU;
@@ -773,18 +927,28 @@ fn render_lissajous(time: f64, intensity: f64, area: Rect, buf: &mut Buffer, s: 
             let y = (fy * t + phase * 0.3).cos();
             let gx = ((x * s.liss_amplitude + 0.5) * w as f64) as usize;
             let gy = ((y * s.liss_amplitude + 0.5) * h as f64) as usize;
-            if gx < w && gy < h { grid[gy * w + gx] += 1; }
+            if gx < w && gy < h {
+                grid[gy * w + gx] += 1;
+            }
         }
     }
 
     let max_hits = (*grid.iter().max().unwrap_or(&1)).max(1) as f64;
     for py in (0..h).step_by(2) {
         let row = py / 2;
-        if row >= area.height as usize { break; }
+        if row >= area.height as usize {
+            break;
+        }
         for px in 0..w {
-            if px >= area.width as usize { break; }
+            if px >= area.width as usize {
+                break;
+            }
             let top_v = (grid[py * w + px] as f64 / max_hits).min(1.0);
-            let bot_v = if py+1 < h { (grid[(py+1) * w + px] as f64 / max_hits).min(1.0) } else { 0.0 };
+            let bot_v = if py + 1 < h {
+                (grid[(py + 1) * w + px] as f64 / max_hits).min(1.0)
+            } else {
+                0.0
+            };
             let tc = pixel_color_floor_hue(top_v, intensity, 0.25, hue_override);
             let bc = pixel_color_floor_hue(bot_v, intensity, 0.25, hue_override);
             set_halfblock(buf, area, px, row, tc, bc);
@@ -855,9 +1019,17 @@ impl WaterfallState {
             let prev_row = h - 2;
             let new_row = h - 1;
             for x in 0..w {
-                let left = if x > 0 { (self.grid[prev_row * w + x - 1] > 0.3) as u8 } else { 0 };
+                let left = if x > 0 {
+                    (self.grid[prev_row * w + x - 1] > 0.3) as u8
+                } else {
+                    0
+                };
                 let center = (self.grid[prev_row * w + x] > 0.3) as u8;
-                let right = if x + 1 < w { (self.grid[prev_row * w + x + 1] > 0.3) as u8 } else { 0 };
+                let right = if x + 1 < w {
+                    (self.grid[prev_row * w + x + 1] > 0.3) as u8
+                } else {
+                    0
+                };
                 let neighborhood = (left << 2) | (center << 1) | right;
                 let alive = (rule >> neighborhood) & 1 == 1;
 
@@ -883,26 +1055,31 @@ impl WaterfallState {
 /// Ordered roughly by visual density: sparse → dense.
 const NOISE_CHARS: &[char] = &[
     // Light — idle/sparse
-    '▏', '▎', '▍', '░',
-    // Medium — active
-    '▌', '▐', '▒', '┤', '├', '│', '─',
-    // Heavy — intense
-    '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫',
-    // Full — maximum
+    '▏', '▎', '▍', '░', // Medium — active
+    '▌', '▐', '▒', '┤', '├', '│', '─', // Heavy — intense
+    '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫', // Full — maximum
     '█', '╬', '■', '◆',
 ];
 
 /// Render multi-mind waterfall: each active mind gets its own column segment.
 fn render_waterfall_multi(
-    intensity: f64, area: Rect, buf: &mut Buffer,
+    intensity: f64,
+    area: Rect,
+    buf: &mut Buffer,
     waterfalls: &[WaterfallState; 4],
     minds_active: &[bool; 4],
     minds: &[MindState; 4],
 ) {
-    let active_indices: Vec<usize> = minds_active.iter().enumerate()
-        .filter(|(_, a)| **a).map(|(i, _)| i).collect();
+    let active_indices: Vec<usize> = minds_active
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| **a)
+        .map(|(i, _)| i)
+        .collect();
     let n = active_indices.len();
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
 
     let total_w = area.width as usize;
     let gap = if n > 1 { 1 } else { 0 }; // 1-char gap between segments
@@ -953,7 +1130,9 @@ fn render_waterfall(intensity: f64, area: Rect, buf: &mut Buffer, wf: &Waterfall
 
             if val < 0.05 {
                 // Dead cell — background
-                if let Some(cell) = buf.cell_mut(Position::new(area.x + cx as u16, area.y + cy as u16)) {
+                if let Some(cell) =
+                    buf.cell_mut(Position::new(area.x + cx as u16, area.y + cy as u16))
+                {
                     cell.set_char(' ');
                     cell.set_fg(bg_color());
                     cell.set_bg(bg_color());
@@ -973,7 +1152,8 @@ fn render_waterfall(intensity: f64, area: Rect, buf: &mut Buffer, wf: &Waterfall
             let effective = (val * intensity).max(val * 0.08);
             let color = intensity_color(effective);
 
-            if let Some(cell) = buf.cell_mut(Position::new(area.x + cx as u16, area.y + cy as u16)) {
+            if let Some(cell) = buf.cell_mut(Position::new(area.x + cx as u16, area.y + cy as u16))
+            {
                 cell.set_char(ch);
                 cell.set_fg(color);
                 cell.set_bg(bg_color());
@@ -1014,16 +1194,25 @@ struct DemoState {
 impl Default for DemoState {
     fn default() -> Self {
         Self {
-            selected_instrument: 0, selected_param: 0, paused: false,
+            selected_instrument: 0,
+            selected_param: 0,
+            paused: false,
             sim: TelemetrySim::default(),
             // Sonar — operator tuned
-            perlin_scale: 7.9, perlin_octaves: 2.5,
-            perlin_lacunarity: 4.0, perlin_amplitude: 1.0,
+            perlin_scale: 7.9,
+            perlin_octaves: 2.5,
+            perlin_lacunarity: 4.0,
+            perlin_amplitude: 1.0,
             // Thermal — operator tuned
-            plasma_complexity: 2.46, plasma_distortion: 0.68, plasma_amplitude: 1.0,
+            plasma_complexity: 2.46,
+            plasma_distortion: 0.68,
+            plasma_amplitude: 1.0,
             // Radar — operator tuned
-            liss_num_curves: 3.6, liss_freq_base: 1.9,
-            liss_freq_spread: 3.0, liss_amplitude: 0.50, liss_points: 500.0,
+            liss_num_curves: 3.6,
+            liss_freq_base: 1.9,
+            liss_freq_spread: 3.0,
+            liss_amplitude: 0.50,
+            liss_points: 500.0,
             // CA Waterfalls — one per mind, sized per active count
             waterfalls: [
                 WaterfallState::new(22, 5),
@@ -1070,7 +1259,9 @@ impl DemoState {
 
     fn adjust(&mut self, dir: f64, fine: bool) {
         let params = self.params_for(self.selected_instrument);
-        if self.selected_param >= params.len() { return; }
+        if self.selected_param >= params.len() {
+            return;
+        }
         let (_, val, min, max) = params[self.selected_param];
         let range = max - min;
         let step = if fine { range * 0.01 } else { range * 0.05 };

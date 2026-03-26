@@ -1,16 +1,16 @@
 //! auth — Authentication status feature.
 //!
 //! Provides the `auth_status` tool for checking authentication status across
-//! all backends (Anthropic OAuth, OpenAI OAuth, Vault, secrets store, MCP 
-//! remote, API keys). Injects authentication state as context and emits 
+//! all backends (Anthropic OAuth, OpenAI OAuth, Vault, secrets store, MCP
+//! remote, API keys). Injects authentication state as context and emits
 //! notifications when credentials are about to expire.
 
 use async_trait::async_trait;
 use omegon_traits::{
-    BusEvent, BusRequest, ContextInjection, ContextSignals, Feature, 
-    ToolDefinition, ToolResult, ContentBlock, NotifyLevel
+    BusEvent, BusRequest, ContentBlock, ContextInjection, ContextSignals, Feature, NotifyLevel,
+    ToolDefinition, ToolResult,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How often to check for credential expiry (in turns).
@@ -40,7 +40,8 @@ impl AuthFeature {
         const CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
 
         let now = SystemTime::now();
-        let should_refresh = self.last_probe_time
+        let should_refresh = self
+            .last_probe_time
             .is_none_or(|last| now.duration_since(last).unwrap_or(CACHE_TTL) >= CACHE_TTL);
 
         if should_refresh {
@@ -100,7 +101,8 @@ impl Feature for AuthFeature {
             anyhow::bail!("Unknown tool: {}", tool_name);
         }
 
-        let action = args.get("action")
+        let action = args
+            .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("status");
 
@@ -109,25 +111,27 @@ impl Feature for AuthFeature {
         let providers = crate::auth::auth_status_to_provider_statuses(&auth_status);
 
         let mut output = String::new();
-        
+
         match action {
             "status" => {
                 output.push_str("# Authentication Status\n\n");
-                
+
                 if providers.is_empty() {
                     output.push_str("**No authentication providers configured.**\n");
                 } else {
                     for provider in &providers {
                         let status_icon = if provider.authenticated { "✓" } else { "✗" };
-                        let auth_method = provider.auth_method
+                        let auth_method = provider
+                            .auth_method
                             .as_ref()
                             .map(|s| format!(" ({})", s))
                             .unwrap_or_default();
-                        let model_info = provider.model
+                        let model_info = provider
+                            .model
                             .as_ref()
                             .map(|m| format!(" → {}", m))
                             .unwrap_or_default();
-                        
+
                         output.push_str(&format!(
                             "{} **{}**{}{}\n",
                             status_icon, provider.name, auth_method, model_info
@@ -137,7 +141,9 @@ impl Feature for AuthFeature {
 
                 // Check secrets store status
                 if let Ok(secrets_path) = std::fs::canonicalize(
-                    dirs::home_dir().unwrap_or_default().join(".omegon/secrets.db")
+                    dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".omegon/secrets.db"),
                 ) {
                     if secrets_path.exists() {
                         output.push_str("\n**Secrets Store:** Available (encrypted)\n");
@@ -152,30 +158,37 @@ impl Feature for AuthFeature {
                     .output()
                 {
                     let vault_available = vault_output.status.success();
-                    let vault_status = if vault_available { "Connected" } else { "Disconnected" };
+                    let vault_status = if vault_available {
+                        "Connected"
+                    } else {
+                        "Disconnected"
+                    };
                     output.push_str(&format!("\n**Vault:** {}\n", vault_status));
                 }
             }
             "check" => {
                 output.push_str("# Detailed Authentication Check\n\n");
-                
+
                 for provider in &providers {
                     output.push_str(&format!("## {}\n", provider.name));
-                    output.push_str(&format!("- **Authenticated:** {}\n", provider.authenticated));
-                    
+                    output.push_str(&format!(
+                        "- **Authenticated:** {}\n",
+                        provider.authenticated
+                    ));
+
                     if let Some(ref method) = provider.auth_method {
                         output.push_str(&format!("- **Method:** {}\n", method));
                     }
-                    
+
                     if let Some(ref model) = provider.model {
                         output.push_str(&format!("- **Active Model:** {}\n", model));
                     }
-                    
+
                     // Check token expiry for OAuth providers
                     if provider.auth_method.as_deref() == Some("oauth") {
                         let provider_lower = provider.name.to_lowercase();
                         let auth_key = crate::auth::auth_json_key(&provider_lower);
-                        
+
                         if let Some(creds) = crate::auth::read_credentials(auth_key) {
                             let expires_in = if creds.is_expired() {
                                 "**Expired**".to_string()
@@ -183,7 +196,8 @@ impl Feature for AuthFeature {
                                 let now_ms = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap_or_default()
-                                    .as_millis() as u64;
+                                    .as_millis()
+                                    as u64;
                                 let remaining_ms = creds.expires.saturating_sub(now_ms);
                                 let remaining_hours = remaining_ms / (1000 * 60 * 60);
                                 format!("{}h", remaining_hours)
@@ -191,7 +205,7 @@ impl Feature for AuthFeature {
                             output.push_str(&format!("- **Token Expires:** {}\n", expires_in));
                         }
                     }
-                    
+
                     output.push('\n');
                 }
 
@@ -199,10 +213,10 @@ impl Feature for AuthFeature {
                 output.push_str("## Environment Variables\n");
                 let env_keys = [
                     "ANTHROPIC_API_KEY",
-                    "ANTHROPIC_OAUTH_TOKEN", 
-                    "OPENAI_API_KEY"
+                    "ANTHROPIC_OAUTH_TOKEN",
+                    "OPENAI_API_KEY",
                 ];
-                
+
                 for key in &env_keys {
                     let value = std::env::var(key);
                     let status = if value.is_ok() { "Set" } else { "Not set" };
@@ -226,9 +240,16 @@ impl Feature for AuthFeature {
     fn provide_context(&self, signals: &ContextSignals<'_>) -> Option<ContextInjection> {
         // Only inject context if user prompt mentions auth-related terms
         let auth_keywords = [
-            "auth", "login", "credential", "token", "oauth", "anthropic", "openai", "vault"
+            "auth",
+            "login",
+            "credential",
+            "token",
+            "oauth",
+            "anthropic",
+            "openai",
+            "vault",
         ];
-        
+
         let prompt_lower = signals.user_prompt.to_lowercase();
         if !auth_keywords.iter().any(|kw| prompt_lower.contains(kw)) {
             return None;
@@ -238,11 +259,16 @@ impl Feature for AuthFeature {
             return None;
         }
 
-        let authenticated_providers: Vec<String> = self.cached_providers
+        let authenticated_providers: Vec<String> = self
+            .cached_providers
             .iter()
             .filter(|p| p.authenticated)
             .map(|p| {
-                let method = p.auth_method.as_ref().map(|s| format!(" ({})", s)).unwrap_or_default();
+                let method = p
+                    .auth_method
+                    .as_ref()
+                    .map(|s| format!(" ({})", s))
+                    .unwrap_or_default();
                 format!("{}{}", p.name, method)
             })
             .collect();
@@ -291,7 +317,7 @@ impl Feature for AuthFeature {
             }
             _ => {}
         }
-        
+
         vec![]
     }
 }
@@ -300,21 +326,21 @@ impl AuthFeature {
     /// Check for expiring OAuth credentials and emit warnings.
     fn check_expiring_credentials(&self) -> Vec<BusRequest> {
         let mut requests = Vec::new();
-        
+
         for provider in &self.cached_providers {
             if provider.auth_method.as_deref() == Some("oauth") && provider.authenticated {
                 let provider_lower = provider.name.to_lowercase();
                 let auth_key = crate::auth::auth_json_key(&provider_lower);
-                
+
                 if let Some(creds) = crate::auth::read_credentials(auth_key) {
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    
+
                     let remaining_ms = creds.expires.saturating_sub(now_ms);
                     let remaining_hours = remaining_ms / (1000 * 60 * 60);
-                    
+
                     if creds.is_expired() {
                         requests.push(BusRequest::Notify {
                             message: format!("{} OAuth token has expired", provider.name),
@@ -323,7 +349,7 @@ impl AuthFeature {
                     } else if remaining_hours < 24 {
                         requests.push(BusRequest::Notify {
                             message: format!(
-                                "{} OAuth token expires in {}h", 
+                                "{} OAuth token expires in {}h",
                                 provider.name, remaining_hours
                             ),
                             level: NotifyLevel::Info,
@@ -332,7 +358,7 @@ impl AuthFeature {
                 }
             }
         }
-        
+
         requests
     }
 }
@@ -358,12 +384,15 @@ mod tests {
     #[tokio::test]
     async fn auth_status_tool_execution() {
         let feature = AuthFeature::new();
-        let result = feature.execute(
-            "auth_status",
-            "test-call",
-            json!({"action": "status"}),
-            tokio_util::sync::CancellationToken::new(),
-        ).await.unwrap();
+        let result = feature
+            .execute(
+                "auth_status",
+                "test-call",
+                json!({"action": "status"}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.content.len(), 1);
         if let ContentBlock::Text { text } = &result.content[0] {
@@ -374,12 +403,15 @@ mod tests {
     #[tokio::test]
     async fn auth_status_detailed_check() {
         let feature = AuthFeature::new();
-        let result = feature.execute(
-            "auth_status",
-            "test-call",
-            json!({"action": "check"}),
-            tokio_util::sync::CancellationToken::new(),
-        ).await.unwrap();
+        let result = feature
+            .execute(
+                "auth_status",
+                "test-call",
+                json!({"action": "check"}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.content.len(), 1);
         if let ContentBlock::Text { text } = &result.content[0] {
@@ -409,7 +441,7 @@ mod tests {
 
         let injection = feature.provide_context(&signals);
         assert!(injection.is_some());
-        
+
         let injection = injection.unwrap();
         assert_eq!(injection.source, "auth");
         assert!(injection.content.contains("Authenticated"));
@@ -437,19 +469,25 @@ mod tests {
         feature.last_expiry_check = 0;
 
         // First check after interval should trigger
-        let _requests = feature.on_event(&BusEvent::TurnEnd { turn: EXPIRY_CHECK_INTERVAL });
+        let _requests = feature.on_event(&BusEvent::TurnEnd {
+            turn: EXPIRY_CHECK_INTERVAL,
+        });
         // Will be empty since no cached providers, but interval logic should work
         assert_eq!(feature.last_expiry_check, EXPIRY_CHECK_INTERVAL);
 
         // Immediate subsequent check should not trigger
-        let _requests2 = feature.on_event(&BusEvent::TurnEnd { turn: EXPIRY_CHECK_INTERVAL + 1 });
+        let _requests2 = feature.on_event(&BusEvent::TurnEnd {
+            turn: EXPIRY_CHECK_INTERVAL + 1,
+        });
         assert_eq!(feature.last_expiry_check, EXPIRY_CHECK_INTERVAL); // unchanged
     }
 
     #[test]
     fn auth_probe_to_harness_status_pipeline() {
         // C2: end-to-end test for auth → convert → HarnessStatus.providers
-        use crate::auth::{AuthStatus, ProviderInfo, ProviderAuthStatus, auth_status_to_provider_statuses};
+        use crate::auth::{
+            AuthStatus, ProviderAuthStatus, ProviderInfo, auth_status_to_provider_statuses,
+        };
 
         let status = AuthStatus {
             providers: vec![

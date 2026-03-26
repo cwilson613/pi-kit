@@ -66,9 +66,10 @@ fn read_change(change_dir: &Path, name: &str) -> Option<ChangeInfo> {
     let has_specs = specs_dir.is_dir()
         && fs::read_dir(&specs_dir)
             .ok()
-            .map(|e| e.flatten().any(|f| {
-                f.path().extension().and_then(|e| e.to_str()) == Some("md")
-            }))
+            .map(|e| {
+                e.flatten()
+                    .any(|f| f.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            })
             .unwrap_or(false);
     let tasks_path = change_dir.join("tasks.md");
     let has_tasks = tasks_path.exists();
@@ -195,7 +196,10 @@ pub fn parse_specs_dir(specs_dir: &Path) -> Vec<SpecFile> {
                         if sub_path.extension().and_then(|e| e.to_str()) != Some("md") {
                             continue;
                         }
-                        let name = sub_path.file_stem().and_then(|n| n.to_str()).unwrap_or("unknown");
+                        let name = sub_path
+                            .file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
                         let domain = format!("{parent_domain}/{name}");
                         let content = match fs::read_to_string(&sub_path) {
                             Ok(c) => c,
@@ -238,9 +242,16 @@ pub fn parse_spec_content(content: &str) -> Vec<Requirement> {
             let rest = &trimmed[4..];
             let title = rest.strip_prefix("Requirement:").unwrap_or(rest).trim();
             // Flush previous
-            flush_scenario(&mut current_scenario, current_req.as_mut().map(|r| &mut r.2));
+            flush_scenario(
+                &mut current_scenario,
+                current_req.as_mut().map(|r| &mut r.2),
+            );
             if let Some((t, d, s)) = current_req.take() {
-                requirements.push(Requirement { title: t, description: d.trim().to_string(), scenarios: s });
+                requirements.push(Requirement {
+                    title: t,
+                    description: d.trim().to_string(),
+                    scenarios: s,
+                });
             }
             current_req = Some((title.to_string(), String::new(), Vec::new()));
             continue;
@@ -249,7 +260,10 @@ pub fn parse_spec_content(content: &str) -> Vec<Requirement> {
         // New scenario: "#### Scenario: <title>" or bare "#### <title>"
         if let Some(after) = trimmed.strip_prefix("#### ") {
             let rest = after.strip_prefix("Scenario:").unwrap_or(after).trim();
-            flush_scenario(&mut current_scenario, current_req.as_mut().map(|r| &mut r.2));
+            flush_scenario(
+                &mut current_scenario,
+                current_req.as_mut().map(|r| &mut r.2),
+            );
             current_scenario = Some(ScenarioBuilder {
                 title: rest.trim().to_string(),
                 given: String::new(),
@@ -280,9 +294,16 @@ pub fn parse_spec_content(content: &str) -> Vec<Requirement> {
     }
 
     // Flush final
-    flush_scenario(&mut current_scenario, current_req.as_mut().map(|r| &mut r.2));
+    flush_scenario(
+        &mut current_scenario,
+        current_req.as_mut().map(|r| &mut r.2),
+    );
     if let Some((t, d, s)) = current_req {
-        requirements.push(Requirement { title: t, description: d.trim().to_string(), scenarios: s });
+        requirements.push(Requirement {
+            title: t,
+            description: d.trim().to_string(),
+            scenarios: s,
+        });
     }
 
     requirements
@@ -296,10 +317,7 @@ struct ScenarioBuilder {
     and_clauses: Vec<String>,
 }
 
-fn flush_scenario(
-    builder: &mut Option<ScenarioBuilder>,
-    target: Option<&mut Vec<Scenario>>,
-) {
+fn flush_scenario(builder: &mut Option<ScenarioBuilder>, target: Option<&mut Vec<Scenario>>) {
     if let Some(b) = builder.take()
         && (!b.given.is_empty() || !b.when.is_empty() || !b.then.is_empty())
         && let Some(scenarios) = target
@@ -344,11 +362,18 @@ pub fn build_context_injection(changes: &[ChangeInfo]) -> String {
         ));
 
         // Include scenario summaries for implementing/verifying changes
-        if matches!(change.stage, ChangeStage::Implementing | ChangeStage::Verifying) {
+        if matches!(
+            change.stage,
+            ChangeStage::Implementing | ChangeStage::Verifying
+        ) {
             for spec in &change.specs {
-                let scenario_count: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
+                let scenario_count: usize =
+                    spec.requirements.iter().map(|r| r.scenarios.len()).sum();
                 if scenario_count > 0 {
-                    lines.push(format!("    specs/{}: {} scenarios", spec.domain, scenario_count));
+                    lines.push(format!(
+                        "    specs/{}: {} scenarios",
+                        spec.domain, scenario_count
+                    ));
                 }
             }
         }
@@ -415,9 +440,7 @@ pub fn add_spec(
     domain: &str,
     spec_content: &str,
 ) -> anyhow::Result<PathBuf> {
-    let change_dir = repo_path
-        .join("openspec/changes")
-        .join(change_name);
+    let change_dir = repo_path.join("openspec/changes").join(change_name);
 
     if !change_dir.exists() {
         anyhow::bail!("Change '{change_name}' does not exist");
@@ -442,9 +465,7 @@ pub fn add_spec(
 
 /// Archive a change by moving it to openspec/archive/.
 pub fn archive_change(repo_path: &Path, change_name: &str) -> anyhow::Result<()> {
-    let change_dir = repo_path
-        .join("openspec/changes")
-        .join(change_name);
+    let change_dir = repo_path.join("openspec/changes").join(change_name);
 
     if !change_dir.exists() {
         anyhow::bail!("Change '{change_name}' does not exist");
@@ -512,7 +533,11 @@ Then sharedState.cleave.children[i].status becomes running
         let dir = std::env::temp_dir().join("omegon-test-tasks");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("tasks.md");
-        fs::write(&path, "# Tasks\n\n## Group 1\n\n- [x] Done task\n- [ ] Pending task\n- [x] Another done\n").unwrap();
+        fs::write(
+            &path,
+            "# Tasks\n\n## Group 1\n\n- [x] Done task\n- [ ] Pending task\n- [x] Another done\n",
+        )
+        .unwrap();
 
         let (total, done) = count_tasks(&path);
         assert_eq!(total, 3);
@@ -523,12 +548,27 @@ Then sharedState.cleave.children[i].status becomes running
 
     #[test]
     fn compute_stage_progression() {
-        assert_eq!(compute_stage(false, false, false, 0, 0), ChangeStage::Proposed);
-        assert_eq!(compute_stage(true, false, false, 0, 0), ChangeStage::Proposed);
-        assert_eq!(compute_stage(true, true, false, 0, 0), ChangeStage::Specified);
+        assert_eq!(
+            compute_stage(false, false, false, 0, 0),
+            ChangeStage::Proposed
+        );
+        assert_eq!(
+            compute_stage(true, false, false, 0, 0),
+            ChangeStage::Proposed
+        );
+        assert_eq!(
+            compute_stage(true, true, false, 0, 0),
+            ChangeStage::Specified
+        );
         assert_eq!(compute_stage(true, true, true, 0, 0), ChangeStage::Planned);
-        assert_eq!(compute_stage(true, true, true, 5, 2), ChangeStage::Implementing);
-        assert_eq!(compute_stage(true, true, true, 5, 5), ChangeStage::Verifying);
+        assert_eq!(
+            compute_stage(true, true, true, 5, 2),
+            ChangeStage::Implementing
+        );
+        assert_eq!(
+            compute_stage(true, true, true, 5, 5),
+            ChangeStage::Verifying
+        );
     }
 
     #[test]
@@ -600,8 +640,10 @@ mod integration_tests {
     #[test]
     fn scan_real_openspec_directory() {
         let repo_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
-            .parent().unwrap();
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
 
         let changes = list_changes(repo_path);
         tracing::debug!("Found {} active OpenSpec changes", changes.len());
@@ -612,10 +654,19 @@ mod integration_tests {
             let specs = parse_specs_dir(&baseline_dir);
             tracing::debug!("Parsed {} baseline spec files", specs.len());
             for spec in &specs {
-                let scenario_count: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
-                tracing::debug!("  {}: {} requirements, {} scenarios", spec.domain, spec.requirements.len(), scenario_count);
-                assert!(!spec.requirements.is_empty() || scenario_count == 0,
-                    "Spec {} should have requirements if it has scenarios", spec.domain);
+                let scenario_count: usize =
+                    spec.requirements.iter().map(|r| r.scenarios.len()).sum();
+                tracing::debug!(
+                    "  {}: {} requirements, {} scenarios",
+                    spec.domain,
+                    spec.requirements.len(),
+                    scenario_count
+                );
+                assert!(
+                    !spec.requirements.is_empty() || scenario_count == 0,
+                    "Spec {} should have requirements if it has scenarios",
+                    spec.domain
+                );
             }
         }
     }
@@ -683,7 +734,10 @@ mod mutation_tests {
 
         archive_change(dir.path(), "to-archive").unwrap();
         assert!(!change.path.exists(), "original should be gone");
-        assert!(dir.path().join("openspec/archive/to-archive").exists(), "should be in archive");
+        assert!(
+            dir.path().join("openspec/archive/to-archive").exists(),
+            "should be in archive"
+        );
     }
 
     #[test]
@@ -707,7 +761,13 @@ mod mutation_tests {
     fn propose_add_spec_updates_stage() {
         let dir = tempfile::tempdir().unwrap();
         propose_change(dir.path(), "staged", "Staged", "intent").unwrap();
-        add_spec(dir.path(), "staged", "core", "# core\n\n### Requirement: Works\n\n#### Scenario: Basic\n\nGiven X\nWhen Y\nThen Z\n").unwrap();
+        add_spec(
+            dir.path(),
+            "staged",
+            "core",
+            "# core\n\n### Requirement: Works\n\n#### Scenario: Basic\n\nGiven X\nWhen Y\nThen Z\n",
+        )
+        .unwrap();
 
         let changes = list_changes(dir.path());
         assert_eq!(changes.len(), 1);

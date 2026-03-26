@@ -57,12 +57,21 @@ impl ContextRenderer for MarkdownRenderer {
         ];
 
         for (section, desc) in sections.iter().zip(section_descriptions.iter()) {
-            let section_facts: Vec<&Fact> = facts.iter()
+            let section_facts: Vec<&Fact> = facts
+                .iter()
                 .filter(|f| &f.section == section && f.status == FactStatus::Active)
                 .collect();
-            if section_facts.is_empty() { continue; }
+            if section_facts.is_empty() {
+                continue;
+            }
 
-            let header = format!("## {}\n{}", serde_json::to_string(section).unwrap_or_default().trim_matches('"'), desc);
+            let header = format!(
+                "## {}\n{}",
+                serde_json::to_string(section)
+                    .unwrap_or_default()
+                    .trim_matches('"'),
+                desc
+            );
             if char_count + header.len() > max_chars {
                 budget_exhausted = true;
                 break;
@@ -81,7 +90,9 @@ impl ContextRenderer for MarkdownRenderer {
                 facts_injected += 1;
             }
             lines.push(String::new());
-            if budget_exhausted { break; }
+            if budget_exhausted {
+                break;
+            }
         }
 
         // Episodes
@@ -122,14 +133,29 @@ mod tests {
 
     fn make_fact(section: Section, content: &str) -> Fact {
         Fact {
-            id: "test".into(), mind: "test".into(), content: content.into(),
-            section, status: FactStatus::Active, confidence: 1.0,
-            reinforcement_count: 1, decay_rate: 0.05,
+            id: "test".into(),
+            mind: "test".into(),
+            content: content.into(),
+            section,
+            status: FactStatus::Active,
+            confidence: 1.0,
+            reinforcement_count: 1,
+            decay_rate: 0.05,
             decay_profile: DecayProfileName::Standard,
-            last_reinforced: "2026-01-01".into(), created_at: "2026-01-01".into(),
-            version: 1, superseded_by: None, source: None, content_hash: None,
-            last_accessed: None, created_session: None, superseded_at: None, archived_at: None, jj_change_id: None,
-            persona_id: None, layer: "project".into(), tags: vec![],
+            last_reinforced: "2026-01-01".into(),
+            created_at: "2026-01-01".into(),
+            version: 1,
+            superseded_by: None,
+            source: None,
+            content_hash: None,
+            last_accessed: None,
+            created_session: None,
+            superseded_at: None,
+            archived_at: None,
+            jj_change_id: None,
+            persona_id: None,
+            layer: "project".into(),
+            tags: vec![],
         }
     }
 
@@ -160,7 +186,12 @@ mod tests {
     fn respects_budget() {
         let r = MarkdownRenderer;
         let facts: Vec<Fact> = (0..100)
-            .map(|i| make_fact(Section::Architecture, &format!("Fact number {i} with some content padding to use space")))
+            .map(|i| {
+                make_fact(
+                    Section::Architecture,
+                    &format!("Fact number {i} with some content padding to use space"),
+                )
+            })
             .collect();
         let ctx = r.render_context(&facts, &[], &[], 500);
         assert!(ctx.budget_exhausted);

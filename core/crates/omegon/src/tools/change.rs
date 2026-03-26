@@ -188,10 +188,7 @@ pub async fn execute(
 }
 
 /// Rollback all modified files to their snapshot state.
-async fn rollback(
-    snapshots: &HashMap<PathBuf, String>,
-    written_files: &HashMap<PathBuf, String>,
-) {
+async fn rollback(snapshots: &HashMap<PathBuf, String>, written_files: &HashMap<PathBuf, String>) {
     for (path, original) in snapshots {
         if written_files.contains_key(path)
             && let Err(e) = tokio::fs::write(path, original).await
@@ -236,17 +233,19 @@ async fn run_affected_tests(cwd: &Path, files: &[&PathBuf]) -> Option<String> {
     }
 
     // Determine test runner by the first file's extension
-    let ext = match files.first().and_then(|f| f.extension()).and_then(|e| e.to_str()) {
+    let ext = match files
+        .first()
+        .and_then(|f| f.extension())
+        .and_then(|e| e.to_str())
+    {
         Some(e) => e,
         None => return None,
     };
     let (cmd, args) = match ext {
         "rs" => ("cargo", vec!["test".to_string()]),
         "ts" | "tsx" => {
-            let test_file_args: Vec<String> = test_files
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
+            let test_file_args: Vec<String> =
+                test_files.iter().map(|p| p.display().to_string()).collect();
             ("npx", {
                 let mut a = vec!["vitest".to_string(), "run".to_string()];
                 a.extend(test_file_args);
@@ -254,10 +253,8 @@ async fn run_affected_tests(cwd: &Path, files: &[&PathBuf]) -> Option<String> {
             })
         }
         "py" => {
-            let test_file_args: Vec<String> = test_files
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
+            let test_file_args: Vec<String> =
+                test_files.iter().map(|p| p.display().to_string()).collect();
             ("pytest", test_file_args)
         }
         _ => return None,
@@ -304,17 +301,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        std::fs::File::create(&file_a).unwrap().write_all(b"hello world").unwrap();
-        std::fs::File::create(&file_b).unwrap().write_all(b"foo bar baz").unwrap();
+        std::fs::File::create(&file_a)
+            .unwrap()
+            .write_all(b"hello world")
+            .unwrap();
+        std::fs::File::create(&file_b)
+            .unwrap()
+            .write_all(b"foo bar baz")
+            .unwrap();
 
         let edits = vec![
-            EditSpec { file: "a.txt".into(), old_text: "hello".into(), new_text: "goodbye".into() },
-            EditSpec { file: "b.txt".into(), old_text: "foo".into(), new_text: "qux".into() },
+            EditSpec {
+                file: "a.txt".into(),
+                old_text: "hello".into(),
+                new_text: "goodbye".into(),
+            },
+            EditSpec {
+                file: "b.txt".into(),
+                old_text: "foo".into(),
+                new_text: "qux".into(),
+            },
         ];
 
         let cwd = dir.path().to_path_buf();
         let resolve = |p: &str| Ok(cwd.join(p));
-        let result = execute(&edits, ValidationMode::None, &cwd, resolve).await.unwrap();
+        let result = execute(&edits, ValidationMode::None, &cwd, resolve)
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("2 edit(s) across 2 file(s)"));
 
@@ -327,17 +340,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_a = dir.path().join("a.txt");
         let file_b = dir.path().join("b.txt");
-        std::fs::File::create(&file_a).unwrap().write_all(b"hello world").unwrap();
-        std::fs::File::create(&file_b).unwrap().write_all(b"foo bar baz").unwrap();
+        std::fs::File::create(&file_a)
+            .unwrap()
+            .write_all(b"hello world")
+            .unwrap();
+        std::fs::File::create(&file_b)
+            .unwrap()
+            .write_all(b"foo bar baz")
+            .unwrap();
 
         let edits = vec![
-            EditSpec { file: "a.txt".into(), old_text: "hello".into(), new_text: "goodbye".into() },
-            EditSpec { file: "b.txt".into(), old_text: "NONEXISTENT".into(), new_text: "qux".into() },
+            EditSpec {
+                file: "a.txt".into(),
+                old_text: "hello".into(),
+                new_text: "goodbye".into(),
+            },
+            EditSpec {
+                file: "b.txt".into(),
+                old_text: "NONEXISTENT".into(),
+                new_text: "qux".into(),
+            },
         ];
 
         let cwd = dir.path().to_path_buf();
         let resolve = |p: &str| Ok(cwd.join(p));
-        let err = execute(&edits, ValidationMode::None, &cwd, resolve).await.unwrap_err();
+        let err = execute(&edits, ValidationMode::None, &cwd, resolve)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("rolled back"));
 
         // file_a should be restored to original
@@ -348,18 +377,29 @@ mod tests {
     async fn multiple_edits_same_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("code.rs");
-        std::fs::File::create(&file).unwrap().write_all(
-            b"fn foo() {}\nfn bar() {}\nfn baz() {}"
-        ).unwrap();
+        std::fs::File::create(&file)
+            .unwrap()
+            .write_all(b"fn foo() {}\nfn bar() {}\nfn baz() {}")
+            .unwrap();
 
         let edits = vec![
-            EditSpec { file: "code.rs".into(), old_text: "fn foo() {}".into(), new_text: "fn foo() -> i32 { 42 }".into() },
-            EditSpec { file: "code.rs".into(), old_text: "fn bar() {}".into(), new_text: "fn bar() -> bool { true }".into() },
+            EditSpec {
+                file: "code.rs".into(),
+                old_text: "fn foo() {}".into(),
+                new_text: "fn foo() -> i32 { 42 }".into(),
+            },
+            EditSpec {
+                file: "code.rs".into(),
+                old_text: "fn bar() {}".into(),
+                new_text: "fn bar() -> bool { true }".into(),
+            },
         ];
 
         let cwd = dir.path().to_path_buf();
         let resolve = |p: &str| Ok(cwd.join(p));
-        let result = execute(&edits, ValidationMode::None, &cwd, resolve).await.unwrap();
+        let result = execute(&edits, ValidationMode::None, &cwd, resolve)
+            .await
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("2 edit(s) across 1 file(s)"));
 
@@ -374,7 +414,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
         let resolve = |p: &str| Ok(cwd.join(p));
-        let err = execute(&[], ValidationMode::None, &cwd, resolve).await.unwrap_err();
+        let err = execute(&[], ValidationMode::None, &cwd, resolve)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("No edits"));
     }
 }

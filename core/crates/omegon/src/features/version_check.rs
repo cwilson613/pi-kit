@@ -30,11 +30,15 @@ impl VersionCheck {
 
 #[async_trait]
 impl Feature for VersionCheck {
-    fn name(&self) -> &str { "version-check" }
+    fn name(&self) -> &str {
+        "version-check"
+    }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         if let BusEvent::SessionStart { .. } = event {
-            if self.checked { return vec![]; }
+            if self.checked {
+                return vec![];
+            }
             self.checked = true;
 
             if std::env::var("OMEGON_SKIP_VERSION_CHECK").is_ok()
@@ -71,24 +75,26 @@ impl Feature for VersionCheck {
 }
 
 async fn fetch_latest() -> Option<String> {
-    let url = format!(
-        "https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
-    );
+    let url = format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
         .user_agent("omegon-version-check")
         .build()
         .ok()?;
 
-    let resp = client.get(&url)
+    let resp = client
+        .get(&url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
         .ok()?;
 
-    if !resp.status().is_success() { return None; }
+    if !resp.status().is_success() {
+        return None;
+    }
     let body: serde_json::Value = resp.json().await.ok()?;
-    body["tag_name"].as_str()
+    body["tag_name"]
+        .as_str()
         .map(|s| s.strip_prefix('v').unwrap_or(s).to_string())
 }
 
@@ -106,8 +112,12 @@ fn is_newer(latest: &str, current: &str) -> bool {
     for i in 0..len {
         let lv = l.get(i).copied().unwrap_or(0);
         let cv = c.get(i).copied().unwrap_or(0);
-        if lv > cv { return true; }
-        if lv < cv { return false; }
+        if lv > cv {
+            return true;
+        }
+        if lv < cv {
+            return false;
+        }
     }
     false
 }

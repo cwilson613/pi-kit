@@ -54,7 +54,13 @@ pub async fn start(label: &str, cwd: &Path) -> Result<ToolResult> {
     let stash_msg = format!("omegon-speculate: {label}");
     let stash_result = git_command(
         cwd,
-        &["stash", "push", "--include-untracked", "--message", &stash_msg],
+        &[
+            "stash",
+            "push",
+            "--include-untracked",
+            "--message",
+            &stash_msg,
+        ],
     )
     .await;
 
@@ -123,8 +129,12 @@ pub async fn check(cwd: &Path) -> Result<ToolResult> {
     };
 
     // Find currently modified files
-    let diff = git_command(cwd, &["diff", "--name-only"]).await.unwrap_or_default();
-    let staged = git_command(cwd, &["diff", "--staged", "--name-only"]).await.unwrap_or_default();
+    let diff = git_command(cwd, &["diff", "--name-only"])
+        .await
+        .unwrap_or_default();
+    let staged = git_command(cwd, &["diff", "--staged", "--name-only"])
+        .await
+        .unwrap_or_default();
     let modified: Vec<String> = diff
         .lines()
         .chain(staged.lines())
@@ -179,7 +189,9 @@ pub async fn commit(cwd: &Path) -> Result<ToolResult> {
     }
 
     // Report what changed since checkpoint
-    let diff_stat = git_command(cwd, &["diff", "--stat"]).await.unwrap_or_default();
+    let diff_stat = git_command(cwd, &["diff", "--stat"])
+        .await
+        .unwrap_or_default();
 
     Ok(ToolResult {
         content: vec![ContentBlock::Text {
@@ -306,13 +318,19 @@ mod tests {
 
         // Init git repo
         git_command(cwd, &["init"]).await.unwrap();
-        git_command(cwd, &["config", "user.email", "test@test.com"]).await.unwrap();
-        git_command(cwd, &["config", "user.name", "Test"]).await.unwrap();
+        git_command(cwd, &["config", "user.email", "test@test.com"])
+            .await
+            .unwrap();
+        git_command(cwd, &["config", "user.name", "Test"])
+            .await
+            .unwrap();
 
         // Create and commit a file
         std::fs::write(cwd.join("file.txt"), "original").unwrap();
         git_command(cwd, &["add", "."]).await.unwrap();
-        git_command(cwd, &["commit", "-m", "initial"]).await.unwrap();
+        git_command(cwd, &["commit", "-m", "initial"])
+            .await
+            .unwrap();
 
         // Start speculation
         let result = start("try-approach-a", cwd).await.unwrap();
@@ -333,7 +351,10 @@ mod tests {
         assert!(text.contains("rolled back"));
 
         // File should be restored
-        assert_eq!(std::fs::read_to_string(cwd.join("file.txt")).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("file.txt")).unwrap(),
+            "original"
+        );
     }
 
     #[tokio::test]
@@ -345,12 +366,18 @@ mod tests {
 
         // Init git repo
         git_command(cwd, &["init"]).await.unwrap();
-        git_command(cwd, &["config", "user.email", "test@test.com"]).await.unwrap();
-        git_command(cwd, &["config", "user.name", "Test"]).await.unwrap();
+        git_command(cwd, &["config", "user.email", "test@test.com"])
+            .await
+            .unwrap();
+        git_command(cwd, &["config", "user.name", "Test"])
+            .await
+            .unwrap();
 
         std::fs::write(cwd.join("file.txt"), "original").unwrap();
         git_command(cwd, &["add", "."]).await.unwrap();
-        git_command(cwd, &["commit", "-m", "initial"]).await.unwrap();
+        git_command(cwd, &["commit", "-m", "initial"])
+            .await
+            .unwrap();
 
         // Start, modify, commit
         start("keep-it", cwd).await.unwrap();
@@ -358,6 +385,9 @@ mod tests {
         commit(cwd).await.unwrap();
 
         // Changes should be preserved
-        assert_eq!(std::fs::read_to_string(cwd.join("file.txt")).unwrap(), "kept changes");
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("file.txt")).unwrap(),
+            "kept changes"
+        );
     }
 }

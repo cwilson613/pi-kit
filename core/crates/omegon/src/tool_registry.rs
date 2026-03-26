@@ -136,34 +136,57 @@ pub const TOOL_COUNT: usize = 49;
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
         // core (13)
-        core::BASH, core::READ, core::WRITE, core::EDIT, core::CHANGE,
-        core::SPECULATE_START, core::SPECULATE_CHECK, core::SPECULATE_COMMIT,
-        core::SPECULATE_ROLLBACK, core::COMMIT, core::WHOAMI, core::CHRONOS,
+        core::BASH,
+        core::READ,
+        core::WRITE,
+        core::EDIT,
+        core::CHANGE,
+        core::SPECULATE_START,
+        core::SPECULATE_CHECK,
+        core::SPECULATE_COMMIT,
+        core::SPECULATE_ROLLBACK,
+        core::COMMIT,
+        core::WHOAMI,
+        core::CHRONOS,
         core::SERVE,
         // view (1)
         view::VIEW,
         // web_search (1)
         web_search::WEB_SEARCH,
         // render (2)
-        render::RENDER_DIAGRAM, render::GENERATE_IMAGE_LOCAL,
+        render::RENDER_DIAGRAM,
+        render::GENERATE_IMAGE_LOCAL,
         // local_inference (3)
-        local_inference::ASK_LOCAL_MODEL, local_inference::LIST_LOCAL_MODELS,
+        local_inference::ASK_LOCAL_MODEL,
+        local_inference::LIST_LOCAL_MODELS,
         local_inference::MANAGE_OLLAMA,
         // memory (12)
-        memory::MEMORY_STORE, memory::MEMORY_RECALL, memory::MEMORY_QUERY,
-        memory::MEMORY_ARCHIVE, memory::MEMORY_SUPERSEDE, memory::MEMORY_CONNECT,
-        memory::MEMORY_FOCUS, memory::MEMORY_RELEASE, memory::MEMORY_EPISODES,
-        memory::MEMORY_COMPACT, memory::MEMORY_SEARCH_ARCHIVE,
+        memory::MEMORY_STORE,
+        memory::MEMORY_RECALL,
+        memory::MEMORY_QUERY,
+        memory::MEMORY_ARCHIVE,
+        memory::MEMORY_SUPERSEDE,
+        memory::MEMORY_CONNECT,
+        memory::MEMORY_FOCUS,
+        memory::MEMORY_RELEASE,
+        memory::MEMORY_EPISODES,
+        memory::MEMORY_COMPACT,
+        memory::MEMORY_SEARCH_ARCHIVE,
         memory::MEMORY_INGEST_LIFECYCLE,
         // lifecycle (3)
-        lifecycle::DESIGN_TREE, lifecycle::DESIGN_TREE_UPDATE,
+        lifecycle::DESIGN_TREE,
+        lifecycle::DESIGN_TREE_UPDATE,
         lifecycle::OPENSPEC_MANAGE,
         // cleave (2)
-        cleave::CLEAVE_ASSESS, cleave::CLEAVE_RUN,
+        cleave::CLEAVE_ASSESS,
+        cleave::CLEAVE_RUN,
         // delegate (3)
-        delegate::DELEGATE, delegate::DELEGATE_RESULT, delegate::DELEGATE_STATUS,
+        delegate::DELEGATE,
+        delegate::DELEGATE_RESULT,
+        delegate::DELEGATE_STATUS,
         // model_budget (3)
-        model_budget::SET_MODEL_TIER, model_budget::SWITCH_TO_OFFLINE_DRIVER,
+        model_budget::SET_MODEL_TIER,
+        model_budget::SWITCH_TO_OFFLINE_DRIVER,
         model_budget::SET_THINKING_LEVEL,
         // manage_tools (1)
         manage_tools::MANAGE_TOOLS,
@@ -172,7 +195,9 @@ pub fn all_static_names() -> Vec<&'static str> {
         // harness_settings (1)
         harness_settings::HARNESS_SETTINGS,
         // persona (3)
-        persona::SWITCH_PERSONA, persona::SWITCH_TONE, persona::LIST_PERSONAS,
+        persona::SWITCH_PERSONA,
+        persona::SWITCH_TONE,
+        persona::LIST_PERSONAS,
     ]
     // Total: 13+1+1+2+3+12+3+2+3+3+1+1+1+3 = 49
 }

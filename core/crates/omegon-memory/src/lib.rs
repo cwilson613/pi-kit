@@ -18,27 +18,27 @@
 //!         └── MemoryProvider → MemoryBackend::import_jsonl() + render_context()
 //! ```
 
-pub mod types;
+pub mod backend;
 pub mod decay;
 pub mod hash;
-pub mod vectors;
-pub mod backend;
-pub mod util;
 pub mod inmemory;
-pub mod sqlite;
-pub mod renderer;
 pub mod provider;
+pub mod renderer;
+pub mod sqlite;
+pub mod types;
+pub mod util;
+pub mod vectors;
 
 #[cfg(test)]
 mod tests;
 
 // Re-exports for convenience
-pub use backend::{MemoryBackend, ContextRenderer, MemoryError};
-pub use inmemory::InMemoryBackend;
-pub use sqlite::SqliteBackend;
-pub use renderer::MarkdownRenderer;
-pub use provider::MemoryProvider;
-pub use types::*;
-pub use decay::{compute_confidence, DecayProfile};
+pub use backend::{ContextRenderer, MemoryBackend, MemoryError};
+pub use decay::{DecayProfile, compute_confidence};
 pub use hash::{content_hash, normalize_for_hash};
-pub use vectors::{cosine_similarity, vector_to_blob, blob_to_vector};
+pub use inmemory::InMemoryBackend;
+pub use provider::MemoryProvider;
+pub use renderer::MarkdownRenderer;
+pub use sqlite::SqliteBackend;
+pub use types::*;
+pub use vectors::{blob_to_vector, cosine_similarity, vector_to_blob};

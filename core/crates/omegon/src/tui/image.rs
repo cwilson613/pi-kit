@@ -12,9 +12,9 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use ratatui::prelude::*;
+use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::StatefulImage;
 
 /// Global picker — initialized once at startup.
 static PICKER: OnceLock<Option<Picker>> = OnceLock::new();
@@ -22,18 +22,14 @@ static PICKER: OnceLock<Option<Picker>> = OnceLock::new();
 /// Initialize the image picker by querying the terminal.
 /// Call this once before entering the TUI main loop.
 pub fn init_picker() {
-    PICKER.get_or_init(|| {
-        match Picker::from_query_stdio() {
-            Ok(picker) => {
-                tracing::info!(
-                    "Image protocol detected: using ratatui-image"
-                );
-                Some(picker)
-            }
-            Err(e) => {
-                tracing::debug!("No image protocol available: {e} — using placeholders");
-                None
-            }
+    PICKER.get_or_init(|| match Picker::from_query_stdio() {
+        Ok(picker) => {
+            tracing::info!("Image protocol detected: using ratatui-image");
+            Some(picker)
+        }
+        Err(e) => {
+            tracing::debug!("No image protocol available: {e} — using placeholders");
+            None
         }
     });
 }
@@ -53,7 +49,11 @@ pub struct ImageCache {
 impl ImageCache {
     /// Get or create the StatefulProtocol for a segment index.
     /// Returns None if image rendering is unavailable or the file can't be decoded.
-    pub fn get_or_create(&mut self, segment_idx: usize, path: &Path) -> Option<&mut StatefulProtocol> {
+    pub fn get_or_create(
+        &mut self,
+        segment_idx: usize,
+        path: &Path,
+    ) -> Option<&mut StatefulProtocol> {
         use std::collections::hash_map::Entry;
         match self.protocols.entry(segment_idx) {
             Entry::Occupied(e) => Some(e.into_mut()),
@@ -76,11 +76,7 @@ impl ImageCache {
 }
 
 /// Render an image into the given area using the cached protocol.
-pub fn render_image(
-    area: Rect,
-    frame: &mut ratatui::Frame,
-    protocol: &mut StatefulProtocol,
-) {
+pub fn render_image(area: Rect, frame: &mut ratatui::Frame, protocol: &mut StatefulProtocol) {
     let widget = StatefulImage::default();
     frame.render_stateful_widget(widget, area, protocol);
 }

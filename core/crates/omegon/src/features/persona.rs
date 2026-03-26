@@ -7,11 +7,13 @@
 
 use async_trait::async_trait;
 use serde_json::json;
-use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use omegon_traits::{
-    BusEvent, BusRequest, ContentBlock, Feature, NotifyLevel,
-    ToolDefinition, ToolResult,
+    BusEvent, BusRequest, ContentBlock, Feature, NotifyLevel, ToolDefinition, ToolResult,
 };
 
 use crate::plugins::persona_loader;
@@ -26,7 +28,7 @@ pub struct PersonaFeature {
 
 impl PersonaFeature {
     pub fn new(registry: PluginRegistry) -> Self {
-        Self { 
+        Self {
             registry: Mutex::new(registry),
             refresh_status_pending: AtomicBool::new(false),
         }
@@ -105,15 +107,13 @@ impl Feature for PersonaFeature {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::persona::SWITCH_PERSONA => {
-                let name = args.get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
                 if name == "off" {
                     // Deactivate current persona
                     let result = self.registry.lock().unwrap().deactivate_persona();
                     self.refresh_status_pending.store(true, Ordering::Relaxed);
-                    
+
                     if result.removed_id.is_some() {
                         return Ok(text_result("Persona deactivated."));
                     } else {
@@ -124,53 +124,68 @@ impl Feature for PersonaFeature {
                 let (personas, _) = persona_loader::scan_available();
                 let target = name.to_lowercase();
 
-                match personas.iter().find(|p| p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target)) {
+                match personas.iter().find(|p| {
+                    p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target)
+                }) {
                     Some(available) => {
                         match persona_loader::load_persona(&available.path) {
                             Ok(loaded_persona) => {
-                                let badge = loaded_persona.badge.clone().unwrap_or_else(|| "⚙".into());
+                                let badge =
+                                    loaded_persona.badge.clone().unwrap_or_else(|| "⚙".into());
                                 let fact_count = loaded_persona.mind_facts.len();
                                 let pname = loaded_persona.name.clone();
                                 let skills = loaded_persona.activated_skills.join(", ");
 
                                 // Actually activate the persona
-                                let activation_result = self.registry.lock().unwrap().activate_persona(loaded_persona);
+                                let activation_result = self
+                                    .registry
+                                    .lock()
+                                    .unwrap()
+                                    .activate_persona(loaded_persona);
                                 self.refresh_status_pending.store(true, Ordering::Relaxed);
 
                                 let mut message = format!(
                                     "{badge} Persona activated: {pname}\n  Mind facts: {fact_count}\n  Skills: {skills}\n\n\
                                     Note: The persona directive and mind facts are now active in the system prompt."
                                 );
-                                
+
                                 if let Some(prev) = activation_result.previous_id {
-                                    message.push_str(&format!("\n\nPrevious persona ({}) was deactivated.", prev));
+                                    message.push_str(&format!(
+                                        "\n\nPrevious persona ({}) was deactivated.",
+                                        prev
+                                    ));
                                 }
 
                                 Ok(text_result(&message))
                             }
-                            Err(e) => Ok(error_result(&format!("Failed to load persona '{name}': {e}"))),
+                            Err(e) => Ok(error_result(&format!(
+                                "Failed to load persona '{name}': {e}"
+                            ))),
                         }
                     }
                     None => {
-                        let available_names: Vec<_> = personas.iter().map(|p| p.name.as_str()).collect();
+                        let available_names: Vec<_> =
+                            personas.iter().map(|p| p.name.as_str()).collect();
                         Ok(error_result(&format!(
                             "Persona '{name}' not found. Available: {}",
-                            if available_names.is_empty() { "none installed".into() } else { available_names.join(", ") }
+                            if available_names.is_empty() {
+                                "none installed".into()
+                            } else {
+                                available_names.join(", ")
+                            }
                         )))
                     }
                 }
             }
 
             crate::tool_registry::persona::SWITCH_TONE => {
-                let name = args.get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
                 if name == "off" {
                     // Deactivate current tone
                     let removed = self.registry.lock().unwrap().deactivate_tone();
                     self.refresh_status_pending.store(true, Ordering::Relaxed);
-                    
+
                     if removed.is_some() {
                         return Ok(text_result("Tone deactivated."));
                     } else {
@@ -181,7 +196,9 @@ impl Feature for PersonaFeature {
                 let (_, tones) = persona_loader::scan_available();
                 let target = name.to_lowercase();
 
-                match tones.iter().find(|t| t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target)) {
+                match tones.iter().find(|t| {
+                    t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target)
+                }) {
                     Some(available) => {
                         match persona_loader::load_tone(&available.path) {
                             Ok(loaded_tone) => {
@@ -189,28 +206,39 @@ impl Feature for PersonaFeature {
                                 let exemplar_count = loaded_tone.exemplars.len();
 
                                 // Actually activate the tone
-                                let previous = self.registry.lock().unwrap().activate_tone(loaded_tone);
+                                let previous =
+                                    self.registry.lock().unwrap().activate_tone(loaded_tone);
                                 self.refresh_status_pending.store(true, Ordering::Relaxed);
 
                                 let mut message = format!(
                                     "♪ Tone activated: {tname}\n  Exemplars: {exemplar_count}\n\n\
                                     Note: The tone directive is now active in the system prompt."
                                 );
-                                
+
                                 if let Some(prev) = previous {
-                                    message.push_str(&format!("\n\nPrevious tone ({}) was deactivated.", prev));
+                                    message.push_str(&format!(
+                                        "\n\nPrevious tone ({}) was deactivated.",
+                                        prev
+                                    ));
                                 }
 
                                 Ok(text_result(&message))
                             }
-                            Err(e) => Ok(error_result(&format!("Failed to load tone '{name}': {e}"))),
+                            Err(e) => {
+                                Ok(error_result(&format!("Failed to load tone '{name}': {e}")))
+                            }
                         }
                     }
                     None => {
-                        let available_names: Vec<_> = tones.iter().map(|t| t.name.as_str()).collect();
+                        let available_names: Vec<_> =
+                            tones.iter().map(|t| t.name.as_str()).collect();
                         Ok(error_result(&format!(
                             "Tone '{name}' not found. Available: {}",
-                            if available_names.is_empty() { "none installed".into() } else { available_names.join(", ") }
+                            if available_names.is_empty() {
+                                "none installed".into()
+                            } else {
+                                available_names.join(", ")
+                            }
                         )))
                     }
                 }
@@ -229,7 +257,11 @@ impl Feature for PersonaFeature {
                     out.push_str("No personas installed.\n");
                 } else {
                     for p in &personas {
-                        let marker = if active_persona == Some(&p.id) { " ● (active)" } else { "" };
+                        let marker = if active_persona == Some(&p.id) {
+                            " ● (active)"
+                        } else {
+                            ""
+                        };
                         out.push_str(&format!("- **{}**{}: {}\n", p.name, marker, p.description));
                     }
                 }
@@ -239,7 +271,11 @@ impl Feature for PersonaFeature {
                     out.push_str("No tones installed.\n");
                 } else {
                     for t in &tones {
-                        let marker = if active_tone == Some(&t.id) { " ● (active)" } else { "" };
+                        let marker = if active_tone == Some(&t.id) {
+                            " ● (active)"
+                        } else {
+                            ""
+                        };
                         out.push_str(&format!("- **{}**{}: {}\n", t.name, marker, t.description));
                     }
                 }
@@ -287,7 +323,10 @@ impl Feature for PersonaFeature {
         }
     }
 
-    fn provide_context(&self, _signals: &omegon_traits::ContextSignals<'_>) -> Option<omegon_traits::ContextInjection> {
+    fn provide_context(
+        &self,
+        _signals: &omegon_traits::ContextSignals<'_>,
+    ) -> Option<omegon_traits::ContextInjection> {
         // Inject persona directive + tone directive as context
         let prompt = self.registry.lock().unwrap().build_system_prompt();
         if prompt.is_empty() {
@@ -297,7 +336,7 @@ impl Feature for PersonaFeature {
         Some(omegon_traits::ContextInjection {
             source: "persona".into(),
             content: prompt,
-            priority: 85, // Just below Lex Imperialis (embedded at compile time)
+            priority: 85,        // Just below Lex Imperialis (embedded at compile time)
             ttl_turns: u32::MAX, // Never expires — always active while persona is on
         })
     }
@@ -305,14 +344,18 @@ impl Feature for PersonaFeature {
 
 fn text_result(text: &str) -> ToolResult {
     ToolResult {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         details: json!({}),
     }
 }
 
 fn error_result(text: &str) -> ToolResult {
     ToolResult {
-        content: vec![ContentBlock::Text { text: format!("Error: {text}") }],
+        content: vec![ContentBlock::Text {
+            text: format!("Error: {text}"),
+        }],
         details: json!({ "error": true }),
     }
 }
@@ -339,8 +382,13 @@ mod tests {
     async fn list_personas_empty() {
         let feature = PersonaFeature::new(test_registry());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute("list_personas", "c1", json!({}), cancel).await.unwrap();
-        let text: String = result.content.iter()
+        let result = feature
+            .execute("list_personas", "c1", json!({}), cancel)
+            .await
+            .unwrap();
+        let text: String = result
+            .content
+            .iter()
             .filter_map(|c| c.as_text())
             .collect::<Vec<_>>()
             .join("");
@@ -352,12 +400,18 @@ mod tests {
     async fn switch_persona_not_found() {
         let feature = PersonaFeature::new(test_registry());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute(
-            "switch_persona", "c1",
-            json!({"name": "nonexistent"}),
-            cancel,
-        ).await.unwrap();
-        let text: String = result.content.iter()
+        let result = feature
+            .execute(
+                "switch_persona",
+                "c1",
+                json!({"name": "nonexistent"}),
+                cancel,
+            )
+            .await
+            .unwrap();
+        let text: String = result
+            .content
+            .iter()
             .filter_map(|c| c.as_text())
             .collect::<Vec<_>>()
             .join("");
@@ -368,12 +422,13 @@ mod tests {
     async fn switch_tone_not_found() {
         let feature = PersonaFeature::new(test_registry());
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = feature.execute(
-            "switch_tone", "c1",
-            json!({"name": "nonexistent"}),
-            cancel,
-        ).await.unwrap();
-        let text: String = result.content.iter()
+        let result = feature
+            .execute("switch_tone", "c1", json!({"name": "nonexistent"}), cancel)
+            .await
+            .unwrap();
+        let text: String = result
+            .content
+            .iter()
             .filter_map(|c| c.as_text())
             .collect::<Vec<_>>()
             .join("");
@@ -393,7 +448,10 @@ mod tests {
         };
         // Lex Imperialis is always present, so context should be non-empty
         let ctx = feature.provide_context(&signals);
-        assert!(ctx.is_some(), "should inject Lex Imperialis even with no persona");
+        assert!(
+            ctx.is_some(),
+            "should inject Lex Imperialis even with no persona"
+        );
     }
 
     #[test]
@@ -418,8 +476,16 @@ mod tests {
             context_budget_tokens: 50000,
         };
         let ctx = feature.provide_context(&signals).unwrap();
-        assert!(ctx.content.contains("test engineering persona"), "should include persona directive: {}", ctx.content);
-        assert!(ctx.content.contains("Lex Imperialis"), "should still include Lex: {}", ctx.content);
+        assert!(
+            ctx.content.contains("test engineering persona"),
+            "should include persona directive: {}",
+            ctx.content
+        );
+        assert!(
+            ctx.content.contains("Lex Imperialis"),
+            "should still include Lex: {}",
+            ctx.content
+        );
         assert_eq!(ctx.priority, 85);
     }
 

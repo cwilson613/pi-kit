@@ -7,7 +7,12 @@ use std::path::Path;
 /// Timeout for filesystem operations during edit.
 const EDIT_TIMEOUT_SECS: u64 = 30;
 
-pub async fn execute(path: &Path, old_text: &str, new_text: &str, cwd: &Path) -> Result<ToolResult> {
+pub async fn execute(
+    path: &Path,
+    old_text: &str,
+    new_text: &str,
+    cwd: &Path,
+) -> Result<ToolResult> {
     if !path.exists() {
         anyhow::bail!("File not found: {}", path.display());
     }
@@ -15,7 +20,12 @@ pub async fn execute(path: &Path, old_text: &str, new_text: &str, cwd: &Path) ->
     let timeout = std::time::Duration::from_secs(EDIT_TIMEOUT_SECS);
     let content = tokio::time::timeout(timeout, tokio::fs::read_to_string(path))
         .await
-        .map_err(|_| anyhow::anyhow!("Read timed out after {EDIT_TIMEOUT_SECS}s: {}", path.display()))??;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Read timed out after {EDIT_TIMEOUT_SECS}s: {}",
+                path.display()
+            )
+        })??;
 
     // Normalize line endings for matching
     let normalized = content.replace("\r\n", "\n");
@@ -71,7 +81,12 @@ pub async fn execute(path: &Path, old_text: &str, new_text: &str, cwd: &Path) ->
 
     tokio::time::timeout(timeout, tokio::fs::write(path, &final_content))
         .await
-        .map_err(|_| anyhow::anyhow!("Write timed out after {EDIT_TIMEOUT_SECS}s: {}", path.display()))??;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Write timed out after {EDIT_TIMEOUT_SECS}s: {}",
+                path.display()
+            )
+        })??;
 
     // Generate a simple diff summary
     let old_lines = normalized_old.lines().count();
@@ -129,8 +144,15 @@ mod tests {
             .write_all(b"hello world\nfoo bar\nbaz")
             .unwrap();
 
-        let result = execute(&file, "foo bar", "replaced", dir.path()).await.unwrap();
-        assert!(result.content[0].clone().into_text().contains("Successfully"));
+        let result = execute(&file, "foo bar", "replaced", dir.path())
+            .await
+            .unwrap();
+        assert!(
+            result.content[0]
+                .clone()
+                .into_text()
+                .contains("Successfully")
+        );
 
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "hello world\nreplaced\nbaz");
@@ -145,7 +167,9 @@ mod tests {
             .write_all(b"foo\nfoo\nbar")
             .unwrap();
 
-        let err = execute(&file, "foo", "replaced", dir.path()).await.unwrap_err();
+        let err = execute(&file, "foo", "replaced", dir.path())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("2 occurrences"));
     }
 
@@ -158,7 +182,9 @@ mod tests {
             .write_all(b"hello world")
             .unwrap();
 
-        let err = execute(&file, "not found", "replaced", dir.path()).await.unwrap_err();
+        let err = execute(&file, "not found", "replaced", dir.path())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("Could not find"));
     }
 }

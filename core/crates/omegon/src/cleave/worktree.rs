@@ -159,7 +159,8 @@ pub fn commit_dirty_submodules(worktree_path: &Path, child_label: &str) -> Resul
     // Commit the pointer updates in the parent — stage only submodule paths,
     // not everything (avoids sweeping in unrelated dirty files).
     if committed > 0 {
-        let sub_path_strings: Vec<String> = submodules.iter().map(|(name, _)| name.clone()).collect();
+        let sub_path_strings: Vec<String> =
+            submodules.iter().map(|(name, _)| name.clone()).collect();
         let msg = format!("chore({child_label}): update submodule pointer(s)");
         if let Err(e) = omegon_git::commit::create_commit(
             worktree_path,
@@ -346,7 +347,8 @@ mod tests {
         if let Ok(Some(model)) = omegon_git::RepoModel::discover(&cwd) {
             let workspace = tempfile::tempdir().unwrap();
             let branch_name = format!("test-wt-{}", std::process::id());
-            let result = create_worktree(model.repo_path(), workspace.path(), 0, "test", &branch_name);
+            let result =
+                create_worktree(model.repo_path(), workspace.path(), 0, "test", &branch_name);
 
             if let Ok(wt_path) = result {
                 assert!(wt_path.exists(), "worktree should exist");

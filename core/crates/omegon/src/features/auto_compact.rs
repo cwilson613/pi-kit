@@ -73,7 +73,10 @@ impl Feature for AutoCompact {
                     return vec![];
                 }
 
-                if self.last_compact.is_some_and(|last| last.elapsed() < self.cooldown) {
+                if self
+                    .last_compact
+                    .is_some_and(|last| last.elapsed() < self.cooldown)
+                {
                     return vec![];
                 }
 
@@ -130,7 +133,10 @@ mod tests {
 
         // Immediately try again — cooldown should prevent
         let r2 = ac.on_event(&BusEvent::TurnEnd { turn: 11 });
-        assert!(r2.is_empty(), "cooldown should prevent immediate re-compact");
+        assert!(
+            r2.is_empty(),
+            "cooldown should prevent immediate re-compact"
+        );
     }
 
     #[test]

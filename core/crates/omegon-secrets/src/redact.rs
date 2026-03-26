@@ -23,7 +23,12 @@ impl Redactor {
         let mut patterns: Vec<(String, String)> = secrets
             .iter()
             .filter(|(_, v)| v.expose_secret().len() >= MIN_REDACT_LEN)
-            .map(|(name, val)| (val.expose_secret().to_string(), format!("[REDACTED:{name}]")))
+            .map(|(name, val)| {
+                (
+                    val.expose_secret().to_string(),
+                    format!("[REDACTED:{name}]"),
+                )
+            })
             .collect();
 
         // Sort by pattern length descending — longest match wins

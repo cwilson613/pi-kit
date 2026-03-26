@@ -8,8 +8,8 @@
 //! Each method maps 1:1 to an HTTP endpoint in the Omega daemon model,
 //! but is called directly when linked into the omegon-agent binary.
 
-use async_trait::async_trait;
 use crate::types::*;
+use async_trait::async_trait;
 
 /// Errors specific to the memory backend.
 #[derive(Debug, thiserror::Error)]
@@ -17,7 +17,9 @@ pub enum MemoryError {
     #[error("Fact not found: {0}")]
     FactNotFound(String),
 
-    #[error("Embedding dimension mismatch: stored model '{stored_model}' has {expected} dims, query has {got}")]
+    #[error(
+        "Embedding dimension mismatch: stored model '{stored_model}' has {expected} dims, query has {got}"
+    )]
     EmbeddingDimensionMismatch {
         expected: u32,
         got: u32,
@@ -109,12 +111,7 @@ pub trait MemoryBackend: Send + Sync {
     async fn list_episodes(&self, mind: &str, k: usize) -> Result<Vec<Episode>>;
 
     /// Search episodes by narrative similarity (FTS5 or embedding).
-    async fn search_episodes(
-        &self,
-        mind: &str,
-        query: &str,
-        k: usize,
-    ) -> Result<Vec<Episode>>;
+    async fn search_episodes(&self, mind: &str, query: &str, k: usize) -> Result<Vec<Episode>>;
 
     // ── JSONL sync ───────────────────────────────────────────────────────
 

@@ -67,10 +67,8 @@ impl ContextManager {
     ) -> String {
         self.decay_expired();
 
-        let recent_tools_vec: Vec<String> =
-            self.recent_tools.iter().cloned().collect();
-        let recent_files_vec: Vec<PathBuf> =
-            self.recent_files.iter().cloned().collect();
+        let recent_tools_vec: Vec<String> = self.recent_tools.iter().cloned().collect();
+        let recent_files_vec: Vec<PathBuf> = self.recent_files.iter().cloned().collect();
 
         let system_budget = self.context_budget();
 
@@ -120,7 +118,11 @@ impl ContextManager {
         let intent = &conversation.intent;
         let elapsed = self.session_start.elapsed();
         let elapsed_str = if elapsed.as_secs() >= 3600 {
-            format!("{}h{}m", elapsed.as_secs() / 3600, (elapsed.as_secs() % 3600) / 60)
+            format!(
+                "{}h{}m",
+                elapsed.as_secs() / 3600,
+                (elapsed.as_secs() % 3600) / 60
+            )
         } else if elapsed.as_secs() >= 60 {
             format!("{}m{}s", elapsed.as_secs() / 60, elapsed.as_secs() % 60)
         } else {
@@ -132,11 +134,7 @@ impl ContextManager {
 
         format!(
             "[Session: turn {} | {} tool calls | {} files read, {} modified | {}]",
-            intent.stats.turns,
-            intent.stats.tool_calls,
-            files_read,
-            files_modified,
-            elapsed_str,
+            intent.stats.turns, intent.stats.tool_calls, files_read, files_modified, elapsed_str,
         )
     }
 
@@ -323,10 +321,7 @@ impl ContextManager {
             .collect();
 
         for file in self.recent_files.iter().rev().take(5) {
-            let ext = file
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
             let source_key = format!("file-type:{ext}");
 
             if already_injected.contains(&source_key) {
@@ -334,11 +329,21 @@ impl ContextManager {
             }
 
             let guidance = match ext {
-                "rs" => Some("Rust: use `cargo check` for type checking, `cargo clippy` for lints. Prefer `impl` blocks over free functions. Use `?` for error propagation. Tests go in `#[cfg(test)] mod tests` at the bottom of the file."),
-                "ts" | "tsx" => Some("TypeScript: use `npx tsc --noEmit` for type checking. Prefer strict types over `any`. Use `node:test` for testing. ESM imports."),
-                "py" => Some("Python: use `ruff check` for linting, `mypy` for type checking, `pytest` for tests. Prefer type hints. Use `pathlib` over `os.path`."),
-                "go" => Some("Go: use `go vet` for checking, `go test ./...` for tests. Exported names start with uppercase. Error handling via returned `error` values."),
-                "toml" if file.file_name().is_some_and(|n| n == "Cargo.toml") => Some("Cargo.toml: Rust workspace/package manifest. After dependency changes, run `cargo check`."),
+                "rs" => Some(
+                    "Rust: use `cargo check` for type checking, `cargo clippy` for lints. Prefer `impl` blocks over free functions. Use `?` for error propagation. Tests go in `#[cfg(test)] mod tests` at the bottom of the file.",
+                ),
+                "ts" | "tsx" => Some(
+                    "TypeScript: use `npx tsc --noEmit` for type checking. Prefer strict types over `any`. Use `node:test` for testing. ESM imports.",
+                ),
+                "py" => Some(
+                    "Python: use `ruff check` for linting, `mypy` for type checking, `pytest` for tests. Prefer type hints. Use `pathlib` over `os.path`.",
+                ),
+                "go" => Some(
+                    "Go: use `go vet` for checking, `go test ./...` for tests. Exported names start with uppercase. Error handling via returned `error` values.",
+                ),
+                "toml" if file.file_name().is_some_and(|n| n == "Cargo.toml") => Some(
+                    "Cargo.toml: Rust workspace/package manifest. After dependency changes, run `cargo check`.",
+                ),
                 _ => None,
             };
 
@@ -412,13 +417,22 @@ mod tests {
         // Before calling memory tool — no memory guidelines
         let conv = ConversationState::new();
         let prompt = cm.build_system_prompt("test", &conv);
-        assert!(!prompt.contains("Memory guidelines"), "should not inject before tool use");
+        assert!(
+            !prompt.contains("Memory guidelines"),
+            "should not inject before tool use"
+        );
 
         // Record a memory tool call
         cm.record_tool_call("memory_store");
         let prompt = cm.build_system_prompt("test", &conv);
-        assert!(prompt.contains("Memory guidelines"), "should inject after memory tool use");
-        assert!(prompt.contains("memory_recall"), "should include recall guidance");
+        assert!(
+            prompt.contains("Memory guidelines"),
+            "should inject after memory tool use"
+        );
+        assert!(
+            prompt.contains("memory_recall"),
+            "should include recall guidance"
+        );
     }
 
     #[test]
@@ -460,7 +474,10 @@ mod tests {
         }
 
         let prompt = cm.build_system_prompt("test", &conv);
-        assert!(!prompt.contains("Memory guidelines"), "should expire after TTL");
+        assert!(
+            !prompt.contains("Memory guidelines"),
+            "should expire after TTL"
+        );
     }
 
     #[test]
@@ -470,7 +487,10 @@ mod tests {
 
         cm.record_file_access(PathBuf::from("src/main.rs"));
         let prompt = cm.build_system_prompt("test", &conv);
-        assert!(prompt.contains("cargo check"), "should inject Rust guidance for .rs files");
+        assert!(
+            prompt.contains("cargo check"),
+            "should inject Rust guidance for .rs files"
+        );
     }
 
     #[test]
@@ -484,6 +504,9 @@ mod tests {
         let prompt = cm.build_system_prompt("test", &conv);
 
         // Core tools don't trigger group injection (they have static guidelines)
-        assert!(!prompt.contains("guidelines:"), "core tools should not trigger group injection");
+        assert!(
+            !prompt.contains("guidelines:"),
+            "core tools should not trigger group injection"
+        );
     }
 }

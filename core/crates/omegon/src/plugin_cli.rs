@@ -77,7 +77,10 @@ pub fn list() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<12} {:<10} DESCRIPTION", "NAME", "TYPE", "VERSION");
+    println!(
+        "{:<20} {:<12} {:<10} DESCRIPTION",
+        "NAME", "TYPE", "VERSION"
+    );
     println!("{}", "─".repeat(72));
 
     for entry in &entries {
@@ -223,13 +226,23 @@ fn install_git(plugins_dir: &Path, uri: &str) -> anyhow::Result<()> {
     let target = plugins_dir.join(&name);
 
     if target.exists() {
-        anyhow::bail!("Plugin '{}' already installed at {}", name, target.display());
+        anyhow::bail!(
+            "Plugin '{}' already installed at {}",
+            name,
+            target.display()
+        );
     }
 
     println!("Cloning {uri} → {name}...");
 
     let output = std::process::Command::new("git")
-        .args(["clone", "--depth=1", "--single-branch", uri, target.to_str().unwrap_or("")])
+        .args([
+            "clone",
+            "--depth=1",
+            "--single-branch",
+            uri,
+            target.to_str().unwrap_or(""),
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -251,10 +264,17 @@ fn install_git(plugins_dir: &Path, uri: &str) -> anyhow::Result<()> {
     // Parse and display summary
     match load_manifest_summary(&manifest) {
         Ok(info) => {
-            println!("Installed {} ({}) v{}", info.name, info.plugin_type, info.version);
+            println!(
+                "Installed {} ({}) v{}",
+                info.name, info.plugin_type, info.version
+            );
             println!("  {}", info.description);
             if info.tool_count > 0 {
-                println!("  {} tool{}", info.tool_count, if info.tool_count == 1 { "" } else { "s" });
+                println!(
+                    "  {} tool{}",
+                    info.tool_count,
+                    if info.tool_count == 1 { "" } else { "s" }
+                );
             }
             if info.has_context {
                 println!("  dynamic context injection");
@@ -270,10 +290,12 @@ fn install_git(plugins_dir: &Path, uri: &str) -> anyhow::Result<()> {
 
 /// Symlink a local plugin directory for development.
 fn install_local(plugins_dir: &Path, local_path: &Path) -> anyhow::Result<()> {
-    let canonical = local_path.canonicalize()
+    let canonical = local_path
+        .canonicalize()
         .map_err(|e| anyhow::anyhow!("cannot resolve path {}: {e}", local_path.display()))?;
 
-    let name = canonical.file_name()
+    let name = canonical
+        .file_name()
         .ok_or_else(|| anyhow::anyhow!("cannot determine plugin name from path"))?
         .to_string_lossy()
         .to_string();
@@ -281,7 +303,11 @@ fn install_local(plugins_dir: &Path, local_path: &Path) -> anyhow::Result<()> {
     let target = plugins_dir.join(&name);
 
     if target.exists() {
-        anyhow::bail!("Plugin '{}' already installed at {}", name, target.display());
+        anyhow::bail!(
+            "Plugin '{}' already installed at {}",
+            name,
+            target.display()
+        );
     }
 
     #[cfg(unix)]
@@ -342,8 +368,8 @@ struct ManifestSummary {
 
 fn load_manifest_summary(path: &Path) -> anyhow::Result<ManifestSummary> {
     let content = std::fs::read_to_string(path)?;
-    let manifest = ArmoryManifest::parse(&content)
-        .map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
+    let manifest =
+        ArmoryManifest::parse(&content).map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
 
     Ok(ManifestSummary {
         name: manifest.plugin.name.clone(),
@@ -412,14 +438,18 @@ mod tests {
         let source = tempfile::tempdir().unwrap();
 
         // Create a minimal plugin
-        std::fs::write(source.path().join("plugin.toml"), r#"
+        std::fs::write(
+            source.path().join("plugin.toml"),
+            r#"
             [plugin]
             type = "skill"
             id = "dev.test.local"
             name = "Local Test"
             version = "0.1.0"
             description = "a test"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         install_local(plugins.path(), source.path()).unwrap();
 
@@ -428,7 +458,10 @@ mod tests {
         let link = plugins.path().join(name);
         assert!(link.exists(), "symlink should exist");
         assert!(link.is_symlink(), "should be a symlink");
-        assert!(link.join("plugin.toml").exists(), "manifest should be accessible");
+        assert!(
+            link.join("plugin.toml").exists(),
+            "manifest should be accessible"
+        );
     }
 
     #[test]
@@ -436,14 +469,18 @@ mod tests {
         let plugins = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
 
-        std::fs::write(source.path().join("plugin.toml"), r#"
+        std::fs::write(
+            source.path().join("plugin.toml"),
+            r#"
             [plugin]
             type = "skill"
             id = "dev.test.dup"
             name = "Dup"
             version = "0.1.0"
             description = "a test"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         install_local(plugins.path(), source.path()).unwrap();
         let result = install_local(plugins.path(), source.path());
@@ -455,18 +492,27 @@ mod tests {
         let plugins = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
 
-        std::fs::write(source.path().join("plugin.toml"), r#"
+        std::fs::write(
+            source.path().join("plugin.toml"),
+            r#"
             [plugin]
             type = "skill"
             id = "dev.test.rm"
             name = "Remove Me"
             version = "0.1.0"
             description = "a test"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         install_local(plugins.path(), source.path()).unwrap();
 
-        let name = source.path().file_name().unwrap().to_string_lossy().to_string();
+        let name = source
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         // Override plugins_dir for test — call remove's inner logic directly
         let plugin_path = plugins.path().join(&name);
         assert!(plugin_path.exists());
@@ -498,7 +544,9 @@ mod tests {
     #[test]
     fn load_manifest_summary_valid() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("plugin.toml"), r#"
+        std::fs::write(
+            dir.path().join("plugin.toml"),
+            r#"
             [plugin]
             type = "persona"
             id = "dev.test.summary"
@@ -515,7 +563,9 @@ mod tests {
             [context]
             runner = "bash"
             script = "context/status.sh"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let info = load_manifest_summary(&dir.path().join("plugin.toml")).unwrap();
         assert_eq!(info.name, "Test Persona");
@@ -538,14 +588,18 @@ mod tests {
         // are managed externally by the developer
         let plugins = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
-        std::fs::write(source.path().join("plugin.toml"), r#"
+        std::fs::write(
+            source.path().join("plugin.toml"),
+            r#"
             [plugin]
             type = "skill"
             id = "dev.test.up"
             name = "Update Test"
             version = "0.1.0"
             description = "a test"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         install_local(plugins.path(), source.path()).unwrap();
 
@@ -555,11 +609,15 @@ mod tests {
         assert!(link.is_symlink());
 
         // Collect non-symlink dirs (should be empty)
-        let updatable: Vec<_> = std::fs::read_dir(plugins.path()).unwrap()
+        let updatable: Vec<_> = std::fs::read_dir(plugins.path())
+            .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.is_dir() && !p.is_symlink())
             .collect();
-        assert!(updatable.is_empty(), "symlinked plugins should not be updatable");
+        assert!(
+            updatable.is_empty(),
+            "symlinked plugins should not be updatable"
+        );
     }
 }

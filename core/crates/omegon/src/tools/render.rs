@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 use omegon_traits::{ContentBlock, ToolDefinition, ToolProvider, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -42,21 +42,33 @@ fn timestamp_slug() -> String {
 }
 
 fn has_cmd(cmd: &str) -> bool {
-    Command::new("which").arg(cmd).output().is_ok_and(|o| o.status.success())
+    Command::new("which")
+        .arg(cmd)
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 fn render_d2(args: &Value) -> anyhow::Result<ToolResult> {
     if !has_cmd("d2") {
-        anyhow::bail!("d2 CLI not found. Install via `brew install d2` or `nix profile install nixpkgs#d2`.");
+        anyhow::bail!(
+            "d2 CLI not found. Install via `brew install d2` or `nix profile install nixpkgs#d2`."
+        );
     }
 
     let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
-    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("diagram");
+    let title = args
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("diagram");
     let layout = args.get("layout").and_then(|v| v.as_str()).unwrap_or("elk");
     let theme = args.get("theme").and_then(|v| v.as_u64()).unwrap_or(200);
-    let sketch = args.get("sketch").and_then(|v| v.as_bool()).unwrap_or(false);
+    let sketch = args
+        .get("sketch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    let slug = title.chars()
+    let slug = title
+        .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .take(40)
         .collect::<String>();
@@ -68,9 +80,12 @@ fn render_d2(args: &Value) -> anyhow::Result<ToolResult> {
     fs::write(&d2_path, code)?;
 
     let mut cmd_args = vec![
-        "-l".to_string(), layout.to_string(),
-        "-t".to_string(), theme.to_string(),
-        "--pad".to_string(), "40".to_string(),
+        "-l".to_string(),
+        layout.to_string(),
+        "-t".to_string(),
+        theme.to_string(),
+        "--pad".to_string(),
+        "40".to_string(),
     ];
     if sketch {
         cmd_args.push("--sketch".to_string());
@@ -82,7 +97,11 @@ fn render_d2(args: &Value) -> anyhow::Result<ToolResult> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("d2 failed (exit {}):\n{}", output.status, &stderr[stderr.len().saturating_sub(1500)..]);
+        anyhow::bail!(
+            "d2 failed (exit {}):\n{}",
+            output.status,
+            &stderr[stderr.len().saturating_sub(1500)..]
+        );
     }
 
     // Read PNG and return as image content
@@ -99,9 +118,11 @@ fn render_d2(args: &Value) -> anyhow::Result<ToolResult> {
     Ok(ToolResult {
         content: vec![
             ContentBlock::Text {
-                text: format!("{header}📊 D2 ({layout}, {:.1}s)  ·  Saved: {}",
+                text: format!(
+                    "{header}📊 D2 ({layout}, {:.1}s)  ·  Saved: {}",
                     0.0, // TODO: actual timing
-                    png_path.display()),
+                    png_path.display()
+                ),
             },
             ContentBlock::Image {
                 url: data_uri,
@@ -121,7 +142,10 @@ fn generate_image(args: &Value) -> anyhow::Result<ToolResult> {
     // FLUX.1 generation requires the MLX Python package
     // This is a subprocess call to the existing Python script
     let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-    let preset = args.get("preset").and_then(|v| v.as_str()).unwrap_or("schnell");
+    let preset = args
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .unwrap_or("schnell");
     let width = args.get("width").and_then(|v| v.as_u64()).unwrap_or(1024);
     let height = args.get("height").and_then(|v| v.as_u64()).unwrap_or(1024);
     let steps = args.get("steps").and_then(|v| v.as_u64());
@@ -149,13 +173,20 @@ fn generate_image(args: &Value) -> anyhow::Result<ToolResult> {
 
     // Build the MLX FLUX command
     let mut cmd_args = vec![
-        "-m".to_string(), "mlx_community/FLUX.1-schnell-4bit-quantized".to_string(),
-        "--prompt".to_string(), prompt.to_string(),
-        "--output".to_string(), out_path.to_string_lossy().to_string(),
-        "--width".to_string(), width.to_string(),
-        "--height".to_string(), height.to_string(),
-        "--n-images".to_string(), "1".to_string(),
-        "--steps".to_string(), steps.to_string(),
+        "-m".to_string(),
+        "mlx_community/FLUX.1-schnell-4bit-quantized".to_string(),
+        "--prompt".to_string(),
+        prompt.to_string(),
+        "--output".to_string(),
+        out_path.to_string_lossy().to_string(),
+        "--width".to_string(),
+        width.to_string(),
+        "--height".to_string(),
+        height.to_string(),
+        "--n-images".to_string(),
+        "1".to_string(),
+        "--steps".to_string(),
+        steps.to_string(),
     ];
     if let Some(s) = seed {
         cmd_args.extend(["--seed".to_string(), s.to_string()]);
@@ -176,8 +207,10 @@ fn generate_image(args: &Value) -> anyhow::Result<ToolResult> {
             Ok(ToolResult {
                 content: vec![
                     ContentBlock::Text {
-                        text: format!("Generated image: {}\nPreset: {preset}, {width}x{height}, {steps} steps",
-                            out_path.display()),
+                        text: format!(
+                            "Generated image: {}\nPreset: {preset}, {width}x{height}, {steps} steps",
+                            out_path.display()
+                        ),
                     },
                     ContentBlock::Image {
                         url: format!("data:image/png;base64,{b64}"),

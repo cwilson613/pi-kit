@@ -30,7 +30,11 @@ pub fn vector_to_blob(vec: &[f32]) -> Vec<u8> {
 /// Deserialize bytes from SQLite BLOB to Vec<f32>.
 /// Panics if blob length is not a multiple of 4.
 pub fn blob_to_vector(blob: &[u8]) -> Vec<f32> {
-    assert!(blob.len().is_multiple_of(4), "BLOB length {} is not a multiple of 4", blob.len());
+    assert!(
+        blob.len().is_multiple_of(4),
+        "BLOB length {} is not a multiple of 4",
+        blob.len()
+    );
     blob.chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()

@@ -5,7 +5,7 @@
 
 use super::guardrails;
 use super::plan::CleavePlan;
-use super::progress::{self, ProgressEvent, ChildProgressStatus};
+use super::progress::{self, ChildProgressStatus, ProgressEvent};
 use super::state::{self, ChildStatus, CleaveState};
 use super::waves::compute_waves;
 use super::worktree;
@@ -58,8 +58,7 @@ pub async fn run_cleave(
 ) -> Result<CleaveResult> {
     let started = Instant::now();
 
-    std::fs::create_dir_all(workspace_path)
-        .context("Failed to create workspace directory")?;
+    std::fs::create_dir_all(workspace_path).context("Failed to create workspace directory")?;
 
     let state_path = workspace_path.join("state.json");
 
@@ -73,7 +72,12 @@ pub async fn run_cleave(
     } else {
         let run_id = format!("clv-{}-{}", nanoid(8), nanoid(4));
         CleaveState::from_plan(
-            &run_id, directive, repo_path, workspace_path, plan, &config.model,
+            &run_id,
+            directive,
+            repo_path,
+            workspace_path,
+            plan,
+            &config.model,
         )
     };
     state.save(&state_path)?;
@@ -97,7 +101,10 @@ pub async fn run_cleave(
             break;
         }
 
-        let wave_labels: Vec<&str> = wave.iter().map(|&i| plan.children[i].label.as_str()).collect();
+        let wave_labels: Vec<&str> = wave
+            .iter()
+            .map(|&i| plan.children[i].label.as_str())
+            .collect();
         tracing::info!(wave = wave_idx, children = ?wave_labels, "dispatching wave");
         progress::emit_progress(&ProgressEvent::WaveStart {
             wave: wave_idx,
@@ -119,7 +126,9 @@ pub async fn run_cleave(
 
             // Use existing worktree if the TS caller already created it,
             // otherwise create one
-            let existing_wt = state.children[child_idx].worktree_path.as_ref()
+            let existing_wt = state.children[child_idx]
+                .worktree_path
+                .as_ref()
                 .filter(|p| std::path::Path::new(p).exists());
             let wt_result = if let Some(wt) = existing_wt {
                 Ok(PathBuf::from(wt))
@@ -128,7 +137,8 @@ pub async fn run_cleave(
             };
             match wt_result {
                 Ok(wt_path) => {
-                    state.children[child_idx].worktree_path = Some(wt_path.to_string_lossy().to_string());
+                    state.children[child_idx].worktree_path =
+                        Some(wt_path.to_string_lossy().to_string());
 
                     // Initialize submodules in the worktree so children
                     // can access files inside them
@@ -158,8 +168,14 @@ pub async fn run_cleave(
                     } else {
                         let description = &state.children[child_idx].description;
                         let content = build_task_file(
-                            child_idx, &label, description, scope, directive,
-                            &state.children, &guardrail_section, repo_path,
+                            child_idx,
+                            &label,
+                            description,
+                            scope,
+                            directive,
+                            &state.children,
+                            &guardrail_section,
+                            repo_path,
                         );
                         std::fs::write(&task_path, &content)?;
                         content
@@ -191,7 +207,8 @@ pub async fn run_cleave(
                 }
                 Err(e) => {
                     state.children[child_idx].status = ChildStatus::Failed;
-                    state.children[child_idx].error = Some(format!("Worktree creation failed: {e}"));
+                    state.children[child_idx].error =
+                        Some(format!("Worktree creation failed: {e}"));
                     tracing::error!(child = %label, "worktree failed: {e}");
                 }
             }
@@ -226,7 +243,11 @@ pub async fn run_cleave(
             // infer capability tier from scope size and route to best provider+model.
             let model = if let Some(ref inv_lock) = config.inventory {
                 let child_state = &state.children[info.child_idx];
-                if child_state.execute_model.as_deref().is_none_or(|m| m == config.model) {
+                if child_state
+                    .execute_model
+                    .as_deref()
+                    .is_none_or(|m| m == config.model)
+                {
                     let inv = inv_lock.read().await;
                     let tier = crate::routing::infer_capability_tier(child_state.scope.len());
                     let req = crate::routing::CapabilityRequest {
@@ -243,7 +264,10 @@ pub async fn run_cleave(
                         config.model.clone()
                     }
                 } else {
-                    child_state.execute_model.clone().unwrap_or_else(|| config.model.clone())
+                    child_state
+                        .execute_model
+                        .clone()
+                        .unwrap_or_else(|| config.model.clone())
                 }
             } else {
                 config.model.clone()
@@ -266,7 +290,8 @@ pub async fn run_cleave(
                     &info.label,
                     &info.prompt,
                     child_cancel,
-                ).await;
+                )
+                .await;
                 (info.child_idx, result)
             });
             handles.push(handle);
@@ -288,9 +313,8 @@ pub async fn run_cleave(
                     );
 
                     // Salvage any uncommitted work (submodules + parent).
-                    let auto_committed = salvage_worktree_changes(
-                        &state.children[child_idx], false,
-                    );
+                    let auto_committed =
+                        salvage_worktree_changes(&state.children[child_idx], false);
                     if auto_committed > 0 {
                         progress::emit_progress(&ProgressEvent::AutoCommit {
                             child: label.clone(),
@@ -313,9 +337,7 @@ pub async fn run_cleave(
                     // Salvage whatever work the child produced before failing.
                     // A timed-out or errored child may have made real edits
                     // inside a submodule that would otherwise be silently lost.
-                    let salvaged = salvage_worktree_changes(
-                        &state.children[child_idx], true,
-                    );
+                    let salvaged = salvage_worktree_changes(&state.children[child_idx], true);
                     if salvaged > 0 {
                         tracing::info!(
                             child = %label,
@@ -381,14 +403,18 @@ pub async fn run_cleave(
                 let _ = worktree::delete_branch(repo_path, branch);
                 merge_results.push((child.label.clone(), MergeOutcome::Success));
                 progress::emit_progress(&ProgressEvent::MergeResult {
-                    child: child.label.clone(), success: true, detail: None,
+                    child: child.label.clone(),
+                    success: true,
+                    detail: None,
                 });
             }
             Ok(worktree::MergeResult::Conflict(detail)) => {
                 tracing::warn!(child = %child.label, "merge conflict");
                 merge_results.push((child.label.clone(), MergeOutcome::Conflict(detail.clone())));
                 progress::emit_progress(&ProgressEvent::MergeResult {
-                    child: child.label.clone(), success: false, detail: Some(detail),
+                    child: child.label.clone(),
+                    success: false,
+                    detail: Some(detail),
                 });
             }
             Ok(worktree::MergeResult::Failed(detail)) => {
@@ -398,7 +424,9 @@ pub async fn run_cleave(
                 let _ = worktree::delete_branch(repo_path, branch);
                 merge_results.push((child.label.clone(), MergeOutcome::Failed(detail.clone())));
                 progress::emit_progress(&ProgressEvent::MergeResult {
-                    child: child.label.clone(), success: false, detail: Some(detail),
+                    child: child.label.clone(),
+                    success: false,
+                    detail: Some(detail),
                 });
             }
             Err(e) => {
@@ -406,7 +434,9 @@ pub async fn run_cleave(
                 child.error = Some(format!("{e}"));
                 merge_results.push((child.label.clone(), MergeOutcome::Failed(format!("{e}"))));
                 progress::emit_progress(&ProgressEvent::MergeResult {
-                    child: child.label.clone(), success: false, detail: Some(format!("{e}")),
+                    child: child.label.clone(),
+                    success: false,
+                    detail: Some(format!("{e}")),
                 });
             }
         }
@@ -422,8 +452,16 @@ pub async fn run_cleave(
     let duration_secs = started.elapsed().as_secs_f64();
     state.save(&state_path)?;
 
-    let completed = state.children.iter().filter(|c| c.status == ChildStatus::Completed).count();
-    let failed = state.children.iter().filter(|c| c.status == ChildStatus::Failed).count();
+    let completed = state
+        .children
+        .iter()
+        .filter(|c| c.status == ChildStatus::Completed)
+        .count();
+    let failed = state
+        .children
+        .iter()
+        .filter(|c| c.status == ChildStatus::Failed)
+        .count();
 
     // Post-merge guardrails are handled by the caller (TS wrapper or CLI).
     // The orchestrator only discovers guardrails for task file enrichment.
@@ -488,10 +526,14 @@ async fn dispatch_child(
     // Forcing --bridge bypasses native providers entirely, which breaks children
     // when the bridge script path is relative or node_modules are missing.
     let mut args = vec![
-        "--prompt-file", prompt_file.to_str().unwrap(),
-        "--cwd", cwd.to_str().unwrap(),
-        "--model", config.model,
-        "--max-turns", &max_turns_str,
+        "--prompt-file",
+        prompt_file.to_str().unwrap(),
+        "--cwd",
+        cwd.to_str().unwrap(),
+        "--model",
+        config.model,
+        "--max-turns",
+        &max_turns_str,
     ];
     if std::env::var("OMEGON_FORCE_BRIDGE").is_ok() {
         args.extend(["--bridge", config.bridge_path.to_str().unwrap()]);
@@ -662,7 +704,8 @@ fn auto_commit_worktree(wt_path: &Path, label: &str, scope: &[String]) -> usize 
     let changed_files: Vec<String> = match &status {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines()
+            stdout
+                .lines()
                 .filter_map(|line| {
                     let file = line.get(3..)?.trim();
                     if file.is_empty() || file.starts_with(".cleave-prompt") {
@@ -686,9 +729,10 @@ fn auto_commit_worktree(wt_path: &Path, label: &str, scope: &[String]) -> usize 
     let in_scope: Vec<&String> = if scope.is_empty() {
         changed_files.iter().collect()
     } else {
-        changed_files.iter().filter(|f| {
-            scope.iter().any(|s| f.starts_with(s.trim_end_matches('/')))
-        }).collect()
+        changed_files
+            .iter()
+            .filter(|f| scope.iter().any(|s| f.starts_with(s.trim_end_matches('/'))))
+            .collect()
     };
 
     let out_of_scope = changed_files.len() - in_scope.len();
@@ -758,13 +802,15 @@ fn build_task_file(
         .join("\n");
 
     // Sibling context
-    let sibling_list: String = siblings.iter()
+    let sibling_list: String = siblings
+        .iter()
         .filter(|s| s.label != label)
         .map(|s| format!("- **{}**: {}", s.label, s.description))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let depends_on = &siblings.iter()
+    let depends_on = &siblings
+        .iter()
         .find(|s| s.label == label)
         .map(|s| &s.depends_on)
         .cloned()
@@ -782,9 +828,15 @@ fn build_task_file(
     };
 
     // Language-aware test convention
-    let test_convention = if scope.iter().any(|s| s.ends_with(".rs") || s.contains("crates/")) {
+    let test_convention = if scope
+        .iter()
+        .any(|s| s.ends_with(".rs") || s.contains("crates/"))
+    {
         "Write tests as #[test] functions in the same file or a tests submodule"
-    } else if scope.iter().any(|s| s.ends_with(".py") || s.contains("python")) {
+    } else if scope
+        .iter()
+        .any(|s| s.ends_with(".py") || s.contains("python"))
+    {
         "Write tests using pytest in co-located test_*.py files"
     } else {
         "Write tests for new functions and changed behavior — co-locate as *.test.ts"
@@ -803,7 +855,9 @@ fn build_task_file(
             // No directives but still show convention
             ts = format!("## Testing Requirements\n\n### Test Convention\n\n{test_convention}\n\n");
         }
-        ts.push_str(&format!("Example from codebase:\n\n```rust\n{example}\n```\n\n"));
+        ts.push_str(&format!(
+            "Example from codebase:\n\n```rust\n{example}\n```\n\n"
+        ));
         ts
     } else {
         format!("## Testing Requirements\n\n### Test Convention\n\n{test_convention}\n\n")
@@ -854,7 +908,8 @@ siblings: [{sibling_refs}]
 
 **Assumptions:**
 "#,
-        sibling_refs = siblings.iter()
+        sibling_refs = siblings
+            .iter()
             .filter(|s| s.label != label)
             .map(|s| format!("{}:{}", s.child_id, s.label))
             .collect::<Vec<_>>()
@@ -874,10 +929,22 @@ mod tests {
         let wall_clock_secs: u64 = 15 * 60; // 15 minutes
         let idle_secs: u64 = 3 * 60; // 3 minutes
 
-        assert!(idle_secs < wall_clock_secs, "idle must be shorter than wall-clock");
-        assert!(idle_secs >= 60, "idle timeout must be at least 60s for slow tool calls");
-        assert!(wall_clock_secs >= 300, "wall-clock must be at least 5 minutes");
-        assert!(wall_clock_secs <= 3600, "wall-clock should not exceed 1 hour");
+        assert!(
+            idle_secs < wall_clock_secs,
+            "idle must be shorter than wall-clock"
+        );
+        assert!(
+            idle_secs >= 60,
+            "idle timeout must be at least 60s for slow tool calls"
+        );
+        assert!(
+            wall_clock_secs >= 300,
+            "wall-clock must be at least 5 minutes"
+        );
+        assert!(
+            wall_clock_secs <= 3600,
+            "wall-clock should not exceed 1 hour"
+        );
     }
 
     #[test]
@@ -898,67 +965,117 @@ mod tests {
     }
 }
 
-    #[test]
-    fn build_task_file_includes_all_sections() {
-        let siblings = vec![
-            crate::cleave::state::ChildState {
-                child_id: 0, label: "alpha".into(), description: "Do alpha work".into(),
-                scope: vec!["src/".into()], depends_on: vec![],
-                status: crate::cleave::state::ChildStatus::Pending,
-                error: None, branch: Some("cleave/0-alpha".into()),
-                worktree_path: None, backend: "native".into(),
-                execute_model: None, provider_id: None, duration_secs: None,
-            },
-            crate::cleave::state::ChildState {
-                child_id: 1, label: "beta".into(), description: "Do beta work".into(),
-                scope: vec!["tests/".into()], depends_on: vec!["alpha".into()],
-                status: crate::cleave::state::ChildStatus::Pending,
-                error: None, branch: Some("cleave/1-beta".into()),
-                worktree_path: None, backend: "native".into(),
-                execute_model: None, provider_id: None, duration_secs: None,
-            },
-        ];
-        let guardrails = "## Project Guardrails\n\n1. **typecheck**: `tsc`\n";
-
-        let task = build_task_file(1, "beta", "Do beta work", &["tests/".into()], "Fix bugs", &siblings, guardrails, Path::new("/tmp/nonexistent"));
-
-        // Frontmatter
-        assert!(task.contains("task_id: 1"), "missing task_id");
-        assert!(task.contains("label: beta"), "missing label");
-        assert!(task.contains("0:alpha"), "missing sibling ref");
-
-        // Content
-        assert!(task.contains("## Mission"), "missing Mission");
-        assert!(task.contains("Do beta work"), "missing description");
-        assert!(task.contains("- `tests/`"), "missing scope");
-        assert!(task.contains("**Depends on:** alpha"), "missing dependency");
-
-        // Siblings section
-        assert!(task.contains("## Siblings"), "missing siblings section");
-        assert!(task.contains("**alpha**: Do alpha work"), "missing sibling detail");
-
-        // Guardrails
-        assert!(task.contains("## Project Guardrails"), "missing guardrails");
-        assert!(task.contains("typecheck"), "missing guardrail check");
-
-        // Contract + Result
-        assert!(task.contains("## Contract"), "missing contract");
-        assert!(task.contains("## Result"), "missing result");
-        assert!(task.contains("**Status:** PENDING"), "missing pending status");
-    }
-
-    #[test]
-    fn build_task_file_rust_scope_gets_rust_test_convention() {
-        let siblings = vec![crate::cleave::state::ChildState {
-            child_id: 0, label: "rust-child".into(), description: "Fix Rust code".into(),
-            scope: vec!["crates/omegon/".into()], depends_on: vec![],
+#[test]
+fn build_task_file_includes_all_sections() {
+    let siblings = vec![
+        crate::cleave::state::ChildState {
+            child_id: 0,
+            label: "alpha".into(),
+            description: "Do alpha work".into(),
+            scope: vec!["src/".into()],
+            depends_on: vec![],
             status: crate::cleave::state::ChildStatus::Pending,
-            error: None, branch: None, worktree_path: None,
-            backend: "native".into(), execute_model: None, provider_id: None, duration_secs: None,
-        }];
-        let task = build_task_file(0, "rust-child", "Fix Rust code", &["crates/omegon/".into()], "Fix", &siblings, "", Path::new("/tmp/nonexistent"));
-        assert!(task.contains("#[test]"), "Rust scope should get #[test] convention, got: {}", task.lines().find(|l| l.contains("test")).unwrap_or("none"));
-    }
+            error: None,
+            branch: Some("cleave/0-alpha".into()),
+            worktree_path: None,
+            backend: "native".into(),
+            execute_model: None,
+            provider_id: None,
+            duration_secs: None,
+        },
+        crate::cleave::state::ChildState {
+            child_id: 1,
+            label: "beta".into(),
+            description: "Do beta work".into(),
+            scope: vec!["tests/".into()],
+            depends_on: vec!["alpha".into()],
+            status: crate::cleave::state::ChildStatus::Pending,
+            error: None,
+            branch: Some("cleave/1-beta".into()),
+            worktree_path: None,
+            backend: "native".into(),
+            execute_model: None,
+            provider_id: None,
+            duration_secs: None,
+        },
+    ];
+    let guardrails = "## Project Guardrails\n\n1. **typecheck**: `tsc`\n";
+
+    let task = build_task_file(
+        1,
+        "beta",
+        "Do beta work",
+        &["tests/".into()],
+        "Fix bugs",
+        &siblings,
+        guardrails,
+        Path::new("/tmp/nonexistent"),
+    );
+
+    // Frontmatter
+    assert!(task.contains("task_id: 1"), "missing task_id");
+    assert!(task.contains("label: beta"), "missing label");
+    assert!(task.contains("0:alpha"), "missing sibling ref");
+
+    // Content
+    assert!(task.contains("## Mission"), "missing Mission");
+    assert!(task.contains("Do beta work"), "missing description");
+    assert!(task.contains("- `tests/`"), "missing scope");
+    assert!(task.contains("**Depends on:** alpha"), "missing dependency");
+
+    // Siblings section
+    assert!(task.contains("## Siblings"), "missing siblings section");
+    assert!(
+        task.contains("**alpha**: Do alpha work"),
+        "missing sibling detail"
+    );
+
+    // Guardrails
+    assert!(task.contains("## Project Guardrails"), "missing guardrails");
+    assert!(task.contains("typecheck"), "missing guardrail check");
+
+    // Contract + Result
+    assert!(task.contains("## Contract"), "missing contract");
+    assert!(task.contains("## Result"), "missing result");
+    assert!(
+        task.contains("**Status:** PENDING"),
+        "missing pending status"
+    );
+}
+
+#[test]
+fn build_task_file_rust_scope_gets_rust_test_convention() {
+    let siblings = vec![crate::cleave::state::ChildState {
+        child_id: 0,
+        label: "rust-child".into(),
+        description: "Fix Rust code".into(),
+        scope: vec!["crates/omegon/".into()],
+        depends_on: vec![],
+        status: crate::cleave::state::ChildStatus::Pending,
+        error: None,
+        branch: None,
+        worktree_path: None,
+        backend: "native".into(),
+        execute_model: None,
+        provider_id: None,
+        duration_secs: None,
+    }];
+    let task = build_task_file(
+        0,
+        "rust-child",
+        "Fix Rust code",
+        &["crates/omegon/".into()],
+        "Fix",
+        &siblings,
+        "",
+        Path::new("/tmp/nonexistent"),
+    );
+    assert!(
+        task.contains("#[test]"),
+        "Rust scope should get #[test] convention, got: {}",
+        task.lines().find(|l| l.contains("test")).unwrap_or("none")
+    );
+}
 
 fn nanoid(len: usize) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

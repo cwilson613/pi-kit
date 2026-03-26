@@ -134,7 +134,10 @@ mod tests {
         // reinforcementFactor=1.0 means reinforcement doesn't change half-life
         let c1 = compute_confidence(2.0, 1, &RECENT_WORK);
         let c5 = compute_confidence(2.0, 5, &RECENT_WORK);
-        assert!((c1 - c5).abs() < 1e-10, "reinforcement shouldn't matter: {c1} vs {c5}");
+        assert!(
+            (c1 - c5).abs() < 1e-10,
+            "reinforcement shouldn't matter: {c1} vs {c5}"
+        );
     }
 
     #[test]
@@ -142,7 +145,10 @@ mod tests {
         // Global halfLife=30 vs standard=14
         let standard = compute_confidence(14.0, 1, &STANDARD);
         let global = compute_confidence(14.0, 1, &GLOBAL);
-        assert!(global > standard, "global should decay slower: {global} vs {standard}");
+        assert!(
+            global > standard,
+            "global should decay slower: {global} vs {standard}"
+        );
     }
 
     #[test]

@@ -62,10 +62,14 @@ impl Editor {
 
     /// Apply theme styles to the textarea.
     pub fn apply_theme(&mut self, t: &dyn Theme) {
-        self.textarea.set_style(Style::default().fg(t.fg()).bg(t.surface_bg()));
-        self.textarea.set_cursor_line_style(Style::default().bg(t.surface_bg()));
-        self.textarea.set_cursor_style(Style::default().fg(t.bg()).bg(t.fg()));
-        self.textarea.set_placeholder_style(Style::default().fg(t.dim()));
+        self.textarea
+            .set_style(Style::default().fg(t.fg()).bg(t.surface_bg()));
+        self.textarea
+            .set_cursor_line_style(Style::default().bg(t.surface_bg()));
+        self.textarea
+            .set_cursor_style(Style::default().fg(t.bg()).bg(t.fg()));
+        self.textarea
+            .set_placeholder_style(Style::default().fg(t.dim()));
     }
 
     /// Number of content lines in the editor (for dynamic height).
@@ -99,7 +103,11 @@ impl Editor {
     }
 
     pub fn search_update(&mut self, history: &[String]) -> Option<String> {
-        if let EditorMode::ReverseSearch { ref query, ref mut match_idx } = self.mode {
+        if let EditorMode::ReverseSearch {
+            ref query,
+            ref mut match_idx,
+        } = self.mode
+        {
             if query.is_empty() || history.is_empty() {
                 *match_idx = None;
                 return None;
@@ -127,8 +135,14 @@ impl Editor {
     }
 
     pub fn search_prev(&mut self, history: &[String]) -> Option<String> {
-        if let EditorMode::ReverseSearch { ref query, ref mut match_idx } = self.mode {
-            if query.is_empty() || history.is_empty() { return None; }
+        if let EditorMode::ReverseSearch {
+            ref query,
+            ref mut match_idx,
+        } = self.mode
+        {
+            if query.is_empty() || history.is_empty() {
+                return None;
+            }
             let start = match_idx.map(|i| i.saturating_sub(1)).unwrap_or(0);
             for i in (0..=start).rev() {
                 if history[i].contains(query.as_str()) && Some(i) != *match_idx {
@@ -143,7 +157,10 @@ impl Editor {
     }
 
     pub fn accept_search(&mut self, history: &[String]) {
-        if let EditorMode::ReverseSearch { match_idx: Some(idx), .. } = &self.mode
+        if let EditorMode::ReverseSearch {
+            match_idx: Some(idx),
+            ..
+        } = &self.mode
             && let Some(entry) = history.get(*idx)
         {
             self.set_text(entry);
@@ -189,7 +206,11 @@ impl Editor {
 
     /// Take the secret value and return to normal mode.
     pub fn take_secret(&mut self) -> Option<(String, String)> {
-        if let EditorMode::SecretInput { ref label, ref buffer } = self.mode {
+        if let EditorMode::SecretInput {
+            ref label,
+            ref buffer,
+        } = self.mode
+        {
             let result = Some((label.clone(), buffer.clone()));
             self.mode = EditorMode::Normal;
             result
@@ -207,16 +228,22 @@ impl Editor {
 
     /// CRT noise glyphs for secret masking — same aesthetic as the splash screen.
     const SECRET_GLYPHS: &'static [char] = &[
-        '▓', '▒', '░', '█', '▄', '▀', '▌', '▐', '▊', '▋', '▍', '▎',
-        '◆', '■', '□', '▪', '◇', '╬', '╪', '╫', '┼', '│', '─',
+        '▓', '▒', '░', '█', '▄', '▀', '▌', '▐', '▊', '▋', '▍', '▎', '◆', '■', '□', '▪', '◇', '╬',
+        '╪', '╫', '┼', '│', '─',
     ];
 
     /// Get the masked display string for secret mode — CRT noise glyphs
     /// that change per-character based on the buffer position, giving the
     /// appearance of live encrypted data.
     pub fn secret_display(&self) -> Option<(&str, String)> {
-        if let EditorMode::SecretInput { ref label, ref buffer } = self.mode {
-            let masked: String = buffer.bytes().enumerate()
+        if let EditorMode::SecretInput {
+            ref label,
+            ref buffer,
+        } = self.mode
+        {
+            let masked: String = buffer
+                .bytes()
+                .enumerate()
                 .map(|(i, b)| {
                     // Deterministic but visually chaotic — hash position + byte value
                     let idx = ((i as u8).wrapping_mul(7).wrapping_add(b).wrapping_mul(13)) as usize;
@@ -235,7 +262,12 @@ impl Editor {
     pub fn kill_to_end(&mut self) {
         // Select to end of line and cut
         let (row, col) = self.textarea.cursor();
-        let line = self.textarea.lines().get(row).map(|l| l.as_str()).unwrap_or("");
+        let line = self
+            .textarea
+            .lines()
+            .get(row)
+            .map(|l| l.as_str())
+            .unwrap_or("");
         if col < line.len() {
             let killed = line[col..].to_string();
             self.textarea.delete_line_by_end();
@@ -314,15 +346,18 @@ impl Editor {
     }
 
     pub fn move_left(&mut self) {
-        self.textarea.move_cursor(ratatui_textarea::CursorMove::Back);
+        self.textarea
+            .move_cursor(ratatui_textarea::CursorMove::Back);
     }
 
     pub fn move_right(&mut self) {
-        self.textarea.move_cursor(ratatui_textarea::CursorMove::Forward);
+        self.textarea
+            .move_cursor(ratatui_textarea::CursorMove::Forward);
     }
 
     pub fn move_home(&mut self) {
-        self.textarea.move_cursor(ratatui_textarea::CursorMove::Head);
+        self.textarea
+            .move_cursor(ratatui_textarea::CursorMove::Head);
     }
 
     pub fn move_end(&mut self) {
@@ -334,7 +369,8 @@ impl Editor {
     }
 
     pub fn move_down(&mut self) {
-        self.textarea.move_cursor(ratatui_textarea::CursorMove::Down);
+        self.textarea
+            .move_cursor(ratatui_textarea::CursorMove::Down);
     }
 
     /// Insert a newline at the current cursor position (for Shift+Enter multiline input).
@@ -391,11 +427,13 @@ impl Editor {
     }
 
     pub fn move_word_backward(&mut self) {
-        self.textarea.move_cursor(ratatui_textarea::CursorMove::WordBack);
+        self.textarea
+            .move_cursor(ratatui_textarea::CursorMove::WordBack);
     }
 
     pub fn move_word_forward(&mut self) {
-        self.textarea.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        self.textarea
+            .move_cursor(ratatui_textarea::CursorMove::WordForward);
     }
 
     pub fn delete_word_backward(&mut self) {

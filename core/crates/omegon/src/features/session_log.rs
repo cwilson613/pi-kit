@@ -15,8 +15,8 @@ use std::process::Command;
 use async_trait::async_trait;
 
 use omegon_traits::{
-    BusEvent, BusRequest, CommandDefinition, CommandResult,
-    ContextInjection, ContextSignals, Feature,
+    BusEvent, BusRequest, CommandDefinition, CommandResult, ContextInjection, ContextSignals,
+    Feature,
 };
 
 pub struct SessionLog {
@@ -69,7 +69,10 @@ impl SessionLog {
                     .lines()
                     .filter(|line| {
                         let t = line.trim();
-                        if t.starts_with("Session:") || t.starts_with("Written:") || t.starts_with("Edited:") {
+                        if t.starts_with("Session:")
+                            || t.starts_with("Written:")
+                            || t.starts_with("Edited:")
+                        {
                             return false;
                         }
                         // Heuristic: a line with >5 commas and path separators is a file dump
@@ -120,8 +123,14 @@ impl SessionLog {
                     continue;
                 }
                 if let Ok(content) = fs::read_to_string(&tasks_path) {
-                    let total = content.lines().filter(|l| l.trim_start().starts_with("- [")).count();
-                    let done = content.lines().filter(|l| l.trim_start().starts_with("- [x]")).count();
+                    let total = content
+                        .lines()
+                        .filter(|l| l.trim_start().starts_with("- ["))
+                        .count();
+                    let done = content
+                        .lines()
+                        .filter(|l| l.trim_start().starts_with("- [x]"))
+                        .count();
                     if total > 0 {
                         let name = entry.file_name().to_string_lossy().to_string();
                         active.push(format!("{name} ({done}/{total})"));
@@ -148,14 +157,20 @@ impl SessionLog {
     /// Append a structured entry to `.session_log`.
     fn append_entry(&self, turns: u32, tool_calls: u32, duration_secs: f64) {
         let date = Self::today();
-        let branch = self.git(&["branch", "--show-current"])
+        let branch = self
+            .git(&["branch", "--show-current"])
             .unwrap_or_else(|| "main".to_string());
-        let commits = self.git(&["log", "--oneline", "-3", "--no-decorate"])
+        let commits = self
+            .git(&["log", "--oneline", "-3", "--no-decorate"])
             .unwrap_or_default();
         let openspec = self.active_openspec();
 
         let duration = if duration_secs >= 3600.0 {
-            format!("{:.0}h{:.0}m", duration_secs / 3600.0, (duration_secs % 3600.0) / 60.0)
+            format!(
+                "{:.0}h{:.0}m",
+                duration_secs / 3600.0,
+                (duration_secs % 3600.0) / 60.0
+            )
         } else if duration_secs >= 60.0 {
             format!("{:.0}m{:.0}s", duration_secs / 60.0, duration_secs % 60.0)
         } else {
@@ -163,7 +178,10 @@ impl SessionLog {
         };
 
         let mut lines = vec![
-            format!("## {} — {} ({}t {}tc {})", date, branch, turns, tool_calls, duration),
+            format!(
+                "## {} — {} ({}t {}tc {})",
+                date, branch, turns, tool_calls, duration
+            ),
             String::new(),
         ];
 
@@ -292,10 +310,17 @@ impl Feature for SessionLog {
             BusEvent::SessionStart { .. } => {
                 self.context_snippet = self.read_narrative_entries(3);
                 if self.context_snippet.is_some() {
-                    tracing::info!("Session log context loaded from {}", self.log_path.display());
+                    tracing::info!(
+                        "Session log context loaded from {}",
+                        self.log_path.display()
+                    );
                 }
             }
-            BusEvent::SessionEnd { turns, tool_calls, duration_secs } => {
+            BusEvent::SessionEnd {
+                turns,
+                tool_calls,
+                duration_secs,
+            } => {
                 // Only write an entry if the session did meaningful work
                 if *turns > 0 {
                     self.append_entry(*turns, *tool_calls, *duration_secs);
@@ -340,13 +365,22 @@ mod tests {
         let snippet = feature.read_narrative_entries(3).unwrap();
 
         // The file-op dump entry should have its noise stripped
-        assert!(!snippet.contains("880 file operations"), "should strip file-op header");
+        assert!(
+            !snippet.contains("880 file operations"),
+            "should strip file-op header"
+        );
         assert!(!snippet.contains("Written:"), "should strip Written: lines");
         assert!(!snippet.contains("Edited:"), "should strip Edited: lines");
 
         // Narrative entry should be intact
-        assert!(snippet.contains("orchestratable-provider-model"), "should keep narrative");
-        assert!(snippet.contains("feat: session log narrative"), "should keep commits");
+        assert!(
+            snippet.contains("orchestratable-provider-model"),
+            "should keep narrative"
+        );
+        assert!(
+            snippet.contains("feat: session log narrative"),
+            "should keep commits"
+        );
     }
 
     #[test]
@@ -389,14 +423,24 @@ mod tests {
     fn append_entry_appends_not_overwrites() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join(".session_log");
-        fs::write(&log_path, "# Session Log\n\n## 2026-03-01 — existing entry\n").unwrap();
+        fs::write(
+            &log_path,
+            "# Session Log\n\n## 2026-03-01 — existing entry\n",
+        )
+        .unwrap();
 
         let feature = SessionLog::new(dir.path());
         feature.append_entry(3, 10, 60.0);
 
         let content = fs::read_to_string(&log_path).unwrap();
-        assert!(content.contains("existing entry"), "should preserve existing content");
-        assert!(content.contains("(3t 10tc 1m0s)"), "should append new entry");
+        assert!(
+            content.contains("existing entry"),
+            "should preserve existing content"
+        );
+        assert!(
+            content.contains("(3t 10tc 1m0s)"),
+            "should append new entry"
+        );
     }
 
     #[test]
@@ -410,7 +454,10 @@ mod tests {
             duration_secs: 450.0,
         });
 
-        assert!(feature.log_path.exists(), "log should be written on SessionEnd");
+        assert!(
+            feature.log_path.exists(),
+            "log should be written on SessionEnd"
+        );
         let content = fs::read_to_string(&feature.log_path).unwrap();
         assert!(content.contains("7t"), "should record turns");
     }
@@ -426,7 +473,10 @@ mod tests {
             duration_secs: 1.0,
         });
 
-        assert!(!feature.log_path.exists(), "should not write for 0-turn sessions");
+        assert!(
+            !feature.log_path.exists(),
+            "should not write for 0-turn sessions"
+        );
     }
 
     #[test]

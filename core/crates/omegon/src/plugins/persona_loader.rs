@@ -22,7 +22,9 @@ pub fn scan_available() -> (Vec<AvailablePlugin>, Vec<AvailablePlugin>) {
     let mut tones = Vec::new();
 
     for dir in super::plugin_search_paths() {
-        if !dir.is_dir() { continue; }
+        if !dir.is_dir() {
+            continue;
+        }
 
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
@@ -39,7 +41,9 @@ pub fn scan_available() -> (Vec<AvailablePlugin>, Vec<AvailablePlugin>) {
             };
 
             let manifest_path = resolved.join("plugin.toml");
-            if !manifest_path.exists() { continue; }
+            if !manifest_path.exists() {
+                continue;
+            }
 
             let content = match std::fs::read_to_string(&manifest_path) {
                 Ok(c) => c,
@@ -76,12 +80,19 @@ pub fn load_persona(plugin_dir: &Path) -> anyhow::Result<LoadedPersona> {
     let manifest = ArmoryManifest::parse(&content)?;
 
     if manifest.plugin.plugin_type != PluginType::Persona {
-        anyhow::bail!("plugin '{}' is not a persona (type: {})",
-            manifest.plugin.name, manifest.plugin.plugin_type);
+        anyhow::bail!(
+            "plugin '{}' is not a persona (type: {})",
+            manifest.plugin.name,
+            manifest.plugin.plugin_type
+        );
     }
 
-    let persona_config = manifest.persona
-        .ok_or_else(|| anyhow::anyhow!("persona plugin '{}' has no [persona] section", manifest.plugin.name))?;
+    let persona_config = manifest.persona.ok_or_else(|| {
+        anyhow::anyhow!(
+            "persona plugin '{}' has no [persona] section",
+            manifest.plugin.name
+        )
+    })?;
 
     // Load directive (PERSONA.md)
     let directive = if let Some(ref identity) = persona_config.identity {
@@ -103,21 +114,21 @@ pub fn load_persona(plugin_dir: &Path) -> anyhow::Result<LoadedPersona> {
     };
 
     // Skills
-    let activated_skills = persona_config.skills
+    let activated_skills = persona_config
+        .skills
         .as_ref()
         .map(|s| s.activate.clone())
         .unwrap_or_default();
 
     // Tool overrides
-    let disabled_tools = persona_config.tools
+    let disabled_tools = persona_config
+        .tools
         .as_ref()
         .map(|t| t.disable.clone())
         .unwrap_or_default();
 
     // Badge
-    let badge = persona_config.style
-        .as_ref()
-        .and_then(|s| s.badge.clone());
+    let badge = persona_config.style.as_ref().and_then(|s| s.badge.clone());
 
     Ok(LoadedPersona {
         id: manifest.plugin.id,
@@ -136,12 +147,19 @@ pub fn load_tone(plugin_dir: &Path) -> anyhow::Result<LoadedTone> {
     let manifest = ArmoryManifest::parse(&content)?;
 
     if manifest.plugin.plugin_type != PluginType::Tone {
-        anyhow::bail!("plugin '{}' is not a tone (type: {})",
-            manifest.plugin.name, manifest.plugin.plugin_type);
+        anyhow::bail!(
+            "plugin '{}' is not a tone (type: {})",
+            manifest.plugin.name,
+            manifest.plugin.plugin_type
+        );
     }
 
-    let tone_config = manifest.tone
-        .ok_or_else(|| anyhow::anyhow!("tone plugin '{}' has no [tone] section", manifest.plugin.name))?;
+    let tone_config = manifest.tone.ok_or_else(|| {
+        anyhow::anyhow!(
+            "tone plugin '{}' has no [tone] section",
+            manifest.plugin.name
+        )
+    })?;
 
     // Load directive (TONE.md)
     let directive = std::fs::read_to_string(plugin_dir.join(&tone_config.directive))
@@ -155,7 +173,8 @@ pub fn load_tone(plugin_dir: &Path) -> anyhow::Result<LoadedTone> {
     };
 
     // Intensity
-    let intensity = tone_config.intensity
+    let intensity = tone_config
+        .intensity
         .map(|i| ToneIntensity {
             design: i.design,
             coding: i.coding,
@@ -180,7 +199,9 @@ fn load_mind_facts(path: &Path) -> anyhow::Result<Vec<MindFact>> {
     let mut facts = Vec::new();
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         match serde_json::from_str::<MindFact>(line) {
             Ok(fact) => facts.push(fact),
             Err(e) => tracing::warn!(line = line, error = %e, "skipping invalid mind fact"),
@@ -221,11 +242,17 @@ mod tests {
 
         let mind_dir = dir.path().join("mind");
         std::fs::create_dir_all(&mind_dir).unwrap();
-        std::fs::write(mind_dir.join("facts.jsonl"), r#"{"section":"Architecture","content":"test fact","confidence":1.0}
+        std::fs::write(
+            mind_dir.join("facts.jsonl"),
+            r#"{"section":"Architecture","content":"test fact","confidence":1.0}
 {"section":"Decisions","content":"another fact","confidence":0.9,"tags":["test"]}
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        std::fs::write(dir.path().join("plugin.toml"), r#"
+        std::fs::write(
+            dir.path().join("plugin.toml"),
+            r#"
 [plugin]
 type = "persona"
 id = "dev.test.tester"
@@ -244,7 +271,9 @@ activate = ["rust", "testing"]
 
 [persona.style]
 badge = "🧪"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let persona = load_persona(dir.path()).unwrap();
         assert_eq!(persona.id, "dev.test.tester");
@@ -267,7 +296,9 @@ badge = "🧪"
         std::fs::write(exemplar_dir.join("01-brevity.md"), "Short and sharp.\n").unwrap();
         std::fs::write(exemplar_dir.join("02-clarity.md"), "Clear, not clever.\n").unwrap();
 
-        std::fs::write(dir.path().join("plugin.toml"), r#"
+        std::fs::write(
+            dir.path().join("plugin.toml"),
+            r#"
 [plugin]
 type = "tone"
 id = "dev.test.concise"
@@ -282,7 +313,9 @@ exemplars = "exemplars"
 [tone.intensity]
 design = "full"
 coding = "muted"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let tone = load_tone(dir.path()).unwrap();
         assert_eq!(tone.id, "dev.test.concise");
@@ -296,7 +329,9 @@ coding = "muted"
     #[test]
     fn load_persona_wrong_type() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("plugin.toml"), r#"
+        std::fs::write(
+            dir.path().join("plugin.toml"),
+            r#"
 [plugin]
 type = "tone"
 id = "dev.test.not-persona"
@@ -306,7 +341,9 @@ description = "wrong type"
 
 [tone]
 directive = "TONE.md"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let result = load_persona(dir.path());
         assert!(result.is_err());

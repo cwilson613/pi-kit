@@ -96,9 +96,10 @@ impl LifecycleContextProvider {
     fn get_sections(&mut self, node_id: &str) -> Option<&DocumentSections> {
         if !self.sections_cache.contains_key(node_id)
             && let Some(node) = self.nodes.get(node_id)
-                && let Some(sections) = design::read_node_sections(node) {
-                    self.sections_cache.insert(node_id.to_string(), sections);
-                }
+            && let Some(sections) = design::read_node_sections(node)
+        {
+            self.sections_cache.insert(node_id.to_string(), sections);
+        }
         self.sections_cache.get(node_id)
     }
 }
@@ -109,22 +110,26 @@ impl ContextProvider for LifecycleContextProvider {
 
         // 1. Focused design node context
         if let Some(ref node_id) = self.focused_node
-            && let Some(node) = self.nodes.get(node_id) {
-                // Read sections (can't use get_sections due to &self)
-                if let Some(sections) = design::read_node_sections(node) {
-                    let injection = design::build_context_injection(node, &sections);
-                    if !injection.is_empty() {
-                        parts.push(injection);
-                    }
+            && let Some(node) = self.nodes.get(node_id)
+        {
+            // Read sections (can't use get_sections due to &self)
+            if let Some(sections) = design::read_node_sections(node) {
+                let injection = design::build_context_injection(node, &sections);
+                if !injection.is_empty() {
+                    parts.push(injection);
                 }
             }
+        }
 
         // 2. Active openspec changes (if any are implementing/verifying)
-        let active: Vec<_> = self.changes.iter()
+        let active: Vec<_> = self
+            .changes
+            .iter()
             .filter(|c| matches!(c.stage, ChangeStage::Implementing | ChangeStage::Verifying))
             .collect();
         if !active.is_empty() {
-            let injection = spec::build_context_injection(&active.iter().copied().cloned().collect::<Vec<_>>());
+            let injection =
+                spec::build_context_injection(&active.iter().copied().cloned().collect::<Vec<_>>());
             if !injection.is_empty() {
                 parts.push(injection);
             }

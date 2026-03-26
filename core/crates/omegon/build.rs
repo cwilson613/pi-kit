@@ -21,8 +21,7 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     // Short SHA (7 chars)
-    let sha = git(&["rev-parse", "--short=7", "HEAD"])
-        .unwrap_or_else(|| "unknown".into());
+    let sha = git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "unknown".into());
 
     // Dirty flag — any tracked modifications or staged changes
     let dirty = git(&["status", "--porcelain"])
@@ -30,13 +29,12 @@ fn main() {
         .unwrap_or("");
 
     // Commit date (not author date — survives rebase)
-    let date = git(&["log", "-1", "--format=%cd", "--date=short"])
-        .unwrap_or_else(|| "unknown".into());
+    let date =
+        git(&["log", "-1", "--format=%cd", "--date=short"]).unwrap_or_else(|| "unknown".into());
 
     // Describe — includes tag distance for RC awareness
     // e.g. "v0.14.0" (on tag), "v0.14.0-12-g3a4b5c6" (12 commits past tag)
-    let describe = git(&["describe", "--tags", "--always"])
-        .unwrap_or_else(|| sha.clone());
+    let describe = git(&["describe", "--tags", "--always"]).unwrap_or_else(|| sha.clone());
 
     // Check if git describe matches Cargo.toml version (tag is on HEAD).
     // If so, the git: line in --version is redundant — suppress it.

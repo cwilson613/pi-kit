@@ -16,17 +16,11 @@ use std::borrow::Cow;
 /// A lifecycle artifact captured from the agent's response.
 #[derive(Debug, Clone)]
 pub enum AmbientCapture {
-    Decision {
-        status: String,
-        content: String,
-    },
+    Decision { status: String, content: String },
     Constraint(String),
     Question(String),
     Approach(String),
-    Failed {
-        description: String,
-        reason: String,
-    },
+    Failed { description: String, reason: String },
     Phase(String),
 }
 
@@ -75,8 +69,8 @@ pub fn parse_ambient_blocks(text: &str) -> Vec<AmbientCapture> {
 
         match tag_name {
             "decision" => {
-                let status = extract_attr(attrs, "status")
-                    .unwrap_or_else(|| "exploring".to_string());
+                let status =
+                    extract_attr(attrs, "status").unwrap_or_else(|| "exploring".to_string());
                 captures.push(AmbientCapture::Decision { status, content });
             }
             "constraint" => {
@@ -89,8 +83,7 @@ pub fn parse_ambient_blocks(text: &str) -> Vec<AmbientCapture> {
                 captures.push(AmbientCapture::Approach(content));
             }
             "failed" => {
-                let reason = extract_attr(attrs, "reason")
-                    .unwrap_or_default();
+                let reason = extract_attr(attrs, "reason").unwrap_or_default();
                 captures.push(AmbientCapture::Failed {
                     description: content,
                     reason,
@@ -212,7 +205,10 @@ Direct token replacement without invalidation
         let captures = parse_ambient_blocks(text);
         assert_eq!(captures.len(), 1);
         match &captures[0] {
-            AmbientCapture::Failed { description, reason } => {
+            AmbientCapture::Failed {
+                description,
+                reason,
+            } => {
                 assert!(description.contains("Direct token"));
                 assert!(reason.contains("WeakRef"));
             }

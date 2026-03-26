@@ -14,7 +14,7 @@
 //! - Failed auth attempts are logged but not exposed
 //! - Network timeouts prevent hanging
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use reqwest::{Client, Response};
 use secrecy::{ExposeSecret, SecretString};
@@ -77,8 +77,8 @@ fn default_k8s_token_path() -> String {
 #[derive(Debug, Deserialize)]
 pub struct SealStatus {
     pub sealed: bool,
-    pub t: u32,       // threshold
-    pub n: u32,       // total shares
+    pub t: u32,        // threshold
+    pub n: u32,        // total shares
     pub progress: u32, // keys provided so far
 }
 
@@ -159,10 +159,7 @@ pub enum PathPolicy {
     DenyAll,
     /// Paths matching the allow set are permitted, unless they also match the deny set.
     /// Deny takes precedence over allow.
-    AllowList {
-        allow: GlobSet,
-        deny: GlobSet,
-    },
+    AllowList { allow: GlobSet, deny: GlobSet },
 }
 
 impl PathPolicy {
@@ -198,9 +195,9 @@ impl PathPolicy {
         }
 
         match self {
-            PathPolicy::DenyAll => {
-                Err(anyhow!("no paths allowed — configure allowed_paths in vault.json"))
-            }
+            PathPolicy::DenyAll => Err(anyhow!(
+                "no paths allowed — configure allowed_paths in vault.json"
+            )),
             PathPolicy::AllowList { allow, deny } => {
                 // Deny takes precedence
                 if deny.is_match(path) {
@@ -238,16 +235,18 @@ impl VaultConfig {
         // 1. vault.json is authoritative — operator explicitly configured paths
         let vault_config_path = config_dir.join("vault.json");
         if vault_config_path.exists() {
-            let content = std::fs::read_to_string(&vault_config_path)
-                .context("failed to read vault.json")?;
-            let config: VaultConfig = serde_json::from_str(&content)
-                .context("invalid vault.json format")?;
+            let content =
+                std::fs::read_to_string(&vault_config_path).context("failed to read vault.json")?;
+            let config: VaultConfig =
+                serde_json::from_str(&content).context("invalid vault.json format")?;
             debug!("loaded vault config from {}", vault_config_path.display());
             return Ok(Some(config));
         }
 
         // 2. Fallback: VAULT_ADDR env — starts DenyAll (no vault.json = no allowlist)
-        if let Ok(addr) = std::env::var("VAULT_ADDR") && !addr.is_empty() {
+        if let Ok(addr) = std::env::var("VAULT_ADDR")
+            && !addr.is_empty()
+        {
             info!("using VAULT_ADDR: {}", addr);
             tracing::warn!(
                 "vault configured via VAULT_ADDR but no vault.json found — \
@@ -258,7 +257,7 @@ impl VaultConfig {
             return Ok(Some(VaultConfig {
                 addr,
                 auth: AuthConfig::Token,
-                allowed_paths: vec![],  // DenyAll — operator must create vault.json
+                allowed_paths: vec![], // DenyAll — operator must create vault.json
                 denied_paths: vec![],
                 timeout_secs: default_timeout(),
             }));
@@ -274,8 +273,7 @@ impl VaultClient {
     ///
     /// Does not authenticate immediately - call `authenticate()` to establish a session.
     pub fn new(config: VaultConfig) -> Result<Self> {
-        let base_url = Url::parse(&config.addr)
-            .context("invalid vault address")?;
+        let base_url = Url::parse(&config.addr).context("invalid vault address")?;
 
         // Validate URL scheme — only http/https allowed (prevents file:// SSRF)
         match base_url.scheme() {
@@ -311,7 +309,9 @@ impl VaultClient {
     /// 3. Configured auth method (AppRole, Kubernetes SA)
     pub async fn authenticate(&mut self) -> Result<()> {
         // 1. Check VAULT_TOKEN environment variable
-        if let Ok(token) = std::env::var("VAULT_TOKEN") && !token.is_empty() {
+        if let Ok(token) = std::env::var("VAULT_TOKEN")
+            && !token.is_empty()
+        {
             debug!("using VAULT_TOKEN environment variable");
             self.token = Some(SecretString::from(token));
             return Ok(());
@@ -336,7 +336,10 @@ impl VaultClient {
             AuthConfig::Token => {
                 return Err(anyhow!("no token found in VAULT_TOKEN or ~/.vault-token"));
             }
-            AuthConfig::AppRole { role_id, secret_id_key } => {
+            AuthConfig::AppRole {
+                role_id,
+                secret_id_key,
+            } => {
                 self.authenticate_approle(&role_id, &secret_id_key).await?;
             }
             AuthConfig::Kubernetes { role, token_path } => {
@@ -352,7 +355,8 @@ impl VaultClient {
         // Get secret_id from keyring
         let entry = keyring::Entry::new("omegon", secret_id_key)
             .context("failed to create keyring entry")?;
-        let secret_id = entry.get_password()
+        let secret_id = entry
+            .get_password()
             .with_context(|| format!("secret_id not found in keyring: {}", secret_id_key))?;
 
         let login_data = serde_json::json!({
@@ -361,7 +365,8 @@ impl VaultClient {
         });
 
         let url = self.base_url.join("v1/auth/approle/login")?;
-        let response = self.client
+        let response = self
+            .client
             .post(url)
             .json(&login_data)
             .send()
@@ -396,7 +401,8 @@ impl VaultClient {
         });
 
         let url = self.base_url.join("v1/auth/kubernetes/login")?;
-        let response = self.client
+        let response = self
+            .client
             .post(url)
             .json(&login_data)
             .send()
@@ -437,28 +443,33 @@ impl VaultClient {
 
     /// Get Vault health status.
     pub async fn health(&self) -> Result<HealthStatus> {
-        let url = self.base_url.join("v1/sys/health?standbyok=true&sealedcode=200")?;
-        let response = self.client
+        let url = self
+            .base_url
+            .join("v1/sys/health?standbyok=true&sealedcode=200")?;
+        let response = self
+            .client
             .get(url)
             .send()
             .await
             .context("health check failed")?;
 
-        let health: HealthStatus = response.json().await
-            .context("invalid health response")?;
+        let health: HealthStatus = response.json().await.context("invalid health response")?;
         Ok(health)
     }
 
     /// Get seal status.
     pub async fn seal_status(&self) -> Result<SealStatus> {
         let url = self.base_url.join("v1/sys/seal-status")?;
-        let response = self.client
+        let response = self
+            .client
             .get(url)
             .send()
             .await
             .context("seal status check failed")?;
 
-        let status: SealStatus = response.json().await
+        let status: SealStatus = response
+            .json()
+            .await
             .context("invalid seal status response")?;
         Ok(status)
     }
@@ -471,32 +482,34 @@ impl VaultClient {
     pub async fn unseal(&self, key: &SecretString) -> Result<SealStatus> {
         let url = self.base_url.join("v1/sys/unseal")?;
         let data = serde_json::json!({ "key": key.expose_secret() });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(url)
             .json(&data)
             .send()
             .await
             .context("unseal request failed")?;
 
-        let status: SealStatus = response.json().await
-            .context("invalid unseal response")?;
+        let status: SealStatus = response.json().await.context("invalid unseal response")?;
         Ok(status)
     }
 
     /// Look up information about the current token.
     pub async fn token_lookup(&self) -> Result<TokenInfo> {
-
         let url = self.base_url.join("v1/auth/token/lookup-self")?;
-        let response = self.authenticated_request(|req| req.get(url.clone())).await?;
+        let response = self
+            .authenticated_request(|req| req.get(url.clone()))
+            .await?;
 
         let data: serde_json::Value = response.json().await?;
         let token_data = &data["data"];
-        
+
         Ok(TokenInfo {
             ttl: token_data["ttl"].as_u64().unwrap_or(0),
             renewable: token_data["renewable"].as_bool().unwrap_or(false),
-            policies: token_data["policies"].as_array()
+            policies: token_data["policies"]
+                .as_array()
                 .unwrap_or(&vec![])
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -507,24 +520,27 @@ impl VaultClient {
 
     /// Renew the current token.
     pub async fn token_renew(&self, increment: Option<&str>) -> Result<TokenInfo> {
-
         let url = self.base_url.join("v1/auth/token/renew-self")?;
         let mut data = serde_json::Map::new();
         if let Some(inc) = increment {
-            data.insert("increment".to_string(), serde_json::Value::String(inc.to_string()));
+            data.insert(
+                "increment".to_string(),
+                serde_json::Value::String(inc.to_string()),
+            );
         }
 
-        let response = self.authenticated_request(|req| {
-            req.post(url.clone()).json(&data)
-        }).await?;
+        let response = self
+            .authenticated_request(|req| req.post(url.clone()).json(&data))
+            .await?;
 
         let resp_data: serde_json::Value = response.json().await?;
         let token_data = &resp_data["auth"];
-        
+
         Ok(TokenInfo {
             ttl: token_data["lease_duration"].as_u64().unwrap_or(0),
             renewable: token_data["renewable"].as_bool().unwrap_or(false),
-            policies: token_data["policies"].as_array()
+            policies: token_data["policies"]
+                .as_array()
                 .unwrap_or(&vec![])
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -541,11 +557,13 @@ impl VaultClient {
         // Enforce path allowlist/denylist
         self.check_path_allowed(path)?;
         let url = self.base_url.join(&format!("v1/{}", path))?;
-        let response = self.authenticated_request(|req| req.get(url.clone())).await?;
+        let response = self
+            .authenticated_request(|req| req.get(url.clone()))
+            .await?;
 
         if response.status().is_success() {
-            let kv_response: KvV2Response = response.json().await
-                .context("invalid KV v2 response")?;
+            let kv_response: KvV2Response =
+                response.json().await.context("invalid KV v2 response")?;
             Ok(kv_response.data.data)
         } else if response.status().as_u16() == 404 {
             Err(anyhow!("secret not found at path: {}", path))
@@ -562,10 +580,10 @@ impl VaultClient {
         self.check_path_allowed(path)?;
         let payload = serde_json::json!({ "data": data });
         let url = self.base_url.join(&format!("v1/{}", path))?;
-        
-        let response = self.authenticated_request(|req| {
-            req.post(url.clone()).json(&payload)
-        }).await?;
+
+        let response = self
+            .authenticated_request(|req| req.post(url.clone()).json(&payload))
+            .await?;
 
         if response.status().is_success() {
             Ok(())
@@ -581,16 +599,20 @@ impl VaultClient {
         // Enforce path allowlist/denylist
         self.check_path_allowed(path)?;
         let url = self.base_url.join(&format!("v1/{}", path))?;
-        let response = self.authenticated_request(|req| {
-            req.request(reqwest::Method::from_bytes(b"LIST").unwrap(), url.clone())
-        }).await?;
+        let response = self
+            .authenticated_request(|req| {
+                req.request(reqwest::Method::from_bytes(b"LIST").unwrap(), url.clone())
+            })
+            .await?;
 
         if response.status().is_success() {
             let list_response: serde_json::Value = response.json().await?;
-            let keys = list_response["data"]["keys"].as_array()
+            let keys = list_response["data"]["keys"]
+                .as_array()
                 .ok_or_else(|| anyhow!("invalid list response"))?;
-            
-            Ok(keys.iter()
+
+            Ok(keys
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect())
         } else {
@@ -607,7 +629,6 @@ impl VaultClient {
         ttl: Option<String>,
         use_limit: Option<u32>,
     ) -> Result<String> {
-
         let request = CreateTokenRequest {
             policies,
             ttl,
@@ -616,18 +637,24 @@ impl VaultClient {
         };
 
         let url = self.base_url.join("v1/auth/token/create")?;
-        let response = self.authenticated_request(|req| {
-            req.post(url.clone()).json(&request)
-        }).await?;
+        let response = self
+            .authenticated_request(|req| req.post(url.clone()).json(&request))
+            .await?;
 
         if response.status().is_success() {
-            let create_response: CreateTokenResponse = response.json().await
+            let create_response: CreateTokenResponse = response
+                .json()
+                .await
                 .context("invalid token creation response")?;
             Ok(create_response.auth.client_token)
         } else {
             let status = response.status();
             let body = sanitize_error_body(&response.text().await.unwrap_or_default());
-            Err(anyhow!("child token creation failed: {} - {}", status, body))
+            Err(anyhow!(
+                "child token creation failed: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
@@ -645,7 +672,9 @@ impl VaultClient {
     where
         F: FnOnce(&Client) -> reqwest::RequestBuilder,
     {
-        let token = self.token.as_ref()
+        let token = self
+            .token
+            .as_ref()
             .ok_or_else(|| anyhow!("no token available"))?;
 
         let response = builder(&self.client)
@@ -667,7 +696,10 @@ fn sanitize_error_body(body: &str) -> String {
 
     static TOKEN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         // Match Vault token patterns and long base64-ish strings
-        regex::Regex::new(r"(?i)(hvs\.[a-zA-Z0-9_\-\.]+|s\.[a-zA-Z0-9_\-\.]{20,}|[a-zA-Z0-9+/=]{40,})").unwrap()
+        regex::Regex::new(
+            r"(?i)(hvs\.[a-zA-Z0-9_\-\.]+|s\.[a-zA-Z0-9_\-\.]{20,}|[a-zA-Z0-9+/=]{40,})",
+        )
+        .unwrap()
     });
 
     // Truncate at a char boundary — slicing raw bytes panics on multi-byte UTF-8
@@ -682,11 +714,10 @@ fn sanitize_error_body(body: &str) -> String {
 fn build_globset(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        builder.add(Glob::new(pattern)
-            .with_context(|| format!("invalid glob pattern: {}", pattern))?);
+        builder
+            .add(Glob::new(pattern).with_context(|| format!("invalid glob pattern: {}", pattern))?);
     }
-    builder.build()
-        .context("failed to build glob set")
+    builder.build().context("failed to build glob set")
 }
 
 #[cfg(test)]
@@ -708,11 +739,13 @@ mod tests {
     #[tokio::test]
     async fn test_health_check() {
         let mut server = Server::new_async().await;
-        let _m = server.mock("GET", "/v1/sys/health?standbyok=true&sealedcode=200")
+        let _m = server
+            .mock("GET", "/v1/sys/health?standbyok=true&sealedcode=200")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"sealed": false, "initialized": true, "standby": false}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = test_config(&server.url());
         let client = VaultClient::new(config).unwrap();
@@ -726,11 +759,13 @@ mod tests {
     #[tokio::test]
     async fn test_seal_status() {
         let mut server = Server::new_async().await;
-        let _m = server.mock("GET", "/v1/sys/seal-status")
+        let _m = server
+            .mock("GET", "/v1/sys/seal-status")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"sealed": false, "t": 3, "n": 5, "progress": 0}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = test_config(&server.url());
         let client = VaultClient::new(config).unwrap();
@@ -745,15 +780,20 @@ mod tests {
     #[tokio::test]
     async fn test_unseal() {
         let mut server = Server::new_async().await;
-        let _m = server.mock("POST", "/v1/sys/unseal")
+        let _m = server
+            .mock("POST", "/v1/sys/unseal")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"sealed": true, "t": 3, "n": 5, "progress": 1}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = test_config(&server.url());
         let client = VaultClient::new(config).unwrap();
-        let status = client.unseal(&SecretString::from("test-key")).await.unwrap();
+        let status = client
+            .unseal(&SecretString::from("test-key"))
+            .await
+            .unwrap();
 
         assert!(status.sealed);
         assert_eq!(status.progress, 1);
@@ -766,14 +806,22 @@ mod tests {
         client.set_token(SecretString::from("hvs.test"));
 
         // Allowed path should pass
-        assert!(client.check_path_allowed("secret/data/omegon/api-keys").is_ok());
+        assert!(
+            client
+                .check_path_allowed("secret/data/omegon/api-keys")
+                .is_ok()
+        );
 
         // Disallowed path should fail
-        let err = client.check_path_allowed("secret/data/bootstrap/keys").unwrap_err();
+        let err = client
+            .check_path_allowed("secret/data/bootstrap/keys")
+            .unwrap_err();
         assert!(err.to_string().contains("not in allowlist"));
 
         // Denied path should fail even if it matches allowed pattern
-        let err = client.check_path_allowed("secret/data/bootstrap/cloudflare/test").unwrap_err();
+        let err = client
+            .check_path_allowed("secret/data/bootstrap/cloudflare/test")
+            .unwrap_err();
         assert!(err.to_string().contains("denied"));
     }
 
@@ -791,23 +839,31 @@ mod tests {
         client.set_token(SecretString::from("hvs.test"));
 
         let data = client.read("secret/data/omegon/api-keys").await.unwrap();
-        assert_eq!(data.get("anthropic").unwrap().as_str().unwrap(), "sk-ant-test123");
+        assert_eq!(
+            data.get("anthropic").unwrap().as_str().unwrap(),
+            "sk-ant-test123"
+        );
     }
 
     #[tokio::test]
     async fn test_write_secret() {
         let mut server = Server::new_async().await;
-        let _m = server.mock("POST", "/v1/secret/data/omegon/test")
+        let _m = server
+            .mock("POST", "/v1/secret/data/omegon/test")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = test_config(&server.url());
         let mut client = VaultClient::new(config).unwrap();
         client.set_token(SecretString::from("hvs.test"));
 
         let mut data = HashMap::new();
-        data.insert("key".to_string(), serde_json::Value::String("value".to_string()));
+        data.insert(
+            "key".to_string(),
+            serde_json::Value::String("value".to_string()),
+        );
 
         client.write("secret/data/omegon/test", data).await.unwrap();
     }
@@ -834,16 +890,21 @@ mod tests {
     #[tokio::test]
     async fn test_list_secrets() {
         let mut server = Server::new_async().await;
-        let _m = server.mock("LIST", "/v1/secret/metadata/omegon/")
+        let _m = server
+            .mock("LIST", "/v1/secret/metadata/omegon/")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"data": {"keys": ["api-keys", "tokens", "config"]}}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = VaultConfig {
             addr: server.url(),
             auth: AuthConfig::Token,
-            allowed_paths: vec!["secret/data/omegon/*".to_string(), "secret/metadata/omegon/*".to_string()],
+            allowed_paths: vec![
+                "secret/data/omegon/*".to_string(),
+                "secret/metadata/omegon/*".to_string(),
+            ],
             denied_paths: vec![],
             timeout_secs: 5,
         };
@@ -877,11 +938,14 @@ mod tests {
         let mut client = VaultClient::new(config).unwrap();
         client.set_token(SecretString::from("hvs.parent"));
 
-        let child_token = client.mint_child_token(
-            Some(vec!["omegon-child".to_string()]),
-            Some("30m".to_string()),
-            Some(100),
-        ).await.unwrap();
+        let child_token = client
+            .mint_child_token(
+                Some(vec!["omegon-child".to_string()]),
+                Some("30m".to_string()),
+                Some(100),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(child_token, "hvs.child123");
     }
@@ -903,16 +967,20 @@ mod tests {
         // Ensure cleanup runs even on panic
         struct KeyringCleanup(keyring::Entry);
         impl Drop for KeyringCleanup {
-            fn drop(&mut self) { let _ = self.0.delete_credential(); }
+            fn drop(&mut self) {
+                let _ = self.0.delete_credential();
+            }
         }
         let _cleanup = KeyringCleanup(keyring::Entry::new("omegon", &test_key).unwrap());
 
         let mut server = Server::new_async().await;
-        let _m = server.mock("POST", "/v1/auth/approle/login")
+        let _m = server
+            .mock("POST", "/v1/auth/approle/login")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"auth": {"client_token": "hvs.approle123", "lease_duration": 7200}}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = VaultConfig {
             addr: server.url(),
@@ -926,7 +994,10 @@ mod tests {
         };
 
         let mut client = VaultClient::new(config).unwrap();
-        client.authenticate_approle("test-role", &test_key).await.unwrap();
+        client
+            .authenticate_approle("test-role", &test_key)
+            .await
+            .unwrap();
 
         assert!(client.is_authenticated());
     }
@@ -940,29 +1011,48 @@ mod tests {
         client.set_token(SecretString::from("hvs.test"));
 
         // Direct traversal
-        let err = client.check_path_allowed("secret/data/../../sys/seal-status").unwrap_err();
+        let err = client
+            .check_path_allowed("secret/data/../../sys/seal-status")
+            .unwrap_err();
         assert!(err.to_string().contains("path traversal"));
 
         // Leading traversal
-        let err = client.check_path_allowed("../../../etc/passwd").unwrap_err();
+        let err = client
+            .check_path_allowed("../../../etc/passwd")
+            .unwrap_err();
         assert!(err.to_string().contains("path traversal"));
 
         // Null byte injection
-        let err = client.check_path_allowed("secret/data/omegon/test\0/../../../sys/seal-status").unwrap_err();
-        assert!(err.to_string().contains("path traversal") || err.to_string().contains("invalid characters"));
+        let err = client
+            .check_path_allowed("secret/data/omegon/test\0/../../../sys/seal-status")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("path traversal")
+                || err.to_string().contains("invalid characters")
+        );
 
         // URL-encoded traversal
-        let err = client.check_path_allowed("secret/data/%2e%2e/sys/seal-status").unwrap_err();
+        let err = client
+            .check_path_allowed("secret/data/%2e%2e/sys/seal-status")
+            .unwrap_err();
         assert!(err.to_string().contains("invalid characters"));
 
         // Mixed-case URL-encoded traversal (RFC 3986 permits either case)
-        let err = client.check_path_allowed("secret/data/%2E%2e/sys/seal-status").unwrap_err();
+        let err = client
+            .check_path_allowed("secret/data/%2E%2e/sys/seal-status")
+            .unwrap_err();
         assert!(err.to_string().contains("invalid characters"));
-        let err = client.check_path_allowed("secret/data/%2e%2E/sys/seal-status").unwrap_err();
+        let err = client
+            .check_path_allowed("secret/data/%2e%2E/sys/seal-status")
+            .unwrap_err();
         assert!(err.to_string().contains("invalid characters"));
 
         // Normal paths still work
-        assert!(client.check_path_allowed("secret/data/omegon/api-keys").is_ok());
+        assert!(
+            client
+                .check_path_allowed("secret/data/omegon/api-keys")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -997,10 +1087,12 @@ mod tests {
     async fn test_redirect_not_followed() {
         let mut server = Server::new_async().await;
         // Set up a redirect — should NOT be followed (token protection)
-        let _m = server.mock("GET", "/v1/sys/health?standbyok=true&sealedcode=200")
+        let _m = server
+            .mock("GET", "/v1/sys/health?standbyok=true&sealedcode=200")
             .with_status(301)
             .with_header("Location", "http://evil.attacker.com/steal-token")
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = test_config(&server.url());
         let client = VaultClient::new(config).unwrap();
@@ -1025,7 +1117,10 @@ mod tests {
 
         // This path WOULD match "secret/data/*" glob without normalization check,
         // but after URL::join would resolve to v1/sys/seal-status
-        let err = client.read("secret/data/../../sys/seal-status").await.unwrap_err();
+        let err = client
+            .read("secret/data/../../sys/seal-status")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("path traversal"));
     }
 
@@ -1036,30 +1131,38 @@ mod tests {
         let config = VaultConfig {
             addr: "http://localhost:8200".to_string(),
             auth: AuthConfig::Token,
-            allowed_paths: vec![],  // Empty = DenyAll
+            allowed_paths: vec![], // Empty = DenyAll
             denied_paths: vec![],
             timeout_secs: 5,
         };
         let mut client = VaultClient::new(config).unwrap();
         client.set_token(SecretString::from("hvs.test"));
 
-        let err = client.check_path_allowed("secret/data/omegon/anything").unwrap_err();
-        assert!(err.to_string().contains("no paths allowed"), "empty allowlist must deny: {}", err);
+        let err = client
+            .check_path_allowed("secret/data/omegon/anything")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no paths allowed"),
+            "empty allowlist must deny: {}",
+            err
+        );
     }
 
     #[tokio::test]
     async fn test_deny_all_still_allows_health() {
         let mut server = Server::new_async().await;
-        let _m = server.mock("GET", "/v1/sys/health?standbyok=true&sealedcode=200")
+        let _m = server
+            .mock("GET", "/v1/sys/health?standbyok=true&sealedcode=200")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"sealed": false, "initialized": true, "standby": false}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let config = VaultConfig {
             addr: server.url(),
             auth: AuthConfig::Token,
-            allowed_paths: vec![],  // DenyAll
+            allowed_paths: vec![], // DenyAll
             denied_paths: vec![],
             timeout_secs: 5,
         };
@@ -1082,7 +1185,8 @@ mod tests {
         let policy = PathPolicy::from_config(
             &["secret/data/omegon/*".to_string()],
             &["secret/data/omegon/internal/*".to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(policy, PathPolicy::AllowList { .. }));
         assert!(policy.check("secret/data/omegon/api-keys").is_ok());
         assert!(policy.check("secret/data/omegon/internal/tokens").is_err());
@@ -1100,7 +1204,10 @@ mod tests {
         assert!(sanitize_error_body(&format!("token: {}", long_b64)).contains("[REDACTED]"));
 
         // Short normal text passes through
-        assert_eq!(sanitize_error_body("permission denied"), "permission denied");
+        assert_eq!(
+            sanitize_error_body("permission denied"),
+            "permission denied"
+        );
 
         // Truncation at 200 chars
         let long = "x".repeat(300);

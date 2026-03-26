@@ -121,7 +121,6 @@ pub enum DecayProfileName {
     RecentWork,
 }
 
-
 /// A fact with search scoring attached.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoredFact {
@@ -372,7 +371,10 @@ mod tests {
         };
         let record = JsonlRecord::Fact(fact);
         let json = serde_json::to_string(&record).unwrap();
-        assert!(json.contains(r#""_type":"fact"#), "should use _type: {json}");
+        assert!(
+            json.contains(r#""_type":"fact"#),
+            "should use _type: {json}"
+        );
 
         let parsed: JsonlRecord = serde_json::from_str(&json).unwrap();
         match parsed {

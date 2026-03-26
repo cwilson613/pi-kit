@@ -22,18 +22,24 @@ pub fn parse_frontmatter(content: &str) -> Option<HashMap<String, FrontmatterVal
 
     for line in yaml.lines() {
         // Array item: "  - something"
-        if let Some(item) = line.strip_prefix("  - ").or_else(|| line.strip_prefix("- "))
-            && current_key.is_some() {
-                current_array.push(strip_quotes(item.trim()));
-                continue;
-            }
+        if let Some(item) = line
+            .strip_prefix("  - ")
+            .or_else(|| line.strip_prefix("- "))
+            && current_key.is_some()
+        {
+            current_array.push(strip_quotes(item.trim()));
+            continue;
+        }
 
         // Flush previous key
         if let Some(key) = current_key.take() {
             if current_array.is_empty() {
                 result.insert(key, FrontmatterValue::List(vec![]));
             } else {
-                result.insert(key, FrontmatterValue::List(std::mem::take(&mut current_array)));
+                result.insert(
+                    key,
+                    FrontmatterValue::List(std::mem::take(&mut current_array)),
+                );
             }
         }
 
@@ -122,7 +128,11 @@ pub fn node_from_frontmatter(
     file_path: PathBuf,
 ) -> Option<DesignNode> {
     let id = fm.get("id")?.as_str()?.to_string();
-    let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = fm
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let status_str = fm.get("status").and_then(|v| v.as_str()).unwrap_or("seed");
     let status = NodeStatus::parse(status_str).unwrap_or(NodeStatus::Seed);
 
@@ -131,14 +141,38 @@ pub fn node_from_frontmatter(
         title,
         status,
         parent: fm.get("parent").and_then(|v| v.as_str()).map(String::from),
-        tags: fm.get("tags").map(|v| v.as_list().to_vec()).unwrap_or_default(),
-        dependencies: fm.get("dependencies").map(|v| v.as_list().to_vec()).unwrap_or_default(),
-        related: fm.get("related").map(|v| v.as_list().to_vec()).unwrap_or_default(),
-        open_questions: fm.get("open_questions").map(|v| v.as_list().to_vec()).unwrap_or_default(),
-        branches: fm.get("branches").map(|v| v.as_list().to_vec()).unwrap_or_default(),
-        openspec_change: fm.get("openspec_change").and_then(|v| v.as_str()).map(String::from),
-        issue_type: fm.get("issue_type").and_then(|v| v.as_str()).and_then(IssueType::parse),
-        priority: fm.get("priority").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()),
+        tags: fm
+            .get("tags")
+            .map(|v| v.as_list().to_vec())
+            .unwrap_or_default(),
+        dependencies: fm
+            .get("dependencies")
+            .map(|v| v.as_list().to_vec())
+            .unwrap_or_default(),
+        related: fm
+            .get("related")
+            .map(|v| v.as_list().to_vec())
+            .unwrap_or_default(),
+        open_questions: fm
+            .get("open_questions")
+            .map(|v| v.as_list().to_vec())
+            .unwrap_or_default(),
+        branches: fm
+            .get("branches")
+            .map(|v| v.as_list().to_vec())
+            .unwrap_or_default(),
+        openspec_change: fm
+            .get("openspec_change")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        issue_type: fm
+            .get("issue_type")
+            .and_then(|v| v.as_str())
+            .and_then(IssueType::parse),
+        priority: fm
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok()),
         file_path,
     })
 }
@@ -285,23 +319,31 @@ fn parse_impl_notes(content: &str, sections: &mut DocumentSections) {
         } else if in_file_scope {
             // Format: - `path` — description (action)
             if let Some(rest) = line.trim().strip_prefix("- ")
-                && let Some((path_part, desc)) = rest.split_once(" — ").or_else(|| rest.split_once(" - ")) {
-                    let path = path_part.trim().trim_matches('`').to_string();
-                    let (description, action) = if desc.ends_with(')') {
-                        if let Some(paren) = desc.rfind('(') {
-                            (desc[..paren].trim().to_string(), Some(desc[paren + 1..desc.len() - 1].to_string()))
-                        } else {
-                            (desc.to_string(), None)
-                        }
+                && let Some((path_part, desc)) =
+                    rest.split_once(" — ").or_else(|| rest.split_once(" - "))
+            {
+                let path = path_part.trim().trim_matches('`').to_string();
+                let (description, action) = if desc.ends_with(')') {
+                    if let Some(paren) = desc.rfind('(') {
+                        (
+                            desc[..paren].trim().to_string(),
+                            Some(desc[paren + 1..desc.len() - 1].to_string()),
+                        )
                     } else {
                         (desc.to_string(), None)
-                    };
-                    sections.impl_file_scope.push(FileScope { path, description, action });
-                }
-        } else if in_constraints
-            && let Some(rest) = line.trim().strip_prefix("- ") {
-                sections.impl_constraints.push(rest.to_string());
+                    }
+                } else {
+                    (desc.to_string(), None)
+                };
+                sections.impl_file_scope.push(FileScope {
+                    path,
+                    description,
+                    action,
+                });
             }
+        } else if in_constraints && let Some(rest) = line.trim().strip_prefix("- ") {
+            sections.impl_constraints.push(rest.to_string());
+        }
     }
 }
 
@@ -326,30 +368,33 @@ pub fn scan_design_docs(docs_dir: &Path) -> HashMap<String, DesignNode> {
         };
 
         if let Some(fm) = parse_frontmatter(&content)
-            && let Some(node) = node_from_frontmatter(&fm, path) {
-                nodes.insert(node.id.clone(), node);
-            }
+            && let Some(node) = node_from_frontmatter(&fm, path)
+        {
+            nodes.insert(node.id.clone(), node);
+        }
     }
 
     // Also scan docs/design/ subdirectory if it exists
     let design_dir = docs_dir.join("design");
     if design_dir.is_dir()
-        && let Ok(entries) = fs::read_dir(&design_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                    continue;
-                }
-                let content = match fs::read_to_string(&path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                if let Some(fm) = parse_frontmatter(&content)
-                    && let Some(node) = node_from_frontmatter(&fm, path) {
-                        nodes.insert(node.id.clone(), node);
-                    }
+        && let Ok(entries) = fs::read_dir(&design_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if let Some(fm) = parse_frontmatter(&content)
+                && let Some(node) = node_from_frontmatter(&fm, path)
+            {
+                nodes.insert(node.id.clone(), node);
             }
         }
+    }
 
     nodes
 }
@@ -424,7 +469,7 @@ fn serialize_frontmatter(node: &DesignNode) -> String {
     let mut lines = vec![
         "---".to_string(),
         format!("id: {}", node.id),
-        format!("title: \"{}\"", node.title.replace('"', "\\\"" )),
+        format!("title: \"{}\"", node.title.replace('"', "\\\"")),
         format!("status: {}", node.status.as_str()),
     ];
 
@@ -434,13 +479,17 @@ fn serialize_frontmatter(node: &DesignNode) -> String {
 
     if !node.tags.is_empty() {
         // Quote tags that contain commas or spaces to prevent parse ambiguity
-        let formatted: Vec<String> = node.tags.iter().map(|t| {
-            if t.contains(',') || t.contains(' ') {
-                format!("\"{}\"", t.replace('"', "\\\""))
-            } else {
-                t.clone()
-            }
-        }).collect();
+        let formatted: Vec<String> = node
+            .tags
+            .iter()
+            .map(|t| {
+                if t.contains(',') || t.contains(' ') {
+                    format!("\"{}\"", t.replace('"', "\\\""))
+                } else {
+                    t.clone()
+                }
+            })
+            .collect();
         lines.push(format!("tags: [{}]", formatted.join(", ")));
     } else {
         lines.push("tags: []".into());
@@ -549,7 +598,11 @@ fn serialize_document(node: &DesignNode, sections: &DocumentSections) -> String 
         if !sections.impl_file_scope.is_empty() {
             writeln!(out, "\n### File Scope\n").unwrap();
             for fs in &sections.impl_file_scope {
-                let action = fs.action.as_deref().map(|a| format!(" ({a})")).unwrap_or_default();
+                let action = fs
+                    .action
+                    .as_deref()
+                    .map(|a| format!(" ({a})"))
+                    .unwrap_or_default();
                 writeln!(out, "- `{}` — {}{}", fs.path, fs.description, action).unwrap();
             }
         }
@@ -581,7 +634,10 @@ pub fn create_node(
     let file_path = docs_dir.join(format!("{id}.md"));
 
     if file_path.exists() {
-        anyhow::bail!("Design node '{id}' already exists at {}", file_path.display());
+        anyhow::bail!(
+            "Design node '{id}' already exists at {}",
+            file_path.display()
+        );
     }
 
     let status = status
@@ -689,7 +745,9 @@ pub fn add_impl_notes(
     let mut sections = parse_sections(body);
 
     sections.impl_file_scope.extend(file_scope.iter().cloned());
-    sections.impl_constraints.extend(constraints.iter().cloned());
+    sections
+        .impl_constraints
+        .extend(constraints.iter().cloned());
 
     let new_content = serialize_document(node, &sections);
     fs::write(&node.file_path, &new_content)?;
@@ -782,15 +840,27 @@ Content of the second topic.
     fn parse_frontmatter_full() {
         let fm = parse_frontmatter(SAMPLE_DOC).unwrap();
         assert_eq!(fm.get("id").unwrap().as_str(), Some("test-node"));
-        assert_eq!(fm.get("title").unwrap().as_str(), Some("Test Node — with special chars"));
+        assert_eq!(
+            fm.get("title").unwrap().as_str(),
+            Some("Test Node — with special chars")
+        );
         assert_eq!(fm.get("status").unwrap().as_str(), Some("exploring"));
         assert_eq!(fm.get("parent").unwrap().as_str(), Some("parent-node"));
-        assert_eq!(fm.get("tags").unwrap().as_list(), &["rust", "test", "lifecycle"]);
+        assert_eq!(
+            fm.get("tags").unwrap().as_list(),
+            &["rust", "test", "lifecycle"]
+        );
         assert_eq!(fm.get("open_questions").unwrap().as_list().len(), 2);
         assert_eq!(fm.get("dependencies").unwrap().as_list().len(), 0);
         assert_eq!(fm.get("related").unwrap().as_list(), &["other-node"]);
-        assert_eq!(fm.get("branches").unwrap().as_list(), &["feature/test-node"]);
-        assert_eq!(fm.get("openspec_change").unwrap().as_str(), Some("test-change"));
+        assert_eq!(
+            fm.get("branches").unwrap().as_list(),
+            &["feature/test-node"]
+        );
+        assert_eq!(
+            fm.get("openspec_change").unwrap().as_str(),
+            Some("test-change")
+        );
         assert_eq!(fm.get("issue_type").unwrap().as_str(), Some("feature"));
         assert_eq!(fm.get("priority").unwrap().as_str(), Some("2"));
     }
@@ -831,7 +901,10 @@ Content of the second topic.
         assert_eq!(sections.impl_file_scope.len(), 2);
         assert_eq!(sections.impl_file_scope[0].path, "src/foo.rs");
         assert_eq!(sections.impl_file_scope[0].action.as_deref(), Some("new"));
-        assert_eq!(sections.impl_file_scope[1].action.as_deref(), Some("modified"));
+        assert_eq!(
+            sections.impl_file_scope[1].action.as_deref(),
+            Some("modified")
+        );
 
         assert_eq!(sections.impl_constraints.len(), 2);
         assert!(sections.impl_constraints[0].contains("UTF-8"));
@@ -899,8 +972,10 @@ mod integration_tests {
     fn scan_real_docs_directory() {
         // Test against the actual Omegon docs/ directory
         let docs_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
-            .parent().unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
             .join("docs");
 
         if !docs_dir.exists() {
@@ -930,11 +1005,21 @@ mod integration_tests {
         // Parse sections for a known node
         if let Some(node) = nodes.get("rust-lifecycle-crates") {
             let sections = read_node_sections(node).unwrap();
-            assert!(!sections.overview.is_empty(), "rust-lifecycle-crates should have overview");
-            assert!(!sections.decisions.is_empty(), "rust-lifecycle-crates should have decisions");
+            assert!(
+                !sections.overview.is_empty(),
+                "rust-lifecycle-crates should have overview"
+            );
+            assert!(
+                !sections.decisions.is_empty(),
+                "rust-lifecycle-crates should have decisions"
+            );
         }
 
-        tracing::debug!("Scanned {} design nodes from {}", nodes.len(), docs_dir.display());
+        tracing::debug!(
+            "Scanned {} design nodes from {}",
+            nodes.len(),
+            docs_dir.display()
+        );
     }
 }
 
@@ -947,7 +1032,16 @@ mod mutation_tests {
         let dir = tempfile::tempdir().unwrap();
         let docs = dir.path().join("docs");
 
-        let node = create_node(&docs, "new-node", "New Node", Some("parent"), None, &["rust".into(), "test".into()], "Overview text.").unwrap();
+        let node = create_node(
+            &docs,
+            "new-node",
+            "New Node",
+            Some("parent"),
+            None,
+            &["rust".into(), "test".into()],
+            "Overview text.",
+        )
+        .unwrap();
         assert_eq!(node.id, "new-node");
         assert_eq!(node.status, NodeStatus::Seed);
 
@@ -973,7 +1067,16 @@ mod mutation_tests {
     fn update_node_preserves_body() {
         let dir = tempfile::tempdir().unwrap();
         let docs = dir.path().join("docs");
-        let mut node = create_node(&docs, "upd", "Update Test", None, None, &[], "Original overview.").unwrap();
+        let mut node = create_node(
+            &docs,
+            "upd",
+            "Update Test",
+            None,
+            None,
+            &[],
+            "Original overview.",
+        )
+        .unwrap();
 
         // Add a decision first
         add_decision(&node, "Use X", "decided", "Because Y").unwrap();
@@ -982,13 +1085,25 @@ mod mutation_tests {
         let content_before = fs::read_to_string(&node.file_path).unwrap();
         assert!(content_before.contains("Use X"));
 
-        update_node(&mut node, |n| { n.status = NodeStatus::Decided; }).unwrap();
+        update_node(&mut node, |n| {
+            n.status = NodeStatus::Decided;
+        })
+        .unwrap();
         assert_eq!(node.status, NodeStatus::Decided);
 
         let content_after = fs::read_to_string(&node.file_path).unwrap();
-        assert!(content_after.contains("Use X"), "decision should be preserved after status update");
-        assert!(content_after.contains("decided"), "frontmatter should show new status");
-        assert!(content_after.contains("Original overview"), "overview should be preserved");
+        assert!(
+            content_after.contains("Use X"),
+            "decision should be preserved after status update"
+        );
+        assert!(
+            content_after.contains("decided"),
+            "frontmatter should show new status"
+        );
+        assert!(
+            content_after.contains("Original overview"),
+            "overview should be preserved"
+        );
     }
 
     #[test]
@@ -1012,9 +1127,16 @@ mod mutation_tests {
         let docs = dir.path().join("docs");
         let node = create_node(&docs, "impl", "Impl Test", None, None, &[], "").unwrap();
 
-        add_impl_notes(&node, &[
-            FileScope { path: "src/foo.rs".into(), description: "Main impl".into(), action: Some("new".into()) },
-        ], &["Must handle UTF-8".into()]).unwrap();
+        add_impl_notes(
+            &node,
+            &[FileScope {
+                path: "src/foo.rs".into(),
+                description: "Main impl".into(),
+                action: Some("new".into()),
+            }],
+            &["Must handle UTF-8".into()],
+        )
+        .unwrap();
 
         let sections = read_node_sections(&node).unwrap();
         assert_eq!(sections.impl_file_scope.len(), 1);
@@ -1031,7 +1153,8 @@ mod mutation_tests {
         update_node(&mut node, |n| {
             n.open_questions.push("Question 1?".into());
             n.open_questions.push("Question 2?".into());
-        }).unwrap();
+        })
+        .unwrap();
 
         let content = fs::read_to_string(&node.file_path).unwrap();
         let fm = parse_frontmatter(&content).unwrap();
@@ -1041,7 +1164,8 @@ mod mutation_tests {
         // Remove one
         update_node(&mut node, |n| {
             n.open_questions.retain(|q| q != "Question 1?");
-        }).unwrap();
+        })
+        .unwrap();
 
         let content = fs::read_to_string(&node.file_path).unwrap();
         let fm = parse_frontmatter(&content).unwrap();
@@ -1054,7 +1178,16 @@ mod mutation_tests {
     fn serialization_handles_special_chars() {
         let dir = tempfile::tempdir().unwrap();
         let docs = dir.path().join("docs");
-        let node = create_node(&docs, "special", "Node with \"quotes\" and — dashes", None, None, &[], "").unwrap();
+        let node = create_node(
+            &docs,
+            "special",
+            "Node with \"quotes\" and — dashes",
+            None,
+            None,
+            &[],
+            "",
+        )
+        .unwrap();
 
         let content = fs::read_to_string(&node.file_path).unwrap();
         let fm = parse_frontmatter(&content).unwrap();
@@ -1074,17 +1207,30 @@ mod roundtrip_tests {
         let docs = dir.path().join("docs");
 
         // Create a node with all sections populated
-        let node = create_node(&docs, "rt", "Round Trip Test", Some("parent"), Some("exploring"),
-            &["rust".into(), "test".into()], "Overview text here.").unwrap();
+        let node = create_node(
+            &docs,
+            "rt",
+            "Round Trip Test",
+            Some("parent"),
+            Some("exploring"),
+            &["rust".into(), "test".into()],
+            "Overview text here.",
+        )
+        .unwrap();
 
         // Add content to all sections
         add_research(&node, "Topic A", "Research content A.").unwrap();
         add_decision(&node, "Use X", "decided", "Because Y.").unwrap();
-        add_impl_notes(&node, &[FileScope {
-            path: "src/foo.rs".into(),
-            description: "Main impl".into(),
-            action: Some("new".into()),
-        }], &["Must handle UTF-8".into()]).unwrap();
+        add_impl_notes(
+            &node,
+            &[FileScope {
+                path: "src/foo.rs".into(),
+                description: "Main impl".into(),
+                action: Some("new".into()),
+            }],
+            &["Must handle UTF-8".into()],
+        )
+        .unwrap();
 
         // Add a question
         let mut node = {
@@ -1094,7 +1240,8 @@ mod roundtrip_tests {
         };
         update_node(&mut node, |n| {
             n.open_questions.push("What about Z?".into());
-        }).unwrap();
+        })
+        .unwrap();
 
         // Read the content after first write
         let content_v1 = fs::read_to_string(&node.file_path).unwrap();
@@ -1103,8 +1250,10 @@ mod roundtrip_tests {
         update_node(&mut node, |_| {}).unwrap();
         let content_v2 = fs::read_to_string(&node.file_path).unwrap();
 
-        assert_eq!(content_v1, content_v2,
-            "no-op update should produce identical output\nv1:\n{content_v1}\n\nv2:\n{content_v2}");
+        assert_eq!(
+            content_v1, content_v2,
+            "no-op update should produce identical output\nv1:\n{content_v1}\n\nv2:\n{content_v2}"
+        );
 
         // Do another no-op update (third write — should still be stable)
         update_node(&mut node, |_| {}).unwrap();
@@ -1123,25 +1272,33 @@ mod roundtrip_tests {
         update_node(&mut node, |n| {
             n.open_questions.push("Q1?".into());
             n.open_questions.push("Q2?".into());
-        }).unwrap();
+        })
+        .unwrap();
 
         // Remove one question
         update_node(&mut node, |n| {
             n.open_questions.retain(|q| q != "Q1?");
-        }).unwrap();
+        })
+        .unwrap();
 
         // Re-read and verify both frontmatter and body are in sync
         let content = fs::read_to_string(&node.file_path).unwrap();
         let fm = parse_frontmatter(&content).unwrap();
         let read_node = node_from_frontmatter(&fm, node.file_path.clone()).unwrap();
 
-        assert_eq!(read_node.open_questions, vec!["Q2?"],
-            "frontmatter should only have Q2");
+        assert_eq!(
+            read_node.open_questions,
+            vec!["Q2?"],
+            "frontmatter should only have Q2"
+        );
 
         let body = extract_body(&content);
         let sections = parse_sections(body);
-        assert_eq!(sections.open_questions, vec!["Q2?"],
-            "body should only have Q2");
+        assert_eq!(
+            sections.open_questions,
+            vec!["Q2?"],
+            "body should only have Q2"
+        );
 
         // Another update should be stable
         let mut node = read_node;
@@ -1149,7 +1306,10 @@ mod roundtrip_tests {
         update_node(&mut node, |_| {}).unwrap();
         let content_after = fs::read_to_string(&node.file_path).unwrap();
         let sections_after = parse_sections(extract_body(&content_after));
-        assert_eq!(sections_after.open_questions, vec!["Q2?"],
-            "questions should remain stable after re-write");
+        assert_eq!(
+            sections_after.open_questions,
+            vec!["Q2?"],
+            "questions should remain stable after re-write"
+        );
     }
 }

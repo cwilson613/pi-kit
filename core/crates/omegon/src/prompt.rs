@@ -47,7 +47,8 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
 
     let has_design_tools = tool_names.contains("design_tree");
     let has_openspec_tools = tool_names.contains("openspec_manage");
-    let has_cleave_tools = tool_names.contains("cleave_assess") || tool_names.contains("cleave_run");
+    let has_cleave_tools =
+        tool_names.contains("cleave_assess") || tool_names.contains("cleave_run");
 
     let docs_dir = repo_root.join("docs");
     let openspec_dir = repo_root.join("openspec");
@@ -192,10 +193,7 @@ fn detect_project_conventions(cwd: &Path) -> String {
     if conventions.is_empty() {
         String::new()
     } else {
-        format!(
-            "\n# Project Conventions\n\n{}\n",
-            conventions.join("\n")
-        )
+        format!("\n# Project Conventions\n\n{}\n", conventions.join("\n"))
     }
 }
 
@@ -231,21 +229,22 @@ fn load_project_directives(cwd: &Path) -> String {
     for dir in search_dirs {
         let agents_file = dir.join("AGENTS.md");
         if agents_file.exists()
-            && let Ok(content) = std::fs::read_to_string(&agents_file) {
-                let trimmed = if content.len() > 4000 {
-                    let mut end = 4000;
-                    while end > 0 && !content.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    format!("{}...\n[truncated at ~4000 bytes]", &content[..end])
-                } else {
-                    content
-                };
-                return format!(
-                    "\n# Project Directives\n\nFrom `{}`:\n\n{trimmed}\n",
-                    agents_file.display()
-                );
-            }
+            && let Ok(content) = std::fs::read_to_string(&agents_file)
+        {
+            let trimmed = if content.len() > 4000 {
+                let mut end = 4000;
+                while end > 0 && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...\n[truncated at ~4000 bytes]", &content[..end])
+            } else {
+                content
+            };
+            return format!(
+                "\n# Project Directives\n\nFrom `{}`:\n\n{trimmed}\n",
+                agents_file.display()
+            );
+        }
     }
     String::new()
 }
@@ -261,21 +260,23 @@ fn find_repo_root(start: &Path) -> Option<PathBuf> {
             if git_path.is_file() {
                 // Worktree: .git is a file like "gitdir: /main/repo/.git/worktrees/name"
                 if let Ok(content) = std::fs::read_to_string(&git_path)
-                    && let Some(gitdir) = content.strip_prefix("gitdir: ") {
-                        let gitdir = gitdir.trim();
-                        // gitdir points to .git/worktrees/<name>, go up to .git, then up to repo root
-                        let gitdir_path = if Path::new(gitdir).is_absolute() {
-                            PathBuf::from(gitdir)
-                        } else {
-                            dir.join(gitdir)
-                        };
-                        // .git/worktrees/<name> → .git → repo root
-                        // .git/worktrees/<name> → .git → repo root
-                        if let Some(dot_git) = gitdir_path.parent().and_then(|p| p.parent())
-                            && let Some(repo) = dot_git.parent() {
-                                return Some(repo.to_path_buf());
-                            }
+                    && let Some(gitdir) = content.strip_prefix("gitdir: ")
+                {
+                    let gitdir = gitdir.trim();
+                    // gitdir points to .git/worktrees/<name>, go up to .git, then up to repo root
+                    let gitdir_path = if Path::new(gitdir).is_absolute() {
+                        PathBuf::from(gitdir)
+                    } else {
+                        dir.join(gitdir)
+                    };
+                    // .git/worktrees/<name> → .git → repo root
+                    // .git/worktrees/<name> → .git → repo root
+                    if let Some(dot_git) = gitdir_path.parent().and_then(|p| p.parent())
+                        && let Some(repo) = dot_git.parent()
+                    {
+                        return Some(repo.to_path_buf());
                     }
+                }
                 // Fallback: treat as repo root
                 return Some(dir);
             } else {
@@ -315,15 +316,33 @@ fn epoch_to_ymd(epoch_secs: u64) -> String {
     let mut y = 1970i64;
     loop {
         let ydays = if is_leap(y) { 366 } else { 365 };
-        if days < ydays { break; }
+        if days < ydays {
+            break;
+        }
         days -= ydays;
         y += 1;
     }
     let leap = is_leap(y);
-    let mdays: [i64; 12] = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 0usize;
     for (i, &md) in mdays.iter().enumerate() {
-        if days < md { m = i; break; }
+        if days < md {
+            m = i;
+            break;
+        }
         days -= md;
     }
     format!("{y}-{:02}-{:02}", m + 1, days + 1)
@@ -362,7 +381,10 @@ mod tests {
     fn base_prompt_includes_commit_instructions() {
         let tools = vec![];
         let prompt = build_base_prompt(Path::new("/tmp"), &tools);
-        assert!(prompt.contains("Commit when done"), "should instruct to commit");
+        assert!(
+            prompt.contains("Commit when done"),
+            "should instruct to commit"
+        );
         assert!(prompt.contains("NOT push"), "should instruct not to push");
     }
 
@@ -399,7 +421,10 @@ mod tests {
         ];
 
         let ctx = detect_lifecycle_context(cwd, &tools);
-        assert!(ctx.contains("Project Lifecycle"), "should detect lifecycle, got: {ctx}");
+        assert!(
+            ctx.contains("Project Lifecycle"),
+            "should detect lifecycle, got: {ctx}"
+        );
         assert!(ctx.contains("design-tree"), "should mention design-tree");
         assert!(ctx.contains("1 design doc"), "should count docs");
     }
@@ -419,7 +444,10 @@ mod tests {
         }];
 
         let ctx = detect_lifecycle_context(cwd, &tools);
-        assert!(ctx.contains("openspec"), "should detect openspec, got: {ctx}");
+        assert!(
+            ctx.contains("openspec"),
+            "should detect openspec, got: {ctx}"
+        );
         assert!(ctx.contains("Spec-driven"), "should include spec guidance");
     }
 
@@ -427,27 +455,54 @@ mod tests {
     fn lifecycle_context_empty_when_no_artifacts() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = detect_lifecycle_context(dir.path(), &[]);
-        assert!(ctx.is_empty(), "no artifacts + no tools = no lifecycle section");
+        assert!(
+            ctx.is_empty(),
+            "no artifacts + no tools = no lifecycle section"
+        );
     }
 
     #[test]
     fn evidence_grounding_in_prompt() {
         let tools = vec![];
         let prompt = build_base_prompt(Path::new("/tmp"), &tools);
-        assert!(prompt.contains("Ground claims in evidence"), "should include evidence directive");
+        assert!(
+            prompt.contains("Ground claims in evidence"),
+            "should include evidence directive"
+        );
     }
 
     #[test]
     fn lex_imperialis_in_prompt() {
         let tools = vec![];
         let prompt = build_base_prompt(Path::new("/tmp"), &tools);
-        assert!(prompt.contains("Lex Imperialis"), "should include Lex Imperialis");
-        assert!(prompt.contains("Anti-Sycophancy"), "should include directive I");
-        assert!(prompt.contains("Evidence-Based Epistemology"), "should include directive II");
-        assert!(prompt.contains("Perfection Is the Enemy of Good"), "should include directive III");
-        assert!(prompt.contains("Systems Engineering Harness"), "should include directive IV");
-        assert!(prompt.contains("Cognitive Honesty"), "should include directive V");
-        assert!(prompt.contains("Operator Agency"), "should include directive VI");
+        assert!(
+            prompt.contains("Lex Imperialis"),
+            "should include Lex Imperialis"
+        );
+        assert!(
+            prompt.contains("Anti-Sycophancy"),
+            "should include directive I"
+        );
+        assert!(
+            prompt.contains("Evidence-Based Epistemology"),
+            "should include directive II"
+        );
+        assert!(
+            prompt.contains("Perfection Is the Enemy of Good"),
+            "should include directive III"
+        );
+        assert!(
+            prompt.contains("Systems Engineering Harness"),
+            "should include directive IV"
+        );
+        assert!(
+            prompt.contains("Cognitive Honesty"),
+            "should include directive V"
+        );
+        assert!(
+            prompt.contains("Operator Agency"),
+            "should include directive VI"
+        );
     }
 
     #[test]
@@ -457,10 +512,16 @@ mod tests {
         let lex_pos = prompt.find("Lex Imperialis").unwrap_or(usize::MAX);
         // Lex should come before any operator/project directives sections
         if let Some(op_pos) = prompt.find("Operator Directives") {
-            assert!(lex_pos < op_pos, "Lex Imperialis must appear before Operator Directives");
+            assert!(
+                lex_pos < op_pos,
+                "Lex Imperialis must appear before Operator Directives"
+            );
         }
         if let Some(proj_pos) = prompt.find("Project Directives") {
-            assert!(lex_pos < proj_pos, "Lex Imperialis must appear before Project Directives");
+            assert!(
+                lex_pos < proj_pos,
+                "Lex Imperialis must appear before Project Directives"
+            );
         }
     }
 }

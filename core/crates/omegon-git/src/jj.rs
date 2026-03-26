@@ -33,7 +33,10 @@ mod jj_lib_queries {
     /// Load the jj workspace and repo at the current operation head.
     pub async fn load_repo(
         repo_path: &Path,
-    ) -> Result<(jj_lib::workspace::Workspace, std::sync::Arc<jj_lib::repo::ReadonlyRepo>)> {
+    ) -> Result<(
+        jj_lib::workspace::Workspace,
+        std::sync::Arc<jj_lib::repo::ReadonlyRepo>,
+    )> {
         let config = jj_lib::config::StackedConfig::with_defaults();
         let settings = jj_lib::settings::UserSettings::from_config(config)
             .context("failed to create jj settings")?;
@@ -62,9 +65,7 @@ mod jj_lib_queries {
         }
 
         let (workspace, repo) = load_repo(repo_path).await?;
-        let wc_id = repo
-            .view()
-            .get_wc_commit_id(workspace.workspace_name());
+        let wc_id = repo.view().get_wc_commit_id(workspace.workspace_name());
 
         match wc_id {
             Some(commit_id) => {

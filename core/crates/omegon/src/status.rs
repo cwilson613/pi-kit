@@ -34,9 +34,9 @@ pub struct HarnessStatus {
     pub container_runtime: Option<ContainerRuntimeStatus>,
 
     // ── Context routing (three-axis model) ───────────────────
-    pub context_class: String,      // "Squad" / "Maniple" / "Clan" / "Legion"
-    pub thinking_level: String,     // "Off" / "Minimal" / "Low" / "Medium" / "High"
-    pub capability_tier: String,    // "retribution" / "victory" / "gloriana"
+    pub context_class: String,   // "Squad" / "Maniple" / "Clan" / "Legion"
+    pub thinking_level: String,  // "Off" / "Minimal" / "Low" / "Medium" / "High"
+    pub capability_tier: String, // "retribution" / "victory" / "gloriana"
 
     // ── Memory ───────────────────────────────────────────────
     pub memory: MemoryStatus,
@@ -81,7 +81,7 @@ pub struct ToneSummary {
 pub struct PluginSummary {
     pub id: String,
     pub name: String,
-    pub plugin_type: String,    // "persona" / "tone" / "skill" / "extension"
+    pub plugin_type: String, // "persona" / "tone" / "skill" / "extension"
     pub version: String,
     pub description: String,
 }
@@ -116,14 +116,14 @@ impl std::fmt::Display for McpTransportMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretBackendStatus {
-    pub backend: String,        // "keyring" / "passphrase" / "styrene-identity"
+    pub backend: String, // "keyring" / "passphrase" / "styrene-identity"
     pub stored_count: usize,
     pub locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceBackendStatus {
-    pub name: String,           // "Candle" / "Ollama" / "Burn-LM"
+    pub name: String, // "Candle" / "Ollama" / "Burn-LM"
     pub kind: InferenceKind,
     pub available: bool,
     pub models: Vec<InferenceModelInfo>,
@@ -149,13 +149,13 @@ impl std::fmt::Display for InferenceKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceModelInfo {
     pub name: String,
-    pub params: Option<String>,     // "30B", "0.6B"
+    pub params: Option<String>, // "30B", "0.6B"
     pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerRuntimeStatus {
-    pub runtime: String,        // "podman" / "docker" / "nerdctl"
+    pub runtime: String, // "podman" / "docker" / "nerdctl"
     pub version: Option<String>,
     pub available: bool,
 }
@@ -174,10 +174,10 @@ pub struct MemoryStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderStatus {
-    pub name: String,           // "Anthropic" / "OpenAI" / "Copilot"
+    pub name: String, // "Anthropic" / "OpenAI" / "Copilot"
     pub authenticated: bool,
     pub auth_method: Option<String>, // "oauth" / "api-key" / "copilot"
-    pub model: Option<String>,  // active model name
+    pub model: Option<String>,       // active model name
 }
 
 // ── Display for bootstrap rendering ──────────────────────────
@@ -203,7 +203,9 @@ impl HarnessStatus {
 
         let mcp_connected = self.mcp_servers.iter().filter(|s| s.connected).count();
         if mcp_connected > 0 {
-            let total_tools: usize = self.mcp_servers.iter()
+            let total_tools: usize = self
+                .mcp_servers
+                .iter()
                 .filter(|s| s.connected)
                 .map(|s| s.tool_count)
                 .sum();
@@ -218,12 +220,16 @@ impl HarnessStatus {
 
     /// Check if any MCP servers failed to connect.
     pub fn mcp_errors(&self) -> Vec<&McpServerStatus> {
-        self.mcp_servers.iter().filter(|s| s.error.is_some()).collect()
+        self.mcp_servers
+            .iter()
+            .filter(|s| s.error.is_some())
+            .collect()
     }
 
     /// Total MCP tools available.
     pub fn mcp_tool_count(&self) -> usize {
-        self.mcp_servers.iter()
+        self.mcp_servers
+            .iter()
             .filter(|s| s.connected)
             .map(|s| s.tool_count)
             .sum()
@@ -255,31 +261,41 @@ impl HarnessStatus {
         // Populate installed plugins from the bus's registered features
         // (Feature trait doesn't expose identity, so we use tool counts as signal)
         let tool_defs = bus.tool_definitions();
-        let mcp_tools: Vec<_> = tool_defs.iter()
+        let mcp_tools: Vec<_> = tool_defs
+            .iter()
             .filter(|t| t.label.starts_with("mcp:"))
             .collect();
 
         if !mcp_tools.is_empty() {
             // Group by server name (label is "mcp:servername")
-            let mut servers: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut servers: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
             for t in &mcp_tools {
                 let server = t.label.strip_prefix("mcp:").unwrap_or(&t.label);
                 *servers.entry(server.to_string()).or_default() += 1;
             }
-            self.mcp_servers = servers.into_iter().map(|(name, count)| {
-                McpServerStatus {
-                    name,
-                    transport_mode: McpTransportMode::LocalProcess, // best guess
-                    tool_count: count,
-                    connected: true,
-                    error: None,
-                }
-            }).collect();
+            self.mcp_servers = servers
+                .into_iter()
+                .map(|(name, count)| {
+                    McpServerStatus {
+                        name,
+                        transport_mode: McpTransportMode::LocalProcess, // best guess
+                        tool_count: count,
+                        connected: true,
+                        error: None,
+                    }
+                })
+                .collect();
         }
     }
 
     /// Update routing state from the settings/profile.
-    pub fn update_routing(&mut self, context_class: &str, thinking_level: &str, capability_tier: &str) {
+    pub fn update_routing(
+        &mut self,
+        context_class: &str,
+        thinking_level: &str,
+        capability_tier: &str,
+    ) {
         self.context_class = context_class.into();
         self.thinking_level = thinking_level.into();
         self.capability_tier = capability_tier.into();
@@ -308,20 +324,21 @@ fn probe_container_runtime() -> Option<ContainerRuntimeStatus> {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output()
-            && output.status.success() {
-                let version_str = String::from_utf8_lossy(&output.stdout);
-                // Extract version number — typically "podman version 5.3.1" or "Docker version 27.x"
-                let version = version_str
-                    .split_whitespace()
-                    .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
-                    .map(|v| v.trim_end_matches(',').to_string());
+            && output.status.success()
+        {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            // Extract version number — typically "podman version 5.3.1" or "Docker version 27.x"
+            let version = version_str
+                .split_whitespace()
+                .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .map(|v| v.trim_end_matches(',').to_string());
 
-                return Some(ContainerRuntimeStatus {
-                    runtime: runtime.to_string(),
-                    version,
-                    available: true,
-                });
-            }
+            return Some(ContainerRuntimeStatus {
+                runtime: runtime.to_string(),
+                version,
+                available: true,
+            });
+        }
     }
     None
 }
@@ -336,29 +353,34 @@ fn probe_inference_backends() -> Vec<InferenceBackendStatus> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output()
-        && resp.status.success() {
-            let body = String::from_utf8_lossy(&resp.stdout);
-            let models: Vec<InferenceModelInfo> = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["models"].as_array().cloned())
-                .map(|arr| {
-                    arr.iter().filter_map(|m| {
+        && resp.status.success()
+    {
+        let body = String::from_utf8_lossy(&resp.stdout);
+        let models: Vec<InferenceModelInfo> = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["models"].as_array().cloned())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
                         Some(InferenceModelInfo {
                             name: m["name"].as_str()?.to_string(),
-                            params: m["details"]["parameter_size"].as_str().map(|s| s.to_string()),
+                            params: m["details"]["parameter_size"]
+                                .as_str()
+                                .map(|s| s.to_string()),
                             context_window: None,
                         })
-                    }).collect()
-                })
-                .unwrap_or_default();
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            backends.push(InferenceBackendStatus {
-                name: "Ollama".into(),
-                kind: InferenceKind::External,
-                available: true,
-                models,
-            });
-        }
+        backends.push(InferenceBackendStatus {
+            name: "Ollama".into(),
+            kind: InferenceKind::External,
+            available: true,
+            models,
+        });
+    }
 
     backends
 }
@@ -376,7 +398,9 @@ fn probe_secret_store() -> Option<SecretBackendStatus> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(db) => db
-            .query_row("SELECT value FROM meta WHERE key = 'backend'", [], |row| row.get::<_, String>(0))
+            .query_row("SELECT value FROM meta WHERE key = 'backend'", [], |row| {
+                row.get::<_, String>(0)
+            })
             .unwrap_or_else(|_| "encrypted".into()),
         Err(_) => "encrypted".into(),
     };
@@ -402,9 +426,13 @@ impl Default for HarnessStatus {
             thinking_level: "Medium".into(),
             capability_tier: "victory".into(),
             memory: MemoryStatus {
-                total_facts: 0, active_facts: 0,
-                project_facts: 0, persona_facts: 0, working_facts: 0,
-                episodes: 0, edges: 0,
+                total_facts: 0,
+                active_facts: 0,
+                project_facts: 0,
+                persona_facts: 0,
+                working_facts: 0,
+                episodes: 0,
+                edges: 0,
                 active_persona_mind: None,
             },
             providers: vec![],
@@ -437,18 +465,29 @@ mod tests {
     fn footer_summary_full() {
         let mut status = HarnessStatus::default();
         status.active_persona = Some(PersonaSummary {
-            id: "test".into(), name: "Engineer".into(), badge: "⚙".into(),
-            mind_facts_count: 10, activated_skills: vec![], disabled_tools: vec![],
+            id: "test".into(),
+            name: "Engineer".into(),
+            badge: "⚙".into(),
+            mind_facts_count: 10,
+            activated_skills: vec![],
+            disabled_tools: vec![],
         });
         status.active_tone = Some(ToneSummary {
-            id: "test".into(), name: "Concise".into(), intensity_mode: "full".into(),
+            id: "test".into(),
+            name: "Concise".into(),
+            intensity_mode: "full".into(),
         });
         status.secret_backend = Some(SecretBackendStatus {
-            backend: "passphrase".into(), stored_count: 3, locked: false,
+            backend: "passphrase".into(),
+            stored_count: 3,
+            locked: false,
         });
         status.mcp_servers.push(McpServerStatus {
-            name: "filesystem".into(), transport_mode: McpTransportMode::LocalProcess,
-            tool_count: 5, connected: true, error: None,
+            name: "filesystem".into(),
+            transport_mode: McpTransportMode::LocalProcess,
+            tool_count: 5,
+            connected: true,
+            error: None,
         });
 
         let footer = status.footer_summary();
@@ -462,12 +501,18 @@ mod tests {
     fn mcp_errors_filtered() {
         let mut status = HarnessStatus::default();
         status.mcp_servers.push(McpServerStatus {
-            name: "ok".into(), transport_mode: McpTransportMode::LocalProcess,
-            tool_count: 3, connected: true, error: None,
+            name: "ok".into(),
+            transport_mode: McpTransportMode::LocalProcess,
+            tool_count: 3,
+            connected: true,
+            error: None,
         });
         status.mcp_servers.push(McpServerStatus {
-            name: "broken".into(), transport_mode: McpTransportMode::OciContainer,
-            tool_count: 0, connected: false, error: Some("connection refused".into()),
+            name: "broken".into(),
+            transport_mode: McpTransportMode::OciContainer,
+            tool_count: 0,
+            connected: false,
+            error: Some("connection refused".into()),
         });
 
         assert_eq!(status.mcp_errors().len(), 1);
@@ -479,8 +524,11 @@ mod tests {
     fn serialization_roundtrip() {
         let mut status = HarnessStatus::default();
         status.active_persona = Some(PersonaSummary {
-            id: "test.persona".into(), name: "Test".into(), badge: "🧪".into(),
-            mind_facts_count: 5, activated_skills: vec!["rust".into()],
+            id: "test.persona".into(),
+            name: "Test".into(),
+            badge: "🧪".into(),
+            mind_facts_count: 5,
+            activated_skills: vec!["rust".into()],
             disabled_tools: vec!["bash".into()],
         });
 

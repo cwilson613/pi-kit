@@ -3,7 +3,7 @@
 //! Provides `manage_tools` for the agent to control which tools are active.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 

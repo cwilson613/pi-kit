@@ -8,7 +8,7 @@
 //! - Interactive terminal picker
 //! - .omegon-version auto-detection
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use dirs::home_dir;
 use std::collections::HashMap;
 use std::env;
@@ -78,7 +78,7 @@ impl PartialOrd for Version {
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
-        
+
         // First compare major.minor.patch
         match (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch)) {
             Ordering::Equal => {
@@ -124,9 +124,9 @@ impl VersionSwitcher {
         let versions_dir = home_dir()
             .expect("HOME directory not set — cannot manage versions without a home directory")
             .join(".omegon/versions");
-        
+
         let current_exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("omegon"));
-        
+
         Self {
             versions_dir,
             current_exe,
@@ -138,16 +138,23 @@ impl VersionSwitcher {
     /// Fetch releases from GitHub API with caching
     pub async fn fetch_releases(&mut self) -> Result<&[GitHubRelease]> {
         if self.cache.is_none() {
-            let url = format!("{}/repos/{}/{}/releases", GITHUB_API_BASE, REPO_OWNER, REPO_NAME);
-            
-            let response = self.client
+            let url = format!(
+                "{}/repos/{}/{}/releases",
+                GITHUB_API_BASE, REPO_OWNER, REPO_NAME
+            );
+
+            let response = self
+                .client
                 .get(&url)
                 .header("User-Agent", "omegon-version-switcher")
                 .send()
                 .await?;
 
             if !response.status().is_success() {
-                return Err(anyhow!("Failed to fetch releases: HTTP {}", response.status()));
+                return Err(anyhow!(
+                    "Failed to fetch releases: HTTP {}",
+                    response.status()
+                ));
             }
 
             let releases: Vec<GitHubRelease> = response.json().await?;
@@ -160,7 +167,7 @@ impl VersionSwitcher {
     /// List all installed versions
     pub fn list_installed_versions(&self) -> Result<Vec<VersionInfo>> {
         let mut versions = Vec::new();
-        
+
         if !self.versions_dir.exists() {
             return Ok(versions);
         }
@@ -172,7 +179,7 @@ impl VersionSwitcher {
             if entry.file_type()?.is_dir() {
                 let version_name = entry.file_name();
                 let version_str = version_name.to_string_lossy();
-                
+
                 if let Ok(version) = Version::parse(&version_str) {
                     let binary_path = entry.path().join("omegon");
                     let is_installed = binary_path.exists();
@@ -206,10 +213,11 @@ impl VersionSwitcher {
 
         // Extract version from path like ~/.omegon/versions/1.2.3/omegon
         if let Some(parent) = target.parent()
-            && let Some(version_name) = parent.file_name() {
-                let version_str = version_name.to_string_lossy();
-                return Ok(Some(Version::parse(&version_str)?));
-            }
+            && let Some(version_name) = parent.file_name()
+        {
+            let version_str = version_name.to_string_lossy();
+            return Ok(Some(Version::parse(&version_str)?));
+        }
 
         Ok(None)
     }
@@ -230,22 +238,32 @@ impl VersionSwitcher {
         // Try multiple artifact naming conventions — the format has changed
         // across releases (omegon-agent-*, omegon-*, omegon-VERSION-TRIPLE.*)
         let candidates = vec![
-            format!("omegon-{}.tar.gz", platform.target),                    // current: omegon-darwin-arm64.tar.gz
-            format!("omegon-agent-{}.tar.gz", platform.target),              // v0.12.x: omegon-agent-darwin-arm64.tar.gz
+            format!("omegon-{}.tar.gz", platform.target), // current: omegon-darwin-arm64.tar.gz
+            format!("omegon-agent-{}.tar.gz", platform.target), // v0.12.x: omegon-agent-darwin-arm64.tar.gz
             format!("omegon-{}-{}.tar.gz", version_bare, platform.rust_triple()), // CI raw: omegon-0.14.0-aarch64-apple-darwin.tar.gz
         ];
-        let artifact_name = candidates.iter()
+        let artifact_name = candidates
+            .iter()
             .find(|name| release.assets.iter().any(|a| &a.name == *name))
-            .ok_or_else(|| anyhow!(
-                "No asset found for platform {} in release {}. Available: {}",
-                platform.target,
-                release.tag_name,
-                release.assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
-            ))?
+            .ok_or_else(|| {
+                anyhow!(
+                    "No asset found for platform {} in release {}. Available: {}",
+                    platform.target,
+                    release.tag_name,
+                    release
+                        .assets
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?
             .clone();
 
         // Asset is guaranteed to exist — the candidate loop above verified it
-        let asset = release.assets.iter()
+        let asset = release
+            .assets
+            .iter()
             .find(|a| a.name == artifact_name)
             .expect("candidate loop verified asset exists")
             .clone();
@@ -260,13 +278,13 @@ impl VersionSwitcher {
         // Download and verify
         let tarball_data = self.download_asset(&asset).await?;
         let checksums_data = self.download_asset(&checksums_asset).await?;
-        
+
         verify_checksum(&tarball_data, &checksums_data, &artifact_name)?;
 
         // Extract to version directory
         let version_dir = self.versions_dir.join(version);
         fs::create_dir_all(&version_dir)?;
-        
+
         extract_tarball(&tarball_data, &version_dir)?;
 
         let binary_path = version_dir.join("omegon");
@@ -289,7 +307,7 @@ impl VersionSwitcher {
     /// Switch to a specific version
     pub fn activate_version(&self, version: &str) -> Result<()> {
         let version_binary = self.versions_dir.join(version).join("omegon");
-        
+
         if !version_binary.exists() {
             return Err(anyhow!("Version {} is not installed", version));
         }
@@ -297,19 +315,17 @@ impl VersionSwitcher {
         // Handle first-time setup (move current binary to versions)
         if !self.current_exe.is_symlink() && self.current_exe.exists() {
             // Detect current version
-            let output = Command::new(&self.current_exe)
-                .arg("--version")
-                .output();
-            
+            let output = Command::new(&self.current_exe).arg("--version").output();
+
             if let Ok(output) = output {
                 let version_str = String::from_utf8_lossy(&output.stdout);
                 if let Some(version) = extract_version_from_output(&version_str) {
                     let current_version_dir = self.versions_dir.join(&version);
                     fs::create_dir_all(&current_version_dir)?;
-                    
+
                     let backup_path = current_version_dir.join("omegon");
                     fs::copy(&self.current_exe, &backup_path)?;
-                    
+
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -349,7 +365,9 @@ impl VersionSwitcher {
                 tracing::debug!(error = %e, "atomic rename failed, used fallback symlink");
             }
         } else {
-            return Err(anyhow!("cannot determine parent directory of current executable"));
+            return Err(anyhow!(
+                "cannot determine parent directory of current executable"
+            ));
         }
 
         Ok(())
@@ -427,18 +445,31 @@ impl VersionSwitcher {
                 ("Release Candidates:", Color::Yellow, true),
             ] {
                 let has_entries = all_options.iter().any(|(v, _)| v.rc.is_some() == filter_rc);
-                if !has_entries { continue; }
+                if !has_entries {
+                    continue;
+                }
 
-                execute!(stdout, SetForegroundColor(color), Print(format!("{label}\n")), ResetColor)?;
+                execute!(
+                    stdout,
+                    SetForegroundColor(color),
+                    Print(format!("{label}\n")),
+                    ResetColor
+                )?;
 
                 for (i, (version, _)) in all_options.iter().enumerate() {
-                    if version.rc.is_some() != filter_rc { continue; }
+                    if version.rc.is_some() != filter_rc {
+                        continue;
+                    }
 
                     let marker = if i == selected { "→ " } else { "  " };
                     let mut status_parts = Vec::new();
                     if let Some(info) = installed_map.get(&version.raw) {
-                        if info.is_active { status_parts.push("● active"); }
-                        if info.is_installed { status_parts.push("installed"); }
+                        if info.is_active {
+                            status_parts.push("● active");
+                        }
+                        if info.is_installed {
+                            status_parts.push("installed");
+                        }
                     }
                     let status = if status_parts.is_empty() {
                         String::new()
@@ -447,8 +478,12 @@ impl VersionSwitcher {
                     };
 
                     if i == selected {
-                        execute!(stdout, SetForegroundColor(Color::Yellow),
-                            Print(format!("{marker}{}{status}\n", version.raw)), ResetColor)?;
+                        execute!(
+                            stdout,
+                            SetForegroundColor(Color::Yellow),
+                            Print(format!("{marker}{}{status}\n", version.raw)),
+                            ResetColor
+                        )?;
                     } else {
                         execute!(stdout, Print(format!("{marker}{}{status}\n", version.raw)))?;
                     }
@@ -489,17 +524,15 @@ impl VersionSwitcher {
     /// Check for .omegon-version file and warn if mismatch
     pub fn check_version_file(&self, cwd: &Path) -> Result<Option<String>> {
         let version_file = find_version_file(cwd)?;
-        
+
         let Some(version_file_path) = version_file else {
             return Ok(None);
         };
 
-        let required_version = fs::read_to_string(&version_file_path)?
-            .trim()
-            .to_string();
+        let required_version = fs::read_to_string(&version_file_path)?.trim().to_string();
 
         let active_version = self.get_active_version()?;
-        
+
         match active_version {
             Some(active) if active.raw != required_version => {
                 let warning = format!(
@@ -521,14 +554,19 @@ impl VersionSwitcher {
 
     /// Download an asset from GitHub
     async fn download_asset(&self, asset: &GitHubAsset) -> Result<Vec<u8>> {
-        let response = self.client
+        let response = self
+            .client
             .get(&asset.browser_download_url)
             .header("User-Agent", "omegon-version-switcher")
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Failed to download {}: HTTP {}", asset.name, response.status()));
+            return Err(anyhow!(
+                "Failed to download {}: HTTP {}",
+                asset.name,
+                response.status()
+            ));
         }
 
         Ok(response.bytes().await?.to_vec())
@@ -561,7 +599,7 @@ pub fn detect_platform() -> Result<PlatformInfo> {
 
 /// Verify SHA256 checksum
 fn verify_checksum(data: &[u8], checksums: &[u8], filename: &str) -> Result<()> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let checksums_str = String::from_utf8_lossy(checksums);
     let expected_hash = checksums_str
@@ -595,12 +633,12 @@ fn verify_checksum(data: &[u8], checksums: &[u8], filename: &str) -> Result<()> 
 /// Extract tarball to directory
 fn extract_tarball(data: &[u8], dest_dir: &Path) -> Result<()> {
     use std::io::Cursor;
-    
+
     let tar_data = if data.starts_with(&[0x1f, 0x8b]) {
         // Gzipped
         use flate2::read::GzDecoder;
         use std::io::Read;
-        
+
         let mut decoder = GzDecoder::new(Cursor::new(data));
         let mut buf = Vec::new();
         decoder.read_to_end(&mut buf)?;
@@ -611,20 +649,20 @@ fn extract_tarball(data: &[u8], dest_dir: &Path) -> Result<()> {
 
     let mut archive = tar::Archive::new(Cursor::new(tar_data));
     archive.unpack(dest_dir)?;
-    
+
     Ok(())
 }
 
 /// Find .omegon-version file by walking up directories
 fn find_version_file(start_dir: &Path) -> Result<Option<PathBuf>> {
     let mut current = start_dir;
-    
+
     loop {
         let version_file = current.join(".omegon-version");
         if version_file.exists() {
             return Ok(Some(version_file));
         }
-        
+
         match current.parent() {
             Some(parent) => current = parent,
             None => return Ok(None),
@@ -646,10 +684,11 @@ impl Version {
     /// Parse a version string like "1.2.3" or "1.2.3-rc.4"
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.strip_prefix('v').unwrap_or(s); // Remove 'v' prefix if present
-        
+
         let (base, rc) = if let Some(rc_pos) = s.find("-rc.") {
             let (base, rc_part) = s.split_at(rc_pos);
-            let rc_num = rc_part.strip_prefix("-rc.")
+            let rc_num = rc_part
+                .strip_prefix("-rc.")
                 .ok_or_else(|| anyhow!("Invalid RC format"))?
                 .parse::<u32>()?;
             (base, Some(rc_num))
@@ -741,11 +780,20 @@ pub async fn switch_to_latest(include_rc: bool) -> anyhow::Result<()> {
         .collect();
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
-    let (release, _) = candidates
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No {} releases found", if include_rc { "RC" } else { "stable" }))?;
-    let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name);
-    println!("Latest {}: {version}", if include_rc { "RC" } else { "stable" });
+    let (release, _) = candidates.first().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No {} releases found",
+            if include_rc { "RC" } else { "stable" }
+        )
+    })?;
+    let version = release
+        .tag_name
+        .strip_prefix('v')
+        .unwrap_or(&release.tag_name);
+    println!(
+        "Latest {}: {version}",
+        if include_rc { "RC" } else { "stable" }
+    );
     switch_to_version(version).await
 }
 
@@ -828,9 +876,12 @@ mod tests {
         assert!(!platform.os.is_empty());
         assert!(!platform.arch.is_empty());
         assert!(!platform.target.is_empty());
-        
+
         // Should be in format "os-arch"
-        assert_eq!(platform.target, format!("{}-{}", platform.os, platform.arch));
+        assert_eq!(
+            platform.target,
+            format!("{}-{}", platform.os, platform.arch)
+        );
     }
 
     #[test]
@@ -847,26 +898,26 @@ mod tests {
         assert_eq!(extract_version_from_output(""), None);
     }
 
-    #[test] 
+    #[test]
     fn test_find_version_file() {
         use std::fs;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let root = temp_dir.path();
-        
+
         // Create nested directory structure
         let nested_dir = root.join("project").join("sub");
         fs::create_dir_all(&nested_dir).unwrap();
-        
+
         // Create .omegon-version in root
         let version_file = root.join(".omegon-version");
         fs::write(&version_file, "1.2.3").unwrap();
-        
+
         // Should find the file when starting from nested directory
         let found = find_version_file(&nested_dir).unwrap();
         assert_eq!(found, Some(version_file));
-        
+
         // Should return None if no file exists
         let temp_dir2 = TempDir::new().unwrap();
         let found = find_version_file(temp_dir2.path()).unwrap();
@@ -883,7 +934,10 @@ mod tests {
         fs::write(dir.path().join(".omegon-version"), "99.99.99").unwrap();
 
         let warning = check_version_file_warning(dir.path());
-        assert!(warning.is_some(), "should warn when version can't be determined");
+        assert!(
+            warning.is_some(),
+            "should warn when version can't be determined"
+        );
         assert!(warning.unwrap().contains("99.99.99"));
     }
 
@@ -897,13 +951,25 @@ mod tests {
 
     #[test]
     fn test_rust_triple_mapping() {
-        let p = PlatformInfo { os: "darwin".into(), arch: "arm64".into(), target: "darwin-arm64".into() };
+        let p = PlatformInfo {
+            os: "darwin".into(),
+            arch: "arm64".into(),
+            target: "darwin-arm64".into(),
+        };
         assert_eq!(p.rust_triple(), "aarch64-apple-darwin");
 
-        let p = PlatformInfo { os: "linux".into(), arch: "x64".into(), target: "linux-x64".into() };
+        let p = PlatformInfo {
+            os: "linux".into(),
+            arch: "x64".into(),
+            target: "linux-x64".into(),
+        };
         assert_eq!(p.rust_triple(), "x86_64-unknown-linux-gnu");
 
-        let p = PlatformInfo { os: "darwin".into(), arch: "x64".into(), target: "darwin-x64".into() };
+        let p = PlatformInfo {
+            os: "darwin".into(),
+            arch: "x64".into(),
+            target: "darwin-x64".into(),
+        };
         assert_eq!(p.rust_triple(), "x86_64-apple-darwin");
     }
 
@@ -912,7 +978,7 @@ mod tests {
         // env::consts::ARCH values → must match release artifact naming
         // Release artifacts use: darwin-arm64, darwin-x64, linux-arm64, linux-x64
         let arch_map: &[(&str, &str)] = &[
-            ("x86_64", "x64"),    // NOT "x86_64" — release uses "x64"
+            ("x86_64", "x64"), // NOT "x86_64" — release uses "x64"
             ("aarch64", "arm64"),
         ];
         for (rust_arch, expected) in arch_map {
@@ -921,7 +987,10 @@ mod tests {
                 "aarch64" => "arm64",
                 other => other,
             };
-            assert_eq!(mapped, *expected, "ARCH {rust_arch} should map to {expected}");
+            assert_eq!(
+                mapped, *expected,
+                "ARCH {rust_arch} should map to {expected}"
+            );
         }
     }
 
@@ -949,7 +1018,7 @@ mod tests {
         versions.sort_by(|a, b| b.cmp(a));
         assert_eq!(versions[0].raw, "0.14.1-rc.12"); // highest RC
         assert_eq!(versions[1].raw, "0.14.1-rc.3");
-        assert_eq!(versions[2].raw, "0.14.0");        // highest stable
+        assert_eq!(versions[2].raw, "0.14.0"); // highest stable
         assert_eq!(versions[3].raw, "0.13.0");
     }
 }

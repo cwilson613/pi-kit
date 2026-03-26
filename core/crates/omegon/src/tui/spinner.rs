@@ -45,7 +45,6 @@ const VERBS: &[&str] = &[
     "Offering a binary prayer to the void",
     "Reciting the Canticle of the Blessed Diff",
     "Applying the Unguent of Optimal Throughput",
-
     // ═══ Imperium of Man — Warfare & Devotion ═══
     "Purging the heretical code",
     "Deploying the Exterminatus on tech debt",
@@ -60,7 +59,6 @@ const VERBS: &[&str] = &[
     "Debugging with extreme prejudice",
     "Declaring Exterminatus on the node_modules",
     "Fortifying this position",
-
     // ═══ Classical Antiquity ═══
     "Consulting the Oracle at Delphi",
     "Reading the auguries",
@@ -72,7 +70,6 @@ const VERBS: &[&str] = &[
     "Bargaining with the Sphinx",
     "Cleaning the Augean stables of legacy code",
     "Charting a course between Scylla and Charybdis",
-
     // ═══ Norse — Sagas & Runes ═══
     "Consulting the Norns",
     "Reading the runes",
@@ -81,20 +78,17 @@ const VERBS: &[&str] = &[
     "Forging in the heart of Niðavellir",
     "Feeding Huginn and Muninn the latest telemetry",
     "Braving the Fimbulwinter of dependency hell",
-
     // ═══ Arthurian & Medieval ═══
     "Questing for the Holy Grail of zero bugs",
     "Pulling the sword from the CI/CD stone",
     "Convening the Round Table for design review",
     "Consulting Merlin's grimoire",
-
     // ═══ Lovecraftian — Cosmic Horror ═══
     "Gazing into the non-Euclidean geometry of the type system",
     "Consulting the Necronomicon of legacy documentation",
     "Invoking That Which Should Not Be Refactored",
     "Descending into the R'lyeh of nested callbacks",
     "Performing rites that would drive lesser compilers mad",
-
     // ═══ Dune — Arrakis & the Imperium ═══
     "Consulting the Mentat about computational complexity",
     "Folding space through the Holtzman drive",
@@ -102,25 +96,21 @@ const VERBS: &[&str] = &[
     "Consuming the spice of stack traces",
     "Reciting the Litany Against Fear",
     "Surviving the Gom Jabbar of code review",
-
     // ═══ Tolkien — Middle-earth ═══
     "Consulting the palantír",
     "Speaking 'friend' and entering the API",
     "Seeking the counsel of Elrond",
     "Delving too greedily and too deep",
     "Riding the Eagles to production",
-
     // ═══ Eastern — Sun Tzu, Zen ═══
     "Contemplating the sound of one hand coding",
     "Achieving mushin no shin — mind without mind",
     "Sitting with the kōan of the failing assertion",
-
     // ═══ Alchemy & Occult ═══
     "Transmuting the base code into gold",
     "Distilling the quintessence from the logs",
     "Performing the Great Work upon the monolith",
     "Drawing the sigil of binding upon the interface",
-
     // ═══ The Expanse ═══
     "Performing a hard burn toward the solution",
     "Navigating the Ring Gate to the next module",
@@ -128,20 +118,17 @@ const VERBS: &[&str] = &[
     "Drifting in the slow zone, waiting on I/O",
     "Deploying PDCs against incoming regressions",
     "Reading the Roci's threat board",
-
     // ═══ Three Body Problem ═══
     "Unfolding the proton into two dimensions",
     "Monitoring the sophon for interference",
     "Computing the three-body orbital solution",
     "Awaiting the next Stable Era",
     "Wallface-ing the architecture decision",
-
     // ═══ Annihilation — Area X ═══
     "Crossing the border into Area X",
     "Observing the refraction through the Shimmer",
     "Watching the code bloom into something unrecognizable",
     "Submitting to the annihilation of the old architecture",
-
     // ═══ Starfleet Engineering ═══
     "Rerouting auxiliary power to the build server",
     "Realigning the dilithium matrix",
@@ -179,6 +166,10 @@ mod tests {
 
     #[test]
     fn verb_count() {
-        assert!(VERBS.len() >= 100, "should have at least 100 verbs, got {}", VERBS.len());
+        assert!(
+            VERBS.len() >= 100,
+            "should have at least 100 verbs, got {}",
+            VERBS.len()
+        );
     }
 }

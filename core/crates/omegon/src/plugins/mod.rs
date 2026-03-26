@@ -14,14 +14,14 @@
 
 pub mod armory;
 pub mod armory_feature;
-pub mod manifest;
 pub mod http_feature;
+pub mod manifest;
 pub mod mcp;
 pub mod persona_loader;
 pub mod registry;
 
-use manifest::PluginManifest;
 use http_feature::HttpPluginFeature;
+use manifest::PluginManifest;
 use omegon_traits::Feature;
 use std::path::{Path, PathBuf};
 
@@ -35,7 +35,9 @@ pub async fn discover_plugins(cwd: &Path) -> Vec<Box<dyn omegon_traits::Feature>
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
 
     for dir in &plugin_dirs {
-        if !dir.is_dir() { continue; }
+        if !dir.is_dir() {
+            continue;
+        }
 
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -44,10 +46,14 @@ pub async fn discover_plugins(cwd: &Path) -> Vec<Box<dyn omegon_traits::Feature>
 
         for entry in entries.flatten() {
             let plugin_dir = entry.path();
-            if !plugin_dir.is_dir() { continue; }
+            if !plugin_dir.is_dir() {
+                continue;
+            }
 
             let manifest_path = plugin_dir.join("plugin.toml");
-            if !manifest_path.exists() { continue; }
+            if !manifest_path.exists() {
+                continue;
+            }
 
             // Try armory-style manifest first (has plugin.type field),
             // fall back to legacy HTTP-only manifest.
@@ -122,7 +128,10 @@ async fn load_armory_plugin(
         Ok(m) => m,
         Err(e) if is_armory => {
             // Looks like an armory manifest with a syntax error — surface it
-            anyhow::bail!("armory manifest parse error in {}: {e}", manifest_path.display());
+            anyhow::bail!(
+                "armory manifest parse error in {}: {e}",
+                manifest_path.display()
+            );
         }
         Err(_) => return Ok(None), // Genuinely not armory-style
     };
@@ -131,10 +140,8 @@ async fn load_armory_plugin(
 
     // Connect MCP servers if declared
     if !manifest.mcp_servers.is_empty() {
-        let mcp_feature = mcp::McpFeature::connect(
-            &manifest.plugin.name,
-            &manifest.mcp_servers,
-        ).await?;
+        let mcp_feature =
+            mcp::McpFeature::connect(&manifest.plugin.name, &manifest.mcp_servers).await?;
 
         if !mcp_feature.tools().is_empty() {
             features.push(Box::new(mcp_feature));
@@ -142,9 +149,12 @@ async fn load_armory_plugin(
     }
 
     // Load script-backed and OCI tools via ArmoryFeature
-    let plugin_root = manifest_path.parent()
+    let plugin_root = manifest_path
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("manifest has no parent directory"))?;
-    if let Some(armory_feature) = armory_feature::ArmoryFeature::from_manifest(&manifest, plugin_root).await {
+    if let Some(armory_feature) =
+        armory_feature::ArmoryFeature::from_manifest(&manifest, plugin_root).await
+    {
         let tool_count = armory_feature.tools().len();
         tracing::info!(
             plugin = manifest.plugin.name,
@@ -186,22 +196,24 @@ async fn discover_project_mcp_servers(cwd: &Path) -> Vec<Box<dyn omegon_traits::
     let mcp_config_path = cwd.join(".omegon").join("mcp.toml");
     if mcp_config_path.exists()
         && let Ok(content) = std::fs::read_to_string(&mcp_config_path)
-            && let Ok(servers) = toml::from_str::<std::collections::HashMap<String, mcp::McpServerConfig>>(&content) {
-                match mcp::McpFeature::connect("project-mcp", &servers).await {
-                    Ok(feature) if !feature.tools().is_empty() => {
-                        tracing::info!(
-                            servers = servers.len(),
-                            tools = feature.tools().len(),
-                            "loaded project MCP servers from .omegon/mcp.toml"
-                        );
-                        features.push(Box::new(feature));
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to connect project MCP servers");
-                    }
-                }
+        && let Ok(servers) =
+            toml::from_str::<std::collections::HashMap<String, mcp::McpServerConfig>>(&content)
+    {
+        match mcp::McpFeature::connect("project-mcp", &servers).await {
+            Ok(feature) if !feature.tools().is_empty() => {
+                tracing::info!(
+                    servers = servers.len(),
+                    tools = feature.tools().len(),
+                    "loaded project MCP servers from .omegon/mcp.toml"
+                );
+                features.push(Box::new(feature));
             }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to connect project MCP servers");
+            }
+        }
+    }
 
     features
 }
@@ -248,7 +260,9 @@ mod tests {
         std::fs::create_dir_all(&plugins_dir).unwrap();
         std::fs::write(dir.path().join(".marker"), "").unwrap();
 
-        std::fs::write(plugins_dir.join("plugin.toml"), r#"
+        std::fs::write(
+            plugins_dir.join("plugin.toml"),
+            r#"
             [plugin]
             name = "test"
             description = "Test plugin"
@@ -260,12 +274,15 @@ mod tests {
             name = "test_tool"
             description = "does nothing"
             endpoint = "http://localhost:9999/noop"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let result = load_legacy_plugin(
             &plugins_dir.join("plugin.toml"),
             dir.path(), // cwd has .marker
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(result.is_some(), "should load active plugin");
         let feature = result.unwrap();
@@ -280,17 +297,18 @@ mod tests {
         std::fs::create_dir_all(&plugins_dir).unwrap();
         // No .marker file — plugin should not activate
 
-        std::fs::write(plugins_dir.join("plugin.toml"), r#"
+        std::fs::write(
+            plugins_dir.join("plugin.toml"),
+            r#"
             [plugin]
             name = "test"
             [activation]
             marker_files = [".nope"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
-        let result = load_legacy_plugin(
-            &plugins_dir.join("plugin.toml"),
-            dir.path(),
-        ).unwrap();
+        let result = load_legacy_plugin(&plugins_dir.join("plugin.toml"), dir.path()).unwrap();
 
         assert!(result.is_none(), "inactive plugin should not load");
     }
@@ -302,10 +320,7 @@ mod tests {
         std::fs::create_dir_all(&plugins_dir).unwrap();
         std::fs::write(plugins_dir.join("plugin.toml"), "not valid toml {{{}}}").unwrap();
 
-        let result = load_legacy_plugin(
-            &plugins_dir.join("plugin.toml"),
-            dir.path(),
-        );
+        let result = load_legacy_plugin(&plugins_dir.join("plugin.toml"), dir.path());
 
         assert!(result.is_err(), "invalid manifest should return error");
     }

@@ -131,6 +131,7 @@ impl AgentSetup {
                 )
             }
         };
+        secrets.hydrate_process_env();
 
         let mut bus = EventBus::new();
 

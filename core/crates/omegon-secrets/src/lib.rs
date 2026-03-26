@@ -261,12 +261,28 @@ impl SecretsManager {
             .collect()
     }
 
+    /// Resolve well-known provider secrets into process environment variables
+    /// so legacy env-based integrations (web search, provider clients) can use
+    /// secrets stored in Omegon's keyring/recipe system.
+    pub fn hydrate_process_env(&self) {
+        for env_name in resolve::WELL_KNOWN_SECRET_ENVS {
+            if let Some(value) = self.resolve(env_name) {
+                // SAFETY: Omegon mutates process env only on the main runtime thread
+                // during setup or in direct response to operator secret changes.
+                // We do not concurrently iterate the environment while doing this.
+                unsafe { std::env::set_var(env_name, value) };
+            }
+        }
+    }
+
     /// Set a secret recipe (e.g. "env:MY_VAR", "cmd:pass show x", "vault:path").
     pub fn set_recipe(&self, name: &str, recipe_str: &str) -> anyhow::Result<()> {
         self.recipes
             .write()
             .unwrap()
-            .set_string(name.to_string(), recipe_str.to_string())
+            .set_string(name.to_string(), recipe_str.to_string())?;
+        self.hydrate_process_env();
+        Ok(())
     }
 
     /// Store a raw value in the OS keyring and create a keyring: recipe for it.
@@ -278,7 +294,9 @@ impl SecretsManager {
             .set_password(value)
             .map_err(|e| anyhow::anyhow!("keyring store failed: {e}"))?;
         // Create recipe pointing to keyring
-        self.set_recipe(name, &format!("keyring:{name}"))
+        self.set_recipe(name, &format!("keyring:{name}"))?;
+        self.hydrate_process_env();
+        Ok(())
     }
 
     /// Delete a secret recipe (and try to remove from keyring if applicable).
@@ -287,7 +305,12 @@ impl SecretsManager {
         if let Ok(entry) = keyring::Entry::new("omegon", name) {
             let _ = entry.delete_credential(); // best-effort
         }
-        self.recipes.write().unwrap().remove(name).map(|_| ())
+        self.recipes.write().unwrap().remove(name).map(|_| ())?;
+        if resolve::WELL_KNOWN_SECRET_ENVS.contains(&name) {
+            // SAFETY: same reasoning as hydrate_process_env().
+            unsafe { std::env::remove_var(name) };
+        }
+        Ok(())
     }
 
     /// Re-resolve all secrets and rebuild the redaction automaton.
@@ -321,5 +344,40 @@ impl SecretsManager {
             count = count,
             "redaction set refreshed (keyring + aho-corasick) - vault recipes require async refresh"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hydrate_process_env_populates_well_known_recipe_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test process controls these env vars and does not iterate env concurrently.
+        unsafe {
+            std::env::remove_var("BRAVE_API_KEY");
+            std::env::set_var("OMEGON_TEST_BRAVE_KEY", "brave-test-key");
+        }
+        let mgr = SecretsManager::new(dir.path()).unwrap();
+        mgr.set_recipe("BRAVE_API_KEY", "env:OMEGON_TEST_BRAVE_KEY")
+            .unwrap();
+        mgr.hydrate_process_env();
+        assert_eq!(std::env::var("BRAVE_API_KEY").ok().as_deref(), Some("brave-test-key"));
+        // SAFETY: cleanup for isolated test env vars.
+        unsafe {
+            std::env::remove_var("OMEGON_TEST_BRAVE_KEY");
+            std::env::remove_var("BRAVE_API_KEY");
+        }
+    }
+
+    #[test]
+    fn delete_recipe_removes_well_known_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SecretsManager::new(dir.path()).unwrap();
+        // SAFETY: test process controls this env var and does not iterate env concurrently.
+        unsafe { std::env::set_var("BRAVE_API_KEY", "present") };
+        mgr.delete_recipe("BRAVE_API_KEY").unwrap();
+        assert!(std::env::var("BRAVE_API_KEY").is_err());
     }
 }

@@ -543,25 +543,20 @@ fn render_assistant_text(
         return;
     }
 
-    let lane_bg = t.surface_bg();
-    Block::default().style(Style::default().bg(lane_bg)).render(area, buf);
+    let bg = t.surface_bg();
+    let border_color = if complete { t.success() } else { t.accent_muted() };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color).bg(bg))
+        .padding(Padding::horizontal(1))
+        .style(Style::default().bg(bg));
+    let inner = block.inner(area);
+    block.render(area, buf);
 
-    // Left gutter — role-colored lane marker for the full height of the response
-    for row in 0..area.height {
-        if area.x + 1 < area.right() {
-            if let Some(cell) = buf.cell_mut((area.x + 1, area.y + row)) {
-                cell.set_symbol("│");
-                cell.set_style(Style::default().fg(t.success()).bg(lane_bg));
-            }
-        }
+    if inner.width == 0 || inner.height == 0 {
+        return;
     }
-
-    let inner = Rect {
-        x: area.x + 2,
-        y: area.y,
-        width: area.width.saturating_sub(3),
-        height: area.height,
-    };
 
     let mut lines: Vec<Line<'_>> = Vec::new();
 
@@ -570,22 +565,22 @@ fn render_assistant_text(
         Span::styled(
             format!("{} ", presentation.sigil),
             Style::default()
-                .fg(t.success())
-                .bg(lane_bg)
+                .fg(border_color)
+                .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             if complete { "response" } else { "thinking" },
-            Style::default().fg(t.border_dim()).bg(lane_bg),
+            Style::default().fg(t.border_dim()).bg(bg),
         ),
     ]));
 
-    // Meta tag line: model / provider / tier — dim right-aligned header
+    // Meta tag line: model / provider / tier — dim secondary header
     let meta_tag = build_meta_tag(meta);
     if !meta_tag.is_empty() {
         lines.push(Line::from(Span::styled(
             meta_tag,
-            Style::default().fg(t.border_dim()),
+            Style::default().fg(t.border_dim()).bg(bg),
         )));
     }
 
@@ -594,14 +589,17 @@ fn render_assistant_text(
         let think_lines: Vec<&str> = thinking.lines().collect();
         let show = think_lines.len().min(6);
         lines.push(Line::from(vec![
-            Span::styled("◌ ", Style::default().fg(t.border())),
+            Span::styled("◌ ", Style::default().fg(t.border()).bg(bg)),
             Span::styled(
                 "thinking ",
-                Style::default().fg(t.dim()).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(t.dim())
+                    .bg(bg)
+                    .add_modifier(Modifier::ITALIC),
             ),
             Span::styled(
                 format!("({} lines)", think_lines.len()),
-                Style::default().fg(t.border_dim()),
+                Style::default().fg(t.border_dim()).bg(bg),
             ),
         ]));
         for line in think_lines.iter().take(show) {
@@ -609,19 +607,19 @@ fn render_assistant_text(
                 format!("  {line}"),
                 Style::default()
                     .fg(t.border())
+                    .bg(bg)
                     .add_modifier(Modifier::ITALIC),
             )));
         }
         if think_lines.len() > show {
             lines.push(Line::from(Span::styled(
                 format!("  ⋯ {} more", think_lines.len() - show),
-                Style::default().fg(t.border_dim()),
+                Style::default().fg(t.border_dim()).bg(bg),
             )));
         }
-        // Visual separator between thinking and response
         lines.push(Line::from(Span::styled(
             "  ─ ─ ─",
-            Style::default().fg(t.border_dim()),
+            Style::default().fg(t.border_dim()).bg(bg),
         )));
     }
 
@@ -634,15 +632,14 @@ fn render_assistant_text(
             table_state = TableState::None;
             lines.push(Line::from(Span::styled(
                 line.to_string(),
-                Style::default().fg(t.dim()).bg(t.surface_bg()),
+                Style::default().fg(t.dim()).bg(bg),
             )));
         } else if in_code_fence {
             lines.push(Line::from(Span::styled(
                 line.to_string(),
-                Style::default().fg(t.accent_muted()).bg(t.surface_bg()),
+                Style::default().fg(t.accent_muted()).bg(bg),
             )));
         } else if is_table_line(line) {
-            // Track table context: header → separator → body
             let is_header = match table_state {
                 TableState::None => {
                     table_state = TableState::Header;
@@ -664,14 +661,13 @@ fn render_assistant_text(
         }
     }
 
-    // Streaming cursor
     if !complete && text.is_empty() && thinking.is_empty() {
-        lines.push(Line::from(Span::styled("…", t.style_dim())));
+        lines.push(Line::from(Span::styled("…", t.style_dim().bg(bg))));
     }
 
     Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .style(Style::default().bg(lane_bg))
+        .style(Style::default().bg(bg))
         .render(inner, buf);
 }
 
@@ -1338,11 +1334,12 @@ mod tests {
                 complete: true,
             },
         };
-        let (area, mut buf) = make_buf(40, 6);
+        let (area, mut buf) = make_buf(40, 8);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
         assert!(text.contains("Ω"), "assistant header should include Ω sigil: {text}");
         assert!(text.contains("response"), "assistant header should describe the segment role: {text}");
+        assert!(text.contains("╭") || text.contains("╰") || text.contains("│"), "assistant response should now render as a card: {text}");
     }
 
     #[test]

@@ -1,3 +1,0 @@
-# Memory sync: keep all lines from both sides on merge.
-# importFromJsonl deduplicates by content_hash, so redundant lines are harmless.
-.pi/memory/facts.jsonl merge=union

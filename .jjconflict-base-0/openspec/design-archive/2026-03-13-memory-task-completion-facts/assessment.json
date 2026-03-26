@@ -1,8 +1,0 @@
-{
-  "nodeId": "memory-task-completion-facts",
-  "assessedAt": "2026-03-13",
-  "structuralPass": true,
-  "findings": [],
-  "outcome": "PASS",
-  "note": "Design approved by operator in session discussion. All decisions recorded with rationale. Acceptance criteria written in spec.md."
-}

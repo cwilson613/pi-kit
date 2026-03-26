@@ -196,8 +196,21 @@ release:
 
     echo ""
     echo "✓ ${NEW_VERSION} — tested, committed, tagged, built."
-    echo "  To publish: git push origin main --tags"
+    echo "  To publish: git push origin main v${NEW_VERSION}"
 
+    # Open the next RC cycle immediately so dev builds aren't mislabelled as the
+    # just-shipped stable release.  No rebuild needed — this is just a version bump.
+    IFS='.' read -r MAJOR MINOR PATCH <<< "$NEW_VERSION"
+    NEXT_RC="${MAJOR}.${MINOR}.$((PATCH + 1))-rc.1"
+    echo ""
+    echo "Opening next cycle: $NEXT_RC"
+    sed -i '' "s/^version = \"${NEW_VERSION}\"/version = \"${NEXT_RC}\"/" core/Cargo.toml
+    cd core && cargo check -p omegon -q 2>&1 | tail -1; cd ..
+    git add core/Cargo.toml core/Cargo.lock
+    git commit -m "chore(release): ${NEXT_RC}"
+    echo "✓ Bumped to ${NEXT_RC} — branch is now open for the next cycle."
+    echo "  Publish stable: git push origin main v${NEW_VERSION}"
+    echo "  (RC tag is created by 'just rc' when there's something to release)"
 # Sign the release binary with Apple Developer ID (YubiKey).
 # Interactive — prompts for PIN and touch.
 # Run after `just rc` if SMARTCARD_PIN wasn't set.

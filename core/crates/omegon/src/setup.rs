@@ -154,7 +154,26 @@ impl AgentSetup {
                 preflight.extend(env_names.iter().map(|s| (*s).to_string()));
             }
         }
+        tracing::info!(
+            requested = preflight.len(),
+            names = ?preflight,
+            child = is_child,
+            "startup secret preflight plan"
+        );
         secrets.preflight_session_cache(preflight);
+        let session_secret_env = secrets.session_env();
+        let session_secret_diag = secrets.session_diagnostics();
+        tracing::info!(
+            warmed = session_secret_diag.len(),
+            names = ?session_secret_diag
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            exported = session_secret_env.len(),
+            child = is_child,
+            "startup secret preflight summary"
+        );
+        tracing::debug!(diagnostics = ?session_secret_diag, "startup secret diagnostics");
 
         let mut bus = EventBus::new();
 
@@ -270,7 +289,8 @@ impl AgentSetup {
         bus.register(Box::new(lifecycle_feature));
 
         // ─── Cleave (decomposition + dispatch) ─────────────────────────
-        let cleave_feature = features::cleave::CleaveFeature::new(&cwd, secrets.session_env());
+        let cleave_feature =
+            features::cleave::CleaveFeature::new(&cwd, session_secret_env.clone());
         let cleave_handle = cleave_feature.shared_progress();
         bus.register(Box::new(cleave_feature));
 
@@ -466,7 +486,7 @@ impl AgentSetup {
             conversation,
             cwd,
             secrets: secrets.clone(),
-            session_secret_env: secrets.session_env(),
+            session_secret_env,
             resume_info,
             startup_snapshot,
             initial_harness_status,

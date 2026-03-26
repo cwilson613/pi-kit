@@ -546,6 +546,12 @@ async fn dispatch_child(
     }
     tracing::info!(child = %label, args = ?args, "spawn args");
 
+    tracing::info!(
+        child = %label,
+        inherited_env = config.inherited_env.len(),
+        inherited_env_names = ?config.inherited_env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        "child secret env inheritance"
+    );
     let mut child = Command::new(config.agent_binary);
     child
         .args(&args)

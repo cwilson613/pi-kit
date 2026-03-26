@@ -53,6 +53,15 @@ pub struct CachedSecretMeta {
     pub used_by: HashSet<SecretUse>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionSecretDiagnostic {
+    pub name: String,
+    pub source: &'static str,
+    pub warmed: bool,
+    pub required_at_startup: bool,
+    pub used_by: Vec<SecretUse>,
+}
+
 /// Central secrets manager — owns the redaction set, recipes, guards, and Vault client.
 pub struct SecretsManager {
     /// Resolved secret values for redaction (name → SecretString).
@@ -203,14 +212,33 @@ impl SecretsManager {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        for name in names {
-            let name = name.as_ref();
-            let use_case = match name {
+        let requested: Vec<String> = names.into_iter().map(|n| n.as_ref().to_string()).collect();
+        tracing::info!(
+            requested = requested.len(),
+            names = ?requested,
+            "secrets preflight starting"
+        );
+        let mut warmed = Vec::new();
+        let mut missing = Vec::new();
+        for name in &requested {
+            let use_case = match name.as_str() {
                 "BRAVE_API_KEY" | "TAVILY_API_KEY" | "SERPER_API_KEY" => SecretUse::WebSearch,
                 _ => SecretUse::LlmProvider,
             };
-            let _ = self.warm_secret(name, use_case, true);
+            if self.warm_secret(name, use_case, true) {
+                warmed.push(name.clone());
+            } else {
+                missing.push(name.clone());
+            }
         }
+        tracing::info!(
+            requested = requested.len(),
+            warmed = warmed.len(),
+            missing = missing.len(),
+            warmed_names = ?warmed,
+            missing_names = ?missing,
+            "secrets preflight finished"
+        );
         self.hydrate_process_env();
     }
 
@@ -218,12 +246,45 @@ impl SecretsManager {
     /// processes. Intended for headless/cleave children so they inherit the
     /// startup-approved secret set instead of touching keychain/UI mid-run.
     pub fn session_env(&self) -> Vec<(String, String)> {
-        self.session_cache
+        let exported: Vec<(String, String)> = self
+            .session_cache
             .read()
             .unwrap()
             .iter()
             .map(|(name, value)| (name.clone(), value.expose_secret().to_string()))
-            .collect()
+            .collect();
+        tracing::debug!(
+            exported = exported.len(),
+            names = ?exported.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            "exporting session secret env pairs"
+        );
+        exported
+    }
+
+    /// Name-only diagnostics for the current startup/session secret state.
+    pub fn session_diagnostics(&self) -> Vec<SessionSecretDiagnostic> {
+        let meta = self.session_meta.read().unwrap();
+        let mut diagnostics: Vec<_> = meta
+            .iter()
+            .map(|(name, meta)| {
+                let mut used_by: Vec<_> = meta.used_by.iter().copied().collect();
+                used_by.sort_by_key(|u| match u {
+                    SecretUse::LlmProvider => 0,
+                    SecretUse::WebSearch => 1,
+                    SecretUse::Update => 2,
+                    SecretUse::Other => 3,
+                });
+                SessionSecretDiagnostic {
+                    name: name.clone(),
+                    source: meta.source,
+                    warmed: meta.warmed,
+                    required_at_startup: meta.required_at_startup,
+                    used_by,
+                }
+            })
+            .collect();
+        diagnostics.sort_by(|a, b| a.name.cmp(&b.name));
+        diagnostics
     }
 
     /// Resolve a secret by name. Checks the session cache first, then the

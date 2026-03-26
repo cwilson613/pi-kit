@@ -587,6 +587,121 @@ package:
     echo ""
     echo "Archives in ${DIST}/"
 
+# Finalize a draft nightly release on this Mac using the YubiKey signing flow.
+# Builds from the tagged source in a temporary worktree, signs/notarizes the
+# macOS binary, uploads the signed archive + refreshed checksums, and publishes
+# the draft GitHub release.
+finalize-nightly tag='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "✗ GitHub CLI (gh) is required. Install it and run 'gh auth login'."
+        exit 1
+    fi
+
+    if ! gh auth status >/dev/null 2>&1; then
+        echo "✗ gh is not authenticated. Run 'gh auth login'."
+        exit 1
+    fi
+
+    if ! xcrun notarytool history --keychain-profile "omegon" >/dev/null 2>&1; then
+        echo "✗ Apple notarization profile 'omegon' is not configured on this Mac."
+        echo "  Run 'just setup-notarize' first."
+        exit 1
+    fi
+
+    if [ -z "{{tag}}" ]; then
+        TAG=$(gh release list --limit 50 --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.isDraft == true and .isPrerelease == true and (.tagName | contains("-nightly."))) | .tagName' | head -1)
+        if [ -z "$TAG" ]; then
+            echo "✗ No draft nightly release found. Pass an explicit tag: just finalize-nightly vX.Y.Z-nightly.YYYYMMDD"
+            exit 1
+        fi
+    else
+        TAG="{{tag}}"
+    fi
+
+    VERSION="${TAG#v}"
+    TARGET="aarch64-apple-darwin"
+    ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
+    WORKTREE="$(mktemp -d /tmp/omegon-nightly-XXXXXX)"
+    ARTIFACT_DIR="$(mktemp -d /tmp/omegon-nightly-artifacts-XXXXXX)"
+    CHECKSUMS="$ARTIFACT_DIR/checksums.sha256"
+
+    cleanup() {
+        set +e
+        if [ -d "$WORKTREE/.git" ] || [ -f "$WORKTREE/.git" ]; then
+            git worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
+        else
+            rm -rf "$WORKTREE"
+        fi
+        rm -rf "$ARTIFACT_DIR"
+    }
+    trap cleanup EXIT
+
+    echo "Preparing worktree for $TAG..."
+    git fetch --tags origin "$TAG"
+    git worktree add --detach "$WORKTREE" "$TAG"
+
+    echo "Building macOS release binary..."
+    (cd "$WORKTREE/core" && cargo build --release -p omegon)
+    BINARY="$WORKTREE/core/target/release/omegon"
+
+    echo "Signing with Apple Developer ID (YubiKey)..."
+    if [ -n "${SMARTCARD_PIN:-}" ]; then
+        echo "Using SMARTCARD_PIN from environment"
+        echo "⚡ Touch YubiKey when it blinks"
+        "$HOME/.cargo/bin/rcodesign" sign \
+            --smartcard-slot 9c \
+            --smartcard-pin-env SMARTCARD_PIN \
+            --code-signature-flags runtime \
+            "$BINARY"
+    else
+        echo "⚡ Enter PIN when prompted, then touch YubiKey when it blinks"
+        "$HOME/.cargo/bin/rcodesign" sign \
+            --smartcard-slot 9c \
+            --code-signature-flags runtime \
+            "$BINARY"
+    fi
+
+    echo "Verifying signature..."
+    codesign -dvvv "$BINARY" 2>&1 | grep -E "Authority|Team|Signature|Identifier"
+
+    echo "Submitting for Apple notarization (blocking)..."
+    NOTARY_ZIP="$ARTIFACT_DIR/${ARCHIVE%.tar.gz}.zip"
+    ditto -c -k --keepParent "$BINARY" "$NOTARY_ZIP"
+    xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "omegon" --wait
+
+    echo "Packaging signed macOS archive..."
+    tar czf "$ARTIFACT_DIR/$ARCHIVE" -C "$(dirname "$BINARY")" omegon
+    shasum -a 256 "$ARTIFACT_DIR/$ARCHIVE" > "$ARTIFACT_DIR/$ARCHIVE.sha256"
+
+    echo "Refreshing release checksums..."
+    gh release download "$TAG" -p 'checksums.sha256' -D "$ARTIFACT_DIR" >/dev/null 2>&1 || true
+    if [ -f "$CHECKSUMS" ]; then
+        grep -v "$TARGET" "$CHECKSUMS" > "$CHECKSUMS.tmp" || true
+        mv "$CHECKSUMS.tmp" "$CHECKSUMS"
+    else
+        : > "$CHECKSUMS"
+    fi
+    cat "$ARTIFACT_DIR/$ARCHIVE.sha256" >> "$CHECKSUMS"
+
+    echo "Uploading signed nightly assets to $TAG..."
+    gh release upload "$TAG" \
+        "$ARTIFACT_DIR/$ARCHIVE" \
+        "$ARTIFACT_DIR/$ARCHIVE.sha256" \
+        "$CHECKSUMS" \
+        --clobber
+
+    echo "Publishing draft nightly release..."
+    gh release edit "$TAG" --draft=false
+
+    echo ""
+    echo "✓ Finalized nightly $TAG"
+    echo "  Uploaded: $ARCHIVE"
+    echo "  Release:  $(gh release view "$TAG" --json url --jq .url)"
+
 # ─── TypeScript (omegon-pi) ─────────────────────────────────
 
 # Run all TS tests

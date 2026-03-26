@@ -210,6 +210,7 @@ jobs:
         with:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-rc.') || contains(github.ref_name, '-nightly.') }}
+          draft: ${{ contains(github.ref_name, '-nightly.') }}
           files: |
             artifacts/omegon-*.tar.gz
             artifacts/omegon-*.tar.gz.sha256

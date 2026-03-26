@@ -13,10 +13,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
+use serde_json::{Value, json};
 
 use omegon_traits::{
-    BusEvent, BusRequest, CommandDefinition, CommandResult, ContextInjection, ContextSignals,
-    Feature,
+    BusEvent, BusRequest, CommandDefinition, CommandResult, ContentBlock, ContextInjection,
+    ContextSignals, Feature, ToolDefinition, ToolResult,
 };
 
 pub struct SessionLog {
@@ -221,19 +222,15 @@ impl SessionLog {
         let _ = fs::write(&self.log_path, new_content);
     }
 
-    fn read_entries(&self, n: usize) -> CommandResult {
+    fn read_entries_text(&self, n: usize) -> anyhow::Result<(String, Value)> {
         if !self.log_path.exists() {
-            return CommandResult::Display(format!(
-                "No .session_log found at {}",
-                self.log_path.display()
+            return Ok((
+                format!("No .session_log found at {}", self.log_path.display()),
+                json!({"entries": [], "total": 0}),
             ));
         }
 
-        let content = match fs::read_to_string(&self.log_path) {
-            Ok(c) => c,
-            Err(e) => return CommandResult::Display(format!("Error reading session log: {e}")),
-        };
-
+        let content = fs::read_to_string(&self.log_path)?;
         let entries: Vec<&str> = content.split("\n## ").collect();
         let has_header = entries
             .first()
@@ -245,24 +242,35 @@ impl SessionLog {
         };
 
         if total == 0 {
-            return CommandResult::Display("No entries found in .session_log".into());
+            return Ok((
+                "No entries found in .session_log".into(),
+                json!({"entries": [], "total": 0}),
+            ));
         }
 
-        let recent: Vec<String> = entries
+        let recent_raw: Vec<&str> = entries.iter().skip(1).rev().take(n).rev().copied().collect();
+        let recent_text: Vec<String> = recent_raw.iter().map(|e| format!("## {e}")).collect();
+        let recent_structured: Vec<Value> = recent_raw
             .iter()
-            .skip(1)
-            .rev()
-            .take(n)
-            .rev()
-            .map(|e| format!("## {e}"))
+            .map(|e| json!({"entry": format!("## {e}")}))
             .collect();
 
-        CommandResult::Display(format!(
-            "Recent .session_log entries ({} of {}):\n\n{}",
-            recent.len(),
-            total,
-            recent.join("\n")
+        Ok((
+            format!(
+                "Recent .session_log entries ({} of {}):\n\n{}",
+                recent_text.len(),
+                total,
+                recent_text.join("\n")
+            ),
+            json!({"entries": recent_structured, "total": total, "returned": recent_text.len()}),
         ))
+    }
+
+    fn read_entries(&self, n: usize) -> CommandResult {
+        match self.read_entries_text(n) {
+            Ok((text, _details)) => CommandResult::Display(text),
+            Err(e) => CommandResult::Display(format!("Error reading session log: {e}")),
+        }
     }
 }
 
@@ -270,6 +278,54 @@ impl SessionLog {
 impl Feature for SessionLog {
     fn name(&self) -> &str {
         "session-log"
+    }
+
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: crate::tool_registry::session_log::SESSION_LOG.into(),
+            label: "session_log".into(),
+            description: "Read recent session-log narrative so the harness can inspect prior work without operator slash commands.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["read", "recent"],
+                        "description": "Read session log entries"
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Number of recent entries to return (default 5)"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }]
+    }
+
+    async fn execute(
+        &self,
+        tool_name: &str,
+        _call_id: &str,
+        args: Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if tool_name != crate::tool_registry::session_log::SESSION_LOG {
+            anyhow::bail!("Unknown tool: {tool_name}");
+        }
+
+        let action = args["action"].as_str().unwrap_or("read");
+        let count = args["count"].as_u64().unwrap_or(5) as usize;
+        match action {
+            "read" | "recent" => {
+                let (text, details) = self.read_entries_text(count)?;
+                Ok(ToolResult {
+                    content: vec![ContentBlock::Text { text }],
+                    details,
+                })
+            }
+            _ => anyhow::bail!("Unknown action: {action}"),
+        }
     }
 
     fn commands(&self) -> Vec<CommandDefinition> {
@@ -336,6 +392,7 @@ impl Feature for SessionLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::EventBus;
 
     #[test]
     fn no_log_file() {
@@ -498,6 +555,38 @@ mod tests {
         } else {
             panic!("Expected Display result");
         }
+    }
+
+    #[tokio::test]
+    async fn session_log_tool_reads_entries_via_bus() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join(".session_log");
+        fs::write(
+            &log_path,
+            "# Session Log\n\n\
+             ## 2026-03-17 — Day 1\n\nStuff.\n\n\
+             ## 2026-03-18 — Day 2\n\nMore stuff.\n",
+        )
+        .unwrap();
+
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SessionLog::new(dir.path())));
+        bus.finalize();
+
+        let result = bus
+            .execute_tool(
+                crate::tool_registry::session_log::SESSION_LOG,
+                "tc1",
+                json!({"action": "read", "count": 1}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let text = result.content[0].as_text().unwrap();
+        assert!(text.contains("Day 2"), "should show latest entry: {text}");
+        assert_eq!(result.details["total"].as_u64(), Some(2));
+        assert_eq!(result.details["returned"].as_u64(), Some(1));
     }
 
     #[test]

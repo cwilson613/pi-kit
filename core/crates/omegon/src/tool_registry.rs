@@ -93,6 +93,11 @@ pub mod delegate {
     pub const DELEGATE_STATUS: &str = "delegate_status";
 }
 
+/// Session log — owned by `features::session_log`
+pub mod session_log {
+    pub const SESSION_LOG: &str = "session_log";
+}
+
 /// Model budget (tier switching) — owned by `features::model_budget`
 pub mod model_budget {
     pub const SET_MODEL_TIER: &str = "set_model_tier";
@@ -132,7 +137,7 @@ pub mod persona {
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.
 /// Number of statically registered tools (for splash screen display).
-pub const TOOL_COUNT: usize = 50;
+pub const TOOL_COUNT: usize = 51;
 
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
@@ -186,8 +191,9 @@ pub fn all_static_names() -> Vec<&'static str> {
         delegate::DELEGATE,
         delegate::DELEGATE_RESULT,
         delegate::DELEGATE_STATUS,
+        // session_log (1)
+        session_log::SESSION_LOG,
         // model_budget (3)
-        model_budget::SET_MODEL_TIER,
         model_budget::SWITCH_TO_OFFLINE_DRIVER,
         model_budget::SET_THINKING_LEVEL,
         // manage_tools (1)
@@ -201,7 +207,7 @@ pub fn all_static_names() -> Vec<&'static str> {
         persona::SWITCH_TONE,
         persona::LIST_PERSONAS,
     ]
-    // Total: 13+1+1+2+3+12+4+2+3+3+1+1+1+3 = 50
+    // Total: 13+1+1+2+3+12+4+2+3+1+3+1+1+1+3 = 51
 }
 
 #[cfg(test)]

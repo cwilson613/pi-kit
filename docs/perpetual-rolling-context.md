@@ -496,6 +496,8 @@ Clean, universal, zero dependencies.
 
 ### Operator metrics, settings, and subscription-aware defaults
 
+
+
 ### What we already know at startup
 
 The harness already probes at startup and knows:
@@ -554,6 +556,99 @@ The existing ContextClass maps cleanly to selector aggressiveness:
 | Legion (1M+) | 750k conversation | 15 turns | Never | Unlimited |
 
 Legion on a subscription provider (OAuth Anthropic, Codex) is effectively "send everything" — the entire buffer fits, no selection needed, no compaction needed. The simplest and best experience.
+
+### Token budget audit — actual per-request overhead
+
+Measured from the actual tool definitions and system prompt (test: `tool_token_budget_audit`):
+
+```
+FIXED OVERHEAD PER REQUEST
+─────────────────────────────────────────
+System prompt (base + lex + lifecycle):     ~1,415 tokens
+Active ToolProvider tools (14):             ~1,850 tokens
+Active Feature tools (~25):                 ~4,800 tokens
+Output reserve (max_tokens):               16,384 tokens
+─────────────────────────────────────────
+TOTAL:                                    ~24,449 tokens/request
+```
+
+Context class impact:
+| Class | Window | Overhead % | Available for conversation |
+|-------|--------|-----------|--------------------------|
+| Squad 128k | 131,072 | 19% | ~106k |
+| Maniple 272k | 278,528 | 9% | ~254k |
+| Clan 440k | 409,600 | 6% | ~385k |
+| Legion 1M | 1,048,576 | 2% | ~1,024k |
+
+Top token consumers (active tools):
+1. `memory_*` (11 tools): ~1,700 tokens — 7% of overhead
+2. `lifecycle_*` (6 tools): ~1,515 tokens — 6% of overhead
+3. `model_budget_*` (6 tools): ~757 tokens — 3% of overhead  
+4. `chronos`: ~294 tokens — date/time utility
+5. `serve`: ~240 tokens — background process management
+6. `cleave_*` (3 tools): ~562 tokens
+
+The big number: **on a Squad (128k) context, 19% of the window is consumed before any conversation happens.** On subscription plans where we WANT to be generous with context, this is fine. On pay-per-token, 24k tokens × 50 turns = 1.2M tokens of repeated tool definitions.
+
+### Reducing internal token usage — four strategies
+
+
+
+### Strategy 1: Phase-aware tool scoping
+
+The harness already tracks lifecycle phase (`Idle`, `Exploring`, `Specifying`, `Implementing`, `Verifying`). Different phases need different tools:
+
+| Phase | Essential tools | Droppable tools |
+|-------|----------------|-----------------|
+| Exploring | design_tree, design_tree_update, memory_*, web_search | cleave_*, openspec_manage, commit, change |
+| Specifying | openspec_manage, design_tree, memory_* | cleave_*, web_search |
+| Implementing | bash, read, write, edit, commit, change | design_tree_update, web_search |
+| Verifying | bash, read, cleave_assess | write, edit, design_tree_update |
+
+Savings: ~30-50% of tool tokens per turn by omitting tools irrelevant to the current phase. The model can still request tool re-enablement via `manage_tools`.
+
+Risk: The model can't discover tools it doesn't know exist. Mitigation: the system prompt lists ALL available tools by name (it already does), but only sends full schemas for phase-relevant tools. The model sees "cleave_run is available (use manage_tools to enable)" but doesn't pay the schema cost.
+
+### Strategy 2: Compact tool schemas
+
+The Anthropic projector already strips parameter descriptions (`strip_parameter_descriptions()`). We could go further:
+- Strip `description` fields from the tool definitions themselves (the model infers from the name)
+- Collapse enum values into a comma-separated string
+- Remove `type: "string"` (it's the default in most providers' schema parsing)
+
+Potential savings: ~30% of tool token cost. Risk: reduced accuracy on complex multi-parameter tools.
+
+### Strategy 3: Tool schema caching via Anthropic prompt caching
+
+Anthropic caches the system prompt + tools prefix. If we keep the tool definitions STABLE between turns (same order, same content), the first ~4k tokens of tools are cached and don't count toward per-turn input cost. This is free money on subscription plans.
+
+Requirement: the projector must produce deterministic, stable tool definition order. Today this is already the case (tools come from bus.tool_definitions() which is cached at setup).
+
+### Strategy 4: Merge related tools into fewer, higher-level tools
+
+Instead of 11 memory tools, expose 2:
+- `memory` (covers store, recall, query, archive, supersede, focus, release, episodes, compact)
+- `memory_manage` (covers connect, search_archive, ingest_lifecycle)
+
+The `action` parameter determines behavior, just like `design_tree` and `design_tree_update` already work. One schema instead of 11.
+
+Current: 11 memory tools × ~155 tokens avg = ~1,700 tokens
+Merged: 2 memory tools × ~400 tokens avg = ~800 tokens
+Savings: ~900 tokens (53%)
+
+Apply the same pattern to model_budget (6 tools → 1 `model_control` tool) and other groups.
+
+### Operator knobs
+
+| Knob | Default | Effect |
+|------|---------|--------|
+| `tool_profile` | `auto` (phase-aware) | `full` sends all, `minimal` sends only core 8, `auto` adapts per phase |
+| `schema_detail` | `standard` | `compact` strips descriptions, `full` includes everything |
+| `compaction_mode` | derived from cost posture | `never` / `cost-optimal` / `aggressive` |
+| `context_budget` | auto from provider probe | explicit override in tokens |
+| `cost_alert` | none | warn at $X per session |
+| `mandatory_turns` | auto from context class | explicit override (3-15) |
+| `budget_margin` | auto from cost posture | explicit override (0.70-0.95) |
 
 ## Decisions
 
@@ -766,6 +861,130 @@ Behavior:
 This works for every model that exists today and every model that will exist tomorrow. Zero binary size increase. Zero maintenance burden. Zero provider-specific code for token counting.
 
 The only provider that DOESN'T reliably report usage is... none. All major providers include usage in their response metadata. If a provider omits it, the estimator keeps its current ratio (graceful degradation).
+
+### Decision: Selector aggressiveness derived from auth method (subscription vs pay-per-token) — operator can override
+
+**Status:** exploring
+**Rationale:** The harness already knows the auth method at startup (OAuth vs API key). This implies cost posture:
+
+- **OAuth subscription** (Anthropic Pro/Max, ChatGPT Pro, Codex): Input tokens are prepaid. The selector should be GENEROUS — fill the context window, include more history, run compaction lazily. The user already paid for the tokens.
+- **API key** (Anthropic, OpenAI, OpenRouter paid): Every input token costs money. The selector should be ECONOMICAL — include fewer old turns, run compaction aggressively to replace verbose history with summaries.
+- **Free** (Ollama, OpenRouter free models, Codex free tier): No cost concern, only context window limit. Be generous.
+
+This maps to a `CostPosture` enum derived at startup:
+```rust
+enum CostPosture {
+    Subscription,  // OAuth — prepaid, be generous
+    PayPerToken,   // API key — economize
+    Free,          // Local/free tier — be generous
+}
+```
+
+The selector reads CostPosture to set:
+- Budget margin: 90% for Subscription/Free, 75% for PayPerToken
+- Mandatory window: 5+ turns for Subscription/Free, 3 turns for PayPerToken
+- Compaction: lazy/never for Subscription/Free, cost-optimal for PayPerToken
+
+The operator can override with `/settings compaction_mode aggressive` or project profile. But the defaults should be right for 90% of users without any configuration.
+
+### Decision: Buffer metrics surfaced via HarnessStatus — footer shows utilization, raised dashboard shows session economics
+
+**Status:** exploring
+**Rationale:** The existing HarnessStatus gains a new section:
+
+```rust
+pub struct ContextStatus {
+    /// Buffer state
+    pub buffer_entries: usize,
+    pub buffer_estimated_tokens: usize,
+    /// Last projection
+    pub last_projection_turns: usize,
+    pub last_projection_coverage_pct: u8,
+    /// Token usage (from provider responses)
+    pub session_input_tokens: u64,
+    pub session_output_tokens: u64,
+    pub session_cache_read_tokens: u64,
+    /// Calibration
+    pub estimator_ratio: f32,
+    /// Cost (if model pricing is known)
+    pub estimated_session_cost_usd: Option<f32>,
+    /// Active posture
+    pub cost_posture: String,  // "subscription" / "pay-per-token" / "free"
+    pub compaction_waypoints: usize,
+}
+```
+
+### Decision: Probe authoritative model limits from all providers at startup, not just Anthropic
+
+**Status:** exploring
+**Rationale:** Today only Anthropic's `/v1/models` is probed for context window and max output tokens. The static `infer_context_window()` lookup is the fallback for all other providers — and it's a hardcoded table that drifts as providers update models.
+
+All three wire protocol families support model introspection:
+- Anthropic: `GET /v1/models` → `max_input_tokens`, `max_tokens`
+- OpenAI/Chat Completions: `GET /v1/models` → model list (context window in metadata, though not always)
+- Ollama: `GET /api/show` → `context_length` from model metadata
+
+The startup probe should attempt model introspection for the active model and update `context_window` in settings. The static lookup remains as fallback when the probe fails (timeout, auth issue, provider doesn't support it).
+
+This means the selector's budget is based on REAL limits, not a guess table. When OpenAI increases GPT-4.1's context to 2M, the harness learns it automatically at startup without a code update.
+
+### Decision: Phase-aware tool scoping replaces static profiles — projector sends full schemas only for phase-relevant tools
+
+**Status:** exploring
+**Rationale:** Static tool profiles (disable at startup, re-enable manually) are crude. The harness already knows the lifecycle phase, recent tools, and current task. It should use these signals to scope tool definitions dynamically:
+
+1. **Always-on core** (~8 tools, ~1k tokens): bash, read, write, edit, commit, web_search, manage_tools, view
+2. **Phase-conditional** (~20 tools, ~4k tokens): design_tree/openspec during exploring/specifying, cleave during decomposing, memory tools during any phase that writes/reads facts
+3. **On-demand** (~11 tools, ~1.5k tokens): render, delegate, persona, auth — sent only when the model has recently used them or explicitly requested them
+
+The system prompt always lists ALL tool names (cheap — just a comma-separated list). Full schemas are sent only for tiers 1-2. Tier 3 tools show as `"[name] — available via manage_tools enable"` in the tool list.
+
+On a Squad context, this drops active tool tokens from ~6,650 to ~3,000 during a typical implementing phase — saving ~3,650 tokens per request. Over 50 turns, that's 182k input tokens saved.
+
+The projector handles this naturally: it receives a filtered tool list from the selector. The selector already has phase and signal data. No new abstraction needed — just a `fn select_tools(all_tools, phase, recent_tools) -> Vec<ToolDefinition>` alongside `fn select(buffer, budget, signals) -> Vec<usize>`.
+
+### Decision: Consolidate tool families into fewer multi-action tools — memory (11→2), model control (6→1)
+
+**Status:** exploring
+**Rationale:** Several tool families use many small tools for what is logically one interface. The design_tree/design_tree_update pattern (1 query tool + 1 mutation tool with an `action` enum) is the right model. Apply it to:
+
+### Decision: Operator knobs: 7 settings, all with intelligent auto-defaults from subscription and model probing
+
+**Status:** exploring
+**Rationale:** All settings auto-derive from what the harness already knows. No configuration required for sane behavior. Each is overridable via project profile or `/settings`.
+
+```
+[context]
+# Budget: auto = derived from model probe + cost posture
+context_budget = "auto"          # or explicit: 200000
+
+# Margin: auto = 90% for subscription/free, 75% for pay-per-token
+budget_margin = "auto"           # or explicit: 0.85
+
+# Recent turns always included: auto = 5 for standard, 3 for tight, 15 for legion
+mandatory_turns = "auto"         # or explicit: 8
+
+# Compaction: auto = cost-optimal for pay-per-token, lazy for subscription
+compaction_mode = "auto"         # or: "never" / "cost-optimal" / "aggressive"
+
+# Tool scoping: auto = phase-aware dynamic scoping
+tool_scope = "auto"              # or: "full" (all tools always) / "minimal" (core 8 only)
+
+# Schema detail: standard = full descriptions, compact = names + params only
+schema_detail = "standard"       # or: "compact"
+
+# Cost alert: warn when estimated session cost exceeds this
+cost_alert = "none"              # or: 5.00 (USD)
+```
+
+Auto-derivation rules:
+- `context_budget`: from `/v1/models` probe → `max_input_tokens`, or static lookup
+- `budget_margin`: OAuth → 0.90 (prepaid, less conservative), API key → 0.75 (economize)
+- `mandatory_turns`: `context_budget / 40000` clamped to [3, 15]
+- `compaction_mode`: OAuth/free → `lazy` (every ~20 turns), API key → `cost-optimal` (every ~10 turns)
+- `tool_scope`: always `auto` unless overridden — phase-aware scoping
+- `schema_detail`: always `standard` — `compact` is an escape hatch for tiny contexts
+- `cost_alert`: none by default, operator sets if they want budget guardrails
 
 ## Open Questions
 

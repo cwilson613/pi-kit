@@ -545,6 +545,11 @@ async fn run_cleave_command(
             .map(|d| format!(" ({:.0}s)", d))
             .unwrap_or_default();
         eprintln!("  {} **{}**{}: {:?}", icon, child.label, dur, child.status);
+        if child.provider_id.is_some() || child.execute_model.is_some() {
+            let provider = child.provider_id.as_deref().unwrap_or("unknown-provider");
+            let model = child.execute_model.as_deref().unwrap_or("unknown-model");
+            eprintln!("    Route: {}:{}", provider, model);
+        }
         if let Some(err) = &child.error {
             eprintln!("    Error: {}", err);
         }

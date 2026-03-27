@@ -157,6 +157,8 @@ mod tests {
         );
         state.children[0].status = ChildStatus::Completed;
         state.children[0].duration_secs = Some(42.5);
+        state.children[0].provider_id = Some("openai-codex".into());
+        state.children[0].execute_model = Some("openai-codex:gpt-5.4".into());
 
         let tmp = std::env::temp_dir().join("omegon-test-state.json");
         state.save(&tmp).unwrap();
@@ -165,6 +167,14 @@ mod tests {
         assert_eq!(loaded.run_id, "run-1");
         assert_eq!(loaded.children[0].status, ChildStatus::Completed);
         assert_eq!(loaded.children[0].duration_secs, Some(42.5));
+        assert_eq!(
+            loaded.children[0].provider_id.as_deref(),
+            Some("openai-codex")
+        );
+        assert_eq!(
+            loaded.children[0].execute_model.as_deref(),
+            Some("openai-codex:gpt-5.4")
+        );
         assert_eq!(loaded.children[1].status, ChildStatus::Pending);
 
         let _ = std::fs::remove_file(&tmp);

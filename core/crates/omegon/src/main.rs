@@ -867,42 +867,40 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         old = %old_provider, new = %new_provider,
                         "provider changed — re-detecting bridge"
                     );
-                    let bridge_clone = bridge.clone();
-                    let model_clone = effective_model.clone();
-                    let events_clone = events_tx.clone();
-                    let settings_clone = shared_settings.clone();
-                    tokio::spawn(async move {
-                        let provider = crate::providers::infer_provider_id(&model_clone);
-                        if let Some(new_bridge) = providers::auto_detect_bridge(&model_clone).await
-                        {
-                            let mut guard = bridge_clone.write().await;
-                            *guard = new_bridge;
-                            if let Ok(mut s) = settings_clone.lock() {
-                                s.provider_connected = true;
-                            }
-                            let provider_label = crate::auth::provider_by_id(&provider)
-                                .map(|p| p.display_name)
-                                .unwrap_or(provider.as_str());
-                            tracing::info!("bridge hot-swapped for provider {}", provider);
-                            let _ = events_clone.send(AgentEvent::SystemNotification {
-                                message: format!(
-                                    "Provider switched to {provider_label} ({model_clone})."
-                                ),
-                            });
-                        } else {
-                            if let Ok(mut s) = settings_clone.lock() {
-                                s.provider_connected = false;
-                            }
-                            let provider_label = crate::auth::provider_by_id(&provider)
-                                .map(|p| p.display_name)
-                                .unwrap_or(provider.as_str());
-                            let _ = events_clone.send(AgentEvent::SystemNotification {
-                                message: format!(
-                                    "⚠ No credentials for {provider_label}. Use /login to authenticate."
-                                ),
-                            });
+                    // Bridge swap is awaited (not spawned) to prevent a race
+                    // where the user sends a message before the new bridge is
+                    // installed, causing the old provider to receive requests
+                    // with the new model name.
+                    let provider = crate::providers::infer_provider_id(&effective_model);
+                    if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await
+                    {
+                        let mut guard = bridge.write().await;
+                        *guard = new_bridge;
+                        if let Ok(mut s) = shared_settings.lock() {
+                            s.provider_connected = true;
                         }
-                    });
+                        let provider_label = crate::auth::provider_by_id(&provider)
+                            .map(|p| p.display_name)
+                            .unwrap_or(provider.as_str());
+                        tracing::info!("bridge hot-swapped for provider {}", provider);
+                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                            message: format!(
+                                "Provider switched to {provider_label} ({effective_model})."
+                            ),
+                        });
+                    } else {
+                        if let Ok(mut s) = shared_settings.lock() {
+                            s.provider_connected = false;
+                        }
+                        let provider_label = crate::auth::provider_by_id(&provider)
+                            .map(|p| p.display_name)
+                            .unwrap_or(provider.as_str());
+                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                            message: format!(
+                                "⚠ No credentials for {provider_label}. Use /login to authenticate."
+                            ),
+                        });
+                    }
                 } else if old_model != effective_model {
                     let provider_label = crate::auth::provider_by_id(&new_provider)
                         .map(|p| p.display_name)

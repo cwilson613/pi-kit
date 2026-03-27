@@ -293,6 +293,28 @@ pub async fn auto_detect_bridge(model_spec: &str) -> Option<Box<dyn LlmBridge>> 
 
 // ─── SSE Helpers ────────────────────────────────────────────────────────────
 
+/// Sanitize a tool call ID to match Anthropic's `^[a-zA-Z0-9_-]+$` pattern.
+/// Codex compound IDs use `call_abc|fc_1` — take only the call_id before the pipe.
+/// Any remaining invalid characters are replaced with underscores.
+fn sanitize_tool_id(id: &str) -> String {
+    // Strip Codex compound suffix (pipe-separated item ID)
+    let base = if id.contains('|') {
+        id.splitn(2, '|').next().unwrap_or(id)
+    } else {
+        id
+    };
+    // Replace any remaining non-alphanumeric/underscore/hyphen characters
+    base.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Strip `description` fields from parameter properties to reduce token cost.
 /// Keeps type, enum, default, items, minimum, maximum — drops only descriptions.
 fn strip_parameter_descriptions(value: &Value) -> Value {
@@ -477,9 +499,13 @@ impl AnthropicClient {
                     } else {
                         json!({})
                     };
+                    // Sanitize tool call IDs — Anthropic requires ^[a-zA-Z0-9_-]+$
+                    // Codex compound IDs use `call_abc|fc_1` format; strip the pipe
+                    // and suffix so cross-provider history doesn't cause 400 errors.
+                    let sanitized_id = sanitize_tool_id(&tc.id);
                     content.push(json!({
                         "type": "tool_use",
-                        "id": tc.id,
+                        "id": sanitized_id,
                         "name": tc.name,
                         "input": input,
                     }));
@@ -487,9 +513,11 @@ impl AnthropicClient {
                 json!({"role": "assistant", "content": content})
             }
             LlmMessage::ToolResult { call_id, content, is_error, .. } => {
+                // Sanitize tool call IDs for cross-provider compatibility
+                let sanitized_id = sanitize_tool_id(call_id);
                 json!({
                     "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": call_id, "content": content, "is_error": is_error}]
+                    "content": [{"type": "tool_result", "tool_use_id": sanitized_id, "content": content, "is_error": is_error}]
                 })
             }
         }).collect()
@@ -552,7 +580,7 @@ impl LlmBridge for AnthropicClient {
         let model = options
             .model
             .as_deref()
-            .and_then(|m| m.strip_prefix("anthropic:"))
+            .map(|m| model_id_from_spec(m))
             .unwrap_or("claude-sonnet-4-6");
 
         // System prompt format: OAuth requires array format with CC identity prefix
@@ -909,10 +937,13 @@ impl LlmBridge for OpenAIClient {
     ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
         let (tx, rx) = mpsc::channel(256);
 
+        // Strip any provider prefix (openai:, openrouter:, etc.) from model.
+        // OpenRouter and OpenAICompatClient delegate through here with
+        // pre-stripped or re-prefixed model names.
         let model = options
             .model
             .as_deref()
-            .and_then(|m| m.strip_prefix("openai:"))
+            .map(|m| model_id_from_spec(m))
             .unwrap_or("gpt-4.1");
 
         let mut wire_msgs = vec![json!({"role": "system", "content": system_prompt})];
@@ -1708,15 +1739,8 @@ impl LlmBridge for OpenAICompatClient {
             }
         }
 
-        // OpenAIClient.stream() strips "openai:" prefix. For compat providers,
-        // wrap the model so that strip works correctly.
-        if self.provider_id != "openai" {
-            if let Some(ref mut m) = opts.model {
-                if !m.starts_with("openai:") {
-                    *m = format!("openai:{m}");
-                }
-            }
-        }
+        // No prefix wrapping needed — OpenAIClient now uses model_id_from_spec()
+        // which handles both prefixed and bare model names.
 
         self.inner
             .stream(system_prompt, messages, tools, &opts)
@@ -2288,5 +2312,38 @@ mod tests {
         // Without CHATGPT_OAUTH_TOKEN set or auth.json, should return None
         // (This is environment-dependent but should not panic)
         let _ = CodexClient::from_env();
+    }
+
+    #[test]
+    fn model_id_from_spec_strips_known_provider_prefixes() {
+        // Provider-prefixed models
+        assert_eq!(model_id_from_spec("anthropic:claude-sonnet-4-6"), "claude-sonnet-4-6");
+        assert_eq!(model_id_from_spec("openai:gpt-4.1"), "gpt-4.1");
+        assert_eq!(model_id_from_spec("openai-codex:codex-mini-latest"), "codex-mini-latest");
+        assert_eq!(model_id_from_spec("ollama:qwen3:32b"), "qwen3:32b");
+
+        // Bare model IDs (no known provider prefix) — returned as-is
+        assert_eq!(model_id_from_spec("claude-sonnet-4-6"), "claude-sonnet-4-6");
+        assert_eq!(model_id_from_spec("qwen3:32b"), "qwen3:32b");
+
+        // OpenRouter slash-separated models — no colon prefix, returned as-is
+        assert_eq!(
+            model_id_from_spec("anthropic/claude-sonnet-4-20250514"),
+            "anthropic/claude-sonnet-4-20250514"
+        );
+    }
+
+    #[test]
+    fn sanitize_tool_id_strips_codex_compound_ids() {
+        assert_eq!(sanitize_tool_id("call_abc|fc_1"), "call_abc");
+        assert_eq!(sanitize_tool_id("call_abc"), "call_abc");
+        assert_eq!(sanitize_tool_id("toolu_01ABC-xyz_123"), "toolu_01ABC-xyz_123");
+    }
+
+    #[test]
+    fn sanitize_tool_id_replaces_invalid_chars() {
+        assert_eq!(sanitize_tool_id("call abc"), "call_abc");
+        assert_eq!(sanitize_tool_id("call.abc"), "call_abc");
+        assert_eq!(sanitize_tool_id(""), "");
     }
 }

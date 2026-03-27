@@ -3,6 +3,7 @@ id: agent-loop-resilience
 title: Agent loop resilience — what the hermit crab wants in its shell
 status: implemented
 parent: rust-agent-loop
+related: [perpetual-rolling-context]
 tags: [rust, agent-loop, resilience, self-awareness, introspective]
 open_questions: []
 ---
@@ -155,6 +156,25 @@ The deepest desire: I want the loop to notice patterns that indicate I'm struggl
 **Implementation:** A `StuckDetector` struct that the loop updates after every tool call. It maintains a sliding window of recent (tool_name, args_hash) pairs and pattern-matches against known stuck signatures. When a pattern matches, it returns an `Option<String>` that the loop injects as a system message before the next LLM call.
 
 This is not AI. It's a finite state machine watching for pathological patterns. The "intelligence" is in choosing which patterns to detect — and that's exactly the kind of thing the agent occupying this loop knows best.
+
+### Session 2026-03-27: Error classification hierarchy and structural recovery
+
+The error handling system now has a three-tier classification in `stream_with_retry()` and the calling loop:
+
+**Tier 1 — Transient (retry with backoff):**
+Handled inside `stream_with_retry()`. Matches: rate limit, overloaded, timeout, 500/502/503/529, "too many requests". Retries up to `max_retries` with exponential backoff.
+
+Guard: `is_context_overflow()` and `is_malformed_history()` are explicitly EXCLUDED from transient classification to prevent blind retries on structural errors.
+
+**Tier 2 — Context overflow (compact + retry):**
+Caught by the loop after `stream_with_retry()` returns an error. Matches: "long context", "context length", "token limit", "request too large", "extra usage" + "context". Triggers emergency compaction → decay fallback → message rebuild → single retry.
+
+**Tier 3 — Malformed history (decay + retry):**
+Also caught by the loop. Matches: "tool_use_id", "tool_result", "thinking.signature", "role must alternate", "field required", "does not match pattern". Triggers aggressive decay (drop first half of history) → message rebuild → single retry.
+
+**Terminal:** Anything not matching tiers 1-3 propagates as an error to the operator.
+
+This covers every failure mode encountered during cross-provider model switching (Codex→Anthropic, GPT→Claude) including tool ID format mismatches, unsigned thinking blocks, orphaned tool results, and context overflow.
 
 ## Decisions
 

@@ -3,6 +3,7 @@ id: perpetual-rolling-context
 title: Perpetual rolling context — provider-agnostic conversation buffer with projection-based LLM requests
 status: exploring
 parent: rust-agent-loop
+related: [rust-compaction, bridge-provider-routing, agent-loop-resilience, context-class-taxonomy-and-routing-policy]
 tags: [architecture, context, providers, strategic, conversation]
 open_questions: []
 jj_change_id: totulnyvrrzuplprmzuwrlzpuksvkslp

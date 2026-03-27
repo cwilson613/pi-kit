@@ -25,5 +25,5 @@ expression: render_to_string(&terminal)
 │
 │
 │
-│── openspec ───────────────────
-│ ⟳ tui-surface-pass 7/10
+│
+│

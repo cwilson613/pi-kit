@@ -344,27 +344,18 @@ impl DashboardState {
         // ── Compute section heights ─────────────────────────────
         let header_lines = self.build_header_lines(inner.width as usize, t);
         let focus_lines = self.build_focus_lines(inner.width as usize, t);
-        let change_lines = self.build_changes_lines(inner.width as usize, t);
 
         let header_h = header_lines.len() as u16;
         let focus_h = focus_lines.len() as u16;
-        let change_h = change_lines.len() as u16;
 
-        // Bottom section: only openspec changes.
-        // Cleave progress is transient operational telemetry — shown in
-        // the instruments panel, not competing with the design tree for space.
-        let bottom_h = change_h;
-        // Top sections
-        let top_h = header_h + focus_h;
-        // Tree gets remaining space
-        let tree_h = inner.height.saturating_sub(top_h + bottom_h).max(3); // minimum 3 rows for tree
+        // Tree gets all remaining space — OpenSpec changes are now shown
+        // inline on their bound tree nodes, not in a separate section.
+        let tree_h = inner.height.saturating_sub(header_h + focus_h).max(3);
 
-        // Build layout constraints
         let chunks = Layout::vertical([
-            Constraint::Length(header_h), // [0] header
-            Constraint::Length(focus_h),  // [1] focused node
-            Constraint::Length(tree_h),   // [2] tree (fills)
-            Constraint::Length(change_h), // [3] openspec changes
+            Constraint::Length(header_h),
+            Constraint::Length(focus_h),
+            Constraint::Length(tree_h),
         ])
         .split(inner);
 
@@ -390,12 +381,6 @@ impl DashboardState {
                 Style::default().fg(t.dim()),
             )));
             frame.render_widget(hint, chunks[2]);
-        }
-
-        // ── Render bottom section ───────────────────────────────
-        if change_h > 0 {
-            let para = Paragraph::new(change_lines);
-            frame.render_widget(para, chunks[3]);
         }
     }
 
@@ -589,7 +574,12 @@ impl DashboardState {
 
     fn render_tree(&mut self, area: Rect, frame: &mut Frame, t: &dyn Theme) {
         let focused_id = self.focused_node.as_ref().map(|n| n.id.as_str());
-        let mut items = build_tree_items(&self.all_nodes, focused_id, t);
+        let changes_by_name: std::collections::HashMap<&str, &ChangeSummary> = self
+            .active_changes
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let mut items = build_tree_items(&self.all_nodes, focused_id, &changes_by_name, t);
 
         // Prepend degraded nodes — files that exist but no longer parse.
         // Shown with ⚠ icon so the operator can trace the breakage.
@@ -670,6 +660,7 @@ impl DashboardState {
 fn build_tree_items<'a>(
     nodes: &[NodeSummary],
     focused_id: Option<&str>,
+    changes: &std::collections::HashMap<&str, &ChangeSummary>,
     t: &dyn Theme,
 ) -> Vec<TreeItem<'a, String>> {
     // Index children by parent
@@ -697,6 +688,7 @@ fn build_tree_items<'a>(
         parent_key: Option<&str>,
         children_map: &HashMap<Option<&str>, Vec<&NodeSummary>>,
         focused_id: Option<&str>,
+        changes: &std::collections::HashMap<&str, &ChangeSummary>,
         t: &dyn Theme,
     ) -> Vec<TreeItem<'a, String>> {
         let Some(children) = children_map.get(&parent_key) else {
@@ -705,8 +697,9 @@ fn build_tree_items<'a>(
         children
             .iter()
             .filter_map(|node| {
-                let child_items = build_recursive(Some(&node.id), children_map, focused_id, t);
-                let text = node_text(node, focused_id, t);
+                let child_items =
+                    build_recursive(Some(&node.id), children_map, focused_id, changes, t);
+                let text = node_text(node, focused_id, changes, t);
                 if child_items.is_empty() {
                     Some(TreeItem::new_leaf(node.id.clone(), text))
                 } else {
@@ -716,7 +709,7 @@ fn build_tree_items<'a>(
             .collect()
     }
 
-    build_recursive(None, &children_map, focused_id, t)
+    build_recursive(None, &children_map, focused_id, changes, t)
 }
 
 /// Build the rich `Text` for a single tree node line.
@@ -726,7 +719,12 @@ fn build_tree_items<'a>(
 /// - id: node id (bold if focused, normal otherwise)
 /// - ?N: question count badge (if > 0)
 /// - P1-P5: priority badge (if set)
-fn node_text<'a>(node: &NodeSummary, focused_id: Option<&str>, t: &dyn Theme) -> Text<'a> {
+fn node_text<'a>(
+    node: &NodeSummary,
+    focused_id: Option<&str>,
+    changes: &std::collections::HashMap<&str, &ChangeSummary>,
+    t: &dyn Theme,
+) -> Text<'a> {
     let (icon, color) = status_icon_color(node.status, t);
     let is_focused = focused_id == Some(node.id.as_str());
 
@@ -762,9 +760,24 @@ fn node_text<'a>(node: &NodeSummary, focused_id: Option<&str>, t: &dyn Theme) ->
         ));
     }
 
-    // OpenSpec indicator
-    if node.openspec_change.is_some() {
-        spans.push(Span::styled(" ◈", Style::default().fg(t.accent())));
+    // Inline OpenSpec: stage icon + task progress, not a bare ◈
+    if let Some(ref change_name) = node.openspec_change {
+        if let Some(change) = changes.get(change_name.as_str()) {
+            let (stage_icon, stage_color) = stage_badge(change.stage, t);
+            spans.push(Span::styled(
+                format!(" {stage_icon}"),
+                Style::default().fg(stage_color),
+            ));
+            if change.total_tasks > 0 {
+                spans.push(Span::styled(
+                    format!(" {}/{}", change.done_tasks, change.total_tasks),
+                    Style::default().fg(t.dim()),
+                ));
+            }
+        } else {
+            // Not in active_changes (archived/unknown) — dim indicator only
+            spans.push(Span::styled(" ◈", Style::default().fg(t.accent_muted())));
+        }
     }
 
     Text::from(Line::from(spans))
@@ -919,6 +932,10 @@ mod tests {
 
     #[test]
     fn dashboard_with_changes() {
+        // OpenSpec changes are now shown inline on their bound tree nodes,
+        // not in a separate sidebar section.  A change with no bound node
+        // produces no visible text — that is the correct new behaviour.
+        // A change bound to a node should render the stage icon on that node.
         let mut state = DashboardState::default();
         state.active_changes = vec![ChangeSummary {
             name: "my-change".into(),
@@ -926,6 +943,17 @@ mod tests {
             done_tasks: 3,
             total_tasks: 8,
         }];
+        // Add a node that references the change
+        state.all_nodes.push(NodeSummary {
+            id: "feat-node".into(),
+            title: "Feature node".into(),
+            status: NodeStatus::Exploring,
+            parent: None,
+            open_questions: 0,
+            openspec_change: Some("my-change".into()),
+            priority: None,
+            issue_type: None,
+        });
         let backend = TestBackend::new(36, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -935,10 +963,9 @@ mod tests {
             .unwrap();
 
         let text = buf_text(&terminal);
-        assert!(
-            text.contains("my-change"),
-            "should render change name: {text}"
-        );
+        // The node id should appear, and 3/8 task progress should be inline
+        assert!(text.contains("feat-node"), "should render bound node: {text}");
+        assert!(text.contains("3/8"), "should render task progress inline: {text}");
     }
 
     #[test]
@@ -1100,7 +1127,8 @@ mod tests {
                 openspec_change: None,
             },
         ];
-        let items = build_tree_items(&nodes, None, &t);
+        let empty_changes = std::collections::HashMap::new();
+        let items = build_tree_items(&nodes, None, &empty_changes, &t);
         assert_eq!(items.len(), 3);
         // Implementing should come first
         assert_eq!(items[0].identifier(), &"implementing-node".to_string());
@@ -1143,7 +1171,8 @@ mod tests {
                 openspec_change: Some("change-b".into()),
             },
         ];
-        let items = build_tree_items(&nodes, None, &t);
+        let empty_changes = std::collections::HashMap::new();
+        let items = build_tree_items(&nodes, None, &empty_changes, &t);
         assert_eq!(items.len(), 1, "should have one root");
         assert_eq!(items[0].children().len(), 2, "root should have 2 children");
         // implementing child comes first
@@ -1165,7 +1194,8 @@ mod tests {
         };
 
         // Not focused
-        let text_normal = node_text(&node, None, &t);
+        let empty_changes = std::collections::HashMap::new();
+        let text_normal = node_text(&node, None, &empty_changes, &t);
         let line = &text_normal.lines[0];
         assert!(
             line.spans.len() >= 4,
@@ -1173,7 +1203,7 @@ mod tests {
         );
 
         // Focused
-        let text_focused = node_text(&node, Some("my-node"), &t);
+        let text_focused = node_text(&node, Some("my-node"), &empty_changes, &t);
         let line = &text_focused.lines[0];
         // The id span should be bold+accent_bright when focused
         let id_span = &line.spans[1];
@@ -1415,7 +1445,8 @@ mod tests {
             issue_type: None,
             openspec_change: None,
         }];
-        let items = build_tree_items(&nodes, None, &t);
+        let empty_changes = std::collections::HashMap::new();
+        let items = build_tree_items(&nodes, None, &empty_changes, &t);
         assert_eq!(items.len(), 1, "orphan should become root");
         assert_eq!(items[0].identifier(), &"orphan".to_string());
     }

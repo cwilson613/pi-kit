@@ -3,6 +3,7 @@ id: rust-compaction
 title: Rust compaction — context decay + LLM-driven summarization
 status: implemented
 parent: rust-phase-1
+related: [perpetual-rolling-context]
 tags: [rust, compaction, context, decay]
 open_questions: []
 priority: 1
@@ -69,6 +70,22 @@ The existing `lifecycle/mod.rs` has commented-out stubs for this. `conversation.
 - Reference tracking (scan assistant text for paths/identifiers to slow decay) — deferred, optimization
 - Configurable context window (hardcoded 200k) — should come from model metadata
 - Compaction model routing (use cheaper model for summarization) — can use bridge's model parameter
+
+### Session 2026-03-27: Emergency compaction and graceful degradation
+
+New compaction features implemented in rc.22–rc.24:
+
+1. **Emergency compaction on context overflow** — When Anthropic returns 429 "Extra usage required for long context", the loop now detects this via `is_context_overflow()`, forces compaction, and retries. If the LLM compaction call itself fails, falls back to `decay_oldest()` (brute-force front-of-buffer removal).
+
+2. **Compaction payload truncation** — `compact_via_llm()` now caps the payload at 100k chars (~25k tokens) to prevent the compaction request itself from exceeding provider limits.
+
+3. **Malformed history recovery** — `is_malformed_history()` detects provider-rejected conversation structure (orphaned tool IDs, missing thinking signatures, role violations) and triggers emergency decay + retry instead of terminal failure.
+
+4. **Orphan stripping** — `strip_orphaned_tool_results()` removes tool_result messages whose tool_use was evicted during compaction.
+
+5. **Role alternation enforcement** — `enforce_role_alternation()` merges adjacent same-role messages and drops structurally invalid sequences after compaction.
+
+6. **Future direction** — The perpetual-rolling-context design (exploring) will make compaction an optional cost optimization rather than a structural necessity. The selector handles budget overflow by construction — compaction only runs to save token costs on pay-per-token providers.
 
 ## Decisions
 

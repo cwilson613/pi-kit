@@ -41,6 +41,12 @@ pub struct ChildState {
     pub provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout_log_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr_log_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -93,6 +99,9 @@ impl CleaveState {
                 execute_model: Some(model.to_string()),
                 provider_id: None,
                 duration_secs: None,
+                stdout_log_path: None,
+                stderr_log_path: None,
+                session_path: None,
             })
             .collect();
 
@@ -159,6 +168,9 @@ mod tests {
         state.children[0].duration_secs = Some(42.5);
         state.children[0].provider_id = Some("openai-codex".into());
         state.children[0].execute_model = Some("openai-codex:gpt-5.4".into());
+        state.children[0].stdout_log_path = Some("/tmp/child.stdout.log".into());
+        state.children[0].stderr_log_path = Some("/tmp/child.stderr.log".into());
+        state.children[0].session_path = Some("/tmp/.cleave-session.json".into());
 
         let tmp = std::env::temp_dir().join("omegon-test-state.json");
         state.save(&tmp).unwrap();
@@ -174,6 +186,18 @@ mod tests {
         assert_eq!(
             loaded.children[0].execute_model.as_deref(),
             Some("openai-codex:gpt-5.4")
+        );
+        assert_eq!(
+            loaded.children[0].stdout_log_path.as_deref(),
+            Some("/tmp/child.stdout.log")
+        );
+        assert_eq!(
+            loaded.children[0].stderr_log_path.as_deref(),
+            Some("/tmp/child.stderr.log")
+        );
+        assert_eq!(
+            loaded.children[0].session_path.as_deref(),
+            Some("/tmp/.cleave-session.json")
         );
         assert_eq!(loaded.children[1].status, ChildStatus::Pending);
 

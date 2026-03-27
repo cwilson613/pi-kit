@@ -559,6 +559,15 @@ async fn run_cleave_command(
         if let Some(err) = &child.error {
             eprintln!("    Error: {}", err);
         }
+        if let Some(path) = &child.stderr_log_path {
+            eprintln!("    Stderr log: {}", path);
+        }
+        if let Some(path) = &child.stdout_log_path {
+            eprintln!("    Stdout log: {}", path);
+        }
+        if let Some(path) = &child.session_path {
+            eprintln!("    Session: {}", path);
+        }
     }
 
     eprintln!("\n### Merge Results");

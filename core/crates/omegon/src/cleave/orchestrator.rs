@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -325,10 +325,15 @@ pub async fn run_cleave(
                 Ok(output) => {
                     state.children[child_idx].status = ChildStatus::Completed;
                     state.children[child_idx].duration_secs = Some(output.duration_secs);
+                    state.children[child_idx].stdout_log_path = output.stdout_log_path.clone();
+                    state.children[child_idx].stderr_log_path = output.stderr_log_path.clone();
+                    state.children[child_idx].session_path = output.session_path.clone();
                     tracing::info!(
                         child = %label,
                         duration = format!("{:.0}s", output.duration_secs),
                         session_path = ?output.session_path,
+                        stdout_log = ?output.stdout_log_path,
+                        stderr_log = ?output.stderr_log_path,
                         "child completed"
                     );
 
@@ -537,7 +542,10 @@ struct ChildOutput {
     duration_secs: f64,
     stdout: String,
     stderr_tail: String,
+    stderr_full: String,
     session_path: Option<String>,
+    stdout_log_path: Option<String>,
+    stderr_log_path: Option<String>,
 }
 
 /// Configuration for dispatching a child agent process.
@@ -630,6 +638,11 @@ async fn dispatch_child(
     let stderr = child.stderr.take().unwrap();
     let mut reader = BufReader::new(stderr).lines();
     let mut stderr_tail: std::collections::VecDeque<String> = std::collections::VecDeque::with_capacity(20);
+    let logs_dir = cwd.join(".omegon-child-logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let stdout_log_path = logs_dir.join(format!("{}.stdout.log", label));
+    let stderr_log_path = logs_dir.join(format!("{}.stderr.log", label));
+    let mut stderr_log = tokio::fs::File::create(&stderr_log_path).await.ok();
 
     let wall_timeout = tokio::time::Duration::from_secs(config.timeout_secs);
     let idle_timeout = tokio::time::Duration::from_secs(config.idle_timeout_secs);
@@ -655,6 +668,10 @@ async fn dispatch_child(
                     Ok(Ok(Some(line))) => {
                         last_activity = Instant::now();
                         line_count += 1;
+                        if let Some(file) = stderr_log.as_mut() {
+                            let _ = file.write_all(line.as_bytes()).await;
+                            let _ = file.write_all(b"\n").await;
+                        }
                         if stderr_tail.len() == 20 {
                             stderr_tail.pop_front();
                         }
@@ -703,9 +720,9 @@ async fn dispatch_child(
 
     let mut stdout_buf = String::new();
     if let Some(mut stdout) = child.stdout.take() {
-        use tokio::io::AsyncReadExt;
         let _ = stdout.read_to_string(&mut stdout_buf).await;
     }
+    let _ = std::fs::write(&stdout_log_path, &stdout_buf);
     let stderr_tail_text = stderr_tail.into_iter().collect::<Vec<_>>().join("\n");
     let session_path = cwd.join(".cleave-session.json");
     let session_path = session_path.exists().then(|| session_path.display().to_string());
@@ -717,16 +734,21 @@ async fn dispatch_child(
             duration_secs,
             stdout: stdout_buf,
             stderr_tail: stderr_tail_text,
+            stderr_full: std::fs::read_to_string(&stderr_log_path).unwrap_or_default(),
             session_path,
+            stdout_log_path: Some(stdout_log_path.display().to_string()),
+            stderr_log_path: Some(stderr_log_path.display().to_string()),
         }),
         Ok(()) => Err(anyhow::anyhow!(
-            "Child exited with code {}\n{}",
+            "Child exited with code {}\nlog: {}\n{}",
             exit.code().unwrap_or(-1),
+            stderr_log_path.display(),
             crate::util::truncate(&stderr_tail_text, 1200)
         )),
         Err(e) => Err(anyhow::anyhow!(
-            "{}\n{}",
+            "{}\nlog: {}\n{}",
             e,
+            stderr_log_path.display(),
             crate::util::truncate(&stderr_tail_text, 1200)
         )),
     }

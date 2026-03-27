@@ -250,6 +250,250 @@ Critical design choice: the buffer stores **canonical IDs** (`omg_{short_uuid}`)
 
 When projecting to a DIFFERENT provider than the one that generated the message, the projector uses the canonical ID directly (sanitized to match the target's regex). When projecting to the SAME provider, it can use the original provider ID from the blob for perfect round-tripping.
 
+### Adversarial assessment — landmines and mitigations
+
+
+
+### Landmine 1: Token counting divergence (CRITICAL)
+
+The selector needs to pick a subset that fits the provider's context window. But token counts vary by provider:
+- Different tokenizers (Claude tokenizer vs tiktoken cl100k vs o200k vs llama tokenizer)
+- Same text can be 15-30% different in token count between providers
+- The chars/4 heuristic is wrong for code (operators/short names inflate tokens), JSON (heavily tokenized), and CJK text
+
+If the selector picks "200k tokens worth" using chars/4 but the provider counts 240k, we still get a 429. We've just moved the failure from storage to selection — same failure mode.
+
+**Mitigation**: Two-pronged approach:
+1. The WireProjector trait gets `fn estimate_tokens(&self, entries: &[&BufferEntry]) -> usize` — each projector provides provider-specific estimates. AnthropicProjector uses chars/3.5, ChatCompletionsProjector uses chars/4 (or embeds tiktoken-rs if accuracy matters).
+2. The selector targets 80% of the budget, not 100%. The 20% margin absorbs tokenizer variance.
+3. Track actual vs estimated per-request using provider-reported usage (see landmine 2) and calibrate the estimator over time.
+
+### Landmine 2: Provider usage data is discarded (REAL BUG)
+
+Every provider response includes actual token usage in message_delta (Anthropic) or the final chunk (OpenAI). We currently `tracing::trace!()` this and throw it away. This is the only source of ground truth for token counting, and we're not capturing it.
+
+**Mitigation**: The streaming response parser should extract and return `Usage { input_tokens, output_tokens }` alongside the AssistantMessage. The loop stores this in the buffer entry. Over time, we can compare estimated vs actual and calibrate.
+
+### Landmine 3: Tool definitions eat a fixed budget (MODERATE)
+
+34 tools × ~500 tokens each = ~17k tokens consumed before any conversation. This is 8.5% of a 200k window. The selector must subtract this from the conversation budget, not treat the full context window as available for messages.
+
+Additionally, tool descriptions are stripped/compacted by some projectors (AnthropicProjector strips parameter descriptions). The projector knows the actual tool token cost — this should feed into the budget calculation.
+
+**Mitigation**: The projector computes tool token overhead: `fn tool_overhead(&self, tools: &[ToolDefinition]) -> usize`. The selector's budget is `context_window - system_prompt_tokens - tool_overhead - output_reserve - margin`.
+
+### Landmine 4: Output token reservation (MODERATE)
+
+Context window = input + output. If we fill 195k of a 200k window with input, the model can only generate 5k tokens — not enough for complex tool calls. The current `max_tokens: 16384` is hardcoded but not factored into the budget.
+
+**Mitigation**: The selector reserves `max_tokens` (currently 16384) from the budget. This is already implicit in the "budget allocation" step of the projection architecture, but must be explicit in code.
+
+### Landmine 5: Anthropic prompt caching conflict (LOW)
+
+Anthropic caches the KV cache for repeated message prefixes, reducing cost. If the selector changes which messages are included between turns, cache hits drop. Dynamic selection could increase costs.
+
+**Mitigation**: The selector should be STABLE — prefer extending the existing selection over reshuffling. A turn that was included last time should remain included if budget allows. This is a soft preference, not a hard constraint.
+
+### Landmine 6: Response parsing lives in the bridge, not the projector (DESIGN TENSION)
+
+The projector formats requests (clean, stateless). But response parsing is streaming and stateful (accumulate deltas → build complete message). Having the projector own both request AND response creates a coupling with the streaming state machine.
+
+**Mitigation**: The projector only does final assembly: `parse_response(text, thinking, tool_calls, raw) → BufferEntry`. The streaming accumulation stays in the bridge's SSE parser. The bridge calls `projector.parse_response()` when the stream completes, passing the accumulated parts. Clean boundary: bridge owns the stream, projector owns the format.
+
+### Landmine 7: Canonical ID mapping during tool dispatch (MODERATE)
+
+When the model responds with tool calls, the provider assigns IDs (toolu_xxx, call_xxx). We need to:
+1. Generate canonical IDs (omg_xxx)
+2. Store the mapping in ProviderBlob
+3. Dispatch tools using canonical IDs
+4. Store tool_results with canonical call_ids
+5. On next projection, map canonical → provider ID for same-provider round-tripping
+
+This mapping is per-turn, per-assistant-message. If the projector generates the BufferEntry from the response (landmine 6 mitigation), it naturally generates the canonical IDs and stores the provider-to-canonical mapping in the blob. The loop dispatches using canonical IDs. The next projection reads the blob to recover the original provider IDs.
+
+**Risk**: If the mapping is lost (blob is None after session resume), the projector falls back to canonical IDs. These MUST satisfy the target provider's regex. The `omg_` prefix + alphanumeric guarantees this.
+
+### Landmine 8: Per-model billing and rate limits (LOW, EXTERNAL)
+
+Token usage tracking needs to know: which model, which provider, how many input/output tokens, cached vs uncached. This is billing/observability data, not architectural. The buffer can store per-entry usage metrics without affecting the core design.
+
+### NOT a landmine: session format migration
+
+The constraint "old sessions must load" is achievable. The old format stores LlmMessage variants. A `BufferEntry::from_legacy()` converter can:
+- Extract text/tool_calls from LlmMessage::Assistant
+- Store the raw field as ProviderBlob (inferring provider from field structure)
+- Generate canonical IDs deterministically from old call_ids (hash-based, so tool_result pairing survives)
+- Detect old format by presence of "role" key in the JSON
+
+### Revised WireProjector trait with token estimation and usage parsing
+
+```rust
+/// Provider-specific wire format transformer.
+/// One implementation per wire protocol family.
+pub trait WireProjector: Send + Sync {
+    // ─── Request formatting ─────────────────────────────────────
+    
+    /// Format selected buffer entries into the provider's request body.
+    fn format_request(
+        &self,
+        system_prompt: &str,
+        entries: &[&BufferEntry],
+        tools: &[ToolDefinition],
+        options: &ProjectionOptions,
+    ) -> Value;
+
+    // ─── Response parsing ───────────────────────────────────────
+    
+    /// Convert streamed response parts into a canonical BufferEntry.
+    /// Called when the stream completes.
+    /// Generates canonical tool call IDs and stores provider IDs in the blob.
+    fn parse_response(
+        &self,
+        text: String,
+        thinking: Option<String>,
+        tool_calls: Vec<WireToolCall>,
+        raw: Value,
+        turn: u32,
+    ) -> BufferEntry;
+
+    /// Extract token usage from the provider's response metadata.
+    /// Called on message_delta (Anthropic) or final chunk (OpenAI).
+    fn parse_usage(&self, response_meta: &Value) -> Option<Usage>;
+
+    // ─── Token estimation ───────────────────────────────────────
+    
+    /// Estimate token count for buffer entries in this provider's format.
+    /// Includes JSON structural overhead, content block wrappers, etc.
+    fn estimate_tokens(&self, entries: &[&BufferEntry]) -> usize;
+
+    /// Estimate token overhead for tool definitions in this provider's format.
+    fn tool_overhead(&self, tools: &[ToolDefinition]) -> usize;
+
+    /// Estimate token count for a system prompt.
+    fn system_prompt_tokens(&self, prompt: &str) -> usize;
+
+    // ─── ID mapping ─────────────────────────────────────────────
+    
+    /// Map a canonical tool call ID to this provider's format.
+    /// Uses ProviderBlob for same-provider round-tripping.
+    fn map_tool_id(
+        &self,
+        canonical_id: &str,
+        blob: Option<&ProviderBlob>,
+    ) -> String;
+
+    /// Provider family identifier (for logging/diagnostics).
+    fn family(&self) -> &str;
+}
+
+/// Token usage from a provider response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Usage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    /// Anthropic: cache_read_input_tokens
+    pub cache_read_tokens: Option<u32>,
+    /// Anthropic: cache_creation_input_tokens
+    pub cache_creation_tokens: Option<u32>,
+}
+```
+
+### Budget computation in the selector:
+
+```rust
+fn compute_conversation_budget(
+    projector: &dyn WireProjector,
+    context_window: usize,
+    system_prompt: &str,
+    tools: &[ToolDefinition],
+    max_output_tokens: usize,
+) -> usize {
+    let system_cost = projector.system_prompt_tokens(system_prompt);
+    let tools_cost = projector.tool_overhead(tools);
+    let output_reserve = max_output_tokens;
+    let margin_factor = 0.80;
+    
+    let available = context_window
+        .saturating_sub(system_cost)
+        .saturating_sub(tools_cost)
+        .saturating_sub(output_reserve);
+    
+    (available as f64 * margin_factor) as usize
+}
+```
+
+This means the selector IS provider-aware via the projector's estimation methods, but only for token counting — never for message formatting. The selector's logic (which turns to include, structural integrity) remains provider-agnostic.
+
+### Simplified token estimation — estimator lives on the buffer, not the projector
+
+With self-calibrating estimation, token counting doesn't need to be provider-specific. The `TokenEstimator` lives on the `ConversationBuffer`, not the `WireProjector`.
+
+The projector still needs `tool_overhead()` because the JSON structural overhead for tool definitions IS format-specific:
+- Anthropic: `input_schema` wrapper + description + property schemas
+- Chat Completions: `function` wrapper + `parameters` schema
+- Codex: similar to Chat Completions + `strict: null`
+
+But the overhead difference between formats is ~10%, well within the 20% margin. A single `chars/4` estimate for tool definitions works. The projector doesn't need `estimate_tokens()` or `system_prompt_tokens()`.
+
+**Revised WireProjector trait** (simplified):
+
+```rust
+pub trait WireProjector: Send + Sync {
+    fn format_request(
+        &self,
+        system_prompt: &str,
+        entries: &[&BufferEntry],
+        tools: &[ToolDefinition],
+        options: &ProjectionOptions,
+    ) -> Value;
+
+    fn parse_response(
+        &self,
+        text: String,
+        thinking: Option<String>,
+        tool_calls: Vec<WireToolCall>,
+        raw: Value,
+        turn: u32,
+    ) -> BufferEntry;
+
+    fn parse_usage(&self, response_meta: &Value) -> Option<Usage>;
+
+    fn map_tool_id(
+        &self,
+        canonical_id: &str,
+        blob: Option<&ProviderBlob>,
+    ) -> String;
+
+    fn family(&self) -> &str;
+}
+```
+
+Removed from projector: `estimate_tokens()`, `tool_overhead()`, `system_prompt_tokens()`. These all use the buffer's `TokenEstimator` with the shared chars/N ratio. One estimator, all providers, self-calibrating.
+
+The selector's budget computation becomes:
+
+```rust
+fn compute_budget(
+    estimator: &TokenEstimator,
+    context_window: usize,
+    system_prompt: &str,
+    tools: &[ToolDefinition],
+    max_output_tokens: usize,
+) -> usize {
+    let system_cost = estimator.estimate(system_prompt.len());
+    // Tool defs: sum char lengths of names + descriptions + param schemas
+    let tools_chars: usize = tools.iter().map(|t| t.char_count()).sum();
+    let tools_cost = estimator.estimate(tools_chars);
+    let available = context_window
+        .saturating_sub(system_cost)
+        .saturating_sub(tools_cost)
+        .saturating_sub(max_output_tokens);
+    (available as f64 * 0.80) as usize
+}
+```
+
+Clean, universal, zero dependencies.
+
 ## Decisions
 
 ### Decision: Three-layer architecture: Buffer → Selector → Projector
@@ -367,6 +611,100 @@ Signals: user prompt keywords, recent_files from ContextManager, IntentDocument.
 Memory facts should NOT be injected as synthetic conversation messages — that would confuse the model about what it actually said vs what the harness told it. Memory stays in the system prompt via ContextManager injections, exactly as it works today.
 
 The buffer and memory interact at one point: the selector can use memory-recalled file paths as relevance signals (boost turns that touched files the memory says are architecturally important). But memory content never enters the buffer.
+
+### Decision: Token usage tracked per-entry from provider responses — estimator calibrates against actuals
+
+**Status:** exploring
+**Rationale:** Provider responses include actual token usage (input_tokens, output_tokens, cached). This is ground truth we're currently discarding.
+
+New data flow:
+1. SSE parser extracts usage from message_delta (Anthropic) or final chunk (OpenAI/Codex)
+2. Usage is returned alongside the AssistantMessage from consume_llm_stream()
+3. The buffer stores Usage on the BufferEntry for the assistant response
+4. The selector can now compute: actual tokens used by turn N = sum of entry usages up to turn N
+5. Over time, the ratio of actual/estimated gives a per-provider calibration factor
+
+This gives us:
+- Accurate budget targeting (use actual token counts from recent turns, not estimates)
+- Per-session cost tracking (sum input_tokens × price + output_tokens × price)
+- Per-provider calibration (if chars/4 consistently overestimates for Anthropic, adjust)
+- Observability (which turns are expensive, where the tokens go)
+
+The WireProjector trait gains:
+```rust
+fn estimate_tokens(&self, entries: &[&BufferEntry]) -> usize;
+fn tool_overhead(&self, tools: &[ToolDefinition]) -> usize;
+```
+
+And the buffer entry gains:
+```rust
+pub struct Usage {
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u32>,
+    pub cache_creation_tokens: Option<u32>,
+    pub provider_id: String,
+    pub model_id: String,
+}
+```
+
+### Decision: Selector targets 80% of provider budget with margin for tokenizer variance
+
+**Status:** exploring
+**Rationale:** Token estimation can never be perfect — different tokenizers, different overhead for JSON wrapping, content block structure, etc. The selector should target 80% of the available conversation budget:
+
+```
+available = context_window - system_prompt_estimate - tool_overhead - output_reserve
+target = available × 0.80
+```
+
+The 20% margin absorbs:
+- Tokenizer variance between estimate and actual (typically 10-15%)
+- JSON structural overhead added by the projector (content block wrappers, role/type fields)
+- System prompt growth from context injections
+
+If the provider reports actual usage and it's consistently under 70% of the window, the margin can tighten. If it's over 90%, the margin widens. Self-calibrating.
+
+The output_reserve defaults to max_tokens (16384) and tool_overhead is computed by the projector's tool_overhead() method.
+
+### Decision: No tokenizer libraries — self-calibrating estimation from provider-reported usage
+
+**Status:** exploring
+**Rationale:** Embedding model-specific tokenizers (tiktoken, SentencePiece, etc.) creates a per-model dependency treadmill. tiktoken-rs only covers OpenAI. The 8 providers behind Chat Completions use at least 4 different tokenizer families (tiktoken, SentencePiece, Qwen BPE, proprietary). Every new model or provider would require another tokenizer crate. Local inference models are completely open-ended — any GGUF on Ollama could have any tokenizer.
+
+Instead: **chars/N baseline + provider-reported usage feedback → self-calibrating ratio.**
+
+```rust
+struct TokenEstimator {
+    /// Chars-per-token ratio. Starts at 4.0 (conservative default).
+    /// Updated after each provider response with actual usage.
+    ratio: f64,
+    /// Exponential moving average weight for ratio updates.
+    alpha: f64,  // 0.3 — recent turns weighted more heavily
+}
+
+impl TokenEstimator {
+    fn estimate(&self, char_count: usize) -> usize {
+        (char_count as f64 / self.ratio) as usize
+    }
+
+    fn calibrate(&mut self, estimated_chars: usize, actual_tokens: u32) {
+        let observed_ratio = estimated_chars as f64 / actual_tokens as f64;
+        self.ratio = self.alpha * observed_ratio + (1.0 - self.alpha) * self.ratio;
+    }
+}
+```
+
+Behavior:
+- **Turn 1**: Uses chars/4.0 with 80% budget margin. Conservative, safe.
+- **Turn 1 response**: Provider reports `input_tokens: 1234` for text we estimated at 1100 tokens. Ratio adjusts.
+- **Turn 3+**: Estimate converges to within 5% of actual for the current model.
+- **Model switch**: Ratio resets to 4.0 (new model, new tokenizer).
+- **Local inference**: Same approach. Ollama reports usage in its OpenAI-compat response.
+
+This works for every model that exists today and every model that will exist tomorrow. Zero binary size increase. Zero maintenance burden. Zero provider-specific code for token counting.
+
+The only provider that DOESN'T reliably report usage is... none. All major providers include usage in their response metadata. If a provider omits it, the estimator keeps its current ratio (graceful degradation).
 
 ## Open Questions
 

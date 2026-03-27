@@ -223,6 +223,8 @@ struct ToolEntry {
 pub struct InstrumentPanel {
     time: f64,
     context_fill: f64,
+    /// Static thinking-level fill (0–1) from the setting — not animated.
+    thinking_level_pct: f64,
     thinking_active: bool,
     thinking_intensity: f64,
     minds: Vec<MindState>,
@@ -237,6 +239,7 @@ impl Default for InstrumentPanel {
         Self {
             time: 0.0,
             context_fill: 0.0,
+            thinking_level_pct: 0.0,
             thinking_active: false,
             thinking_intensity: 0.0,
             minds: vec![
@@ -278,6 +281,15 @@ impl InstrumentPanel {
 
         // Context: true 0–100% fill, clamped.
         self.context_fill = (context_pct as f64 / 100.0).clamp(0.0, 1.0);
+
+        // Thinking static fill — reflects the setting level, not animated intensity
+        self.thinking_level_pct = match thinking_level {
+            "high"    => 1.0,
+            "medium"  => 0.60,
+            "low"     => 0.35,
+            "minimal" => 0.15,
+            _         => 0.0,
+        };
 
         // Thinking: only active during inference
         self.thinking_active = agent_active;
@@ -421,64 +433,66 @@ impl InstrumentPanel {
 
     fn render_context_bar(&self, area: Rect, buf: &mut Buffer) {
         let w = area.width as usize;
-        let fill_cols = (self.context_fill * w as f64) as usize;
-        let thinking = self.thinking_intensity > 0.05;
+        if w == 0 { return; }
         let rows = area.height.min(2) as usize;
+        let active = self.thinking_active;
+
+        // Row 0 → thinking level  (static solid fill, reflects the setting)
+        // Row 1 → context fill    (dynamic solid fill, reflects token usage)
+        // Both rows: when inference is active, glitch chars animate across
+        // the entire two-row area while keeping the fill colors intact.
+        let fills = [self.thinking_level_pct, self.context_fill];
+
+        let thinking_color = |lvl: f64| -> Color {
+            if lvl < 0.01 { Color::Rgb(12, 20, 28) }
+            else if lvl < 0.40 { Color::Rgb(42, 160, 180) }
+            else if lvl < 0.70 { Color::Rgb(220, 170, 70) }
+            else { Color::Rgb(240, 110, 90) }
+        };
 
         for row in 0..rows {
+            let fill = fills[row];
+            let fill_cols = (fill * w as f64) as usize;
+
             for x in 0..w {
-                let intensity = if x < fill_cols {
-                    (x as f64 / fill_cols.max(1) as f64) * self.context_fill
-                } else {
-                    0.0
-                };
-
-                let is_glitch = thinking && {
-                    // Offset hash by row for visual variance between rows
-                    let hash = ((x * 17 + row * 53 + (self.time * 8.0) as usize) * 31) % 100;
-                    (hash as f64) < self.thinking_intensity * 60.0
-                };
-
                 let y = area.y + row as u16;
+
+                let is_glitch = active && {
+                    let hash = x.wrapping_mul(17)
+                        .wrapping_add(row.wrapping_mul(53))
+                        .wrapping_add((self.time * 8.0) as usize)
+                        .wrapping_mul(31)
+                        % 100;
+                    (hash as f64) < self.thinking_intensity * 55.0
+                };
+
                 if is_glitch {
-                    let idx =
-                        ((x * 7 + row * 23 + (self.time * 12.0) as usize) * 13) % NOISE_CHARS.len();
-                    let color =
-                        intensity_color((intensity + self.thinking_intensity * 0.3).min(1.0));
+                    let idx = x.wrapping_mul(7)
+                        .wrapping_add(row.wrapping_mul(23))
+                        .wrapping_add((self.time * 12.0) as usize)
+                        .wrapping_mul(13)
+                        % NOISE_CHARS.len();
+                    // Glitch preserves fill color so identity stays legible.
+                    let base = if x < fill_cols { fill } else { self.thinking_intensity * 0.2 };
+                    let color = if row == 0 {
+                        thinking_color((base + self.thinking_intensity * 0.2).min(1.0))
+                    } else {
+                        intensity_color((base + self.thinking_intensity * 0.2).min(1.0))
+                    };
                     if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
                         cell.set_char(NOISE_CHARS[idx]);
                         cell.set_fg(color);
                         cell.set_bg(bg_color());
                     }
-                } else if row == 0 {
-                    // Row 0: context fill bar
-                    let color = intensity_color(intensity);
-                    if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
-                        cell.set_char(if intensity > 0.01 { '█' } else { ' ' });
-                        cell.set_fg(color);
-                        cell.set_bg(bg_color());
-                    }
                 } else {
-                    // Row 1 (non-glitch): percentage label on left, rest blank
-                    // Handled after the x loop
-                }
-            }
-        }
-
-        // Row 1 label (only when not fully glitching)
-        if rows > 1 {
-            let pct = (self.context_fill * 100.0).round() as u32;
-            let label = format!(" {}%", pct);
-            let color = intensity_color(self.context_fill);
-            for (i, ch) in label.chars().enumerate() {
-                if i >= w {
-                    break;
-                }
-                let pos = Position::new(area.x + i as u16, area.y + 1);
-                // Only write label if the cell wasn't already glitched
-                if let Some(cell) = buf.cell_mut(pos) {
-                    if !thinking || cell.symbol() == " " {
-                        cell.set_char(ch);
+                    let in_fill = x < fill_cols;
+                    let color = if in_fill {
+                        if row == 0 { thinking_color(fill) } else { intensity_color(fill) }
+                    } else {
+                        Color::Rgb(10, 18, 24)
+                    };
+                    if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
+                        cell.set_char(if in_fill { '█' } else { '·' });
                         cell.set_fg(color);
                         cell.set_bg(bg_color());
                     }

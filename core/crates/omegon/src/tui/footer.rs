@@ -212,6 +212,18 @@ impl FooterData {
                     self.context_class.short(),
                     Style::default().fg(ctx_class_color),
                 ),
+                Span::styled(
+                    format!(" {:.0}%", self.context_percent.min(100.0)),
+                    Style::default().fg(widgets::percent_color(self.context_percent, t)),
+                ),
+                Span::styled(
+                    if self.context_window > 0 {
+                        format!("/{}", widgets::format_tokens(self.context_window))
+                    } else {
+                        String::new()
+                    },
+                    Style::default().fg(t.border_dim()),
+                ),
             ]));
 
             // Line 3: model + auth + persona
@@ -546,6 +558,18 @@ impl FooterData {
             Span::styled(
                 self.context_class.short(),
                 Style::default().fg(ctx_class_color),
+            ),
+            Span::styled(
+                format!(" {:.0}%", self.context_percent.min(100.0)),
+                Style::default().fg(widgets::percent_color(self.context_percent, t)),
+            ),
+            Span::styled(
+                if self.context_window > 0 {
+                    format!("/{}", widgets::format_tokens(self.context_window))
+                } else {
+                    String::new()
+                },
+                Style::default().fg(t.border_dim()),
             ),
         ]));
 

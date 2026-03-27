@@ -236,6 +236,53 @@ pub async fn resolve_execution_model_spec(model_spec: &str) -> Option<String> {
     ))
 }
 
+fn default_model_for_provider(provider_id: &str) -> &'static str {
+    match provider_id {
+        "anthropic" => "claude-sonnet-4-6",
+        "openai" => "gpt-4.1",
+        "openai-codex" => "gpt-5.4",
+        "openrouter" => "anthropic/claude-haiku-3-5-20241022",
+        "groq" => "llama-3.3-70b-versatile",
+        "xai" => "grok-3-mini-fast",
+        "mistral" => "devstral-small-2505",
+        "cerebras" => "llama-3.3-70b",
+        "huggingface" => "Qwen/Qwen3-32B",
+        "ollama" | "local" => "qwen3:32b",
+        _ => "claude-sonnet-4-6",
+    }
+}
+
+pub fn preferred_model_for_authenticated_provider(
+    current_model: &str,
+    authenticated_provider: &str,
+) -> String {
+    let normalized_provider = if authenticated_provider == "claude" {
+        "anthropic"
+    } else if matches!(authenticated_provider, "chatgpt" | "codex") {
+        "openai-codex"
+    } else {
+        authenticated_provider
+    };
+
+    if infer_provider_id(current_model) == normalized_provider {
+        return current_model.to_string();
+    }
+
+    format!(
+        "{}:{}",
+        normalized_provider,
+        default_model_for_provider(normalized_provider)
+    )
+}
+
+pub async fn resolve_post_login_model_spec(
+    current_model: &str,
+    authenticated_provider: &str,
+) -> Option<String> {
+    let preferred = preferred_model_for_authenticated_provider(current_model, authenticated_provider);
+    resolve_execution_model_spec(&preferred).await.or(Some(preferred))
+}
+
 /// Resolve a single provider by ID.
 /// Resolve a single provider by ID. Returns a bridge if the provider
 /// has credentials and a native client implementation.
@@ -2279,6 +2326,38 @@ mod tests {
         assert!(is_openai_family_model("openai:gpt-5.4"));
         assert!(is_openai_family_model("gpt-5.4"));
         assert!(!is_openai_family_model("codex-mini-latest"));
+    }
+
+    #[test]
+    fn preferred_model_for_authenticated_provider_preserves_same_provider_model() {
+        assert_eq!(
+            preferred_model_for_authenticated_provider("openai-codex:gpt-5.4", "openai-codex"),
+            "openai-codex:gpt-5.4"
+        );
+    }
+
+    #[test]
+    fn preferred_model_for_authenticated_provider_switches_to_provider_default() {
+        assert_eq!(
+            preferred_model_for_authenticated_provider("anthropic:claude-sonnet-4-6", "openai-codex"),
+            "openai-codex:gpt-5.4"
+        );
+        assert_eq!(
+            preferred_model_for_authenticated_provider("openai-codex:gpt-5.4", "anthropic"),
+            "anthropic:claude-sonnet-4-6"
+        );
+    }
+
+    #[test]
+    fn preferred_model_for_authenticated_provider_normalizes_provider_aliases() {
+        assert_eq!(
+            preferred_model_for_authenticated_provider("anthropic:claude-sonnet-4-6", "codex"),
+            "openai-codex:gpt-5.4"
+        );
+        assert_eq!(
+            preferred_model_for_authenticated_provider("openai-codex:gpt-5.4", "claude"),
+            "anthropic:claude-sonnet-4-6"
+        );
     }
 
     // ── CodexClient tests ───────────────────────────────────────

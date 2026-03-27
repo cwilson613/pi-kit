@@ -1149,11 +1149,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                             let progress_tx = events_tx.clone();
                             let provider_clone = provider.to_string();
                             let bridge_clone = bridge.clone();
-                            let model_for_redetect = shared_settings
-                                .lock()
-                                .ok()
-                                .map(|s| s.model.clone())
-                                .unwrap_or_else(|| cli.model.clone());
                             let settings_for_login = shared_settings.clone();
                             tokio::spawn(async move {
                                 let progress: auth::LoginProgress = Box::new(move |msg| {
@@ -1189,13 +1184,25 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                 let _ = events_tx_clone
                                     .send(AgentEvent::SystemNotification { message });
 
-                                // Hot-swap the bridge after login succeeds using the current model intent.
+                                // Hot-swap the bridge after login succeeds using the authenticated
+                                // provider as the authority, not the stale pre-login route.
                                 if result.is_ok() {
-                                    let effective_model = providers::resolve_execution_model_spec(
-                                        &model_for_redetect,
+                                    let current_model = settings_for_login
+                                        .lock()
+                                        .ok()
+                                        .map(|s| s.model.clone())
+                                        .unwrap_or_default();
+                                    let effective_model = providers::resolve_post_login_model_spec(
+                                        &current_model,
+                                        &provider_clone,
                                     )
                                     .await
-                                    .unwrap_or(model_for_redetect.clone());
+                                    .unwrap_or_else(|| {
+                                        providers::preferred_model_for_authenticated_provider(
+                                            &current_model,
+                                            &provider_clone,
+                                        )
+                                    });
                                     if let Some(new_bridge) =
                                         providers::auto_detect_bridge(&effective_model).await
                                     {
@@ -1205,11 +1212,22 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                             s.set_model(&effective_model);
                                             s.provider_connected = true;
                                         }
-                                        tracing::info!("bridge hot-swapped after successful login");
+                                        tracing::info!(model = %effective_model, provider = %provider_clone, "bridge hot-swapped after successful login");
                                         let _ =
                                             events_tx_clone.send(AgentEvent::SystemNotification {
                                                 message: format!(
                                                     "Provider connected — active route {}.",
+                                                    effective_model
+                                                ),
+                                            });
+                                    } else {
+                                        if let Ok(mut s) = settings_for_login.lock() {
+                                            s.provider_connected = false;
+                                        }
+                                        let _ =
+                                            events_tx_clone.send(AgentEvent::SystemNotification {
+                                                message: format!(
+                                                    "⚠ Login succeeded, but {} is not executable with the current credentials.",
                                                     effective_model
                                                 ),
                                             });

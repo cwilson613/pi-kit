@@ -4,9 +4,7 @@ title: "RC1: provider routing verification closure"
 status: exploring
 parent: release-0-15-4-trust-hardening
 tags: [release, rc1, providers, verification]
-open_questions:
-  - "Which exact rc.1 verification cases must pass to declare that no known invalid default-model or fallback path remains in the routed execution slice?"
-  - "What observable evidence should rc.1 capture for each routed child run — resolved provider, resolved model, fallback path taken or not taken, and final child outcome?"
+open_questions: []
 dependencies: []
 related:
   - orchestratable-provider-model
@@ -31,8 +29,3 @@ Release-checklist node for the first rc.1 acceptance criterion: the orchestratab
 **Status:** decided
 
 **Rationale:** A passing run is not enough if the operator cannot tell what actually happened. For each rc.1 verification case, the evidence should show: requested or inferred route, concrete resolved provider, concrete resolved model, whether fallback occurred, and the final child outcome (success, no-op, or failure). Without that evidence, rc.1 could appear stable while still hiding routing mistakes behind successful end states.
-
-## Open Questions
-
-- Which exact rc.1 verification cases must pass to declare that no known invalid default-model or fallback path remains in the routed execution slice?
-- What observable evidence should rc.1 capture for each routed child run — resolved provider, resolved model, fallback path taken or not taken, and final child outcome?

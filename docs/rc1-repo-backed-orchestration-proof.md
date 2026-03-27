@@ -4,8 +4,7 @@ title: "RC1: repo-backed orchestration proof"
 status: exploring
 parent: release-0-15-4-trust-hardening
 tags: [release, rc1, cleave, verification]
-open_questions:
-  - "What must be true at the end of the proof run for rc.1 acceptance — successful child completion, accurate provider/model reporting, expected file changes or no-op rationale, and no merge/worktree bookkeeping contradiction?"
+open_questions: []
 dependencies: []
 related:
   - orchestratable-provider-model
@@ -43,6 +42,8 @@ Release-checklist node for the third rc.1 acceptance criterion: at least one rea
 
 **Rationale:** Stop leaving the proof task abstract. For rc.1, the proof task should be a single-file documentation edit under `docs/` in the live repository — ideally on an existing release-planning or rc.1 design doc that is already part of the current working set. This is the cleanest low-risk proof because it exercises the full real-repo orchestration path (checkout, child routing, child execution, result reporting, worktree/merge bookkeeping) while minimizing the chance that a large code change muddies whether the orchestration system itself is trustworthy. Later RCs can use harder proof tasks; rc.1 should optimize for signal, not bravado.
 
-## Open Questions
+### Decision: the docs-based rc.1 proof run passes only if the child succeeds, the reported provider/model route matches execution, the expected single-file docs change is produced or a justified no-op is reported, and merge/worktree state remains coherent
 
-- What must be true at the end of the proof run for rc.1 acceptance — successful child completion, accurate provider/model reporting, expected file changes or no-op rationale, and no merge/worktree bookkeeping contradiction?
+**Status:** decided
+
+**Rationale:** Close the last acceptance ambiguity. For the chosen rc.1 proof task, success means: the child reaches a successful terminal state, the concrete provider/model shown to the operator matches the executed route, the repo outcome is coherent (the expected single-file docs change exists, or the run clearly explains why no edit was required), and no bookkeeping layer reclassifies the run as failed after successful child execution. This is the minimum trustworthy end-to-end proof for rc.1.

@@ -4,9 +4,7 @@ title: "RC1: OpenAI-family routing honesty landing"
 status: exploring
 parent: release-0-15-4-trust-hardening
 tags: [release, rc1, providers, auth, ux]
-open_questions:
-  - "Which operator-visible surfaces are mandatory for rc.1 honesty — bootstrap/auth summary, model selector gating, active engine display, conversation footer, and diagnostics/report output?"
-  - "What concrete rc.1 proof cases show the OpenAI-family split is honest: OpenAI API-only credentials, ChatGPT/Codex OAuth-only credentials, both present, and fallback from openai intent to openai-codex execution?"
+open_questions: []
 dependencies: []
 related:
   - openai-provider-identity-and-routing-honesty
@@ -37,8 +35,3 @@ Release-checklist node for the second rc.1 acceptance criterion: OpenAI-family a
 **Status:** decided
 
 **Rationale:** The code already gives us four concrete surfaces that matter and are testable. The bootstrap panel renders provider/auth state from `HarnessStatus` (`tui/bootstrap.rs`). The model selector builds gated choices based on separate OpenAI API and OpenAI Codex auth inputs (`tui/mod.rs::build_model_selector_options`, with existing tests in `tui/tests.rs`). The engine panel in the footer shows provider label, model, and auth class (`tui/footer.rs`). And the rc.1 routed-run/report evidence should carry the final concrete provider/model route. These surfaces are enough to prove the split honestly without waiting for a full dashboard redesign.
-
-## Open Questions
-
-- Which operator-visible surfaces are mandatory for rc.1 honesty — bootstrap/auth summary, model selector gating, active engine display, conversation footer, and diagnostics/report output?
-- What concrete rc.1 proof cases show the OpenAI-family split is honest: OpenAI API-only credentials, ChatGPT/Codex OAuth-only credentials, both present, and fallback from openai intent to openai-codex execution?

@@ -6,7 +6,7 @@ dependencies: [lsp-monorepo-workspace-handling]
 related: [codebase-search]
 tags: [architecture, lsp, code-intelligence, tools, navigation]
 open_questions: []
-jj_change_id: ykqqlwnsttquosykvkzllqlnqkwqookt
+jj_change_id: xutzpkqvuomsqvzqkmttqyvltonzxvyw
 issue_type: feature
 priority: 1
 ---

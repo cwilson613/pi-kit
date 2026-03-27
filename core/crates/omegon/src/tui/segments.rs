@@ -375,18 +375,13 @@ impl Segment {
         // buffer clips content and the cached height becomes permanently wrong.
         let estimate = match &self.content {
             UserPrompt { text } => wrapped_rows(text, width.saturating_sub(4)) + 4,
-            AssistantText { text, thinking, .. } => {
+            AssistantText { text, .. } => {
                 let meta_line = if self.meta.model_id.is_some() || self.meta.provider.is_some() {
                     1u16
                 } else {
                     0
                 };
-                let thinking_rows = if thinking.is_empty() {
-                    0
-                } else {
-                    wrapped_rows(thinking, width.saturating_sub(5)).min(8) + 2
-                };
-                wrapped_rows(text, width.saturating_sub(3)) + thinking_rows + 4 + meta_line
+                wrapped_rows(text, width.saturating_sub(3)) + 4 + meta_line
             }
             ToolCard {
                 name,
@@ -553,7 +548,7 @@ fn build_meta_tag(meta: &SegmentMeta) -> String {
 
 fn render_assistant_text(
     text: &str,
-    thinking: &str,
+    _thinking: &str,
     complete: bool,
     meta: &SegmentMeta,
     presentation: &SegmentPresentation,
@@ -595,10 +590,7 @@ fn render_assistant_text(
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            if complete { "response" } else { "thinking" },
-            Style::default().fg(t.border_dim()).bg(bg),
-        ),
+        Span::styled("response", Style::default().fg(t.border_dim()).bg(bg)),
     ]));
 
     // Meta tag line: model / provider / tier — dim secondary header
@@ -606,45 +598,6 @@ fn render_assistant_text(
     if !meta_tag.is_empty() {
         lines.push(Line::from(Span::styled(
             meta_tag,
-            Style::default().fg(t.border_dim()).bg(bg),
-        )));
-    }
-
-    // Thinking block — collapsed summary with line count
-    if !thinking.is_empty() {
-        let think_lines: Vec<&str> = thinking.lines().collect();
-        let show = think_lines.len().min(6);
-        lines.push(Line::from(vec![
-            Span::styled("◌ ", Style::default().fg(t.border()).bg(bg)),
-            Span::styled(
-                "thinking ",
-                Style::default()
-                    .fg(t.dim())
-                    .bg(bg)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-            Span::styled(
-                format!("({} lines)", think_lines.len()),
-                Style::default().fg(t.border_dim()).bg(bg),
-            ),
-        ]));
-        for line in think_lines.iter().take(show) {
-            lines.push(Line::from(Span::styled(
-                format!("  {line}"),
-                Style::default()
-                    .fg(t.border())
-                    .bg(bg)
-                    .add_modifier(Modifier::ITALIC),
-            )));
-        }
-        if think_lines.len() > show {
-            lines.push(Line::from(Span::styled(
-                format!("  ⋯ {} more", think_lines.len() - show),
-                Style::default().fg(t.border_dim()).bg(bg),
-            )));
-        }
-        lines.push(Line::from(Span::styled(
-            "  ─ ─ ─",
             Style::default().fg(t.border_dim()).bg(bg),
         )));
     }
@@ -687,7 +640,7 @@ fn render_assistant_text(
         }
     }
 
-    if !complete && text.is_empty() && thinking.is_empty() {
+    if !complete && text.is_empty() {
         lines.push(Line::from(Span::styled("…", t.style_dim().bg(bg))));
     }
 

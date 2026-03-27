@@ -619,6 +619,9 @@ fn is_transient_error(msg: &str) -> bool {
         || lower.contains("service unavailable")
         || lower.contains("bad gateway")
         || lower.contains("internal server error")
+        || lower.contains("error decoding response body")
+        || lower.contains("unexpected eof")
+        || lower.contains("eof while parsing")
     {
         return true;
     }
@@ -1274,6 +1277,9 @@ mod tests {
         assert!(is_transient_error("error 529: capacity exceeded"));
         assert!(is_transient_error("502 Bad Gateway"));
         assert!(is_transient_error("service unavailable"));
+        assert!(is_transient_error(
+            "error decoding response body: unexpected EOF while parsing a value"
+        ));
 
         // Should NOT match: permanent errors
         assert!(!is_transient_error("Invalid API key"));

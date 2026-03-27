@@ -199,6 +199,26 @@ fn operator_event_queue_keeps_most_recent_entries() {
 }
 
 #[test]
+fn transient_llm_notifications_are_toasts_not_transcript() {
+    let mut app = test_app();
+    let before = app.conversation.segments().len();
+
+    app.handle_agent_event(AgentEvent::SystemNotification {
+        message: "⚠ LLM error (attempt 1/3): error decoding response body: unexpected EOF".into(),
+    });
+
+    assert_eq!(
+        app.conversation.segments().len(),
+        before,
+        "transient transport warnings should not pollute the transcript"
+    );
+    assert!(
+        app.operator_events.iter().any(|e| e.message.contains("error decoding response body")),
+        "warning should still be visible as an ephemeral toast"
+    );
+}
+
+#[test]
 fn mouse_wheel_scroll_direction_latches_manual_scroll() {
     let mut app = test_app();
     app.conversation.push_user("user");

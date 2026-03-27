@@ -3102,8 +3102,17 @@ impl App {
                     .push_lifecycle("⚡", &format!("Cleave {status}"));
             }
             AgentEvent::SystemNotification { message } => {
-                // Transient notifications → toast; persistent ones → conversation
-                if message.starts_with('⟳') || message.starts_with("Retrying") {
+                // Retry/transport diagnostics belong in ephemeral operator status,
+                // not the durable transcript.
+                let lower = message.to_ascii_lowercase();
+                let is_ephemeral_warning = message.starts_with('⟳')
+                    || message.starts_with("Retrying")
+                    || message.starts_with("⚠ LLM error")
+                    || lower.contains("error decoding response body")
+                    || lower.contains("unexpected eof")
+                    || lower.contains("eof while parsing")
+                    || lower.contains("parse error");
+                if is_ephemeral_warning {
                     self.show_toast(&message, ratatui_toaster::ToastType::Warning);
                 } else if message.starts_with('⚡') {
                     self.show_toast(&message, ratatui_toaster::ToastType::Info);

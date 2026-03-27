@@ -264,13 +264,20 @@ impl InstrumentPanel {
         &mut self,
         total_facts: usize,
         working_memory: usize,
+        episodes: usize,
         memory_fill: f64,
     ) {
         if !self.minds.is_empty() {
             self.minds[0].fact_count = total_facts;
+            self.minds[0].active = true;
         }
         if self.minds.len() > 1 {
             self.minds[1].fact_count = working_memory;
+            self.minds[1].active = working_memory > 0;
+        }
+        if self.minds.len() > 2 {
+            self.minds[2].fact_count = episodes;
+            self.minds[2].active = episodes > 0;
         }
         self.memory_fill = memory_fill.clamp(0.0, 0.12);
     }
@@ -470,32 +477,40 @@ impl InstrumentPanel {
         let active = self.thinking_active;
         // Oscillation speed: slow when idle, a touch faster during inference
         let t = self.time * if active { 0.7 } else { 0.25 };
+        let think_scan_x = if think_frac > 0.0 {
+            ((mem_frac + think_frac * 0.5 + (t.sin() * 0.35) * think_frac) * w as f64)
+                .round() as isize
+        } else {
+            -1
+        };
 
         for x in 0..w {
             let pos = x as f64 / w as f64;
             let mem_end = mem_frac;
             let think_end = mem_frac + think_frac;
+            let in_memory_band = pos < mem_end;
+            let in_thinking_band = pos >= mem_end && pos < think_end;
+            let in_used_band = pos >= think_end && pos < think_end + used_frac;
 
             // Which segment?
-            let (mut amp, color): (usize, Color) = if pos < mem_end {
-                // Memory — navy, gentle ripple amplitude 2–4
+            let (amp, color): (usize, Color) = if in_memory_band {
+                // Memory-injected context — navy, gentle ripple amplitude 2–4
                 let osc = (x as f64 * 0.7 + t).sin() * 0.9;
                 let a = (3.0 + osc).clamp(2.0, 4.0) as usize;
                 let r = (20.0 + 30.0 * (pos / mem_frac.max(0.001))) as u8;
                 (a, Color::Rgb(r, (r as f64 * 1.5) as u8, 140))
-            } else if pos < think_end {
-                // Thinking reservation — teal arch peaking in the middle
+            } else if in_thinking_band {
+                // Thinking reservation — explicit reserved band, calmer than the prior glitch overlay
                 let rel = (pos - mem_frac) / think_frac.max(0.001);
                 let arch = (rel * std::f64::consts::PI).sin();
-                let osc = (x as f64 * 0.5 + t * 1.2).sin() * 0.4;
-                let a = (3.5 + arch * 2.5 + osc).clamp(3.0, 6.0) as usize;
+                let a = (3.0 + arch * 2.0).clamp(3.0, 5.0) as usize;
                 (a, Color::Rgb(42, 180, 200))
-            } else if pos < think_end + used_frac {
+            } else if in_used_band {
                 // Context used — gradient teal → orange
                 let rel = (pos - mem_frac - think_frac) / used_frac.max(0.001);
-                let osc = (x as f64 * 0.4 + t * 0.9).sin() * 0.6;
-                let density = rel; // left = less dense, right = fuller
-                let a = (2.0 + density * 4.5 + osc).clamp(1.0, 6.0) as usize;
+                let osc = (x as f64 * 0.25 + t * 0.6).sin() * 0.4;
+                let density = rel;
+                let a = (2.0 + density * 4.0 + osc).clamp(1.0, 6.0) as usize;
                 let rr = (42.0 + 198.0 * rel) as u8;
                 let gg = (180.0 - 80.0 * rel) as u8;
                 let bb = (200.0 - 160.0 * rel) as u8;
@@ -504,54 +519,6 @@ impl InstrumentPanel {
                 // Empty region — near-black dim dots
                 (0, Color::Rgb(12, 22, 32))
             };
-
-            // Thinking overlay: visible, not chaotic.
-            // During active inference, the thinking band gets a clear animated
-            // overlay and the rest of the used-context band gets a lighter shimmer.
-            let mut overlay_noise = false;
-            let mut overlay_char: Option<char> = None;
-            if active {
-                let in_thinking_band = pos >= mem_end && pos < think_end;
-                let in_used_band = pos >= think_end && pos < think_end + used_frac;
-
-                let jitter_threshold = if in_thinking_band {
-                    self.thinking_intensity * 0.45
-                } else if in_used_band {
-                    self.thinking_intensity * 0.20
-                } else {
-                    self.thinking_intensity * 0.08
-                };
-                let hash = x
-                    .wrapping_mul(31)
-                    .wrapping_add((t * 4.0) as usize)
-                    .wrapping_mul(17)
-                    % 100;
-                if (hash as f64) < jitter_threshold * 100.0 {
-                    let up = (x.wrapping_mul(7) + (t * 2.0) as usize) % 2 == 0;
-                    amp = if up {
-                        (amp + 1).min(7)
-                    } else {
-                        amp.saturating_sub(1)
-                    };
-                    overlay_noise = true;
-                    overlay_char = if in_thinking_band {
-                        Some(match (x + (t * 3.0) as usize) % 4 {
-                            0 => '░',
-                            1 => '▒',
-                            2 => '▓',
-                            _ => '╎',
-                        })
-                    } else if in_used_band {
-                        Some(match (x + (t * 2.0) as usize) % 3 {
-                            0 => '░',
-                            1 => '▒',
-                            _ => '╎',
-                        })
-                    } else {
-                        None
-                    };
-                }
-            }
 
             let amp = amp.min(7);
             let (top_ch, bot_ch) = WAVE[amp];
@@ -592,15 +559,11 @@ impl InstrumentPanel {
                     } else {
                         Color::Rgb(42, 180, 200)
                     };
-                } else if overlay_noise && ch != '·' {
-                    ch = overlay_char.unwrap_or(ch);
-                    fg = if pos >= mem_end && pos < think_end {
-                        Color::Rgb(255, 205, 110)
-                    } else if row == 0 {
-                        Color::Rgb(110, 220, 230)
-                    } else {
-                        color
-                    };
+                } else if active && in_thinking_band && (x as isize - think_scan_x).abs() <= 1 && ch != '·' {
+                    ch = if row == 0 { '╻' } else { '┃' };
+                    fg = Color::Rgb(255, 205, 110);
+                } else if active && in_used_band && row == 0 && ch != '·' {
+                    fg = Color::Rgb(110, 220, 230);
                 }
                 if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + row)) {
                     cell.set_char(ch);
@@ -948,7 +911,7 @@ mod tests {
     #[test]
     fn memory_fill_is_visually_capped() {
         let mut panel = InstrumentPanel::default();
-        panel.update_mind_facts(10_000, 0, 0.9);
+        panel.update_mind_facts(10_000, 0, 0, 0.9);
         assert!(
             panel.memory_fill <= 0.12,
             "memory fill should be capped conservatively"
@@ -995,5 +958,16 @@ mod tests {
         panel.update_telemetry(0.0, Some("bash"), false, "off", None, false, 0.016);
         assert_eq!(panel.tools.len(), 1);
         assert_eq!(panel.tools[0].name, "bash");
+    }
+
+    #[test]
+    fn update_mind_facts_populates_project_working_and_episodes() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(18, 3, 2, 0.25);
+        assert_eq!(panel.minds[0].fact_count, 18);
+        assert_eq!(panel.minds[1].fact_count, 3);
+        assert_eq!(panel.minds[2].fact_count, 2);
+        assert!(panel.minds[2].active, "episodes mind should activate when populated");
+        assert!(panel.memory_fill <= 0.12, "memory fill stays conservatively capped");
     }
 }

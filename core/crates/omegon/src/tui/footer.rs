@@ -60,6 +60,8 @@ pub struct FooterData {
 impl FooterData {
     /// Update the harness status snapshot from a BusEvent::HarnessStatusChanged.
     pub fn update_harness(&mut self, status: HarnessStatus) {
+        self.total_facts = status.memory.total_facts;
+        self.working_memory = status.memory.working_facts;
         self.harness = status;
     }
 

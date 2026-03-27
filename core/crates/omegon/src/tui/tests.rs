@@ -621,6 +621,16 @@ fn harness_status_changed_updates_footer() {
             activated_skills: vec!["rust".into()],
             disabled_tools: vec![],
         }),
+        memory: crate::status::MemoryStatus {
+            total_facts: 18,
+            active_facts: 18,
+            project_facts: 18,
+            persona_facts: 0,
+            working_facts: 4,
+            episodes: 2,
+            edges: 0,
+            active_persona_mind: None,
+        },
         ..Default::default()
     };
 
@@ -639,6 +649,8 @@ fn harness_status_changed_updates_footer() {
         "Test Persona"
     );
     assert_eq!(app.footer_data.harness.context_class, "Clan");
+    assert_eq!(app.footer_data.total_facts, 18);
+    assert_eq!(app.footer_data.working_memory, 4);
 }
 
 #[test]

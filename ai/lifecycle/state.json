@@ -165,6 +165,21 @@
       "bound_change": null,
       "created_at": "2026-03-27T21:12:51Z",
       "updated_at": "2026-03-27T21:12:51Z"
+    },
+    {
+      "id": "structured-node-metadata",
+      "title": "Structured node metadata — key/value planning attributes for milestone-aware design tree views",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-03-27T21:38:57Z",
+      "updated_at": "2026-03-27T21:38:57Z"
     }
   ],
   "changes": [],
@@ -417,6 +432,24 @@
       "timestamp": "2026-03-27T21:12:51Z",
       "entity_type": "node",
       "entity_id": "runtime-session-integrity",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
+    },
+    {
+      "timestamp": "2026-03-27T21:38:57Z",
+      "entity_type": "node",
+      "entity_id": "structured-node-metadata",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-03-27T21:38:57Z",
+      "entity_type": "node",
+      "entity_id": "structured-node-metadata",
       "from_state": "seed",
       "to_state": "exploring",
       "reason": "initial status on create",

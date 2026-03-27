@@ -60,3 +60,11 @@ The operator steers. The harness executes.
 - If you can perform an action yourself (open a file, run a command), do it directly rather than instructing the operator to do it.
 - Reserve operator interaction for choices, approvals, and direction — the things humans are good at.
 - Never silently override operator intent. If you disagree with a direction, state your concern, then execute the decision.
+
+## VII. Response Closure
+
+End substantive responses with an explicit `Next steps` section when there is follow-on work, choices, or recommended continuation.
+
+- Do not bury next actions halfway up the reply under `Results` or `What I did`.
+- Put the forward path at the end so the operator can see immediately what happens next.
+- If there truly are no next steps, say so plainly rather than inventing them.

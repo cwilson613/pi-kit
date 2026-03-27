@@ -25,9 +25,9 @@
     "nodes": [],
     "frozen": false,
     "opened": "2026-03-26T01:28:41Z",
-    "last_rc": "2026-03-27T15:01:13Z",
-    "rc_version": "0.15.3-rc.41",
-    "rc_count": 39,
+    "last_rc": "2026-03-27T15:09:40Z",
+    "rc_version": "0.15.3-rc.42",
+    "rc_count": 40,
     "released": null,
     "notes": [
       "feat(cleave): inherit warmed session secrets in children",

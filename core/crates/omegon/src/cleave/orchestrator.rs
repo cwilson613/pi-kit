@@ -828,7 +828,7 @@ fn classify_scope(scope: &[String]) -> ScopeKind {
 
     for entry in scope {
         let lower = entry.to_ascii_lowercase();
-        if lower.ends_with(".rs") || lower.contains("/crates/") {
+        if lower.ends_with(".rs") || lower.contains("/crates/") || lower.starts_with("src/") {
             saw_rust = true;
         } else if lower.ends_with(".py") || lower.contains("python") {
             saw_python = true;

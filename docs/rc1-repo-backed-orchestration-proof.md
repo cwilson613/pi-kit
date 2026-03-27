@@ -5,7 +5,6 @@ status: exploring
 parent: release-0-15-4-trust-hardening
 tags: [release, rc1, cleave, verification]
 open_questions:
-  - "Which real repo-backed task should serve as the rc.1 proof case so it exercises routing, child execution, and final reporting without depending on an artificial scratch scenario?"
   - "What must be true at the end of the proof run for rc.1 acceptance — successful child completion, accurate provider/model reporting, expected file changes or no-op rationale, and no merge/worktree bookkeeping contradiction?"
 dependencies: []
 related:
@@ -38,7 +37,12 @@ Release-checklist node for the third rc.1 acceptance criterion: at least one rea
 
 **Rationale:** For rc.1, the proof task should exercise real checkout/worktree/routing/reporting behavior without coupling success to a large product change. The safest proof shape is a small documentation or test-surface task inside the real repository — for example, updating a design/release doc or adding a narrowly scoped test/assertion — because it still uses the full orchestration path, produces observable repo artifacts, and minimizes merge-risk compared with feature-code changes. That keeps the proof focused on orchestration trust rather than feature implementation complexity.
 
+### Decision: the exact rc.1 repo-backed proof task is a single-file documentation edit under docs/ on the live repository
+
+**Status:** decided
+
+**Rationale:** Stop leaving the proof task abstract. For rc.1, the proof task should be a single-file documentation edit under `docs/` in the live repository — ideally on an existing release-planning or rc.1 design doc that is already part of the current working set. This is the cleanest low-risk proof because it exercises the full real-repo orchestration path (checkout, child routing, child execution, result reporting, worktree/merge bookkeeping) while minimizing the chance that a large code change muddies whether the orchestration system itself is trustworthy. Later RCs can use harder proof tasks; rc.1 should optimize for signal, not bravado.
+
 ## Open Questions
 
-- Which real repo-backed task should serve as the rc.1 proof case so it exercises routing, child execution, and final reporting without depending on an artificial scratch scenario?
 - What must be true at the end of the proof run for rc.1 acceptance — successful child completion, accurate provider/model reporting, expected file changes or no-op rationale, and no merge/worktree bookkeeping contradiction?

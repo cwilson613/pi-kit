@@ -53,6 +53,7 @@ pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<()> {
 #[derive(Debug)]
 pub enum MergeResult {
     Success,
+    NoChanges,
     Conflict(String),
     Failed(String),
 }
@@ -65,9 +66,7 @@ pub enum MergeResult {
 pub fn squash_merge_branch(repo_path: &Path, branch: &str, message: &str) -> Result<MergeResult> {
     match omegon_git::merge::squash_merge(repo_path, branch, message)? {
         omegon_git::merge::MergeResult::Success { .. } => Ok(MergeResult::Success),
-        omegon_git::merge::MergeResult::NoChanges => Ok(MergeResult::Failed(
-            "Branch has no new commits — child did not produce any work".to_string(),
-        )),
+        omegon_git::merge::MergeResult::NoChanges => Ok(MergeResult::NoChanges),
         omegon_git::merge::MergeResult::Conflict { files } => {
             Ok(MergeResult::Conflict(files.join(", ")))
         }
@@ -80,9 +79,7 @@ pub fn merge_branch(repo_path: &Path, branch: &str) -> Result<MergeResult> {
     let message = format!("cleave: merge {}", branch);
     match omegon_git::merge::merge_no_ff(repo_path, branch, &message)? {
         omegon_git::merge::MergeResult::Success { .. } => Ok(MergeResult::Success),
-        omegon_git::merge::MergeResult::NoChanges => Ok(MergeResult::Failed(
-            "Branch has no new commits — child did not produce any work".to_string(),
-        )),
+        omegon_git::merge::MergeResult::NoChanges => Ok(MergeResult::NoChanges),
         omegon_git::merge::MergeResult::Conflict { files } => {
             Ok(MergeResult::Conflict(files.join(", ")))
         }
@@ -261,6 +258,8 @@ mod tests {
     fn merge_result_variants() {
         let s = MergeResult::Success;
         assert!(format!("{s:?}").contains("Success"));
+        let n = MergeResult::NoChanges;
+        assert!(format!("{n:?}").contains("NoChanges"));
         let c = MergeResult::Conflict("file.rs".into());
         assert!(format!("{c:?}").contains("file.rs"));
         let f = MergeResult::Failed("error".into());

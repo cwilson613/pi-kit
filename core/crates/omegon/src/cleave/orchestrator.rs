@@ -420,6 +420,19 @@ pub async fn run_cleave(
                     detail: None,
                 });
             }
+            Ok(worktree::MergeResult::NoChanges) => {
+                tracing::info!(child = %child.label, "no merge needed — child produced no commits");
+                let _ = worktree::delete_branch(repo_path, branch);
+                merge_results.push((
+                    child.label.clone(),
+                    MergeOutcome::Skipped("no committed changes".to_string()),
+                ));
+                config.progress_sink.emit(&ProgressEvent::MergeResult {
+                    child: child.label.clone(),
+                    success: true,
+                    detail: Some("no committed changes".to_string()),
+                });
+            }
             Ok(worktree::MergeResult::Conflict(detail)) => {
                 tracing::warn!(child = %child.label, "merge conflict");
                 merge_results.push((child.label.clone(), MergeOutcome::Conflict(detail.clone())));

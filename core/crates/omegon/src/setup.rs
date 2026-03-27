@@ -366,10 +366,6 @@ impl AgentSetup {
             disabled.insert(reg::persona::SWITCH_PERSONA.into());
             disabled.insert(reg::persona::SWITCH_TONE.into());
             disabled.insert(reg::persona::LIST_PERSONAS.into());
-            // Delegate system — advanced multi-agent, not default
-            disabled.insert(reg::delegate::DELEGATE.into());
-            disabled.insert(reg::delegate::DELEGATE_RESULT.into());
-            disabled.insert(reg::delegate::DELEGATE_STATUS.into());
             // Auth probing — used at startup, not mid-conversation
             disabled.insert(reg::auth::AUTH_STATUS.into());
             // Harness settings — internal, rarely agent-called

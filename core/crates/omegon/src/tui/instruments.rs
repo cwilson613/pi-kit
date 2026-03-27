@@ -117,11 +117,6 @@ fn tool_short_name(name: &str) -> String {
     format!("{glyph} {label}")
 }
 
-const NOISE_CHARS: &[char] = &[
-    '▏', '▎', '▍', '░', '▌', '▐', '▒', '┤', '├', '│', '─', '▊', '▋', '▓', '╱', '╲', '┼', '╪', '╫',
-    '█', '╬', '■', '◆',
-];
-
 // ─── Wave direction ─────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
@@ -505,11 +500,9 @@ impl InstrumentPanel {
                 (0, Color::Rgb(12, 22, 32))
             };
 
-            // Thinking overlay: visible, not chaotic.
-            // During active inference, the thinking band gets a clear animated
-            // overlay and the rest of the used-context band gets a lighter shimmer.
-            let mut overlay_noise = false;
-            let mut overlay_char: Option<char> = None;
+            // Thinking animation should read as stable signal, not terminal
+            // corruption. Keep motion in amplitude/color only; do not swap in
+            // noise glyphs that look like rendering glitches.
             if active {
                 let in_thinking_band = pos >= mem_end && pos < think_end;
                 let in_used_band = pos >= think_end && pos < think_end + used_frac;
@@ -532,23 +525,6 @@ impl InstrumentPanel {
                         (amp + 1).min(7)
                     } else {
                         amp.saturating_sub(1)
-                    };
-                    overlay_noise = true;
-                    overlay_char = if in_thinking_band {
-                        Some(match (x + (t * 3.0) as usize) % 4 {
-                            0 => '░',
-                            1 => '▒',
-                            2 => '▓',
-                            _ => '╎',
-                        })
-                    } else if in_used_band {
-                        Some(match (x + (t * 2.0) as usize) % 3 {
-                            0 => '░',
-                            1 => '▒',
-                            _ => '╎',
-                        })
-                    } else {
-                        None
                     };
                 }
             }
@@ -584,16 +560,15 @@ impl InstrumentPanel {
                 if is_memory_divider || is_thinking_divider {
                     let phase = ((t * 2.0) as usize + row as usize) % 4;
                     ch = match phase {
-                        0 | 2 => '╎',
-                        _ => '┆',
+                        0 | 2 => '|',
+                        _ => ':',
                     };
                     fg = if is_thinking_divider {
                         Color::Rgb(240, 140, 70)
                     } else {
                         Color::Rgb(42, 180, 200)
                     };
-                } else if overlay_noise && ch != '·' {
-                    ch = overlay_char.unwrap_or(ch);
+                } else if active && ch != '·' {
                     fg = if pos >= mem_end && pos < think_end {
                         Color::Rgb(255, 205, 110)
                     } else if row == 0 {
@@ -995,5 +970,33 @@ mod tests {
         panel.update_telemetry(0.0, Some("bash"), false, "off", None, false, 0.016);
         assert_eq!(panel.tools.len(), 1);
         assert_eq!(panel.tools[0].name, "bash");
+    }
+
+    #[test]
+    fn active_thinking_bar_avoids_glitch_glyphs() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(50, 5, 0.5);
+        panel.update_telemetry(62.0, Some("bash"), true, "high", None, true, 0.016);
+
+        let area = Rect::new(0, 0, 64, 10);
+        let backend = ratatui::backend::TestBackend::new(64, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let t = crate::tui::theme::Alpharius;
+        terminal.draw(|f| panel.render(area, f, &t)).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        for ch in ['░', '▒', '▓', '╎', '┆'] {
+            assert!(
+                !rendered.contains(ch),
+                "rendered thinking bar should avoid glitch glyph {ch:?}: {rendered}"
+            );
+        }
     }
 }

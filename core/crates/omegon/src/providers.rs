@@ -293,6 +293,44 @@ pub async fn auto_detect_bridge(model_spec: &str) -> Option<Box<dyn LlmBridge>> 
 
 // ─── SSE Helpers ────────────────────────────────────────────────────────────
 
+/// Extract and log rate limit headers from a provider's HTTP response.
+/// All major providers return quota/remaining/reset information on every
+/// response — this is the only source of subscription usage data.
+fn log_rate_limit_headers(provider: &str, headers: &reqwest::header::HeaderMap) {
+    // Collect all rate-limit-related headers into a structured log
+    let mut limits: Vec<(String, String)> = Vec::new();
+
+    for (name, value) in headers.iter() {
+        let name_str = name.as_str().to_lowercase();
+        if name_str.contains("ratelimit")
+            || name_str.contains("rate-limit")
+            || name_str.contains("retry-after")
+            || name_str.contains("x-request-id")
+        {
+            if let Ok(v) = value.to_str() {
+                limits.push((name_str, v.to_string()));
+            }
+        }
+    }
+
+    if limits.is_empty() {
+        return;
+    }
+
+    // Log as structured fields for tracing consumers
+    // Use info level — this data is operationally important, not noise
+    let pairs: Vec<String> = limits
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    tracing::info!(
+        provider,
+        header_count = limits.len(),
+        headers = %pairs.join(", "),
+        "provider rate limit headers"
+    );
+}
+
 /// Sanitize a tool call ID to match Anthropic's `^[a-zA-Z0-9_-]+$` pattern.
 /// Codex compound IDs use `call_abc|fc_1` — take only the call_id before the pipe.
 /// Any remaining invalid characters are replaced with underscores.
@@ -710,6 +748,8 @@ impl LlmBridge for AnthropicClient {
                 .await;
             return Ok(rx);
         }
+        // Extract rate limit headers before consuming the response for SSE
+        log_rate_limit_headers("anthropic", response.headers());
         tracing::debug!(status = %response.status(), "Anthropic response OK — starting SSE stream");
 
         tokio::spawn(async move {
@@ -753,6 +793,15 @@ async fn parse_anthropic_stream(
 
         match etype {
             "message_start" => {
+                // message_start contains input token usage
+                if let Some(usage) = event.pointer("/message/usage") {
+                    tracing::info!(
+                        input_tokens = usage["input_tokens"].as_u64().unwrap_or(0),
+                        cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                        cache_creation = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+                        "Anthropic usage (input)"
+                    );
+                }
                 tracing::debug!("message_start received");
                 let _ = tx.try_send(LlmEvent::Start);
             }
@@ -850,9 +899,20 @@ async fn parse_anthropic_stream(
                 block_type = None;
             }
 
-            // message_delta: stop_reason + final usage (not critical for functionality)
+            // message_delta: stop_reason + final usage
             "message_delta" => {
-                tracing::trace!("message_delta: stop_reason/usage");
+                if let Some(usage) = event.get("usage") {
+                    tracing::info!(
+                        output_tokens = usage["output_tokens"].as_u64().unwrap_or(0),
+                        input_tokens = usage["input_tokens"].as_u64().unwrap_or(0),
+                        cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                        cache_creation = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+                        "Anthropic usage (final)"
+                    );
+                }
+                if let Some(stop) = event.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
+                    tracing::debug!(stop_reason = stop, "message_delta");
+                }
             }
 
             // Events from newer SDK versions — gracefully handled
@@ -1019,6 +1079,8 @@ impl LlmBridge for OpenAIClient {
             return Ok(rx);
         }
 
+        log_rate_limit_headers("openai", response.headers());
+
         tokio::spawn(async move {
             if let Err(e) = parse_openai_stream(response, &tx).await {
                 let _ = tx
@@ -1047,6 +1109,17 @@ async fn parse_openai_stream(
         let Ok(event) = serde_json::from_str::<Value>(data) else {
             return true;
         };
+
+        // Usage block appears at the top level of the final chunk
+        if let Some(usage) = event.get("usage") {
+            tracing::info!(
+                prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0),
+                completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0),
+                total_tokens = usage["total_tokens"].as_u64().unwrap_or(0),
+                "OpenAI usage"
+            );
+        }
+
         let Some(choice) = event.get("choices").and_then(|c| c.get(0)) else {
             return true;
         };
@@ -1417,6 +1490,7 @@ impl LlmBridge for CodexClient {
 
             match response {
                 Ok(resp) if resp.status().is_success() => {
+                    log_rate_limit_headers("openai-codex", resp.headers());
                     let tx_clone = tx.clone();
                     tokio::spawn(async move {
                         if let Err(e) = parse_codex_stream(resp, &tx_clone).await {
@@ -1594,6 +1668,15 @@ async fn parse_codex_stream(
                 _current_item_type = None;
             }
             "response.completed" => {
+                // Extract usage from the completed response
+                if let Some(usage) = event.pointer("/response/usage") {
+                    tracing::info!(
+                        input_tokens = usage["input_tokens"].as_u64().unwrap_or(0),
+                        output_tokens = usage["output_tokens"].as_u64().unwrap_or(0),
+                        total_tokens = usage["total_tokens"].as_u64().unwrap_or(0),
+                        "Codex usage"
+                    );
+                }
                 let _ = tx.try_send(LlmEvent::Done {
                     message: json!({"text": full_text, "tool_calls": completed_tool_calls}),
                 });

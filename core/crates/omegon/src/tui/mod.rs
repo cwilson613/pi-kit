@@ -1422,9 +1422,17 @@ impl App {
             };
             self.memory_ops_this_frame = 0;
 
+            let memory_fill = if self.footer_data.context_window > 0 {
+                // Estimate ~300 tokens per injected fact
+                (self.footer_data.total_facts * 300) as f64
+                    / self.footer_data.context_window as f64
+            } else {
+                0.0
+            };
             self.instrument_panel.update_mind_facts(
                 self.footer_data.total_facts,
                 self.footer_data.working_memory,
+                memory_fill,
             );
             let now = std::time::Instant::now();
             let dt = now

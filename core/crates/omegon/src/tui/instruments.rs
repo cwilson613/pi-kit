@@ -223,6 +223,8 @@ struct ToolEntry {
 pub struct InstrumentPanel {
     time: f64,
     context_fill: f64,
+    /// Fraction of context window used by injected memory facts.
+    memory_fill: f64,
     /// Static thinking-level fill (0–1) from the setting — not animated.
     thinking_level_pct: f64,
     thinking_active: bool,
@@ -239,6 +241,7 @@ impl Default for InstrumentPanel {
         Self {
             time: 0.0,
             context_fill: 0.0,
+            memory_fill: 0.0,
             thinking_level_pct: 0.0,
             thinking_active: false,
             thinking_intensity: 0.0,
@@ -256,14 +259,15 @@ impl Default for InstrumentPanel {
 }
 
 impl InstrumentPanel {
-    /// Update mind fact counts from footer data.
-    pub fn update_mind_facts(&mut self, total_facts: usize, working_memory: usize) {
+    /// Update mind fact counts and memory context fraction.
+    pub fn update_mind_facts(&mut self, total_facts: usize, working_memory: usize, memory_fill: f64) {
         if !self.minds.is_empty() {
             self.minds[0].fact_count = total_facts;
         }
         if self.minds.len() > 1 {
             self.minds[1].fact_count = working_memory;
         }
+        self.memory_fill = memory_fill.clamp(0.0, 0.5);
     }
 
     /// Update telemetry from harness state.
@@ -434,68 +438,103 @@ impl InstrumentPanel {
     fn render_context_bar(&self, area: Rect, buf: &mut Buffer) {
         let w = area.width as usize;
         if w == 0 { return; }
-        let rows = area.height.min(2) as usize;
+
+        // Waveform character pairs (top_row, bottom_row) indexed by amplitude 0–7.
+        // Each column is a vertical spike — low amplitude = thin bottom bar,
+        // high amplitude = tall spike filling both rows.
+        const WAVE: [(char, char); 8] = [
+            ('·', '·'),  // 0 — empty
+            (' ', '▁'),  // 1 — whisper
+            (' ', '▃'),  // 2 — low
+            (' ', '▅'),  // 3 — medium-low
+            (' ', '█'),  // 4 — medium
+            ('▂', '█'),  // 5 — medium-high
+            ('▅', '█'),  // 6 — high
+            ('█', '█'),  // 7 — full
+        ];
+
+        // Segment fractions (clamped so they can’t exceed total context_fill).
+        let mem_frac   = self.memory_fill.min(self.context_fill);
+        // Thinking reservation: level setting × ~12% of window (rough overhead budget)
+        let think_frac = (self.thinking_level_pct * 0.12)
+            .min((self.context_fill - mem_frac).max(0.0));
+        let used_frac  = (self.context_fill - mem_frac - think_frac).max(0.0);
+
         let active = self.thinking_active;
+        // Oscillation speed: slow when idle, a touch faster during inference
+        let t = self.time * if active { 0.7 } else { 0.25 };
 
-        // Row 0 → thinking level  (static solid fill, reflects the setting)
-        // Row 1 → context fill    (dynamic solid fill, reflects token usage)
-        // Both rows: when inference is active, glitch chars animate across
-        // the entire two-row area while keeping the fill colors intact.
-        let fills = [self.thinking_level_pct, self.context_fill];
+        for x in 0..w {
+            let pos = x as f64 / w as f64;
 
-        let thinking_color = |lvl: f64| -> Color {
-            if lvl < 0.01 { Color::Rgb(12, 20, 28) }
-            else if lvl < 0.40 { Color::Rgb(42, 160, 180) }
-            else if lvl < 0.70 { Color::Rgb(220, 170, 70) }
-            else { Color::Rgb(240, 110, 90) }
-        };
+            // Which segment?
+            let (mut amp, color): (usize, Color) = if pos < mem_frac {
+                // Memory — navy, gentle ripple amplitude 2–4
+                let osc = (x as f64 * 0.7 + t).sin() * 0.9;
+                let a = (3.0 + osc).clamp(2.0, 4.0) as usize;
+                let r = (20.0 + 30.0 * (pos / mem_frac.max(0.001))) as u8;
+                (a, Color::Rgb(r, (r as f64 * 1.5) as u8, 140))
 
-        for row in 0..rows {
-            let fill = fills[row];
-            let fill_cols = (fill * w as f64) as usize;
+            } else if pos < mem_frac + think_frac {
+                // Thinking reservation — teal arch peaking in the middle
+                let rel = (pos - mem_frac) / think_frac.max(0.001);
+                let arch = (rel * std::f64::consts::PI).sin();
+                let osc  = (x as f64 * 0.5 + t * 1.2).sin() * 0.4;
+                let a = (3.5 + arch * 2.5 + osc).clamp(3.0, 6.0) as usize;
+                (a, Color::Rgb(42, 180, 200))
 
-            for x in 0..w {
-                let y = area.y + row as u16;
+            } else if pos < mem_frac + think_frac + used_frac {
+                // Context used — gradient teal → orange
+                let rel = (pos - mem_frac - think_frac) / used_frac.max(0.001);
+                let osc = (x as f64 * 0.4 + t * 0.9).sin() * 0.6;
+                let density = rel; // left = less dense, right = fuller
+                let a = (2.0 + density * 4.5 + osc).clamp(1.0, 6.0) as usize;
+                let rr = (42.0 + 198.0 * rel) as u8;
+                let gg = (180.0 - 80.0  * rel) as u8;
+                let bb = (200.0 - 160.0 * rel) as u8;
+                (a, Color::Rgb(rr, gg, bb))
 
-                let is_glitch = active && {
-                    let hash = x.wrapping_mul(17)
-                        .wrapping_add(row.wrapping_mul(53))
-                        .wrapping_add((self.time * 8.0) as usize)
-                        .wrapping_mul(31)
-                        % 100;
-                    (hash as f64) < self.thinking_intensity * 55.0
-                };
+            } else {
+                // Empty region — near-black dim dots
+                (0, Color::Rgb(12, 22, 32))
+            };
 
-                if is_glitch {
-                    let idx = x.wrapping_mul(7)
-                        .wrapping_add(row.wrapping_mul(23))
-                        .wrapping_add((self.time * 12.0) as usize)
-                        .wrapping_mul(13)
-                        % NOISE_CHARS.len();
-                    // Glitch preserves fill color so identity stays legible.
-                    let base = if x < fill_cols { fill } else { self.thinking_intensity * 0.2 };
-                    let color = if row == 0 {
-                        thinking_color((base + self.thinking_intensity * 0.2).min(1.0))
-                    } else {
-                        intensity_color((base + self.thinking_intensity * 0.2).min(1.0))
-                    };
-                    if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
-                        cell.set_char(NOISE_CHARS[idx]);
-                        cell.set_fg(color);
-                        cell.set_bg(bg_color());
-                    }
+            // Glitch: ±1 amplitude jitter on ~6% of cells during inference.
+            // Uses a deterministic hash so it doesn’t flicker every frame —
+            // it shifts slowly as time advances.
+            if active {
+                let jitter_threshold = self.thinking_intensity * 0.10;
+                let hash = x.wrapping_mul(31)
+                    .wrapping_add((t * 4.0) as usize)
+                    .wrapping_mul(17)
+                    % 100;
+                if (hash as f64) < jitter_threshold * 100.0 {
+                    let up = (x.wrapping_mul(7) + (t * 2.0) as usize) % 2 == 0;
+                    amp = if up { (amp + 1).min(7) } else { amp.saturating_sub(1) };
+                }
+            }
+
+            let amp = amp.min(7);
+            let (top_ch, bot_ch) = WAVE[amp];
+            let dim_color = match color {
+                Color::Rgb(r, g, b) => Color::Rgb(
+                    (r / 3).max(8),
+                    (g / 3).max(8),
+                    (b / 3).max(8),
+                ),
+                other => other,
+            };
+
+            for row in 0..area.height.min(2) {
+                let (ch, fg) = if row == 0 {
+                    if top_ch == '·' { ('·', dim_color) } else { (top_ch, color) }
                 } else {
-                    let in_fill = x < fill_cols;
-                    let color = if in_fill {
-                        if row == 0 { thinking_color(fill) } else { intensity_color(fill) }
-                    } else {
-                        Color::Rgb(10, 18, 24)
-                    };
-                    if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, y)) {
-                        cell.set_char(if in_fill { '█' } else { '·' });
-                        cell.set_fg(color);
-                        cell.set_bg(bg_color());
-                    }
+                    if bot_ch == '·' { ('·', dim_color) } else { (bot_ch, color) }
+                };
+                if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + row)) {
+                    cell.set_char(ch);
+                    cell.set_fg(fg);
+                    cell.set_bg(bg_color());
                 }
             }
         }

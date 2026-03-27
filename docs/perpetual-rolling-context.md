@@ -986,6 +986,28 @@ Auto-derivation rules:
 - `schema_detail`: always `standard` — `compact` is an escape hatch for tiny contexts
 - `cost_alert`: none by default, operator sets if they want budget guardrails
 
+### Decision: Capture all provider rate limit headers and usage data — foundation for price sensitivity and quota awareness
+
+**Status:** decided
+**Rationale:** Every provider response includes rate limit headers AND usage data that we were discarding:
+
+**Anthropic** (every response):
+- Headers: `anthropic-ratelimit-input-tokens-limit`, `anthropic-ratelimit-input-tokens-remaining`, `anthropic-ratelimit-input-tokens-reset` (and output equivalents)
+- SSE `message_start`: `usage.input_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`
+- SSE `message_delta`: `usage.output_tokens` (final)
+
+**OpenAI/Chat Completions** (every response):
+- Headers: `x-ratelimit-limit-tokens`, `x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens`
+- Final chunk: `usage.prompt_tokens`, `usage.completion_tokens`, `usage.total_tokens`
+
+**Codex** (every response):
+- Headers: rate limit headers on HTTP response
+- `response.completed`: `response.usage.input_tokens`, `response.usage.output_tokens`
+
+This data is now captured at `tracing::info` level from all providers (rc.24+). Next step: pipe it into the buffer's TokenEstimator for calibration and surface it in HarnessStatus for the dashboard.
+
+This is the foundation for price sensitivity — rate limit headers tell you your QUOTA (how many tokens per window), remaining shows USAGE, reset shows the WINDOW. From these three values you can derive: subscription tier, utilization rate, time until quota refreshes, and whether you're approaching a limit.
+
 ## Open Questions
 
 *No open questions.*

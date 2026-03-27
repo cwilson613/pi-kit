@@ -37,8 +37,9 @@ pub const WELL_KNOWN_SECRET_ENVS: &[&str] = &[
     "IGOR_API_KEY",
 ];
 
-/// Omegon's keyring service name — used for cross-platform credential storage.
-const KEYRING_SERVICE: &str = "omegon";
+/// Omegon's keyring service name — reverse-DNS format, single canonical name
+/// used for ALL keychain entries so macOS only prompts for authorization once.
+const KEYRING_SERVICE: &str = "sh.styrene.omegon";
 
 #[cfg(not(test))]
 pub(crate) fn keyring_get(service: &str, name: &str) -> Result<Option<String>, keyring::Error> {

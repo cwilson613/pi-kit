@@ -1378,6 +1378,7 @@ impl App {
             self.footer_data.model_provider = s.provider().to_string();
             self.footer_data.context_class = s.context_class;
             self.footer_data.context_mode = s.context_mode;
+            self.footer_data.context_window = s.context_window;
             self.footer_data.thinking_level = s.thinking.as_str().to_string();
             self.footer_data.provider_connected = s.provider_connected;
             self.footer_data.is_oauth = crate::providers::resolve_api_key_sync(s.provider())

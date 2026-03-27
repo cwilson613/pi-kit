@@ -319,10 +319,7 @@ fn log_rate_limit_headers(provider: &str, headers: &reqwest::header::HeaderMap) 
 
     // Log as structured fields for tracing consumers
     // Use info level — this data is operationally important, not noise
-    let pairs: Vec<String> = limits
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let pairs: Vec<String> = limits.iter().map(|(k, v)| format!("{k}={v}")).collect();
     tracing::info!(
         provider,
         header_count = limits.len(),
@@ -2400,9 +2397,15 @@ mod tests {
     #[test]
     fn model_id_from_spec_strips_known_provider_prefixes() {
         // Provider-prefixed models
-        assert_eq!(model_id_from_spec("anthropic:claude-sonnet-4-6"), "claude-sonnet-4-6");
+        assert_eq!(
+            model_id_from_spec("anthropic:claude-sonnet-4-6"),
+            "claude-sonnet-4-6"
+        );
         assert_eq!(model_id_from_spec("openai:gpt-4.1"), "gpt-4.1");
-        assert_eq!(model_id_from_spec("openai-codex:codex-mini-latest"), "codex-mini-latest");
+        assert_eq!(
+            model_id_from_spec("openai-codex:codex-mini-latest"),
+            "codex-mini-latest"
+        );
         assert_eq!(model_id_from_spec("ollama:qwen3:32b"), "qwen3:32b");
 
         // Bare model IDs (no known provider prefix) — returned as-is
@@ -2420,7 +2423,10 @@ mod tests {
     fn sanitize_tool_id_strips_codex_compound_ids() {
         assert_eq!(sanitize_tool_id("call_abc|fc_1"), "call_abc");
         assert_eq!(sanitize_tool_id("call_abc"), "call_abc");
-        assert_eq!(sanitize_tool_id("toolu_01ABC-xyz_123"), "toolu_01ABC-xyz_123");
+        assert_eq!(
+            sanitize_tool_id("toolu_01ABC-xyz_123"),
+            "toolu_01ABC-xyz_123"
+        );
     }
 
     #[test]

@@ -103,7 +103,10 @@ pub async fn run(
             );
             let _ = events.send(AgentEvent::TurnStart { turn });
             bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
-            let _ = events.send(AgentEvent::TurnEnd { turn, estimated_tokens: conversation.estimate_tokens() });
+            let _ = events.send(AgentEvent::TurnEnd {
+                turn,
+                estimated_tokens: conversation.estimate_tokens(),
+            });
             break;
         }
 
@@ -319,11 +322,17 @@ pub async fn run(
                         .to_string(),
                 );
                 bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
-                let _ = events.send(AgentEvent::TurnEnd { turn, estimated_tokens: conversation.estimate_tokens() });
+                let _ = events.send(AgentEvent::TurnEnd {
+                    turn,
+                    estimated_tokens: conversation.estimate_tokens(),
+                });
                 continue; // give it one more turn to commit
             }
             bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
-            let _ = events.send(AgentEvent::TurnEnd { turn, estimated_tokens: conversation.estimate_tokens() });
+            let _ = events.send(AgentEvent::TurnEnd {
+                turn,
+                estimated_tokens: conversation.estimate_tokens(),
+            });
             break;
         }
 
@@ -406,7 +415,10 @@ pub async fn run(
             }
         }
 
-        let _ = events.send(AgentEvent::TurnEnd { turn, estimated_tokens: conversation.estimate_tokens() });
+        let _ = events.send(AgentEvent::TurnEnd {
+            turn,
+            estimated_tokens: conversation.estimate_tokens(),
+        });
     }
 
     let elapsed = session_start.elapsed();
@@ -1197,7 +1209,9 @@ mod tests {
 
     #[test]
     fn context_overflow_detection() {
-        assert!(is_context_overflow("Extra usage is required for long context requests."));
+        assert!(is_context_overflow(
+            "Extra usage is required for long context requests."
+        ));
         assert!(is_context_overflow("maximum context length exceeded"));
         assert!(is_context_overflow("token limit reached for this request"));
         assert!(is_context_overflow("request too large"));
@@ -1209,11 +1223,19 @@ mod tests {
 
     #[test]
     fn malformed_history_detection() {
-        assert!(is_malformed_history("unexpected tool_use_id found in tool_result blocks"));
+        assert!(is_malformed_history(
+            "unexpected tool_use_id found in tool_result blocks"
+        ));
         assert!(is_malformed_history("thinking.signature: Field required"));
-        assert!(is_malformed_history("String does not match pattern '^[a-zA-Z0-9_-]+$'"));
-        assert!(is_malformed_history("role must alternate between user and assistant"));
-        assert!(is_malformed_history("Each tool_result block must have a corresponding tool_use"));
+        assert!(is_malformed_history(
+            "String does not match pattern '^[a-zA-Z0-9_-]+$'"
+        ));
+        assert!(is_malformed_history(
+            "role must alternate between user and assistant"
+        ));
+        assert!(is_malformed_history(
+            "Each tool_result block must have a corresponding tool_use"
+        ));
         assert!(!is_malformed_history("rate limit exceeded"));
         assert!(!is_malformed_history("Invalid API key"));
     }
@@ -1221,14 +1243,20 @@ mod tests {
     #[test]
     fn context_overflow_not_classified_as_transient() {
         // Context overflow should NOT be retried blindly — it needs compaction
-        assert!(!is_transient_error("Anthropic 429 Too Many Requests: Extra usage is required for long context requests."));
+        assert!(!is_transient_error(
+            "Anthropic 429 Too Many Requests: Extra usage is required for long context requests."
+        ));
         // But regular 429 rate limits SHOULD be retried
-        assert!(is_transient_error("429 Too Many Requests: rate limit exceeded"));
+        assert!(is_transient_error(
+            "429 Too Many Requests: rate limit exceeded"
+        ));
     }
 
     #[test]
     fn malformed_history_not_classified_as_transient() {
-        assert!(!is_transient_error("400 Bad Request: messages.9.content.1.tool_use.id: String does not match pattern"));
+        assert!(!is_transient_error(
+            "400 Bad Request: messages.9.content.1.tool_use.id: String does not match pattern"
+        ));
         assert!(!is_transient_error("thinking.signature: Field required"));
     }
 

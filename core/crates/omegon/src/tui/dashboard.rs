@@ -999,8 +999,14 @@ mod tests {
 
         let text = buf_text(&terminal);
         // The node id should appear, and 3/8 task progress should be inline
-        assert!(text.contains("feat-node"), "should render bound node: {text}");
-        assert!(text.contains("3/8"), "should render task progress inline: {text}");
+        assert!(
+            text.contains("feat-node"),
+            "should render bound node: {text}"
+        );
+        assert!(
+            text.contains("3/8"),
+            "should render task progress inline: {text}"
+        );
     }
 
     #[test]

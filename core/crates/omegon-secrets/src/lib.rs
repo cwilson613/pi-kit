@@ -506,7 +506,10 @@ mod tests {
         mgr.set_recipe("BRAVE_API_KEY", "env:OMEGON_TEST_BRAVE_KEY")
             .unwrap();
         mgr.preflight_session_cache(["BRAVE_API_KEY"]);
-        assert_eq!(std::env::var("BRAVE_API_KEY").ok().as_deref(), Some("brave-test-key"));
+        assert_eq!(
+            std::env::var("BRAVE_API_KEY").ok().as_deref(),
+            Some("brave-test-key")
+        );
         // SAFETY: cleanup for isolated test env vars.
         unsafe {
             std::env::remove_var("OMEGON_TEST_BRAVE_KEY");

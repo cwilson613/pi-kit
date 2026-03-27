@@ -32,9 +32,17 @@ fn editor_raw_cursor_screen_position_matches_top_border_only_input_box() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("abc");
     editor.move_end();
-    let area = Rect { x: 10, y: 5, width: 20, height: 5 };
+    let area = Rect {
+        x: 10,
+        y: 5,
+        width: 20,
+        height: 5,
+    };
     let (x, y) = editor.raw_cursor_screen_position(area);
-    assert_eq!(x, 13, "cursor should align with text origin, not a fictitious left border");
+    assert_eq!(
+        x, 13,
+        "cursor should align with text origin, not a fictitious left border"
+    );
     assert_eq!(y, 6, "cursor should sit one row below the top border");
 }
 
@@ -42,10 +50,21 @@ fn editor_raw_cursor_screen_position_matches_top_border_only_input_box() {
 fn editor_raw_cursor_screen_position_is_inside_editor_box() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("hello\nworld");
-    let area = Rect { x: 10, y: 5, width: 20, height: 5 };
+    let area = Rect {
+        x: 10,
+        y: 5,
+        width: 20,
+        height: 5,
+    };
     let (x, y) = editor.raw_cursor_screen_position(area);
-    assert!((11..29).contains(&x), "x should be inside bordered editor area: {x}");
-    assert!((6..9).contains(&y), "y should be inside bordered editor area: {y}");
+    assert!(
+        (11..29).contains(&x),
+        "x should be inside bordered editor area: {x}"
+    );
+    assert!(
+        (6..9).contains(&y),
+        "y should be inside bordered editor area: {y}"
+    );
 }
 
 #[test]
@@ -53,7 +72,12 @@ fn editor_cursor_screen_position_wraps_without_horizontal_scroll() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("1234567890\nabc");
     editor.move_end();
-    let area = Rect { x: 0, y: 0, width: 4, height: 6 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 6,
+    };
     let (x, y) = editor.cursor_screen_position(area);
     assert!(x < 4, "cursor x should stay within editor width: {x}");
     assert!(y >= 1, "cursor y should account for wrapped rows: {y}");
@@ -64,7 +88,11 @@ fn editor_visual_line_count_accounts_for_wrapping() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("1234567890");
     assert_eq!(editor.line_count(), 1, "logical lines should stay at 1");
-    assert_eq!(editor.visual_line_count(4), 3, "wrapped rows should expand to 3");
+    assert_eq!(
+        editor.visual_line_count(4),
+        3,
+        "wrapped rows should expand to 3"
+    );
 }
 
 #[test]
@@ -78,13 +106,24 @@ fn editor_visual_line_count_counts_newlines_and_wraps() {
 fn editor_cursor_screen_position_tracks_wrapped_backspace() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("123456789");
-    let area = Rect { x: 0, y: 0, width: 6, height: 6 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 6,
+        height: 6,
+    };
     editor.move_end();
     let before = editor.cursor_screen_position(area);
     editor.backspace();
     let after = editor.cursor_screen_position(area);
-    assert!(after.0 <= before.0, "backspace should not leave the caret stranded to the right");
-    assert!(after.1 <= before.1, "backspace should move within wrapped layout");
+    assert!(
+        after.0 <= before.0,
+        "backspace should not leave the caret stranded to the right"
+    );
+    assert!(
+        after.1 <= before.1,
+        "backspace should move within wrapped layout"
+    );
 }
 
 #[test]
@@ -92,22 +131,46 @@ fn editor_cursor_screen_position_wraps_at_expected_column() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("123456789");
     editor.move_end();
-    let area = Rect { x: 0, y: 0, width: 6, height: 6 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 6,
+        height: 6,
+    };
     let (x, y) = editor.cursor_screen_position(area);
     assert_eq!(x, 3, "9 chars at width 6 should wrap to column 3");
-    assert_eq!(y, 2, "9 chars at width 6 should land on the second wrapped row beneath the border");
+    assert_eq!(
+        y, 2,
+        "9 chars at width 6 should land on the second wrapped row beneath the border"
+    );
 }
 
 #[test]
 fn editor_height_expands_for_wrapped_input() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.set_text("1234567890abcdefghij");
-    let narrow = Rect { x: 0, y: 0, width: 8, height: 20 };
-    let wide = Rect { x: 0, y: 0, width: 40, height: 20 };
+    let narrow = Rect {
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 20,
+    };
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 20,
+    };
     let narrow_height = super::editor_height_for(&editor, narrow);
     let wide_height = super::editor_height_for(&editor, wide);
-    assert!(narrow_height > wide_height, "wrapped input should expand editor height");
-    assert!(narrow_height >= 5, "wrapped input should grow beyond the minimum height");
+    assert!(
+        narrow_height > wide_height,
+        "wrapped input should expand editor height"
+    );
+    assert!(
+        narrow_height >= 5,
+        "wrapped input should grow beyond the minimum height"
+    );
 }
 
 #[test]
@@ -136,15 +199,32 @@ fn operator_event_queue_keeps_most_recent_entries() {
 }
 
 #[test]
-fn copy_mode_toggle_flips_mouse_capture_state() {
+fn selection_mode_toggle_flips_mouse_capture_state() {
     let mut app = test_app();
-    assert!(app.mouse_capture_enabled, "mouse capture should start enabled");
+    assert!(
+        app.mouse_capture_enabled,
+        "mouse capture should start enabled"
+    );
 
     app.set_mouse_capture(false);
-    assert!(!app.mouse_capture_enabled, "copy mode should disable mouse capture");
+    assert!(
+        !app.mouse_capture_enabled,
+        "selection mode should disable mouse capture"
+    );
+    assert!(
+        app.conversation.conv_state.user_scrolled,
+        "selection mode should freeze follow-tail"
+    );
 
     app.set_mouse_capture(true);
-    assert!(app.mouse_capture_enabled, "exiting copy mode should re-enable mouse capture");
+    assert!(
+        app.mouse_capture_enabled,
+        "exiting selection mode should re-enable mouse capture"
+    );
+    assert!(
+        !app.conversation.conv_state.user_scrolled,
+        "resuming live view should clear the frozen state"
+    );
 }
 
 #[test]
@@ -178,9 +258,12 @@ fn slash_update_reports_available_version() {
     let _ = update_tx.send(Some(UpdateInfo {
         current: "0.15.2".into(),
         latest: "0.15.3-rc.7".into(),
-        download_url: "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz".into(),
-        signature_url: "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz.sig".into(),
-        certificate_url: "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz.pem".into(),
+        download_url: "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz"
+            .into(),
+        signature_url: "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz.sig"
+            .into(),
+        certificate_url:
+            "https://example.invalid/omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz.pem".into(),
         release_notes: "notes".into(),
         is_newer: true,
     }));
@@ -217,7 +300,10 @@ fn slash_update_install_requires_update_info() {
     let tx = test_tx();
     let result = app.handle_slash_command("/update install", &tx);
     if let SlashResult::Display(text) = result {
-        assert!(text.contains("No update information") || text.contains("No downloadable update"), "{text}");
+        assert!(
+            text.contains("No update information") || text.contains("No downloadable update"),
+            "{text}"
+        );
     } else {
         panic!("expected Display result");
     }

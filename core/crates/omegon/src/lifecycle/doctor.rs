@@ -83,7 +83,8 @@ pub fn audit_nodes(nodes: &HashMap<String, DesignNode>) -> Vec<AuditFinding> {
                 node_id: node.id.clone(),
                 title: node.title.clone(),
                 kind: AuditKind::SeedWithoutQuestions,
-                detail: "seed node has no open questions or assumptions; likely underspecified".into(),
+                detail: "seed node has no open questions or assumptions; likely underspecified"
+                    .into(),
             });
         }
 
@@ -92,7 +93,8 @@ pub fn audit_nodes(nodes: &HashMap<String, DesignNode>) -> Vec<AuditFinding> {
                 node_id: node.id.clone(),
                 title: node.title.clone(),
                 kind: AuditKind::ExploringWithoutQuestions,
-                detail: "exploring node has no open questions; likely stale or underspecified".into(),
+                detail: "exploring node has no open questions; likely stale or underspecified"
+                    .into(),
             });
         }
 
@@ -111,7 +113,11 @@ pub fn audit_nodes(nodes: &HashMap<String, DesignNode>) -> Vec<AuditFinding> {
                     kind: AuditKind::ParentImplementedWithActiveChildren,
                     detail: format!(
                         "implemented parent still has active children: {}",
-                        active.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join(", ")
+                        active
+                            .iter()
+                            .map(|c| c.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                 });
             }
@@ -138,7 +144,11 @@ pub fn audit_nodes(nodes: &HashMap<String, DesignNode>) -> Vec<AuditFinding> {
         }
     }
 
-    findings.sort_by(|a, b| a.node_id.cmp(&b.node_id).then(a.kind.as_str().cmp(b.kind.as_str())));
+    findings.sort_by(|a, b| {
+        a.node_id
+            .cmp(&b.node_id)
+            .then(a.kind.as_str().cmp(b.kind.as_str()))
+    });
     findings
 }
 
@@ -190,7 +200,11 @@ mod tests {
         let mut nodes = HashMap::new();
         nodes.insert("n1".into(), node("n1", NodeStatus::Resolved));
         let findings = audit_nodes(&nodes);
-        assert!(findings.iter().any(|f| f.kind == AuditKind::ResolvedWithoutQuestions));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.kind == AuditKind::ResolvedWithoutQuestions)
+        );
     }
 
     #[test]
@@ -198,7 +212,11 @@ mod tests {
         let mut nodes = HashMap::new();
         nodes.insert("n1".into(), node("n1", NodeStatus::Seed));
         let findings = audit_nodes(&nodes);
-        assert!(findings.iter().any(|f| f.kind == AuditKind::SeedWithoutQuestions));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.kind == AuditKind::SeedWithoutQuestions)
+        );
     }
 
     #[test]
@@ -210,6 +228,10 @@ mod tests {
         nodes.insert(parent.id.clone(), parent);
         nodes.insert(child.id.clone(), child);
         let findings = audit_nodes(&nodes);
-        assert!(findings.iter().any(|f| f.kind == AuditKind::ParentImplementedWithActiveChildren));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.kind == AuditKind::ParentImplementedWithActiveChildren)
+        );
     }
 }

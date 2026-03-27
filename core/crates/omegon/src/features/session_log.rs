@@ -248,7 +248,14 @@ impl SessionLog {
             ));
         }
 
-        let recent_raw: Vec<&str> = entries.iter().skip(1).rev().take(n).rev().copied().collect();
+        let recent_raw: Vec<&str> = entries
+            .iter()
+            .skip(1)
+            .rev()
+            .take(n)
+            .rev()
+            .copied()
+            .collect();
         let recent_text: Vec<String> = recent_raw.iter().map(|e| format!("## {e}")).collect();
         let recent_structured: Vec<Value> = recent_raw
             .iter()

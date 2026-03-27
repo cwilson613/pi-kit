@@ -300,7 +300,11 @@ impl ConversationState {
     pub fn decay_oldest(&mut self, count: usize) {
         let remove = count.min(self.canonical.len());
         self.canonical.drain(..remove);
-        tracing::info!(removed = remove, remaining = self.canonical.len(), "Emergency decay applied");
+        tracing::info!(
+            removed = remove,
+            remaining = self.canonical.len(),
+            "Emergency decay applied"
+        );
     }
 
     /// Number of messages in the canonical conversation.
@@ -708,17 +712,28 @@ impl ConversationState {
                     LlmMessage::User { content, .. } => {
                         lines.push(format!("- User: {}", crate::util::truncate(content, 140)));
                     }
-                    LlmMessage::Assistant { text, tool_calls, .. } => {
+                    LlmMessage::Assistant {
+                        text, tool_calls, ..
+                    } => {
                         let body = crate::util::truncate(&text.join("\n"), 140);
                         if tool_calls.is_empty() {
                             lines.push(format!("- Assistant: {body}"));
                         } else {
-                            let tools = tool_calls.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
+                            let tools = tool_calls
+                                .iter()
+                                .map(|t| t.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
                             lines.push(format!("- Assistant ({tools}): {body}"));
                         }
                     }
-                    LlmMessage::ToolResult { tool_name, content, .. } => {
-                        lines.push(format!("- Tool {tool_name}: {}", crate::util::truncate(content, 120)));
+                    LlmMessage::ToolResult {
+                        tool_name, content, ..
+                    } => {
+                        lines.push(format!(
+                            "- Tool {tool_name}: {}",
+                            crate::util::truncate(content, 120)
+                        ));
                     }
                 }
             }
@@ -736,7 +751,10 @@ impl ConversationState {
             .map(|msg| {
                 let turn = last_turn;
                 match msg {
-                    LlmMessage::User { content, .. } => AgentMessage::User { text: content, turn },
+                    LlmMessage::User { content, .. } => AgentMessage::User {
+                        text: content,
+                        turn,
+                    },
                     LlmMessage::Assistant {
                         text,
                         thinking,
@@ -745,10 +763,18 @@ impl ConversationState {
                     } => AgentMessage::Assistant(
                         AssistantMessage {
                             text: text.join("\n"),
-                            thinking: if thinking.is_empty() { None } else { Some(thinking.join("\n")) },
+                            thinking: if thinking.is_empty() {
+                                None
+                            } else {
+                                Some(thinking.join("\n"))
+                            },
                             tool_calls: tool_calls
                                 .into_iter()
-                                .map(|tc| ToolCall { id: tc.id, name: tc.name, arguments: tc.arguments })
+                                .map(|tc| ToolCall {
+                                    id: tc.id,
+                                    name: tc.name,
+                                    arguments: tc.arguments,
+                                })
                                 .collect(),
                             raw: raw.unwrap_or(Value::Null),
                         },
@@ -1571,7 +1597,10 @@ mod tests {
         conv.intent.stats.turns = 5;
         let view = conv.build_llm_view();
         // The tool result at turn 1 should NOT be decayed (referenced, extended window = 4)
-        let tool_msg = view.iter().find(|m| matches!(m, LlmMessage::ToolResult { .. })).unwrap();
+        let tool_msg = view
+            .iter()
+            .find(|m| matches!(m, LlmMessage::ToolResult { .. }))
+            .unwrap();
         if let LlmMessage::ToolResult { content, .. } = tool_msg {
             assert!(
                 content.contains("authenticate_user"),
@@ -1582,7 +1611,10 @@ mod tests {
         // At turn 6 (age 5), even referenced results should decay (5 > 4)
         conv.intent.stats.turns = 6;
         let view = conv.build_llm_view();
-        let tool_msg = view.iter().find(|m| matches!(m, LlmMessage::ToolResult { .. })).unwrap();
+        let tool_msg = view
+            .iter()
+            .find(|m| matches!(m, LlmMessage::ToolResult { .. }))
+            .unwrap();
         if let LlmMessage::ToolResult { content, .. } = tool_msg {
             assert!(
                 !content.contains("authenticate_user"),
@@ -1743,10 +1775,19 @@ mod tests {
 
         let loaded = ConversationState::load_session(&tmp).unwrap();
         let view = loaded.build_llm_view();
-        assert!(loaded.compaction_summary.is_some(), "large resumed sessions should synthesize a summary");
-        assert!(view.len() < 40, "resumed view should not pull the full prior session back in");
+        assert!(
+            loaded.compaction_summary.is_some(),
+            "large resumed sessions should synthesize a summary"
+        );
+        assert!(
+            view.len() < 40,
+            "resumed view should not pull the full prior session back in"
+        );
         if let Some(LlmMessage::User { content, .. }) = view.first() {
-            assert!(content.contains("Resumed session"), "summary header should explain the compaction: {content}");
+            assert!(
+                content.contains("Resumed session"),
+                "summary header should explain the compaction: {content}"
+            );
         } else {
             panic!("expected synthesized summary as first message");
         }
@@ -1757,8 +1798,14 @@ mod tests {
     #[test]
     fn role_alternation_merges_adjacent_users() {
         let mut msgs = vec![
-            LlmMessage::User { content: "hello".into(), images: vec![] },
-            LlmMessage::User { content: "world".into(), images: vec![] },
+            LlmMessage::User {
+                content: "hello".into(),
+                images: vec![],
+            },
+            LlmMessage::User {
+                content: "world".into(),
+                images: vec![],
+            },
         ];
         enforce_role_alternation(&mut msgs);
         assert_eq!(msgs.len(), 1);
@@ -1771,7 +1818,10 @@ mod tests {
     #[test]
     fn role_alternation_drops_orphaned_tool_result_after_user() {
         let mut msgs = vec![
-            LlmMessage::User { content: "test".into(), images: vec![] },
+            LlmMessage::User {
+                content: "test".into(),
+                images: vec![],
+            },
             LlmMessage::ToolResult {
                 call_id: "t1".into(),
                 tool_name: "bash".into(),

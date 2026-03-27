@@ -674,12 +674,14 @@ impl LifecycleFeature {
             })
             .collect();
 
-        let counts = filtered.iter().fold(serde_json::Map::new(), |mut acc, finding| {
-            let key = finding.kind.as_str().to_string();
-            let next = acc.get(&key).and_then(|v| v.as_u64()).unwrap_or(0) + 1;
-            acc.insert(key, json!(next));
-            acc
-        });
+        let counts = filtered
+            .iter()
+            .fold(serde_json::Map::new(), |mut acc, finding| {
+                let key = finding.kind.as_str().to_string();
+                let next = acc.get(&key).and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+                acc.insert(key, json!(next));
+                acc
+            });
 
         let details = json!({
             "findings": filtered.iter().map(|f| json!({
@@ -697,7 +699,13 @@ impl LifecycleFeature {
         } else {
             let mut out = format!("Lifecycle doctor: {} finding(s)\n\n", filtered.len());
             for f in &filtered {
-                out.push_str(&format!("- {} [{}]\n  {}\n  {}\n", f.node_id, f.kind.as_str(), f.title, f.detail));
+                out.push_str(&format!(
+                    "- {} [{}]\n  {}\n  {}\n",
+                    f.node_id,
+                    f.kind.as_str(),
+                    f.title,
+                    f.detail
+                ));
             }
             out.trim_end().to_string()
         };
@@ -1314,12 +1322,20 @@ mod tests {
         .unwrap();
         let feature = LifecycleFeature::new(&repo);
 
-        let result = feature.execute_lifecycle_doctor(&json!({"node_id": "stale-node"})).unwrap();
+        let result = feature
+            .execute_lifecycle_doctor(&json!({"node_id": "stale-node"}))
+            .unwrap();
         let text = result.content[0].as_text().unwrap();
         assert!(text.contains("Lifecycle doctor: 1 finding"), "{text}");
         assert_eq!(result.details["total"].as_u64(), Some(1));
-        assert_eq!(result.details["findings"][0]["node_id"].as_str(), Some("stale-node"));
-        assert_eq!(result.details["findings"][0]["kind"].as_str(), Some("resolved_without_questions"));
+        assert_eq!(
+            result.details["findings"][0]["node_id"].as_str(),
+            Some("stale-node")
+        );
+        assert_eq!(
+            result.details["findings"][0]["kind"].as_str(),
+            Some("resolved_without_questions")
+        );
     }
 
     #[tokio::test]
@@ -1346,7 +1362,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.details["total"].as_u64(), Some(1));
-        assert_eq!(result.details["findings"][0]["node_id"].as_str(), Some("stale-node"));
+        assert_eq!(
+            result.details["findings"][0]["node_id"].as_str(),
+            Some("stale-node")
+        );
     }
 
     #[test]

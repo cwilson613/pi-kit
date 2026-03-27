@@ -69,10 +69,10 @@ pub(crate) fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), 
 
 #[cfg(test)]
 pub(crate) fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Error> {
-    TEST_KEYRING.lock().unwrap().insert(
-        (service.to_string(), name.to_string()),
-        value.to_string(),
-    );
+    TEST_KEYRING
+        .lock()
+        .unwrap()
+        .insert((service.to_string(), name.to_string()), value.to_string());
     Ok(())
 }
 

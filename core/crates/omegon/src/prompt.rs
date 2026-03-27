@@ -626,7 +626,10 @@ mod tests {
         eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
         eprintln!("║              TOOL TOKEN BUDGET AUDIT                         ║");
         eprintln!("╠═══════════════════════════════════════════════════════════════╣");
-        eprintln!("║ {:>5} {:3} {:<30} {:<8} {:<10} ║", "Tok", "Act", "Tool", "Group", "Status");
+        eprintln!(
+            "║ {:>5} {:3} {:<30} {:<8} {:<10} ║",
+            "Tok", "Act", "Tool", "Group", "Status"
+        );
         eprintln!("╠═══════════════════════════════════════════════════════════════╣");
         for (name, tokens, is_disabled, group) in &all_tools {
             let status = if *is_disabled { "disabled" } else { "ACTIVE" };
@@ -644,9 +647,19 @@ mod tests {
         let active_count = all_tools.iter().filter(|t| !t.2).count();
         let disabled_count = all_tools.iter().filter(|t| t.2).count();
 
-        eprintln!("║ Active:   {:>3} tools = {:>5} tokens/request              ║", active_count, total_active);
-        eprintln!("║ Disabled: {:>3} tools = {:>5} tokens (saved)               ║", disabled_count, total_disabled);
-        eprintln!("║ Total:    {:>3} tools = {:>5} tokens (if all enabled)      ║", all_tools.len(), total_all);
+        eprintln!(
+            "║ Active:   {:>3} tools = {:>5} tokens/request              ║",
+            active_count, total_active
+        );
+        eprintln!(
+            "║ Disabled: {:>3} tools = {:>5} tokens (saved)               ║",
+            disabled_count, total_disabled
+        );
+        eprintln!(
+            "║ Total:    {:>3} tools = {:>5} tokens (if all enabled)      ║",
+            all_tools.len(),
+            total_all
+        );
         eprintln!("╠═══════════════════════════════════════════════════════════════╣");
 
         // System prompt measurement
@@ -657,16 +670,30 @@ mod tests {
             .collect();
         let prompt = build_base_prompt(Path::new("/tmp"), &active_tool_defs);
         let prompt_tokens = prompt.len() / 4;
-        eprintln!("║ System prompt:     {:>5} tokens ({} chars)          ║", prompt_tokens, prompt.len());
-        eprintln!("║ Fixed overhead:    {:>5} tokens/request              ║", prompt_tokens + total_active);
+        eprintln!(
+            "║ System prompt:     {:>5} tokens ({} chars)          ║",
+            prompt_tokens,
+            prompt.len()
+        );
+        eprintln!(
+            "║ Fixed overhead:    {:>5} tokens/request              ║",
+            prompt_tokens + total_active
+        );
         eprintln!("║                                                               ║");
 
         // Budget impact on different context classes
-        for (class, window) in [("Squad 128k", 131_072usize), ("Maniple 272k", 278_528usize), ("Clan 440k", 409_600usize), ("Legion 1M", 1_048_576usize)] {
+        for (class, window) in [
+            ("Squad 128k", 131_072usize),
+            ("Maniple 272k", 278_528usize),
+            ("Clan 440k", 409_600usize),
+            ("Legion 1M", 1_048_576usize),
+        ] {
             let overhead = prompt_tokens + total_active + 16_384; // + max_output_tokens
             let available = window.saturating_sub(overhead);
             let pct = (overhead as f64 / window as f64 * 100.0) as usize;
-            eprintln!("║ {class:<15} overhead: {pct:>2}% → {available:>7} tokens for conversation ║");
+            eprintln!(
+                "║ {class:<15} overhead: {pct:>2}% → {available:>7} tokens for conversation ║"
+            );
         }
         eprintln!("╚═══════════════════════════════════════════════════════════════╝\n");
 

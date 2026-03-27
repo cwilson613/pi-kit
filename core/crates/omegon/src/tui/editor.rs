@@ -467,8 +467,8 @@ impl Editor {
 
         for (row_idx, line) in self.textarea.lines().iter().enumerate() {
             if row_idx < cursor_row {
-                visual_row = visual_row
-                    .saturating_add(wrap_chars_at(line, content_width).len() as u16);
+                visual_row =
+                    visual_row.saturating_add(wrap_chars_at(line, content_width).len() as u16);
                 continue;
             }
             // Cursor is in this logical row.
@@ -487,7 +487,10 @@ impl Editor {
 
         let screen_y = inner_y + visual_row.saturating_sub(self.scroll_row);
         let screen_x = inner_x + visual_col.min(editor_area.width.saturating_sub(1));
-        (screen_x, screen_y.min(editor_area.y + editor_area.height.saturating_sub(1)))
+        (
+            screen_x,
+            screen_y.min(editor_area.y + editor_area.height.saturating_sub(1)),
+        )
     }
 
     pub fn move_word_backward(&mut self) {

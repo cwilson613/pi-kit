@@ -330,7 +330,10 @@ impl FooterData {
             // Line 8+: inline operator event queue (replaces top-right toasts)
             for event in self.operator_events.iter().take(2) {
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {} ", event.icon), Style::default().fg(event.color)),
+                    Span::styled(
+                        format!(" {} ", event.icon),
+                        Style::default().fg(event.color),
+                    ),
                     Span::styled(event.message.clone(), Style::default().fg(event.color)),
                 ]));
             }

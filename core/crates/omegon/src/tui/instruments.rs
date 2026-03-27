@@ -260,7 +260,12 @@ impl Default for InstrumentPanel {
 
 impl InstrumentPanel {
     /// Update mind fact counts and memory context fraction.
-    pub fn update_mind_facts(&mut self, total_facts: usize, working_memory: usize, memory_fill: f64) {
+    pub fn update_mind_facts(
+        &mut self,
+        total_facts: usize,
+        working_memory: usize,
+        memory_fill: f64,
+    ) {
         if !self.minds.is_empty() {
             self.minds[0].fact_count = total_facts;
         }
@@ -288,11 +293,11 @@ impl InstrumentPanel {
 
         // Thinking static fill — reflects the setting level, not animated intensity
         self.thinking_level_pct = match thinking_level {
-            "high"    => 1.0,
-            "medium"  => 0.60,
-            "low"     => 0.35,
+            "high" => 1.0,
+            "medium" => 0.60,
+            "low" => 0.35,
             "minimal" => 0.15,
-            _         => 0.0,
+            _ => 0.0,
         };
 
         // Thinking: only active during inference
@@ -437,28 +442,30 @@ impl InstrumentPanel {
 
     fn render_context_bar(&self, area: Rect, buf: &mut Buffer) {
         let w = area.width as usize;
-        if w == 0 { return; }
+        if w == 0 {
+            return;
+        }
 
         // Waveform character pairs (top_row, bottom_row) indexed by amplitude 0–7.
         // Each column is a vertical spike — low amplitude = thin bottom bar,
         // high amplitude = tall spike filling both rows.
         const WAVE: [(char, char); 8] = [
-            ('·', '·'),  // 0 — empty
-            (' ', '▁'),  // 1 — whisper
-            (' ', '▃'),  // 2 — low
-            (' ', '▅'),  // 3 — medium-low
-            (' ', '█'),  // 4 — medium
-            ('▂', '█'),  // 5 — medium-high
-            ('▅', '█'),  // 6 — high
-            ('█', '█'),  // 7 — full
+            ('·', '·'), // 0 — empty
+            (' ', '▁'), // 1 — whisper
+            (' ', '▃'), // 2 — low
+            (' ', '▅'), // 3 — medium-low
+            (' ', '█'), // 4 — medium
+            ('▂', '█'), // 5 — medium-high
+            ('▅', '█'), // 6 — high
+            ('█', '█'), // 7 — full
         ];
 
         // Segment fractions (clamped so they can’t exceed total context_fill).
-        let mem_frac   = self.memory_fill.min(self.context_fill);
+        let mem_frac = self.memory_fill.min(self.context_fill);
         // Thinking reservation: level setting × ~12% of window (rough overhead budget)
-        let think_frac = (self.thinking_level_pct * 0.12)
-            .min((self.context_fill - mem_frac).max(0.0));
-        let used_frac  = (self.context_fill - mem_frac - think_frac).max(0.0);
+        let think_frac =
+            (self.thinking_level_pct * 0.12).min((self.context_fill - mem_frac).max(0.0));
+        let used_frac = (self.context_fill - mem_frac - think_frac).max(0.0);
 
         let active = self.thinking_active;
         // Oscillation speed: slow when idle, a touch faster during inference
@@ -476,15 +483,13 @@ impl InstrumentPanel {
                 let a = (3.0 + osc).clamp(2.0, 4.0) as usize;
                 let r = (20.0 + 30.0 * (pos / mem_frac.max(0.001))) as u8;
                 (a, Color::Rgb(r, (r as f64 * 1.5) as u8, 140))
-
             } else if pos < think_end {
                 // Thinking reservation — teal arch peaking in the middle
                 let rel = (pos - mem_frac) / think_frac.max(0.001);
                 let arch = (rel * std::f64::consts::PI).sin();
-                let osc  = (x as f64 * 0.5 + t * 1.2).sin() * 0.4;
+                let osc = (x as f64 * 0.5 + t * 1.2).sin() * 0.4;
                 let a = (3.5 + arch * 2.5 + osc).clamp(3.0, 6.0) as usize;
                 (a, Color::Rgb(42, 180, 200))
-
             } else if pos < think_end + used_frac {
                 // Context used — gradient teal → orange
                 let rel = (pos - mem_frac - think_frac) / used_frac.max(0.001);
@@ -492,10 +497,9 @@ impl InstrumentPanel {
                 let density = rel; // left = less dense, right = fuller
                 let a = (2.0 + density * 4.5 + osc).clamp(1.0, 6.0) as usize;
                 let rr = (42.0 + 198.0 * rel) as u8;
-                let gg = (180.0 - 80.0  * rel) as u8;
+                let gg = (180.0 - 80.0 * rel) as u8;
                 let bb = (200.0 - 160.0 * rel) as u8;
                 (a, Color::Rgb(rr, gg, bb))
-
             } else {
                 // Empty region — near-black dim dots
                 (0, Color::Rgb(12, 22, 32))
@@ -517,13 +521,18 @@ impl InstrumentPanel {
                 } else {
                     self.thinking_intensity * 0.08
                 };
-                let hash = x.wrapping_mul(31)
+                let hash = x
+                    .wrapping_mul(31)
                     .wrapping_add((t * 4.0) as usize)
                     .wrapping_mul(17)
                     % 100;
                 if (hash as f64) < jitter_threshold * 100.0 {
                     let up = (x.wrapping_mul(7) + (t * 2.0) as usize) % 2 == 0;
-                    amp = if up { (amp + 1).min(7) } else { amp.saturating_sub(1) };
+                    amp = if up {
+                        (amp + 1).min(7)
+                    } else {
+                        amp.saturating_sub(1)
+                    };
                     overlay_noise = true;
                     overlay_char = if in_thinking_band {
                         Some(match (x + (t * 3.0) as usize) % 4 {
@@ -547,11 +556,7 @@ impl InstrumentPanel {
             let amp = amp.min(7);
             let (top_ch, bot_ch) = WAVE[amp];
             let dim_color = match color {
-                Color::Rgb(r, g, b) => Color::Rgb(
-                    (r / 3).max(8),
-                    (g / 3).max(8),
-                    (b / 3).max(8),
-                ),
+                Color::Rgb(r, g, b) => Color::Rgb((r / 3).max(8), (g / 3).max(8), (b / 3).max(8)),
                 other => other,
             };
 
@@ -563,9 +568,17 @@ impl InstrumentPanel {
                     && think_frac > 0.0
                     && (((think_end * w as f64).round() as isize - x as isize).abs() <= 0);
                 let (mut ch, mut fg) = if row == 0 {
-                    if top_ch == '·' { ('·', dim_color) } else { (top_ch, color) }
+                    if top_ch == '·' {
+                        ('·', dim_color)
+                    } else {
+                        (top_ch, color)
+                    }
                 } else {
-                    if bot_ch == '·' { ('·', dim_color) } else { (bot_ch, color) }
+                    if bot_ch == '·' {
+                        ('·', dim_color)
+                    } else {
+                        (bot_ch, color)
+                    }
                 };
 
                 if is_memory_divider || is_thinking_divider {
@@ -921,16 +934,25 @@ mod tests {
     fn context_fill_uses_full_percent_range() {
         let mut panel = InstrumentPanel::default();
         panel.update_telemetry(50.0, None, false, "off", None, false, 0.016);
-        assert!((panel.context_fill - 0.5).abs() < 0.001, "context fill should track 50%");
+        assert!(
+            (panel.context_fill - 0.5).abs() < 0.001,
+            "context fill should track 50%"
+        );
         panel.update_telemetry(100.0, None, false, "off", None, false, 0.016);
-        assert!((panel.context_fill - 1.0).abs() < 0.001, "context fill should track 100%");
+        assert!(
+            (panel.context_fill - 1.0).abs() < 0.001,
+            "context fill should track 100%"
+        );
     }
 
     #[test]
     fn memory_fill_is_visually_capped() {
         let mut panel = InstrumentPanel::default();
         panel.update_mind_facts(10_000, 0, 0.9);
-        assert!(panel.memory_fill <= 0.12, "memory fill should be capped conservatively");
+        assert!(
+            panel.memory_fill <= 0.12,
+            "memory fill should be capped conservatively"
+        );
     }
 
     #[test]

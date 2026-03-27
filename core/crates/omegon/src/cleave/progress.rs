@@ -1,13 +1,16 @@
-//! NDJSON progress events emitted on stdout during cleave orchestration.
+//! Progress event types and sinks for cleave orchestration.
 //!
-//! The TS native-dispatch.ts wrapper reads these line-by-line and maps them
-//! to `emitCleaveChildProgress` calls so the dashboard updates live.
+//! Different embeddings consume cleave progress differently:
+//! - external CLI / native-dispatch: NDJSON written to stdout
+//! - in-process harness tool use: callback sink updating shared state
+//! - future telemetry / RPC: file, socket, or event-bus sinks
 
 use serde::Serialize;
 use std::io::Write;
+use std::sync::Arc;
 
-/// Progress events emitted as JSON lines on stdout.
-#[derive(Debug, Serialize)]
+/// Progress events emitted during cleave orchestration.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum ProgressEvent {
     WaveStart {
@@ -81,23 +84,58 @@ pub enum ProgressEvent {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildProgressStatus {
     Completed,
     Failed,
 }
 
-/// Emit a progress event as a JSON line on stdout.
-///
-/// Uses `println!` for atomic line writes. Stdout is exclusively used
-/// for progress events — all tracing/diagnostic output goes to stderr.
-pub fn emit_progress(event: &ProgressEvent) {
-    if let Ok(json) = serde_json::to_string(event) {
-        let _ = std::io::stdout().write_all(json.as_bytes());
-        let _ = std::io::stdout().write_all(b"\n");
-        let _ = std::io::stdout().flush();
+/// Embedding-aware sink for progress events.
+pub trait ProgressSink: Send + Sync {
+    fn emit(&self, event: &ProgressEvent);
+}
+
+pub type SharedProgressSink = Arc<dyn ProgressSink>;
+
+#[derive(Default)]
+pub struct StdoutProgressSink;
+
+impl ProgressSink for StdoutProgressSink {
+    fn emit(&self, event: &ProgressEvent) {
+        if let Ok(json) = serde_json::to_string(event) {
+            let _ = std::io::stdout().write_all(json.as_bytes());
+            let _ = std::io::stdout().write_all(b"\n");
+            let _ = std::io::stdout().flush();
+        }
     }
+}
+
+pub fn stdout_progress_sink() -> SharedProgressSink {
+    Arc::new(StdoutProgressSink)
+}
+
+struct CallbackProgressSink<F>
+where
+    F: Fn(&ProgressEvent) + Send + Sync + 'static,
+{
+    callback: F,
+}
+
+impl<F> ProgressSink for CallbackProgressSink<F>
+where
+    F: Fn(&ProgressEvent) + Send + Sync + 'static,
+{
+    fn emit(&self, event: &ProgressEvent) {
+        (self.callback)(event);
+    }
+}
+
+pub fn callback_progress_sink<F>(callback: F) -> SharedProgressSink
+where
+    F: Fn(&ProgressEvent) + Send + Sync + 'static,
+{
+    Arc::new(CallbackProgressSink { callback })
 }
 
 /// Parse a child stderr line for tool-call or turn-boundary patterns.
@@ -206,6 +244,7 @@ fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn test_emit_progress_serialization() {
@@ -214,9 +253,31 @@ mod tests {
             pid: 1234,
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(r#""event":"child_spawned"#));
-        assert!(json.contains(r#""child":"test-a"#));
+        assert!(json.contains(r#""event":"child_spawned""#));
+        assert!(json.contains(r#""child":"test-a""#));
         assert!(json.contains(r#""pid":1234"#));
+    }
+
+    #[test]
+    fn callback_sink_receives_events() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let seen = Arc::clone(&seen);
+            callback_progress_sink(move |event| {
+                seen.lock()
+                    .unwrap()
+                    .push(serde_json::to_string(event).unwrap());
+            })
+        };
+
+        sink.emit(&ProgressEvent::ChildSpawned {
+            child: "test-a".to_string(),
+            pid: 1234,
+        });
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].contains("child_spawned"));
     }
 
     #[test]
@@ -321,7 +382,7 @@ mod tests {
             duration_secs: 45.5,
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(r#""event":"done"#));
+        assert!(json.contains(r#""event":"done""#));
         assert!(json.contains(r#""completed":3"#));
     }
 }

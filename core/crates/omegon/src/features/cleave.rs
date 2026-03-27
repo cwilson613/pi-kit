@@ -20,7 +20,11 @@ use omegon_traits::{
     ToolResult,
 };
 
-use crate::cleave::{self, CleavePlan, state::ChildStatus};
+use crate::cleave::{
+    self, CleavePlan,
+    progress::{self, ChildProgressStatus, ProgressEvent},
+    state::ChildStatus,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Complexity assessment — pure pattern matching
@@ -269,6 +273,71 @@ pub struct ChildProgress {
     pub duration_secs: Option<f64>,
 }
 
+fn recompute_progress_counts(progress: &mut CleaveProgress) {
+    progress.completed = progress
+        .children
+        .iter()
+        .filter(|child| child.status == "completed")
+        .count();
+    progress.failed = progress
+        .children
+        .iter()
+        .filter(|child| child.status == "failed")
+        .count();
+}
+
+fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEvent) {
+    let mut progress = shared.lock().unwrap();
+
+    match event {
+        ProgressEvent::ChildSpawned { child, .. } => {
+            progress.active = true;
+            if let Some(existing) = progress.children.iter_mut().find(|c| c.label == *child) {
+                existing.status = "running".into();
+                existing.duration_secs = None;
+            } else {
+                progress.children.push(ChildProgress {
+                    label: child.clone(),
+                    status: "running".into(),
+                    duration_secs: None,
+                });
+                progress.total_children = progress.children.len();
+            }
+        }
+        ProgressEvent::ChildStatus {
+            child,
+            status,
+            duration_secs,
+            ..
+        } => {
+            let status_text = match status {
+                ChildProgressStatus::Completed => "completed",
+                ChildProgressStatus::Failed => "failed",
+            };
+            if let Some(existing) = progress.children.iter_mut().find(|c| c.label == *child) {
+                existing.status = status_text.into();
+                existing.duration_secs = *duration_secs;
+            } else {
+                progress.children.push(ChildProgress {
+                    label: child.clone(),
+                    status: status_text.into(),
+                    duration_secs: *duration_secs,
+                });
+                progress.total_children = progress.children.len();
+            }
+            recompute_progress_counts(&mut progress);
+        }
+        ProgressEvent::Done {
+            completed, failed, ..
+        } => {
+            progress.active = false;
+            progress.completed = *completed;
+            progress.failed = *failed;
+        }
+        _ => {}
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Feature implementation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -359,6 +428,11 @@ impl CleaveFeature {
                 .collect();
         }
 
+        let progress_sink = {
+            let shared = self.shared_progress();
+            progress::callback_progress_sink(move |event| apply_progress_event(&shared, event))
+        };
+
         let config = cleave::orchestrator::CleaveConfig {
             agent_binary,
             bridge_path: PathBuf::new(), // Not used in native mode
@@ -376,6 +450,7 @@ impl CleaveFeature {
                 )))
             }),
             inherited_env: self.session_secret_env.clone(),
+            progress_sink,
         };
 
         let result = cleave::run_cleave(
@@ -697,6 +772,76 @@ mod tests {
         let prog = feature.progress();
         assert!(!prog.active);
         assert_eq!(prog.total_children, 0);
+    }
+
+    #[test]
+    fn apply_progress_event_updates_child_statuses() {
+        let shared = Arc::new(Mutex::new(CleaveProgress {
+            active: true,
+            run_id: "run-1".into(),
+            total_children: 1,
+            completed: 0,
+            failed: 0,
+            children: vec![ChildProgress {
+                label: "alpha".into(),
+                status: "pending".into(),
+                duration_secs: None,
+            }],
+        }));
+
+        apply_progress_event(
+            &shared,
+            &ProgressEvent::ChildSpawned {
+                child: "alpha".into(),
+                pid: 42,
+            },
+        );
+        {
+            let progress = shared.lock().unwrap();
+            assert_eq!(progress.children[0].status, "running");
+            assert!(progress.active);
+        }
+
+        apply_progress_event(
+            &shared,
+            &ProgressEvent::ChildStatus {
+                child: "alpha".into(),
+                status: ChildProgressStatus::Completed,
+                duration_secs: Some(1.5),
+                error: None,
+            },
+        );
+        let progress = shared.lock().unwrap();
+        assert_eq!(progress.children[0].status, "completed");
+        assert_eq!(progress.children[0].duration_secs, Some(1.5));
+        assert_eq!(progress.completed, 1);
+        assert_eq!(progress.failed, 0);
+    }
+
+    #[test]
+    fn apply_progress_event_done_marks_run_inactive() {
+        let shared = Arc::new(Mutex::new(CleaveProgress {
+            active: true,
+            run_id: "run-1".into(),
+            total_children: 2,
+            completed: 1,
+            failed: 0,
+            children: vec![],
+        }));
+
+        apply_progress_event(
+            &shared,
+            &ProgressEvent::Done {
+                completed: 1,
+                failed: 1,
+                duration_secs: 3.0,
+            },
+        );
+
+        let progress = shared.lock().unwrap();
+        assert!(!progress.active);
+        assert_eq!(progress.completed, 1);
+        assert_eq!(progress.failed, 1);
     }
 
     #[tokio::test]

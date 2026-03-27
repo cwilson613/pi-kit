@@ -5,7 +5,7 @@
 
 use super::guardrails;
 use super::plan::CleavePlan;
-use super::progress::{self, ChildProgressStatus, ProgressEvent};
+use super::progress::{self, ChildProgressStatus, ProgressEvent, SharedProgressSink};
 use super::state::{self, ChildStatus, CleaveState};
 use super::waves::compute_waves;
 use super::worktree;
@@ -33,6 +33,8 @@ pub struct CleaveConfig {
     pub inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
     /// Startup-approved secret env inherited from the parent process.
     pub inherited_env: Vec<(String, String)>,
+    /// Embedding-aware sink for live progress events.
+    pub progress_sink: SharedProgressSink,
 }
 
 /// Result of a cleave run.
@@ -108,7 +110,7 @@ pub async fn run_cleave(
             .map(|&i| plan.children[i].label.as_str())
             .collect();
         tracing::info!(wave = wave_idx, children = ?wave_labels, "dispatching wave");
-        progress::emit_progress(&ProgressEvent::WaveStart {
+        config.progress_sink.emit(&ProgressEvent::WaveStart {
             wave: wave_idx,
             children: wave_labels.iter().map(|s| s.to_string()).collect(),
         });
@@ -221,11 +223,13 @@ pub async fn run_cleave(
         for info in &to_dispatch {
             let task_count = progress::count_task_items(&info.prompt);
             let scope_files = state.children[info.child_idx].scope.len();
-            progress::emit_progress(&ProgressEvent::ChildTaskInventory {
-                child: info.label.clone(),
-                total_tasks: task_count,
-                scope_files,
-            });
+            config
+                .progress_sink
+                .emit(&ProgressEvent::ChildTaskInventory {
+                    child: info.label.clone(),
+                    total_tasks: task_count,
+                    scope_files,
+                });
         }
 
         // ── Dispatch children ───────────────────────────────────────────
@@ -240,6 +244,7 @@ pub async fn run_cleave(
             let max_turns = config.max_turns;
             let timeout_secs = config.timeout_secs;
             let idle_timeout_secs = config.idle_timeout_secs;
+            let progress_sink = config.progress_sink.clone();
 
             // Route per-child model: if inventory is available and child has no explicit model,
             // infer capability tier from scope size and route to best provider+model.
@@ -287,6 +292,7 @@ pub async fn run_cleave(
                     timeout_secs,
                     idle_timeout_secs,
                     inherited_env: &inherited_env,
+                    progress_sink,
                 };
                 let result = dispatch_child(
                     &dispatch_config,
@@ -320,13 +326,13 @@ pub async fn run_cleave(
                     let auto_committed =
                         salvage_worktree_changes(&state.children[child_idx], false);
                     if auto_committed > 0 {
-                        progress::emit_progress(&ProgressEvent::AutoCommit {
+                        config.progress_sink.emit(&ProgressEvent::AutoCommit {
                             child: label.clone(),
                             files: auto_committed,
                         });
                     }
 
-                    progress::emit_progress(&ProgressEvent::ChildStatus {
+                    config.progress_sink.emit(&ProgressEvent::ChildStatus {
                         child: label.clone(),
                         status: ChildProgressStatus::Completed,
                         duration_secs: Some(output.duration_secs),
@@ -350,7 +356,7 @@ pub async fn run_cleave(
                         );
                     }
 
-                    progress::emit_progress(&ProgressEvent::ChildStatus {
+                    config.progress_sink.emit(&ProgressEvent::ChildStatus {
                         child: label.clone(),
                         status: ChildProgressStatus::Failed,
                         duration_secs: Some(started.elapsed().as_secs_f64()),
@@ -364,7 +370,7 @@ pub async fn run_cleave(
 
     // ── Merge phase ─────────────────────────────────────────────────────
     tracing::info!("merge phase starting");
-    progress::emit_progress(&ProgressEvent::MergeStart);
+    config.progress_sink.emit(&ProgressEvent::MergeStart);
     let mut merge_results = Vec::new();
 
     for child in &mut state.children {
@@ -406,7 +412,7 @@ pub async fn run_cleave(
                 }
                 let _ = worktree::delete_branch(repo_path, branch);
                 merge_results.push((child.label.clone(), MergeOutcome::Success));
-                progress::emit_progress(&ProgressEvent::MergeResult {
+                config.progress_sink.emit(&ProgressEvent::MergeResult {
                     child: child.label.clone(),
                     success: true,
                     detail: None,
@@ -415,7 +421,7 @@ pub async fn run_cleave(
             Ok(worktree::MergeResult::Conflict(detail)) => {
                 tracing::warn!(child = %child.label, "merge conflict");
                 merge_results.push((child.label.clone(), MergeOutcome::Conflict(detail.clone())));
-                progress::emit_progress(&ProgressEvent::MergeResult {
+                config.progress_sink.emit(&ProgressEvent::MergeResult {
                     child: child.label.clone(),
                     success: false,
                     detail: Some(detail),
@@ -427,7 +433,7 @@ pub async fn run_cleave(
                 child.error = Some(detail.clone());
                 let _ = worktree::delete_branch(repo_path, branch);
                 merge_results.push((child.label.clone(), MergeOutcome::Failed(detail.clone())));
-                progress::emit_progress(&ProgressEvent::MergeResult {
+                config.progress_sink.emit(&ProgressEvent::MergeResult {
                     child: child.label.clone(),
                     success: false,
                     detail: Some(detail),
@@ -437,7 +443,7 @@ pub async fn run_cleave(
                 child.status = ChildStatus::Failed;
                 child.error = Some(format!("{e}"));
                 merge_results.push((child.label.clone(), MergeOutcome::Failed(format!("{e}"))));
-                progress::emit_progress(&ProgressEvent::MergeResult {
+                config.progress_sink.emit(&ProgressEvent::MergeResult {
                     child: child.label.clone(),
                     success: false,
                     detail: Some(format!("{e}")),
@@ -470,7 +476,7 @@ pub async fn run_cleave(
     // Post-merge guardrails are handled by the caller (TS wrapper or CLI).
     // The orchestrator only discovers guardrails for task file enrichment.
 
-    progress::emit_progress(&ProgressEvent::Done {
+    config.progress_sink.emit(&ProgressEvent::Done {
         completed,
         failed,
         duration_secs,
@@ -499,6 +505,7 @@ struct ChildDispatchConfig<'a> {
     timeout_secs: u64,
     idle_timeout_secs: u64,
     inherited_env: &'a [(String, String)],
+    progress_sink: SharedProgressSink,
 }
 
 /// Dispatch a single omegon-agent child process.
@@ -568,7 +575,7 @@ async fn dispatch_child(
 
     let pid = child.id().unwrap_or(0);
     tracing::info!(child = %label, pid, "child spawned");
-    progress::emit_progress(&ProgressEvent::ChildSpawned {
+    config.progress_sink.emit(&ProgressEvent::ChildSpawned {
         child: label.to_string(),
         pid,
     });
@@ -606,7 +613,7 @@ async fn dispatch_child(
                         // Emit activity events (throttled to 1/sec)
                         if last_activity.duration_since(last_activity_event).as_secs() >= 1
                             && let Some(activity) = progress::parse_child_activity(label, &line) {
-                                progress::emit_progress(&activity);
+                                config.progress_sink.emit(&activity);
                                 last_activity_event = Instant::now();
                             }
 
@@ -976,6 +983,7 @@ mod tests {
             max_turns: 50,
             inventory: None,
             inherited_env: vec![],
+            progress_sink: crate::cleave::progress::stdout_progress_sink(),
         };
         assert_eq!(config.idle_timeout_secs, 300);
         assert_eq!(config.timeout_secs, 900);

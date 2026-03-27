@@ -291,15 +291,17 @@ impl App {
         }
         self.mouse_capture_enabled = enabled;
         if enabled {
+            self.conversation.snap_to_bottom();
             let _ = io::stdout().execute(EnableMouseCapture);
             self.show_toast(
-                "Mouse capture enabled — scroll/hover restored",
+                "Selection mode off — live scrolling and mouse wheel restored",
                 ratatui_toaster::ToastType::Info,
             );
         } else {
+            self.conversation.freeze_follow();
             let _ = io::stdout().execute(DisableMouseCapture);
             self.show_toast(
-                "Copy mode enabled — use native terminal selection/copy; press Ctrl+Shift+C to return",
+                "Selection mode on — conversation frozen for native terminal selection; press F6 to resume live view",
                 ratatui_toaster::ToastType::Info,
             );
         }
@@ -583,7 +585,10 @@ impl App {
         // Memory backend degradation/recovery
         if prev.memory_available != current.memory_available {
             if current.memory_available {
-                self.show_toast("Memory backend restored", ratatui_toaster::ToastType::Success);
+                self.show_toast(
+                    "Memory backend restored",
+                    ratatui_toaster::ToastType::Success,
+                );
             } else {
                 self.show_toast(
                     current
@@ -1472,8 +1477,7 @@ impl App {
                 // We want the harness to reach for memory on demand rather than
                 // imply that a large resident memory slab is always injected.
                 // Estimate ~48 tokens per fact and let instruments cap further.
-                (self.footer_data.total_facts * 48) as f64
-                    / self.footer_data.context_window as f64
+                (self.footer_data.total_facts * 48) as f64 / self.footer_data.context_window as f64
             } else {
                 0.0
             };
@@ -1556,10 +1560,8 @@ impl App {
                 .and_then(|i| self.history.get(i))
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            let editor_title = Span::styled(
-                format!(" (reverse-i-search)`{query}': "),
-                t.style_warning(),
-            );
+            let editor_title =
+                Span::styled(format!(" (reverse-i-search)`{query}': "), t.style_warning());
             let editor_block = Block::default()
                 .borders(Borders::TOP)
                 .border_type(ratatui::widgets::BorderType::Rounded)
@@ -1811,7 +1813,11 @@ impl App {
         ),
         ("sessions", "list saved sessions", &[]),
         ("memory", "memory stats", &[]),
-        ("cleave", "show cleave status or trigger decomposition", &["status"]),
+        (
+            "cleave",
+            "show cleave status or trigger decomposition",
+            &["status"],
+        ),
         (
             "login",
             "log in to a provider or service",
@@ -1835,7 +1841,11 @@ impl App {
             "initialize project — scan & migrate agent conventions",
             &["scan", "migrate"],
         ),
-        ("update", "check for and install updates", &["install", "channel"]),
+        (
+            "update",
+            "check for and install updates",
+            &["install", "channel"],
+        ),
         (
             "migrate",
             "import from other tools",
@@ -1991,8 +2001,16 @@ impl App {
                     s.model_short(),
                     s.thinking.icon(),
                     s.thinking.as_str(),
-                    if self.footer_data.harness.memory_available { "available" } else { "UNAVAILABLE" },
-                    if self.footer_data.harness.cleave_available { "available" } else { "UNAVAILABLE" },
+                    if self.footer_data.harness.memory_available {
+                        "available"
+                    } else {
+                        "UNAVAILABLE"
+                    },
+                    if self.footer_data.harness.cleave_available {
+                        "available"
+                    } else {
+                        "UNAVAILABLE"
+                    },
                 ))
             }
 
@@ -2181,9 +2199,7 @@ impl App {
 
             "compact" => {
                 let _ = tx.try_send(TuiCommand::Compact);
-                SlashResult::Display(
-                    "Compacting conversation now…".into(),
-                )
+                SlashResult::Display("Compacting conversation now…".into())
             }
 
             "clear" => {
@@ -2912,7 +2928,10 @@ impl App {
                 self.working_verb = spinner::next_verb();
                 self.effects.start_spinner_glow();
             }
-            AgentEvent::TurnEnd { turn, estimated_tokens } => {
+            AgentEvent::TurnEnd {
+                turn,
+                estimated_tokens,
+            } => {
                 self.turn = turn;
                 let ctx_window = self.footer_data.context_window;
                 if ctx_window > 0 {
@@ -3662,7 +3681,8 @@ pub async fn run_tui(
     ))?;
     // Enable mouse capture for scroll-wheel support.
     // This blocks native text selection. Operators can temporarily disable it
-    // in-session with Ctrl+Shift+C to use terminal-native selection/copy.
+    // in-session with F6, which also freezes follow-tail so streaming output
+    // does not scroll underneath terminal-native selection.
     io::stdout().execute(EnableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
 
@@ -4324,10 +4344,10 @@ pub async fn run_tui(
                             app.conversation.toggle_pin();
                         }
 
-                        // Ctrl+Shift+C: toggle copy mode for native terminal selection.
-                        // Mouse capture blocks terminal text selection, so this is the
-                        // fast path until in-app selection/OSC52 exists.
-                        (KeyCode::Char('C'), KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
+                        // F6: toggle selection mode for native terminal text selection.
+                        // Ctrl+Shift+C is unreliable because many terminals intercept it
+                        // for copy, and Ctrl+C is already used for interrupt/quit.
+                        (KeyCode::F(6), _) => {
                             app.set_mouse_capture(!app.mouse_capture_enabled);
                         }
 

@@ -314,7 +314,16 @@ impl Segment {
                 thinking,
                 complete,
             } => {
-                render_assistant_text(text, thinking, *complete, &self.meta, &presentation, area, buf, t);
+                render_assistant_text(
+                    text,
+                    thinking,
+                    *complete,
+                    &self.meta,
+                    &presentation,
+                    area,
+                    buf,
+                    t,
+                );
             }
             ToolCard {
                 name,
@@ -392,7 +401,9 @@ impl Segment {
                         .as_ref()
                         .map(|a| a.lines().take(4).count() as u16)
                         .unwrap_or(0),
-                    "edit" | "change" | "read" | "write" | "view" => u16::from(detail_args.is_some()),
+                    "edit" | "change" | "read" | "write" | "view" => {
+                        u16::from(detail_args.is_some())
+                    }
                     _ => detail_args
                         .as_ref()
                         .map(|a| wrapped_rows(a, inner_width).min(if *expanded { 80 } else { 4 }))
@@ -555,7 +566,11 @@ fn render_assistant_text(
     }
 
     let bg = t.surface_bg();
-    let border_color = if complete { t.success() } else { t.accent_muted() };
+    let border_color = if complete {
+        t.success()
+    } else {
+        t.accent_muted()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -696,29 +711,27 @@ fn render_tool_card(
     let summarize_args = |tool_name: &str, args: Option<&str>| -> Option<String> {
         let args = args?;
         match tool_name {
-            "edit" | "change" => {
-                serde_json::from_str::<serde_json::Value>(args)
-                    .ok()
-                    .and_then(|v| {
-                        let path = v
-                            .get("file")
-                            .or(v.get("path"))
-                            .and_then(|f| f.as_str())
-                            .unwrap_or("(unknown file)");
-                        let old_len = v
-                            .get("oldText")
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.lines().count())
-                            .unwrap_or(0);
-                        let new_len = v
-                            .get("newText")
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.lines().count())
-                            .unwrap_or(0);
-                        Some(format!("{path} · {old_len}→{new_len} lines"))
-                    })
-                    .or_else(|| Some(crate::util::truncate(args, 80)))
-            }
+            "edit" | "change" => serde_json::from_str::<serde_json::Value>(args)
+                .ok()
+                .and_then(|v| {
+                    let path = v
+                        .get("file")
+                        .or(v.get("path"))
+                        .and_then(|f| f.as_str())
+                        .unwrap_or("(unknown file)");
+                    let old_len = v
+                        .get("oldText")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.lines().count())
+                        .unwrap_or(0);
+                    let new_len = v
+                        .get("newText")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.lines().count())
+                        .unwrap_or(0);
+                    Some(format!("{path} · {old_len}→{new_len} lines"))
+                })
+                .or_else(|| Some(crate::util::truncate(args, 80))),
             "read" | "write" | "view" | "bash" => {
                 Some(args.lines().next().unwrap_or(args).to_string())
             }
@@ -1330,7 +1343,10 @@ mod tests {
         assert_eq!(seg.role(), SegmentRole::Operator);
         assert_eq!(seg.presentation().sigil, "OP");
         assert!(text.contains("hello world"), "should have text");
-        assert!(text.contains("╭") || text.contains("╰") || text.contains("│"), "should render as a bordered card: {text}");
+        assert!(
+            text.contains("╭") || text.contains("╰") || text.contains("│"),
+            "should render as a bordered card: {text}"
+        );
     }
 
     #[test]
@@ -1347,10 +1363,22 @@ mod tests {
         let cases = [
             (Segment::tool_card("1", "read"), ToolVisualKind::FileRead),
             (Segment::tool_card("1", "bash"), ToolVisualKind::CommandExec),
-            (Segment::tool_card("1", "design_tree"), ToolVisualKind::DesignTree),
-            (Segment::tool_card("1", "memory_query"), ToolVisualKind::Memory),
-            (Segment::tool_card("1", "web_search"), ToolVisualKind::Search),
-            (Segment::tool_card("1", "write"), ToolVisualKind::FileMutation),
+            (
+                Segment::tool_card("1", "design_tree"),
+                ToolVisualKind::DesignTree,
+            ),
+            (
+                Segment::tool_card("1", "memory_query"),
+                ToolVisualKind::Memory,
+            ),
+            (
+                Segment::tool_card("1", "web_search"),
+                ToolVisualKind::Search,
+            ),
+            (
+                Segment::tool_card("1", "write"),
+                ToolVisualKind::FileMutation,
+            ),
         ];
         for (seg, expected) in cases {
             assert_eq!(seg.presentation().tool_visual, Some(expected));
@@ -1370,9 +1398,18 @@ mod tests {
         let (area, mut buf) = make_buf(40, 8);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
-        assert!(text.contains("Ω"), "assistant header should include Ω sigil: {text}");
-        assert!(text.contains("response"), "assistant header should describe the segment role: {text}");
-        assert!(text.contains("╭") || text.contains("╰") || text.contains("│"), "assistant response should now render as a card: {text}");
+        assert!(
+            text.contains("Ω"),
+            "assistant header should include Ω sigil: {text}"
+        );
+        assert!(
+            text.contains("response"),
+            "assistant header should describe the segment role: {text}"
+        );
+        assert!(
+            text.contains("╭") || text.contains("╰") || text.contains("│"),
+            "assistant response should now render as a card: {text}"
+        );
     }
 
     #[test]
@@ -1383,7 +1420,9 @@ mod tests {
                 id: "1".into(),
                 name: "edit".into(),
                 args_summary: None,
-                detail_args: Some(r#"{"file":"src/main.rs","oldText":"a\nb","newText":"c\nd\ne"}"#.into()),
+                detail_args: Some(
+                    r#"{"file":"src/main.rs","oldText":"a\nb","newText":"c\nd\ne"}"#.into(),
+                ),
                 result_summary: None,
                 detail_result: Some("ok".into()),
                 is_error: false,
@@ -1394,9 +1433,18 @@ mod tests {
         let (area, mut buf) = make_buf(80, 8);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
-        assert!(text.contains("src/main.rs"), "edit cards should summarize the file path: {text}");
-        assert!(text.contains("2→3 lines"), "edit cards should summarize line counts: {text}");
-        assert!(!text.contains("oldText"), "edit cards should not dump raw JSON keys into the card header: {text}");
+        assert!(
+            text.contains("src/main.rs"),
+            "edit cards should summarize the file path: {text}"
+        );
+        assert!(
+            text.contains("2→3 lines"),
+            "edit cards should summarize line counts: {text}"
+        );
+        assert!(
+            !text.contains("oldText"),
+            "edit cards should not dump raw JSON keys into the card header: {text}"
+        );
     }
 
     #[test]
@@ -1513,8 +1561,14 @@ mod tests {
         };
         let h_narrow = tool.height(40, &t);
         let h_wide = tool.height(120, &t);
-        assert!(h_narrow > h_wide, "narrow tool cards should get taller when output wraps");
-        assert!(h_narrow >= 8, "wrapped tool output should materially increase card height: {h_narrow}");
+        assert!(
+            h_narrow > h_wide,
+            "narrow tool cards should get taller when output wraps"
+        );
+        assert!(
+            h_narrow >= 8,
+            "wrapped tool output should materially increase card height: {h_narrow}"
+        );
     }
 
     #[test]
@@ -1556,7 +1610,10 @@ mod tests {
             },
         };
         let h = tool.height(80, &t);
-        assert!(h <= 7, "read cards should stay compact when args collapse to a single file row, got {h}");
+        assert!(
+            h <= 7,
+            "read cards should stay compact when args collapse to a single file row, got {h}"
+        );
     }
 
     #[test]

@@ -494,6 +494,7 @@ async fn run_cleave_command(
         max_turns,
         inventory: None,
         inherited_env: agent_setup.session_secret_env.clone(),
+        progress_sink: cleave::progress::stdout_progress_sink(),
     };
 
     let cancel = CancellationToken::new();
@@ -926,8 +927,11 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         extended_context: false,
                     }
                 };
-                if let Some((payload, _evict_count)) = agent.conversation.build_compaction_payload() {
-                    match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options).await {
+                if let Some((payload, _evict_count)) = agent.conversation.build_compaction_payload()
+                {
+                    match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options)
+                        .await
+                    {
                         Ok(summary) => {
                             agent.conversation.apply_compaction(summary);
                             let est = agent.conversation.estimate_tokens();
@@ -1521,8 +1525,7 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
     }
 
     let resume = cli.resume.as_ref().map(|r| r.as_deref());
-    let mut agent =
-        setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
+    let mut agent = setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
     agent.conversation.push_user(prompt_text.clone());
 
     // ─── Build loop config ──────────────────────────────────────────────

@@ -4,4 +4,4 @@
 
 > Parent: [Cross-provider session telemetry schema for replay and inspection](cross-provider-session-telemetry-schema.md)
 
-See [Structured RPC/event transport for cleave child execution design doc](../../../docs/structured-cleave-child-rpc.md) for full context.
+See [design doc](../../../docs/structured-cleave-child-rpc.md).

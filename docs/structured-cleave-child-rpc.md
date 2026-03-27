@@ -1,11 +1,10 @@
 ---
 id: structured-cleave-child-rpc
 title: "Structured RPC/event transport for cleave child execution"
-status: exploring
+status: decided
 parent: cross-provider-session-telemetry-schema
-open_questions:
-  - "Should cleave child execution keep using spawned CLI subprocesses with stderr scraping, or move to a structured event/RPC channel with semantic heartbeats and typed progress events?"
-jj_change_id: ypkmlvmkxytkyuqtvmnzwsytuxontrvz
+open_questions: []
+jj_change_id: ztkpunvlopwvzlqprsnyuzqnmmouplox
 ---
 
 # Structured RPC/event transport for cleave child execution
@@ -66,6 +65,26 @@ Short version: the screenshot is a smoking gun that the cleave orchestration lay
 **Status:** exploring
 **Rationale:** There are two layers here. At the top layer, the harness should invoke `cleave_run` instead of shelling out through `bash` to `omegon cleave ...`; that preserves the tool contract and keeps the run inside the harness surface. But at the lower layer, `cleave_run` still delegates to the same subprocess-based child model: full child Omegon processes, stderr scraping for activity, stdout harvested at exit, and idle timeout keyed to log silence. The architectural problem is therefore not merely the wrong command path; it is that the current child transport is weak. Fixing the outer call path improves correctness and UX, but the long-term solution is a typed event/RPC channel with semantic heartbeats.
 
+### Decision: Keep subprocess child isolation for now, but make progress transport embedding-aware
+
+**Status:** decided
+**Rationale:** The immediate bug is not child isolation itself; it is that cleave progress emission was globally hard-wired to process stdout. That works for the external CLI/native-dispatch embedding, but it corrupts the interactive TUI when `cleave_run` is invoked inside the harness. The fix is to preserve the current subprocess model for child execution while introducing a pluggable progress sink. External CLI callers continue using a stdout-backed NDJSON sink, while internal harness execution routes progress into shared in-process state. This removes terminal corruption now and establishes the transport boundary needed for future richer RPC/telemetry work.
+
 ## Open Questions
 
-- Should cleave child execution keep using spawned CLI subprocesses with stderr scraping, or move to a structured event/RPC channel with semantic heartbeats and typed progress events?
+*No open questions.*
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/cleave/progress.rs` (modified) — Introduce embedding-aware progress sink abstraction with stdout and callback sinks.
+- `core/crates/omegon/src/cleave/orchestrator.rs` (modified) — Thread progress sink through orchestration and child dispatch so progress emission is no longer hard-wired to stdout.
+- `core/crates/omegon/src/features/cleave.rs` (modified) — Route internal cleave_run progress into shared in-process cleave dashboard state and test event application.
+- `core/crates/omegon/src/main.rs` (modified) — Keep external CLI cleave path on stdout-backed NDJSON progress sink.
+
+### Constraints
+
+- Preserve current subprocess child-execution model for this fix.
+- Keep external CLI/native-dispatch stdout NDJSON compatibility while preventing internal TUI corruption.
+- Treat richer semantic heartbeats / full RPC transport as follow-on work beyond this immediate fix.

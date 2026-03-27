@@ -98,7 +98,10 @@ pub fn spawn_check(tx: UpdateSender, channel: UpdateChannel) {
                 let _ = tx.send(None);
             }
             Err(e) => {
-                tracing::debug!(channel = channel.as_str(), "update check failed (non-fatal): {e}");
+                tracing::debug!(
+                    channel = channel.as_str(),
+                    "update check failed (non-fatal): {e}"
+                );
             }
         }
     });
@@ -115,13 +118,15 @@ pub async fn check_latest_for_channel(
         .build()?;
 
     let releases: Vec<GitHubRelease> = if matches!(channel, UpdateChannel::Stable) {
-        vec![client
-            .get("https://api.github.com/repos/styrene-lab/omegon/releases/latest")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?]
+        vec![
+            client
+                .get("https://api.github.com/repos/styrene-lab/omegon/releases/latest")
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?,
+        ]
     } else {
         client
             .get("https://api.github.com/repos/styrene-lab/omegon/releases")
@@ -194,10 +199,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
         let version: Vec<u32> = base.split('.').filter_map(|p| p.parse().ok()).collect();
         if let Some(num) = suffix.strip_prefix("rc.").and_then(|n| n.parse().ok()) {
             (version, SuffixKind::Rc, num)
-        } else if let Some(num) = suffix
-            .strip_prefix("nightly.")
-            .and_then(|n| n.parse().ok())
-        {
+        } else if let Some(num) = suffix.strip_prefix("nightly.").and_then(|n| n.parse().ok()) {
             (version, SuffixKind::Nightly, num)
         } else {
             (version, SuffixKind::Stable, 0)
@@ -233,12 +235,22 @@ fn platform_archive_target() -> String {
 }
 
 async fn download_to_path(client: &reqwest::Client, url: &str, path: &Path) -> anyhow::Result<()> {
-    let bytes = client.get(url).send().await?.error_for_status()?.bytes().await?;
+    let bytes = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
     tokio::fs::write(path, &bytes).await?;
     Ok(())
 }
 
-fn verify_archive_signature(archive_path: &Path, sig_path: &Path, cert_path: &Path) -> anyhow::Result<()> {
+fn verify_archive_signature(
+    archive_path: &Path,
+    sig_path: &Path,
+    cert_path: &Path,
+) -> anyhow::Result<()> {
     let blob = std::fs::read(archive_path)?;
     let signature = std::fs::read_to_string(sig_path)?;
     let cert_pem = std::fs::read_to_string(cert_path)?;
@@ -279,9 +291,11 @@ fn verify_certificate_identity(cert_pem: &str) -> anyhow::Result<()> {
         }
     }
 
-    let subject_uri = subject_uri
-        .ok_or_else(|| anyhow::anyhow!("certificate missing GitHub Actions SAN URI"))?;
-    if !subject_uri.starts_with("https://github.com/styrene-lab/omegon/.github/workflows/release.yml@") {
+    let subject_uri =
+        subject_uri.ok_or_else(|| anyhow::anyhow!("certificate missing GitHub Actions SAN URI"))?;
+    if !subject_uri
+        .starts_with("https://github.com/styrene-lab/omegon/.github/workflows/release.yml@")
+    {
         anyhow::bail!("certificate SAN URI does not match release workflow policy: {subject_uri}");
     }
 
@@ -290,7 +304,11 @@ fn verify_certificate_identity(cert_pem: &str) -> anyhow::Result<()> {
         .extensions()
         .iter()
         .find(|ext| ext.oid.to_id_string() == issuer_oid)
-        .map(|ext| String::from_utf8_lossy(ext.value).trim_matches(char::from(0)).to_string())
+        .map(|ext| {
+            String::from_utf8_lossy(ext.value)
+                .trim_matches(char::from(0))
+                .to_string()
+        })
         .unwrap_or_default();
     if issuer != "https://token.actions.githubusercontent.com" {
         anyhow::bail!("certificate issuer policy failed: {issuer}");
@@ -301,7 +319,11 @@ fn verify_certificate_identity(cert_pem: &str) -> anyhow::Result<()> {
         .extensions()
         .iter()
         .find(|ext| ext.oid.to_id_string() == repo_oid)
-        .map(|ext| String::from_utf8_lossy(ext.value).trim_matches(char::from(0)).to_string())
+        .map(|ext| {
+            String::from_utf8_lossy(ext.value)
+                .trim_matches(char::from(0))
+                .to_string()
+        })
         .unwrap_or_default();
     if repo != "styrene-lab/omegon" {
         anyhow::bail!("certificate repository policy failed: {repo}");
@@ -438,15 +460,24 @@ mod tests {
         assert!(!is_newer("0.15.1", "0.15.2-rc.3"));
         assert!(is_newer("0.15.3-rc.7", "0.15.2"));
         assert!(is_newer("0.15.3-nightly.20260326", "0.15.3-rc.7"));
-        assert!(is_newer("0.15.3-nightly.20260327", "0.15.3-nightly.20260326"));
+        assert!(is_newer(
+            "0.15.3-nightly.20260327",
+            "0.15.3-nightly.20260326"
+        ));
         assert!(is_newer("0.15.3", "0.15.3-nightly.20260327"));
     }
 
     #[test]
     fn platform_archive_target_is_valid() {
         let name = platform_archive_target();
-        assert!(name.contains("darwin") || name.contains("linux"), "got: {name}");
-        assert!(name.contains("aarch64") || name.contains("x86_64"), "got: {name}");
+        assert!(
+            name.contains("darwin") || name.contains("linux"),
+            "got: {name}"
+        );
+        assert!(
+            name.contains("aarch64") || name.contains("x86_64"),
+            "got: {name}"
+        );
     }
 
     #[test]
@@ -462,7 +493,10 @@ mod tests {
             },
         ];
         assert_eq!(
-            find_asset_url(&assets, "omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz.sig"),
+            find_asset_url(
+                &assets,
+                "omegon-0.15.3-rc.7-aarch64-apple-darwin.tar.gz.sig"
+            ),
             "https://example.invalid/archive.sig"
         );
     }
@@ -471,6 +505,9 @@ mod tests {
     fn certificate_identity_requires_repo_workflow_prefix() {
         let cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
         let err = verify_certificate_identity(cert).expect_err("invalid cert should fail");
-        assert!(err.to_string().contains("parse PEM certificate") || err.to_string().contains("parse certificate DER"));
+        assert!(
+            err.to_string().contains("parse PEM certificate")
+                || err.to_string().contains("parse certificate DER")
+        );
     }
 }

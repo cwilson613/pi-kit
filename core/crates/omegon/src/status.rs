@@ -266,9 +266,15 @@ impl HarnessStatus {
         // Populate installed plugins from the bus's registered features
         // (Feature trait doesn't expose identity, so we use tool counts as signal)
         let tool_defs = bus.tool_definitions();
-        self.memory_available = tool_defs.iter().any(|t| t.name == crate::tool_registry::memory::MEMORY_QUERY);
-        self.cleave_available = tool_defs.iter().any(|t| t.name == crate::tool_registry::cleave::CLEAVE_ASSESS)
-            && tool_defs.iter().any(|t| t.name == crate::tool_registry::cleave::CLEAVE_RUN);
+        self.memory_available = tool_defs
+            .iter()
+            .any(|t| t.name == crate::tool_registry::memory::MEMORY_QUERY);
+        self.cleave_available = tool_defs
+            .iter()
+            .any(|t| t.name == crate::tool_registry::cleave::CLEAVE_ASSESS)
+            && tool_defs
+                .iter()
+                .any(|t| t.name == crate::tool_registry::cleave::CLEAVE_RUN);
         let mcp_tools: Vec<_> = tool_defs
             .iter()
             .filter(|t| t.label.starts_with("mcp:"))

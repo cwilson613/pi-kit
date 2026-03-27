@@ -136,8 +136,6 @@ pub mod persona {
 
 /// All statically-declared tool names. Used by `EventBus::finalize()` to
 /// detect collisions with dynamic tools (MCP, plugins).
-/// All statically-declared tool names. Used by `EventBus::finalize()` to
-/// detect collisions with dynamic tools (MCP, plugins).
 ///
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.

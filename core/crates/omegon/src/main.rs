@@ -616,8 +616,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     // ─── Shared state (created early so features can reference it) ────
     let shared_settings = settings::shared(&cli.model);
 
-    // Load project profile → apply to settings (model, thinking, max_turns)
-    let profile = settings::Profile::load(&cli.cwd);
     if let Ok(mut s) = shared_settings.lock() {
         apply_profile_with_cli_overrides(cli, &mut s);
         tracing::info!(

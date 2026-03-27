@@ -26,6 +26,26 @@ use omegon_traits::{
     ContextSignals, Feature, NotifyLevel, ToolDefinition, ToolResult,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DelegateTier {
+    Local,
+    Retribution,
+    Victory,
+    Gloriana,
+}
+
+impl DelegateTier {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "local" => Some(Self::Local),
+            "retribution" => Some(Self::Retribution),
+            "victory" => Some(Self::Victory),
+            "gloriana" => Some(Self::Gloriana),
+            _ => None,
+        }
+    }
+}
+
 /// Agent specification loaded from .omegon/agents/*.md
 #[derive(Debug, Clone)]
 pub struct AgentSpec {
@@ -153,6 +173,7 @@ impl DelegateRunner {
         task: String,
         scope: Option<Vec<String>>,
         model: Option<String>,
+        tier: Option<String>,
         thinking_level: Option<String>,
         facts: Option<Vec<String>>,
         mind: Option<String>,
@@ -174,6 +195,7 @@ impl DelegateRunner {
             agent_name.as_deref(),
             scope.as_deref(),
             model.as_deref(),
+            tier.as_deref(),
             thinking_level.as_deref(),
             facts.as_deref(),
             mind.as_deref(),
@@ -239,6 +261,7 @@ impl DelegateRunner {
         agent_name: Option<&str>,
         scope: Option<&[String]>,
         model: Option<&str>,
+        tier: Option<&str>,
         thinking_level: Option<&str>,
         facts: Option<&[String]>,
         mind: Option<&str>,
@@ -254,6 +277,9 @@ impl DelegateRunner {
         }
         if let Some(level) = thinking_level {
             prompt.push_str(&format!("## Requested Thinking Level\n\n{level}\n\n"));
+        }
+        if let Some(tier) = tier {
+            prompt.push_str(&format!("## Requested Model Tier\n\n{tier}\n\n"));
         }
         if let Some(scope) = scope
             && !scope.is_empty()
@@ -281,12 +307,39 @@ impl DelegateRunner {
         prompt.push_str(task);
         prompt.push('\n');
 
+        let resolved_model = if let Some(explicit) = model {
+            explicit.to_string()
+        } else {
+            self.resolve_delegate_model(tier)?
+        };
+
         Ok(DelegateExecutionSpec {
             prompt,
             cwd: self.cwd.clone(),
-            model: model.unwrap_or("openai-codex:codex-mini-latest").to_string(),
+            model: resolved_model,
             max_turns: 24,
         })
+    }
+
+    fn resolve_delegate_model(&self, tier: Option<&str>) -> anyhow::Result<String> {
+        let requested = tier.unwrap_or("victory");
+        let tier = DelegateTier::parse(requested)
+            .ok_or_else(|| anyhow::anyhow!("Invalid delegate tier: {requested}"))?;
+
+        let provider = match tier {
+            DelegateTier::Local => "ollama",
+            _ => "openai-codex",
+        };
+
+        let model = match (tier, provider) {
+            (DelegateTier::Local, _) => "qwen3:30b",
+            (DelegateTier::Gloriana, "openai-codex") => "gpt-5.4",
+            (DelegateTier::Victory, "openai-codex") => "gpt-5.4",
+            (DelegateTier::Retribution, "openai-codex") => "codex-mini-latest",
+            _ => "codex-mini-latest",
+        };
+
+        Ok(format!("{provider}:{model}"))
     }
 }
 
@@ -403,7 +456,12 @@ impl Feature for DelegateFeature {
                         },
                         "model": {
                             "type": "string",
-                            "description": "Optional model override for the delegate"
+                            "description": "Optional concrete model override for the delegate"
+                        },
+                        "tier": {
+                            "type": "string",
+                            "enum": ["local", "retribution", "victory", "gloriana"],
+                            "description": "Optional model tier for the delegate. Ignored when model is provided."
                         },
                         "thinking_level": {
                             "type": "string",
@@ -482,6 +540,10 @@ impl Feature for DelegateFeature {
                     .get("model")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let tier = args
+                    .get("tier")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let thinking_level = args
                     .get("thinking_level")
                     .and_then(|v| v.as_str())
@@ -517,6 +579,7 @@ impl Feature for DelegateFeature {
                         task,
                         scope,
                         model,
+                        tier,
                         thinking_level,
                         facts,
                         mind,
@@ -849,6 +912,7 @@ mod tests {
                 Some("analyzer"),
                 Some(&["src/lib.rs".into(), "tests/lib.rs".into()]),
                 Some("openai-codex:codex-mini-latest"),
+                Some("victory"),
                 Some("low"),
                 Some(&["fact one".into(), "fact two".into()]),
                 Some("debugger"),
@@ -856,11 +920,36 @@ mod tests {
             .unwrap();
 
         assert!(spec.prompt.contains("## Requested Agent\n\nanalyzer"));
+        assert!(spec.prompt.contains("## Requested Model Tier\n\nvictory"));
         assert!(spec.prompt.contains("## Scope"));
         assert!(spec.prompt.contains("src/lib.rs"));
         assert!(spec.prompt.contains("fact one"));
         assert!(spec.prompt.contains("## Mind Context\n\ndebugger"));
         assert_eq!(spec.model, "openai-codex:codex-mini-latest");
+    }
+
+    #[test]
+    fn test_delegate_tier_resolves_to_codex_models() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(DelegateResultStore::new());
+        let runner = DelegateRunner::new(
+            temp_dir.path().to_path_buf(),
+            store,
+            PathBuf::from("/bin/echo"),
+        );
+
+        assert_eq!(
+            runner.resolve_delegate_model(Some("retribution")).unwrap(),
+            "openai-codex:codex-mini-latest"
+        );
+        assert_eq!(
+            runner.resolve_delegate_model(Some("victory")).unwrap(),
+            "openai-codex:gpt-5.4"
+        );
+        assert_eq!(
+            runner.resolve_delegate_model(Some("gloriana")).unwrap(),
+            "openai-codex:gpt-5.4"
+        );
     }
 
     #[tokio::test]

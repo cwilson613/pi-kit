@@ -1524,6 +1524,11 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
     let profile = settings::Profile::load(&cli.cwd);
     if let Ok(mut s) = shared_settings.lock() {
         profile.apply_to(&mut s);
+        // Headless/child runs must honor the explicit CLI model instead of
+        // silently inheriting a persisted profile model. Otherwise startup
+        // secret preflight can request the wrong credential class before the
+        // child even begins execution.
+        s.set_model(&cli.model);
         if cli.max_turns != 50 {
             s.max_turns = cli.max_turns;
         }

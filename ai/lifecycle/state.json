@@ -180,6 +180,51 @@
       "bound_change": null,
       "created_at": "2026-03-27T21:38:57Z",
       "updated_at": "2026-03-27T21:38:57Z"
+    },
+    {
+      "id": "rc1-provider-routing-verification",
+      "title": "RC1: provider routing verification closure",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-03-27T22:18:50Z",
+      "updated_at": "2026-03-27T22:18:50Z"
+    },
+    {
+      "id": "rc1-openai-routing-honesty",
+      "title": "RC1: OpenAI-family routing honesty landing",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-03-27T22:18:50Z",
+      "updated_at": "2026-03-27T22:18:50Z"
+    },
+    {
+      "id": "rc1-repo-backed-orchestration-proof",
+      "title": "RC1: repo-backed orchestration proof",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-03-27T22:18:50Z",
+      "updated_at": "2026-03-27T22:18:50Z"
     }
   ],
   "changes": [],
@@ -450,6 +495,60 @@
       "timestamp": "2026-03-27T21:38:57Z",
       "entity_type": "node",
       "entity_id": "structured-node-metadata",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
+    },
+    {
+      "timestamp": "2026-03-27T22:18:50Z",
+      "entity_type": "node",
+      "entity_id": "rc1-provider-routing-verification",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-03-27T22:18:50Z",
+      "entity_type": "node",
+      "entity_id": "rc1-provider-routing-verification",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
+    },
+    {
+      "timestamp": "2026-03-27T22:18:50Z",
+      "entity_type": "node",
+      "entity_id": "rc1-openai-routing-honesty",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-03-27T22:18:50Z",
+      "entity_type": "node",
+      "entity_id": "rc1-openai-routing-honesty",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
+    },
+    {
+      "timestamp": "2026-03-27T22:18:50Z",
+      "entity_type": "node",
+      "entity_id": "rc1-repo-backed-orchestration-proof",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-03-27T22:18:50Z",
+      "entity_type": "node",
+      "entity_id": "rc1-repo-backed-orchestration-proof",
       "from_state": "seed",
       "to_state": "exploring",
       "reason": "initial status on create",

@@ -483,12 +483,12 @@ impl AnthropicClient {
                         }
                     }
                 }
-                // Fallback: reconstruct from parsed fields (no signatures — works for
-                // providers that don't need them, or for decayed/compacted messages)
+                // Fallback: reconstruct from parsed fields. Thinking blocks are
+                // OMITTED because Anthropic requires a valid `signature` for
+                // round-tripping and we don't have one without the raw content.
+                // This happens after compaction or when switching from another provider.
                 let mut content = Vec::new();
-                for t in thinking {
-                    content.push(json!({"type": "thinking", "thinking": t}));
-                }
+                // thinking blocks intentionally skipped — no signature available
                 for t in text {
                     content.push(json!({"type": "text", "text": t}));
                 }

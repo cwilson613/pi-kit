@@ -58,11 +58,6 @@ impl ConvState {
         self.user_scrolled = false;
     }
 
-    /// Freeze follow-tail behavior without moving the viewport.
-    pub fn freeze_follow(&mut self) {
-        self.user_scrolled = true;
-    }
-
     /// Invalidate height cache — call when segments change.
     pub fn invalidate(&mut self) {
         self.cached_count = 0;

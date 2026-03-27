@@ -199,32 +199,13 @@ fn operator_event_queue_keeps_most_recent_entries() {
 }
 
 #[test]
-fn selection_mode_toggle_flips_mouse_capture_state() {
-    let mut app = test_app();
-    assert!(
-        app.mouse_capture_enabled,
-        "mouse capture should start enabled"
-    );
-
-    app.set_mouse_capture(false);
-    assert!(
-        !app.mouse_capture_enabled,
-        "selection mode should disable mouse capture"
-    );
-    assert!(
-        app.conversation.conv_state.user_scrolled,
-        "selection mode should freeze follow-tail"
-    );
-
-    app.set_mouse_capture(true);
-    assert!(
-        app.mouse_capture_enabled,
-        "exiting selection mode should re-enable mouse capture"
-    );
-    assert!(
-        !app.conversation.conv_state.user_scrolled,
-        "resuming live view should clear the frozen state"
-    );
+fn mouse_wheel_scroll_direction_latches_manual_scroll() {
+    let mut state = crate::tui::conv_widget::ConvState::new();
+    state.scroll_up(3);
+    assert!(state.user_scrolled, "scrolling away from bottom should latch manual scroll");
+    assert_eq!(state.scroll_offset, 3);
+    state.auto_scroll_to_bottom();
+    assert_eq!(state.scroll_offset, 3, "streaming should not pull the viewport back to bottom once manually scrolled");
 }
 
 #[test]

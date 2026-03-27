@@ -291,19 +291,9 @@ impl App {
         }
         self.mouse_capture_enabled = enabled;
         if enabled {
-            self.conversation.snap_to_bottom();
             let _ = io::stdout().execute(EnableMouseCapture);
-            self.show_toast(
-                "Selection mode off — live scrolling and mouse wheel restored",
-                ratatui_toaster::ToastType::Info,
-            );
         } else {
-            self.conversation.freeze_follow();
             let _ = io::stdout().execute(DisableMouseCapture);
-            self.show_toast(
-                "Selection mode on — conversation frozen for native terminal selection; press F6 to resume live view",
-                ratatui_toaster::ToastType::Info,
-            );
         }
     }
 
@@ -3680,9 +3670,6 @@ pub async fn run_tui(
         crossterm::terminal::ClearType::All,
     ))?;
     // Enable mouse capture for scroll-wheel support.
-    // This blocks native text selection. Operators can temporarily disable it
-    // in-session with F6, which also freezes follow-tail so streaming output
-    // does not scroll underneath terminal-native selection.
     io::stdout().execute(EnableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
 
@@ -3962,26 +3949,8 @@ pub async fn run_tui(
         if has_terminal_event {
             match event::read()? {
                 // ── Mouse scroll ────────────────────────────────────────
-                // macOS natural scrolling inverts at the OS level BEFORE
-                // the terminal sees it. crossterm's ScrollUp means "the OS
-                // sent scroll-up" which, with natural scrolling, means the
-                // user swiped fingers DOWN (wanting to see newer content).
-                // So: ScrollUp → scroll toward bottom, ScrollDown → scroll toward top.
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp if app.mouse_capture_enabled => {
-                        let over_dashboard = app.dashboard_area.is_some_and(|area| {
-                            mouse.column >= area.x
-                                && mouse.column < area.x + area.width
-                                && mouse.row >= area.y
-                                && mouse.row < area.y + area.height
-                        });
-                        if over_dashboard {
-                            app.dashboard.scroll_up(3);
-                        } else {
-                            app.conversation.scroll_up(3);
-                        }
-                    }
-                    MouseEventKind::ScrollDown if app.mouse_capture_enabled => {
                         let over_dashboard = app.dashboard_area.is_some_and(|area| {
                             mouse.column >= area.x
                                 && mouse.column < area.x + area.width
@@ -3992,6 +3961,19 @@ pub async fn run_tui(
                             app.dashboard.scroll_down(3);
                         } else {
                             app.conversation.scroll_down(3);
+                        }
+                    }
+                    MouseEventKind::ScrollDown if app.mouse_capture_enabled => {
+                        let over_dashboard = app.dashboard_area.is_some_and(|area| {
+                            mouse.column >= area.x
+                                && mouse.column < area.x + area.width
+                                && mouse.row >= area.y
+                                && mouse.row < area.y + area.height
+                        });
+                        if over_dashboard {
+                            app.dashboard.scroll_up(3);
+                        } else {
+                            app.conversation.scroll_up(3);
                         }
                     }
                     _ => {}
@@ -4342,13 +4324,6 @@ pub async fn run_tui(
                         // Ctrl+O: toggle pin/expand on nearest tool card
                         (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
                             app.conversation.toggle_pin();
-                        }
-
-                        // F6: toggle selection mode for native terminal text selection.
-                        // Ctrl+Shift+C is unreliable because many terminals intercept it
-                        // for copy, and Ctrl+C is already used for interrupt/quit.
-                        (KeyCode::F(6), _) => {
-                            app.set_mouse_capture(!app.mouse_capture_enabled);
                         }
 
                         // Ctrl+D: toggle sidebar navigation mode (design tree)

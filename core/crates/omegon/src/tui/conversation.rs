@@ -225,11 +225,6 @@ impl ConversationView {
         self.conv_state.force_scroll_to_bottom();
     }
 
-    /// Freeze the current viewport so streaming updates do not auto-scroll.
-    pub fn freeze_follow(&mut self) {
-        self.conv_state.freeze_follow();
-    }
-
     /// Toggle expansion state of a tool card at the given segment index.
     pub fn toggle_expand(&mut self, segment_idx: usize) {
         if let Some(seg) = self.segments.get_mut(segment_idx) {
@@ -433,15 +428,6 @@ mod tests {
         assert_eq!(cv.conv_state.scroll_offset, 0);
     }
 
-    #[test]
-    fn freeze_follow_preserves_viewport_during_streaming() {
-        let mut cv = ConversationView::new();
-        cv.append_streaming("hello");
-        cv.freeze_follow();
-        cv.append_streaming(" world");
-        assert!(cv.conv_state.user_scrolled, "freeze should disable follow-tail");
-        assert_eq!(cv.conv_state.scroll_offset, 0, "freeze should not move the viewport");
-    }
 
     #[test]
     fn segments_render_via_widget() {

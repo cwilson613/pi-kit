@@ -247,6 +247,7 @@ mod tests {
         status.thinking_level = "High".into();
         status.memory.total_facts = 1200;
         status.memory.active_facts = 900;
+        status.memory_available = true;
 
         // /status renders without ANSI (SlashResult::Display goes through ratatui)
         let output = render_bootstrap(&status, false);

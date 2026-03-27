@@ -1,10 +1,10 @@
 ---
 id: git-native-task-management
 title: "Git-native task management — extend design tree into a full in-repo issue/task system"
-status: exploring
+status: decided
 tags: [architecture, task-management, git, design-tree, workflow, strategic]
 open_questions: []
-jj_change_id: xvrlvxwxvttwnnmpmsxoqlosqqvulqrr
+jj_change_id: urroornuzoyklopmyzxtuytzwknnxtqp
 issue_type: epic
 priority: 2
 ---
@@ -414,6 +414,18 @@ A: **Not yet, but the architecture doesn't preclude it.** Since the design tree 
 ### Why this matters
 
 Most project management tools are SaaS platforms that own your data. The design tree is the opposite: it's files in your repo. The "project management app" is just a viewer/aggregator — the source of truth is always the git repo. You can switch from omegon-pm to reading markdown files in vim and lose nothing.
+
+### Conclusion
+
+The architectural direction is now settled:
+
+1. The design tree becomes the single task/project-management substrate rather than spawning a parallel issue system.
+2. The reusable core is extracted into `omegon-design`.
+3. Per-project omegon sessions consume that crate locally.
+4. A future multi-repo project-management app can consume the same crate for sovereign orchestration, likely alongside Forgejo.
+5. Implementation work should proceed in child nodes: crate extraction, task metadata/filtering/history, dashboard/board views, and multi-repo orchestration.
+
+This parent node is now chiefly an umbrella architecture/strategy decision, with execution delegated to its children.
 
 ## Decisions
 

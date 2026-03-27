@@ -58,3 +58,9 @@ Cross-cutting release-planning umbrella for the 0.15.4 RC series. This node does
 **Status:** decided
 
 **Rationale:** Today is Friday, 2026-03-27. A realistic first RC target is Friday, 2026-04-03 — one working week to land and verify the integrity-first slice without inventing false certainty. RC1 should aim to ship the narrowest release-worthy checkpoint of the 0.15.4 program: close out orchestratable-provider-model verification, land OpenAI-family provider identity/routing honesty, and prove realistic orchestrated execution against repo-backed tasks. Session secret preflight, diagnostics v1, and broader merge/release hardening remain part of the 0.15.4 release thesis but should not be forced into rc.1 if that would turn the first RC into another moving target.
+
+### Decision: 0.15.4-rc.1 exit criteria are verification closure, routing honesty, and repo-backed orchestration proof
+
+**Status:** decided
+
+**Rationale:** A date-only RC target is not enough. 0.15.4-rc.1 is ready to cut only when three concrete conditions hold: (1) `orchestratable-provider-model` has completed its verifying-stage proof with no known invalid default model/fallback path remaining in the rc.1 slice, (2) OpenAI-family auth/routing honesty is landed such that operator-visible surfaces distinguish OpenAI API from ChatGPT/Codex OAuth and report the concrete runtime provider/model truthfully, and (3) at least one realistic repo-backed orchestrated execution path (not a synthetic scratch probe) succeeds end-to-end and leaves child/provider state that matches what the operator sees. If any of these remain ambiguous, rc.1 should slip rather than ship a false trust checkpoint.

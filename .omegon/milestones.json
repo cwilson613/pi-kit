@@ -151,17 +151,23 @@
     "frozen": false,
     "opened": "2026-03-27T17:03:52Z",
     "released": null,
-    "rc_count": 1,
+    "rc_count": 2,
     "notes": [
+      "feat(release): add durable tag-link workflow",
       "feat(tui): add dim segment header timestamps",
+      "feat(tui): redesign inference panel around context composition",
+      "feat(tui): show live tool runtimes in footer",
+      "feat(tui): unify footer into engine inference and tools",
       "fix(ci): remove ghost publish workflow and repair tests",
       "fix(release): block detached-head linking and surface repo state",
+      "fix(release): make link-tag reuse existing tagged binaries",
       "fix(site): source changelog from release changelog",
+      "fix(tui): clear stale tool title suffixes on redraw",
       "fix(tui): preserve detached conversation viewport during streaming",
       "fix(tui): restore terminal copy and normalize pasted input",
       "fix(tui): truncate tool headers before timestamp collision"
     ],
-    "rc_version": "0.15.4-rc.2",
-    "last_rc": "2026-03-28T02:37:12Z"
+    "rc_version": "0.15.4-rc.3",
+    "last_rc": "2026-03-28T03:57:25Z"
   }
 }

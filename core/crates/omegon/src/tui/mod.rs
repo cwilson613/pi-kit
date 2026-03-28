@@ -281,7 +281,7 @@ impl App {
             update_rx: None,
             update_tx: None,
             keyboard_enhancement: false,
-            mouse_capture_enabled: true,
+            mouse_capture_enabled: false,
         }
     }
 
@@ -3670,8 +3670,10 @@ pub async fn run_tui(
     io::stdout().execute(crossterm::terminal::Clear(
         crossterm::terminal::ClearType::All,
     ))?;
-    // Enable mouse capture for scroll-wheel support.
-    io::stdout().execute(EnableMouseCapture)?;
+    // Leave mouse capture disabled by default so terminal-native text
+    // selection/copy works in the conversation pane. Keyboard scrolling
+    // remains available.
+    io::stdout().execute(DisableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
 
     // Enable Kitty keyboard protocol when the terminal supports it.
@@ -3989,7 +3991,7 @@ pub async fn run_tui(
                     } else if text.is_empty() {
                         app.try_paste_clipboard_image();
                     } else {
-                        app.editor.textarea.insert_str(text);
+                        app.editor.insert_paste(text);
                     }
                 }
                 // ── Ctrl+V: check for clipboard image ──────────
@@ -4360,7 +4362,6 @@ pub async fn run_tui(
                             if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
                         {
                             if !app.agent_active {
-                                app.conversation.snap_to_bottom();
                                 app.editor.insert_newline();
                             }
                         }
@@ -4426,11 +4427,9 @@ pub async fn run_tui(
                         // Basic editing — only insert if no Ctrl modifier
                         // (Ctrl+letter arms above handle those explicitly)
                         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) => {
-                            app.conversation.snap_to_bottom();
                             app.editor.insert(c);
                         }
                         (KeyCode::Backspace, _) => {
-                            app.conversation.snap_to_bottom();
                             app.editor.backspace();
                         }
                         (KeyCode::Left, KeyModifiers::ALT) => {

@@ -379,6 +379,13 @@ impl Editor {
         self.textarea.input(input)
     }
 
+    /// Insert pasted text with normalized line endings.
+    /// Terminals may deliver CRLF or bare CR; the editor should treat both as LF.
+    pub fn insert_paste(&mut self, text: &str) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        self.textarea.insert_str(&normalized);
+    }
+
     /// Insert a character directly (for compat with old API).
     pub fn insert(&mut self, c: char) {
         self.textarea.insert_char(c);
@@ -515,6 +522,13 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insert_paste_normalizes_crlf_and_cr() {
+        let mut e = Editor::new();
+        e.insert_paste("alpha\r\nbeta\rgamma\n");
+        assert_eq!(e.render_text(), "alpha\nbeta\ngamma\n");
+    }
 
     #[test]
     fn basic_insert_and_take() {

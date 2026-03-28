@@ -517,22 +517,13 @@ fn render_user_prompt(
         return;
     }
 
-    let content = vec![Line::from(vec![
-        Span::styled(
-            format!("{} ", presentation.sigil),
-            Style::default()
-                .fg(border_color)
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            text.to_string(),
-            Style::default()
-                .fg(t.fg())
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ])];
+    let content = vec![Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(t.fg())
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    ))];
     Paragraph::new(content)
         .wrap(Wrap { trim: false })
         .style(Style::default().bg(bg))
@@ -1424,6 +1415,8 @@ mod tests {
             text.contains("╭") || text.contains("╰") || text.contains("│"),
             "should render as a bordered card: {text}"
         );
+        let op_count = text.match_indices("OP").count();
+        assert!(op_count <= 1, "operator card should not duplicate the OP sigil in both title and body: {text}");
     }
 
     #[test]

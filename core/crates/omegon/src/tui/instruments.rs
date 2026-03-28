@@ -229,6 +229,7 @@ pub struct InstrumentPanel {
     thinking_level_pct: f64,
     thinking_active: bool,
     thinking_intensity: f64,
+    external_wait: f64,
     minds: Vec<MindState>,
     tools: Vec<ToolEntry>,
     pub focus_mode: bool,
@@ -245,6 +246,7 @@ impl Default for InstrumentPanel {
             thinking_level_pct: 0.0,
             thinking_active: false,
             thinking_intensity: 0.0,
+            external_wait: 0.0,
             minds: vec![
                 MindState::new("project", true),
                 MindState::new("working", false),
@@ -258,7 +260,76 @@ impl Default for InstrumentPanel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivityMode {
+    Idle,
+    Thinking,
+    ToolChurn,
+    Waiting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextBand {
+    Conversation,
+    System,
+    Memory,
+    Tools,
+    Thinking,
+    Free,
+}
+
 impl InstrumentPanel {
+    fn context_breakdown(&self) -> [(ContextBand, f64); 6] {
+        let total_used = self.context_fill.clamp(0.0, 1.0);
+        let system = 0.08_f64.min(total_used);
+        let memory = self.memory_fill.min((total_used - system).max(0.0));
+        let thinking = (self.thinking_level_pct * 0.12).min((total_used - system - memory).max(0.0));
+        let recent_tool_load = ((self.active_tool_load() * 0.10).min(0.10))
+            .min((total_used - system - memory - thinking).max(0.0));
+        let conversation =
+            (total_used - system - memory - thinking - recent_tool_load).max(0.0);
+        let free = (1.0 - total_used).max(0.0);
+        [
+            (ContextBand::Conversation, conversation),
+            (ContextBand::System, system),
+            (ContextBand::Memory, memory),
+            (ContextBand::Tools, recent_tool_load),
+            (ContextBand::Thinking, thinking),
+            (ContextBand::Free, free),
+        ]
+    }
+
+    fn active_tool_load(&self) -> f64 {
+        self.tools
+            .iter()
+            .map(|tool| (1.0 - ((self.time - tool.last_called).max(0.0) / 4.0)).clamp(0.0, 1.0))
+            .fold(0.0_f64, f64::max)
+    }
+
+    fn activity_mode(&self) -> ActivityMode {
+        let tool_load = self.active_tool_load();
+        if self.external_wait > 0.05 {
+            ActivityMode::Waiting
+        } else if self.thinking_active && self.thinking_level_pct > 0.0 {
+            ActivityMode::Thinking
+        } else if tool_load > 0.05 {
+            ActivityMode::ToolChurn
+        } else {
+            ActivityMode::Idle
+        }
+    }
+
+    fn band_color(band: ContextBand) -> Color {
+        match band {
+            ContextBand::Conversation => Color::Rgb(70, 126, 160),
+            ContextBand::System => Color::Rgb(104, 96, 148),
+            ContextBand::Memory => Color::Rgb(58, 176, 156),
+            ContextBand::Tools => Color::Rgb(214, 156, 74),
+            ContextBand::Thinking => Color::Rgb(132, 110, 212),
+            ContextBand::Free => Color::Rgb(16, 24, 34),
+        }
+    }
+
     /// Update mind fact counts and memory context fraction.
     pub fn update_mind_facts(
         &mut self,
@@ -307,9 +378,9 @@ impl InstrumentPanel {
             _ => 0.0,
         };
 
-        // Thinking: only active during inference
-        self.thinking_active = agent_active;
-        let target = if agent_active {
+        // Thinking: active only during inference when a thinking budget is configured.
+        self.thinking_active = agent_active && self.thinking_level_pct > 0.0;
+        let target = if self.thinking_active {
             match thinking_level {
                 "high" => 0.85,
                 "medium" => 0.6,
@@ -321,6 +392,12 @@ impl InstrumentPanel {
             0.0
         };
         self.thinking_intensity += (target - self.thinking_intensity) * dt * 3.0;
+
+        self.external_wait = if agent_active && !self.thinking_active {
+            (self.external_wait + dt * 1.8).clamp(0.0, 1.0)
+        } else {
+            (self.external_wait - dt * 1.2).clamp(0.0, 1.0)
+        };
 
         // Tool: register call
         if tool_name.is_some() {
@@ -453,121 +530,95 @@ impl InstrumentPanel {
             return;
         }
 
-        // Waveform character pairs (top_row, bottom_row) indexed by amplitude 0–7.
-        // Each column is a vertical spike — low amplitude = thin bottom bar,
-        // high amplitude = tall spike filling both rows.
-        const WAVE: [(char, char); 8] = [
-            ('·', '·'), // 0 — empty
-            (' ', '▁'), // 1 — whisper
-            (' ', '▃'), // 2 — low
-            (' ', '▅'), // 3 — medium-low
-            (' ', '█'), // 4 — medium
-            ('▂', '█'), // 5 — medium-high
-            ('▅', '█'), // 6 — high
-            ('█', '█'), // 7 — full
-        ];
+        let breakdown = self.context_breakdown();
+        let activity = self.activity_mode();
+        let t = self.time;
 
-        // Segment fractions (clamped so they can’t exceed total context_fill).
-        let mem_frac = self.memory_fill.min(self.context_fill);
-        // Thinking reservation: level setting × ~12% of window (rough overhead budget)
-        let think_frac =
-            (self.thinking_level_pct * 0.12).min((self.context_fill - mem_frac).max(0.0));
-        let used_frac = (self.context_fill - mem_frac - think_frac).max(0.0);
-
-        let active = self.thinking_active;
-        // Oscillation speed: slow when idle, a touch faster during inference
-        let t = self.time * if active { 0.7 } else { 0.25 };
-        let think_scan_x = if think_frac > 0.0 {
-            ((mem_frac + think_frac * 0.5 + (t.sin() * 0.35) * think_frac) * w as f64)
-                .round() as isize
-        } else {
-            -1
-        };
+        let mut spans: Vec<(ContextBand, usize, usize)> = Vec::new();
+        let mut cursor = 0usize;
+        for (idx, (band, frac)) in breakdown.iter().enumerate() {
+            let mut width = if idx == breakdown.len() - 1 {
+                w.saturating_sub(cursor)
+            } else {
+                ((*frac * w as f64).round() as usize).min(w.saturating_sub(cursor))
+            };
+            if *frac > 0.0 && width == 0 && cursor < w {
+                width = 1;
+            }
+            let end = (cursor + width).min(w);
+            spans.push((*band, cursor, end));
+            cursor = end;
+        }
+        if let Some((_, _, end)) = spans.last_mut() {
+            *end = w;
+        }
 
         for x in 0..w {
-            let pos = x as f64 / w as f64;
-            let mem_end = mem_frac;
-            let think_end = mem_frac + think_frac;
-            let in_memory_band = pos < mem_end;
-            let in_thinking_band = pos >= mem_end && pos < think_end;
-            let in_used_band = pos >= think_end && pos < think_end + used_frac;
-
-            // Which segment?
-            let (amp, color): (usize, Color) = if in_memory_band {
-                // Memory-injected context — navy, gentle ripple amplitude 2–4
-                let osc = (x as f64 * 0.7 + t).sin() * 0.9;
-                let a = (3.0 + osc).clamp(2.0, 4.0) as usize;
-                let r = (20.0 + 30.0 * (pos / mem_frac.max(0.001))) as u8;
-                (a, Color::Rgb(r, (r as f64 * 1.5) as u8, 140))
-            } else if in_thinking_band {
-                // Thinking reservation — explicit reserved band, calmer than the prior glitch overlay
-                let rel = (pos - mem_frac) / think_frac.max(0.001);
-                let arch = (rel * std::f64::consts::PI).sin();
-                let a = (3.0 + arch * 2.0).clamp(3.0, 5.0) as usize;
-                (a, Color::Rgb(42, 180, 200))
-            } else if in_used_band {
-                // Context used — gradient teal → orange
-                let rel = (pos - mem_frac - think_frac) / used_frac.max(0.001);
-                let osc = (x as f64 * 0.25 + t * 0.6).sin() * 0.4;
-                let density = rel;
-                let a = (2.0 + density * 4.0 + osc).clamp(1.0, 6.0) as usize;
-                let rr = (42.0 + 198.0 * rel) as u8;
-                let gg = (180.0 - 80.0 * rel) as u8;
-                let bb = (200.0 - 160.0 * rel) as u8;
-                (a, Color::Rgb(rr, gg, bb))
+            let (band, start, end) = spans
+                .iter()
+                .copied()
+                .find(|(_, start, end)| x >= *start && x < *end)
+                .unwrap_or((ContextBand::Free, x, x + 1));
+            let color = Self::band_color(band);
+            let rel = if end > start {
+                (x - start) as f64 / (end - start).max(1) as f64
             } else {
-                // Empty region — near-black dim dots
-                (0, Color::Rgb(12, 22, 32))
+                0.0
+            };
+            let center_rel = ((rel - 0.5).abs() * 2.0).min(1.0);
+
+            let (mut top_ch, mut bottom_ch, mut fg) = match band {
+                ContextBand::Conversation => (' ', '█', color),
+                ContextBand::System => (' ', '■', color),
+                ContextBand::Memory => (' ', '▓', color),
+                ContextBand::Tools => (' ', '▆', color),
+                ContextBand::Thinking => (' ', '▒', color),
+                ContextBand::Free => ('·', '·', color),
             };
 
-            let amp = amp.min(7);
-            let (top_ch, bot_ch) = WAVE[amp];
-            let dim_color = match color {
-                Color::Rgb(r, g, b) => Color::Rgb((r / 3).max(8), (g / 3).max(8), (b / 3).max(8)),
-                other => other,
-            };
+            match activity {
+                ActivityMode::Thinking if band == ContextBand::Thinking => {
+                    let phase = (t * 3.0) + (1.0 - center_rel) * 1.8;
+                    let pulse = ((phase.sin() + 1.0) * 0.5 * self.thinking_intensity.max(0.15))
+                        .clamp(0.0, 1.0);
+                    let glyphs = ['░', '▒', '▓', '█'];
+                    let idx = (pulse * (glyphs.len() as f64 - 1.0)).round() as usize;
+                    bottom_ch = glyphs[idx.min(glyphs.len() - 1)];
+                    top_ch = if pulse > 0.72 && center_rel < 0.72 { '▄' } else { ' ' };
+                    fg = if pulse > 0.72 {
+                        Color::Rgb(198, 178, 255)
+                    } else {
+                        color
+                    };
+                }
+                ActivityMode::ToolChurn if band == ContextBand::Tools => {
+                    let pulse = (((t * 10.0) + x as f64 * 0.9).sin() + 1.0) * 0.5;
+                    bottom_ch = if pulse > 0.75 { '█' } else if pulse > 0.4 { '▆' } else { '▄' };
+                    top_ch = if pulse > 0.8 { '▂' } else { ' ' };
+                    fg = if pulse > 0.75 { Color::Rgb(255, 196, 96) } else { color };
+                }
+                ActivityMode::Waiting if band == ContextBand::Tools => {
+                    let pulse = (((t * 2.2) + x as f64 * 0.1).sin() + 1.0) * 0.5;
+                    bottom_ch = if pulse > 0.6 { '▅' } else { '▃' };
+                    fg = if pulse > 0.6 { Color::Rgb(232, 186, 104) } else { color };
+                }
+                ActivityMode::Idle if band == ContextBand::Free => {
+                    top_ch = '·';
+                    bottom_ch = '·';
+                }
+                _ => {}
+            }
 
+            let divider = spans.iter().any(|(_, _, end)| *end == x && x < w.saturating_sub(1));
             for row in 0..area.height.min(2) {
-                let is_memory_divider = row < 2
-                    && mem_end > 0.0
-                    && (((mem_end * w as f64).round() as isize - x as isize).abs() <= 0);
-                let is_thinking_divider = row < 2
-                    && think_frac > 0.0
-                    && (((think_end * w as f64).round() as isize - x as isize).abs() <= 0);
-                let (mut ch, mut fg) = if row == 0 {
-                    if top_ch == '·' {
-                        ('·', dim_color)
-                    } else {
-                        (top_ch, color)
-                    }
-                } else {
-                    if bot_ch == '·' {
-                        ('·', dim_color)
-                    } else {
-                        (bot_ch, color)
-                    }
-                };
-
-                if is_memory_divider || is_thinking_divider {
-                    let phase = ((t * 2.0) as usize + row as usize) % 4;
-                    ch = match phase {
-                        0 | 2 => '╎',
-                        _ => '┆',
-                    };
-                    fg = if is_thinking_divider {
-                        Color::Rgb(240, 140, 70)
-                    } else {
-                        Color::Rgb(42, 180, 200)
-                    };
-                } else if active && in_thinking_band && (x as isize - think_scan_x).abs() <= 1 && ch != '·' {
-                    ch = if row == 0 { '╻' } else { '┃' };
-                    fg = Color::Rgb(255, 205, 110);
-                } else if active && in_used_band && row == 0 && ch != '·' {
-                    fg = Color::Rgb(110, 220, 230);
+                let (mut ch, mut row_fg) = if row == 0 { (top_ch, fg) } else { (bottom_ch, fg) };
+                if divider {
+                    ch = if row == 0 { '╷' } else { '│' };
+                    row_fg = Color::Rgb(34, 54, 72);
                 }
                 if let Some(cell) = buf.cell_mut(Position::new(area.x + x as u16, area.y + row)) {
                     cell.set_char(ch);
-                    cell.set_fg(fg);
+                    cell.set_fg(row_fg);
                     cell.set_bg(bg_color());
                 }
             }
@@ -969,5 +1020,35 @@ mod tests {
         assert_eq!(panel.minds[2].fact_count, 2);
         assert!(panel.minds[2].active, "episodes mind should activate when populated");
         assert!(panel.memory_fill <= 0.12, "memory fill stays conservatively capped");
+    }
+
+    #[test]
+    fn context_breakdown_stays_normalized_and_ordered() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(18, 3, 2, 0.08);
+        panel.update_telemetry(62.0, Some("read"), false, "medium", None, true, 0.016);
+        let breakdown = panel.context_breakdown();
+        let total: f64 = breakdown.iter().map(|(_, frac)| frac).sum();
+        assert!((total - 1.0).abs() < 0.0001, "breakdown should sum to 1.0, got {total}");
+        assert_eq!(breakdown[0].0, ContextBand::Conversation);
+        assert_eq!(breakdown[1].0, ContextBand::System);
+        assert_eq!(breakdown[2].0, ContextBand::Memory);
+        assert_eq!(breakdown[3].0, ContextBand::Tools);
+        assert_eq!(breakdown[4].0, ContextBand::Thinking);
+        assert_eq!(breakdown[5].0, ContextBand::Free);
+    }
+
+    #[test]
+    fn thinking_activity_mode_beats_tool_churn() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_telemetry(40.0, Some("bash"), false, "high", None, true, 0.016);
+        assert_eq!(panel.activity_mode(), ActivityMode::Thinking);
+    }
+
+    #[test]
+    fn waiting_activity_mode_appears_without_thinking_budget() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_telemetry(40.0, None, false, "off", None, true, 0.5);
+        assert_eq!(panel.activity_mode(), ActivityMode::Waiting);
     }
 }

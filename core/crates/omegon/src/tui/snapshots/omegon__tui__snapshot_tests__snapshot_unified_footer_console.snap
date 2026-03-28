@@ -4,14 +4,14 @@ assertion_line: 323
 expression: render_to_string(&terminal)
 ---
   engine                              ╭ inference ───────────────────────────────╮╭ tools ─────────────────────────────╮
-  ⚡  Ollama (Local) · Maniple 68%/262 │           ╷  ╷    ╷   ╷    ╷·············││▸ ▫ recall       220ms≋≋≋≋≋≋≋≋≋≋≋≋≋≋│
-  qwen3 ·  ○ api key · ⚙ Systems Engi │███████████│■■│▓▓▓▓│▆▆▆│░░░░│·············││✗ ⊕ search       8.1s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
-  68% / 262k                          ├─ project ⌗24⠊⠉⠉⠉⠒⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠒⠒⠢⠤⣀││  ⌘ sh           1.2s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
-  ⌂ /Users/cwilson/workspace…/omegon  ├─ working ⌗8 ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤││                                    │
-  Victory · ◎ High · ◆ native         └─ episodes ⌗4⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤││                                    │
-  T·8 · ⚙ 23 · ↻ 2                    │                                          ││                                    │
-  v0.15.4-rc.5 → v0.15.4              │                                          ││                                    │
-                                      │                                          ││                                    │
-                                      │                                          ││                                    │
+  provider ⚡  Ollama (Local)          │           ╷  ╷    ╷   ╷    ╷·············││▸ ▫ recall       220ms≋≋≋≋≋≋≋≋≋≋≋≋≋≋│
+  model   qwen3                       │███████████│■■│▓▓▓▓│▆▆▆│░░░░│·············││✗ ⊕ search       8.1s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
+  auth    ○ api key                   ├─ project ⌗24⠊⠉⠉⠉⠒⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠒⠒⠢⠤⣀││  ⌘ sh           1.2s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
+  persona ⚙ Systems Engineer          ├─ working ⌗8 ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤││                                    │
+  context Maniple 68% / 262k          └─ episodes ⌗4⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤││                                    │
+  path    ~/workspace/black-…/omegon  │                                          ││                                    │
+  mode    Victory · ◎ High · ◆ native │                                          ││                                    │
+  session T·8 · ⚙ 23 · ↻ 2            │                                          ││                                    │
+  version v0.15.4-rc.5 → v0.15.4      │                                          ││                                    │
                                       │                                          ││  3/3 active                        │
                                       ╰──────────────────────────────────────────╯╰────────────────────────────────────╯

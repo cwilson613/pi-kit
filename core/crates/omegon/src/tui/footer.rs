@@ -149,8 +149,27 @@ impl FooterData {
         };
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let label_width = 7usize;
 
-        // Line 1: header
+        let push_row = |lines: &mut Vec<Line<'static>>,
+                        label: &str,
+                        value: String,
+                        label_color: Color,
+                        value_color: Color,
+                        value_bold: bool| {
+            let mut value_style = Style::default().fg(value_color);
+            if value_bold {
+                value_style = value_style.add_modifier(Modifier::BOLD);
+            }
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {:<width$} ", label, width = label_width),
+                    Style::default().fg(label_color),
+                ),
+                Span::styled(value, value_style),
+            ]));
+        };
+
         lines.push(Line::from(Span::styled(
             " engine",
             Style::default()
@@ -159,196 +178,109 @@ impl FooterData {
         )));
 
         if !self.provider_connected {
-            // No provider — show clear disconnected state
-            lines.push(Line::from(vec![
-                Span::styled(" ⚠ ", Style::default().fg(t.warning())),
-                Span::styled(
-                    "no provider",
-                    Style::default()
-                        .fg(t.warning())
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            lines.push(Line::from(vec![Span::styled(
-                "   /login to connect",
-                Style::default().fg(t.muted()),
-            )]));
+            push_row(
+                &mut lines,
+                "status",
+                "⚠ no provider".to_string(),
+                t.border_dim(),
+                t.warning(),
+                true,
+            );
+            push_row(
+                &mut lines,
+                "action",
+                "/login to connect".to_string(),
+                t.border_dim(),
+                t.muted(),
+                false,
+            );
         } else {
             let model_short = short_model(&self.model_id);
             let provider_label = crate::auth::provider_by_id(&self.model_provider)
                 .map(|p| p.display_name)
                 .unwrap_or(self.model_provider.as_str());
-            let source_icon = if self.model_provider == "ollama" {
-                "⚡"
+            let provider_text = if self.model_provider == "ollama" {
+                format!("⚡ {provider_label}")
             } else {
-                "☁"
+                format!("☁ {provider_label}")
             };
-            let auth_icon = if self.is_oauth { "●" } else { "○" };
-            let auth_color = if self.is_oauth {
-                t.success()
+            let auth_text = if self.is_oauth {
+                "● subscription".to_string()
             } else {
-                t.muted()
+                "○ api key".to_string()
             };
-            let ctx_class_color = match self.context_class {
-                ContextClass::Legion => t.accent(),
-                ContextClass::Clan => t.fg(),
-                _ => t.dim(),
-            };
-
-            // Line 2: model + class
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {source_icon} "),
-                    Style::default().fg(if self.model_provider == "ollama" {
-                        t.accent()
-                    } else {
-                        t.dim()
-                    }),
-                ),
-                Span::styled(
-                    provider_label.to_string(),
-                    Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" · ", Style::default().fg(t.border_dim())),
-                Span::styled(
+            let persona_text = self
+                .harness
+                .active_persona
+                .as_ref()
+                .map(|p| format!("{} {}", p.badge, p.name))
+                .unwrap_or_else(|| "—".to_string());
+            let context_text = if self.context_window > 0 {
+                format!(
+                    "{} {:.0}% / {}",
                     self.context_class.short(),
-                    Style::default().fg(ctx_class_color),
-                ),
-                Span::styled(
-                    format!(" {:.0}%", self.context_percent.min(100.0)),
-                    Style::default().fg(widgets::percent_color(self.context_percent, t)),
-                ),
-                Span::styled(
-                    if self.context_window > 0 {
-                        format!("/{}", widgets::format_tokens(self.context_window))
-                    } else {
-                        String::new()
-                    },
-                    Style::default().fg(t.border_dim()),
-                ),
-            ]));
+                    self.context_percent.min(100.0),
+                    widgets::format_tokens(self.context_window)
+                )
+            } else {
+                format!("{} {:.0}%", self.context_class.short(), self.context_percent.min(100.0))
+            };
+            let tier_text = format!(
+                "{} · ◎ {} · {} {}",
+                capitalize(&self.model_tier),
+                capitalize(&self.thinking_level),
+                self.context_mode.icon(),
+                self.context_mode.as_str()
+            );
+            let session_text = format!("T·{} · ⚙ {} · ↻ {}", self.turn, self.tool_calls, self.compactions);
+            let next_ver = env!("OMEGON_NEXT_VERSION");
+            let version_text = format!("v{} → v{next_ver}", env!("CARGO_PKG_VERSION"));
 
-            // Line 3: model + auth + persona
-            let mut auth_parts: Vec<Span<'static>> = vec![
-                Span::styled(
-                    format!(" {}", model_short),
-                    Style::default().fg(t.muted()).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" · ", Style::default().fg(t.border_dim())),
-                Span::styled(format!(" {auth_icon} "), Style::default().fg(auth_color)),
-                Span::styled(
-                    if self.is_oauth {
-                        "subscription"
-                    } else {
-                        "api key"
-                    },
-                    Style::default().fg(t.muted()),
-                ),
-            ];
-            if let Some(ref p) = self.harness.active_persona {
-                auth_parts.push(Span::styled(" · ", Style::default().fg(t.border_dim())));
-                auth_parts.push(Span::styled(
-                    format!("{} {}", p.badge, p.name),
-                    Style::default().fg(t.accent()),
-                ));
-            }
-            lines.push(Line::from(auth_parts));
+            push_row(&mut lines, "provider", provider_text, t.border_dim(), t.fg(), true);
+            push_row(
+                &mut lines,
+                "model",
+                model_short.to_string(),
+                t.border_dim(),
+                t.muted(),
+                true,
+            );
+            push_row(&mut lines, "auth", auth_text, t.border_dim(), t.muted(), false);
+            push_row(&mut lines, "persona", persona_text, t.border_dim(), t.accent(), false);
+            push_row(
+                &mut lines,
+                "context",
+                context_text,
+                t.border_dim(),
+                widgets::percent_color(self.context_percent.min(100.0), t),
+                false,
+            );
 
-            // Line 4: context summary (gauge is in the inference panel)
-            let pct = self.context_percent.min(100.0) as u32;
-            let ctx_color = widgets::percent_color(self.context_percent.min(100.0), t);
-            let mut ctx_parts: Vec<Span<'static>> = vec![Span::styled(
-                format!(" {}%", pct),
-                Style::default().fg(ctx_color),
-            )];
-            if self.context_window > 0 {
-                ctx_parts.push(Span::styled(
-                    format!(" / {}", widgets::format_tokens(self.context_window)),
-                    Style::default().fg(t.dim()),
-                ));
-            }
-            lines.push(Line::from(ctx_parts));
-
-            // Line 5: working directory
             if !self.cwd.is_empty() {
-                let cwd_display = shorten_cwd(&self.cwd, inner.width.saturating_sub(4) as usize);
-                lines.push(Line::from(vec![
-                    Span::styled(" ⌂ ", Style::default().fg(t.border_dim())),
-                    Span::styled(cwd_display, Style::default().fg(t.dim())),
-                ]));
+                let cwd_display = shorten_cwd(&self.cwd, inner.width.saturating_sub(label_width as u16 + 3) as usize);
+                push_row(&mut lines, "path", cwd_display, t.border_dim(), t.dim(), false);
             }
 
-            // Line 5: tier + thinking level
             let tier_color = match self.model_tier.as_str() {
                 "gloriana" => t.accent(),
                 "victory" => t.fg(),
                 "retribution" => t.dim(),
                 _ => t.muted(),
             };
-            let think_color = match self.thinking_level.as_str() {
-                "high" => t.accent(),
-                "medium" => t.accent_muted(),
-                "low" => t.muted(),
-                _ => t.dim(),
-            };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {}", capitalize(&self.model_tier)),
-                    Style::default().fg(tier_color),
-                ),
-                Span::styled(" · ", Style::default().fg(t.border_dim())),
-                Span::styled(
-                    format!("◎ {}", capitalize(&self.thinking_level)),
-                    Style::default().fg(think_color),
-                ),
-                Span::styled(" · ", Style::default().fg(t.border_dim())),
-                Span::styled(
-                    format!(
-                        "{} {}",
-                        self.context_mode.icon(),
-                        self.context_mode.as_str()
-                    ),
-                    Style::default().fg(t.dim()),
-                ),
-            ]));
+            push_row(&mut lines, "mode", tier_text, t.border_dim(), tier_color, false);
+            push_row(&mut lines, "session", session_text, t.border_dim(), t.muted(), false);
+            push_row(&mut lines, "version", version_text, t.border_dim(), t.accent(), false);
 
-            // Line 6: session counters (always visible, even at 0)
-            lines.push(Line::from(vec![
-                Span::styled(format!(" T·{}", self.turn), Style::default().fg(t.muted())),
-                Span::styled(" · ", Style::default().fg(t.border_dim())),
-                Span::styled(
-                    format!("⚙ {}", self.tool_calls),
-                    Style::default().fg(t.muted()),
-                ),
-                Span::styled(" · ", Style::default().fg(t.border_dim())),
-                Span::styled(
-                    format!("↻ {}", self.compactions),
-                    Style::default().fg(t.dim()),
-                ),
-            ]));
-
-            // Line 7: next milestone version (baked in at build time from CARGO_PKG_VERSION)
-            let next_ver = env!("OMEGON_NEXT_VERSION");
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" v{} ", env!("CARGO_PKG_VERSION")),
-                    Style::default().fg(t.dim()),
-                ),
-                Span::styled("→", Style::default().fg(t.accent_muted())),
-                Span::styled(format!(" v{next_ver}"), Style::default().fg(t.accent())),
-            ]));
-
-            // Line 8+: inline operator event queue (replaces top-right toasts)
             for event in self.operator_events.iter().take(2) {
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!(" {} ", event.icon),
+                        format!(" {:<width$} ", event.icon, width = label_width),
                         Style::default().fg(event.color),
                     ),
                     Span::styled(event.message.clone(), Style::default().fg(event.color)),
                 ]));
             }
-        } // close else (provider_connected)
+        }
 
         let widget = Paragraph::new(lines).style(Style::default().bg(bg));
         frame.render_widget(widget, inner);
@@ -803,15 +735,22 @@ fn shorten_cwd(cwd: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
-    if cwd.chars().count() <= max_chars {
-        return cwd.to_string();
+
+    let home_compacted = std::env::var("HOME")
+        .ok()
+        .filter(|home| cwd == home || cwd.starts_with(&format!("{home}/")))
+        .map(|home| cwd.replacen(&home, "~", 1))
+        .unwrap_or_else(|| cwd.to_string());
+
+    if home_compacted.chars().count() <= max_chars {
+        return home_compacted;
     }
 
-    let path = std::path::Path::new(cwd);
+    let path = std::path::Path::new(&home_compacted);
     let file_name = path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(cwd);
+        .unwrap_or(home_compacted.as_str());
 
     if file_name.chars().count() + 2 >= max_chars {
         let tail: String = file_name
@@ -826,7 +765,7 @@ fn shorten_cwd(cwd: &str, max_chars: usize) -> String {
     }
 
     let keep = max_chars.saturating_sub(file_name.chars().count() + 2);
-    let prefix: String = cwd.chars().take(keep).collect();
+    let prefix: String = home_compacted.chars().take(keep).collect();
     format!("{prefix}…/{file_name}")
 }
 
@@ -935,5 +874,13 @@ mod tests {
         let data = FooterData::default();
         assert!(data.model_id.is_empty());
         assert_eq!(data.context_percent, 0.0);
+    }
+
+    #[test]
+    fn shorten_cwd_replaces_home_with_tilde() {
+        let home = std::env::var("HOME").unwrap();
+        let path = format!("{home}/workspace/black-meridian/omegon");
+        let shortened = shorten_cwd(&path, 128);
+        assert!(shortened.starts_with("~/"), "expected ~ prefix: {shortened}");
     }
 }

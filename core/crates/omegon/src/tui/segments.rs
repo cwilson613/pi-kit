@@ -42,7 +42,7 @@ fn syntax_cache() -> &'static SyntaxCache {
 #[derive(Debug, Clone, Default)]
 pub struct SegmentMeta {
     /// Wall-clock time this segment was created.
-    pub timestamp: Option<std::time::Instant>,
+    pub timestamp: Option<std::time::SystemTime>,
     /// Provider that generated this content (e.g. "anthropic", "ollama").
     pub provider: Option<String>,
     /// Model ID at generation time (e.g. "claude-sonnet-4-20250514").
@@ -308,7 +308,7 @@ impl Segment {
         use SegmentContent::*;
         let presentation = self.presentation();
         match &self.content {
-            UserPrompt { text } => render_user_prompt(text, &presentation, area, buf, t),
+            UserPrompt { text } => render_user_prompt(text, &presentation, &self.meta, area, buf, t),
             AssistantText {
                 text,
                 thinking,
@@ -341,6 +341,7 @@ impl Segment {
                     *is_error,
                     *complete,
                     *expanded,
+                    &self.meta,
                     area,
                     buf,
                     t,
@@ -476,6 +477,7 @@ fn wrapped_rows(text: &str, width: u16) -> u16 {
 fn render_user_prompt(
     text: &str,
     presentation: &SegmentPresentation,
+    meta: &SegmentMeta,
     area: Rect,
     buf: &mut Buffer,
     t: &dyn Theme,
@@ -494,6 +496,18 @@ fn render_user_prompt(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color).bg(bg))
+        .title_top(Line::from(Span::styled(
+            format!(" {}", presentation.sigil),
+            Style::default()
+                .fg(border_color)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .title_top(
+            top_right_timestamp(meta, t)
+                .unwrap_or_else(Line::default)
+                .right_aligned(),
+        )
         .padding(Padding::horizontal(1))
         .style(Style::default().bg(bg));
     let inner = block.inner(area);
@@ -551,6 +565,21 @@ fn build_meta_tag(meta: &SegmentMeta) -> String {
     parts.join(" · ")
 }
 
+fn format_timestamp(timestamp: Option<std::time::SystemTime>) -> Option<String> {
+    let timestamp = timestamp?;
+    let datetime: chrono::DateTime<chrono::Local> = timestamp.into();
+    Some(datetime.format("%H:%M").to_string())
+}
+
+fn top_right_timestamp<'a>(meta: &SegmentMeta, t: &dyn Theme) -> Option<Line<'a>> {
+    format_timestamp(meta.timestamp).map(|stamp| {
+        Line::from(Span::styled(
+            stamp,
+            Style::default().fg(t.dim()).add_modifier(Modifier::DIM),
+        ))
+    })
+}
+
 fn render_assistant_text(
     text: &str,
     thinking: &str,
@@ -575,6 +604,11 @@ fn render_assistant_text(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color).bg(bg))
+        .title_top(
+            top_right_timestamp(meta, t)
+                .unwrap_or_else(Line::default)
+                .right_aligned(),
+        )
         .padding(Padding::horizontal(1))
         .style(Style::default().bg(bg));
     let inner = block.inner(area);
@@ -704,6 +738,7 @@ fn render_tool_card(
     is_error: bool,
     complete: bool,
     expanded: bool,
+    meta: &SegmentMeta,
     area: Rect,
     buf: &mut Buffer,
     t: &dyn Theme,
@@ -821,7 +856,12 @@ fn render_tool_card(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color).bg(bg))
-        .title(title)
+        .title_top(title)
+        .title_top(
+            top_right_timestamp(meta, t)
+                .unwrap_or_else(Line::default)
+                .right_aligned(),
+        )
         .padding(Padding::horizontal(1))
         .style(Style::default().bg(bg));
 
@@ -1410,6 +1450,18 @@ mod tests {
             text.contains("╭") || text.contains("╰") || text.contains("│"),
             "assistant response should now render as a card: {text}"
         );
+    }
+
+    #[test]
+    fn header_timestamp_formats_as_clock_time() {
+        let formatted = format_timestamp(Some(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(13 * 3600 + 5 * 60),
+        ))
+        .expect("timestamp should format");
+        assert_eq!(formatted.len(), 5);
+        assert_eq!(&formatted[2..3], ":");
+        assert!(formatted.chars().take(2).all(|c| c.is_ascii_digit()));
+        assert!(formatted.chars().skip(3).all(|c| c.is_ascii_digit()));
     }
 
     #[test]

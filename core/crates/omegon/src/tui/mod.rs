@@ -209,7 +209,7 @@ impl App {
     /// Snapshot current model/provider state into a SegmentMeta.
     fn current_meta(&self) -> segments::SegmentMeta {
         segments::SegmentMeta {
-            timestamp: Some(std::time::Instant::now()),
+            timestamp: Some(std::time::SystemTime::now()),
             provider: Some(self.footer_data.model_provider.clone()),
             model_id: Some(self.footer_data.model_id.clone()),
             tier: Some(self.footer_data.model_tier.clone()),

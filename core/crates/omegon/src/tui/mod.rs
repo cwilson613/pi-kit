@@ -351,24 +351,53 @@ impl App {
 
     fn open_model_selector(&mut self) {
         let current = self.settings().model.clone();
-        let options = build_model_selector_options(
-            &current,
-            crate::providers::resolve_api_key_sync("anthropic"),
-            crate::providers::resolve_api_key_sync("openai"),
-            crate::providers::resolve_api_key_sync("openai-codex"),
-        );
-
+        
+        // Build selector options from the unified model catalog
+        let catalog = self::model_catalog::ModelCatalog::new();
+        let mut options: Vec<selector::SelectOption> = Vec::new();
+        
+        // Group models by provider for visual organization
+        for (provider_name, models) in &catalog.providers {
+            for model in models {
+                // Format: "Provider: Model Name — description (context, cost tier, capabilities)"
+                let context = model.context_str();
+                let caps = if model.capabilities.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", model.capability_str())
+                };
+                let label = format!(
+                    "{}: {}",
+                    provider_name,
+                    model.name
+                );
+                let description = format!(
+                    "{} — {} • {}{}",
+                    model.description,
+                    context,
+                    model.cost_tier.as_str(),
+                    caps
+                );
+                
+                options.push(selector::SelectOption {
+                    value: model.id.clone(),
+                    label,
+                    description,
+                    active: model.id == current,
+                });
+            }
+        }
+        
         if options.is_empty() {
             self.conversation.push_system(
-                "No providers authenticated.\n\
-                 Run: omegon auth login anthropic     (Claude subscription)\n\
-                 Run: omegon auth login openai-codex  (ChatGPT/Codex OAuth)\n\
-                 Run: omegon auth login openai        (OpenAI API key)\n\
-                 Or:  export ANTHROPIC_API_KEY=...",
+                "Model catalog is empty. Check /model list for available options.",
             );
             return;
         }
-
+        
+        // Sort by provider, then by name for consistency
+        options.sort_by(|a, b| a.label.cmp(&b.label));
+        
         self.selector = Some(selector::Selector::new("Select Model", options));
         self.selector_kind = Some(SelectorKind::Model);
     }

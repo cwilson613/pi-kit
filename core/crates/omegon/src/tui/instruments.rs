@@ -314,19 +314,14 @@ impl InstrumentPanel {
         inference_height.max(tools_height).clamp(10, 16)
     }
 
-    fn band_moniker(band: ContextBand) -> char {
-        match band {
-            ContextBand::Conversation => 'C',
-            ContextBand::System => 'S',
-            ContextBand::Memory => 'M',
-            ContextBand::Tools => 'T',
-            ContextBand::Thinking => 'H',
-            ContextBand::Free => 'F',
-        }
-    }
-
-    fn context_legend() -> &'static str {
-        "C conv  S sys  M mem  T tools  H think"
+    fn context_legend_entries() -> [(&'static str, &'static str, Color); 5] {
+        [
+            ("◌", "conv", Self::band_color(ContextBand::Conversation)),
+            ("✉", "sys", Self::band_color(ContextBand::System)),
+            ("◈", "mem", Self::band_color(ContextBand::Memory)),
+            ("⚒", "tools", Self::band_color(ContextBand::Tools)),
+            ("◔", "think", Self::band_color(ContextBand::Thinking)),
+        ]
     }
 
     pub fn render_inference_panel(&self, area: Rect, frame: &mut Frame, t: &dyn Theme) {
@@ -473,11 +468,11 @@ impl InstrumentPanel {
 
     fn band_color(band: ContextBand) -> Color {
         match band {
-            ContextBand::Conversation => Color::Rgb(70, 126, 160),
-            ContextBand::System => Color::Rgb(104, 96, 148),
-            ContextBand::Memory => Color::Rgb(58, 176, 156),
+            ContextBand::Conversation => Color::Rgb(232, 236, 242),
+            ContextBand::System => Color::Rgb(88, 182, 116),
+            ContextBand::Memory => Color::Rgb(148, 108, 212),
             ContextBand::Tools => Color::Rgb(214, 156, 74),
-            ContextBand::Thinking => Color::Rgb(132, 110, 212),
+            ContextBand::Thinking => Color::Rgb(70, 126, 214),
             ContextBand::Free => Color::Rgb(16, 24, 34),
         }
     }
@@ -647,20 +642,28 @@ impl InstrumentPanel {
 
         if inner.height > bar_h {
             clear_row(inner.y + bar_h, inner.x, inner.right(), buf, panel_bg(t));
-            let legend = crate::util::truncate(Self::context_legend(), inner.width as usize);
-            for (i, ch) in legend.chars().enumerate() {
-                if let Some(cell) = buf.cell_mut(Position::new(inner.x + i as u16, inner.y + bar_h)) {
-                    cell.set_char(ch);
-                    let fg = match ch {
-                        'C' => Self::band_color(ContextBand::Conversation),
-                        'S' => Self::band_color(ContextBand::System),
-                        'M' => Self::band_color(ContextBand::Memory),
-                        'T' => Self::band_color(ContextBand::Tools),
-                        'H' => Self::band_color(ContextBand::Thinking),
-                        _ => t.dim(),
-                    };
-                    cell.set_fg(fg);
-                    cell.set_bg(panel_bg(t));
+            let mut x = inner.x;
+            for (idx, (icon, label_text, color)) in Self::context_legend_entries().into_iter().enumerate() {
+                let entry = if idx == 0 {
+                    format!("{icon} {label_text}")
+                } else {
+                    format!("  {icon} {label_text}")
+                };
+                for (i, ch) in entry.chars().enumerate() {
+                    let draw_x = x + i as u16;
+                    if draw_x >= inner.right() {
+                        break;
+                    }
+                    if let Some(cell) = buf.cell_mut(Position::new(draw_x, inner.y + bar_h)) {
+                        cell.set_char(ch);
+                        let fg = if icon.contains(ch) { color } else { t.dim() };
+                        cell.set_fg(fg);
+                        cell.set_bg(panel_bg(t));
+                    }
+                }
+                x = x.saturating_add(entry.chars().count() as u16);
+                if x >= inner.right() {
+                    break;
                 }
             }
         }

@@ -164,11 +164,14 @@ pub fn infer_provider_id(model_spec: &str) -> String {
     if lower.contains('/') {
         return "openrouter".to_string();
     }
+    // Common open-source models typically run on Ollama
     if lower.starts_with("qwen")
         || lower.starts_with("llama")
         || lower.starts_with("devstral")
         || lower.starts_with("nemotron")
         || lower.starts_with("mistral")
+        || lower.starts_with("dolphin")
+        || lower.starts_with("neural")
     {
         return "ollama".to_string();
     }

@@ -1003,13 +1003,15 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     events_tx.clone(),
                     agent.web_auth_state.clone(),
                 );
-                let token = web_state.web_auth.issue_query_token();
                 match web::start_server(web_state, 7842).await {
-                    Ok((addr, web_cmd_rx)) => {
-                        let url = format!("http://{addr}/?token={token}");
+                    Ok((startup, web_cmd_rx)) => {
+                        let url = format!("http://{}/?token={}", startup.addr, startup.token);
                         tui::open_browser(&url);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
-                            message: format!("Dashboard started at {url}"),
+                            message: format!(
+                                "Dashboard started at {url} (auth: {} via {})",
+                                startup.auth_mode, startup.auth_source
+                            ),
                         });
                         // Spawn a task to forward web commands into the main TUI command channel
                         let cmd_tx_clone = web_command_tx.clone();

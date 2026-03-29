@@ -19,7 +19,15 @@ use axum::Router;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::tui::dashboard::DashboardHandles;
-pub use auth::{WEB_AUTH_SECRET_NAME, WebAuthSource, WebAuthState, resolve_web_auth_state};
+pub use auth::{resolve_web_auth_state, WebAuthState};
+
+#[derive(Debug, Clone)]
+pub struct WebStartupInfo {
+    pub addr: SocketAddr,
+    pub token: String,
+    pub auth_mode: String,
+    pub auth_source: String,
+}
 
 /// Shared state accessible to all web handlers.
 #[derive(Clone)]
@@ -75,13 +83,14 @@ pub enum WebCommand {
 pub async fn start_server(
     mut state: WebState,
     preferred_port: u16,
-) -> anyhow::Result<(SocketAddr, mpsc::Receiver<WebCommand>)> {
+) -> anyhow::Result<(WebStartupInfo, mpsc::Receiver<WebCommand>)> {
     // Create the command channel — caller gets the receiver
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     state.command_tx = cmd_tx;
 
     let token = state.web_auth.issue_query_token();
     let auth_mode = state.web_auth.mode_name();
+    let auth_source = state.web_auth.source_name().to_string();
 
     let app = Router::new()
         .route("/api/state", axum::routing::get(api::get_state))
@@ -104,10 +113,19 @@ pub async fn start_server(
     let listener = bind_with_fallback(preferred_port).await?;
     let bound = listener.local_addr()?;
 
+    let startup = WebStartupInfo {
+        addr: bound,
+        token,
+        auth_mode: auth_mode.to_string(),
+        auth_source,
+    };
+
     tracing::debug!(
-        port = bound.port(),
-        auth_mode,
-        "web dashboard at http://{bound}/?token={token}"
+        port = startup.addr.port(),
+        auth_mode = startup.auth_mode,
+        auth_source = startup.auth_source,
+        "web dashboard at http://{}/?token={}"
+        ,startup.addr, startup.token
     );
 
     tokio::spawn(async move {
@@ -116,7 +134,7 @@ pub async fn start_server(
         }
     });
 
-    Ok((bound, cmd_rx))
+    Ok((startup, cmd_rx))
 }
 
 /// Serve the embedded dashboard HTML.
@@ -177,6 +195,25 @@ mod tests {
 
         assert!(!token.is_empty());
         assert!(state.web_auth.verify_query_token(Some(&token)));
+    }
+
+    #[test]
+    fn startup_info_carries_auth_metadata() {
+        let state = WebState::with_auth_state(
+            DashboardHandles::default(),
+            tokio::sync::broadcast::channel(16).0,
+            WebAuthState::ephemeral_generated("token-123".into()),
+        );
+        let startup = WebStartupInfo {
+            addr: ([127, 0, 0, 1], 7842).into(),
+            token: state.web_auth.issue_query_token(),
+            auth_mode: state.web_auth.mode_name().into(),
+            auth_source: state.web_auth.source_name().into(),
+        };
+
+        assert_eq!(startup.token, "token-123");
+        assert_eq!(startup.auth_mode, "ephemeral-bearer");
+        assert_eq!(startup.auth_source, "generated");
     }
 
     #[test]

@@ -448,24 +448,37 @@ impl InstrumentPanel {
     /// Update mind fact counts and memory context fraction.
     pub fn update_mind_facts(
         &mut self,
-        total_facts: usize,
+        project_facts: usize,
         working_memory: usize,
         episodes: usize,
         memory_fill: f64,
     ) {
-        if !self.minds.is_empty() {
-            self.minds[0].fact_count = total_facts;
-            self.minds[0].active = true;
-        }
-        if self.minds.len() > 1 {
-            self.minds[1].fact_count = working_memory;
-            self.minds[1].active = working_memory > 0;
-        }
-        if self.minds.len() > 2 {
-            self.minds[2].fact_count = episodes;
-            self.minds[2].active = episodes > 0;
-        }
+        self.update_mind_slot(0, project_facts, true);
+        self.update_mind_slot(1, working_memory, working_memory > 0);
+        self.update_mind_slot(2, episodes, episodes > 0);
         self.memory_fill = memory_fill.clamp(0.0, 0.12);
+    }
+
+    fn update_mind_slot(&mut self, idx: usize, fact_count: usize, active: bool) {
+        if idx >= self.minds.len() {
+            return;
+        }
+        let mind = &mut self.minds[idx];
+        let previous = mind.fact_count;
+        mind.fact_count = fact_count;
+        mind.active = active;
+        if !mind.active {
+            return;
+        }
+        if previous == 0 && fact_count > 0 {
+            mind.wave = vec![0.0; 80];
+            mind.velocity = vec![0.0; 80];
+            mind.pluck(WaveDirection::Right);
+        } else if fact_count > previous {
+            mind.pluck(WaveDirection::Right);
+        } else if fact_count < previous {
+            mind.pluck(WaveDirection::Left);
+        }
     }
 
     /// Update telemetry from harness state.
@@ -1233,5 +1246,37 @@ mod tests {
         let mut panel = InstrumentPanel::default();
         panel.update_telemetry(40.0, None, false, "off", None, true, 0.5);
         assert_eq!(panel.activity_mode(), ActivityMode::Waiting);
+    }
+
+    #[test]
+    fn fact_count_changes_pluck_project_wave() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(10, 0, 0, 0.02);
+        for _ in 0..4 {
+            panel.update_telemetry(0.0, None, false, "off", None, false, 0.016);
+        }
+        let baseline = panel.minds[0].max_amplitude();
+        panel.update_mind_facts(11, 0, 0, 0.02);
+        for _ in 0..4 {
+            panel.update_telemetry(0.0, None, false, "off", None, false, 0.016);
+        }
+        let after = panel.minds[0].max_amplitude();
+        assert!(after > baseline, "fact count increase should excite the project wave");
+    }
+
+    #[test]
+    fn update_mind_facts_uses_project_bucket_for_project_row() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(180, 12, 6, 0.04);
+        assert_eq!(panel.minds[0].fact_count, 180);
+        assert_eq!(panel.minds[1].fact_count, 12);
+        assert_eq!(panel.minds[2].fact_count, 6);
+    }
+}
+
+impl InstrumentPanel {
+    #[cfg(test)]
+    pub fn debug_mind_fact_count(&self, idx: usize) -> Option<usize> {
+        self.minds.get(idx).map(|mind| mind.fact_count)
     }
 }

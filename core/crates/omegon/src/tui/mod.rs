@@ -1523,7 +1523,7 @@ impl App {
                 0.0
             };
             self.instrument_panel.update_mind_facts(
-                self.footer_data.total_facts,
+                self.footer_data.harness.memory.project_facts,
                 self.footer_data.working_memory,
                 self.footer_data.harness.memory.episodes,
                 memory_fill,
@@ -4695,11 +4695,9 @@ pub async fn run_tui(
                             } else if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
                                 // Multiline: move cursor up within editor
                                 app.editor.move_up();
-                            } else {
-                                // With the composer focused, plain Up recalls prior submitted
-                                // prompts into the input panel. Conversation scrolling remains
-                                // explicit on Shift+Up/PageUp, so recall and viewport movement
-                                // do not share the same key path.
+                            } else if app.editor.is_empty() || app.history_idx.is_some() {
+                                // History recall is explicit: only from an empty composer, or
+                                // while already walking recalled entries.
                                 app.history_up();
                             }
                         }

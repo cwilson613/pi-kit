@@ -359,6 +359,7 @@ impl Editor {
         if !text.is_empty() {
             self.textarea.insert_str(text);
         }
+        self.scroll_row = 0;
     }
 
     /// Get current text for display/inspection.

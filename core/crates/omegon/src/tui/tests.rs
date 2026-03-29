@@ -402,6 +402,22 @@ fn history_up_walks_back_multiple_entries_after_recall_starts() {
 }
 
 #[test]
+fn non_empty_editor_up_does_not_start_history_recall() {
+    let mut app = test_app();
+    app.history = vec!["first".into(), "second".into()];
+    app.editor.set_text("draft");
+
+    if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
+        app.editor.move_up();
+    } else if app.editor.is_empty() || app.history_idx.is_some() {
+        app.history_up();
+    }
+
+    assert_eq!(app.editor.render_text(), "draft");
+    assert_eq!(app.history_idx, None);
+}
+
+#[test]
 fn history_down_clears_editor_after_latest_entry() {
     let mut app = test_app();
     app.history = vec!["first".into(), "second".into()];
@@ -422,6 +438,24 @@ fn multiline_up_uses_editor_navigation_before_history_recall() {
     app.editor.move_up();
     assert_eq!(app.history_idx, None, "moving within multiline text should not start history recall");
     assert_eq!(app.editor.render_text(), "top\nbottom");
+}
+
+#[test]
+fn recalled_history_can_continue_walking_with_up() {
+    let mut app = test_app();
+    app.history = vec!["first".into(), "second".into(), "third".into()];
+
+    app.history_up();
+    assert_eq!(app.editor.render_text(), "third");
+
+    if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
+        app.editor.move_up();
+    } else if app.editor.is_empty() || app.history_idx.is_some() {
+        app.history_up();
+    }
+
+    assert_eq!(app.editor.render_text(), "second");
+    assert_eq!(app.history_idx, Some(1));
 }
 
 #[test]
@@ -875,6 +909,15 @@ fn harness_status_changed_updates_footer() {
     assert_eq!(app.footer_data.harness.context_class, "Clan");
     assert_eq!(app.footer_data.total_facts, 18);
     assert_eq!(app.footer_data.working_memory, 4);
+    app.instrument_panel.update_mind_facts(
+        app.footer_data.harness.memory.project_facts,
+        app.footer_data.working_memory,
+        app.footer_data.harness.memory.episodes,
+        0.08,
+    );
+    assert_eq!(app.instrument_panel.debug_mind_fact_count(0), Some(18));
+    assert_eq!(app.instrument_panel.debug_mind_fact_count(1), Some(4));
+    assert_eq!(app.instrument_panel.debug_mind_fact_count(2), Some(2));
 }
 
 #[test]

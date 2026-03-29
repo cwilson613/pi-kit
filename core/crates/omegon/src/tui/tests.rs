@@ -547,9 +547,10 @@ fn ctrl_up_walks_back_multiple_entries_after_recall_starts() {
 }
 
 #[test]
-fn bare_up_does_not_start_history_recall_from_empty_editor() {
+fn bare_up_does_not_start_history_recall_from_empty_editor_in_mouse_mode() {
     let mut app = test_app();
     app.history = vec!["first".into(), "second".into()];
+    app.terminal_copy_mode = false;
 
     if matches!(app.pane_focus, PaneFocus::Conversation) {
         app.conversation.scroll_up(3);
@@ -559,10 +560,34 @@ fn bare_up_does_not_start_history_recall_from_empty_editor() {
         app.conversation.scroll_up(3);
     } else if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
         app.editor.move_up();
+    } else if app.should_use_arrow_history_recall() {
+        app.history_recall_up();
     }
 
     assert_eq!(app.editor.render_text(), "");
     assert_eq!(app.history_idx, None);
+}
+
+#[test]
+fn bare_up_recalls_history_from_empty_editor_in_terminal_copy_mode() {
+    let mut app = test_app();
+    app.history = vec!["first".into(), "second".into(), "third".into()];
+    app.terminal_copy_mode = true;
+
+    if matches!(app.pane_focus, PaneFocus::Conversation) {
+        app.conversation.scroll_up(3);
+    } else if matches!(app.pane_focus, PaneFocus::Dashboard) {
+        app.dashboard.scroll_up(3);
+    } else if app.agent_active {
+        app.conversation.scroll_up(3);
+    } else if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
+        app.editor.move_up();
+    } else if app.should_use_arrow_history_recall() {
+        app.history_recall_up();
+    }
+
+    assert_eq!(app.editor.render_text(), "third");
+    assert_eq!(app.history_idx, Some(2));
 }
 
 #[test]
@@ -584,6 +609,32 @@ fn ctrl_down_clears_editor_after_latest_entry() {
 
     app.history_recall_up();
     app.history_recall_down();
+    assert_eq!(app.editor.render_text(), "");
+    assert_eq!(app.history_idx, None);
+}
+
+#[test]
+fn bare_down_advances_history_in_terminal_copy_mode() {
+    let mut app = test_app();
+    app.history = vec!["first".into(), "second".into()];
+    app.terminal_copy_mode = true;
+
+    app.history_recall_up();
+
+    if matches!(app.pane_focus, PaneFocus::Conversation) {
+        app.conversation.scroll_down(3);
+    } else if matches!(app.pane_focus, PaneFocus::Dashboard) {
+        app.dashboard.scroll_down(3);
+    } else if app.agent_active {
+        app.conversation.scroll_down(3);
+    } else if app.editor.line_count() > 1
+        && app.editor.cursor_row() < app.editor.line_count() - 1
+    {
+        app.editor.move_down();
+    } else if app.should_use_arrow_history_recall() {
+        app.history_recall_down();
+    }
+
     assert_eq!(app.editor.render_text(), "");
     assert_eq!(app.history_idx, None);
 }

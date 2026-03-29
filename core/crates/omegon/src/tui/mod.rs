@@ -3087,6 +3087,10 @@ impl App {
         }
     }
 
+    fn should_use_arrow_history_recall(&self) -> bool {
+        self.terminal_copy_mode
+    }
+
     fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::TurnStart { turn } => {
@@ -4723,6 +4727,8 @@ pub async fn run_tui(
                             } else if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
                                 // Multiline: move cursor up within editor
                                 app.editor.move_up();
+                            } else if app.should_use_arrow_history_recall() {
+                                app.history_recall_up();
                             }
                         }
                         (KeyCode::Down, _) => {
@@ -4737,6 +4743,8 @@ pub async fn run_tui(
                             {
                                 // Multiline: move cursor down within editor
                                 app.editor.move_down();
+                            } else if app.should_use_arrow_history_recall() {
+                                app.history_recall_down();
                             }
                         }
                         _ => {}

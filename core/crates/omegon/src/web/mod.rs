@@ -107,14 +107,14 @@ pub enum WebCommand {
 /// Start the embedded web server. Returns the bound address and a receiver
 /// for web commands that should be processed by the main agent loop.
 pub async fn start_server(
-    mut state: WebState,
+    state: WebState,
     preferred_port: u16,
 ) -> anyhow::Result<(WebStartupInfo, mpsc::Receiver<WebCommand>)> {
     start_server_with_options(state, preferred_port, false).await
 }
 
 pub async fn start_server_with_options(
-    state: WebState,
+    mut state: WebState,
     preferred_port: u16,
     strict_port: bool,
 ) -> anyhow::Result<(WebStartupInfo, mpsc::Receiver<WebCommand>)> {

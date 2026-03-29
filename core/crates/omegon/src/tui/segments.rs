@@ -227,6 +227,67 @@ impl Segment {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Segment {
+    pub fn plain_text(&self) -> String {
+        match &self.content {
+            SegmentContent::UserPrompt { text } => text.clone(),
+            SegmentContent::AssistantText { text, thinking, .. } => {
+                if thinking.trim().is_empty() {
+                    text.clone()
+                } else if text.trim().is_empty() {
+                    format!("[thinking]\n{}", thinking.trim_end())
+                } else {
+                    format!(
+                        "[thinking]\n{}\n\n[text]\n{}",
+                        thinking.trim_end(),
+                        text.trim_end()
+                    )
+                }
+            }
+            SegmentContent::ToolCard {
+                name,
+                detail_args,
+                detail_result,
+                is_error,
+                complete,
+                ..
+            } => {
+                let mut lines = vec![format!("tool: {name}")];
+                if !complete {
+                    lines.push("status: running".to_string());
+                } else if *is_error {
+                    lines.push("status: error".to_string());
+                } else {
+                    lines.push("status: complete".to_string());
+                }
+                if let Some(args) = detail_args.as_deref()
+                    && !args.trim().is_empty()
+                {
+                    lines.push(String::new());
+                    lines.push("args:".to_string());
+                    lines.push(args.trim_end().to_string());
+                }
+                if let Some(result) = detail_result.as_deref()
+                    && !result.trim().is_empty()
+                {
+                    lines.push(String::new());
+                    lines.push("result:".to_string());
+                    lines.push(result.trim_end().to_string());
+                }
+                lines.join("\n")
+            }
+            SegmentContent::SystemNotification { text } => text.clone(),
+            SegmentContent::LifecycleEvent { icon, text } => format!("{icon} {text}"),
+            SegmentContent::Image { path, alt } => {
+                let mut lines = vec![format!("image: {}", path.display())];
+                if !alt.trim().is_empty() {
+                    lines.push(format!("alt: {alt}"));
+                }
+                lines.join("\n")
+            }
+            SegmentContent::TurnSeparator => "───".to_string(),
+        }
+    }
+
     fn tool_visual_kind(&self) -> Option<ToolVisualKind> {
         match &self.content {
             SegmentContent::ToolCard { name, .. } => Some(match name.as_str() {

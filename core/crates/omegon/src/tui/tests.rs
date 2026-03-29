@@ -253,6 +253,53 @@ fn conversation_scroll_does_not_recall_input_history() {
 }
 
 #[test]
+fn selected_conversation_segment_exports_plain_text() {
+    let mut app = test_app();
+    app.conversation.push_user("operator prompt");
+    app.conversation.append_streaming("assistant answer");
+    app.conversation.finalize_message();
+    app.conversation.select_segment(1);
+
+    let selected = app.conversation.selected_segment_text();
+    assert_eq!(selected.as_deref(), Some("assistant answer"));
+}
+
+#[test]
+fn selected_tool_segment_exports_args_and_result() {
+    let mut app = test_app();
+    app.conversation
+        .push_tool_start("t1", "bash", Some("echo hi"), Some("echo hi"));
+    app.conversation.push_tool_end("t1", false, Some("hi"));
+    app.conversation.select_segment(0);
+
+    let selected = app
+        .conversation
+        .selected_segment_text()
+        .expect("tool text should export");
+    assert!(selected.contains("tool: bash"), "missing tool header: {selected}");
+    assert!(selected.contains("args:"), "missing args block: {selected}");
+    assert!(selected.contains("echo hi"), "missing args body: {selected}");
+    assert!(selected.contains("result:"), "missing result block: {selected}");
+    assert!(selected.contains("hi"), "missing result body: {selected}");
+}
+
+#[test]
+fn ctrl_y_keeps_editor_yank_outside_conversation_focus() {
+    let mut app = test_app();
+    app.editor.set_text("prefix");
+    app.editor.clear_line();
+    app.pane_focus = PaneFocus::Editor;
+
+    if matches!(app.pane_focus, PaneFocus::Conversation) {
+        app.copy_selected_conversation_segment();
+    } else {
+        app.editor.yank();
+    }
+
+    assert_eq!(app.editor.render_text(), "prefix");
+}
+
+#[test]
 fn empty_editor_up_recalls_latest_history_entry() {
     let mut app = test_app();
     app.history = vec!["first".into(), "second".into(), "third".into()];

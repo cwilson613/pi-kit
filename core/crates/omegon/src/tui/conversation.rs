@@ -312,6 +312,23 @@ impl ConversationView {
         }
     }
 
+    pub fn selected_or_focused_segment(&self) -> Option<usize> {
+        self.selected_segment.or_else(|| {
+            self.segments
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, seg)| !matches!(seg.content, SegmentContent::TurnSeparator))
+                .map(|(idx, _)| idx)
+        })
+    }
+
+    pub fn selected_segment_text(&self) -> Option<String> {
+        self.selected_or_focused_segment()
+            .and_then(|idx| self.segments.get(idx))
+            .map(Segment::plain_text)
+    }
+
     pub fn segment_at(&self, viewport: ratatui::prelude::Rect, row: u16) -> Option<usize> {
         let heights = &self.conv_state.heights;
         if heights.len() != self.segments.len() || row < viewport.y || row >= viewport.bottom() {

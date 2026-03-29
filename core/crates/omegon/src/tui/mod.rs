@@ -1792,6 +1792,87 @@ impl App {
         // for a normal text paste that crossterm handles separately.
     }
 
+    fn copy_text_to_clipboard(&self, text: &str) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            use std::io::Write;
+            let mut child = match std::process::Command::new("pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(_) => return false,
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_err() {
+                    let _ = child.wait();
+                    return false;
+                }
+            } else {
+                let _ = child.wait();
+                return false;
+            }
+            child.wait().is_ok_and(|status| status.success())
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::io::Write;
+            let commands: &[(&str, &[&str])] = if std::env::var("WAYLAND_DISPLAY").is_ok() {
+                &[("wl-copy", &[])]
+            } else {
+                &[("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])]
+            };
+            for (cmd, args) in commands {
+                let mut child = match std::process::Command::new(cmd)
+                    .args(*args)
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(_) => continue,
+                };
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(text.as_bytes()).is_err() {
+                        let _ = child.wait();
+                        continue;
+                    }
+                } else {
+                    let _ = child.wait();
+                    continue;
+                }
+                if child.wait().is_ok_and(|status| status.success()) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = text;
+            false
+        }
+    }
+
+    fn copy_selected_conversation_segment(&mut self) {
+        let Some(text) = self.conversation.selected_segment_text() else {
+            self.show_toast("Nothing selected to copy", ratatui_toaster::ToastType::Warning);
+            return;
+        };
+        if self.copy_text_to_clipboard(&text) {
+            self.show_toast(
+                "Copied selected conversation segment",
+                ratatui_toaster::ToastType::Success,
+            );
+        } else {
+            self.show_toast(
+                "Clipboard unavailable — select text in your terminal or install pbcopy/wl-copy/xclip",
+                ratatui_toaster::ToastType::Warning,
+            );
+        }
+    }
+
     fn show_toast(&mut self, message: &str, toast_type: ratatui_toaster::ToastType) {
         let (icon, color) = match toast_type {
             ratatui_toaster::ToastType::Error => ("✖", self.theme.error()),
@@ -4375,7 +4456,11 @@ pub async fn run_tui(
                             app.editor.kill_to_end();
                         }
                         (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                            app.editor.yank();
+                            if matches!(app.pane_focus, PaneFocus::Conversation) {
+                                app.copy_selected_conversation_segment();
+                            } else {
+                                app.editor.yank();
+                            }
                         }
                         (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
                             app.editor.move_home();

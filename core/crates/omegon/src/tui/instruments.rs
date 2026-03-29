@@ -22,6 +22,28 @@ fn panel_bg(t: &dyn Theme) -> Color {
     t.footer_bg()
 }
 
+fn clear_area(area: Rect, buf: &mut Buffer, bg: Color) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+                cell.set_char(' ');
+                cell.set_fg(bg);
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+fn clear_row(y: u16, x0: u16, x1: u16, buf: &mut Buffer, bg: Color) {
+    for x in x0..x1 {
+        if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+            cell.set_char(' ');
+            cell.set_fg(bg);
+            cell.set_bg(bg);
+        }
+    }
+}
+
 /// Scale an RGB color's brightness.
 fn dim_color(c: Color, factor: f64) -> Color {
     if let Color::Rgb(r, g, b) = c {
@@ -589,6 +611,7 @@ impl InstrumentPanel {
         }
 
         let buf = frame.buffer_mut();
+        clear_area(inner, buf, panel_bg(t));
         let active_minds: Vec<usize> = self
             .minds
             .iter()
@@ -731,6 +754,7 @@ impl InstrumentPanel {
             if y >= area.bottom() {
                 break;
             }
+            clear_row(y, area.x, area.right(), buf, panel_bg(t));
             let mind = &self.minds[mind_idx];
             let is_last = row_idx == n - 1;
 
@@ -857,6 +881,7 @@ impl InstrumentPanel {
         }
 
         let buf = frame.buffer_mut();
+        clear_area(inner, buf, panel_bg(t));
         let w = inner.width as usize;
         let duration_w = 6usize.min(w.saturating_sub(8)).max(4);
         let name_w = 14.min(w.saturating_sub(duration_w + 6)).max(7);
@@ -1124,6 +1149,51 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let t = crate::tui::theme::Alpharius;
         terminal.draw(|f| panel.render(area, f, &t)).unwrap();
+    }
+
+    #[test]
+    fn render_clears_dirty_inference_and_tool_rows() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(18, 3, 2, 0.08);
+        panel.tool_started("read");
+        panel.tool_finished("read", false);
+        let area = Rect::new(0, 0, 96, 12);
+        let backend = ratatui::backend::TestBackend::new(96, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let t = crate::tui::theme::Alpharius;
+
+        terminal
+            .draw(|f| {
+                let buf = f.buffer_mut();
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+                            cell.set_char('X');
+                            cell.set_fg(Color::Red);
+                            cell.set_bg(Color::Red);
+                        }
+                    }
+                }
+                panel.render(area, f, &t);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let footer_bg = panel_bg(&t);
+        let residual = (0..buf.area.height)
+            .flat_map(|dy| (0..buf.area.width).map(move |dx| (dx, dy)))
+            .filter_map(|(dx, dy)| {
+                let x = buf.area.x + dx;
+                let y = buf.area.y + dy;
+                let cell = buf.cell(Position::new(x, y))?;
+                (cell.symbol() == "X" && cell.bg == footer_bg).then_some((x, y))
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            residual.is_empty(),
+            "instrument panel should clear dirty cells it owns, residual: {residual:?}"
+        );
     }
 
     #[test]

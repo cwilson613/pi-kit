@@ -37,6 +37,13 @@ build:
 link:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Same jj→git normalization as 'rc' — keeps HEAD attached after harness commits.
+    if command -v jj &>/dev/null 2>&1 && [ -d ".jj" ]; then
+        jj git export 2>/dev/null || true
+        if [ -z "$(git branch --show-current 2>/dev/null)" ]; then
+            git checkout main 2>/dev/null || true
+        fi
+    fi
     if ! git symbolic-ref -q HEAD >/dev/null 2>&1 && [ "${OMEGON_ALLOW_DETACHED_LINK:-0}" != "1" ]; then
         echo "✗ Detached HEAD. Refusing to link from an unattached commit."
         echo "  Check out main (or set OMEGON_ALLOW_DETACHED_LINK=1 for an intentional tagged/worktree build)."
@@ -176,6 +183,16 @@ run *args:
 rc:
     #!/usr/bin/env bash
     set -euo pipefail
+
+    # In a colocated jj+git repo the 'commit' harness tool uses jj, which leaves
+    # git HEAD detached (pointing at jj's empty working-copy commit rather than the
+    # main branch).  Auto-sync and reattach so the guards below always see clean state.
+    if command -v jj &>/dev/null 2>&1 && [ -d ".jj" ]; then
+        jj git export 2>/dev/null || true
+        if [ -z "$(git branch --show-current 2>/dev/null)" ]; then
+            git checkout main 2>/dev/null || true
+        fi
+    fi
 
     # Refuse detached HEAD or non-main release cuts.
     BRANCH=$(git branch --show-current)

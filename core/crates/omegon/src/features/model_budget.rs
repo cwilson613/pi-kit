@@ -71,9 +71,9 @@ impl ModelTier {
             (Self::Gloriana, "anthropic") => "claude-opus",
             (Self::Victory, "anthropic") => "claude-sonnet",
             (Self::Retribution, "anthropic") => "claude-haiku",
-            (Self::Gloriana, "openai") => "o3",
+            (Self::Gloriana, "openai") => "gpt-5.4",
             (Self::Victory, "openai") => "gpt-5",
-            (Self::Retribution, "openai") => "gpt-4.1-mini",
+            (Self::Retribution, "openai") => "gpt-5-mini",
             (Self::Gloriana, "openai-codex") => "gpt-5",
             (Self::Victory, "openai-codex") => "gpt-5",
             (Self::Retribution, "openai-codex") => "codex-mini",
@@ -101,10 +101,10 @@ impl ModelTier {
         match (self, provider) {
             (Self::Gloriana, "anthropic") => "claude-opus-4-6",
             (Self::Victory, "anthropic") => "claude-sonnet-4-6",
-            (Self::Retribution, "anthropic") => "claude-haiku-4-5",
-            (Self::Gloriana, "openai") => "o3",
-            (Self::Victory, "openai") => "gpt-5.4",
-            (Self::Retribution, "openai") => "gpt-4.1-mini",
+            (Self::Retribution, "anthropic") => "claude-haiku-4-5-20251001",
+            (Self::Gloriana, "openai") => "gpt-5.4",
+            (Self::Victory, "openai") => "gpt-5",
+            (Self::Retribution, "openai") => "gpt-5-mini",
             (Self::Gloriana, "openai-codex") => "gpt-5.4",
             (Self::Victory, "openai-codex") => "gpt-5.4",
             (Self::Retribution, "openai-codex") => "codex-mini-latest",
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn tier_resolve_openai() {
-        assert_eq!(ModelTier::Gloriana.resolve_model("openai", ""), "o3");
+        assert_eq!(ModelTier::Gloriana.resolve_model("openai", ""), "gpt-5.4");
         assert!(
             ModelTier::Victory
                 .resolve_model("openai", "")

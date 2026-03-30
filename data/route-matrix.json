@@ -1,5 +1,5 @@
 {
-  "lastReviewed": "2026-03-20",
+  "lastReviewed": "2026-03-30",
   "version": 1,
   "routes": [
     {
@@ -25,6 +25,48 @@
       "modelIdPattern": "claude-haiku-*",
       "contextCeiling": 200000,
       "tier": "retribution",
+      "breakpointZones": []
+    },
+    {
+      "provider": "openai",
+      "modelIdPattern": "gpt-5",
+      "contextCeiling": 1000000,
+      "tier": "gloriana",
+      "breakpointZones": []
+    },
+    {
+      "provider": "openai",
+      "modelIdPattern": "gpt-5-mini",
+      "contextCeiling": 1000000,
+      "tier": "retribution",
+      "breakpointZones": []
+    },
+    {
+      "provider": "openai",
+      "modelIdPattern": "gpt-5-nano",
+      "contextCeiling": 128000,
+      "tier": "retribution",
+      "breakpointZones": []
+    },
+    {
+      "provider": "openai",
+      "modelIdPattern": "gpt-4.1*",
+      "contextCeiling": 1000000,
+      "tier": "victory",
+      "breakpointZones": []
+    },
+    {
+      "provider": "openai",
+      "modelIdPattern": "o4-mini",
+      "contextCeiling": 200000,
+      "tier": "victory",
+      "breakpointZones": []
+    },
+    {
+      "provider": "openai",
+      "modelIdPattern": "o3",
+      "contextCeiling": 200000,
+      "tier": "gloriana",
       "breakpointZones": []
     },
     {

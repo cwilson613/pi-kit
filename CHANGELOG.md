@@ -3,6 +3,26 @@
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.15.5-rc.3] - 2026-03-30
+
+### Added
+
+- **Tool groups** — predefined named sets (`memory-advanced`, `delegate`, `cleave`, `lifecycle-advanced`, `model-control`) in `manage_tools`. Operators can enable/disable an entire capability cluster in one call. Groups don't change default state — they're a batch toggle mechanism for managing schema surface.
+- **Auto-ingest lifecycle decisions to memory** — `BusRequest::AutoStoreFact` variant wired from `LifecycleFeature` through all bus drain sites to `memory_store`. When `design_tree_update(add_decision)` or `set_status(resolved|decided|implementing)` runs, the decision is automatically persisted to the `Decisions` memory section. The previously declared `memory_ingest_lifecycle` tool had no automatic call path; this replaces that intent correctly.
+
+### Fixed
+
+- **Spurious end-of-turn commit nudge** — `update_from_tools("commit")` now clears `files_modified`, so the `[System: You made file changes but did not run git commit]` injection no longer fires after the agent already committed. Previously, `files_modified` accumulated on every `edit`/`write` call and was never cleared, causing the nudge to fire spuriously on every session that used the `commit` tool.
+- **`manage_tools` enable/disable had no effect on LLM schema** — `tool_defs` was captured once before the turn loop; disabled tools were filtered from execution routing but not from the schema sent to the LLM each turn. Tool definitions are now refreshed from `bus.tool_definitions()` at the top of every turn, so schema reflects current enabled state immediately.
+- **Context bar used `chars/4` heuristic** — actual `input_tokens` from Anthropic/OpenAI/Codex API responses are now wired end-to-end: `LlmEvent::Done` → `AssistantMessage.provider_tokens` → `AgentEvent::TurnEnd` → TUI `context_percent`. The bar now shows what the provider actually billed, not a character-count estimate.
+
+### Changed
+
+- **Tool schema surface reduced ~650 tokens/request** — stripped redundant `description` fields from optional properties in the 4 heaviest feature tool schemas: `design_tree_update` (−168 tok), `delegate` (−268 tok), `lifecycle_doctor` (−102 tok), `openspec_manage` (−115 tok). `file_scope` nested object schema in `design_tree_update` simplified to `items: {type: object}` — field validation is at the Rust handler level.
+- **Feature tool output capped at 16,000 chars** — all tool text blocks are truncated after secret redaction in `dispatch_tools`. Catches unbounded feature tool responses (`memory_query` listing all facts, `design_tree list` with 267 nodes, etc.). Native tools (bash 50KB, read 2000 lines) already self-limit; this is a universal safety net. Truncated blocks append `[truncated: N chars dropped — limit 16000]`.
+- All provider model catalogs updated to current 2026 IDs (Anthropic, OpenAI, Groq, xAI, Mistral, OpenRouter). Route matrix includes gpt-5 family.
+- 1050 tests.
+
 ## [0.15.4] - 2026-03-29
 
 ### Added

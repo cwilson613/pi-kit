@@ -1,6 +1,7 @@
-//! Tool management — list, enable, disable tools.
+//! Tool management — list, enable, disable tools by name or group.
 //!
 //! Provides `manage_tools` for the agent to control which tools are active.
+//! Tool groups let operators activate/deactivate related sets with one call.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -11,6 +12,45 @@ use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 
 /// Shared set of disabled tool names.
 pub type DisabledTools = Arc<Mutex<HashSet<String>>>;
+
+/// Predefined tool groups — named sets that can be toggled together.
+///
+/// Groups represent coherent capability clusters. Operators enable/disable
+/// groups to control the schema surface and model affordances.
+/// Note: groups are mechanisms for toggling — they don't imply any default
+/// enabled/disabled state. See setup.rs for the default disabled profile.
+pub static TOOL_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "memory-advanced",
+        &[
+            "memory_connect",
+            "memory_search_archive",
+            "memory_ingest_lifecycle",
+        ],
+    ),
+    (
+        "delegate",
+        &["delegate", "delegate_result", "delegate_status"],
+    ),
+    // cleave is enabled by default — critical subagent decomposition capability.
+    // Disable only in constrained/quota contexts.
+    (
+        "cleave",
+        &["cleave_assess", "cleave_run"],
+    ),
+    (
+        "lifecycle-advanced",
+        &["lifecycle_doctor", "codebase_search", "codebase_index"],
+    ),
+    (
+        "model-control",
+        &[
+            "set_model_tier",
+            "switch_to_offline_driver",
+            "set_thinking_level",
+        ],
+    ),
+];
 
 pub struct ManageTools {
     disabled: DisabledTools,
@@ -61,14 +101,13 @@ impl Feature for ManageTools {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "enable", "disable"],
-                        "description": "Action: list (show tools), enable/disable (toggle tools)"
+                        "enum": ["list", "enable", "disable", "enable_group", "disable_group", "list_groups"]
                     },
                     "tools": {
                         "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Tool names to enable/disable"
-                    }
+                        "items": { "type": "string" }
+                    },
+                    "group": { "type": "string" }
                 },
                 "required": ["action"]
             }),
@@ -155,6 +194,90 @@ impl Feature for ManageTools {
                         } else {
                             format!("Disabled: {}", newly_disabled.join(", "))
                         },
+                    }],
+                    details: Value::Null,
+                })
+            }
+            "enable_group" | "disable_group" => {
+                let group_name = args["group"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("group required for {action}"))?;
+                let tools = TOOL_GROUPS
+                    .iter()
+                    .find(|(name, _)| *name == group_name)
+                    .map(|(_, tools)| *tools)
+                    .ok_or_else(|| {
+                        let available: Vec<&str> =
+                            TOOL_GROUPS.iter().map(|(n, _)| *n).collect();
+                        anyhow::anyhow!(
+                            "Unknown group '{group_name}'. Available: {}",
+                            available.join(", ")
+                        )
+                    })?;
+                let mut disabled = self.disabled.lock().unwrap();
+                let mut changed = Vec::new();
+                if action == "enable_group" {
+                    for name in tools {
+                        if disabled.remove(*name) {
+                            changed.push(*name);
+                        }
+                    }
+                    Ok(ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: if changed.is_empty() {
+                                format!("Group '{group_name}' — all tools already enabled.")
+                            } else {
+                                format!(
+                                    "Group '{group_name}' enabled: {}",
+                                    changed.join(", ")
+                                )
+                            },
+                        }],
+                        details: Value::Null,
+                    })
+                } else {
+                    for name in tools {
+                        if *name != "manage_tools" && disabled.insert(name.to_string()) {
+                            changed.push(*name);
+                        }
+                    }
+                    Ok(ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: if changed.is_empty() {
+                                format!("Group '{group_name}' — all tools already disabled.")
+                            } else {
+                                format!(
+                                    "Group '{group_name}' disabled: {}",
+                                    changed.join(", ")
+                                )
+                            },
+                        }],
+                        details: Value::Null,
+                    })
+                }
+            }
+            "list_groups" => {
+                let disabled = self.disabled.lock().unwrap();
+                let mut lines = vec![
+                    "**Tool Groups**".to_string(),
+                    String::new(),
+                ];
+                for (group_name, tools) in TOOL_GROUPS {
+                    let enabled_count = tools.iter().filter(|t| !disabled.contains(**t)).count();
+                    let state = if enabled_count == tools.len() {
+                        "all enabled"
+                    } else if enabled_count == 0 {
+                        "all disabled"
+                    } else {
+                        "partial"
+                    };
+                    lines.push(format!("  {group_name:<20} [{state}]  {}", tools.join(", ")));
+                }
+                lines.push(String::new());
+                lines.push("Use: manage_tools(enable_group|disable_group, group: \"<name>\")".into());
+                Ok(ToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: lines.join("\n"),
                     }],
                     details: Value::Null,
                 })

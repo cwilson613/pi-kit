@@ -769,12 +769,8 @@ fn shorten_cwd(cwd: &str, max_chars: usize) -> String {
     format!("{prefix}…/{file_name}")
 }
 
-fn short_model(model_id: &str) -> &str {
-    model_id
-        .split(':')
-        .next_back()
-        .or_else(|| model_id.split('/').next_back())
-        .unwrap_or(model_id)
+fn short_model(model_id: &str) -> String {
+    crate::settings::humanize_model_id(model_id)
 }
 
 #[cfg(test)]

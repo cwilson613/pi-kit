@@ -293,12 +293,12 @@ impl Settings {
         self.context_mode = self.context_class.context_mode();
     }
 
-    pub fn model_short(&self) -> &str {
-        self.model
-            .split(':')
-            .next_back()
-            .or_else(|| self.model.split('/').next_back())
-            .unwrap_or(&self.model)
+    /// Returns the human-readable short name for the model.
+    ///
+    /// Strips the provider prefix (e.g. `anthropic:`, `ollama:`) and the
+    /// Ollama `:latest` tag so the label reads "glm-4.7-flash" not "latest".
+    pub fn model_short(&self) -> String {
+        humanize_model_id(&self.model)
     }
 
     pub fn provider(&self) -> &str {
@@ -445,6 +445,56 @@ fn lookup_context_ceiling(provider: &str, model_id: &str) -> Option<usize> {
 
 /// Infer context window from model identifier.
 /// Uses the embedded route matrix first, falls back to heuristics.
+/// Known provider prefixes used to strip the leading `provider:` segment
+/// from model spec strings.
+const PROVIDER_PREFIXES: &[&str] = &[
+    "anthropic",
+    "openai",
+    "openai-codex",
+    "groq",
+    "xai",
+    "mistral",
+    "cerebras",
+    "huggingface",
+    "openrouter",
+    "ollama",
+    "local",
+    "codex",
+];
+
+/// Convert a full model spec (e.g. `ollama:glm-4.7-flash:latest`) to a
+/// short human-readable label (e.g. `glm-4.7-flash`).
+///
+/// Rules applied in order:
+/// 1. Strip a leading `provider:` prefix if the segment is a known provider.
+/// 2. Strip a trailing `:latest` Ollama tag.
+/// 3. For HuggingFace-style `org/repo` paths, take the last path segment.
+pub(crate) fn humanize_model_id(model_spec: &str) -> String {
+    // 1. Strip provider prefix
+    let without_provider = if let Some(colon) = model_spec.find(':') {
+        let prefix = &model_spec[..colon];
+        if PROVIDER_PREFIXES.contains(&prefix) {
+            &model_spec[colon + 1..]
+        } else {
+            model_spec
+        }
+    } else {
+        model_spec
+    };
+
+    // 2. Strip trailing :latest
+    let without_latest = without_provider
+        .strip_suffix(":latest")
+        .unwrap_or(without_provider);
+
+    // 3. Take last path segment for HuggingFace-style org/repo names
+    without_latest
+        .split('/')
+        .next_back()
+        .unwrap_or(without_latest)
+        .to_string()
+}
+
 fn infer_context_window(model: &str) -> usize {
     let parts: Vec<&str> = model.splitn(2, ':').collect();
     let (provider, model_id) = if parts.len() == 2 {
@@ -473,7 +523,14 @@ fn infer_context_window(model: &str) -> usize {
         return 200_000;
     }
 
-    131_072 // fail-closed: default to Squad
+    // Ollama models: default to 32k — matches the num_ctx we inject in
+    // OpenAICompatClient. Using 131k here would cause the harness to keep
+    // sending more tokens than the model's KV cache can hold.
+    if provider == "ollama" || provider == "local" {
+        return 32_768;
+    }
+
+    131_072 // fail-closed: default to Squad for unknown cloud providers
 }
 
 /// Thread-safe shared settings handle.
@@ -659,12 +716,32 @@ mod tests {
 
     #[test]
     fn provider_infers_bare_local_model_ids() {
+        // qwen3:30b — 'qwen3' is a model family, not a provider prefix
+        // so the full 'qwen3:30b' name is preserved (not just '30b')
         let s = Settings::new("qwen3:30b");
-        assert_eq!(s.model_short(), "30b");
+        assert_eq!(s.model_short(), "qwen3:30b");
         assert_eq!(s.provider(), "ollama");
 
         let local = Settings::new("local:qwen3:30b");
+        assert_eq!(local.model_short(), "qwen3:30b");
         assert_eq!(local.provider(), "ollama");
+    }
+
+    #[test]
+    fn humanize_model_id_strips_provider_and_latest() {
+        // Provider prefix stripped
+        assert_eq!(humanize_model_id("anthropic:claude-opus-4-6"), "claude-opus-4-6");
+        assert_eq!(humanize_model_id("openai:gpt-4o"), "gpt-4o");
+        // Ollama :latest stripped
+        assert_eq!(humanize_model_id("ollama:glm-4.7-flash:latest"), "glm-4.7-flash");
+        assert_eq!(humanize_model_id("local:mistral:latest"), "mistral");
+        // Non-provider first segment kept
+        assert_eq!(humanize_model_id("qwen3:30b"), "qwen3:30b");
+        assert_eq!(humanize_model_id("glm-4.7-flash:latest"), "glm-4.7-flash");
+        // HuggingFace org/repo
+        assert_eq!(humanize_model_id("huggingface:Qwen/Qwen3-32B"), "Qwen3-32B");
+        // Bare model
+        assert_eq!(humanize_model_id("claude-opus-4-6"), "claude-opus-4-6");
     }
 
     #[test]

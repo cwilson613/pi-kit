@@ -5,6 +5,7 @@
 //! context wiring, and parallel tool dispatch.
 
 use crate::bridge::{LlmBridge, LlmEvent, StreamOptions};
+use crate::ollama::{OllamaManager, WarmupResult};
 use crate::context::ContextManager;
 use crate::conversation::{AssistantMessage, ConversationState, ToolCall, ToolResultEntry};
 use omegon_traits::{AgentEvent, ContentBlock};
@@ -233,6 +234,20 @@ pub async fn run(
                 .or_else(|| Some(config.model.clone()));
             opts
         };
+
+        // ─── Ollama cold-start warmup ───────────────────────────
+        // A cold 20-30B model can take 3+ minutes to load into memory.
+        // The SSE idle timeout (90s) fires before the first token arrives
+        // on a cold start. We pre-flight the model load here and surface
+        // progress in the TUI via toast notifications.
+        if let Some(model_spec) = stream_options.model.as_deref() {
+            if crate::providers::infer_provider_id(model_spec) == "ollama" {
+                let bare = model_spec
+                    .trim_start_matches("ollama:")
+                    .trim_start_matches("local:");
+                maybe_warmup_ollama(bare, events).await;
+            }
+        }
 
         let assistant_msg = tokio::select! {
             result = stream_with_retry(
@@ -553,6 +568,40 @@ pub(crate) async fn compact_via_llm(
 }
 
 /// Stream an LLM response with retry on transient errors.
+/// Pre-flight an Ollama model to ensure it's warm before streaming.
+///
+/// If the model is cold (not in `/api/ps`), issues a minimal blocking
+/// generate request so the model is fully loaded before `stream_with_retry`
+/// attempts to open an SSE stream. Emits toast notifications during the wait.
+async fn maybe_warmup_ollama(model_name: &str, events: &broadcast::Sender<AgentEvent>) {
+    let mgr = OllamaManager::new();
+    if !mgr.is_reachable().await {
+        tracing::debug!("Ollama not reachable — skipping warmup");
+        return;
+    }
+    // Emit a ⟳ toast so the operator knows we're waiting on model load.
+    let _ = events.send(AgentEvent::SystemNotification {
+        message: format!("⟳ Loading {model_name} into memory…"),
+    });
+    match mgr.warmup_model(model_name).await {
+        Ok(WarmupResult::AlreadyWarm) => {
+            // Model was already warm — no visible noise needed.
+            tracing::debug!(model_name, "Ollama model already warm");
+        }
+        Ok(WarmupResult::WasLoaded) => {
+            tracing::info!(model_name, "Ollama model warmed up successfully");
+            let _ = events.send(AgentEvent::SystemNotification {
+                message: format!("⚡ {model_name} loaded"),
+            });
+        }
+        Err(e) => {
+            // Don't abort the turn — the real stream attempt may still succeed
+            // (e.g. model loaded between our check and the stream call).
+            tracing::warn!(model_name, error = %e, "Ollama warmup failed — proceeding anyway");
+        }
+    }
+}
+
 async fn stream_with_retry(
     bridge: &dyn LlmBridge,
     system_prompt: &str,

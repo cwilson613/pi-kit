@@ -23,6 +23,15 @@ pub struct OllamaModel {
     pub digest: String,
 }
 
+/// Result of a warmup check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WarmupResult {
+    /// Model was already loaded — no warmup needed.
+    AlreadyWarm,
+    /// Model was cold; we triggered a load and waited for it.
+    WasLoaded,
+}
+
 /// A model currently loaded in VRAM.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunningModel {
@@ -84,6 +93,51 @@ impl OllamaManager {
             .await?;
         let body: PsResponse = resp.json().await?;
         Ok(body.models)
+    }
+
+    /// Ensure `model_name` is loaded and warm before attempting a real stream.
+    ///
+    /// Checks `/api/ps`; if the model is already loaded returns `AlreadyWarm`
+    /// immediately. If cold, sends a minimal no-output generate request
+    /// (`"prompt": ""`, `"stream": false`) which blocks until the model is
+    /// fully in memory, then returns `WasLoaded`.
+    ///
+    /// `model_name` is the bare Ollama model id (no `ollama:` prefix).
+    pub async fn warmup_model(&self, model_name: &str) -> anyhow::Result<WarmupResult> {
+        // Use a no-timeout client for the blocking load — can take 5+ minutes.
+        let load_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap_or_default();
+
+        // First, check if already warm via /api/ps.
+        let running = self.list_running().await.unwrap_or_default();
+        let is_warm = running.iter().any(|r| r.name == model_name
+            || r.name.starts_with(&format!("{model_name}:"))
+            || model_name.starts_with(&r.name));
+        if is_warm {
+            return Ok(WarmupResult::AlreadyWarm);
+        }
+
+        // Cold — issue a minimal generate to force-load the model.
+        // `"keep_alive": "30m"` ensures it stays warm for the session.
+        let body = serde_json::json!({
+            "model": model_name,
+            "prompt": "",
+            "stream": false,
+            "keep_alive": "30m"
+        });
+        let resp = load_client
+            .post(format!("{}/api/generate", self.host))
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama warmup failed ({status}): {text}");
+        }
+        Ok(WarmupResult::WasLoaded)
     }
 
     /// Estimate hardware profile for model sizing.

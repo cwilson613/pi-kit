@@ -202,7 +202,7 @@
     "opened": "2026-03-29T16:13:57Z",
     "nodes": [],
     "frozen": false,
-    "rc_count": 4,
+    "rc_count": 5,
     "notes": [
       "feat(auth): restructure /login by company=api-key / product=subscription paradigm",
       "feat(auth): support headless OAuth login via paste-back flow",
@@ -227,7 +227,7 @@
       "fix(tui,providers): dynamic Ollama catalog, auth-gated cloud providers, expanded routing",
       "refactor(providers): remove MLX as dedicated provider — use Ollama instead"
     ],
-    "last_rc": "2026-03-30T12:14:57Z",
-    "rc_version": "0.15.5-rc.6"
+    "last_rc": "2026-03-30T12:18:59Z",
+    "rc_version": "0.15.5-rc.7"
   }
 }

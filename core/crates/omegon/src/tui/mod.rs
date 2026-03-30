@@ -1549,11 +1549,15 @@ impl App {
             self.memory_ops_this_frame = 0;
 
             let memory_fill = if self.footer_data.context_window > 0 {
-                // Keep memory's visual footprint conservative.
-                // We want the harness to reach for memory on demand rather than
-                // imply that a large resident memory slab is always injected.
-                // Estimate ~48 tokens per fact and let instruments cap further.
-                (self.footer_data.total_facts * 48) as f64 / self.footer_data.context_window as f64
+                // The memory renderer hard-caps its output at 12_000 chars.
+                // At ~4 chars/token that is ~3_000 tokens injected regardless of fact count.
+                // The old formula (total_facts * 48 / window) grew with DB size and could
+                // consume the entire remaining context budget even at 10% total usage,
+                // leaving zero for conversation — making the bar appear "all memory."
+                const MEMORY_RENDERER_MAX_CHARS: f64 = 12_000.0;
+                const CHARS_PER_TOKEN: f64 = 4.0;
+                let max_memory_tokens = MEMORY_RENDERER_MAX_CHARS / CHARS_PER_TOKEN;
+                max_memory_tokens / self.footer_data.context_window as f64
             } else {
                 0.0
             };

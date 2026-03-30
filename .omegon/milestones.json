@@ -202,7 +202,7 @@
     "opened": "2026-03-29T16:13:57Z",
     "nodes": [],
     "frozen": false,
-    "rc_count": 17,
+    "rc_count": 18,
     "notes": [
       "feat(auth): restructure /login by company=api-key / product=subscription paradigm",
       "feat(auth): support headless OAuth login via paste-back flow",
@@ -223,6 +223,7 @@
       "fix(context): wire actual provider token counts end-to-end to TUI",
       "fix(homebrew): bump formula to 0.15.4 and wire brew-tap into publish",
       "fix(install): fix escape sequence rendering and replace broken box layout",
+      "fix(justfile): auto-reattach git HEAD to main before rc/link in jj-colocated repos",
       "fix(justfile): guard rc and release against jj/git branch divergence",
       "fix(loop): persist commit_nudged across TUI run() invocations\\n\\nThe TUI calls loop::run() once per user turn, so a local\\n`commit_nudged` variable reset to false every message — causing\\nthe \\\"you made file changes\\\" nudge to fire on every turn even\\nafter a successful commit.\\n\\nMove commit_nudged onto IntentDocument (which persists for the\\nentire session lifetime). Also reset it when the commit tool\\nclears files_modified, so a second commit after further changes\\nstill gets a nudge.\\n\\nFixes: commit nudge regression introduced in rc.7\"",
       "fix(loop): suppress spurious commit nudge; refresh tool_defs per turn",
@@ -236,7 +237,7 @@
       "fix: D2 render timing, MCP per-server timeout, stale Esc mouse hint",
       "refactor(providers): remove MLX as dedicated provider — use Ollama instead"
     ],
-    "last_rc": "2026-03-30T22:20:20Z",
-    "rc_version": "0.15.5-rc.19"
+    "last_rc": "2026-03-30T22:23:26Z",
+    "rc_version": "0.15.5-rc.20"
   }
 }

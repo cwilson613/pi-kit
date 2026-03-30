@@ -40,7 +40,7 @@
       "feat(release): add nightly finalization step",
       "feat(release): add nightly prerelease workflow",
       "feat(release): add optional macos signing in ci",
-      "feat(release): milestone-update.sh \u2014 automated milestone tracking in rc/release lifecycle",
+      "feat(release): milestone-update.sh — automated milestone tracking in rc/release lifecycle",
       "feat(secrets): add preflight and child-env diagnostics",
       "feat(secrets): add session preflight cache",
       "feat(session): auto-resume by default, --fresh flag, /new command",
@@ -61,7 +61,7 @@
       "fix(ci): cargo-cyclonedx flag compat, flexible SBOM output detection",
       "fix(ci): cross build mounts repo root, sha256sum macOS compat",
       "fix(ci): macos-13 runner deprecated, use macos-14 for x86_64 builds",
-      "fix(ci): no-cache on site container build \u2014 docker was caching stale install.sh layer",
+      "fix(ci): no-cache on site container build — docker was caching stale install.sh layer",
       "fix(cleave): reset internal workspace and restore natural scroll",
       "fix(cleave): simplify child finalization and avoid double cleanup",
       "fix(codescan): tree-sitter AST scanner + 3 assessment defect fixes",
@@ -117,9 +117,9 @@
       "fix(tui): sync live memory telemetry and simplify inference panel",
       "fix(tui): sync wrapped cursor and tool summaries",
       "fix(tui): tighten compact tool card spacing",
-      "fix: another POSIX sh bashism \u2014 (( )) subshell syntax",
-      "fix: install.sh POSIX compat \u2014 no bashisms, suppress segfault from old binary",
-      "fix: install.sh archive name mismatch \u2014 align with release asset naming",
+      "fix: another POSIX sh bashism — (( )) subshell syntax",
+      "fix: install.sh POSIX compat — no bashisms, suppress segfault from old binary",
+      "fix: install.sh archive name mismatch — align with release asset naming",
       "fix: install.sh archive naming (version + target triple)",
       "fix: replace all omegon-core repo references with omegon",
       "perf(release): streamline nightly draft publishing",
@@ -130,7 +130,7 @@
       "refactor(tui): render operator input with raw textarea widget",
       "refactor(tui): scaffold segment presentation roles",
       "refactor(update): rename prerelease channel to nightly",
-      "refactor: purge all .pi runtime path references \u2014 we are Omegon",
+      "refactor: purge all .pi runtime path references — we are Omegon",
       "test(prompt): add tool token budget audit test"
     ]
   },
@@ -188,7 +188,7 @@
       "fix(tui): enable mouse interaction at startup",
       "fix(status): avoid nested runtime in startup memory probe",
       "feat(ipc): define auspex native contract foundation",
-      "feat(ipc): harden auspex contract \u2014 typed snapshots, events, capabilities",
+      "feat(ipc): harden auspex contract — typed snapshots, events, capabilities",
       "feat(ipc): add native unix socket ipc server"
     ],
     "rc_version": "0.15.4",
@@ -205,11 +205,18 @@
     "rc_count": 1,
     "notes": [
       "feat(auth): restructure /login by company=api-key / product=subscription paradigm",
-      "feat(models): interactive model selector \u2014 browse providers and models with context/cost info",
+      "feat(models): interactive model selector — browse providers and models with context/cost info",
       "feat(inference): openrouter native routing and unified provider UX",
       "feat(inference): local inference onboarding and provider discoverability"
     ],
     "last_rc": "2026-03-29T20:20:23Z",
     "rc_version": "0.15.5-rc.1"
+  },
+  "nightly": {
+    "status": "nightly",
+    "channel": "nightly",
+    "version": "0.15.5-nightly.20260330",
+    "last_build": "2026-03-30T08:51:29Z",
+    "build_count": 1
   }
 }

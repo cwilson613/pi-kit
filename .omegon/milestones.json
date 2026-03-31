@@ -257,13 +257,14 @@
     "frozen": false,
     "opened": "2026-03-31T02:04:48Z",
     "released": null,
-    "rc_count": 3,
+    "rc_count": 4,
     "notes": [
       "feat(ci): integrate THIRD_PARTY_NOTICES with SBOM in release workflow",
       "feat(scribe): implement first Rust-native extension",
       "feat(scribe): implement rust-native extension — RPC sidecar integration",
       "feat: /context subcommand interface for organic context management",
       "feat: SharedContextMetrics for real-time status collection",
+      "feat: generic extension manifest + discovery system — all extensions equal",
       "feat: wire command_tx to ContextProvider for tool dispatch",
       "fix(ci): add workflow_dispatch to release.yml; use RELEASE_TAG env var",
       "fix(ci): direct git push to vanderlyn instead of polling",
@@ -274,7 +275,7 @@
       "fix(site): add nginx location blocks for /terms and /privacy",
       "refactor: remove dead TypeScript extension bridge — scribe is pure Rust"
     ],
-    "rc_version": "0.15.6-rc.4",
-    "last_rc": "2026-03-31T21:47:52Z"
+    "rc_version": "0.15.6-rc.5",
+    "last_rc": "2026-03-31T22:16:41Z"
   }
 }

@@ -365,6 +365,9 @@ impl AgentSetup {
             "CARGO_PKG_VERSION"
         ))));
 
+        // ─── Context management provider ───────────────────────────────
+        bus.register(Box::new(features::context::ContextProvider::new()));
+
         // ─── External plugins (TOML manifests) ────────────────────────
         let plugins = crate::plugins::discover_plugins(&cwd).await;
         for plugin in plugins {

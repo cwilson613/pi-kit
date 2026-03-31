@@ -722,7 +722,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     };
     let mut agent = setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
 
-    // ─── LLM provider ──────────────────────────────────────────────────
+    // LLM provider ──────────────────────────────────────────────────────
     // Native Rust clients by default. --bridge flag forces the Node.js subprocess.
     // ─── LLM provider (native Rust clients only) ─────────────────────
     let requested_start_model = shared_settings
@@ -1068,6 +1068,74 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         message: "Nothing eligible to compact yet.".into(),
                     });
                 }
+            }
+
+            tui::TuiCommand::ContextStatus => {
+                let est = agent.conversation.estimate_tokens();
+                let settings = shared_settings.lock().unwrap();
+                let ctx_window = settings.context_window;
+                let pct = if ctx_window > 0 {
+                    ((est as f64 / ctx_window as f64) * 100.0).min(100.0) as u32
+                } else {
+                    0
+                };
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: format!(
+                        "Context: {}/{} tokens ({}%)\nClass: {}\nThinking: {}",
+                        est,
+                        ctx_window,
+                        pct,
+                        settings.context_class.label(),
+                        settings.thinking.as_str()
+                    ),
+                });
+            }
+
+            tui::TuiCommand::ContextCompact => {
+                tracing::info!("context compaction requested via /context compact");
+
+                let bridge_guard = bridge.read().await;
+                let stream_options = {
+                    let s = shared_settings.lock().unwrap();
+                    crate::bridge::StreamOptions {
+                        model: Some(s.model.clone()),
+                        reasoning: Some(s.thinking.as_str().to_string()),
+                        extended_context: false,
+                        ..Default::default()
+                    }
+                };
+                if let Some((payload, _evict_count)) = agent.conversation.build_compaction_payload()
+                {
+                    match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options)
+                        .await
+                    {
+                        Ok(summary) => {
+                            agent.conversation.apply_compaction(summary);
+                            let est = agent.conversation.estimate_tokens();
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Context compressed. Now using {est} tokens."),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Compression failed: {e}"),
+                            });
+                        }
+                    }
+                } else {
+                    let _ = events_tx.send(AgentEvent::SystemNotification {
+                        message: "Nothing to compress yet.".into(),
+                    });
+                }
+            }
+
+            tui::TuiCommand::ContextClear => {
+                tracing::info!("context clear requested via /context clear");
+                // TODO: archive current session, reset conversation history
+                // For now, just notify
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: "Context clear: NOT YET IMPLEMENTED. Use /new to start a fresh session.".into(),
+                });
             }
 
             tui::TuiCommand::ListSessions => {

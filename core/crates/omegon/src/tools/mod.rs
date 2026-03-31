@@ -415,9 +415,10 @@ impl ToolProvider for CoreTools {
                 }),
             },
             // NOTE: view, web_search, render_diagram, generate_image_local,
-            // ask_local_model, list_local_models, manage_ollama are provided by
-            // their dedicated ToolProvider implementations (ViewProvider,
-            // WebSearchProvider, RenderProvider, LocalInferenceProvider) registered
+            // ask_local_model, list_local_models, manage_ollama, context_status,
+            // context_compact, context_clear are provided by their dedicated
+            // ToolProvider implementations (ViewProvider, WebSearchProvider,
+            // RenderProvider, LocalInferenceProvider, ContextProvider) registered
             // separately in setup.rs. Do NOT add them here — duplicates cause
             // Anthropic API 400 "Tool names must be unique" errors.
         ]
@@ -772,8 +773,8 @@ mod tests {
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // Should have 11 core tools (bash, read, write, edit, change,
-        // speculate_start/check/commit/rollback, commit, whoami, chronos)
+        // Should have 13 core tools (bash, read, write, edit, change,
+        // speculate_start/check/commit/rollback, commit, whoami, chronos, serve)
         assert_eq!(
             tool_names.len(),
             13,

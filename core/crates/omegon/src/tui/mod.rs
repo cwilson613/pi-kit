@@ -74,6 +74,12 @@ pub enum TuiCommand {
     BusCommand { name: String, args: String },
     /// Trigger manual compaction.
     Compact,
+    /// Show context usage and status.
+    ContextStatus,
+    /// Compress context and clear history.
+    ContextCompact,
+    /// Clear context completely (fresh start).
+    ContextClear,
     /// List saved sessions.
     ListSessions,
     /// Start the web dashboard server.
@@ -1983,8 +1989,8 @@ impl App {
         ),
         (
             "context",
-            "select context class (Squad/Maniple/Clan/Legion)",
-            &["squad", "maniple", "clan", "legion"],
+            "context management (class selection or compaction)",
+            &["status", "compact", "clear", "squad", "maniple", "clan", "legion"],
         ),
         ("sessions", "list saved sessions", &[]),
         ("memory", "memory stats", &[]),
@@ -2385,19 +2391,41 @@ impl App {
                     // No args → open interactive context class selector
                     self.open_context_selector();
                     SlashResult::Handled
-                } else if let Some(class) = crate::settings::ContextClass::parse(args) {
-                    self.update_settings(|s| {
-                        s.context_class = class;
-                        s.context_window = class.nominal_tokens();
-                        s.context_mode = class.context_mode();
-                    });
-                    let s = self.settings();
-                    self.footer_data.context_window = s.context_window;
-                    SlashResult::Display(format!("Context → {}", class.label()))
                 } else {
-                    SlashResult::Display(format!(
-                        "Unknown class: {args}. Options: squad, maniple, clan, legion"
-                    ))
+                    let (sub, _sub_args) = args.split_once(' ').unwrap_or((args, ""));
+                    match sub {
+                        "status" => {
+                            let _ = tx.try_send(TuiCommand::ContextStatus);
+                            SlashResult::Handled
+                        }
+                        "compact" => {
+                            let _ = tx.try_send(TuiCommand::ContextCompact);
+                            SlashResult::Display("Compacting context…".into())
+                        }
+                        "clear" => {
+                            let _ = tx.try_send(TuiCommand::ContextClear);
+                            SlashResult::Display("Clearing context…".into())
+                        }
+                        _ => {
+                            // Fall back to class parsing (squad, maniple, clan, legion)
+                            if let Some(class) = crate::settings::ContextClass::parse(sub) {
+                                self.update_settings(|s| {
+                                    s.context_class = class;
+                                    s.context_window = class.nominal_tokens();
+                                    s.context_mode = class.context_mode();
+                                });
+                                let s = self.settings();
+                                self.footer_data.context_window = s.context_window;
+                                SlashResult::Display(format!("Context → {}", class.label()))
+                            } else {
+                                SlashResult::Display(format!(
+                                    "Unknown context option: {sub}.\n\
+                                     Use: /context [status|compact|clear|<class>]\n\
+                                     Classes: squad, maniple, clan, legion"
+                                ))
+                            }
+                        }
+                    }
                 }
             }
 

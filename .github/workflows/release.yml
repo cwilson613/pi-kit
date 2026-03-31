@@ -3,6 +3,12 @@ name: Release Rust binary
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to release (e.g. v0.15.5). Must already exist on origin.'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,6 +17,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
   RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
   APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
   APPLE_SIGNING_CERT_B64: ${{ secrets.APPLE_SIGNING_CERT_B64 }}
@@ -43,8 +50,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -112,7 +119,7 @@ jobs:
 
       - name: Create archive
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           ARCHIVE="omegon-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
           BINARY="core/target/${{ matrix.target }}/release/omegon"
           tar czf "$ARCHIVE" -C "$(dirname $BINARY)" omegon
@@ -161,15 +168,15 @@ jobs:
 
       # ─── SBOM ─────────────────────────────────────────────────
       - name: Install Rust toolchain (for cargo-cyclonedx)
-        if: ${{ !contains(github.ref_name, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-cyclonedx
-        if: ${{ !contains(github.ref_name, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         run: cargo install cargo-cyclonedx
 
       - name: Generate CycloneDX SBOM
-        if: ${{ !contains(github.ref_name, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         run: |
           cd core
           cargo cyclonedx --manifest-path Cargo.toml --format json || true
@@ -196,7 +203,7 @@ jobs:
           done
 
       - name: Sign SBOM
-        if: ${{ !contains(github.ref_name, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         run: |
           cd artifacts
           cosign sign-blob --yes omegon-sbom.cdx.json \
@@ -205,7 +212,7 @@ jobs:
 
       # ─── Provenance attestation ────────────────────────────────
       - name: Attest build provenance
-        if: ${{ !contains(github.ref_name, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: artifacts/omegon-*.tar.gz
@@ -220,13 +227,13 @@ jobs:
           gh api repos/${{ github.repository }}/releases >/dev/null
 
       - name: Create nightly GitHub Release
-        if: ${{ contains(github.ref_name, '-nightly.') }}
+        if: ${{ contains(env.RELEASE_TAG, '-nightly.') }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "${{ env.RELEASE_TAG }}" \
+            --title "${{ env.RELEASE_TAG }}" \
             --generate-notes \
             --draft \
             --prerelease \
@@ -237,15 +244,15 @@ jobs:
             artifacts/checksums.sha256
 
       - name: Create stable/rc GitHub Release
-        if: ${{ !contains(github.ref_name, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-rc.') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-rc.') }}
           draft: false
           files: |
             artifacts/omegon-*.tar.gz

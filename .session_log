@@ -242,4 +242,154 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   cca5101c Revert "test: trigger site build"
   c32fcb2b test: trigger site build
   5de07e98 fix(ci): direct git push to vanderlyn instead of polling
+## 2026-03-31 — main (30t 6651tc 4m12s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (2t 6654tc 20s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (2t 6655tc 11s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (1t 6655tc 11s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (1t 6655tc 18s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (1t 6655tc 10s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (11t 6665tc 58s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (33t 6697tc 3m54s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (33t 6729tc 4m31s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
+  c32fcb2b test: trigger site build
+## 2026-03-31 — main (8t 6736tc 1m9s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  6f5890d0 feat: /context subcommand interface for organic context management
+  44a60a5b feat(scribe): implement first Rust-native extension
+  cca5101c Revert "test: trigger site build"
 

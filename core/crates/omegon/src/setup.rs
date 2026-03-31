@@ -31,6 +31,8 @@ pub struct AgentSetup {
     /// The event bus — owns all features. The loop dispatches tools and
     /// emits events through the bus.
     pub bus: EventBus,
+    /// Shared context metrics — updated each turn, read by ContextProvider
+    pub context_metrics: std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
     pub context_manager: ContextManager,
     pub conversation: ConversationState,
     pub cwd: PathBuf,
@@ -366,7 +368,8 @@ impl AgentSetup {
         ))));
 
         // ─── Context management provider ───────────────────────────────
-        bus.register(Box::new(features::context::ContextProvider::new()));
+        let context_metrics = features::context::SharedContextMetrics::new();
+        bus.register(Box::new(features::context::ContextProvider::new(context_metrics.clone())));
 
         // ─── External plugins (TOML manifests) ────────────────────────
         let plugins = crate::plugins::discover_plugins(&cwd).await;
@@ -525,6 +528,7 @@ impl AgentSetup {
 
         Ok(Self {
             bus,
+            context_metrics,
             context_manager,
             conversation,
             cwd,

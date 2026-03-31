@@ -8,17 +8,57 @@
 use async_trait::async_trait;
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::tui::TuiCommand;
 
+/// Shared context metrics — updated by main loop, read by ContextProvider
+#[derive(Debug, Clone)]
+pub struct SharedContextMetrics {
+    pub tokens_used: usize,
+    pub context_window: usize,
+    pub context_class: String,
+    pub thinking_level: String,
+}
+
+impl SharedContextMetrics {
+    pub fn new() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            tokens_used: 0,
+            context_window: 200000,
+            context_class: "unknown".to_string(),
+            thinking_level: "unknown".to_string(),
+        }))
+    }
+
+    pub fn usage_percent(&self) -> u32 {
+        if self.context_window > 0 {
+            ((self.tokens_used as f64 / self.context_window as f64) * 100.0).min(100.0) as u32
+        } else {
+            0
+        }
+    }
+
+    pub fn update(&mut self, tokens_used: usize, context_window: usize, context_class: &str, thinking_level: &str) {
+        self.tokens_used = tokens_used;
+        self.context_window = context_window;
+        self.context_class = context_class.to_string();
+        self.thinking_level = thinking_level.to_string();
+    }
+}
+
 pub struct ContextProvider {
     command_tx: Option<mpsc::Sender<TuiCommand>>,
+    metrics: Arc<Mutex<SharedContextMetrics>>,
 }
 
 impl ContextProvider {
-    pub fn new() -> Self {
-        Self { command_tx: None }
+    pub fn new(metrics: Arc<Mutex<SharedContextMetrics>>) -> Self {
+        Self {
+            command_tx: None,
+            metrics,
+        }
     }
 
     pub fn with_command_tx(mut self, tx: mpsc::Sender<TuiCommand>) -> Self {
@@ -77,15 +117,31 @@ impl Feature for ContextProvider {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             "context_status" => {
-                // Dispatch to TUI
+                let metrics = self.metrics.lock().unwrap();
+                let pct = metrics.usage_percent();
+                let result_text = format!(
+                    "Context: {}/{} tokens ({}%)\nClass: {}\nThinking: {}",
+                    metrics.tokens_used,
+                    metrics.context_window,
+                    pct,
+                    metrics.context_class,
+                    metrics.thinking_level
+                );
+
+                // Also dispatch to TUI
                 if let Some(ref tx) = self.command_tx {
                     let _ = tx.try_send(TuiCommand::ContextStatus);
                 }
+
                 Ok(ToolResult {
-                    content: vec![ContentBlock::Text {
-                        text: "Context status requested. Check the footer for current usage metrics.".into(),
-                    }],
-                    details: json!({}),
+                    content: vec![ContentBlock::Text { text: result_text }],
+                    details: json!({
+                        "tokens_used": metrics.tokens_used,
+                        "context_window": metrics.context_window,
+                        "usage_percent": pct,
+                        "class": metrics.context_class,
+                        "thinking": metrics.thinking_level,
+                    }),
                 })
             }
 

@@ -202,7 +202,7 @@
     "opened": "2026-03-29T16:13:57Z",
     "nodes": [],
     "frozen": false,
-    "rc_count": 24,
+    "rc_count": 25,
     "notes": [
       "feat(auth): restructure /login by company=api-key / product=subscription paradigm",
       "feat(auth): support headless OAuth login via paste-back flow",
@@ -230,6 +230,7 @@
       "fix(loop): suppress spurious commit nudge; refresh tool_defs per turn",
       "fix(memory): proactive use directives in tool descriptions and context header",
       "fix(ollama): add extra_body to StreamOptions for provider-specific injection",
+      "fix(release): replace flawed jj+git sync in justfile with dedicated script",
       "fix(session): tolerate missing fields and corrupt sessions on resume",
       "fix(tui): /context slash command uses ContextClass not ContextMode",
       "fix(tui): correct cell-width advancement for ambiguous-width Unicode icons",
@@ -242,7 +243,7 @@
       "fix: D2 render timing, MCP per-server timeout, stale Esc mouse hint",
       "refactor(providers): remove MLX as dedicated provider — use Ollama instead"
     ],
-    "last_rc": "2026-03-31T00:42:03Z",
-    "rc_version": "0.15.5-rc.26"
+    "last_rc": "2026-03-31T00:52:40Z",
+    "rc_version": "0.15.5-rc.27"
   }
 }

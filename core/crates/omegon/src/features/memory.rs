@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use omegon_memory::{
     ContextRenderer, CreateEdge, DecayProfileName, FactFilter, MarkdownRenderer, MemoryBackend,
-    Section, StoreAction, StoreFact,
+    Section, StoreAction, StoreFact, StoreEpisode,
 };
 
 /// Memory feature that provides all memory_* tools and context injection.
@@ -648,6 +648,64 @@ Also use it when you notice a gap — if you're unsure whether something was alr
             {
                 vec![BusRequest::RefreshHarnessStatus]
             }
+
+            // On session end, persist a template episode so memory_episodes
+            // has a time-indexed record of every session.  This runs
+            // synchronously via block_on — store_episode is a fast SQLite
+            // write so the latency is negligible.
+            BusEvent::SessionEnd {
+                turns,
+                tool_calls,
+                duration_secs,
+            } if *turns > 0 => {
+                let backend = self.backend.clone();
+                let mind = self.mind.clone();
+                let (t, tc, dur) = (*turns, *tool_calls, *duration_secs);
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    std::thread::scope(|scope| {
+                        let _ = scope
+                            .spawn(|| {
+                                handle.block_on(async {
+                                    let now = chrono::Utc::now();
+                                    let title = format!(
+                                        "Session {}: {}t {}tc",
+                                        now.format("%Y-%m-%d"),
+                                        t,
+                                        tc
+                                    );
+                                    let narrative = format!(
+                                        "Session on {date}: {t} turns, {tc} tool calls, \
+                                         {dur:.0}s. Auto-recorded by harness at session end.",
+                                        date = now.format("%Y-%m-%d"),
+                                    );
+                                    if let Err(e) = backend
+                                        .store_episode(StoreEpisode {
+                                            mind,
+                                            title,
+                                            narrative,
+                                            date: Some(
+                                                now.format("%Y-%m-%d").to_string(),
+                                            ),
+                                            affected_nodes: vec![],
+                                            affected_changes: vec![],
+                                            files_changed: vec![],
+                                            tags: vec!["auto".into()],
+                                            tool_calls_count: Some(tc),
+                                        })
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "Session episode storage failed: {e}"
+                                        );
+                                    }
+                                })
+                            })
+                            .join();
+                    });
+                }
+                vec![]
+            }
+
             _ => Vec::new(),
         }
     }

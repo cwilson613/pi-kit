@@ -485,21 +485,40 @@ pub async fn run(
     bus.emit(&omegon_traits::BusEvent::AgentEnd);
     let _ = events.send(AgentEvent::AgentEnd);
 
-    // Process any pending bus requests (e.g. auto-compact notifications)
+    // Emit SessionEnd so session_log and memory features can finalise.
+    // This must come after AgentEnd so TUI is no longer in "working" state
+    // before any slow post-session I/O runs.
+    bus.emit(&omegon_traits::BusEvent::SessionEnd {
+        turns: turn,
+        tool_calls: conversation.intent.stats.tool_calls,
+        duration_secs: elapsed.as_secs_f64(),
+    });
+
+    // Process any pending bus requests (e.g. auto-compact notifications,
+    // auto-store facts from lifecycle transitions, episode storage).
+    // AutoStoreFact requests are now executed rather than dropped —
+    // design_tree decisions/transitions enqueued late in the session
+    // (or from SessionEnd handlers) are persisted to memory.
     for request in bus.drain_requests() {
         match request {
             omegon_traits::BusRequest::Notify { message, level } => {
                 tracing::info!(level = ?level, "Bus notification: {message}");
             }
             omegon_traits::BusRequest::InjectSystemMessage { content } => {
-                conversation.push_user(format!("[System: {content}]"));
+                tracing::debug!("post-loop InjectSystemMessage ignored (loop complete): {content}");
             }
             omegon_traits::BusRequest::RequestCompaction => {
                 tracing::info!("Bus requested compaction (post-loop — ignored)");
             }
             omegon_traits::BusRequest::RefreshHarnessStatus => {}
-            omegon_traits::BusRequest::AutoStoreFact { source, .. } => {
-                tracing::debug!(source, "auto-store fact (post-loop — ignored, loop complete)");
+            omegon_traits::BusRequest::AutoStoreFact { section, content, source } => {
+                let args = serde_json::json!({ "content": content, "section": section });
+                if let Err(e) = bus
+                    .execute_tool("memory_store", "post_loop_auto_ingest", args, cancel.clone())
+                    .await
+                {
+                    tracing::debug!(source, "post-loop auto-store fact skipped: {e}");
+                }
             }
         }
     }

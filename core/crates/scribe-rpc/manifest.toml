@@ -10,3 +10,10 @@ binary = "target/release/scribe-rpc"
 [startup]
 ping_method = "get_tools"
 timeout_ms = 5000
+
+[widgets.timeline]
+label = "Work Timeline"
+kind = "stateful"
+renderer = "timeline"
+description = "Timeline of engagement activity"
+

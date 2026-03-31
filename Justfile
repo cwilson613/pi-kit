@@ -505,7 +505,19 @@ publish:
     set -euo pipefail
 
     BINARY="core/target/release/omegon"
-    VERSION=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+    # Read version from the built binary — not Cargo.toml.
+    # Cargo.toml may already be bumped to the next RC cycle (e.g. 0.15.6-rc.1)
+    # by the time publish runs, so the binary is the authoritative source of truth.
+    if [ ! -f "$BINARY" ]; then
+        echo "✗ No binary at $BINARY — run 'just rc' or 'just release' first."
+        exit 1
+    fi
+    VERSION=$("$BINARY" --version 2>/dev/null | awk '{print $2}' | head -1)
+    if [ -z "$VERSION" ]; then
+        echo "✗ Could not read version from binary. Rebuild with: just rc"
+        exit 1
+    fi
     TAG="v${VERSION}"
 
     echo "╭──────────────────────────────────╮"
@@ -518,11 +530,6 @@ publish:
         exit 1
     fi
 
-    if [ ! -f "$BINARY" ]; then
-        echo "✗ No binary at $BINARY — run 'just rc' first."
-        exit 1
-    fi
-
     # Verify tag exists
     if ! git tag --list "$TAG" | grep -q "$TAG"; then
         echo "✗ Tag $TAG not found. Run 'just rc' or 'just release' first."
@@ -531,14 +538,6 @@ publish:
 
     # Verify binary version matches
     BINARY_VERSION=$("$BINARY" --version 2>/dev/null | head -1 || echo "unknown")
-    if ! echo "$BINARY_VERSION" | grep -q "$VERSION"; then
-        echo "✗ Binary version mismatch:"
-        echo "  Cargo.toml: $VERSION"
-        echo "  Binary:     $BINARY_VERSION"
-        echo "  Rebuild with: just rc"
-        exit 1
-    fi
-
     echo "  Binary:  $BINARY_VERSION"
 
     # Check signing status

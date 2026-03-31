@@ -17,4 +17,49 @@ Edited: core/crates/omegon/src/auth.rs, core/crates/omegon/src/auth.rs, core/cra
 Session: 115 file operations
 Written: core/crates/omegon/src/cleave/progress.rs, openspec/design/structured-cleave-child-rpc/spec.md, openspec/design/structured-cleave-child-rpc/tasks.md, openspec/changes/codebase-search/tasks.md, openspec/changes/codebase-search/proposal.md, openspec/changes/codebase-search/design.md, openspec/changes/codebase-search/tasks.md, core/crates/omegon-codescan/Cargo.toml, core/crates/omegon-codescan/src/lib.rs, core/crates/omegon-codescan/src/cache.rs, core/crates/omegon-codescan/src/code.rs, core/crates/omegon-codescan/src/knowledge.rs, core/crates/omegon-codescan/src/bm25.rs, core/crates/omegon-codescan/src/indexer.rs, core/crates/omegon/src/tools/codebase_search.rs, core/crates/omegon-codescan/Cargo.toml, core/crates/omegon-codescan/src/cache.rs, core/crates/omegon-codescan/src/code.rs, core/crates/omegon-codescan/src/knowledge.rs, core/crates/omegon-codescan/src/bm25.rs, core/crates/omegon-codescan/src/indexer.rs, core/crates/omegon/src/tools/codebase_search.rs, core/crates/omegon-codescan/src/code.rs, core/crates/omegon-codescan/src/cache.rs, core/crates/omegon-codescan/src/indexer.rs, core/crates/omegon/src/tools/codebase_search.rs
 Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/main.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/conversation.rs, core/crates/omegon/src/loop.rs, core/crates/omegon/src/prompt.rs, core/crates/omegon/src/prompt.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/features/cleave.rs, core/crates/omegon/src/features/cleave.rs, core/crates/omegon/src/features/cleave.rs, core/crates/omegon/src/features/cleave.rs, core/crates/omegon/src/main.rs, core/crates/omegon/src/cleave/orchestrator.rs, core/crates/omegon/src/cleave/progress.rs, core/crates/omegon/src/cleave/progress.rs, core/crates/omegon-codescan/Cargo.toml, core/Cargo.toml, core/crates/omegon/src/tool_registry.rs, core/crates/omegon/src/tool_registry.rs, core/crates/omegon/src/tool_registry.rs, core/crates/omegon/src/tools/mod.rs, core/crates/omegon/src/setup.rs, core/crates/omegon/src/setup.rs, core/crates/omegon/src/setup.rs, core/crates/omegon/Cargo.toml, core/crates/omegon/src/tools/mod.rs, core/crates/omegon/src/tool_registry.rs, core/crates/omegon/src/tool_registry.rs, core/crates/omegon/src/tool_registry.rs, core/crates/omegon-codescan/Cargo.toml, core/crates/omegon-codescan/src/code.rs, core/crates/omegon/src/tools/codebase_search.rs
+## 2026-03-31 — main (37t 6356tc 7m7s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  7cbd40a1 docs: documentation pass for 0.15.5 release
+  bd0a50ae chore(release): 0.15.5-rc.30
+  3fbd2977 fix(memory): emit SessionEnd and wire episode storage at session close
+## 2026-03-31 — main (4t 6359tc 35s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  7cbd40a1 docs: documentation pass for 0.15.5 release
+  bd0a50ae chore(release): 0.15.5-rc.30
+  3fbd2977 fix(memory): emit SessionEnd and wire episode storage at session close
+## 2026-03-31 — main (14t 6379tc 6m41s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  0a878151 chore(release): 0.15.6-rc.1
+  8e567f3d chore(release): 0.15.5
+  7cbd40a1 docs: documentation pass for 0.15.5 release
 

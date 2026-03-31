@@ -32,6 +32,8 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>memory_release()</code></td><td>Clear working memory buffer</td></tr>
       <tr><td><code>memory_connect(source, target, relation)</code></td><td>Create a typed edge in the knowledge graph</td></tr>
       <tr><td><code>memory_compact()</code></td><td>Trigger context compaction to free context window</td></tr>
+      <tr><td><code>memory_search_archive(query)</code></td><td>Search archived (superseded/stale) facts — not injected into context but still queryable</td></tr>
+      <tr><td><code>memory_ingest_lifecycle()</code></td><td>Batch-import recent design-tree decisions and resolved questions into the memory store</td></tr>
     </tbody>
   </table>
 
@@ -44,6 +46,15 @@ import Docs from "../../layouts/Docs.astro";
     <li><strong>Archive</strong> — stale facts are moved to archive (still searchable, not injected)</li>
     <li><strong>Compact</strong> — when context fills, older conversation is summarized; pinned facts survive</li>
   </ol>
+
+  <h2>Auto-Ingestion</h2>
+  <p>
+    Two automatic memory flows run without explicit tool calls:
+  </p>
+  <ul>
+    <li><strong>Lifecycle decisions</strong> — when <code>design_tree_update(add_decision)</code> or a status transition to <code>resolved</code>/<code>decided</code>/<code>implementing</code> fires, the decision is automatically persisted to the <code>Decisions</code> memory section via the bus. No <code>memory_store</code> call needed.</li>
+    <li><strong>Session episodes</strong> — at session close, a template episode is automatically written (title, turn count, tool call count, duration) and tagged <code>auto</code>. Searchable via <code>memory_episodes</code> in future sessions for continuity context.</li>
+  </ul>
 
   <h2>Operator Commands</h2>
   <pre><code>/memory       # Show memory stats: facts, episodes, working memory

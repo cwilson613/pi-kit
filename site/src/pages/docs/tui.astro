@@ -10,7 +10,7 @@ import Docs from "../../layouts/Docs.astro";
     <li><strong>Conversation view</strong> (center) — segments: user prompts, assistant responses, tool cards, system notifications, lifecycle events</li>
     <li><strong>Instrument panel</strong> (right) — CIC telemetry: context bar, memory gauge, tool history, active model</li>
     <li><strong>Editor</strong> (bottom) — multi-line input with history, slash command palette</li>
-    <li><strong>Footer</strong> (bottom bar) — model, provider, context %, tool calls, session duration</li>
+    <li><strong>Footer</strong> (bottom bar) — engine block (provider/model/route), inference panel (context composition with bucket legend), live tools strip with per-tool runtimes, and session token totals (cumulative input/output tokens)</li>
   </ul>
 
   <h2>Segments</h2>
@@ -43,7 +43,7 @@ import Docs from "../../layouts/Docs.astro";
   <h2>Tool Cards</h2>
   <p>
     Each tool call renders as a compact card with the tool name (glyph + label), a one-line
-    args summary, and a collapsible result preview. 49 tools are mapped to distinctive glyphs.
+    args summary, and a collapsible result preview. 53 tools are mapped to distinctive glyphs.
   </p>
   <ul>
     <li><strong>Collapsed</strong> — shows tool name, args summary, first 12 lines of result</li>
@@ -67,7 +67,7 @@ import Docs from "../../layouts/Docs.astro";
     The right-side instrument panel (CIC — Command Information Center) shows real-time telemetry:
   </p>
   <ul>
-    <li><strong>Context bar</strong> — two-row signal-density display (≋ ≈ ∿ · chars) showing context fill with perceptual teal ramp</li>
+    <li><strong>Context bar</strong> — braille-character density bar showing context fill in real provider token counts (not a character-count estimate). Bucket legend identifies composition zones (cached / input / output / reasoning). Per-turn token stats row below shows last-turn input/output tokens.</li>
     <li><strong>Memory gauge</strong> — active facts, working memory pins, injected count</li>
     <li><strong>Tool history</strong> — recent tool calls with glyph labels and timing</li>
     <li><strong>Thinking/context telemetry</strong> — the panel emphasizes real context and memory state over ornamental effects</li>
@@ -108,6 +108,18 @@ import Docs from "../../layouts/Docs.astro";
     <li>IBM Plex Mono (or system monospace) for code</li>
     <li>Tomorrow (Google Fonts) for UI chrome</li>
   </ul>
+
+  <h2>Mouse</h2>
+  <p>
+    Mouse capture is <strong>on by default</strong>. Scroll events pan the conversation; click-drag does not
+    select text in this mode. To select and copy text with your terminal's native selection, press
+    <code>Ctrl+M</code> to toggle mouse scroll off. Press again to re-enable. <code>Esc</code> no longer
+    silently disables mouse mode.
+  </p>
+  <p>
+    Press <code>Ctrl+Y</code> to copy the currently selected conversation segment as plain text
+    to the system clipboard.
+  </p>
 
   <h2>Editor</h2>
   <p>

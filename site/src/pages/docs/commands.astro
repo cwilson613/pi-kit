@@ -119,11 +119,12 @@ import Docs from "../../layouts/Docs.astro";
     <li><code>codebase_search</code> / <code>codebase_index</code> — ranked discovery across code and project knowledge</li>
     <li><code>web_search</code> — multi-provider web search (Brave, Tavily, Serper)</li>
     <li><code>ask_local_model</code> / <code>list_local_models</code> / <code>manage_ollama</code> — local inference and Ollama control</li>
+    <li><code>speculate_start</code> / <code>speculate_check</code> / <code>speculate_commit</code> / <code>speculate_rollback</code> — git-checkpoint sandbox for exploratory changes; commit to keep or rollback to discard</li>
     <li><code>read</code> / <code>edit</code> / <code>write</code> / <code>bash</code> / <code>view</code> / <code>change</code> / <code>commit</code> — file and system operations with atomic edits and git commits</li>
     <li><code>serve</code> — manage long-lived background processes (dev servers, watchers, MCP servers). Start, stop, list, logs, check.</li>
     <li><code>chronos</code> — authoritative date/time (never calculates dates manually)</li>
     <li><code>whoami</code> — check auth status across all dev tools</li>
-    <li><code>manage_tools</code> — enable/disable tools and profiles</li>
+    <li><code>manage_tools</code> — enable/disable individual tools or entire groups (<code>memory-advanced</code>, <code>delegate</code>, <code>cleave</code>, <code>lifecycle-advanced</code>, <code>model-control</code>). Actions: <code>list</code>, <code>enable</code>, <code>disable</code>, <code>enable_group</code>, <code>disable_group</code>, <code>list_groups</code>.</li>
   </ul>
 
   <h2>Keyboard Shortcuts</h2>
@@ -132,6 +133,8 @@ import Docs from "../../layouts/Docs.astro";
     <tbody>
       <tr><td><code>Ctrl+D</code></td><td>Toggle sidebar navigation mode — arrow keys/hjkl navigate the design tree, Enter focuses a node, Esc exits</td></tr>
       <tr><td><code>Ctrl+O</code></td><td>Pin/unpin segment expansion (locks tool card open at bottom of viewport)</td></tr>
+      <tr><td><code>Ctrl+Y</code></td><td>Copy the currently selected conversation segment as plain text to the clipboard</td></tr>
+      <tr><td><code>Ctrl+M</code></td><td>Toggle mouse scroll mode (mouse is on by default; <code>Ctrl+M</code> switches between scroll and terminal-native selection)</td></tr>
       <tr><td><code>Tab</code></td><td>Expand nearest tool card (when editor is empty)</td></tr>
       <tr><td><code>Esc</code></td><td>Cancel active agent turn / unpin segment / close selector</td></tr>
       <tr><td><code>Ctrl+C</code></td><td>Cancel turn (single) / quit (double-tap)</td></tr>

@@ -3,6 +3,44 @@
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.15.5] - 2026-03-31
+
+### Added
+
+- **Speculative sandbox tools** — `speculate_start` / `speculate_check` / `speculate_commit` / `speculate_rollback`. Creates a git checkpoint before exploratory changes; commit to keep or rollback to discard. Replaces the pattern of ad-hoc `git stash` in agent sessions.
+- **Tool groups in `manage_tools`** — predefined named capability clusters: `memory-advanced`, `delegate`, `cleave`, `lifecycle-advanced`, `model-control`. `enable_group` / `disable_group` / `list_groups` actions let operators collapse entire capability surfaces in one call. Groups don't change default state — they're a batch toggle for managing schema surface.
+- **Ollama model warmup** — before streaming starts, cold Ollama models are pre-warmed with a no-op request. Progress surfaces in the TUI so the operator sees the model loading rather than a silent hang.
+- **Unified braille context bar** — replaced the `≋ ≈ ∿ ·` character ramp with a braille-density bar backed by actual provider token counts (not a character-count heuristic). Bucket legend identifies all composition zones.
+- **Per-turn token stats row** — the instruments panel shows last-turn input/output tokens immediately below the context bar.
+- **Session token totals in footer** — cumulative session input/output tokens shown in the footer engine block.
+- **Auto-ingest lifecycle decisions to memory** — `design_tree_update(add_decision)` and status transitions to `resolved` / `decided` / `implementing` automatically persist to the `Decisions` memory section via `BusRequest::AutoStoreFact`. Previously declared intent (`memory_ingest_lifecycle`) now has a real call path.
+- **Auto-stored session episodes** — at session close, a template episode (title, turn count, tool calls, duration, tagged `auto`) is written to the memory backend. Searchable via `memory_episodes` in future sessions.
+- **Segment copy** — `Ctrl+Y` copies the currently selected conversation segment as plain text to the system clipboard.
+- **Dynamic Ollama catalog** — available local models are fetched at startup and surfaced in the model selector; unavailable cloud providers are filtered from the selector unless authenticated.
+
+### Fixed
+
+- **Spurious end-of-turn commit nudge** — `update_from_tools("commit")` now clears `files_modified` and `commit_nudged` is persisted across TUI `run()` invocations (was a local variable reset each message). The `[System: You made file changes but did not run git commit]` injection no longer fires after a successful commit.
+- **`manage_tools` schema leak** — `tool_defs` was captured once before the turn loop; disabled tools were filtered from execution routing but still appeared in the schema sent to the LLM. Tool definitions are now refreshed from `bus.tool_definitions()` at the top of every turn.
+- **Actual provider token counts end-to-end** — `input_tokens` from Anthropic / OpenAI / Codex API responses are wired through `LlmEvent::Done` → `AssistantMessage.provider_tokens` → `AgentEvent::TurnEnd` → TUI context bar.
+- **`SessionEnd` never emitted in production** — the agent loop emitted `AgentEnd` but not `SessionEnd`, so `session_log.append_entry()` and all `SessionEnd` feature handlers were dead code. Fixed; `SessionEnd` now carries `turns` / `tool_calls` / `duration_secs`.
+- **Post-loop `AutoStoreFact` dropped** — late-arriving or `SessionEnd`-triggered auto-store requests were silently discarded at the post-loop drain site. They now execute via `bus.execute_tool`.
+- **Mouse on by default; `Esc` no longer silently disables** — mouse capture is enabled at startup; `Esc` closes popups/unpins segments only. `Ctrl+M` is the explicit mouse toggle.
+- **Context bar memory fill estimate** — corrected the memory-fill fraction computation in the context bar breakdown.
+- **`/context` slash command** — was parsing `ContextMode` (200k/1M) instead of `ContextClass` (squad/maniple/clan/legion); the command now matches what the selector shows.
+- **Splash screen overflow** — content height was miscalculated (logo + 4 instead of actual content rows), causing overflow on terminals shorter than ~30 lines. Content-sized grid layout eliminates terminal-proportional whitespace.
+- **Ambiguous-width Unicode cell advancement** — `⊙`, `◎`, `✦` and similar glyphs are 2-cell wide in most terminals; the footer and segment renderers now use `unicode-width` for correct cell advancement.
+- **Session resume with missing fields** — tolerates unknown/missing fields in saved session snapshots rather than failing to deserialize.
+- **Ollama stream flakiness** — `extra_body` injected into `StreamOptions` for provider-specific fields; model label display corrected.
+
+### Changed
+
+- **Tool schema surface −650 tokens/request** — stripped redundant `description` fields from optional properties in the four heaviest feature schemas (`design_tree_update`, `delegate`, `lifecycle_doctor`, `openspec_manage`). `file_scope` simplified to `items: {type: object}`.
+- **Feature tool output capped at 16 000 chars** — universal safety net applied at the `dispatch_tools` level. Truncated blocks append `[truncated: N chars dropped — limit 16000]`.
+- All provider model catalogs updated to current 2026 IDs (Anthropic, OpenAI, Groq, xAI, Mistral, OpenRouter). Route matrix includes gpt-5 family. MLX removed as a dedicated provider — use Ollama instead.
+- `SessionEnd` is now emitted after every agent loop regardless of exit reason, enabling post-session hooks in features.
+- 1050 tests.
+
 ## [0.15.5-rc.3] - 2026-03-30
 
 ### Added

@@ -165,7 +165,19 @@ impl AgentSetup {
         );
         secrets.preflight_session_cache(preflight);
         let session_secret_env = secrets.session_env();
-        let web_auth_state = crate::web::resolve_web_auth_state(&secrets, "".into()).await;
+        
+        // Extract web auth secret from already-loaded cache instead of re-querying keychain
+        let web_auth_state = if let Some((_, secret)) = session_secret_env
+            .iter()
+            .find(|(name, _)| name == crate::web::WEB_AUTH_SECRET_NAME)
+        {
+            crate::web::WebAuthState::from_resolved_root(
+                secret.clone(),
+                crate::web::WebAuthSource::Keyring,
+            )
+        } else {
+            crate::web::resolve_web_auth_state(&secrets, "".into()).await
+        };
         let session_secret_diag = secrets.session_diagnostics();
         tracing::info!(
             warmed = session_secret_diag.len(),

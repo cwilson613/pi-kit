@@ -22,7 +22,9 @@ use axum::Router;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::tui::dashboard::DashboardHandles;
-pub use auth::{resolve_web_auth_state, WebAuthState};
+pub use auth::{
+    resolve_web_auth_state, WEB_AUTH_SECRET_NAME, WebAuthSource, WebAuthState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]

@@ -1022,4 +1022,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   4df9a2c5 chore(release): 0.15.6-rc.15
   3c664c58 fix(footer): use compact token formatting for session counters
   c32f9dd8 chore(release): 0.15.6-rc.14
+## 2026-04-01 — main (20t 7705tc 6m36s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  3d454a71 chore(release): 0.15.6-rc.16
+  3809b066 fix(context): prevent deadlock in /context clear operation
+  4df9a2c5 chore(release): 0.15.6-rc.15
 

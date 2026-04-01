@@ -774,6 +774,18 @@ pub fn format_tokens(count: usize) -> String {
     }
 }
 
+/// Compact token formatting (no decimals) — for space-constrained footer lines.
+/// Used in session counters: ↑ 1M ↓ 7M instead of ↑ 1.3M ↓ 7.2M
+pub fn format_tokens_compact(count: usize) -> String {
+    if count < 1000 {
+        count.to_string()
+    } else if count < 1_000_000 {
+        format!("{}k", count / 1000)
+    } else {
+        format!("{}M", count / 1_000_000)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

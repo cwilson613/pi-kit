@@ -240,8 +240,8 @@ impl FooterData {
                     self.turn,
                     self.tool_calls,
                     self.compactions,
-                    widgets::format_tokens(self.session_input_tokens as usize),
-                    widgets::format_tokens(self.session_output_tokens as usize),
+                    widgets::format_tokens_compact(self.session_input_tokens as usize),
+                    widgets::format_tokens_compact(self.session_output_tokens as usize),
                 )
             } else {
                 format!("T·{} · ⚙ {} · ↻ {}", self.turn, self.tool_calls, self.compactions)

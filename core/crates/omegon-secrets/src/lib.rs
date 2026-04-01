@@ -226,40 +226,27 @@ impl SecretsManager {
 
         // Pre-load all recipes so we know which ones require keyring access
         // and can batch them together in a single prompt.
+        // SECURITY: Keyring is the authoritative source. Environment variables
+        // are only used if no keyring recipe is configured.
         let recipes = self.recipes.read().unwrap();
         let mut keyring_names: Vec<&String> = Vec::new();
-        let mut env_names: Vec<&String> = Vec::new();
+        let mut env_fallback_names: Vec<&String> = Vec::new();
         
         for name in &requested {
-            // Check if the secret is in environment already
-            if std::env::var(name).is_ok() {
-                env_names.push(name);
-                continue;
-            }
-            // Check if it has a recipe (which may require keyring)
+            // Check if it has a recipe first (keyring is authoritative)
             if recipes.get(name).is_some() {
                 keyring_names.push(name);
+            } else if std::env::var(name).is_ok() {
+                // Only use env if no recipe is configured
+                env_fallback_names.push(name);
             }
         }
         drop(recipes);
 
-        // Now resolve secrets in order: env first (free), then all keyring
-        // together (one prompt). This batches the Keychain access.
+        // Resolve secrets in order: all keyring together (single prompt), then env.
+        // This batches all Keychain access into a single prompt on macOS.
         let mut warmed = Vec::new();
         let mut missing = Vec::new();
-
-        // Resolve env vars first (no prompting)
-        for name in env_names {
-            let use_case = match name.as_str() {
-                "BRAVE_API_KEY" | "TAVILY_API_KEY" | "SERPER_API_KEY" => SecretUse::WebSearch,
-                _ => SecretUse::LlmProvider,
-            };
-            if self.warm_secret(name, use_case, true) {
-                warmed.push(name.clone());
-            } else {
-                missing.push(name.clone());
-            }
-        }
 
         // Resolve keyring vars all at once (single prompt on macOS)
         // by triggering all keyring lookups in sequence before building the cache
@@ -272,6 +259,19 @@ impl SecretsManager {
                 warmed.push((*name).clone());
             } else {
                 missing.push((*name).clone());
+            }
+        }
+
+        // Resolve env vars only if no keyring recipe exists (fallback only)
+        for name in env_fallback_names {
+            let use_case = match name.as_str() {
+                "BRAVE_API_KEY" | "TAVILY_API_KEY" | "SERPER_API_KEY" => SecretUse::WebSearch,
+                _ => SecretUse::LlmProvider,
+            };
+            if self.warm_secret(name, use_case, true) {
+                warmed.push(name.clone());
+            } else {
+                missing.push(name.clone());
             }
         }
 
@@ -388,7 +388,30 @@ impl SecretsManager {
             }
         }
 
-        // Check env var before acquiring any locks
+        // Clone recipe out — don't hold across I/O
+        // Check recipe FIRST (keyring is authoritative)
+        let recipe = {
+            let recipes = self.recipes.read().unwrap();
+            recipes.get(name).cloned()
+        };
+
+        if let Some(recipe) = recipe {
+            // Recipe exists — resolve it (may be keyring, vault, or shell)
+            // Acquire vault client only when we actually need it for recipe execution
+            let client = self.vault_client.lock().await;
+            let vault_client = client.as_ref();
+
+            if let Some(secret) = resolve::execute_recipe_async(name, &recipe, vault_client).await {
+                let value = secret.expose_secret().to_string();
+                let mut set = self.redaction_set.write().unwrap();
+                set.insert(name.to_string(), secret);
+                let new_redactor = Redactor::build(&set);
+                *self.redactor.write().unwrap() = new_redactor;
+                return Some(value);
+            }
+        }
+
+        // No recipe — fall back to environment variable
         if let Ok(val) = std::env::var(name) {
             if !val.is_empty() {
                 let secret = SecretString::from(val);
@@ -401,27 +424,7 @@ impl SecretsManager {
             }
         }
 
-        // Clone recipe out — don't hold across I/O
-        let recipe = {
-            let recipes = self.recipes.read().unwrap();
-            recipes.get(name).cloned()
-        };
-        let recipe = recipe?;
-
-        // Acquire vault client only when we actually need it for recipe execution
-        let client = self.vault_client.lock().await;
-        let vault_client = client.as_ref();
-
-        if let Some(secret) = resolve::execute_recipe_async(name, &recipe, vault_client).await {
-            let value = secret.expose_secret().to_string();
-            let mut set = self.redaction_set.write().unwrap();
-            set.insert(name.to_string(), secret);
-            let new_redactor = Redactor::build(&set);
-            *self.redactor.write().unwrap() = new_redactor;
-            Some(value)
-        } else {
-            None
-        }
+        None
     }
 
     /// Redact all known secret values from a string.

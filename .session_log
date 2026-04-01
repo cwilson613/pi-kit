@@ -917,4 +917,34 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   d427bdf7 feat(omegon): implement extension state management (Phase 2 of BYOM)
   661ff673 feat(omegon-extension): add BYOM (Bring Your Own Mind) types and manifest support
   fb798eec docs: update extension system summary with lifecycle and BYOM additions
+## 2026-04-01 — main (25t 7541tc 4m12s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  d5eaf9c6 feat(omegon): implement extension mind persistence (Phase 3 of BYOM)
+  d427bdf7 feat(omegon): implement extension state management (Phase 2 of BYOM)
+  661ff673 feat(omegon-extension): add BYOM (Bring Your Own Mind) types and manifest support
+## 2026-04-01 — main (9t 7549tc 6m6s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  f8ada9ec chore(release): 0.15.6-rc.12
+  d5eaf9c6 feat(omegon): implement extension mind persistence (Phase 3 of BYOM)
+  d427bdf7 feat(omegon): implement extension state management (Phase 2 of BYOM)
 

@@ -3385,6 +3385,9 @@ impl App {
                 cache_read_tokens,
             } => {
                 self.turn = turn;
+                // Accumulate session-long token counts
+                self.footer_data.session_input_tokens += actual_input_tokens;
+                self.footer_data.session_output_tokens += actual_output_tokens;
                 // Forward raw token counts to the instrument panel
                 self.instrument_panel.update_turn_tokens(
                     actual_input_tokens as u32,

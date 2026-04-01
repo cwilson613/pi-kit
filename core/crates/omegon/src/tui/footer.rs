@@ -34,6 +34,10 @@ pub struct FooterData {
     pub memory_tokens_est: usize,
     /// Estimated total context tokens (rough heuristic from turn + tool counts).
     pub estimated_tokens: usize,
+    /// Cumulative input tokens for the entire session.
+    pub session_input_tokens: u64,
+    /// Cumulative output tokens for the entire session.
+    pub session_output_tokens: u64,
     pub tool_calls: u32,
     pub turn: u32,
     pub compactions: u32,
@@ -230,7 +234,18 @@ impl FooterData {
                 capitalize(&self.model_tier),
                 capitalize(&self.thinking_level),
             );
-            let session_text = format!("T·{} · ⚙ {} · ↻ {}", self.turn, self.tool_calls, self.compactions);
+            let session_text = if self.session_input_tokens > 0 || self.session_output_tokens > 0 {
+                format!(
+                    "T·{} · ⚙ {} · ↻ {} · ↑ {} ↓ {}",
+                    self.turn,
+                    self.tool_calls,
+                    self.compactions,
+                    widgets::format_tokens(self.session_input_tokens as usize),
+                    widgets::format_tokens(self.session_output_tokens as usize),
+                )
+            } else {
+                format!("T·{} · ⚙ {} · ↻ {}", self.turn, self.tool_calls, self.compactions)
+            };
             let next_ver = env!("OMEGON_NEXT_VERSION");
             let version_text = format!("v{} → v{next_ver}", env!("CARGO_PKG_VERSION"));
 

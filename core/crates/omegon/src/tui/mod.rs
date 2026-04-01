@@ -4980,15 +4980,15 @@ pub async fn run_tui(
                             }
                         }
 
-                        // Ctrl+Tab: next conversation tab
-                        (KeyCode::Tab, m) if m.contains(KeyModifiers::CONTROL) => {
+                        // Alt+N: next conversation tab
+                        (KeyCode::Char('n'), KeyModifiers::ALT) => {
                             if app.conversation.tabs.tabs.len() > 1 {
                                 app.conversation.tabs.next_tab();
                             }
                         }
 
-                        // Ctrl+Shift+Tab: previous conversation tab
-                        (KeyCode::BackTab, m) if m.contains(KeyModifiers::CONTROL) => {
+                        // Alt+P: previous conversation tab
+                        (KeyCode::Char('p'), KeyModifiers::ALT) => {
                             if app.conversation.tabs.tabs.len() > 1 {
                                 app.conversation.tabs.prev_tab();
                             }

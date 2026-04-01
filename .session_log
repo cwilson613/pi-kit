@@ -707,4 +707,34 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   9e094400 feat: action prompt rendering for extension widgets
   6c4b3bfd feat: modal dismiss on Esc key
   6105c148 feat: ephemeral modal rendering for extension widgets
+## 2026-03-31 — main (11t 7287tc 1m29s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  16655133 feat: action prompt input handling — numeric key selection
+  9e094400 feat: action prompt rendering for extension widgets
+  6c4b3bfd feat: modal dismiss on Esc key
+## 2026-03-31 — main (12t 7298tc 5m18s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  0bcfefaa chore(release): 0.15.6-rc.7
+  a031a3bc chore(release): 0.15.6-rc.6
+  16655133 feat: action prompt input handling — numeric key selection
 

@@ -257,7 +257,7 @@
     "frozen": false,
     "opened": "2026-03-31T02:04:48Z",
     "released": null,
-    "rc_count": 22,
+    "rc_count": 23,
     "notes": [
       "feat(ci): integrate THIRD_PARTY_NOTICES with SBOM in release workflow",
       "feat(omegon): implement extension mind persistence (Phase 3 of BYOM)",
@@ -294,6 +294,7 @@
       "fix(justfile): smoke and publish robust to post-release RC cycle bump",
       "fix(legal): update contact address to admin@styrene.io",
       "fix(secrets): defer redactor rebuild until after batch preflight",
+      "fix(secrets): keyring recipes take precedence over environment variables",
       "fix(site): add nginx location blocks for /terms and /privacy",
       "fix(startup): consolidate dual keychain prompts into single OS request",
       "fix(startup): eliminate web auth secret from preflight keychain access",
@@ -304,7 +305,7 @@
       "refactor: remove dead TypeScript extension bridge — scribe is pure Rust",
       "refactor: remove scribe-rpc crate from omegon workspace"
     ],
-    "rc_version": "0.15.6-rc.23",
-    "last_rc": "2026-04-01T13:19:46Z"
+    "rc_version": "0.15.6-rc.24",
+    "last_rc": "2026-04-01T13:59:57Z"
   }
 }

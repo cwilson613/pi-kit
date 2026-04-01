@@ -91,21 +91,26 @@ pub(crate) fn keyring_delete(service: &str, name: &str) -> Result<(), keyring::E
     Ok(())
 }
 
-/// Resolve a secret by name. Priority: env var > recipe (including vault:).
+/// Resolve a secret by name. Priority: recipe > env var.
 /// Returns a SecretString that auto-zeroizes on drop.
 /// For vault recipes, this returns None and logs a warning - use resolve_async instead.
+///
+/// SECURITY: Recipes (keyring, file, shell, vault) are the authoritative source.
+/// Environment variables are only used as fallback when no recipe is configured.
 #[allow(dead_code)]
 pub fn resolve_secret(name: &str, recipes: &RecipeStore) -> Option<SecretString> {
-    // 1. Check environment variable
+    // 1. Check recipe store (authoritative source)
+    if let Some(recipe) = recipes.get(name) {
+        if let Some(value) = execute_recipe(name, recipe) {
+            return Some(value);
+        }
+    }
+
+    // 2. Fallback: check environment variable (only if no recipe matched)
     if let Ok(val) = std::env::var(name) {
         if !val.is_empty() {
             return Some(SecretString::from(val));
         }
-    }
-
-    // 2. Check recipe store
-    if let Some(recipe) = recipes.get(name) {
-        return execute_recipe(name, recipe);
     }
 
     None
@@ -113,21 +118,26 @@ pub fn resolve_secret(name: &str, recipes: &RecipeStore) -> Option<SecretString>
 
 /// Resolve a secret by name with async vault support.
 /// This is the preferred method when vault recipes might be present.
+///
+/// SECURITY: Recipes (keyring, file, shell, vault) are the authoritative source.
+/// Environment variables are only used as fallback when no recipe is configured.
 pub async fn resolve_secret_async(
     name: &str,
     recipes: &RecipeStore,
     vault_client: Option<&VaultClient>,
 ) -> Option<SecretString> {
-    // 1. Check environment variable
+    // 1. Check recipe store (authoritative source)
+    if let Some(recipe) = recipes.get(name) {
+        if let Some(value) = execute_recipe_async(name, recipe, vault_client).await {
+            return Some(value);
+        }
+    }
+
+    // 2. Fallback: check environment variable (only if no recipe matched)
     if let Ok(val) = std::env::var(name) {
         if !val.is_empty() {
             return Some(SecretString::from(val));
         }
-    }
-
-    // 2. Check recipe store
-    if let Some(recipe) = recipes.get(name) {
-        return execute_recipe_async(name, recipe, vault_client).await;
     }
 
     None

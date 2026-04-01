@@ -1202,4 +1202,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   26f5c1d5 chore(release): 0.15.6-rc.23
   a435f58d fix(startup): skip keyring recipe resolution at init, resolve on-demand
   5cc794fa chore(release): 0.15.6-rc.22
+## 2026-04-01 — main (16t 8041tc 7m30s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  7a079791 chore(release): 0.15.6-rc.24
+  d71ca08c fix(secrets): keyring recipes take precedence over environment variables
+  26f5c1d5 chore(release): 0.15.6-rc.23
 

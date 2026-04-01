@@ -49,6 +49,15 @@ impl AuditLog {
                 .append(true)
                 .open(&self.path)
             {
+                // Restrict permissions on audit log — contains secret access decisions.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &self.path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
                 let _ = writeln!(file, "{line}");
             }
         }

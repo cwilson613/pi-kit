@@ -544,8 +544,14 @@ impl SecretsManager {
             }
         }
 
-        // Also grab well-known env vars that might contain secrets
+        // Also grab well-known env vars that might contain secrets,
+        // but ONLY if they don't already have a recipe-resolved value.
+        // Recipe values are authoritative — env is fallback only.
         for env_name in resolve::WELL_KNOWN_SECRET_ENVS {
+            if set.contains_key(*env_name) {
+                // Already resolved from recipe — skip env override
+                continue;
+            }
             if let Ok(value) = std::env::var(env_name) {
                 if !value.is_empty() && !set.values().any(|v| v.expose_secret() == value) {
                     set.insert(env_name.to_string(), SecretString::from(value));

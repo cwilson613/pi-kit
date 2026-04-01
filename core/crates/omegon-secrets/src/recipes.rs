@@ -133,7 +133,17 @@ impl RecipeStore {
             recipes: self.recipes.clone(),
         };
         let json = serde_json::to_string_pretty(&file)?;
-        std::fs::write(&self.path, json)?;
+        std::fs::write(&self.path, &json)?;
+
+        // Restrict file permissions — recipes contain sensitive metadata
+        // (keyring service names, file paths, vault paths, shell commands).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&self.path, perms)?;
+        }
+
         Ok(())
     }
 }

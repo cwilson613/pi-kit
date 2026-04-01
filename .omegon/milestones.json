@@ -257,9 +257,11 @@
     "frozen": false,
     "opened": "2026-03-31T02:04:48Z",
     "released": null,
-    "rc_count": 24,
+    "rc_count": 25,
     "notes": [
       "feat(ci): integrate THIRD_PARTY_NOTICES with SBOM in release workflow",
+      "feat(extensions): deliver secrets via bootstrap_secrets RPC, not env vars",
+      "feat(extensions): preflight extension-declared secrets at startup",
       "feat(omegon): implement extension mind persistence (Phase 3 of BYOM)",
       "feat(omegon): implement extension state management (Phase 2 of BYOM)",
       "feat(omegon-extension): add BYOM (Bring Your Own Mind) types and manifest support",
@@ -288,6 +290,7 @@
       "fix(ci): fix malformed YAML in release.yml workflow_dispatch edit",
       "fix(context): prevent deadlock in /context clear operation",
       "fix(context): sync footer display on compaction and clear operations",
+      "fix(extensions): refuse to spawn extension when required secrets are absent",
       "fix(footer): use compact token formatting for session counters",
       "fix(inference): reflect actual context breakdown, not heuristic caps",
       "fix(justfile): publish reads version from binary, not Cargo.toml",
@@ -306,7 +309,7 @@
       "refactor: remove dead TypeScript extension bridge — scribe is pure Rust",
       "refactor: remove scribe-rpc crate from omegon workspace"
     ],
-    "rc_version": "0.15.6-rc.25",
-    "last_rc": "2026-04-01T14:49:53Z"
+    "rc_version": "0.15.6-rc.26",
+    "last_rc": "2026-04-01T15:16:55Z"
   }
 }

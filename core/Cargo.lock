@@ -4296,6 +4296,7 @@ dependencies = [
  "insta",
  "libc",
  "omegon-codescan",
+ "omegon-extension",
  "omegon-git",
  "omegon-memory",
  "omegon-secrets",

@@ -10,6 +10,7 @@ name = "omegon"
 path = "src/main.rs"
 
 [dependencies]
+omegon-extension = { path = "../omegon-extension" }
 omegon-traits = { path = "../omegon-traits" }
 omegon-git = { path = "../omegon-git" }
 omegon-memory = { path = "../omegon-memory" }

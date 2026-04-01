@@ -15,9 +15,11 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 pub mod manifest;
+pub mod mind;
 pub mod state;
 pub mod widgets;
 pub use manifest::{ExtensionManifest, RuntimeConfig, WidgetConfig};
+pub use mind::{ExtensionMind, MindStats};
 pub use state::{ExtensionState, StabilityMetrics};
 pub use widgets::{WidgetDeclaration, WidgetEvent, ExtensionTabWidget};
 

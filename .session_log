@@ -962,4 +962,34 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   3a0a1e87 feat(tui): add session-long token counters to footer engine stats
   f8ada9ec chore(release): 0.15.6-rc.12
   d5eaf9c6 feat(omegon): implement extension mind persistence (Phase 3 of BYOM)
+## 2026-04-01 — main (51t 7631tc 4m40s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  be90bc24 fix(context): sync footer display on compaction and clear operations
+  3a0a1e87 feat(tui): add session-long token counters to footer engine stats
+  f8ada9ec chore(release): 0.15.6-rc.12
+## 2026-04-01 — main (3t 7633tc 4m13s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  26452371 chore(release): 0.15.6-rc.13
+  be90bc24 fix(context): sync footer display on compaction and clear operations
+  3a0a1e87 feat(tui): add session-long token counters to footer engine stats
 

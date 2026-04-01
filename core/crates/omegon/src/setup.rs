@@ -154,6 +154,9 @@ impl AgentSetup {
                     .map(|s| (*s).to_string()),
             );
         }
+        // Include web auth secret in preflight so it's warmed in the same keychain
+        // prompt as the LLM provider credentials, avoiding a second OS Keychain request
+        preflight.insert("OMEGON_WEB_AUTH_SECRET".to_string());
         tracing::info!(
             requested = preflight.len(),
             names = ?preflight,

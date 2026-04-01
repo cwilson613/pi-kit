@@ -257,7 +257,7 @@
     "frozen": false,
     "opened": "2026-03-31T02:04:48Z",
     "released": null,
-    "rc_count": 9,
+    "rc_count": 10,
     "notes": [
       "feat(ci): integrate THIRD_PARTY_NOTICES with SBOM in release workflow",
       "feat(scribe): implement first Rust-native extension",
@@ -267,6 +267,7 @@
       "feat: action prompt input handling — numeric key selection",
       "feat: action prompt rendering for extension widgets",
       "feat: add Tab and TabState for conversation widget tabbed interface",
+      "feat: add omegon-extension SDK for third-party extension development",
       "feat: add tab switching key bindings (Ctrl+Tab, Ctrl+Shift+Tab)",
       "feat: auto-fetch widget initial data on extension spawn",
       "feat: ephemeral modal rendering for extension widgets",
@@ -287,9 +288,10 @@
       "fix(site): add nginx location blocks for /terms and /privacy",
       "fix: change tab navigation keybindings from Ctrl+Tab to Alt+N/P",
       "fix: install scribe-rpc extension to ~/.omegon/extensions",
-      "refactor: remove dead TypeScript extension bridge — scribe is pure Rust"
+      "refactor: remove dead TypeScript extension bridge — scribe is pure Rust",
+      "refactor: remove scribe-rpc crate from omegon workspace"
     ],
-    "rc_version": "0.15.6-rc.10",
-    "last_rc": "2026-04-01T00:39:11Z"
+    "rc_version": "0.15.6-rc.11",
+    "last_rc": "2026-04-01T01:08:30Z"
   }
 }

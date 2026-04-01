@@ -431,6 +431,34 @@ impl ModelCatalog {
         ]); // end Mistral
         } // end if has_key("mistral")
 
+        // OpenAI Codex (ChatGPT OAuth — /codex/responses endpoint)
+        if has_key("openai-codex") {
+        providers.insert("ChatGPT / Codex".to_string(), vec![
+            ModelInfo {
+                id: "openai-codex:gpt-5.4".to_string(),
+                name: "GPT-5.4".to_string(),
+                provider: "ChatGPT / Codex".to_string(),
+                context_input: 1_000_000,
+                context_output: 32_768,
+                cost_tier: CostTier::Premium,
+                capabilities: vec![Capability::Reasoning, Capability::Vision, Capability::Coding],
+                description: "GPT-5.4 via ChatGPT/Codex OAuth — frontier, 1M context".to_string(),
+                available: true,
+            },
+            ModelInfo {
+                id: "openai-codex:codex-mini-latest".to_string(),
+                name: "Codex Mini".to_string(),
+                provider: "ChatGPT / Codex".to_string(),
+                context_input: 200_000,
+                context_output: 16_384,
+                cost_tier: CostTier::StandardAPI,
+                capabilities: vec![Capability::Coding, Capability::Fast],
+                description: "Codex Mini via ChatGPT/Codex OAuth — fast, coding-optimised".to_string(),
+                available: true,
+            },
+        ]); // end ChatGPT / Codex
+        } // end if has_key("openai-codex")
+
         ModelCatalog { providers }
     }
 

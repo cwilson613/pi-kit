@@ -75,45 +75,43 @@ pub async fn write_log_entry(content: &str, category: &str) -> Result<()> {
 }
 
 /// Get engagement timeline (commits, PRs, manual logs).
-/// Returns JSON with structure: { "events": [...] }
+/// Phase 1: Returns JSON with structure: { "events": [...] } for widget rendering
 pub async fn get_timeline(
-    cwd: &str,
+    _cwd: &str,
     page: usize,
     per_page: usize,
 ) -> Result<Value> {
-    // TODO: GET {SCRIBE_URL}/api/engagement/current/timeline?page={page}&per_page={per_page}
-    // TODO: paginate results using page and per_page
-
+    // Phase 1 stub: fake timeline events for widget rendering test
     let entries = vec![
         TimelineEntry {
-            timestamp: "2024-03-31T14:30:00Z".to_string(),
-            title: "Terraform Drift Detected".to_string(),
-            description: "AWS infrastructure diverged from code; initiated reconciliation".to_string(),
+            timestamp: "2026-03-31T17:30:00Z".to_string(),
+            title: "Fixed Terraform state drift".to_string(),
+            description: "Production cluster resilience improved".to_string(),
         },
         TimelineEntry {
-            timestamp: "2024-03-31T12:15:00Z".to_string(),
-            title: "EKS Planning Session".to_string(),
-            description: "Team reviewed cluster autoscaling strategy and cost optimization".to_string(),
+            timestamp: "2026-03-31T14:15:00Z".to_string(),
+            title: "EKS 1.29 upgrade planning".to_string(),
+            description: "Coordinated with platform team".to_string(),
         },
         TimelineEntry {
-            timestamp: "2024-03-31T10:45:00Z".to_string(),
-            title: "PR Merged to Main".to_string(),
-            description: "Feature: async batch processing pipeline (5 files, +342 lines)".to_string(),
+            timestamp: "2026-03-31T10:30:00Z".to_string(),
+            title: "PR #142 merged: EKS runbook".to_string(),
+            description: "Upgrade documentation complete".to_string(),
         },
         TimelineEntry {
-            timestamp: "2024-03-30T16:20:00Z".to_string(),
-            title: "Code Review Complete".to_string(),
-            description: "Approved 3 PRs; requested changes on 1 with performance feedback".to_string(),
+            timestamp: "2026-03-30T16:45:00Z".to_string(),
+            title: "Karpenter compatibility check".to_string(),
+            description: "Watch EKS 1.29 incompatibility issues".to_string(),
         },
         TimelineEntry {
-            timestamp: "2024-03-30T09:00:00Z".to_string(),
-            title: "Engagement Kickoff".to_string(),
-            description: "Partnership began; established roadmap and team communication cadence".to_string(),
+            timestamp: "2026-03-30T09:00:00Z".to_string(),
+            title: "Q2 roadmap sync".to_string(),
+            description: "Aligned with stakeholders on priorities".to_string(),
         },
         TimelineEntry {
-            timestamp: "2024-03-29T15:30:00Z".to_string(),
-            title: "Initial Onboarding".to_string(),
-            description: "Repository access granted; dev environment configured".to_string(),
+            timestamp: "2026-03-29T15:20:00Z".to_string(),
+            title: "Node group upgrade plan review".to_string(),
+            description: "Production readiness confirmed".to_string(),
         },
     ];
 

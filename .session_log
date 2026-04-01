@@ -782,4 +782,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   65734aaa chore(release): 0.15.6-rc.9
   f921c350 feat: scribe timeline widget Phase 1 — emit formatted timeline events
   feaab97d chore(release): 0.15.6-rc.8
+## 2026-04-01 — main (19t 7349tc 4m5s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  f0b93c06 fix: install scribe-rpc extension to ~/.omegon/extensions
+  65734aaa chore(release): 0.15.6-rc.9
+  f921c350 feat: scribe timeline widget Phase 1 — emit formatted timeline events
 

@@ -271,11 +271,18 @@ async fn spawn_native(
         stdout,
     );
 
-    // Convert widget declarations to tab widgets
-    let tab_widgets: Vec<ExtensionTabWidget> = widgets
-        .into_iter()
-        .map(|w| ExtensionTabWidget::new(w.id, w.label, w.renderer, w.kind))
-        .collect();
+    // Convert widget declarations to tab widgets with initial data
+    let mut tab_widgets: Vec<ExtensionTabWidget> = vec![];
+    for widget in widgets {
+        let mut tab_widget = ExtensionTabWidget::new(widget.id.clone(), widget.label, widget.renderer, widget.kind);
+        
+        // Fetch initial data for the widget
+        if let Ok(data) = feature.rpc_call(&format!("get_{}", widget.id), json!({})).await {
+            tab_widget.update(data);
+        }
+        
+        tab_widgets.push(tab_widget);
+    }
 
     Ok(SpawnedExtension {
         feature: Box::new(feature),
@@ -343,11 +350,18 @@ async fn spawn_container(
         stdout,
     );
 
-    // Convert widget declarations to tab widgets
-    let tab_widgets: Vec<ExtensionTabWidget> = widgets
-        .into_iter()
-        .map(|w| ExtensionTabWidget::new(w.id, w.label, w.renderer, w.kind))
-        .collect();
+    // Convert widget declarations to tab widgets with initial data
+    let mut tab_widgets: Vec<ExtensionTabWidget> = vec![];
+    for widget in widgets {
+        let mut tab_widget = ExtensionTabWidget::new(widget.id.clone(), widget.label, widget.renderer, widget.kind);
+        
+        // Fetch initial data for the widget
+        if let Ok(data) = feature.rpc_call(&format!("get_{}", widget.id), json!({})).await {
+            tab_widget.update(data);
+        }
+        
+        tab_widgets.push(tab_widget);
+    }
 
     Ok(SpawnedExtension {
         feature: Box::new(feature),

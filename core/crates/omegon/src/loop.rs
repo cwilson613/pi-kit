@@ -728,6 +728,8 @@ fn is_transient_error(msg: &str) -> bool {
         || lower.contains("service unavailable")
         || lower.contains("bad gateway")
         || lower.contains("internal server error")
+        || lower.contains("connection may be stalled")
+        || lower.contains("stream idle for")
     {
         return true;
     }
@@ -782,7 +784,7 @@ async fn consume_llm_stream(
         role: "assistant".into(),
     });
 
-    let stream_idle_timeout = std::time::Duration::from_secs(120);
+    let stream_idle_timeout = std::time::Duration::from_secs(30);
     while let Some(event) = match tokio::time::timeout(stream_idle_timeout, rx.recv()).await {
         Ok(event) => event,
         Err(_) => {
@@ -1394,6 +1396,9 @@ mod tests {
         assert!(is_transient_error("error 529: capacity exceeded"));
         assert!(is_transient_error("502 Bad Gateway"));
         assert!(is_transient_error("service unavailable"));
+        assert!(is_transient_error(
+            "LLM stream idle for 30s — connection may be stalled"
+        ));
 
         // Should NOT match: permanent errors
         assert!(!is_transient_error("Invalid API key"));

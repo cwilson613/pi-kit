@@ -23,7 +23,10 @@ pub struct LoopConfig {
     /// Turn at which to inject a "you're running long" advisory.
     /// Defaults to max_turns * 2/3.
     pub soft_limit_turns: u32,
-    /// Max retries on transient LLM errors.
+    /// Soft exhaustion threshold for transient upstream errors.
+    /// 0 = retry indefinitely (interactive/TUI mode).
+    /// N > 0 = bail after N consecutive transient failures with an upstream-exhausted
+    /// error so the cleave orchestrator can detect it and try a fallback provider.
     pub max_retries: u32,
     /// Initial retry delay in milliseconds.
     pub retry_delay_ms: u64,
@@ -46,7 +49,7 @@ impl Default for LoopConfig {
         Self {
             max_turns: 50,
             soft_limit_turns: 35,
-            max_retries: 8,
+            max_retries: 0,
             retry_delay_ms: 750,
             model: "anthropic:claude-sonnet-4-6".into(),
             cwd: std::env::current_dir().unwrap_or_default(),
@@ -631,69 +634,91 @@ async fn stream_with_retry(
     events: &broadcast::Sender<AgentEvent>,
     config: &LoopConfig,
 ) -> anyhow::Result<AssistantMessage> {
-    let mut attempt = 0;
+    let mut attempt = 0u32;
     let mut delay = config.retry_delay_ms;
+    let started = Instant::now();
 
     loop {
         attempt += 1;
-        let mut rx = bridge
-            .stream(system_prompt, messages, tools, options)
-            .await?;
 
-        match consume_llm_stream(&mut rx, events).await {
-            Ok(msg) => return Ok(msg),
-            Err(e) => {
-                let err_msg = e.to_string();
-                let is_transient = is_transient_error(&err_msg);
+        // Wrap bridge.stream() so pre-stream network errors (DNS, connection
+        // refused, TLS failures) enter the same transient classifier instead
+        // of aborting immediately via `?`.
+        let err = match bridge.stream(system_prompt, messages, tools, options).await {
+            Ok(mut rx) => match consume_llm_stream(&mut rx, events).await {
+                Ok(msg) => return Ok(msg),
+                Err(e) => e,
+            },
+            Err(e) => e,
+        };
 
-                if !is_transient || attempt > config.max_retries {
-                    if is_transient && attempt > config.max_retries {
-                        // All retry budget spent on a transient failure.
-                        // Tag the error so the process exit handler (and cleave orchestrator)
-                        // can distinguish upstream exhaustion from a logic failure.
-                        tracing::error!(attempts = config.max_retries, "upstream provider exhausted: {err_msg}");
-                        return Err(anyhow::anyhow!(
-                            "upstream provider exhausted after {} retries: {}",
-                            config.max_retries,
-                            err_msg
-                        ));
-                    }
-                    if attempt > 1 {
-                        tracing::error!("LLM error after {attempt} attempts: {err_msg}");
-                    }
-                    return Err(e);
-                }
+        let err_msg = err.to_string();
+        let is_transient = is_transient_error(&err_msg);
 
-                tracing::warn!(
-                    attempt,
-                    max = config.max_retries,
-                    delay_ms = delay,
-                    "Transient LLM error, retrying: {err_msg}"
-                );
-                // Notify the TUI so the user knows why it's paused.
-                // First retry shows in conversation (persistent); subsequent are toasts.
-                let short_err = crate::util::truncate_str(&err_msg, 300);
-                let retries_remaining = config.max_retries.saturating_sub(attempt);
-                let msg = if err_msg.contains("stream idle for") || err_msg.contains("connection may be stalled") {
-                    format!(
-                        "⚠ Upstream stream stalled — retrying in {}ms (attempt {attempt}/{}; {} left): {short_err}",
-                        delay,
-                        config.max_retries,
-                        retries_remaining
-                    )
-                } else {
-                    format!(
-                        "⚠ Upstream transient failure — retrying in {}ms (attempt {attempt}/{}; {} left): {short_err}",
-                        delay,
-                        config.max_retries,
-                        retries_remaining
-                    )
-                };
-                let _ = events.send(AgentEvent::SystemNotification { message: msg });
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                delay = (delay * 2).min(10_000); // exponential backoff, cap at 10s
+        if !is_transient {
+            if attempt > 1 {
+                tracing::error!("LLM error after {attempt} attempts: {err_msg}");
             }
+            return Err(err);
         }
+
+        // Soft exhaustion: when max_retries > 0, bail after that many
+        // consecutive transient failures so the cleave orchestrator can
+        // detect upstream exhaustion and try a fallback provider.
+        // max_retries == 0 means retry indefinitely (interactive/TUI mode).
+        if config.max_retries > 0 && attempt >= config.max_retries {
+            let elapsed = started.elapsed();
+            tracing::error!(
+                attempts = attempt,
+                elapsed_secs = elapsed.as_secs(),
+                "upstream exhausted: {err_msg}"
+            );
+            return Err(anyhow::anyhow!(
+                "upstream exhausted: {} consecutive transient failures over {:.0}s: {}",
+                attempt,
+                elapsed.as_secs_f64(),
+                err_msg
+            ));
+        }
+
+        // Transient — retry with escalating visual feedback.
+        tracing::warn!(
+            attempt,
+            delay_ms = delay,
+            "Transient LLM error, retrying: {err_msg}"
+        );
+
+        // Milestone warnings → persistent (pushed to conversation).
+        // These escalate so the operator notices accumulated failures.
+        let is_milestone = matches!(attempt, 10 | 25 | 50 | 100)
+            || (attempt > 100 && attempt % 100 == 0);
+        if is_milestone {
+            let provider = config.model.split(':').next().unwrap_or("upstream");
+            let elapsed = started.elapsed();
+            let _ = events.send(AgentEvent::SystemNotification {
+                message: format!(
+                    "⚠ {provider} degraded: {attempt} consecutive transient failures over {:.0}s — consider switching providers",
+                    elapsed.as_secs_f64()
+                ),
+            });
+        }
+
+        // Regular retry notification → toast (routed by TUI via "— retrying" substring).
+        let short_err = crate::util::truncate_str(&err_msg, 300);
+        let msg = if err_msg.contains("stream idle for") || err_msg.contains("connection may be stalled") {
+            format!(
+                "⚠ Upstream stalled — retrying (attempt {attempt}, delay {}ms): {short_err}",
+                delay
+            )
+        } else {
+            format!(
+                "⚠ Upstream transient failure — retrying (attempt {attempt}, delay {}ms): {short_err}",
+                delay
+            )
+        };
+        let _ = events.send(AgentEvent::SystemNotification { message: msg });
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        delay = (delay * 2).min(15_000); // exponential backoff, cap at 15s
     }
 }
 
@@ -725,11 +750,12 @@ fn is_malformed_history(msg: &str) -> bool {
         || lower.contains("does not match pattern")
 }
 
-/// Returns true if the error was produced by `stream_with_retry` exhausting its retry
-/// budget on transient upstream failures. The orchestrator uses this to distinguish
-/// provider-rate-limit failures from logic failures when classifying child exit codes.
+/// Returns true if the error was produced by `stream_with_retry` hitting the soft
+/// exhaustion threshold (max_retries consecutive transient failures). The cleave
+/// orchestrator uses this to distinguish provider exhaustion from logic failures
+/// when classifying child exit codes, enabling fallback provider routing.
 pub fn is_upstream_exhausted(e: &anyhow::Error) -> bool {
-    e.to_string().starts_with("upstream provider exhausted after")
+    e.to_string().starts_with("upstream exhausted:")
 }
 
 /// Heuristic: is this error message transient (worth retrying)?
@@ -760,6 +786,18 @@ fn is_transient_error(msg: &str) -> bool {
         || lower.contains("internal server error")
         || lower.contains("connection may be stalled")
         || lower.contains("stream idle for")
+        // Network-level failures — transient by nature
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("reset by peer")
+        || lower.contains("broken pipe")
+        || lower.contains("connection closed")
+        || lower.contains("unexpected eof")
+        || lower.contains("dns error")
+        || lower.contains("name resolution")
+        // Bridge/stream dropped mid-response — worth retrying
+        || lower.contains("stream ended without")
+        || lower.contains("bridge may have crashed")
     {
         return true;
     }
@@ -1430,6 +1468,21 @@ mod tests {
             "LLM stream idle for 30s — connection may be stalled"
         ));
 
+        // Should match: network-level failures
+        assert!(is_transient_error("connection refused (os error 111)"));
+        assert!(is_transient_error("connection reset by peer"));
+        assert!(is_transient_error("reset by peer"));
+        assert!(is_transient_error("broken pipe"));
+        assert!(is_transient_error("connection closed before message completed"));
+        assert!(is_transient_error("unexpected eof during handshake"));
+        assert!(is_transient_error("dns error: failed to lookup address"));
+        assert!(is_transient_error("error performing name resolution"));
+
+        // Should match: bridge/stream dropped mid-response
+        assert!(is_transient_error(
+            "LLM stream ended without a completion event — the bridge may have crashed"
+        ));
+
         // Should NOT match: permanent errors
         assert!(!is_transient_error("Invalid API key"));
         assert!(!is_transient_error("Model not found"));
@@ -1442,6 +1495,20 @@ mod tests {
         assert!(!is_transient_error("model gpt-500 not found"));
         assert!(!is_transient_error("using port 5029"));
         assert!(!is_transient_error("version 5.0.3 released"));
+    }
+
+    #[test]
+    fn upstream_exhausted_detection() {
+        let exhausted = anyhow::anyhow!(
+            "upstream exhausted: 100 consecutive transient failures over 300s: 503 Service Unavailable"
+        );
+        assert!(is_upstream_exhausted(&exhausted));
+
+        let not_exhausted = anyhow::anyhow!("503 Service Unavailable");
+        assert!(!is_upstream_exhausted(&not_exhausted));
+
+        let old_format = anyhow::anyhow!("upstream provider exhausted after 3 retries: 503");
+        assert!(!is_upstream_exhausted(&old_format));
     }
 
     #[test]
@@ -1761,9 +1828,9 @@ mod tests {
     }
 
     #[test]
-    fn loop_config_default_uses_aggressive_bounded_retry() {
+    fn loop_config_default_retry_params() {
         let config = LoopConfig::default();
-        assert_eq!(config.max_retries, 8);
+        assert_eq!(config.max_retries, 0); // 0 = infinite (TUI mode)
         assert_eq!(config.retry_delay_ms, 750);
     }
 

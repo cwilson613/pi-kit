@@ -55,6 +55,8 @@ pub struct CleaveConfig {
     pub inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
     /// Startup-approved secret env inherited from the parent process.
     pub inherited_env: Vec<(String, String)>,
+    /// Extra env vars injected into child agents for deterministic smoke scenarios.
+    pub injected_env: Vec<(String, String)>,
     /// Embedding-aware sink for live progress events.
     pub progress_sink: SharedProgressSink,
 }
@@ -311,6 +313,7 @@ pub async fn run_cleave(
             };
 
             let inherited_env = config.inherited_env.clone();
+            let injected_env = config.injected_env.clone();
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 let dispatch_config = ChildDispatchConfig {
@@ -322,6 +325,7 @@ pub async fn run_cleave(
                     timeout_secs,
                     idle_timeout_secs,
                     inherited_env: &inherited_env,
+                    injected_env: &injected_env,
                     progress_sink,
                 };
                 let result = dispatch_child(
@@ -422,6 +426,7 @@ pub async fn run_cleave(
                                     timeout_secs: config.timeout_secs,
                                     idle_timeout_secs: config.idle_timeout_secs,
                                     inherited_env: &config.inherited_env,
+                                    injected_env: &config.injected_env,
                                     progress_sink: config.progress_sink.clone(),
                                 };
 
@@ -655,6 +660,7 @@ struct ChildDispatchConfig<'a> {
     timeout_secs: u64,
     idle_timeout_secs: u64,
     inherited_env: &'a [(String, String)],
+    injected_env: &'a [(String, String)],
     progress_sink: SharedProgressSink,
 }
 
@@ -672,7 +678,7 @@ async fn dispatch_child(
         .map_err(|e| {
             let msg = e.to_string();
             // Exit code 2 means the child tagged itself as upstream-exhausted via main.rs.
-            if msg.contains("exit code 2") || msg.contains("upstream provider exhausted") {
+            if msg.contains("exit code 2") || msg.contains("upstream exhausted:") {
                 ChildError::UpstreamExhausted { provider, message: msg }
             } else {
                 ChildError::Failed(msg)
@@ -734,8 +740,10 @@ async fn dispatch_child_inner(
     tracing::info!(
         child = %label,
         inherited_env = config.inherited_env.len(),
+        injected_env = config.injected_env.len(),
         inherited_env_names = ?config.inherited_env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
-        "child secret env inheritance"
+        injected_env_names = ?config.injected_env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        "child env inheritance"
     );
     let mut child = Command::new(config.agent_binary);
     child
@@ -746,6 +754,9 @@ async fn dispatch_child_inner(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     for (key, value) in config.inherited_env {
+        child.env(key, value);
+    }
+    for (key, value) in config.injected_env {
         child.env(key, value);
     }
     let mut child = child
@@ -1178,6 +1189,7 @@ mod tests {
             max_turns: 50,
             inventory: None,
             inherited_env: vec![],
+            injected_env: vec![],
             progress_sink: crate::cleave::progress::stdout_progress_sink(),
         };
         assert_eq!(config.idle_timeout_secs, 300);

@@ -456,6 +456,7 @@ impl CleaveFeature {
                 )))
             }),
             inherited_env: self.session_secret_env.clone(),
+            injected_env: Vec::new(),
             progress_sink,
         };
 

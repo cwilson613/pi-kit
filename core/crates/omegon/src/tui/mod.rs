@@ -3574,8 +3574,13 @@ impl App {
                     .push_lifecycle("⚡", &format!("Cleave {status}"));
             }
             AgentEvent::SystemNotification { message } => {
-                // Transient notifications → toast; persistent ones → conversation
-                if message.starts_with('⟳') || message.starts_with("Retrying") {
+                // Transient retry notifications → toast (operator sees them but they
+                // don't clutter the conversation). Milestone warnings and other
+                // persistent messages → conversation.
+                if message.starts_with('⟳')
+                    || message.starts_with("Retrying")
+                    || message.contains("— retrying")
+                {
                     self.show_toast(&message, ratatui_toaster::ToastType::Warning);
                 } else if message.starts_with('⚡') {
                     self.show_toast(&message, ratatui_toaster::ToastType::Info);

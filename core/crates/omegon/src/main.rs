@@ -19,6 +19,7 @@ mod auth;
 mod bridge;
 pub mod bus;
 mod cleave;
+mod cleave_smoke;
 mod context;
 pub mod extensions;
 pub mod features;
@@ -115,8 +116,10 @@ struct Cli {
     #[arg(long, default_value = "50")]
     max_turns: u32,
 
-    /// Max retries on transient LLM errors
-    #[arg(long, default_value = "3")]
+    /// Soft exhaustion threshold for transient LLM errors (0 = infinite).
+    /// After this many consecutive transient failures, exit with code 2
+    /// so the cleave orchestrator can try a fallback provider.
+    #[arg(long, default_value = "100")]
     max_retries: u32,
 
     /// Resume a specific session by ID prefix. Without a value, resumes the
@@ -144,6 +147,11 @@ struct Cli {
     /// Requires LLM auth (any provider) or local inference (Ollama).
     #[arg(long)]
     smoke: bool,
+
+    /// Run deterministic cleave smoke tests without live provider calls.
+    /// Uses injected child outcomes to verify cleave orchestration/reporting.
+    #[arg(long)]
+    smoke_cleave: bool,
 
     /// Queue an initial prompt in the TUI (interactive mode, not headless).
     /// The prompt is sent automatically after startup. The TUI stays open.
@@ -489,6 +497,8 @@ async fn main() -> anyhow::Result<()> {
             // No subcommand: interactive if no --prompt, headless if --prompt given
             if cli.smoke {
                 run_smoke_command(&cli).await
+            } else if cli.smoke_cleave {
+                cleave_smoke::run(&cli).await
             } else if cli.prompt.is_some() || cli.prompt_file.is_some() {
                 run_agent_command(&cli).await
             } else {
@@ -552,7 +562,7 @@ fn ensure_clean_cleave_repo(repo_path: &Path) -> anyhow::Result<()> {
     );
 }
 
-fn summarize_cleave_child_statuses(
+pub(crate) fn summarize_cleave_child_statuses(
     children: &[cleave::state::ChildState],
 ) -> (usize, usize, usize, usize) {
     let mut completed = 0;
@@ -574,7 +584,7 @@ fn summarize_cleave_child_statuses(
     (completed, failed, upstream_exhausted, unfinished)
 }
 
-fn format_cleave_merge_result(
+pub(crate) fn format_cleave_merge_result(
     child: Option<&cleave::state::ChildState>,
     label: &str,
     outcome: &cleave::orchestrator::MergeOutcome,
@@ -651,6 +661,7 @@ async fn run_cleave_command(
         max_turns,
         inventory: None,
         inherited_env: agent_setup.session_secret_env.clone(),
+        injected_env: Vec::new(),
         progress_sink: cleave::progress::stdout_progress_sink(),
     };
 
@@ -1660,8 +1671,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 let loop_config = r#loop::LoopConfig {
                     max_turns,
                     soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
-                    max_retries: cli.max_retries,
-                    retry_delay_ms: 2000,
+                    max_retries: 0, // TUI: retry indefinitely, operator switches manually
+                    retry_delay_ms: 750,
                     model,
                     cwd: agent.cwd.clone(),
                     extended_context: false,
@@ -1725,8 +1736,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 let loop_config = r#loop::LoopConfig {
                     max_turns,
                     soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
-                    max_retries: cli.max_retries,
-                    retry_delay_ms: 2000,
+                    max_retries: 0, // TUI: retry indefinitely, operator switches manually
+                    retry_delay_ms: 750,
                     model,
                     cwd: agent.cwd.clone(),
                     extended_context: false,
@@ -1835,6 +1846,10 @@ async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
 async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
     tracing::info!(model = %cli.model, "omegon-agent starting");
 
+    if maybe_run_injected_cleave_smoke_child(&cli.cwd)? {
+        return Ok(());
+    }
+
     // Resolve prompt from --prompt or --prompt-file
     let prompt_text = match (&cli.prompt, &cli.prompt_file) {
         (Some(p), _) => p.clone(),
@@ -1887,7 +1902,7 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
             0
         },
         max_retries: cli.max_retries,
-        retry_delay_ms: 2000,
+        retry_delay_ms: 750,
         model: cli.model.clone(),
         cwd: agent.cwd.clone(),
         extended_context: false, // headless uses standard context
@@ -2026,6 +2041,42 @@ async fn run_agent_command(cli: &Cli) -> anyhow::Result<()> {
     }
 
     result
+}
+
+fn maybe_run_injected_cleave_smoke_child(cwd: &Path) -> anyhow::Result<bool> {
+    let Some(mode) = std::env::var("OMEGON_CLEAVE_SMOKE_CHILD_MODE").ok() else {
+        return Ok(false);
+    };
+
+    if let Ok(rel_path) = std::env::var("OMEGON_CLEAVE_SMOKE_WRITE_FILE") {
+        let path = cwd.join(rel_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, "smoke child wrote this file\n")?;
+    }
+
+    match mode.as_str() {
+        "success-noop" => {
+            println!("simulated cleave smoke child success (noop)");
+            Ok(true)
+        }
+        "success-dirty" => {
+            println!("simulated cleave smoke child success (dirty)");
+            Ok(true)
+        }
+        "fail" => {
+            eprintln!("Error: simulated cleave smoke child failure");
+            std::process::exit(1);
+        }
+        "upstream-exhausted" => {
+            eprintln!(
+                "upstream exhausted: 100 consecutive transient failures over 0s: simulated smoke exhaustion"
+            );
+            std::process::exit(2);
+        }
+        other => anyhow::bail!("unknown OMEGON_CLEAVE_SMOKE_CHILD_MODE: {other}"),
+    }
 }
 
 async fn run_auth_command(action: &AuthAction) -> anyhow::Result<()> {

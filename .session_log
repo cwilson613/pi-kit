@@ -1742,4 +1742,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   4ccae049 chore: trim trailing whitespace from astro.config.mjs
   6db0aa5a feat: add omegon.styrene.io custom domain step
   764a8e35 chore: trigger site rebuild for CF Pages deploy fix
+## 2026-04-02 — main (19t 289tc 3m41s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  51ebbf8f chore(release): 0.15.7-rc.6
+  3bf71aa2 test(cleave): avoid git2 dependency in worktree branch assertion
+  02623eaa fix(cleave): handle no-change merge outcomes in cli reporting
 

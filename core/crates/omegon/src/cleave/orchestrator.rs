@@ -540,21 +540,27 @@ async fn dispatch_child(
     }
 
     // Write prompt to a temp file to avoid CLI arg parsing issues
-    // (task file content starting with --- breaks clap's arg parser)
-    let prompt_file = cwd.join(".cleave-prompt.md");
+    // (task file content starting with --- breaks clap's arg parser).
+    // Use an absolute prompt path because the child process may resolve
+    // --cwd before reopening the file.
+    let prompt_file = std::fs::canonicalize(cwd)
+        .unwrap_or_else(|_| cwd.to_path_buf())
+        .join(".cleave-prompt.md");
     tracing::info!(child = %label, prompt_file = %prompt_file.display(), prompt_len = prompt.len(), "writing prompt file");
     std::fs::write(&prompt_file, prompt)
         .context(format!("Failed to write prompt file for child '{label}'"))?;
 
     let max_turns_str = config.max_turns.to_string();
+    let cwd_arg = cwd.to_string_lossy().to_string();
+    let prompt_arg = prompt_file.to_string_lossy().to_string();
     // Don't pass --bridge by default — let children auto-detect native providers.
     // Forcing --bridge bypasses native providers entirely, which breaks children
     // when the bridge script path is relative or node_modules are missing.
     let mut args = vec![
         "--prompt-file",
-        prompt_file.to_str().unwrap(),
+        prompt_arg.as_str(),
         "--cwd",
-        cwd.to_str().unwrap(),
+        cwd_arg.as_str(),
         "--model",
         config.model,
         "--max-turns",
@@ -575,6 +581,7 @@ async fn dispatch_child(
     let mut child = Command::new(config.agent_binary);
     child
         .args(&args)
+        .current_dir(cwd)
         .env("OMEGON_CHILD", "1") // Signal child mode — read-only memory, no session save
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1074,6 +1081,20 @@ mod tests {
         let taken = child.worktree_path.take();
         assert_eq!(taken.as_deref(), Some("/tmp/example-worktree"));
         assert!(child.worktree_path.is_none());
+    }
+
+    #[test]
+    fn child_prompt_path_is_absolute_to_survive_cwd_switches() {
+        let temp = tempfile::tempdir().unwrap();
+        let worktree = temp.path().join("child-worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let prompt_file = std::fs::canonicalize(&worktree)
+            .unwrap_or_else(|_| worktree.clone())
+            .join(".cleave-prompt.md");
+
+        assert!(prompt_file.is_absolute());
+        assert_eq!(prompt_file.file_name().and_then(|s| s.to_str()), Some(".cleave-prompt.md"));
     }
 }
 

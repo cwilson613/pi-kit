@@ -39,17 +39,20 @@ pub async fn execute(
         // Try fuzzy match — normalize whitespace
         let fuzzy_content = normalize_whitespace(&normalized);
         let fuzzy_old = normalize_whitespace(&normalized_old);
+        let hint = nearest_context(&normalized, &normalized_old)
+            .map(|h| format!("\n{h}"))
+            .unwrap_or_default();
         if fuzzy_content.contains(&fuzzy_old) {
             anyhow::bail!(
                 "Could not find the exact text in {}. A similar match exists but \
                  whitespace differs. The old text must match exactly including all \
-                 whitespace and newlines.",
+                 whitespace and newlines.{hint}",
                 path.display()
             );
         }
         anyhow::bail!(
             "Could not find the exact text in {}. The old text must match exactly \
-             including all whitespace and newlines.",
+             including all whitespace and newlines.{hint}",
             path.display()
         );
     }
@@ -130,6 +133,56 @@ fn normalize_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Find the nearest region in `content` that contains a line from `old_text`,
+/// and return a short diagnostic snippet.
+///
+/// Used to enrich "could not find exact text" errors so the caller can
+/// correct `oldText` without an extra `read` round-trip.
+pub(super) fn nearest_context(content: &str, old_text: &str) -> Option<String> {
+    let file_lines: Vec<&str> = content.lines().collect();
+
+    for key_line in old_text.lines() {
+        let trimmed = key_line.trim();
+        if trimmed.len() < 6 {
+            continue;
+        }
+
+        // Prefer exact-trim match, fall back to substring. If this line doesn't
+        // match anything, continue scanning later lines from old_text.
+        let Some(idx) = file_lines
+            .iter()
+            .position(|l| l.trim() == trimmed)
+            .or_else(|| file_lines.iter().position(|l| l.contains(trimmed)))
+        else {
+            continue;
+        };
+
+        let start = idx.saturating_sub(2);
+        let end = (idx + 4).min(file_lines.len());
+
+        let context: String = file_lines[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, l)| format!("  {:>4}: {l}", start + i + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let old_preview: String = old_text
+            .lines()
+            .take(5)
+            .map(|l| format!("  {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        return Some(format!(
+            "oldText (first 5 lines):\n{old_preview}\n\nNearest match in file (lines {}-{}):\n{context}",
+            start + 1,
+            end
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +239,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("Could not find"));
+    }
+
+    #[test]
+    fn nearest_context_finds_matching_line() {
+        let content = "fn foo() {}\nlet stable_anchor = compute_value();\nfn baz() {}";
+        // First line differs, but a later significant line matches and should anchor the hint.
+        let old_text = "fn different() {}\nlet stable_anchor = compute_value();\n";
+        let hint = nearest_context(content, old_text).unwrap();
+        assert!(hint.contains("stable_anchor"), "hint: {hint}");
+        assert!(hint.contains("Nearest match"), "hint: {hint}");
+    }
+
+    #[test]
+    fn nearest_context_returns_none_for_no_match() {
+        let content = "fn foo() {}";
+        let result = nearest_context(content, "completely_absent_xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn nearest_context_skips_trivial_lines() {
+        // Only has short/whitespace lines — should return None
+        let content = "a\nb\nc";
+        let result = nearest_context(content, "x\ny");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_text_error_includes_nearest_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        std::fs::File::create(&file)
+            .unwrap()
+            .write_all(b"fn hello() {\n    println!(\"hi\");\n}\n")
+            .unwrap();
+
+        // oldText has slightly wrong content but a recognizable key line
+        let err = execute(&file, "fn hello() {\n    println!(\"wrong\");\n}", "x", dir.path())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Could not find"), "msg: {msg}");
+        // Hint should be present since "fn hello()" is in the file
+        assert!(msg.contains("fn hello()"), "expected context hint, got: {msg}");
     }
 }
 

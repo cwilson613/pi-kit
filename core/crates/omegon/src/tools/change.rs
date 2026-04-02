@@ -101,8 +101,11 @@ pub async fn execute(
         if count == 0 {
             // Rollback all previously written files
             rollback(&snapshots, &written_files).await;
+            let hint = super::edit::nearest_context(&current, old_text)
+                .map(|h| format!("\n{h}"))
+                .unwrap_or_default();
             anyhow::bail!(
-                "Edit {}/{}: could not find exact text in {}. All changes rolled back.",
+                "Edit {}/{}: could not find exact text in {}. All changes rolled back.{hint}",
                 i + 1,
                 edits.len(),
                 edits[i].file
@@ -418,5 +421,35 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("No edits"));
+    }
+
+    #[tokio::test]
+    async fn failed_edit_error_includes_nearest_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        std::fs::File::create(&file)
+            .unwrap()
+            .write_all(b"fn compute() -> i32 {\n    42\n}\n")
+            .unwrap();
+
+        // Wrong body — but key line "fn compute() -> i32 {" is present
+        let edits = vec![EditSpec {
+            file: "lib.rs".into(),
+            old_text: "fn compute() -> i32 {\n    99\n}".into(),
+            new_text: "fn compute() -> i32 { 0 }".into(),
+        }];
+
+        let cwd = dir.path().to_path_buf();
+        let resolve = |p: &str| Ok(cwd.join(p));
+        let err = execute(&edits, ValidationMode::None, &cwd, resolve)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("rolled back"), "msg: {msg}");
+        // Context hint should surface the actual line
+        assert!(
+            msg.contains("fn compute()"),
+            "expected nearest-context hint in error, got: {msg}"
+        );
     }
 }

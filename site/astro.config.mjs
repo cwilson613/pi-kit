@@ -12,5 +12,3 @@ export default defineConfig({
   // Output static HTML — no SSR
   output: "static",
 });
-
-

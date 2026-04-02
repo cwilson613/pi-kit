@@ -552,6 +552,28 @@ fn ensure_clean_cleave_repo(repo_path: &Path) -> anyhow::Result<()> {
     );
 }
 
+fn summarize_cleave_child_statuses(
+    children: &[cleave::state::ChildState],
+) -> (usize, usize, usize, usize) {
+    let mut completed = 0;
+    let mut failed = 0;
+    let mut upstream_exhausted = 0;
+    let mut unfinished = 0;
+
+    for child in children {
+        match child.status {
+            cleave::state::ChildStatus::Completed => completed += 1,
+            cleave::state::ChildStatus::Failed => failed += 1,
+            cleave::state::ChildStatus::UpstreamExhausted => upstream_exhausted += 1,
+            cleave::state::ChildStatus::Running | cleave::state::ChildStatus::Pending => {
+                unfinished += 1
+            }
+        }
+    }
+
+    (completed, failed, upstream_exhausted, unfinished)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_cleave_command(
     cli: &Cli,
@@ -609,22 +631,14 @@ async fn run_cleave_command(
     eprintln!("**Duration:** {:.0}s", result.duration_secs);
     eprintln!();
 
-    let completed = result
-        .state
-        .children
-        .iter()
-        .filter(|c| c.status == cleave::state::ChildStatus::Completed)
-        .count();
-    let failed = result
-        .state
-        .children
-        .iter()
-        .filter(|c| c.status == cleave::state::ChildStatus::Failed)
-        .count();
+    let (completed, failed, upstream_exhausted, unfinished) =
+        summarize_cleave_child_statuses(&result.state.children);
     eprintln!(
-        "**Children:** {} completed, {} failed of {}",
+        "**Children:** {} completed, {} failed, {} upstream exhausted, {} unfinished of {}",
         completed,
         failed,
+        upstream_exhausted,
+        unfinished,
         result.state.children.len()
     );
     eprintln!();
@@ -674,7 +688,7 @@ async fn run_cleave_command(
                 | cleave::orchestrator::MergeOutcome::NoChanges
         )
     });
-    if all_merged && failed == 0 {
+    if all_merged && failed == 0 && upstream_exhausted == 0 && unfinished == 0 {
         let checks = cleave::guardrails::discover_guardrails(&repo_path);
         if !checks.is_empty() {
             let report = cleave::guardrails::run_guardrails(&repo_path, &checks);
@@ -682,8 +696,8 @@ async fn run_cleave_command(
         }
     }
 
-    // Exit with error if any children failed
-    if failed > 0 {
+    // Exit with error if any children did not complete successfully.
+    if failed > 0 || upstream_exhausted > 0 || unfinished > 0 {
         std::process::exit(1);
     }
     Ok(())
@@ -2334,6 +2348,76 @@ mod tests {
         let resolved = cli.cwd.join(cli.prompt_file.as_ref().unwrap());
         let prompt = std::fs::read_to_string(resolved).unwrap();
         assert_eq!(prompt, "child prompt");
+    }
+
+    #[test]
+    fn cleave_status_summary_counts_terminal_and_non_terminal_states() {
+        let children = vec![
+            cleave::state::ChildState {
+                child_id: 0,
+                label: "done".to_string(),
+                description: String::new(),
+                scope: vec![],
+                depends_on: vec![],
+                status: cleave::state::ChildStatus::Completed,
+                error: None,
+                branch: None,
+                worktree_path: None,
+                backend: "native".to_string(),
+                execute_model: None,
+                provider_id: None,
+                duration_secs: None,
+            },
+            cleave::state::ChildState {
+                child_id: 1,
+                label: "failed".to_string(),
+                description: String::new(),
+                scope: vec![],
+                depends_on: vec![],
+                status: cleave::state::ChildStatus::Failed,
+                error: Some("boom".to_string()),
+                branch: None,
+                worktree_path: None,
+                backend: "native".to_string(),
+                execute_model: None,
+                provider_id: None,
+                duration_secs: None,
+            },
+            cleave::state::ChildState {
+                child_id: 2,
+                label: "exhausted".to_string(),
+                description: String::new(),
+                scope: vec![],
+                depends_on: vec![],
+                status: cleave::state::ChildStatus::UpstreamExhausted,
+                error: Some("429".to_string()),
+                branch: None,
+                worktree_path: None,
+                backend: "native".to_string(),
+                execute_model: None,
+                provider_id: None,
+                duration_secs: None,
+            },
+            cleave::state::ChildState {
+                child_id: 3,
+                label: "pending".to_string(),
+                description: String::new(),
+                scope: vec![],
+                depends_on: vec![],
+                status: cleave::state::ChildStatus::Pending,
+                error: None,
+                branch: None,
+                worktree_path: None,
+                backend: "native".to_string(),
+                execute_model: None,
+                provider_id: None,
+                duration_secs: None,
+            },
+        ];
+
+        let (completed, failed, upstream_exhausted, unfinished) =
+            summarize_cleave_child_statuses(&children);
+        assert_eq!((completed, failed, upstream_exhausted, unfinished), (1, 1, 1, 1));
     }
 
     #[test]

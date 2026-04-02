@@ -662,10 +662,22 @@ async fn stream_with_retry(
                 // Notify the TUI so the user knows why it's paused.
                 // First retry shows in conversation (persistent); subsequent are toasts.
                 let short_err = crate::util::truncate_str(&err_msg, 300);
-                let msg = format!(
-                    "⚠ LLM error (attempt {attempt}/{}): {short_err}",
-                    config.max_retries
-                );
+                let retries_remaining = config.max_retries.saturating_sub(attempt);
+                let msg = if err_msg.contains("stream idle for") || err_msg.contains("connection may be stalled") {
+                    format!(
+                        "⚠ Upstream stream stalled — retrying in {}ms (attempt {attempt}/{}; {} left): {short_err}",
+                        delay,
+                        config.max_retries,
+                        retries_remaining
+                    )
+                } else {
+                    format!(
+                        "⚠ Upstream transient failure — retrying in {}ms (attempt {attempt}/{}; {} left): {short_err}",
+                        delay,
+                        config.max_retries,
+                        retries_remaining
+                    )
+                };
                 let _ = events.send(AgentEvent::SystemNotification { message: msg });
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 delay = (delay * 2).min(10_000); // exponential backoff, cap at 10s

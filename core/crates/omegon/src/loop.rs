@@ -1382,6 +1382,35 @@ pub fn summarize_tool_args(tool_name: &str, args: &Value) -> Option<String> {
                     s.to_string()
                 }
             }),
+        "cleave_run" => {
+            // "N children: label1, label2, …"
+            let plan = args
+                .get("plan_json")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+            let labels: Vec<&str> = plan
+                .as_ref()
+                .and_then(|p| p.get("children"))
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.get("label").and_then(|v| v.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let n = labels.len();
+            if n == 0 {
+                Some("cleave".into())
+            } else {
+                let joined = labels.join(", ");
+                let summary = format!("{n} children: {joined}");
+                Some(crate::util::truncate(&summary, 60))
+            }
+        }
+        "cleave_assess" => args
+            .get("directive")
+            .and_then(|v| v.as_str())
+            .map(|s| crate::util::truncate(s, 60)),
         _ => None,
     }
 }
@@ -1633,6 +1662,47 @@ mod tests {
             summarize_tool_args("bash", &serde_json::json!({"command": long_cmd})).unwrap();
         assert!(summary.len() <= 84, "got len {}", summary.len()); // 80 + "…" (3 bytes UTF-8)
         assert!(summary.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_cleave_run_shows_child_count_and_labels() {
+        let plan = serde_json::json!({
+            "children": [
+                {"label": "api-layer", "description": "add endpoints", "scope": ["src/api.rs"]},
+                {"label": "db-layer",  "description": "add migrations", "scope": ["migrations/"]}
+            ],
+            "rationale": "split by layer"
+        });
+        let summary = summarize_tool_args(
+            "cleave_run",
+            &serde_json::json!({
+                "directive": "Build JWT auth",
+                "plan_json": plan.to_string()
+            }),
+        )
+        .unwrap();
+        assert!(summary.contains("2 children"), "expected child count: {summary}");
+        assert!(summary.contains("api-layer"), "expected labels: {summary}");
+        assert!(summary.contains("db-layer"), "expected labels: {summary}");
+    }
+
+    #[test]
+    fn summarize_cleave_run_handles_malformed_plan() {
+        // Bad plan_json should not panic — falls back to "cleave"
+        let result = summarize_tool_args(
+            "cleave_run",
+            &serde_json::json!({"directive": "do something", "plan_json": "not json"}),
+        );
+        assert_eq!(result.as_deref(), Some("cleave"));
+    }
+
+    #[test]
+    fn summarize_cleave_assess_shows_directive() {
+        let result = summarize_tool_args(
+            "cleave_assess",
+            &serde_json::json!({"directive": "implement OAuth flow"}),
+        );
+        assert_eq!(result.as_deref(), Some("implement OAuth flow"));
     }
 
     #[tokio::test]

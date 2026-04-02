@@ -400,10 +400,11 @@ impl InstrumentPanel {
         if area.width < 20 || area.height < 4 {
             return;
         }
-        // When a cleave run is active (or just completed with children), swap the
-        // tools panel to show the cleave child grid instead.
+        // When a cleave run is active, swap the tools panel to show the child grid.
+        // Guard on active only — total_children persists after the run ends and
+        // would keep the cleave panel showing forever.
         if let Some(ref cp) = self.cleave_progress {
-            if cp.active || cp.total_children > 0 {
+            if cp.active {
                 let border = t.border_dim();
                 let label = t.dim();
                 self.render_cleave_panel(area, frame, border, label, t, cp);
@@ -1595,6 +1596,42 @@ mod tests {
             total_tokens_out: 0,
         }));
         assert_eq!(panel.cleave_progress.as_ref().map(|cp| cp.run_id.as_str()), Some("r2"));
+    }
+
+    #[test]
+    fn cleave_panel_reverts_to_tools_when_run_ends() {
+        // active=false should mean tools panel is shown, even if total_children > 0.
+        // Regression: old guard was `active || total_children > 0` which kept the
+        // cleave grid visible forever after a run completed.
+        let mut panel = InstrumentPanel::default();
+        panel.set_cleave_progress(Some(CleaveProgress {
+            active: false, // run finished
+            run_id: "done-run".into(),
+            total_children: 3, // still populated — old bug would key on this
+            completed: 3,
+            failed: 0,
+            children: vec![],
+            total_tokens_in: 100,
+            total_tokens_out: 50,
+        }));
+        // The guard `cp.active` is what's tested — we verify by calling
+        // render_tools_panel on a small area and confirming it doesn't crash.
+        // The real assertion is code-level: render_cleave_panel is NOT entered.
+        let area = ratatui::layout::Rect::new(0, 0, 60, 12);
+        let backend = ratatui::backend::TestBackend::new(60, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let t = crate::tui::theme::Alpharius;
+        terminal
+            .draw(|f| panel.render_tools_panel(area, f, &t))
+            .unwrap();
+        // If we reach here without entering the cleave branch, tools panel rendered.
+        // Verify the cleave panel title "⟁ cleave" is NOT in the output.
+        let buf = terminal.backend().buffer().clone();
+        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            !text.contains("⟁ cleave"),
+            "cleave panel should not render when active=false: {text}"
+        );
     }
 
     #[test]

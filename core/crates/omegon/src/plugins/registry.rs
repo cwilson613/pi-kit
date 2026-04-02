@@ -118,12 +118,18 @@ impl PluginRegistry {
     ///
     /// Call once at session start. Silently skips missing directories.
     pub fn load_skills(&mut self, cwd: &std::path::Path) {
-        let mut skills: Vec<String> = Vec::new();
-
         let bundled = dirs::home_dir().map(|h| h.join(".omegon").join("skills"));
         let project = cwd.join(".omegon").join("skills");
+        let dirs: Vec<std::path::PathBuf> = bundled.into_iter().chain(std::iter::once(project)).collect();
+        self.loaded_skills = Self::load_from_dirs(&dirs);
+    }
 
-        for dir in bundled.iter().chain(std::iter::once(&project)) {
+    /// Load skill content from an explicit list of directories.
+    /// Used by `load_skills` in production and directly by tests to avoid
+    /// reading from the real ~/.omegon/skills/ installation.
+    fn load_from_dirs(dirs: &[std::path::PathBuf]) -> Vec<String> {
+        let mut skills = Vec::new();
+        for dir in dirs {
             if !dir.is_dir() {
                 continue;
             }
@@ -141,13 +147,19 @@ impl PluginRegistry {
                 }
             }
         }
-
-        self.loaded_skills = skills;
+        skills
     }
 
     /// Return the number of loaded skills.
     pub fn skill_count(&self) -> usize {
         self.loaded_skills.len()
+    }
+
+    /// Test-only: load skills from an explicit list of directories,
+    /// bypassing the real ~/.omegon/skills/ path.
+    #[cfg(test)]
+    fn load_skills_from_explicit(&mut self, dirs: &[std::path::PathBuf]) {
+        self.loaded_skills = Self::load_from_dirs(dirs);
     }
 
     /// Activate a persona. Replaces any previously active persona.
@@ -701,12 +713,12 @@ mod tests {
     #[test]
     fn load_skills_from_project_local_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let skill_dir = tmp.path().join(".omegon").join("skills").join("my-skill");
+        let skill_dir = tmp.path().join("skills").join("my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "# My Skill\nDo the thing.").unwrap();
 
         let mut reg = PluginRegistry::new(LEX.into());
-        reg.load_skills(tmp.path());
+        reg.load_skills_from_explicit(&[tmp.path().join("skills")]);
 
         assert_eq!(reg.skill_count(), 1);
         assert!(reg.build_system_prompt().contains("Do the thing."));
@@ -715,12 +727,12 @@ mod tests {
     #[test]
     fn skills_appear_between_lex_and_persona() {
         let tmp = tempfile::tempdir().unwrap();
-        let skill_dir = tmp.path().join(".omegon").join("skills").join("test-skill");
+        let skill_dir = tmp.path().join("skills").join("test-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "SKILL_MARKER").unwrap();
 
         let mut reg = PluginRegistry::new(LEX.into());
-        reg.load_skills(tmp.path());
+        reg.load_skills_from_explicit(&[tmp.path().join("skills")]);
         reg.activate_persona(engineer_persona());
 
         let prompt = reg.build_system_prompt();
@@ -734,21 +746,21 @@ mod tests {
     #[test]
     fn empty_skill_files_not_loaded() {
         let tmp = tempfile::tempdir().unwrap();
-        let skill_dir = tmp.path().join(".omegon").join("skills").join("empty-skill");
+        let skill_dir = tmp.path().join("skills").join("empty-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "   \n   ").unwrap();
 
         let mut reg = PluginRegistry::new(LEX.into());
-        reg.load_skills(tmp.path());
+        reg.load_skills_from_explicit(&[tmp.path().join("skills")]);
         assert_eq!(reg.skill_count(), 0);
     }
 
     #[test]
     fn missing_skills_dir_is_silent() {
         let tmp = tempfile::tempdir().unwrap();
-        // No .omegon/skills/ directory created
         let mut reg = PluginRegistry::new(LEX.into());
-        reg.load_skills(tmp.path());
+        // Pass a nonexistent dir — should load nothing, not panic
+        reg.load_skills_from_explicit(&[tmp.path().join("nonexistent").join("skills")]);
         assert_eq!(reg.skill_count(), 0);
     }
 }

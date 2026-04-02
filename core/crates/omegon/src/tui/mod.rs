@@ -3465,6 +3465,49 @@ impl App {
                         .get("path")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
+                    "cleave_run" => {
+                        let directive = args
+                            .get("directive")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(no directive)");
+                        let directive_short = crate::util::truncate(directive, 100);
+                        // Parse plan_json to extract child labels
+                        let children_line = args
+                            .get("plan_json")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                            .and_then(|plan| {
+                                plan.get("children")
+                                    .and_then(|c| c.as_array())
+                                    .map(|children| {
+                                        children
+                                            .iter()
+                                            .filter_map(|c| {
+                                                let label = c.get("label").and_then(|v| v.as_str())?;
+                                                let desc = c
+                                                    .get("description")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let desc_short = crate::util::truncate(desc, 60);
+                                                Some(format!("  • {label}: {desc_short}"))
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    })
+                            })
+                            .unwrap_or_default();
+                        Some(format!("{directive_short}\n{children_line}"))
+                    }
+                    "cleave_assess" => args
+                        .get("directive")
+                        .and_then(|v| v.as_str())
+                        .map(|s| crate::util::truncate(s, 120)),
+                    // Suppress raw JSON dump for all other harness-internal tools
+                    "design_tree" | "design_tree_update" | "openspec_manage"
+                    | "memory_store" | "memory_recall" | "memory_focus"
+                    | "memory_supersede" | "memory_archive" | "memory_query"
+                    | "memory_episodes" | "memory_compact"
+                    | "cleave_delegate" | "lifecycle_doctor" => None,
                     _ => Some(serde_json::to_string_pretty(&args).unwrap_or_default()),
                 };
                 self.conversation.push_tool_start(

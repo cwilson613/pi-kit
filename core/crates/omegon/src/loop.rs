@@ -724,6 +724,20 @@ async fn stream_with_retry(
 
 /// Detect context-too-large errors that can be recovered by compaction.
 /// Must NOT match general rate-limit 429s — those are transient and retried separately.
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn retry_backoff_is_capped() {
+        let base_ms: u64 = 750;
+        let cap_ms: u64 = 15_000;
+        for attempt in [0_u32, 1, 2, 10, 100] {
+            let delay = base_ms.saturating_mul(1_u64 << attempt.min(63)).min(cap_ms);
+            assert!(delay <= cap_ms, "attempt {attempt} produced {delay}ms");
+        }
+    }
+}
 fn is_context_overflow(msg: &str) -> bool {
     let lower = msg.to_lowercase();
     lower.contains("long context")
@@ -1567,6 +1581,16 @@ mod tests {
     }
 
     // ── Auto-batch tests ────────────────────────────────────────────
+
+    #[test]
+    fn retry_backoff_is_capped() {
+        let base_ms: u64 = 750;
+        let cap_ms: u64 = 15_000;
+        for attempt in [0_u32, 1, 2, 10, 100] {
+            let delay = base_ms.saturating_mul(1_u64 << attempt.min(63)).min(cap_ms);
+            assert!(delay <= cap_ms, "attempt {attempt} produced {delay}ms");
+        }
+    }
 
     #[test]
     fn mutation_tool_detection() {

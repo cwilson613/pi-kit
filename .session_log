@@ -1547,4 +1547,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   577d6261 chore(release): 0.15.7-rc.1
   1c95899e docs(changelog): add 0.15.7 release notes for Codex bridge fixes
   1b829fdd fix(codex): harden parse_codex_stream against bridge crash false-positives
+## 2026-04-01 — main (8t 108tc 4m43s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  bce689a2 feat(footer): add session cost estimate to engine block
+  577d6261 chore(release): 0.15.7-rc.1
+  1c95899e docs(changelog): add 0.15.7 release notes for Codex bridge fixes
 

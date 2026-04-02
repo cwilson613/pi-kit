@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn session_text_omits_cost_when_pricing_unknown() {
-        let text = format_session_text("openai:gpt-5", 2, 12_000, 3_000);
+        let text = format_session_text("openai-codex:codex-mini-latest", 2, 12_000, 3_000);
         assert_eq!(text, "T2 12k/3k");
     }
 }

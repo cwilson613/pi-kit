@@ -1607,4 +1607,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   b45ad8b9 fix(openai-codex): replace bogus codex mini model with gpt-5.4-mini
   e0c7589e fix(pricing): add verified GPT-5.4 footer cost rates
   bce689a2 feat(footer): add session cost estimate to engine block
+## 2026-04-02 — main (6t 154tc 2m46s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  873fe7a8 fix(footer): make session cost lookup independent of auth-gated catalog
+  b45ad8b9 fix(openai-codex): replace bogus codex mini model with gpt-5.4-mini
+  e0c7589e fix(pricing): add verified GPT-5.4 footer cost rates
 

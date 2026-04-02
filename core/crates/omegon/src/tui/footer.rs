@@ -807,14 +807,14 @@ fn estimate_session_cost_usd(model_id: &str, session_input_tokens: u64, session_
 
 fn format_cost_usd(cost_usd: f64) -> String {
     if cost_usd <= 0.0 {
-        return "$0".to_string();
+        return "~$0".to_string();
     }
     if cost_usd < 0.01 {
-        format!("${cost_usd:.3}")
+        format!("~${cost_usd:.3}")
     } else if cost_usd < 1.0 {
-        format!("${cost_usd:.2}")
+        format!("~${cost_usd:.2}")
     } else {
-        format!("${cost_usd:.2}")
+        format!("~${cost_usd:.2}")
     }
 }
 
@@ -930,7 +930,7 @@ mod tests {
         let text = format_session_text("anthropic:claude-sonnet-4-6", 1, 12_000, 3_000);
         assert!(text.starts_with("T1 "), "got {text}");
         assert!(text.contains("12k/3k"), "got {text}");
-        assert!(text.contains('$'), "got {text}");
+        assert!(text.contains("~$"), "got {text}");
         assert!(!text.contains('⚙'), "got {text}");
         assert!(!text.contains('↻'), "got {text}");
         assert!(!text.contains('·'), "got {text}");
@@ -945,6 +945,6 @@ mod tests {
     #[test]
     fn session_text_shows_cost_for_priced_models_even_without_catalog_availability() {
         let text = format_session_text("openai:gpt-5.4", 2, 12_000, 3_000);
-        assert!(text.contains('$'), "got {text}");
+        assert!(text.contains("~$"), "got {text}");
     }
 }

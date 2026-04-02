@@ -342,5 +342,12 @@
       "fix(tui): show upstream retry state clearly during transient failures",
       "fix: use npx wrangler@latest for CF Pages deploy"
     ]
+  },
+  "nightly": {
+    "status": "nightly",
+    "channel": "nightly",
+    "version": "0.15.7-nightly.20260402",
+    "last_build": "2026-04-02T08:15:27Z",
+    "build_count": 1
   }
 }

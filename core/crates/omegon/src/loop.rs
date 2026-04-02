@@ -9,9 +9,11 @@ use crate::ollama::{OllamaManager, WarmupResult};
 use crate::context::ContextManager;
 use crate::conversation::{AssistantMessage, ConversationState, ToolCall, ToolResultEntry};
 use omegon_traits::{AgentEvent, ContentBlock};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -655,6 +657,8 @@ async fn stream_with_retry(
         let err_msg = err.to_string();
         let transient_kind = classify_transient_error(&err_msg);
         let is_transient = transient_kind.is_some();
+        let provider = config.model.split(':').next().unwrap_or("upstream").to_string();
+        let model = config.model.clone();
 
         if !is_transient {
             if attempt > 1 {
@@ -663,15 +667,25 @@ async fn stream_with_retry(
             return Err(err);
         }
 
+        let kind_label = transient_kind
+            .map(TransientFailureKind::label)
+            .unwrap_or("transient upstream failure");
+        append_upstream_failure_log(&UpstreamFailureLogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            provider: provider.clone(),
+            model: model.clone(),
+            failure_kind: kind_label.to_string(),
+            attempt,
+            delay_ms: delay,
+            message: err_msg.clone(),
+        });
+
         // Soft exhaustion: when max_retries > 0, bail after that many
         // consecutive transient failures so the cleave orchestrator can
         // detect upstream exhaustion and try a fallback provider.
         // max_retries == 0 means retry indefinitely (interactive/TUI mode).
         if config.max_retries > 0 && attempt >= config.max_retries {
             let elapsed = started.elapsed();
-            let kind_label = transient_kind
-                .map(TransientFailureKind::label)
-                .unwrap_or("transient upstream failure");
             tracing::error!(
                 attempts = attempt,
                 elapsed_secs = elapsed.as_secs(),
@@ -702,7 +716,6 @@ async fn stream_with_retry(
         let is_milestone = matches!(attempt, 10 | 25 | 50 | 100)
             || (attempt > 100 && attempt % 100 == 0);
         if is_milestone {
-            let provider = config.model.split(':').next().unwrap_or("upstream");
             let elapsed = started.elapsed();
             let kind_label = transient_kind
                 .map(TransientFailureKind::label)
@@ -786,6 +799,17 @@ enum TransientFailureKind {
     GenericTransient,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct UpstreamFailureLogEntry {
+    timestamp: String,
+    provider: String,
+    model: String,
+    failure_kind: String,
+    attempt: u32,
+    delay_ms: u64,
+    message: String,
+}
+
 impl TransientFailureKind {
     fn label(self) -> &'static str {
         match self {
@@ -801,6 +825,36 @@ impl TransientFailureKind {
             Self::GenericTransient => "transient upstream failure",
         }
     }
+}
+
+fn upstream_failures_log_path() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    home.join(".omegon").join("upstream-failures.jsonl")
+}
+
+fn append_upstream_failure_log(entry: &UpstreamFailureLogEntry) {
+    use std::io::Write;
+
+    let path = upstream_failures_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(line) = serde_json::to_string(entry) else {
+        return;
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    let _ = writeln!(file, "{line}");
 }
 
 fn classify_transient_error(msg: &str) -> Option<TransientFailureKind> {
@@ -1634,6 +1688,41 @@ mod tests {
         assert_eq!(TransientFailureKind::RateLimited.label(), "rate-limited");
         assert_eq!(TransientFailureKind::StalledStream.label(), "stalled stream");
         assert_eq!(TransientFailureKind::Dns.label(), "dns failure");
+    }
+
+    #[test]
+    fn upstream_failure_log_appends_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upstream-failures.jsonl");
+        let entry = UpstreamFailureLogEntry {
+            timestamp: "2026-04-02T12:00:00Z".into(),
+            provider: "anthropic".into(),
+            model: "anthropic:claude-sonnet-4-6".into(),
+            failure_kind: "rate-limited".into(),
+            attempt: 3,
+            delay_ms: 1500,
+            message: "429 Too Many Requests".into(),
+        };
+
+        append_upstream_failure_log_at(&path, &entry);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"provider\":\"anthropic\""), "{content}");
+        assert!(content.contains("\"failure_kind\":\"rate-limited\""), "{content}");
+    }
+
+    fn append_upstream_failure_log_at(path: &Path, entry: &UpstreamFailureLogEntry) {
+        use std::io::Write;
+
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let line = serde_json::to_string(entry).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
     }
 
     #[test]

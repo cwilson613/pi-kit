@@ -2552,4 +2552,19 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   83fda8fc fix(tools): add nearest-context hints for exact-text edit failures
   35a172b3 chore(release): 0.15.7-rc.16
   bc88424d fix(tui): cleave panel restores to tools view after run, clean segment rendering
+## 2026-04-02 — main (16t 1198tc 4m56s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  2929552c fix(loop): surface transient failure class in upstream retry notices
+  83fda8fc fix(tools): add nearest-context hints for exact-text edit failures
+  35a172b3 chore(release): 0.15.7-rc.16
 

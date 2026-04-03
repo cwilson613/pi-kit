@@ -850,6 +850,148 @@ struct UpstreamFailureLogEntry {
     message: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ErrorRule {
+    providers: &'static [&'static str],
+    class: UpstreamErrorClass,
+    substrings: &'static [&'static str],
+    word_tokens: &'static [&'static str],
+}
+
+const PROVIDER_ERROR_RULES: &[ErrorRule] = &[
+    ErrorRule {
+        providers: &["anthropic"],
+        class: UpstreamErrorClass::ContextOverflow,
+        substrings: &["extra usage is required for long context requests"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &["openai-codex"],
+        class: UpstreamErrorClass::SessionExpired,
+        substrings: &["session expired", "out of session", "please log in again"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[
+            "openai",
+            "openrouter",
+            "groq",
+            "xai",
+            "mistral",
+            "cerebras",
+            "huggingface",
+            "ollama",
+        ],
+        class: UpstreamErrorClass::BadRequest,
+        substrings: &["invalid_request_error", "unsupported_parameter", "bad request"],
+        word_tokens: &["400"],
+    },
+];
+
+const GLOBAL_ERROR_RULES: &[ErrorRule] = &[
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::SessionExpired,
+        substrings: &[
+            "session expired",
+            "session has expired",
+            "out of session",
+            "out-of-session",
+            "please log in again",
+        ],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::AuthInvalid,
+        substrings: &["invalid api key", "unauthorized", "forbidden", "authentication"],
+        word_tokens: &["401", "403"],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::QuotaExceeded,
+        substrings: &["quota", "insufficient credits", "billing", "usage limit"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::RateLimited,
+        substrings: &["rate limit", "rate_limit", "too many requests"],
+        word_tokens: &["429"],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::ProviderOverloaded,
+        substrings: &["overloaded", "capacity"],
+        word_tokens: &["529"],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::StalledStream,
+        substrings: &["stream idle for", "connection may be stalled"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::Timeout,
+        substrings: &["timeout", "timed out"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::NetworkConnect,
+        substrings: &["connection refused", "connection closed"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::NetworkReset,
+        substrings: &["connection reset", "reset by peer", "broken pipe", "unexpected eof"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::Dns,
+        substrings: &["dns error", "name resolution"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::DecodeBody,
+        substrings: &[
+            "error decoding response body",
+            "decode response body",
+            "failed to decode response body",
+        ],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::BridgeDropped,
+        substrings: &["stream ended without", "bridge may have crashed"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::Upstream5xx,
+        substrings: &[
+            "server_error",
+            "temporarily",
+            "try again",
+            "service unavailable",
+            "bad gateway",
+            "internal server error",
+        ],
+        word_tokens: &["500", "502", "503"],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::BadRequest,
+        substrings: &["invalid request", "bad request"],
+        word_tokens: &["400"],
+    },
+];
+
 impl UpstreamErrorClass {
     fn label(self) -> &'static str {
         match self {
@@ -980,39 +1122,9 @@ fn append_upstream_failure_log(entry: &UpstreamFailureLogEntry) {
 
 fn classify_upstream_error_for_provider(provider: &str, msg: &str) -> UpstreamErrorClass {
     let lower = msg.to_lowercase();
-
-    match provider {
-        // Anthropic long-context wording is provider-specific and should map
-        // explicitly rather than relying on generic token-limit phrasing.
-        "anthropic" => {
-            if lower.contains("extra usage is required for long context requests") {
-                return UpstreamErrorClass::ContextOverflow;
-            }
-        }
-        // ChatGPT/Codex subscription failures frequently present as session expiry
-        // rather than generic auth errors.
-        "openai-codex" => {
-            if lower.contains("session expired")
-                || lower.contains("out of session")
-                || lower.contains("please log in again")
-            {
-                return UpstreamErrorClass::SessionExpired;
-            }
-        }
-        // OpenAI-compatible providers often expose typed invalid_request_error
-        // payloads that should stay distinct from auth/session failures.
-        "openai" | "openrouter" | "groq" | "xai" | "mistral" | "cerebras"
-        | "huggingface" | "ollama" => {
-            if lower.contains("invalid_request_error")
-                || lower.contains("unsupported_parameter")
-                || lower.contains("bad request")
-            {
-                return UpstreamErrorClass::BadRequest;
-            }
-        }
-        _ => {}
+    if let Some(class) = apply_error_rules(PROVIDER_ERROR_RULES, Some(provider), &lower) {
+        return class;
     }
-
     classify_upstream_error(msg)
 }
 
@@ -1025,87 +1137,33 @@ fn classify_upstream_error(msg: &str) -> UpstreamErrorClass {
     if is_malformed_history(&lower) {
         return UpstreamErrorClass::MalformedHistory;
     }
-    if lower.contains("session expired")
-        || lower.contains("session has expired")
-        || lower.contains("out of session")
-        || lower.contains("out-of-session")
-        || lower.contains("please log in again")
-    {
-        return UpstreamErrorClass::SessionExpired;
-    }
-    if lower.contains("invalid api key")
-        || lower.contains("unauthorized")
-        || contains_word(&lower, "401")
-        || lower.contains("forbidden")
-        || contains_word(&lower, "403")
-        || lower.contains("authentication")
-    {
-        return UpstreamErrorClass::AuthInvalid;
-    }
-    if lower.contains("quota")
-        || lower.contains("insufficient credits")
-        || lower.contains("billing")
-        || lower.contains("usage limit")
-    {
-        return UpstreamErrorClass::QuotaExceeded;
-    }
-    if lower.contains("rate limit")
-        || lower.contains("rate_limit")
-        || lower.contains("too many requests")
-        || contains_word(&lower, "429")
-    {
-        return UpstreamErrorClass::RateLimited;
-    }
-    if lower.contains("overloaded") || lower.contains("capacity") || contains_word(&lower, "529") {
-        return UpstreamErrorClass::ProviderOverloaded;
-    }
-    if lower.contains("stream idle for") || lower.contains("connection may be stalled") {
-        return UpstreamErrorClass::StalledStream;
-    }
-    if lower.contains("timeout") || lower.contains("timed out") {
-        return UpstreamErrorClass::Timeout;
-    }
-    if lower.contains("connection refused") || lower.contains("connection closed") {
-        return UpstreamErrorClass::NetworkConnect;
-    }
-    if lower.contains("connection reset")
-        || lower.contains("reset by peer")
-        || lower.contains("broken pipe")
-        || lower.contains("unexpected eof")
-    {
-        return UpstreamErrorClass::NetworkReset;
-    }
-    if lower.contains("dns error") || lower.contains("name resolution") {
-        return UpstreamErrorClass::Dns;
-    }
-    if lower.contains("error decoding response body")
-        || lower.contains("decode response body")
-        || lower.contains("failed to decode response body")
-    {
-        return UpstreamErrorClass::DecodeBody;
-    }
-    if lower.contains("stream ended without") || lower.contains("bridge may have crashed") {
-        return UpstreamErrorClass::BridgeDropped;
-    }
-    if lower.contains("server_error")
-        || lower.contains("temporarily")
-        || lower.contains("try again")
-        || lower.contains("service unavailable")
-        || lower.contains("bad gateway")
-        || lower.contains("internal server error")
-    {
-        return UpstreamErrorClass::Upstream5xx;
-    }
-    for code in ["500", "502", "503"] {
-        if contains_word(&lower, code) {
-            return UpstreamErrorClass::Upstream5xx;
-        }
-    }
-    if contains_word(&lower, "400") || lower.contains("invalid request") || lower.contains("bad request") {
-        return UpstreamErrorClass::BadRequest;
-    }
+    apply_error_rules(GLOBAL_ERROR_RULES, None, &lower).unwrap_or(UpstreamErrorClass::Unknown)
+}
 
-    UpstreamErrorClass::Unknown
+fn apply_error_rules(
+    rules: &[ErrorRule],
+    provider: Option<&str>,
+    lower_msg: &str,
+) -> Option<UpstreamErrorClass> {
+    rules.iter().find_map(|rule| {
+        let provider_matches = match provider {
+            Some(provider) => rule.providers.contains(&provider),
+            None => rule.providers.is_empty(),
+        };
+        if !provider_matches {
+            return None;
+        }
+        let substring_match = rule.substrings.iter().any(|needle| lower_msg.contains(needle));
+        let word_match = rule
+            .word_tokens
+            .iter()
+            .any(|token| contains_word(lower_msg, token));
+        if substring_match || word_match {
+            Some(rule.class)
+        } else {
+            None
+        }
+    })
 }
 
 fn classify_transient_error(msg: &str) -> Option<TransientFailureKind> {

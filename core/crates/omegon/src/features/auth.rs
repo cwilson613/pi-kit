@@ -428,6 +428,10 @@ mod tests {
             authenticated: true,
             auth_method: Some("oauth".into()),
             model: Some("claude-3-5-sonnet-20241022".into()),
+            runtime_status: None,
+            recent_failure_count: None,
+            last_failure_kind: None,
+            last_failure_at: None,
         }];
 
         let signals = ContextSignals {

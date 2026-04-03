@@ -32,4 +32,79 @@ Append-only record of development sessions. Read recent entries for context.
   a1e5a33b refactor(session-log): move to .omegon/agent-journal.md
   206f23d5 fix(tests): use machine-neutral cwd fixture in footer snapshot test
   077d6527 fix(ci): push homebrew formula update from detached HEAD
+## 2026-04-03 — main (10t 1567tc 3m42s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  49f0f4f2 fix(context): report dispatch truthfully and soften upstream warnings
+  a1e5a33b refactor(session-log): move to .omegon/agent-journal.md
+  206f23d5 fix(tests): use machine-neutral cwd fixture in footer snapshot test
+## 2026-04-03 — main (20t 1589tc 12m18s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  49f0f4f2 fix(context): report dispatch truthfully and soften upstream warnings
+  a1e5a33b refactor(session-log): move to .omegon/agent-journal.md
+  206f23d5 fix(tests): use machine-neutral cwd fixture in footer snapshot test
+## 2026-04-03 — main (1t 1589tc 27s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  49f0f4f2 fix(context): report dispatch truthfully and soften upstream warnings
+  a1e5a33b refactor(session-log): move to .omegon/agent-journal.md
+  206f23d5 fix(tests): use machine-neutral cwd fixture in footer snapshot test
+## 2026-04-03 — main (8t 1596tc 9m29s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  49f0f4f2 fix(context): report dispatch truthfully and soften upstream warnings
+  a1e5a33b refactor(session-log): move to .omegon/agent-journal.md
+  206f23d5 fix(tests): use machine-neutral cwd fixture in footer snapshot test
+## 2026-04-03 — main (1t 1596tc 5m4s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  49f0f4f2 fix(context): report dispatch truthfully and soften upstream warnings
+  a1e5a33b refactor(session-log): move to .omegon/agent-journal.md
+  206f23d5 fix(tests): use machine-neutral cwd fixture in footer snapshot test
 

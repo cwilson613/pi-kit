@@ -34,10 +34,12 @@ pub fn render_bootstrap(status: &HarnessStatus, color: bool) -> String {
         if !seen_providers.insert(key) {
             continue;
         } // skip duplicates
-        let icon = if p.authenticated {
-            format!("{green}✓{reset}")
-        } else {
+        let icon = if !p.authenticated {
             format!("{yellow}⚠{reset}")
+        } else if matches!(p.runtime_status, Some(ProviderRuntimeStatus::Degraded)) {
+            format!("{yellow}≈{reset}")
+        } else {
+            format!("{green}✓{reset}")
         };
         let auth = p.auth_method.as_deref().unwrap_or("none");
         // Display name from canonical provider map
@@ -45,9 +47,15 @@ pub fn render_bootstrap(status: &HarnessStatus, color: bool) -> String {
             .map(|pc| pc.display_name)
             .unwrap_or(&p.name);
         out.push_str(&format!(
-            "  {icon} {:<12} {dim}({auth}){reset}\n",
+            "  {icon} {:<12} {dim}({auth}){reset}",
             display_name
         ));
+        if let Some(ProviderRuntimeStatus::Degraded) = p.runtime_status {
+            let failures = p.recent_failure_count.unwrap_or(0);
+            let kind = p.last_failure_kind.as_deref().unwrap_or("transient failures");
+            out.push_str(&format!(" {yellow}[runtime degraded: {failures}× {kind}]{reset}"));
+        }
+        out.push('\n');
         has_providers = true;
     }
     if !has_providers {
@@ -155,12 +163,20 @@ mod tests {
             authenticated: true,
             auth_method: Some("oauth".into()),
             model: Some("Claude 4 Sonnet".into()),
+            runtime_status: None,
+            recent_failure_count: None,
+            last_failure_kind: None,
+            last_failure_at: None,
         });
         status.providers.push(ProviderStatus {
             name: "OpenAI".into(),
             authenticated: false,
             auth_method: None,
             model: None,
+            runtime_status: None,
+            recent_failure_count: None,
+            last_failure_kind: None,
+            last_failure_at: None,
         });
         status.inference_backends.push(InferenceBackendStatus {
             name: "Ollama".into(),
@@ -286,5 +302,27 @@ mod tests {
             "should show current thinking level"
         );
         assert!(output.contains("1200"), "should show current fact count");
+    }
+
+    #[test]
+    fn bootstrap_marks_runtime_degraded_provider() {
+        let mut status = HarnessStatus::default();
+        status.providers.push(ProviderStatus {
+            name: "OpenAI".into(),
+            authenticated: true,
+            auth_method: Some("oauth".into()),
+            model: Some("gpt-5".into()),
+            runtime_status: Some(ProviderRuntimeStatus::Degraded),
+            recent_failure_count: Some(12),
+            last_failure_kind: Some("unreadable response body".into()),
+            last_failure_at: Some("2026-04-03T12:00:00Z".into()),
+        });
+
+        let output = render_bootstrap(&status, false);
+        assert!(output.contains("runtime degraded"), "output: {output}");
+        assert!(
+            output.contains("12× unreadable response body"),
+            "output: {output}"
+        );
     }
 }

@@ -1635,7 +1635,11 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         }
                         omegon_traits::BusRequest::RefreshHarnessStatus => {
                             // Re-assemble and broadcast
-                            let status = crate::status::HarnessStatus::assemble();
+                            let mut status = crate::status::HarnessStatus::assemble();
+                            let auth_status = auth::probe_all_providers().await;
+                            status.providers = crate::auth::auth_status_to_provider_statuses(&auth_status);
+                            status.annotate_provider_runtime_health();
+                            status.update_from_bus(&agent.bus);
                             if let Ok(json) = serde_json::to_value(&status) {
                                 let _ = events_tx
                                     .send(AgentEvent::HarnessStatusChanged { status_json: json });

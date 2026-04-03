@@ -9,6 +9,7 @@
 //! - TUI footer: continuous, re-rendered on BusEvent::HarnessStatusChanged
 //! - Web dashboard: broadcast over WebSocket on the existing event bus
 
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::{self, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -183,15 +184,35 @@ pub struct MemoryStatus {
     pub active_persona_mind: Option<String>, // persona name if persona layer has facts
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRuntimeStatus {
+    Healthy,
+    Degraded,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderStatus {
     pub name: String, // "Anthropic" / "OpenAI" / "Copilot"
     pub authenticated: bool,
     pub auth_method: Option<String>, // "oauth" / "api-key" / "copilot"
     pub model: Option<String>,       // active model name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_status: Option<ProviderRuntimeStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_failure_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_at: Option<String>,
 }
 
-// ── Display for bootstrap rendering ──────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecentUpstreamFailure {
+    provider: String,
+    failure_kind: String,
+    timestamp: String,
+}
 
 impl HarnessStatus {
     /// One-line footer summary for TUI.
@@ -227,6 +248,33 @@ impl HarnessStatus {
         parts.push(self.thinking_level.clone());
 
         parts.join(" │ ")
+    }
+
+    /// Apply recent runtime health signals derived from upstream failure logs.
+    /// This is intentionally separate from authentication state: a provider can
+    /// be authenticated and still be temporarily degraded.
+    pub fn annotate_provider_runtime_health(&mut self) {
+        let recent = recent_upstream_failures();
+        for provider in &mut self.providers {
+            let key = provider.name.to_lowercase();
+            let matches: Vec<&RecentUpstreamFailure> = recent
+                .iter()
+                .filter(|entry| entry.provider == key)
+                .collect();
+            if matches.is_empty() {
+                provider.runtime_status = Some(ProviderRuntimeStatus::Healthy);
+                provider.recent_failure_count = Some(0);
+                provider.last_failure_kind = None;
+                provider.last_failure_at = None;
+                continue;
+            }
+
+            let last = matches[0];
+            provider.runtime_status = Some(ProviderRuntimeStatus::Degraded);
+            provider.recent_failure_count = Some(matches.len() as u32);
+            provider.last_failure_kind = Some(last.failure_kind.clone());
+            provider.last_failure_at = Some(last.timestamp.clone());
+        }
     }
 
     /// Check if any MCP servers failed to connect.
@@ -448,6 +496,43 @@ fn truncate_name(name: &str, max: usize) -> String {
     } else {
         format!("{}…", &name[..max - 1])
     }
+}
+
+fn recent_upstream_failures() -> Vec<RecentUpstreamFailure> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let path = home.join(".omegon").join("upstream-failures.jsonl");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+
+    let cutoff = Utc::now() - Duration::minutes(5);
+    let mut recent = Vec::new();
+    for line in content.lines().rev().take(200) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(provider) = value.get("provider").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(failure_kind) = value.get("failure_kind").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(timestamp) = value.get("timestamp").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
+            continue;
+        };
+        if parsed.with_timezone(&Utc) < cutoff {
+            continue;
+        }
+        recent.push(RecentUpstreamFailure {
+            provider: provider.to_string(),
+            failure_kind: failure_kind.to_string(),
+            timestamp: timestamp.to_string(),
+        });
+    }
+    recent
 }
 
 /// Detect container runtime (podman/docker).

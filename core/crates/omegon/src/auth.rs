@@ -1115,6 +1115,10 @@ pub fn auth_status_to_provider_statuses(status: &AuthStatus) -> Vec<ProviderStat
                 None
             },
             model: None,
+            runtime_status: None,
+            recent_failure_count: None,
+            last_failure_kind: None,
+            last_failure_at: None,
         })
         .collect()
 }
@@ -1219,6 +1223,7 @@ mod tests {
         assert_eq!(converted[0].name, "anthropic");
         assert!(converted[0].authenticated);
         assert_eq!(converted[0].auth_method.as_deref(), Some("oauth"));
+        assert!(converted[0].runtime_status.is_none());
     }
 
     // ── Credential resolution edge cases ────────────────────────────────

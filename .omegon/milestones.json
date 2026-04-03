@@ -320,9 +320,9 @@
     "nodes": [],
     "frozen": false,
     "opened": "2026-04-01T23:29:18Z",
-    "last_rc": "2026-04-02T22:46:34Z",
-    "rc_version": "0.15.7-rc.17",
-    "rc_count": 16,
+    "last_rc": "2026-04-03T00:51:05Z",
+    "rc_version": "0.15.7-rc.18",
+    "rc_count": 17,
     "released": null,
     "notes": [
       "feat(cleave): cancel-bounded transient retry, smoke harness, fallback env fix",
@@ -338,6 +338,7 @@
       "feat(stream): add MessageAbort event for error-path signaling",
       "feat(tokens-test): In core/crates/omegon/src/features/cleave.rs, add a test named `apply_progress_event_accumulates_tokens` inside the existing #[cfg(test)] mod. It should: create a CleaveProgress with one child (label='alpha', zero token counts), call apply_progress_event with ProgressEvent::ChildTokens { child: 'alpha'.into(), tokens_in: 100, tokens_out: 50 }, then assert child.tokens_in==100, child.tokens_out==50, progress.total_tokens_in==100, progress.total_tokens_out==50. Run cargo test -p omegon to confirm it passes.",
       "feat(tui): cleave panel swaps tools display during active runs",
+      "feat(tui): expose plugin management as slash commands",
       "feat: add omegon.styrene.io custom domain step",
       "feat: deploy omegon.styrene.io via Cloudflare Pages",
       "fix(cleave): add model field to ChildPlan test constructor in waves.rs",
@@ -354,7 +355,9 @@
       "fix(footer): make session cost lookup independent of auth-gated catalog",
       "fix(footer): mark session cost as an estimate",
       "fix(justfile): push specific tag only in rc/publish to avoid GitHub Actions trigger drops",
+      "fix(loop): normalize decode-body retry notices for operators",
       "fix(loop): retry stalled llm streams instead of hanging",
+      "fix(loop): rewrite transient retry details in operator language",
       "fix(loop): surface transient failure class in upstream retry notices",
       "fix(loop): use aggressive bounded retries for upstream stalls",
       "fix(model-catalog): add openai-codex section to ModelCatalog",
@@ -363,6 +366,7 @@
       "fix(secrets): preflight web search API keys for env hydration",
       "fix(tools): add nearest-context hints for exact-text edit failures",
       "fix(tui): cleave panel restores to tools view after run, clean segment rendering",
+      "fix(tui): expose skills and hide model alias slash commands",
       "fix(tui): show upstream retry state clearly during transient failures",
       "fix: use npx wrangler@latest for CF Pages deploy"
     ]

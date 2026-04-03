@@ -3,6 +3,7 @@
 //! Each card is a bordered Block with a title bar. Cards share `card_bg`
 //! background for visual cohesion.
 
+use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
@@ -244,10 +245,15 @@ impl FooterData {
                     .last_failure_kind
                     .as_deref()
                     .unwrap_or("transient upstream failures");
+                let status_suffix = provider
+                    .last_failure_at
+                    .as_deref()
+                    .and_then(format_failure_age)
+                    .unwrap_or_else(|| "last recently".to_string());
                 push_row(
                     &mut lines,
                     "status",
-                    format!("≈ degraded · {failures}× {kind} / 5m"),
+                    format!("≈ degraded · {failures}× {kind} · {status_suffix}"),
                     t.border_dim(),
                     t.warning(),
                     false,
@@ -824,6 +830,27 @@ fn format_session_text(model_id: &str, turn: u32, session_input_tokens: u64, ses
     parts.join(" ")
 }
 
+fn format_failure_age(timestamp: &str) -> Option<String> {
+    let parsed = DateTime::parse_from_rfc3339(timestamp).ok()?;
+    let age = Utc::now().signed_duration_since(parsed.with_timezone(&Utc));
+    if age.num_seconds() < 0 {
+        return Some("last just now".to_string());
+    }
+    let secs = age.num_seconds();
+    if secs < 60 {
+        return Some("last just now".to_string());
+    }
+    let mins = age.num_minutes();
+    if mins < 60 {
+        return Some(format!("last {mins}m ago"));
+    }
+    let hours = age.num_hours();
+    if hours < 24 {
+        return Some(format!("last {hours}h ago"));
+    }
+    Some(format!("last {}d ago", age.num_days()))
+}
+
 fn estimate_session_cost_usd(model_id: &str, session_input_tokens: u64, session_output_tokens: u64) -> Option<f64> {
     let pricing = ModelCatalog::pricing_for_model(model_id)?;
     Some(pricing.estimate_cost_usd(session_input_tokens, session_output_tokens))
@@ -1058,7 +1085,8 @@ mod tests {
     }
 
     #[test]
-    fn left_panel_marks_degraded_status_as_five_minute_window() {
+    fn left_panel_marks_degraded_status_with_recency() {
+        let recent = (Utc::now() - chrono::Duration::minutes(2)).to_rfc3339();
         let data = FooterData {
             model_id: "openai:gpt-5.4".into(),
             model_provider: "openai".into(),
@@ -1072,7 +1100,7 @@ mod tests {
                     runtime_status: Some(crate::status::ProviderRuntimeStatus::Degraded),
                     recent_failure_count: Some(6),
                     last_failure_kind: Some("stalled stream".into()),
-                    last_failure_at: Some("2026-04-03T00:00:00Z".into()),
+                    last_failure_at: Some(recent),
                 }],
                 ..Default::default()
             },
@@ -1080,6 +1108,16 @@ mod tests {
         };
         let text = render_left_panel_text(&data, 72, 8);
 
-        assert!(text.contains("6× stalled stream / 5m"), "got {text}");
+        assert!(text.contains("6× stalled stream · last 2m ago"), "got {text}");
+    }
+
+    #[test]
+    fn format_failure_age_handles_recent_and_hourly_values() {
+        let just_now = (Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+        let hourly = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+
+        assert_eq!(format_failure_age(&just_now).as_deref(), Some("last just now"));
+        assert_eq!(format_failure_age(&hourly).as_deref(), Some("last 3h ago"));
+        assert_eq!(format_failure_age("not-a-time"), None);
     }
 }

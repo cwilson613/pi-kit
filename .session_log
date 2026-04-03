@@ -2777,4 +2777,184 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   ca10071a fix(tui): tighten segment rendering and preserve multiline layout
   1e189eb2 chore(release): 0.15.7-rc.18
   f91ddfbb fix(loop): rewrite transient retry details in operator language
+## 2026-04-03 — main (30t 1400tc 10m37s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (1t 1400tc 7s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (2t 1404tc 20s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (2t 1408tc 23s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (3t 1412tc 34s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (1t 1412tc 21s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (12t 1447tc 22m38s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (1t 1447tc 15s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (2t 1450tc 5m3s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (1t 1450tc 23s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (1t 1450tc 29s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
+## 2026-04-03 — main (1t 1450tc 9s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  ad91576f chore(release): 0.15.7
+  2995b382 docs(release): prepare 0.15.7 release surfaces
+  d85549f0 chore(release): 0.15.7-rc.19
 

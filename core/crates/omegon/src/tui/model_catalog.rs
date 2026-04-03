@@ -630,9 +630,42 @@ mod tests {
         let _ = cat.providers;
     }
 
+    fn fixture_catalog() -> ModelCatalog {
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert("OpenRouter".to_string(), vec![
+            ModelInfo {
+                id: "openrouter:qwen/qwen-qwq-32b".to_string(),
+                name: "Qwen QwQ 32B".to_string(),
+                provider: "OpenRouter".to_string(),
+                context_input: 32768,
+                context_output: 8192,
+                cost_tier: CostTier::CheapAPI,
+                pricing: Some(TokenPricing::new(0.20, 0.20)),
+                capabilities: vec![Capability::Reasoning, Capability::Coding],
+                description: "Qwen reasoning model".to_string(),
+                available: true,
+            },
+        ]);
+        providers.insert("Anthropic".to_string(), vec![
+            ModelInfo {
+                id: "anthropic:claude-sonnet-4-6".to_string(),
+                name: "Claude Sonnet 4.6".to_string(),
+                provider: "Anthropic".to_string(),
+                context_input: 1_000_000,
+                context_output: 65536,
+                cost_tier: CostTier::StandardAPI,
+                pricing: Some(TokenPricing::new(3.0, 15.0)),
+                capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Vision],
+                description: "Claude Sonnet 4.6".to_string(),
+                available: true,
+            },
+        ]);
+        ModelCatalog { providers }
+    }
+
     #[test]
     fn search_finds_qwen() {
-        let cat = ModelCatalog::new();
+        let cat = fixture_catalog();
         let results = cat.search("qwen");
         assert!(!results.is_empty());
         assert!(results.iter().any(|m| m.name.contains("Qwen")));
@@ -640,7 +673,7 @@ mod tests {
 
     #[test]
     fn by_capability_finds_reasoning() {
-        let cat = ModelCatalog::new();
+        let cat = fixture_catalog();
         let results = cat.by_capability(Capability::Reasoning);
         assert!(!results.is_empty());
     }
@@ -671,7 +704,7 @@ mod tests {
 
     #[test]
     fn find_by_id_returns_model() {
-        let cat = ModelCatalog::new();
+        let cat = fixture_catalog();
         let model = cat.find_by_id("anthropic:claude-sonnet-4-6");
         assert!(model.is_some());
     }

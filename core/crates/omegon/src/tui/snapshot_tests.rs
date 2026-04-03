@@ -18,6 +18,9 @@ use crate::status::*;
 
 /// Render a terminal buffer to a multi-line string suitable for insta snapshots.
 /// Each line is one row of the terminal, trailing spaces trimmed.
+///
+/// Version strings of the form `vX.Y.Z → vX.Y.Z` are normalized to
+/// `v<current> → v<next>` so snapshots don't break on every release bump.
 fn render_to_string(terminal: &Terminal<TestBackend>) -> String {
     let buf = terminal.backend().buffer();
     let area = buf.area;
@@ -34,7 +37,77 @@ fn render_to_string(terminal: &Terminal<TestBackend>) -> String {
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
-    lines.join("\n")
+    let raw = lines.join("\n");
+    // Normalize compiled-in version strings so snapshots survive release bumps.
+    // Pattern: "vMAJOR.MINOR.PATCH → vMAJOR.MINOR.PATCH"
+    let normalized = regex_replace_version(&raw);
+    normalized
+}
+
+fn regex_replace_version(s: &str) -> String {
+    // Hand-rolled replace — avoids a regex dep in tests.
+    // Matches "v<digits>.<digits>.<digits>[-rc.<digits>] → v<digits>.<digits>.<digits>[-rc.<digits>]"
+    let mut result = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find(" v") {
+        let after_v = &rest[pos + 2..];
+        // Check if this looks like a version transition "vX.Y.Z → vX.Y.Z"
+        if let Some(end) = version_transition_end(after_v) {
+            result.push_str(&rest[..pos]);
+            result.push_str(" v<current> → v<next>");
+            rest = &rest[pos + 2 + end..];
+        } else {
+            result.push_str(&rest[..pos + 2]);
+            rest = &rest[pos + 2..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Returns the byte length of a version transition starting just after the leading "v",
+/// e.g. for "0.15.7 → v0.15.8   rest" returns Some(len_through_second_version).
+fn version_transition_end(s: &str) -> Option<usize> {
+    let mut i = 0;
+    // consume first version digits: digits.digits.digits[-rc.digits]
+    i += version_digits_len(&s[i..])?;
+    // consume " → v"
+    let arrow = " \u{2192} v";
+    if s[i..].starts_with(arrow) {
+        i += arrow.len();
+    } else {
+        return None;
+    }
+    // consume second version
+    i += version_digits_len(&s[i..])?;
+    Some(i)
+}
+
+fn version_digits_len(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    // MAJOR
+    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+    if i == 0 || i >= bytes.len() || bytes[i] != b'.' { return None; }
+    i += 1;
+    // MINOR
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+    if i == start { return None; }
+    if i >= bytes.len() || bytes[i] != b'.' { return None; }
+    i += 1;
+    // PATCH
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+    if i == start { return None; }
+    // optional -rc.N
+    if s[i..].starts_with("-rc.") {
+        i += 4;
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+        if i == start { return None; }
+    }
+    Some(i)
 }
 
 // ═══════════════════════════════════════════════════════════════════

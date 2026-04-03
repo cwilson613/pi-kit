@@ -50,6 +50,13 @@ fn normalize_markdown_for_plaintext(text: &str) -> String {
     normalized.trim_end().to_string()
 }
 
+fn split_preserving_trailing_empty_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return vec![""];
+    }
+    text.split('\n').collect()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Segment — rich metadata wrapper + typed content
 // ═══════════════════════════════════════════════════════════════════════════
@@ -549,11 +556,7 @@ impl Segment {
             }
         }
 
-        let trailing_spacing = match self.role() {
-            SegmentRole::Operator | SegmentRole::Tool => 0,
-            _ => 1,
-        };
-        (last_used + trailing_spacing).max(1)
+        (last_used).max(1)
     }
 }
 
@@ -612,13 +615,18 @@ fn render_user_prompt(
         return;
     }
 
-    let content = vec![Line::from(Span::styled(
-        text.to_string(),
-        Style::default()
-            .fg(t.fg())
-            .bg(bg)
-            .add_modifier(Modifier::BOLD),
-    ))];
+    let content: Vec<Line<'_>> = split_preserving_trailing_empty_lines(text)
+        .into_iter()
+        .map(|line| {
+            Line::from(Span::styled(
+                line.to_string(),
+                Style::default()
+                    .fg(t.fg())
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
     Paragraph::new(content)
         .wrap(Wrap { trim: false })
         .style(Style::default().bg(bg))
@@ -752,7 +760,7 @@ fn render_assistant_text(
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("assistant", Style::default().fg(t.border_dim()).bg(bg)),
+        Span::styled("omegon", Style::default().fg(t.border_dim()).bg(bg)),
     ]));
 
     // Meta tag line: model / provider / tier — dim secondary header
@@ -819,8 +827,9 @@ fn render_assistant_text(
     // Assistant text with markdown structural highlighting
     let mut in_code_fence = false;
     let mut table_state = TableState::None;
-    for line in text.lines() {
-        if line.starts_with("```") {
+    for line in split_preserving_trailing_empty_lines(text) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
             in_code_fence = !in_code_fence;
             table_state = TableState::None;
             lines.push(Line::from(Span::styled(
@@ -832,22 +841,14 @@ fn render_assistant_text(
                 line.to_string(),
                 Style::default().fg(t.accent_muted()).bg(bg),
             )));
-        } else if is_table_line(line) {
-            let is_header = match table_state {
-                TableState::None => {
-                    table_state = TableState::Header;
-                    true
-                }
-                TableState::Header if is_table_separator(line) => {
-                    table_state = TableState::Body;
-                    false
-                }
-                _ => {
-                    table_state = TableState::Body;
-                    false
-                }
-            };
-            lines.push(render_table_line(line, is_header, t));
+        } else if is_table_line(trimmed) {
+            let is_header = matches!(table_state, TableState::None);
+            if is_table_separator(trimmed) || matches!(table_state, TableState::Header) {
+                table_state = TableState::Body;
+            } else {
+                table_state = TableState::Header;
+            }
+            lines.push(render_table_line(trimmed, is_header, t));
         } else {
             table_state = TableState::None;
             lines.push(super::widgets::highlight_line(line, t));
@@ -1613,8 +1614,8 @@ mod tests {
             "assistant header should include Ω sigil: {text}"
         );
         assert!(
-            text.contains("assistant"),
-            "assistant header should identify the source role: {text}"
+            text.contains("omegon"),
+            "assistant header should identify omegon as the source: {text}"
         );
         assert!(
             text.contains("answer"),
@@ -1713,7 +1714,7 @@ mod tests {
         let (area, mut buf) = make_buf(60, 16);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
-        assert!(text.contains("assistant"), "assistant header should name the source: {text}");
+        assert!(text.contains("omegon"), "assistant header should name omegon as the source: {text}");
         assert!(text.contains("reasoning"), "reasoning block should be labeled explicitly: {text}");
         assert!(text.contains("l8"), "live reasoning should render the tail: {text}");
         assert!(
@@ -1735,11 +1736,40 @@ mod tests {
         let (area, mut buf) = make_buf(60, 16);
         seg.render(area, &mut buf, &Alpharius);
         let text = buf_text(&buf, area);
-        assert!(text.contains("assistant"), "assistant header should remain stable after completion: {text}");
+        assert!(text.contains("omegon"), "assistant header should remain stable after completion: {text}");
         assert!(text.contains("reasoning"), "reasoning block should stay labeled after completion: {text}");
         assert!(text.contains("answer"), "answer block should be labeled explicitly: {text}");
         assert!(text.contains("l6"), "collapsed reasoning should keep the preview: {text}");
         assert!(text.contains("⋯ 2 more"), "collapsed reasoning should show a summary hint: {text}");
+    }
+
+    #[test]
+    fn user_prompt_preserves_multiline_and_trailing_blank_lines() {
+        let seg = Segment::user_prompt("alpha\nbeta\n\n");
+        let (area, mut buf) = make_buf(30, 8);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+        assert!(text.contains("alpha"), "first line should render: {text}");
+        assert!(text.contains("beta"), "second line should render: {text}");
+        assert!(seg.height(30, &Alpharius) >= 5, "multiline prompt should reserve height for blank lines");
+    }
+
+    #[test]
+    fn assistant_markdown_tables_render_box_drawing_rows() {
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::AssistantText {
+                text: "| Name | Value |\n| ---- | ----- |\n| foo | bar |".into(),
+                thinking: String::new(),
+                complete: true,
+            },
+        };
+        let (area, mut buf) = make_buf(40, 10);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+        assert!(text.contains("│ Name │ Value │"), "header row should render as a table: {text}");
+        assert!(text.contains("├") || text.contains("┼"), "separator row should render box drawing characters: {text}");
+        assert!(text.contains("│ foo │ bar │"), "body row should render as a table: {text}");
     }
 
     #[test]

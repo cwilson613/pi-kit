@@ -215,6 +215,33 @@ fn editor_visible_visual_lines_follow_cursor_scroll() {
 }
 
 #[test]
+fn editor_visible_visual_lines_preserve_blank_lines_from_paste() {
+    let mut editor = crate::tui::editor::Editor::new();
+    editor.insert_paste("top\n\nbottom\n");
+
+    let visible = editor.visible_visual_lines(20, 6);
+
+    assert_eq!(visible, vec!["top", "", "bottom", ""]);
+}
+
+#[test]
+fn outgoing_operator_segment_preserves_pasted_multiline_layout() {
+    let mut app = test_app();
+    app.editor.insert_paste("alpha\n\nbeta\n");
+    let text = app.editor.take_text();
+    app.conversation.push_user(&text);
+
+    let rendered = app
+        .conversation
+        .segments()
+        .last()
+        .expect("user segment")
+        .plain_text();
+
+    assert_eq!(rendered, "alpha\n\nbeta\n");
+}
+
+#[test]
 fn operator_event_queue_keeps_most_recent_entries() {
     let mut app = test_app();
     app.show_toast("first", ratatui_toaster::ToastType::Info);

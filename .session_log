@@ -2687,4 +2687,49 @@ Edited: core/crates/omegon/src/providers.rs, core/crates/omegon/src/providers.rs
   c4a5557a fix(loop): normalize decode-body retry notices for operators
   aa8308f3 feat(tui): expose plugin management as slash commands
   29bfcbf1 fix(tui): expose skills and hide model alias slash commands
+## 2026-04-03 — main (4t 1272tc 51s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  f91ddfbb fix(loop): rewrite transient retry details in operator language
+  c4a5557a fix(loop): normalize decode-body retry notices for operators
+  aa8308f3 feat(tui): expose plugin management as slash commands
+## 2026-04-03 — main (1t 1272tc 5s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  f91ddfbb fix(loop): rewrite transient retry details in operator language
+  c4a5557a fix(loop): normalize decode-body retry notices for operators
+  aa8308f3 feat(tui): expose plugin management as slash commands
+## 2026-04-03 — main (2t 1273tc 4m21s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  1e189eb2 chore(release): 0.15.7-rc.18
+  f91ddfbb fix(loop): rewrite transient retry details in operator language
+  c4a5557a fix(loop): normalize decode-body retry notices for operators
 

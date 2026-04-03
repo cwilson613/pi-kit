@@ -404,6 +404,35 @@ impl LifecycleFeature {
                 )))
             }
 
+            "archive" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let nodes = self.provider.lock().unwrap().all_nodes().clone();
+                if Self::has_non_archived_descendants(&nodes, id) {
+                    anyhow::bail!(
+                        "cannot archive '{id}' while non-archived descendants remain"
+                    );
+                }
+
+                let mut opsx = self.opsx.lock().unwrap();
+                if opsx.get_node(id).is_none() {
+                    let node = get_node_clone(id)?;
+                    self.bootstrap_node_to_opsx(&mut opsx, &node);
+                }
+                opsx.transition_node(id, OpsxNodeState::Archived)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                drop(opsx);
+
+                let mut node = get_node_clone(id)?;
+                design::update_node(&mut node, |n| {
+                    n.status = NodeStatus::Archived;
+                    n.archive_reason = args["archive_reason"].as_str().map(str::to_string);
+                    n.superseded_by = args["superseded_by"].as_str().map(str::to_string);
+                    n.archived_at = Some(Self::archive_timestamp());
+                })?;
+                self.provider.lock().unwrap().refresh();
+                Ok(text_result(&format!("Archived '{id}'")))
+            }
+
             "set_status" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
                 let status_str = args["status"]
@@ -939,19 +968,21 @@ impl Feature for LifecycleFeature {
             ToolDefinition {
                 name: crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE.into(),
                 label: "design_tree_update".into(),
-                description: "Mutate the design tree: create nodes, change status, add questions/research/decisions, branch, set focus, implement.".into(),
+                description: "Mutate the design tree: create nodes, change status, archive stale nodes, add questions/research/decisions, branch, set focus, implement.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["create", "set_status", "add_question", "remove_question", "add_research", "add_decision", "add_dependency", "add_related", "add_impl_notes", "branch", "focus", "unfocus", "implement", "set_priority", "set_issue_type"],
+                            "enum": ["create", "set_status", "archive", "add_question", "remove_question", "add_research", "add_decision", "add_dependency", "add_related", "add_impl_notes", "branch", "focus", "unfocus", "implement", "set_priority", "set_issue_type"],
                             "description": "Mutation action"
                         },
                         "node_id": { "type": "string", "description": "Primary design node ID. Required for most actions; for create, this is the new node ID." },
                         "title": { "type": "string", "description": "Node title. Required for create." },
                         "parent": { "type": "string", "description": "Parent node ID for create, branch, or implement." },
                         "status": { "type": "string", "description": "Lifecycle status. Required for set_status; optional initial status for create." },
+                        "archive_reason": { "type": "string", "description": "Archive reason for archive or archived status transitions." },
+                        "superseded_by": { "type": "string", "description": "Replacement node ID when archived as superseded." },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "overview": { "type": "string", "description": "Node overview/summary. Required for create." },
                         "question": { "type": "string", "description": "Open question text. Required for add_question/remove_question." },
@@ -972,6 +1003,7 @@ impl Feature for LifecycleFeature {
                     "allOf": [
                         { "if": { "properties": { "action": { "const": "create" } } }, "then": { "required": ["action", "node_id", "title", "overview"] } },
                         { "if": { "properties": { "action": { "const": "set_status" } } }, "then": { "required": ["action", "node_id", "status"] } },
+                        { "if": { "properties": { "action": { "const": "archive" } } }, "then": { "required": ["action", "node_id"] } },
                         { "if": { "properties": { "action": { "const": "add_question" } } }, "then": { "required": ["action", "node_id", "question"] } },
                         { "if": { "properties": { "action": { "const": "remove_question" } } }, "then": { "required": ["action", "node_id", "question"] } },
                         { "if": { "properties": { "action": { "const": "add_research" } } }, "then": { "required": ["action", "node_id", "heading", "content"] } },
@@ -1291,6 +1323,30 @@ mod tests {
 
         assert!(required.contains(&"node_id"), "set_status must require node_id");
         assert!(required.contains(&"status"), "set_status must require status");
+    }
+
+    fn design_tree_update_schema_requires_node_id_for_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let feature = LifecycleFeature::new(dir.path());
+        let tools = feature.tools();
+        let schema = tools
+            .iter()
+            .find(|t| t.name == "design_tree_update")
+            .expect("design_tree_update tool")
+            .parameters
+            .clone();
+
+        let all_of = schema["allOf"].as_array().expect("allOf array");
+        let archive_rule = all_of
+            .iter()
+            .find(|rule| rule["if"]["properties"]["action"]["const"] == "archive")
+            .expect("archive rule");
+        let required = archive_rule["then"]["required"]
+            .as_array()
+            .expect("archive required array");
+        let required: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+
+        assert!(required.contains(&"node_id"), "archive must require node_id");
     }
 
     #[test]
@@ -1623,9 +1679,8 @@ mod tests {
 
         feature
             .execute_design_tree_update(&json!({
-                "action": "set_status",
+                "action": "archive",
                 "node_id": "archive-me",
-                "status": "archived",
                 "archive_reason": "obsolete",
                 "superseded_by": "replacement-node"
             }))
@@ -1686,9 +1741,8 @@ mod tests {
             .unwrap();
 
         let result = feature.execute_design_tree_update(&json!({
-            "action": "set_status",
+            "action": "archive",
             "node_id": "archive-parent",
-            "status": "archived",
             "archive_reason": "obsolete"
         }));
         assert!(result.is_err(), "archive should reject active descendants");

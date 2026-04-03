@@ -209,45 +209,38 @@ impl FooterData {
                 .providers
                 .iter()
                 .find(|p| p.name.eq_ignore_ascii_case(&self.model_provider));
-            let provider_text = if self.model_provider == "ollama" {
-                format!("⚡ {provider_label}")
-            } else {
-                format!("☁ {provider_label}")
-            };
+            let provider_icon = if self.model_provider == "ollama" { "⚡" } else { "☁" };
             let auth_text = if self.is_oauth {
-                "● subscription".to_string()
+                "● subscription"
             } else {
-                "○ api key".to_string()
+                "○ api key"
             };
+            let provider_text = format!("{provider_icon} {provider_label} · {auth_text}");
             let persona_text = self
                 .harness
                 .active_persona
                 .as_ref()
                 .map(|p| format!("{} {}", p.badge, p.name))
                 .unwrap_or_else(|| "—".to_string());
-            let context_text = if self.context_window > 0 {
-                format!(
-                    "{} {:.0}% / {}",
-                    self.context_class.short(),
-                    self.context_percent.min(100.0),
-                    widgets::format_tokens(self.context_window)
-                )
-            } else {
-                format!("{} {:.0}%", self.context_class.short(), self.context_percent.min(100.0))
-            };
-            let tier_text = format!(
-                "{} · think {}",
-                capitalize(&self.model_tier),
-                capitalize(&self.thinking_level),
+            let context_text = format_context_text(
+                self.context_class,
+                self.context_percent.min(100.0),
+                self.context_window,
             );
+            let tier_text = format!("{} / {}", capitalize(&self.model_tier), capitalize(&self.thinking_level));
             let session_text = format_session_text(
                 &self.model_id,
                 self.turn,
                 self.session_input_tokens,
                 self.session_output_tokens,
             );
-            let next_ver = env!("OMEGON_NEXT_VERSION");
-            let version_text = format!("v{} → v{next_ver}", env!("CARGO_PKG_VERSION"));
+            let version_text = format_version_text(self.update_available.as_deref());
+            let model_line = if persona_text == "—" {
+                model_short.to_string()
+            } else {
+                format!("{model_short} · {persona_text}")
+            };
+            let state_line = format!("{context_text} · {tier_text} · {session_text}");
 
             push_row(&mut lines, "provider", provider_text, t.border_dim(), t.fg(), true);
             if let Some(provider) = provider_runtime
@@ -270,36 +263,28 @@ impl FooterData {
             push_row(
                 &mut lines,
                 "model",
-                model_short.to_string(),
+                model_line,
                 t.border_dim(),
                 t.muted(),
                 true,
             );
-            push_row(&mut lines, "auth", auth_text, t.border_dim(), t.muted(), false);
-            push_row(&mut lines, "persona", persona_text, t.border_dim(), t.accent(), false);
             push_row(
                 &mut lines,
-                "context",
-                context_text,
+                "state",
+                state_line,
                 t.border_dim(),
                 widgets::percent_color(self.context_percent.min(100.0), t),
                 false,
             );
+            push_row(&mut lines, "version", version_text, t.border_dim(), t.accent(), false);
 
             if !self.cwd.is_empty() {
-                let cwd_display = shorten_cwd(&self.cwd, inner.width.saturating_sub(label_width as u16 + 3) as usize);
+                let cwd_display = shorten_cwd(
+                    &self.cwd,
+                    inner.width.saturating_sub(label_width as u16 + 3) as usize,
+                );
                 push_row(&mut lines, "path", cwd_display, t.border_dim(), t.dim(), false);
             }
-
-            let tier_color = match self.model_tier.as_str() {
-                "gloriana" => t.accent(),
-                "victory" => t.fg(),
-                "retribution" => t.dim(),
-                _ => t.muted(),
-            };
-            push_row(&mut lines, "mode", tier_text, t.border_dim(), tier_color, false);
-            push_row(&mut lines, "session", session_text, t.border_dim(), t.muted(), false);
-            push_row(&mut lines, "version", version_text, t.border_dim(), t.accent(), false);
 
             for event in self.operator_events.iter().take(2) {
                 lines.push(Line::from(vec![
@@ -799,6 +784,26 @@ fn shorten_cwd(cwd: &str, max_chars: usize) -> String {
     format!("{prefix}…/{file_name}")
 }
 
+fn format_context_text(context_class: ContextClass, context_percent: f32, context_window: usize) -> String {
+    if context_window > 0 {
+        format!(
+            "{} {:.0}% / {}",
+            context_class.short(),
+            context_percent,
+            widgets::format_tokens(context_window)
+        )
+    } else {
+        format!("{} {:.0}%", context_class.short(), context_percent)
+    }
+}
+
+fn format_version_text(update_available: Option<&str>) -> String {
+    match update_available {
+        Some(latest) => format!("v{} → v{latest}", env!("CARGO_PKG_VERSION")),
+        None => format!("v{}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
 fn short_model(model_id: &str) -> String {
     crate::settings::humanize_model_id(model_id)
 }
@@ -968,5 +973,61 @@ mod tests {
     fn session_text_shows_cost_for_priced_models_even_without_catalog_availability() {
         let text = format_session_text("openai:gpt-5.4", 2, 12_000, 3_000);
         assert!(text.contains("~$"), "got {text}");
+    }
+
+    #[test]
+    fn version_text_only_shows_transition_when_update_exists() {
+        let stable = format_version_text(None);
+        assert_eq!(stable, format!("v{}", env!("CARGO_PKG_VERSION")));
+
+        let upgrade = format_version_text(Some("9.9.9"));
+        assert_eq!(upgrade, format!("v{} → v9.9.9", env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn context_text_compacts_class_percent_and_window() {
+        assert_eq!(
+            format_context_text(ContextClass::Maniple, 68.0, 272_000),
+            "Maniple 68% / 272k"
+        );
+        assert_eq!(format_context_text(ContextClass::Clan, 42.0, 0), "Clan 42%");
+    }
+
+    #[test]
+    fn left_panel_keeps_version_visible_in_compact_layout() {
+        let data = FooterData {
+            model_id: "openai:gpt-5.4".into(),
+            model_provider: "openai".into(),
+            context_percent: 68.0,
+            context_window: 272_000,
+            context_class: ContextClass::Maniple,
+            session_input_tokens: 12_000,
+            session_output_tokens: 3_000,
+            turn: 7,
+            cwd: "/Users/test/workspace/black-meridian/omegon/core/crates/omegon".into(),
+            thinking_level: "high".into(),
+            model_tier: "victory".into(),
+            provider_connected: true,
+            update_available: Some("9.9.9".into()),
+            ..Default::default()
+        };
+        let backend = TestBackend::new(38, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                data.render_left_panel(frame.area(), frame, &super::super::theme::Alpharius);
+            })
+            .unwrap();
+
+        let text: String = {
+            let buf = terminal.backend().buffer();
+            let a = buf.area;
+            (0..a.height)
+                .flat_map(|y| (0..a.width).map(move |x| buf[(x, y)].symbol().to_string()))
+                .collect()
+        };
+
+        assert!(text.contains("v<version> → v9.9.9") || text.contains("v0.15."), "got {text}");
+        assert!(text.contains("gpt-5.4"), "got {text}");
     }
 }

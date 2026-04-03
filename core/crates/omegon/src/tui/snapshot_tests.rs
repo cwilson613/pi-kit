@@ -46,15 +46,20 @@ fn render_to_string(terminal: &Terminal<TestBackend>) -> String {
 
 fn regex_replace_version(s: &str) -> String {
     // Hand-rolled replace — avoids a regex dep in tests.
-    // Matches "v<digits>.<digits>.<digits>[-rc.<digits>] → v<digits>.<digits>.<digits>[-rc.<digits>]"
+    // Matches either:
+    //   * "v<digits>.<digits>.<digits>[-rc.<digits>] → v<digits>.<digits>.<digits>[-rc.<digits>]"
+    //   * "v<digits>.<digits>.<digits>[-rc.<digits>]"
     let mut result = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(pos) = rest.find(" v") {
         let after_v = &rest[pos + 2..];
-        // Check if this looks like a version transition "vX.Y.Z → vX.Y.Z"
         if let Some(end) = version_transition_end(after_v) {
             result.push_str(&rest[..pos]);
             result.push_str(" v<current> → v<next>");
+            rest = &rest[pos + 2 + end..];
+        } else if let Some(end) = version_digits_len(after_v) {
+            result.push_str(&rest[..pos]);
+            result.push_str(" v<current>");
             rest = &rest[pos + 2 + end..];
         } else {
             result.push_str(&rest[..pos + 2]);
@@ -87,27 +92,57 @@ fn version_digits_len(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut i = 0;
     // MAJOR
-    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
-    if i == 0 || i >= bytes.len() || bytes[i] != b'.' { return None; }
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 || i >= bytes.len() || bytes[i] != b'.' {
+        return None;
+    }
     i += 1;
     // MINOR
     let start = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
-    if i == start { return None; }
-    if i >= bytes.len() || bytes[i] != b'.' { return None; }
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
+    if i >= bytes.len() || bytes[i] != b'.' {
+        return None;
+    }
     i += 1;
     // PATCH
     let start = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
-    if i == start { return None; }
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
     // optional -rc.N
     if s[i..].starts_with("-rc.") {
         i += 4;
         let start = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
-        if i == start { return None; }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
     }
     Some(i)
+}
+
+#[test]
+fn regex_replace_version_normalizes_transition_and_single_version() {
+    assert_eq!(
+        regex_replace_version("version v0.15.9-rc.7 → v0.15.9-rc.8"),
+        "version v<current> → v<next>"
+    );
+    assert_eq!(
+        regex_replace_version("version v0.15.9-rc.7"),
+        "version v<current>"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════

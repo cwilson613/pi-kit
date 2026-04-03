@@ -152,4 +152,19 @@ Append-only record of development sessions. Read recent entries for context.
   8ea844f9 fix(status): require repeated failures before provider degradation
   c1ac4211 feat(ipc): surface degraded provider runtime state
   9f3d90a2 fix(status): separate provider auth from runtime degradation
+## 2026-04-03 — main (21t 1666tc 18m33s)
+
+**Active:**
+- knowledge-quadrant-lifecycle (0/8)
+- openai-provider-identity-and-routing-honesty (0/13)
+- orchestratable-provider-model (43/43)
+- splash-systems-integration (0/29)
+- styrene-identity-secrets (0/3)
+- tui-footer-engine-display (0/41)
+- tutorial-system (37/39)
+
+**Commits:**
+  a9285d77 refactor(loop): classify upstream failures into explicit recovery classes
+  8ea844f9 fix(status): require repeated failures before provider degradation
+  c1ac4211 feat(ipc): surface degraded provider runtime state
 

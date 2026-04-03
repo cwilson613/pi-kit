@@ -655,10 +655,10 @@ async fn stream_with_retry(
         };
 
         let err_msg = err.to_string();
-        let upstream_class = classify_upstream_error(&err_msg);
+        let provider = config.model.split(':').next().unwrap_or("upstream").to_string();
+        let upstream_class = classify_upstream_error_for_provider(&provider, &err_msg);
         let transient_kind = upstream_class.transient_kind();
         let is_transient = transient_kind.is_some();
-        let provider = config.model.split(':').next().unwrap_or("upstream").to_string();
         let model = config.model.clone();
 
         if !is_transient {
@@ -976,6 +976,44 @@ fn append_upstream_failure_log(entry: &UpstreamFailureLogEntry) {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     let _ = writeln!(file, "{line}");
+}
+
+fn classify_upstream_error_for_provider(provider: &str, msg: &str) -> UpstreamErrorClass {
+    let lower = msg.to_lowercase();
+
+    match provider {
+        // Anthropic long-context wording is provider-specific and should map
+        // explicitly rather than relying on generic token-limit phrasing.
+        "anthropic" => {
+            if lower.contains("extra usage is required for long context requests") {
+                return UpstreamErrorClass::ContextOverflow;
+            }
+        }
+        // ChatGPT/Codex subscription failures frequently present as session expiry
+        // rather than generic auth errors.
+        "openai-codex" => {
+            if lower.contains("session expired")
+                || lower.contains("out of session")
+                || lower.contains("please log in again")
+            {
+                return UpstreamErrorClass::SessionExpired;
+            }
+        }
+        // OpenAI-compatible providers often expose typed invalid_request_error
+        // payloads that should stay distinct from auth/session failures.
+        "openai" | "openrouter" | "groq" | "xai" | "mistral" | "cerebras"
+        | "huggingface" | "ollama" => {
+            if lower.contains("invalid_request_error")
+                || lower.contains("unsupported_parameter")
+                || lower.contains("bad request")
+            {
+                return UpstreamErrorClass::BadRequest;
+            }
+        }
+        _ => {}
+    }
+
+    classify_upstream_error(msg)
 }
 
 fn classify_upstream_error(msg: &str) -> UpstreamErrorClass {
@@ -1890,6 +1928,31 @@ mod tests {
         assert_eq!(
             classify_transient_error("session expired, please log in again"),
             None
+        );
+    }
+
+    #[test]
+    fn provider_specific_error_matrix_overrides_generic_matching() {
+        assert_eq!(
+            classify_upstream_error_for_provider(
+                "anthropic",
+                "Extra usage is required for long context requests."
+            ),
+            UpstreamErrorClass::ContextOverflow
+        );
+        assert_eq!(
+            classify_upstream_error_for_provider(
+                "openai-codex",
+                "ChatGPT session expired, please log in again"
+            ),
+            UpstreamErrorClass::SessionExpired
+        );
+        assert_eq!(
+            classify_upstream_error_for_provider(
+                "openai",
+                "400 Bad Request: invalid_request_error"
+            ),
+            UpstreamErrorClass::BadRequest
         );
     }
 

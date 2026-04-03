@@ -578,11 +578,10 @@ pub struct ProfileModel {
 }
 
 impl Profile {
-    /// Load profile. Project-level (`.omegon/profile.json`) overrides
-    /// global (`~/.config/omegon/profile.json`). Both are optional.
+    /// Load profile. Project-level (`<repo>/.omegon/profile.json`) overrides
+    /// user-level (`~/.omegon/profile.json`). Both are optional.
     pub fn load(cwd: &std::path::Path) -> Self {
-        // Project-level first
-        let project_path = cwd.join(".omegon/profile.json");
+        let project_path = project_profile_path(cwd);
         if let Ok(content) = std::fs::read_to_string(&project_path)
             && let Ok(profile) = serde_json::from_str(&content)
         {
@@ -590,7 +589,7 @@ impl Profile {
             return profile;
         }
 
-        // Global fallback
+        // User-level fallback
         if let Some(global_path) = global_profile_path()
             && let Ok(content) = std::fs::read_to_string(&global_path)
             && let Ok(profile) = serde_json::from_str(&content)
@@ -610,18 +609,19 @@ impl Profile {
         }
     }
 
-    /// Save to the project-level profile.
+    /// Save to the project-level profile at the repository root.
     pub fn save(&self, cwd: &std::path::Path) -> anyhow::Result<()> {
-        let dir = cwd.join(".omegon");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("profile.json");
+        let path = project_profile_path(cwd);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, json)?;
         tracing::debug!(path = %path.display(), "project profile saved");
         Ok(())
     }
 
-    /// Save to the global profile (~/.config/omegon/profile.json).
+    /// Save to the user-level profile (~/.omegon/profile.json).
     pub fn save_global(&self) -> anyhow::Result<()> {
         let path = global_profile_path()
             .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
@@ -690,9 +690,16 @@ impl Profile {
     }
 }
 
+fn project_profile_path(cwd: &std::path::Path) -> std::path::PathBuf {
+    crate::setup::find_project_root(cwd).join(".omegon/profile.json")
+}
+
 fn global_profile_path() -> Option<std::path::PathBuf> {
-    // XDG on Linux, ~/Library/Application Support on macOS
-    dirs::config_dir().map(|d| d.join("omegon/profile.json"))
+    // Preferred user-level home follows the rest of the harness convention.
+    // Fall back to the legacy XDG/App Support path for backward compatibility.
+    dirs::home_dir()
+        .map(|d| d.join(".omegon/profile.json"))
+        .or_else(|| dirs::config_dir().map(|d| d.join("omegon/profile.json")))
 }
 
 #[cfg(test)]
@@ -918,5 +925,41 @@ mod tests {
         assert!(p.avoid_providers.is_empty());
         assert!(p.context_floor_pin.is_none());
         assert!(p.downgrade_overrides.is_empty());
+    }
+
+    #[test]
+    fn project_profile_path_resolves_to_repo_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let nested = tmp.path().join("core/crates/omegon");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(project_profile_path(&nested), tmp.path().join(".omegon/profile.json"));
+    }
+
+    #[test]
+    fn profile_save_uses_repo_root_not_nested_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let nested = tmp.path().join("core/crates/omegon");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let profile = Profile {
+            last_used_model: Some(ProfileModel {
+                provider: "anthropic".into(),
+                model_id: "claude-sonnet-4-6".into(),
+            }),
+            thinking_level: Some("low".into()),
+            max_turns: Some(50),
+            provider_order: Vec::new(),
+            avoid_providers: Vec::new(),
+            context_floor_pin: None,
+            downgrade_overrides: Vec::new(),
+        };
+
+        profile.save(&nested).unwrap();
+
+        assert!(tmp.path().join(".omegon/profile.json").exists());
+        assert!(!nested.join(".omegon/profile.json").exists());
     }
 }

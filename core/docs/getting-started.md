@@ -79,7 +79,7 @@ Omegon auto-detects project conventions from config files (Cargo.toml, tsconfig.
 
 ### Project profile
 
-Settings persist per-project in `.omegon/profile.json`:
+Settings persist per-project in `<repo-root>/.omegon/profile.json` (not the current nested working directory). If no project profile exists, Omegon falls back to `~/.omegon/profile.json`:
 
 ```bash
 # These are saved automatically when you use /model or /think

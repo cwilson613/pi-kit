@@ -2,7 +2,7 @@
 
 ## Project profile
 
-Settings persist per-project in `.omegon/profile.json`. The profile is automatically updated when you change settings via slash commands.
+Settings persist per-project in `<repo-root>/.omegon/profile.json` (resolved at the repository root even when you launch Omegon from a nested subdirectory). The profile is automatically updated when you change settings via slash commands. If no project profile exists, Omegon falls back to the user-level profile at `~/.omegon/profile.json`.
 
 ```json
 {

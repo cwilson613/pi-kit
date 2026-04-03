@@ -37,3 +37,4 @@ dist/
 .omegon/codescan.db-wal
 *.snap.new
 .omegon/agent-journal.md
+.omegon/profile.json

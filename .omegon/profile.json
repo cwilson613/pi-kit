@@ -1,8 +1,0 @@
-{
-  "lastUsedModel": {
-    "provider": "openai-codex",
-    "modelId": "gpt-5.4"
-  },
-  "thinkingLevel": "medium",
-  "maxTurns": 50
-}

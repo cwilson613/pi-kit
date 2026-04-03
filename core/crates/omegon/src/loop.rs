@@ -687,20 +687,41 @@ async fn stream_with_retry(
             message: err_msg.clone(),
         });
 
-        // Soft exhaustion: when max_retries > 0, bail after that many
-        // consecutive transient failures so the cleave orchestrator can
-        // detect upstream exhaustion and try a fallback provider.
-        // max_retries == 0 means retry indefinitely (interactive/TUI mode).
-        if config.max_retries > 0 && attempt >= config.max_retries {
-            let elapsed = started.elapsed();
+        // Soft exhaustion: bail after N consecutive transient failures.
+        //
+        // Two modes:
+        // - max_retries > 0 (cleave): hard cap on attempt count
+        // - max_retries == 0 (TUI): no attempt cap, but rate-limit failures
+        //   escalate to terminal after 120s of continuous rate-limiting,
+        //   because that's a session/quota exhaustion, not a transient burst.
+        let elapsed = started.elapsed();
+        let rate_limit_exhausted = config.max_retries == 0
+            && matches!(transient_kind, Some(TransientFailureKind::RateLimited))
+            && elapsed.as_secs() >= 120;
+        let attempt_exhausted = config.max_retries > 0 && attempt >= config.max_retries;
+
+        if attempt_exhausted || rate_limit_exhausted {
+            let reason = if rate_limit_exhausted {
+                "session rate-limit exhaustion"
+            } else {
+                "upstream exhausted"
+            };
             tracing::error!(
                 attempts = attempt,
                 elapsed_secs = elapsed.as_secs(),
                 kind = kind_label,
-                "upstream exhausted: {err_msg}"
+                "{reason}: {err_msg}"
             );
+            let _ = events.send(AgentEvent::SystemNotification {
+                message: format!(
+                    "🛑 {provider} {reason}: {attempt} consecutive {kind_label} failures over {:.0}s. \
+                     This looks like a session or quota limit, not a transient issue. \
+                     Switch provider with /model or wait for your quota to reset.",
+                    elapsed.as_secs_f64()
+                ),
+            });
             return Err(anyhow::anyhow!(
-                "upstream exhausted: {} consecutive {} failures over {:.0}s: {}",
+                "{reason}: {} consecutive {} failures over {:.0}s: {}",
                 attempt,
                 kind_label,
                 elapsed.as_secs_f64(),

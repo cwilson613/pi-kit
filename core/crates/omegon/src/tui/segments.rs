@@ -1152,43 +1152,74 @@ fn render_tool_card(
                 Style::default().fg(t.muted()).bg(t.surface_bg())
             };
 
-            // Try ANSI color parsing for tool output (cargo, git diff, etc.)
-            let joined = result_lines[..show].join("\n");
-            let has_ansi = joined.contains('\x1b');
+            let mut table_state = TableState::None;
+            let has_table_lines = result_lines.iter().any(|line| is_table_line(line.trim()));
 
-            if has_ansi {
-                use ansi_to_tui::IntoText as _;
-                if let Ok(text) = joined.into_text() {
-                    for line in text.lines {
-                        let spans: Vec<Span<'_>> = line
-                            .spans
-                            .into_iter()
-                            .map(|mut s| {
-                                // Preserve ANSI foreground, apply surface_bg
-                                s.style = s.style.bg(t.surface_bg());
-                                // If no foreground was set by ANSI, use muted
-                                if s.style.fg.is_none() {
-                                    s.style = s.style.fg(t.muted());
-                                }
-                                s
-                            })
-                            .collect();
-                        lines.push(Line::from(spans));
-                        result_row_fills
-                            .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
-                    }
-                } else {
-                    // ANSI parse failed — fall back to plain
-                    for line in &result_lines[..show] {
+            if !is_error && has_table_lines {
+                for line in result_lines[..show].iter().copied() {
+                    let trimmed = line.trim();
+                    if is_table_line(trimmed) {
+                        let is_header = matches!(table_state, TableState::None);
+                        if is_table_separator(trimmed) || matches!(table_state, TableState::Header)
+                        {
+                            table_state = TableState::Body;
+                        } else {
+                            table_state = TableState::Header;
+                        }
+                        let row_bg = if is_header {
+                            t.card_bg()
+                        } else {
+                            t.surface_bg()
+                        };
+                        lines.push(render_table_line(trimmed, is_header, t));
+                        result_row_fills.push((lines.len().saturating_sub(1) as u16, row_bg));
+                    } else {
+                        table_state = TableState::None;
                         lines.push(Line::from(Span::styled(line.to_string(), result_style)));
                         result_row_fills
                             .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
                     }
                 }
             } else {
-                for line in &result_lines[..show] {
-                    lines.push(Line::from(Span::styled(line.to_string(), result_style)));
-                    result_row_fills.push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
+                // Try ANSI color parsing for tool output (cargo, git diff, etc.)
+                let joined = result_lines[..show].join("\n");
+                let has_ansi = joined.contains('\x1b');
+
+                if has_ansi {
+                    use ansi_to_tui::IntoText as _;
+                    if let Ok(text) = joined.into_text() {
+                        for line in text.lines {
+                            let spans: Vec<Span<'_>> = line
+                                .spans
+                                .into_iter()
+                                .map(|mut s| {
+                                    // Preserve ANSI foreground, apply surface_bg
+                                    s.style = s.style.bg(t.surface_bg());
+                                    // If no foreground was set by ANSI, use muted
+                                    if s.style.fg.is_none() {
+                                        s.style = s.style.fg(t.muted());
+                                    }
+                                    s
+                                })
+                                .collect();
+                            lines.push(Line::from(spans));
+                            result_row_fills
+                                .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
+                        }
+                    } else {
+                        // ANSI parse failed — fall back to plain
+                        for line in &result_lines[..show] {
+                            lines.push(Line::from(Span::styled(line.to_string(), result_style)));
+                            result_row_fills
+                                .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
+                        }
+                    }
+                } else {
+                    for line in &result_lines[..show] {
+                        lines.push(Line::from(Span::styled(line.to_string(), result_style)));
+                        result_row_fills
+                            .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
+                    }
                 }
             }
         }
@@ -1765,6 +1796,33 @@ mod tests {
             trailing_content_cell.style().bg,
             Some(Alpharius.surface_bg())
         );
+    }
+
+    #[test]
+    fn tool_result_markdown_tables_render_as_structured_rows() {
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "codebase_search".into(),
+                args_summary: None,
+                detail_args: Some("{\"query\":\"foo\"}".into()),
+                result_summary: None,
+                detail_result: Some(
+                    "## codebase_search: `foo`\n\n**2 result(s)** (scope: `code`)\n\n| File | Lines | Type | Score | Preview |\n|------|-------|------|-------|---------|\n| `src/app.rs` | 10-20 | code | 45.38 | fn render() |\n| `src/lib.rs` | 1-9 | code | 11.20 | helper |\n"
+                        .into(),
+                ),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
+        let (area, mut buf) = make_buf(100, 16);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+        assert!(text.contains("│ File │ Lines │ Type │ Score │ Preview │"), "header row should render as a structured table: {text}");
+        assert!(text.contains("├") || text.contains("┼"), "separator row should render box drawing characters: {text}");
+        assert!(text.contains("│ src/app.rs │ 10-20 │ code │ 45.38 │ fn render() │"), "body row should render as a structured table: {text}");
     }
 
     #[test]

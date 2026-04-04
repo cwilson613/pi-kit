@@ -297,7 +297,7 @@ impl Feature for AuthFeature {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::TurnEnd { turn } => {
+            BusEvent::TurnEnd { turn, .. } => {
                 // Check for expiring credentials every N turns
                 if turn.saturating_sub(self.last_expiry_check) >= EXPIRY_CHECK_INTERVAL {
                     self.last_expiry_check = *turn;
@@ -475,6 +475,12 @@ mod tests {
         // First check after interval should trigger
         let _requests = feature.on_event(&BusEvent::TurnEnd {
             turn: EXPIRY_CHECK_INTERVAL,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
         });
         // Will be empty since no cached providers, but interval logic should work
         assert_eq!(feature.last_expiry_check, EXPIRY_CHECK_INTERVAL);
@@ -482,6 +488,12 @@ mod tests {
         // Immediate subsequent check should not trigger
         let _requests2 = feature.on_event(&BusEvent::TurnEnd {
             turn: EXPIRY_CHECK_INTERVAL + 1,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
         });
         assert_eq!(feature.last_expiry_check, EXPIRY_CHECK_INTERVAL); // unchanged
     }

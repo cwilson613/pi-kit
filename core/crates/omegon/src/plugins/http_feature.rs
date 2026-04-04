@@ -199,7 +199,7 @@ impl Feature for HttpPluginFeature {
         };
 
         match event {
-            BusEvent::TurnEnd { turn } => {
+            BusEvent::TurnEnd { turn, .. } => {
                 if let Some(ref endpoint) = events.turn_end {
                     let client = self.client.clone();
                     let url = resolve_template(endpoint, &HashMap::new());

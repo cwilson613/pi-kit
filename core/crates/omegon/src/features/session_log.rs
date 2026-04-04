@@ -25,6 +25,19 @@ pub struct SessionLog {
     cwd: PathBuf,
     /// Cached narrative context, injected once on SessionStart.
     context_snippet: Option<String>,
+    /// Per-turn provider/model/telemetry snapshots collected during the live session.
+    turn_summaries: Vec<TurnSummary>,
+}
+
+#[derive(Debug, Clone)]
+struct TurnSummary {
+    turn: u32,
+    model: Option<String>,
+    provider: Option<String>,
+    actual_input_tokens: u64,
+    actual_output_tokens: u64,
+    cache_read_tokens: u64,
+    provider_telemetry: Option<omegon_traits::ProviderTelemetrySnapshot>,
 }
 
 impl SessionLog {
@@ -35,6 +48,7 @@ impl SessionLog {
             log_path: omegon_dir.join("agent-journal.md"),
             cwd: cwd.to_path_buf(),
             context_snippet: None,
+            turn_summaries: Vec::new(),
         }
     }
 
@@ -188,6 +202,14 @@ impl SessionLog {
             String::new(),
         ];
 
+        if !self.turn_summaries.is_empty() {
+            lines.push("**Turns:**".to_string());
+            for summary in &self.turn_summaries {
+                lines.push(format!("- {}", format_turn_summary(summary)));
+            }
+            lines.push(String::new());
+        }
+
         if !openspec.is_empty() {
             lines.push("**Active:**".to_string());
             for s in &openspec {
@@ -283,6 +305,37 @@ impl SessionLog {
     }
 }
 
+fn format_turn_summary(summary: &TurnSummary) -> String {
+    let provider = summary.provider.as_deref().unwrap_or("unknown");
+    let model = summary.model.as_deref().unwrap_or("unknown-model");
+    let mut parts = vec![format!(
+        "turn {} — {} / {} in:{} out:{} cache:{}",
+        summary.turn,
+        provider,
+        model,
+        summary.actual_input_tokens,
+        summary.actual_output_tokens,
+        summary.cache_read_tokens
+    )];
+
+    if let Some(telemetry) = &summary.provider_telemetry {
+        if let Some(pct) = telemetry.unified_5h_utilization_pct {
+            parts.push(format!("5h {:.0}%", pct));
+        }
+        if let Some(pct) = telemetry.unified_7d_utilization_pct {
+            parts.push(format!("7d {:.0}%", pct));
+        }
+        if let Some(rem) = telemetry.requests_remaining {
+            parts.push(format!("req {}", rem));
+        }
+        if let Some(rem) = telemetry.tokens_remaining {
+            parts.push(format!("tok {}", rem));
+        }
+    }
+
+    parts.join(" · ")
+}
+
 #[async_trait]
 impl Feature for SessionLog {
     fn name(&self) -> &str {
@@ -374,12 +427,32 @@ impl Feature for SessionLog {
         match event {
             BusEvent::SessionStart { .. } => {
                 self.context_snippet = self.read_narrative_entries(3);
+                self.turn_summaries.clear();
                 if self.context_snippet.is_some() {
                     tracing::info!(
                         "Session log context loaded from {}",
                         self.log_path.display()
                     );
                 }
+            }
+            BusEvent::TurnEnd {
+                turn,
+                model,
+                provider,
+                actual_input_tokens,
+                actual_output_tokens,
+                cache_read_tokens,
+                provider_telemetry,
+            } => {
+                self.turn_summaries.push(TurnSummary {
+                    turn: *turn,
+                    model: model.clone(),
+                    provider: provider.clone(),
+                    actual_input_tokens: *actual_input_tokens,
+                    actual_output_tokens: *actual_output_tokens,
+                    cache_read_tokens: *cache_read_tokens,
+                    provider_telemetry: provider_telemetry.clone(),
+                });
             }
             BusEvent::SessionEnd {
                 turns,
@@ -513,6 +586,24 @@ mod tests {
     fn session_end_event_writes_entry() {
         let dir = tempfile::tempdir().unwrap();
         let mut feature = SessionLog::new(dir.path());
+        feature.on_event(&BusEvent::TurnEnd {
+            turn: 7,
+            model: Some("anthropic:claude-sonnet-4-6".into()),
+            provider: Some("anthropic".into()),
+            actual_input_tokens: 1200,
+            actual_output_tokens: 300,
+            cache_read_tokens: 40,
+            provider_telemetry: Some(omegon_traits::ProviderTelemetrySnapshot {
+                provider: "anthropic".into(),
+                source: "response_headers".into(),
+                unified_5h_utilization_pct: Some(42.0),
+                unified_7d_utilization_pct: None,
+                requests_remaining: None,
+                tokens_remaining: None,
+                retry_after_secs: None,
+                request_id: None,
+            }),
+        });
 
         feature.on_event(&BusEvent::SessionEnd {
             turns: 7,
@@ -526,6 +617,8 @@ mod tests {
         );
         let content = fs::read_to_string(&feature.log_path).unwrap();
         assert!(content.contains("7t"), "should record turns");
+        assert!(content.contains("anthropic / anthropic:claude-sonnet-4-6"), "should record provider/model");
+        assert!(content.contains("5h 42%"), "should record telemetry");
     }
 
     #[test]

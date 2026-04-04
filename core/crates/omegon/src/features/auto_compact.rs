@@ -58,7 +58,7 @@ impl Feature for AutoCompact {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::TurnEnd { turn } => {
+            BusEvent::TurnEnd { turn, .. } => {
                 if self.compacting {
                     return vec![];
                 }
@@ -106,7 +106,15 @@ mod tests {
     #[test]
     fn does_not_compact_below_threshold() {
         let mut ac = AutoCompact::new();
-        let requests = ac.on_event(&BusEvent::TurnEnd { turn: 1 });
+        let requests = ac.on_event(&BusEvent::TurnEnd {
+            turn: 1,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+        });
         assert!(requests.is_empty(), "turn 1 should not trigger compaction");
     }
 
@@ -115,7 +123,15 @@ mod tests {
         let mut ac = AutoCompact::new();
         ac.threshold = 50.0; // lower threshold for testing
         // Turn 30 → estimated 60% > 50%
-        let requests = ac.on_event(&BusEvent::TurnEnd { turn: 30 });
+        let requests = ac.on_event(&BusEvent::TurnEnd {
+            turn: 30,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+        });
         assert_eq!(requests.len(), 1);
         assert!(matches!(requests[0], BusRequest::RequestCompaction));
     }
@@ -125,14 +141,30 @@ mod tests {
         let mut ac = AutoCompact::new();
         ac.threshold = 10.0;
 
-        let r1 = ac.on_event(&BusEvent::TurnEnd { turn: 10 });
+        let r1 = ac.on_event(&BusEvent::TurnEnd {
+            turn: 10,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+        });
         assert_eq!(r1.len(), 1, "first compaction should fire");
 
         // Mark compaction complete
         ac.on_event(&BusEvent::Compacted);
 
         // Immediately try again — cooldown should prevent
-        let r2 = ac.on_event(&BusEvent::TurnEnd { turn: 11 });
+        let r2 = ac.on_event(&BusEvent::TurnEnd {
+            turn: 11,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+        });
         assert!(
             r2.is_empty(),
             "cooldown should prevent immediate re-compact"

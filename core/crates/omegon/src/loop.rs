@@ -114,7 +114,15 @@ pub async fn run(
                 config.max_turns
             );
             let _ = events.send(AgentEvent::TurnStart { turn });
-            bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
+            bus.emit(&omegon_traits::BusEvent::TurnEnd {
+                turn,
+                model: None,
+                provider: None,
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+            });
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
                 estimated_tokens: conversation.estimate_tokens(),
@@ -330,7 +338,15 @@ pub async fn run(
             },
             _ = cancel.cancelled() => {
                 tracing::info!("Agent loop cancelled during LLM streaming");
-                bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
+                bus.emit(&omegon_traits::BusEvent::TurnEnd {
+                    turn,
+                    model: None,
+                    provider: None,
+                    actual_input_tokens: 0,
+                    actual_output_tokens: 0,
+                    cache_read_tokens: 0,
+                    provider_telemetry: None,
+                });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
                     estimated_tokens: conversation.estimate_tokens(),
@@ -371,7 +387,15 @@ pub async fn run(
                      Please commit your work now with a descriptive message, then summarize what you did.]"
                         .to_string(),
                 );
-                bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
+                bus.emit(&omegon_traits::BusEvent::TurnEnd {
+                    turn,
+                    model: Some(config.model.clone()),
+                    provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                    actual_input_tokens: act_in,
+                    actual_output_tokens: act_out,
+                    cache_read_tokens: act_cr,
+                    provider_telemetry: provider_telemetry.clone(),
+                });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
                     estimated_tokens: conversation.estimate_tokens(),
@@ -382,7 +406,15 @@ pub async fn run(
                 });
                 continue; // give it one more turn to commit
             }
-            bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
+            bus.emit(&omegon_traits::BusEvent::TurnEnd {
+                turn,
+                model: Some(config.model.clone()),
+                provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                actual_input_tokens: act_in,
+                actual_output_tokens: act_out,
+                cache_read_tokens: act_cr,
+                provider_telemetry: provider_telemetry.clone(),
+            });
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
                 estimated_tokens: conversation.estimate_tokens(),
@@ -452,7 +484,15 @@ pub async fn run(
             stuck_detector.record(call, is_error);
         }
 
-        bus.emit(&omegon_traits::BusEvent::TurnEnd { turn });
+        bus.emit(&omegon_traits::BusEvent::TurnEnd {
+            turn,
+            model: Some(config.model.clone()),
+            provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+            actual_input_tokens: act_in,
+            actual_output_tokens: act_out,
+            cache_read_tokens: act_cr,
+            provider_telemetry: provider_telemetry.clone(),
+        });
 
         // ─── Handle bus requests from features ──────────────────────
         let turn_requests = bus.drain_requests();

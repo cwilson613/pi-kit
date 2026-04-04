@@ -399,8 +399,24 @@ mod tests {
     #[test]
     fn on_event_counts_turns() {
         let mut feature = HarnessSettings::new(test_settings());
-        feature.on_event(&BusEvent::TurnEnd { turn: 1 });
-        feature.on_event(&BusEvent::TurnEnd { turn: 2 });
+        feature.on_event(&BusEvent::TurnEnd {
+            turn: 1,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+        });
+        feature.on_event(&BusEvent::TurnEnd {
+            turn: 2,
+            model: None,
+            provider: None,
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+        });
         feature.on_event(&BusEvent::ToolEnd {
             id: "x".into(),
             name: "bash".into(),

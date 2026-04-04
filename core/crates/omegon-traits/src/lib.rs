@@ -633,6 +633,12 @@ pub enum BusEvent {
     },
     TurnEnd {
         turn: u32,
+        model: Option<String>,
+        provider: Option<String>,
+        actual_input_tokens: u64,
+        actual_output_tokens: u64,
+        cache_read_tokens: u64,
+        provider_telemetry: Option<ProviderTelemetrySnapshot>,
     },
 
     // ── Message streaming ───────────────────────────────────────────

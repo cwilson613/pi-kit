@@ -374,15 +374,15 @@
     ]
   },
   "0.15.9": {
-    "status": "rc",
+    "status": "released",
     "channel": "stable",
     "nodes": [],
-    "frozen": false,
+    "frozen": true,
     "opened": "2026-04-03T17:38:05Z",
     "last_rc": "2026-04-04T03:15:20Z",
     "rc_version": "0.15.9-rc.14",
     "rc_count": 15,
-    "released": null,
+    "released": "2026-04-04T04:05:24Z",
     "notes": [
       "feat(ipc): surface degraded provider runtime state",
       "feat(lifecycle): add archived design-node status and filtering",

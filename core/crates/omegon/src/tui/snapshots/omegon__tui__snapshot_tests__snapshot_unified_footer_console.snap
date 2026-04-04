@@ -8,7 +8,7 @@ expression: render_to_string(&terminal)
   model   Victory (qwen3) · High      │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣇⣿⣿⣿⣿⡀⡀⡀⡀⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂││✗ ⊕ search       8.1s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
   state   Maniple 68% / ¤262k         │≡  conv  ⊟ sys  ◈  mem  ⚒ tools  ◔ think  ││  ⌘ sh           1.2s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
   session T8 ~$0                      │↑  —   ↓  —   ⊙  —    ✦ 0  ◎  0 recalled  ││                                    │
-  version v<current>               ├─ project ⌗2440  ⠊⠉⠉⠑⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠒⠒⠤⢄││                                    │
+  version v<current>              ├─ project ⌗2440  ⠊⠉⠉⠑⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠒⠒⠤⢄││                                    │
   path    /home/user/workspa…/omegon  ├─ working ⌗8  ⠊⠉⠉⠑⠒⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤││                                    │
                                       └─ episodes ⌗45  ⠊⠉⠉⠑⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤││                                    │
                                       │                                          ││                                    │

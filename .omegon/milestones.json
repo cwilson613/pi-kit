@@ -420,8 +420,11 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 4,
+    "rc_count": 5,
     "notes": [
+      "feat(session-log): record provider telemetry per turn",
+      "feat(telemetry): scaffold provider usage snapshot events",
+      "feat(telemetry): surface provider quota snapshots in footer",
       "fix(agent): hide attachment redisplay hints from user messages",
       "fix(multimodal): preserve attachment source paths for redisplay",
       "fix(multimodal): store user attachments in canonical conversation state",
@@ -429,10 +432,11 @@
       "fix(release): harden signing detection and brew push flow",
       "fix(release): script preflight checks and ignore python bytecode",
       "fix(tui): render operator attachments as inline placeholders",
+      "fix(tui): render tool result markdown tables",
       "fix(tui): support queued prompts with attachment lists",
       "fix(tui): unify tool result block backgrounds"
     ],
-    "rc_version": "0.15.10-rc.5",
-    "last_rc": "2026-04-04T15:08:58Z"
+    "rc_version": "0.15.10-rc.6",
+    "last_rc": "2026-04-04T16:16:14Z"
   }
 }

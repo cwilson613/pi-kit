@@ -67,7 +67,11 @@ impl AssistantMessage {
 /// A message in the canonical conversation history.
 #[derive(Debug, Clone)]
 pub enum AgentMessage {
-    User { text: String, turn: u32 },
+    User {
+        text: String,
+        images: Vec<crate::bridge::ImageAttachment>,
+        turn: u32,
+    },
     Assistant(AssistantMessage, u32), // (msg, turn)
     ToolResult(ToolResultEntry, u32), // (result, turn)
 }
@@ -251,9 +255,6 @@ pub struct ConversationState {
     /// Compaction summary — if set, injected as the first message after compaction.
     /// Replaces evicted messages so the LLM has continuity.
     compaction_summary: Option<String>,
-
-    /// Pending image attachments from clipboard paste — consumed on next LLM call.
-    pub pending_images: Vec<crate::bridge::ImageAttachment>,
 }
 
 impl ConversationState {
@@ -264,7 +265,6 @@ impl ConversationState {
             decay_window: 10,
             referenced_turns: std::collections::HashSet::new(),
             compaction_summary: None,
-            pending_images: Vec::new(),
         }
     }
 
@@ -309,7 +309,7 @@ impl ConversationState {
 
         for msg in &evictable {
             match msg {
-                AgentMessage::User { text, turn } => {
+                AgentMessage::User { text, turn, .. } => {
                     payload.push_str(&format!("[Turn {turn}] User: {text}\n\n"));
                 }
                 AgentMessage::Assistant(a, turn) => {
@@ -412,12 +412,20 @@ impl ConversationState {
     }
 
     pub fn push_user(&mut self, text: String) {
+        self.push_user_with_images(text, Vec::new());
+    }
+
+    pub fn push_user_with_images(
+        &mut self,
+        text: String,
+        images: Vec<crate::bridge::ImageAttachment>,
+    ) {
         let turn = self.intent.stats.turns;
         // Auto-populate current_task from the first non-system user message
         if !text.starts_with("[System:") {
             self.intent.set_task_from_prompt(&text);
         }
-        self.canonical.push(AgentMessage::User { text, turn });
+        self.canonical.push(AgentMessage::User { text, images, turn });
     }
 
     pub fn push_assistant(&mut self, msg: AssistantMessage) {
@@ -548,16 +556,6 @@ impl ConversationState {
             }
         }
 
-        // Attach pending images to the last user message
-        if !self.pending_images.is_empty()
-            && let Some(LlmMessage::User { images, .. }) = messages
-                .iter_mut()
-                .rev()
-                .find(|m| matches!(m, LlmMessage::User { .. }))
-        {
-            *images = self.pending_images.clone();
-        }
-
         // Strip orphaned tool_result messages whose tool_use was evicted.
         // After compaction/decay, tool_use blocks may be removed while their
         // corresponding tool_result blocks survive. Anthropic rejects these
@@ -573,11 +571,7 @@ impl ConversationState {
         messages
     }
 
-    /// Clear pending images after they've been sent to the LLM.
-    pub fn clear_pending_images(&mut self) {
-        self.pending_images.clear();
-    }
-
+    #[allow(dead_code)]
     /// Apply ambient captures from omg: tags.
     pub fn apply_ambient_captures(
         &mut self,
@@ -692,9 +686,9 @@ impl ConversationState {
                 }
             }
             // User messages are small — don't decay
-            AgentMessage::User { text, .. } => LlmMessage::User {
+            AgentMessage::User { text, images, .. } => LlmMessage::User {
                 content: text.clone(),
-                images: vec![],
+                images: images.clone(),
             },
         }
     }
@@ -793,8 +787,9 @@ impl ConversationState {
             .map(|msg| {
                 let turn = last_turn;
                 match msg {
-                    LlmMessage::User { content, .. } => AgentMessage::User {
+                    LlmMessage::User { content, images } => AgentMessage::User {
                         text: content,
+                        images,
                         turn,
                     },
                     LlmMessage::Assistant {
@@ -849,7 +844,6 @@ impl ConversationState {
             decay_window: snapshot.decay_window,
             referenced_turns: std::collections::HashSet::new(),
             compaction_summary: resume_summary,
-            pending_images: Vec::new(),
         })
     }
 
@@ -943,9 +937,9 @@ impl ConversationState {
     /// Convert a canonical message to Omegon's wire format.
     fn to_llm_message(&self, msg: &AgentMessage) -> LlmMessage {
         match msg {
-            AgentMessage::User { text, .. } => LlmMessage::User {
+            AgentMessage::User { text, images, .. } => LlmMessage::User {
                 content: text.clone(),
-                images: vec![],
+                images: images.clone(),
             },
             AgentMessage::Assistant(a, _) => LlmMessage::Assistant {
                 text: if a.text.is_empty() {
@@ -1927,18 +1921,75 @@ mod tests {
         let mut msgs = vec![
             LlmMessage::User {
                 content: "hello".into(),
-                images: vec![],
+                images: vec![crate::bridge::ImageAttachment {
+                    data: "aaa".into(),
+                    media_type: "image/png".into(),
+                }],
             },
             LlmMessage::User {
                 content: "world".into(),
-                images: vec![],
+                images: vec![crate::bridge::ImageAttachment {
+                    data: "bbb".into(),
+                    media_type: "image/jpeg".into(),
+                }],
             },
         ];
         enforce_role_alternation(&mut msgs);
         assert_eq!(msgs.len(), 1);
-        if let LlmMessage::User { content, .. } = &msgs[0] {
+        if let LlmMessage::User { content, images } = &msgs[0] {
             assert!(content.contains("hello"));
             assert!(content.contains("world"));
+            assert_eq!(images.len(), 2);
+            assert_eq!(images[0].media_type, "image/png");
+            assert_eq!(images[1].media_type, "image/jpeg");
+        }
+    }
+
+    #[test]
+    fn build_llm_view_preserves_user_images() {
+        let mut conv = ConversationState::new();
+        conv.push_user_with_images(
+            "describe this".into(),
+            vec![crate::bridge::ImageAttachment {
+                data: "abc123".into(),
+                media_type: "image/png".into(),
+            }],
+        );
+
+        let view = conv.build_llm_view();
+        assert_eq!(view.len(), 1);
+        if let LlmMessage::User { content, images } = &view[0] {
+            assert_eq!(content, "describe this");
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].media_type, "image/png");
+        } else {
+            panic!("expected user message");
+        }
+    }
+
+    #[test]
+    fn save_and_load_session_preserves_user_images() {
+        let mut conv = ConversationState::new();
+        conv.push_user_with_images(
+            "describe this".into(),
+            vec![crate::bridge::ImageAttachment {
+                data: "abc123".into(),
+                media_type: "image/png".into(),
+            }],
+        );
+
+        let tmp = std::env::temp_dir().join("omegon-test-load-session-images.json");
+        conv.save_session(&tmp).unwrap();
+        let loaded = ConversationState::load_session(&tmp).unwrap();
+        let view = loaded.build_llm_view();
+        let _ = std::fs::remove_file(&tmp);
+
+        if let LlmMessage::User { content, images } = &view[0] {
+            assert_eq!(content, "describe this");
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].media_type, "image/png");
+        } else {
+            panic!("expected user message");
         }
     }
 

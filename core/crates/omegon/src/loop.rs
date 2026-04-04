@@ -209,7 +209,7 @@ pub async fn run(
         let system_prompt =
             context.build_system_prompt(conversation.last_user_prompt(), conversation);
         let llm_messages = conversation.build_llm_view();
-        conversation.clear_pending_images();
+        // User-image attachments are stored on canonical user messages directly.
 
         tracing::debug!(
             turn,

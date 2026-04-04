@@ -1011,28 +1011,8 @@ impl OpenAIClient {
     pub fn from_env() -> Option<Self> {
         resolve_api_key("openai").map(Self::new)
     }
-}
 
-#[async_trait]
-impl LlmBridge for OpenAIClient {
-    async fn stream(
-        &self,
-        system_prompt: &str,
-        messages: &[LlmMessage],
-        tools: &[ToolDefinition],
-        options: &StreamOptions,
-    ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
-        let (tx, rx) = mpsc::channel(256);
-
-        // Strip any provider prefix (openai:, openrouter:, etc.) from model.
-        // OpenRouter and OpenAICompatClient delegate through here with
-        // pre-stripped or re-prefixed model names.
-        let model = options
-            .model
-            .as_deref()
-            .map(|m| model_id_from_spec(m))
-            .unwrap_or("gpt-4.1");
-
+    fn build_wire_messages(system_prompt: &str, messages: &[LlmMessage]) -> Vec<Value> {
         let mut wire_msgs = vec![json!({"role": "system", "content": system_prompt})];
         for m in messages {
             match m {
@@ -1066,11 +1046,35 @@ impl LlmBridge for OpenAIClient {
                 LlmMessage::ToolResult {
                     call_id, content, ..
                 } => {
-                    wire_msgs
-                        .push(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
+                    wire_msgs.push(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
                 }
             }
         }
+        wire_msgs
+    }
+}
+
+#[async_trait]
+impl LlmBridge for OpenAIClient {
+    async fn stream(
+        &self,
+        system_prompt: &str,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        options: &StreamOptions,
+    ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
+        let (tx, rx) = mpsc::channel(256);
+
+        // Strip any provider prefix (openai:, openrouter:, etc.) from model.
+        // OpenRouter and OpenAICompatClient delegate through here with
+        // pre-stripped or re-prefixed model names.
+        let model = options
+            .model
+            .as_deref()
+            .map(|m| model_id_from_spec(m))
+            .unwrap_or("gpt-4.1");
+
+        let wire_msgs = Self::build_wire_messages(system_prompt, messages);
 
         let wire_tools: Vec<Value> = tools.iter().map(|t| json!({
             "type": "function",
@@ -2039,6 +2043,24 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_build_messages_with_images() {
+        let messages = vec![LlmMessage::User {
+            content: "describe this".into(),
+            images: vec![crate::bridge::ImageAttachment {
+                data: "abc123".into(),
+                media_type: "image/png".into(),
+            }],
+        }];
+        let wire = AnthropicClient::build_messages(&messages);
+        assert_eq!(wire[0]["role"], "user");
+        assert_eq!(wire[0]["content"][0]["type"], "image");
+        assert_eq!(wire[0]["content"][0]["source"]["type"], "base64");
+        assert_eq!(wire[0]["content"][0]["source"]["media_type"], "image/png");
+        assert_eq!(wire[0]["content"][1]["type"], "text");
+        assert_eq!(wire[0]["content"][1]["text"], "describe this");
+    }
+
+    #[test]
     fn anthropic_build_tool_result() {
         let messages = vec![LlmMessage::ToolResult {
             call_id: "tc1".into(),
@@ -2071,6 +2093,40 @@ mod tests {
         let input = &wire[0]["content"][0]["input"];
         assert!(input.is_object(), "input should be object, got: {input}");
         assert_eq!(input, &json!({}));
+    }
+
+    #[test]
+    fn openai_build_messages_with_images() {
+        let messages = vec![LlmMessage::User {
+            content: "describe this".into(),
+            images: vec![crate::bridge::ImageAttachment {
+                data: "abc123".into(),
+                media_type: "image/png".into(),
+            }],
+        }];
+        let wire = OpenAIClient::build_wire_messages("system", &messages);
+        assert_eq!(wire[1]["role"], "user");
+        assert_eq!(wire[1]["content"][0]["type"], "image_url");
+        assert_eq!(wire[1]["content"][0]["image_url"]["url"], "data:image/png;base64,abc123");
+        assert_eq!(wire[1]["content"][1]["type"], "text");
+        assert_eq!(wire[1]["content"][1]["text"], "describe this");
+    }
+
+    #[test]
+    fn codex_build_input_with_images() {
+        let messages = vec![LlmMessage::User {
+            content: "describe this".into(),
+            images: vec![crate::bridge::ImageAttachment {
+                data: "abc123".into(),
+                media_type: "image/png".into(),
+            }],
+        }];
+        let input = CodexClient::build_input(&messages);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["type"], "input_image");
+        assert_eq!(input[0]["content"][0]["image_url"], "data:image/png;base64,abc123");
+        assert_eq!(input[0]["content"][1]["type"], "input_text");
+        assert_eq!(input[0]["content"][1]["text"], "describe this");
     }
 
     #[test]

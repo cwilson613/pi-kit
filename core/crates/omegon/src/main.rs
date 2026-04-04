@@ -1683,10 +1683,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         });
                     }
                 }
-                // Push user text (images go through the LLM message separately)
-                agent.conversation.push_user(text.clone());
-                // Store images for the next LLM call
-                agent.conversation.pending_images = images;
+                // Push user text and images together so attachments survive
+                // compaction, role alternation, save/resume, and provider translation.
+                agent.conversation.push_user_with_images(text.clone(), images);
 
                 // Read current settings for this turn
                 let (model, max_turns) = {

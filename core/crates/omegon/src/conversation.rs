@@ -428,30 +428,6 @@ impl ConversationState {
         self.canonical.push(AgentMessage::User { text, images, turn });
     }
 
-    fn llm_user_content_with_attachment_manifest(
-        text: &str,
-        images: &[crate::bridge::ImageAttachment],
-    ) -> String {
-        let mut lines = Vec::new();
-        for (idx, image) in images.iter().enumerate() {
-            if let Some(path) = image.source_path.as_deref() {
-                lines.push(format!("- [image{idx}] {path}"));
-            }
-        }
-        if lines.is_empty() {
-            return text.to_string();
-        }
-        let manifest = format!(
-            "[Attachment files]\n{}\n\nUse these paths if you need to redisplay an attachment with the existing view/display pipeline.",
-            lines.join("\n")
-        );
-        if text.trim().is_empty() {
-            manifest
-        } else {
-            format!("{text}\n\n{manifest}")
-        }
-    }
-
     pub fn push_assistant(&mut self, msg: AssistantMessage) {
         let turn = self.intent.stats.turns;
         // Reference tracking: scan the assistant's text for paths and identifiers
@@ -538,6 +514,37 @@ impl ConversationState {
                 _ => None,
             })
             .unwrap_or("")
+    }
+
+    pub fn render_attachment_context_injection(&self) -> Option<String> {
+        let AgentMessage::User { images, .. } = self
+            .canonical
+            .iter()
+            .rev()
+            .find(|m| matches!(m, AgentMessage::User { .. }))?
+        else {
+            return None;
+        };
+
+        let lines: Vec<String> = images
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, image)| {
+                image
+                    .source_path
+                    .as_deref()
+                    .map(|path| format!("- [image{idx}] {path}"))
+            })
+            .collect();
+
+        if lines.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "[Attachment files]\n{}\n\nThese are operator-supplied local attachment paths. Use them only when you need to redisplay an attachment through the existing view/display pipeline. Do not quote this manifest back to the operator unless they explicitly ask for the raw path.",
+            lines.join("\n")
+        ))
     }
 
     pub fn last_assistant_text(&self) -> Option<&str> {
@@ -709,9 +716,8 @@ impl ConversationState {
                     raw: None, // Don't preserve raw for decayed messages
                 }
             }
-            // User messages are small — don't decay
             AgentMessage::User { text, images, .. } => LlmMessage::User {
-                content: Self::llm_user_content_with_attachment_manifest(text, images),
+                content: text.clone(),
                 images: images.clone(),
             },
         }
@@ -962,7 +968,7 @@ impl ConversationState {
     fn to_llm_message(&self, msg: &AgentMessage) -> LlmMessage {
         match msg {
             AgentMessage::User { text, images, .. } => LlmMessage::User {
-                content: Self::llm_user_content_with_attachment_manifest(text, images),
+                content: text.clone(),
                 images: images.clone(),
             },
             AgentMessage::Assistant(a, _) => LlmMessage::Assistant {
@@ -1986,9 +1992,7 @@ mod tests {
         let view = conv.build_llm_view();
         assert_eq!(view.len(), 1);
         if let LlmMessage::User { content, images } = &view[0] {
-            assert!(content.contains("describe this"));
-            assert!(content.contains("[Attachment files]"));
-            assert!(content.contains("[image0] /tmp/describe-this.png"));
+            assert_eq!(content, "describe this");
             assert_eq!(images.len(), 1);
             assert_eq!(images[0].media_type, "image/png");
             assert_eq!(images[0].source_path.as_deref(), Some("/tmp/describe-this.png"));
@@ -2016,13 +2020,38 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
 
         if let LlmMessage::User { content, images } = &view[0] {
-            assert!(content.contains("describe this"));
-            assert!(content.contains("[image0] /tmp/saved-image.png"));
+            assert_eq!(content, "describe this");
             assert_eq!(images.len(), 1);
             assert_eq!(images[0].media_type, "image/png");
             assert_eq!(images[0].source_path.as_deref(), Some("/tmp/saved-image.png"));
         } else {
             panic!("expected user message");
+        }
+    }
+
+    #[test]
+    fn attachment_context_injection_uses_source_paths_without_touching_user_text() {
+        let mut conv = ConversationState::new();
+        conv.push_user_with_images(
+            "show me the image again".into(),
+            vec![crate::bridge::ImageAttachment {
+                data: "abc123".into(),
+                media_type: "image/png".into(),
+                source_path: Some("/tmp/redisplay.png".into()),
+            }],
+        );
+
+        let injection = conv
+            .render_attachment_context_injection()
+            .expect("attachment manifest injection");
+        assert!(injection.contains("[Attachment files]"));
+        assert!(injection.contains("[image0] /tmp/redisplay.png"));
+        assert!(injection.contains("Do not quote this manifest back"));
+
+        let view = conv.build_llm_view();
+        match &view[0] {
+            LlmMessage::User { content, .. } => assert_eq!(content, "show me the image again"),
+            _ => panic!("expected user message"),
         }
     }
 

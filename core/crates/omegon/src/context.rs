@@ -402,6 +402,21 @@ mod tests {
     }
 
     #[test]
+    fn external_attachment_injection_is_hidden_in_system_prompt() {
+        let mut cm = ContextManager::new("You are an assistant.".into(), vec![]);
+        cm.inject_external(vec![omegon_traits::ContextInjection {
+            source: "attachment-files".into(),
+            content: "[Attachment files]\n- [image0] /tmp/demo.png".into(),
+            priority: 190,
+            ttl_turns: 2,
+        }]);
+        let conv = ConversationState::new();
+        let prompt = cm.build_system_prompt("show me the image again", &conv);
+        assert!(prompt.contains("[Attachment files]"));
+        assert!(prompt.contains("/tmp/demo.png"));
+    }
+
+    #[test]
     fn recent_files_dedup_consecutive() {
         let mut cm = ContextManager::new("base".into(), vec![]);
         cm.record_file_access(PathBuf::from("foo.rs"));

@@ -205,6 +205,15 @@ pub async fn run(
             }
         }
 
+        if let Some(attachment_manifest) = conversation.render_attachment_context_injection() {
+            context.inject_external(vec![omegon_traits::ContextInjection {
+                source: "attachment-files".into(),
+                content: attachment_manifest,
+                priority: 190,
+                ttl_turns: 1,
+            }]);
+        }
+
         // ─── Build LLM-facing context ───────────────────────────────
         let system_prompt =
             context.build_system_prompt(conversation.last_user_prompt(), conversation);

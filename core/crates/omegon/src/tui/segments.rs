@@ -57,6 +57,18 @@ fn split_preserving_trailing_empty_lines(text: &str) -> Vec<&str> {
     text.split('\n').collect()
 }
 
+fn apply_rows_bg(area: Rect, start_row: u16, row_count: u16, bg: Color, buf: &mut Buffer) {
+    let end_row = start_row.saturating_add(row_count).min(area.height);
+    for row in start_row..end_row {
+        let y = area.y + row;
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Segment — rich metadata wrapper + typed content
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1076,6 +1088,8 @@ fn render_tool_card(
     }
 
     // ── Result section with distinct background ─────────────────
+    let pre_result_line_count = lines.len();
+    let mut result_row_fills: Vec<(u16, Color)> = Vec::new();
     if let Some(result) = detail_result {
         if !lines.is_empty() {
             // Separator line — matches card border color (red on error)
@@ -1089,6 +1103,7 @@ fn render_tool_card(
                 "─".repeat(card_inner.width as usize),
                 Style::default().fg(sep_color).bg(sep_bg),
             )));
+            result_row_fills.push((pre_result_line_count as u16, sep_bg));
         }
 
         // Pretty-print JSON results — tool outputs often arrive as compact JSON
@@ -1128,6 +1143,7 @@ fn render_tool_card(
                     })
                     .collect();
                 lines.push(Line::from(spans));
+                result_row_fills.push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
             }
         } else {
             let result_style = if is_error {
@@ -1158,16 +1174,21 @@ fn render_tool_card(
                             })
                             .collect();
                         lines.push(Line::from(spans));
+                        result_row_fills
+                            .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
                     }
                 } else {
                     // ANSI parse failed — fall back to plain
                     for line in &result_lines[..show] {
                         lines.push(Line::from(Span::styled(line.to_string(), result_style)));
+                        result_row_fills
+                            .push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
                     }
                 }
             } else {
                 for line in &result_lines[..show] {
                     lines.push(Line::from(Span::styled(line.to_string(), result_style)));
+                    result_row_fills.push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
                 }
             }
         }
@@ -1185,12 +1206,17 @@ fn render_tool_card(
                 hint,
                 Style::default().fg(t.accent_muted()).bg(t.surface_bg()),
             )));
+            result_row_fills.push((lines.len().saturating_sub(1) as u16, t.surface_bg()));
         }
     }
 
     Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .render(card_inner, buf);
+
+    for (row, fill_bg) in result_row_fills {
+        apply_rows_bg(card_inner, row, 1, fill_bg, buf);
+    }
 
     // ── Post-render: OSC 8 hyperlinks for single-file tool paths ────────────
     if matches!(name, "read" | "write" | "view")
@@ -1543,6 +1569,19 @@ mod tests {
         text
     }
 
+    fn find_row_containing(buf: &Buffer, area: Rect, needle: &str) -> Option<u16> {
+        for y in area.top()..area.bottom() {
+            let mut row = String::new();
+            for x in area.left()..area.right() {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            if row.contains(needle) {
+                return Some(y);
+            }
+        }
+        None
+    }
+
     #[test]
     fn user_prompt_renders() {
         let seg = Segment::user_prompt("hello world");
@@ -1699,6 +1738,33 @@ mod tests {
         assert!(text.contains("2 edits"), "change cards should summarize edit count: {text}");
         assert!(!text.contains("oldText"), "change cards should not leak raw JSON keys: {text}");
         assert!(!text.contains("\"edits\""), "change cards should not render the raw JSON payload: {text}");
+    }
+
+    #[test]
+    fn tool_result_highlight_rows_fill_full_surface_background() {
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "read".into(),
+                args_summary: None,
+                detail_args: Some("/tmp/demo.rs".into()),
+                result_summary: None,
+                detail_result: Some("fn demo() {\n    println!(\"hi\");\n}".into()),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        };
+        let (area, mut buf) = make_buf(80, 12);
+        seg.render(area, &mut buf, &Alpharius);
+
+        let code_row = find_row_containing(&buf, area, "println!").expect("code row in buffer");
+        let trailing_content_cell = &buf[(area.right() - 3, code_row)];
+        assert_eq!(
+            trailing_content_cell.style().bg,
+            Some(Alpharius.surface_bg())
+        );
     }
 
     #[test]

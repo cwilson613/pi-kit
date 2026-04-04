@@ -1752,6 +1752,30 @@ async fn parse_codex_stream(
                 terminal = Some(TerminalEvent::Error(format!("Codex error: {msg}")));
                 return false;
             }
+            // response.incomplete: model hit max_output_tokens or content
+            // filter. This is NOT a network error — the API is telling us the
+            // response was intentionally truncated.  Treat as a retryable error
+            // so the retry loop can re-attempt, rather than silently feeding
+            // truncated text back into conversation history.
+            "response.incomplete" => {
+                let reason = event
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                tracing::warn!(reason, "Codex response.incomplete — output was truncated");
+                terminal = Some(TerminalEvent::Error(
+                    format!("Codex: response incomplete ({reason}) — output was truncated")
+                ));
+                return false;
+            }
+            // response.cancelled: request was cancelled server-side.
+            "response.cancelled" => {
+                tracing::warn!("Codex response.cancelled");
+                terminal = Some(TerminalEvent::Error(
+                    "Codex: response cancelled by server".to_string()
+                ));
+                return false;
+            }
             "response.content_part.added" | "response.reasoning_summary_part.added" => {}
             _ => {}
         }
@@ -1780,17 +1804,22 @@ async fn parse_codex_stream(
             // etc.).  If we accumulated content, synthesise a Done so the turn
             // isn't silently lost; otherwise surface a clear error.
             if !full_text.is_empty() || !completed_tool_calls.is_empty() {
+                // Stream dropped without a terminal event.  Could be a network
+                // drop OR a missed event variant.  Surface as an error so the
+                // retry loop handles it — never silently feed truncated text
+                // back into conversation history.
                 tracing::warn!(
                     text_len = full_text.len(),
                     tool_calls = completed_tool_calls.len(),
-                    "Codex stream closed without completion event — synthesising Done from partial content"
+                    "Codex stream closed without completion event — treating as error to prevent partial-content poisoning"
                 );
                 let _ = tx
-                    .send(LlmEvent::Done {
-                        message: json!({"text": full_text, "tool_calls": completed_tool_calls}),
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_read_tokens: 0,
+                    .send(LlmEvent::Error {
+                        message: format!(
+                            "Codex: stream closed without completion (had {}b text, {} tool calls)",
+                            full_text.len(),
+                            completed_tool_calls.len()
+                        ),
                     })
                     .await;
             } else {

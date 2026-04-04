@@ -28,6 +28,11 @@ pub(crate) enum UpstreamErrorClass {
     BadRequest,
     /// Model output entered a degenerate repetition loop.
     DegenerateOutput,
+    /// Responses API returned response.incomplete (output truncated by
+    /// max_output_tokens or content filter).
+    ResponseIncomplete,
+    /// Responses API returned response.cancelled (server-side cancellation).
+    ResponseCancelled,
     Unknown,
 }
 
@@ -55,6 +60,8 @@ pub(crate) enum TransientFailureKind {
     Dns,
     DecodeBody,
     BridgeDropped,
+    ResponseIncomplete,
+    ResponseCancelled,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -222,6 +229,24 @@ const GLOBAL_ERROR_RULES: &[ErrorRule] = &[
         substrings: &["degenerate", "repeated"],
         word_tokens: &[],
     },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::ResponseIncomplete,
+        substrings: &["response incomplete", "output was truncated"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::ResponseCancelled,
+        substrings: &["response cancelled", "cancelled by server"],
+        word_tokens: &[],
+    },
+    ErrorRule {
+        providers: &[],
+        class: UpstreamErrorClass::BridgeDropped,
+        substrings: &["stream closed without completion"],
+        word_tokens: &[],
+    },
 ];
 
 impl UpstreamErrorClass {
@@ -244,6 +269,8 @@ impl UpstreamErrorClass {
             Self::QuotaExceeded => "quota exceeded",
             Self::BadRequest => "invalid request",
             Self::DegenerateOutput => "degenerate model output",
+            Self::ResponseIncomplete => "response truncated",
+            Self::ResponseCancelled => "response cancelled",
             Self::Unknown => "unknown upstream failure",
         }
     }
@@ -263,6 +290,7 @@ impl UpstreamErrorClass {
             Self::MalformedHistory => RecoveryAction::RepairConversation,
             Self::SessionExpired | Self::AuthInvalid => RecoveryAction::Reauthenticate,
             Self::QuotaExceeded | Self::BadRequest | Self::DegenerateOutput | Self::Unknown => RecoveryAction::Fatal,
+            Self::ResponseIncomplete | Self::ResponseCancelled => RecoveryAction::RetrySameProvider,
         }
     }
 
@@ -278,6 +306,8 @@ impl UpstreamErrorClass {
             Self::Dns => Some(TransientFailureKind::Dns),
             Self::DecodeBody => Some(TransientFailureKind::DecodeBody),
             Self::BridgeDropped => Some(TransientFailureKind::BridgeDropped),
+            Self::ResponseIncomplete => Some(TransientFailureKind::ResponseIncomplete),
+            Self::ResponseCancelled => Some(TransientFailureKind::ResponseCancelled),
             Self::ContextOverflow
             | Self::MalformedHistory
             | Self::SessionExpired
@@ -285,6 +315,8 @@ impl UpstreamErrorClass {
             | Self::QuotaExceeded
             | Self::BadRequest
             | Self::DegenerateOutput
+            | Self::ResponseIncomplete
+            | Self::ResponseCancelled
             | Self::Unknown => None,
         }
     }
@@ -303,6 +335,8 @@ impl TransientFailureKind {
             Self::Dns => "dns failure",
             Self::DecodeBody => "unreadable response body",
             Self::BridgeDropped => "bridge dropped stream",
+            Self::ResponseIncomplete => "response truncated",
+            Self::ResponseCancelled => "response cancelled",
         }
     }
 }
@@ -319,6 +353,8 @@ impl TransientFailureKind {
             Self::Dns => format!("could not resolve {provider} endpoint"),
             Self::Timeout => format!("{provider} did not respond before the timeout"),
             Self::StalledStream => format!("{provider} stream stopped producing output"),
+            Self::ResponseIncomplete => format!("{provider} truncated its response (output limit or content filter)"),
+            Self::ResponseCancelled => format!("{provider} cancelled the response server-side"),
             _ => crate::util::truncate_str(err_msg, 300).to_string(),
         }
     }
@@ -573,6 +609,47 @@ mod tests {
             UpstreamErrorClass::Timeout.recovery_action(),
             RecoveryAction::RetrySameProvider,
         );
+    }
+
+    #[test]
+    fn classify_response_incomplete() {
+        assert_eq!(
+            classify_upstream_error_for_provider(
+                "openai-codex",
+                "Codex: response incomplete (max_tokens) — output was truncated",
+            ),
+            UpstreamErrorClass::ResponseIncomplete,
+        );
+        // Must be transient so the retry loop fires
+        assert!(UpstreamErrorClass::ResponseIncomplete.transient_kind().is_some());
+        assert_eq!(
+            UpstreamErrorClass::ResponseIncomplete.recovery_action(),
+            RecoveryAction::RetrySameProvider,
+        );
+    }
+
+    #[test]
+    fn classify_response_cancelled() {
+        assert_eq!(
+            classify_upstream_error_for_provider(
+                "openai-codex",
+                "Codex: response cancelled by server",
+            ),
+            UpstreamErrorClass::ResponseCancelled,
+        );
+        assert!(UpstreamErrorClass::ResponseCancelled.transient_kind().is_some());
+    }
+
+    #[test]
+    fn classify_stream_closed_without_completion() {
+        assert_eq!(
+            classify_upstream_error(
+                "Codex: stream closed without completion (had 1200b text, 0 tool calls)",
+            ),
+            UpstreamErrorClass::BridgeDropped,
+        );
+        // BridgeDropped is transient → retry
+        assert!(UpstreamErrorClass::BridgeDropped.transient_kind().is_some());
     }
 
     #[test]

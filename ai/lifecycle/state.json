@@ -692,6 +692,21 @@
       "bound_change": null,
       "created_at": "2026-04-05T14:59:22Z",
       "updated_at": "2026-04-05T15:00:55Z"
+    },
+    {
+      "id": "auspex-attach-handoff",
+      "title": "TUI → Auspex attach handoff",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-04-05T18:12:20Z",
+      "updated_at": "2026-04-05T18:12:20Z"
     }
   ],
   "changes": [],
@@ -1565,6 +1580,24 @@
       "timestamp": "2026-04-05T15:00:55Z",
       "entity_type": "node",
       "entity_id": "subscription-first-provider-access-architecture",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-04-05T18:12:20Z",
+      "entity_type": "node",
+      "entity_id": "auspex-attach-handoff",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-04-05T18:12:20Z",
+      "entity_type": "node",
+      "entity_id": "auspex-attach-handoff",
       "from_state": "seed",
       "to_state": "exploring",
       "reason": null,

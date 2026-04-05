@@ -231,11 +231,16 @@ impl FooterData {
                 self.context_window,
             );
             let version_text = format_version_text(self.update_available.as_deref());
-            let model_line = format!(
-                "{} ({model_short}) · {}",
-                capitalize(&self.model_tier),
-                capitalize(&self.thinking_level)
-            );
+            // Tier + thinking level on a separate row so the model name never overflows.
+            let tier_line = if self.thinking_level.is_empty() || self.thinking_level == "off" {
+                capitalize(&self.model_tier)
+            } else {
+                format!(
+                    "{} · {}",
+                    capitalize(&self.model_tier),
+                    capitalize(&self.thinking_level)
+                )
+            };
             let state_line = context_text;
             let session_line = format_session_text(
                 &self.model_id,
@@ -270,11 +275,21 @@ impl FooterData {
             push_row(
                 &mut lines,
                 "model",
-                model_line,
+                model_short.to_string(),
                 t.border_dim(),
                 t.muted(),
                 true,
             );
+            if !self.model_tier.is_empty() {
+                push_row(
+                    &mut lines,
+                    "tier",
+                    tier_line,
+                    t.border_dim(),
+                    t.dim(),
+                    false,
+                );
+            }
             push_row(
                 &mut lines,
                 "state",
@@ -1229,7 +1244,9 @@ mod tests {
 
         assert!(text.contains("⤴ OpenAI") || text.contains("⤴ openai"), "got {text}");
         assert!(text.contains("↻ sub"), "got {text}");
-        assert!(text.contains("Victory (gpt-5.4) · High"), "got {text}");
+        // model name is on its own row; tier + thinking on the next
+        assert!(text.contains("gpt-5.4"), "got {text}");
+        assert!(text.contains("Victory · High") || text.contains("victory · high"), "got {text}");
         assert!(text.contains("Maniple 68% / ¤272k"), "got {text}");
     }
 

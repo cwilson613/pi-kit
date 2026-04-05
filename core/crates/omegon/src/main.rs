@@ -1028,6 +1028,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         let ipc_cfg = ipc::IpcServerConfig::from_cwd(
             &agent.cwd,
             env!("CARGO_PKG_VERSION"),
+            &agent.session_id,
         );
         ipc::start_ipc_server(
             ipc_cfg,

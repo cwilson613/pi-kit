@@ -44,11 +44,12 @@ pub struct IpcServerConfig {
     pub cwd: String,
     pub started_at: String,
     pub server_instance_id: String,
+    pub session_id: String,
 }
 
 impl IpcServerConfig {
     /// Build from a project root directory. Socket lives at `{cwd}/.omegon/ipc.sock`.
-    pub fn from_cwd(cwd: &Path, omegon_version: &str) -> Self {
+    pub fn from_cwd(cwd: &Path, omegon_version: &str, session_id: &str) -> Self {
         let socket_path = cwd.join(".omegon").join("ipc.sock");
         let started_at = chrono::Utc::now().to_rfc3339();
         let server_instance_id = format!("{:x}", std::process::id() as u64 ^ started_at.len() as u64);
@@ -58,6 +59,7 @@ impl IpcServerConfig {
             cwd: cwd.to_string_lossy().to_string(),
             started_at,
             server_instance_id,
+            session_id: session_id.to_string(),
         }
     }
 }
@@ -138,6 +140,7 @@ async fn run_server(
                                     cwd: cfg.cwd.clone(),
                                     started_at: cfg.started_at.clone(),
                                     server_instance_id: cfg.server_instance_id.clone(),
+                                    session_id: cfg.session_id.clone(),
                                     handles: handles.clone(),
                                     events_tx: events_tx.clone(),
                                     command_tx: command_tx.clone(),

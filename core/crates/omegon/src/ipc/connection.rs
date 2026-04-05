@@ -28,6 +28,7 @@ pub struct ConnectionConfig {
     pub cwd: String,
     pub started_at: String,
     pub server_instance_id: String,
+    pub session_id: String,
     pub handles: DashboardHandles,
     pub events_tx: broadcast::Sender<AgentEvent>,
     pub command_tx: mpsc::Sender<TuiCommand>,
@@ -108,7 +109,7 @@ impl IpcConnection {
             cwd: cfg.cwd.clone(),
             server_instance_id: cfg.server_instance_id.clone(),
             started_at: cfg.started_at.clone(),
-            session_id: None,
+            session_id: Some(cfg.session_id.clone()),
             capabilities: IpcCapability::v1_server_set()
                 .into_iter()
                 .map(|s| s.to_string())
@@ -190,6 +191,8 @@ impl IpcConnection {
                         &cfg.omegon_version,
                         &cfg.cwd,
                         &cfg.started_at,
+                        &cfg.server_instance_id,
+                        &cfg.session_id,
                     );
                     send_response(&out_tx, req_id, "get_state", serde_json::to_value(snap)?).await;
                 }

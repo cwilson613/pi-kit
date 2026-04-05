@@ -4,7 +4,9 @@ use omegon_traits::{
     IpcCleaveSnapshot, IpcChildSnapshot, IpcDesignCounts, IpcDesignTreeSnapshot,
     IpcFocusedNode, IpcHealthSnapshot, IpcHealthState, IpcHarnessSnapshot, IpcMemorySnapshot,
     IpcNodeBrief, IpcOpenSpecSnapshot, IpcChangeSnapshot, IpcProviderSnapshot,
-    IpcSessionSnapshot, IpcStateSnapshot,
+    IpcSessionSnapshot, IpcStateSnapshot, OmegonControlPlane, OmegonDeploymentKind,
+    OmegonIdentity, OmegonInstanceDescriptor, OmegonOwnerKind, OmegonOwnership,
+    OmegonPlacement, OmegonPlacementKind, OmegonRole, OmegonRuntime, OmegonRuntimeHealth,
 };
 
 use crate::tui::dashboard::DashboardHandles;
@@ -16,17 +18,29 @@ pub fn build_state_snapshot(
     omegon_version: &str,
     cwd: &str,
     started_at: &str,
+    server_instance_id: &str,
+    session_id: &str,
 ) -> IpcStateSnapshot {
-    let session = project_session(handles, cwd, started_at);
+    let session = project_session(handles, cwd, started_at, session_id);
     let design_tree = project_design_tree(handles);
     let openspec = project_openspec(handles);
     let cleave = project_cleave(handles);
     let harness = project_harness(handles);
     let health = project_health(handles);
+    let instance = project_instance(
+        handles,
+        cwd,
+        &session,
+        &harness,
+        &health,
+        omegon_version,
+        server_instance_id,
+    );
 
     IpcStateSnapshot {
         schema_version: omegon_traits::IPC_PROTOCOL_VERSION,
         omegon_version: omegon_version.to_string(),
+        instance,
         session,
         design_tree,
         openspec,
@@ -40,6 +54,7 @@ fn project_session(
     handles: &DashboardHandles,
     cwd: &str,
     started_at: &str,
+    session_id: &str,
 ) -> IpcSessionSnapshot {
     let (turns, tool_calls, compactions) =
         if let Ok(s) = handles.session.lock() {
@@ -67,7 +82,7 @@ fn project_session(
         busy: false, // populated by IpcConnection per-request
         git_branch,
         git_detached,
-        session_id: None,
+        session_id: Some(session_id.to_string()),
     }
 }
 
@@ -198,6 +213,92 @@ fn project_cleave(handles: &DashboardHandles) -> IpcCleaveSnapshot {
     }
 }
 
+fn project_instance(
+    handles: &DashboardHandles,
+    cwd: &str,
+    session: &IpcSessionSnapshot,
+    harness: &IpcHarnessSnapshot,
+    health: &IpcHealthSnapshot,
+    omegon_version: &str,
+    server_instance_id: &str,
+) -> OmegonInstanceDescriptor {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("HOST").ok());
+    let workspace_id = workspace_id_from_cwd(cwd);
+    let auth = handles
+        .harness
+        .as_ref()
+        .and_then(|lock| lock.lock().ok())
+        .map(|h| (h.web_auth_mode.clone(), h.web_auth_source.clone()));
+
+    OmegonInstanceDescriptor {
+        schema_version: omegon_traits::IPC_PROTOCOL_VERSION,
+        identity: OmegonIdentity {
+            instance_id: server_instance_id.to_string(),
+            workspace_id,
+            session_id: session
+                .session_id
+                .clone()
+                .unwrap_or_else(|| "detached".into()),
+            role: OmegonRole::PrimaryDriver,
+            profile: "primary-interactive".into(),
+        },
+        ownership: OmegonOwnership {
+            owner_kind: OmegonOwnerKind::Operator,
+            owner_id: "local-terminal".into(),
+            parent_instance_id: None,
+        },
+        placement: OmegonPlacement {
+            kind: OmegonPlacementKind::LocalProcess,
+            host,
+            pid: Some(std::process::id()),
+            cwd: cwd.to_string(),
+            namespace: None,
+            pod_name: None,
+            container_name: None,
+        },
+        control_plane: OmegonControlPlane {
+            server_instance_id: server_instance_id.to_string(),
+            protocol_version: omegon_traits::IPC_PROTOCOL_VERSION,
+            capabilities: omegon_traits::IpcCapability::v1_server_set()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            ipc_socket_path: Some(std::path::Path::new(cwd).join(".omegon").join("ipc.sock").display().to_string()),
+            http_base: None,
+            startup_url: None,
+            state_url: None,
+            ws_url: None,
+            auth_mode: auth.as_ref().and_then(|(mode, _)| mode.clone()),
+            auth_source: auth.as_ref().and_then(|(_, source)| source.clone()),
+        },
+        runtime: OmegonRuntime {
+            deployment_kind: OmegonDeploymentKind::InteractiveTui,
+            health: match health.state {
+                IpcHealthState::Ready => OmegonRuntimeHealth::Ready,
+                IpcHealthState::Degraded => OmegonRuntimeHealth::Degraded,
+                IpcHealthState::Starting => OmegonRuntimeHealth::Starting,
+                IpcHealthState::Failed => OmegonRuntimeHealth::Failed,
+            },
+            provider_ok: health.provider_ok,
+            memory_ok: health.memory_ok,
+            cleave_available: harness.cleave_available,
+            context_class: Some(harness.context_class.clone()),
+            thinking_level: Some(harness.thinking_level.clone()),
+            capability_tier: Some(harness.capability_tier.clone()),
+        },
+    }
+}
+
+fn workspace_id_from_cwd(cwd: &str) -> String {
+    let trimmed = cwd.trim_matches('/');
+    if trimmed.is_empty() {
+        return "root".into();
+    }
+    trimmed.replace('/', "::")
+}
+
 fn project_harness(handles: &DashboardHandles) -> IpcHarnessSnapshot {
     let Some(ref h_lock) = handles.harness else {
         return IpcHarnessSnapshot {
@@ -291,6 +392,45 @@ fn project_health(handles: &DashboardHandles) -> IpcHealthSnapshot {
         memory_ok,
         provider_ok,
         checked_at: now,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn build_state_snapshot_includes_instance_descriptor() {
+        let handles = DashboardHandles {
+            harness: Some(Arc::new(Mutex::new(crate::status::HarnessStatus {
+                context_class: "Squad".into(),
+                thinking_level: "high".into(),
+                capability_tier: "victory".into(),
+                memory_available: true,
+                cleave_available: true,
+                web_auth_mode: Some("ephemeral-bearer".into()),
+                web_auth_source: Some("generated".into()),
+                ..Default::default()
+            }))),
+            ..Default::default()
+        };
+
+        let snap = build_state_snapshot(
+            &handles,
+            "0.15.10-rc.15",
+            "/tmp/example-project",
+            "2026-04-05T12:00:00Z",
+            "instance-123",
+            "session-abc",
+        );
+
+        assert_eq!(snap.instance.identity.instance_id, "instance-123");
+        assert_eq!(snap.instance.identity.session_id, "session-abc");
+        assert_eq!(snap.instance.identity.workspace_id, "tmp::example-project");
+        assert_eq!(snap.instance.control_plane.server_instance_id, "instance-123");
+        assert_eq!(snap.session.session_id.as_deref(), Some("session-abc"));
+        assert_eq!(snap.instance.runtime.thinking_level.as_deref(), Some("high"));
     }
 }
 

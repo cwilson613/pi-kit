@@ -270,6 +270,7 @@ pub struct SubscriptionResponse {
 pub struct IpcStateSnapshot {
     pub schema_version: u16,
     pub omegon_version: String,
+    pub instance: OmegonInstanceDescriptor,
     pub session: IpcSessionSnapshot,
     pub design_tree: IpcDesignTreeSnapshot,
     pub openspec: IpcOpenSpecSnapshot,
@@ -277,6 +278,142 @@ pub struct IpcStateSnapshot {
     pub harness: IpcHarnessSnapshot,
     pub health: IpcHealthSnapshot,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmegonInstanceDescriptor {
+    pub schema_version: u16,
+    pub identity: OmegonIdentity,
+    pub ownership: OmegonOwnership,
+    pub placement: OmegonPlacement,
+    pub control_plane: OmegonControlPlane,
+    pub runtime: OmegonRuntime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmegonIdentity {
+    pub instance_id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+    pub role: OmegonRole,
+    pub profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmegonOwnership {
+    pub owner_kind: OmegonOwnerKind,
+    pub owner_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_instance_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmegonPlacement {
+    pub kind: OmegonPlacementKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pod_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmegonControlPlane {
+    pub server_instance_id: String,
+    pub protocol_version: u16,
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipc_socket_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_base: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmegonRuntime {
+    pub deployment_kind: OmegonDeploymentKind,
+    pub health: OmegonRuntimeHealth,
+    pub provider_ok: bool,
+    pub memory_ok: bool,
+    pub cleave_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_tier: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmegonRole {
+    PrimaryDriver,
+    EmbeddedBackend,
+    Delegate,
+    Worker,
+    RemoteAgent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmegonOwnerKind {
+    Operator,
+    Auspex,
+    Dispatcher,
+    Cleave,
+    Kubernetes,
+    Systemd,
+    Ci,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmegonPlacementKind {
+    LocalProcess,
+    RemoteHost,
+    Container,
+    KubernetesPod,
+    CiRunner,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmegonDeploymentKind {
+    InteractiveTui,
+    EmbeddedBackend,
+    HomelabService,
+    KubernetesWorker,
+    CleaveChild,
+    RemoteAgent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmegonRuntimeHealth {
+    Ready,
+    Degraded,
+    Starting,
+    Failed,
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IpcSessionSnapshot {

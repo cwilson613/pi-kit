@@ -345,7 +345,11 @@ impl App {
 
     fn auspex_status_text(&self) -> String {
         let cwd = self.cwd().to_path_buf();
-        let ipc_cfg = crate::ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"));
+        let ipc_cfg = crate::ipc::IpcServerConfig::from_cwd(
+            &cwd,
+            env!("CARGO_PKG_VERSION"),
+            "status-probe",
+        );
         let socket_exists = ipc_cfg.socket_path.exists();
         let dash_status = self
             .web_server_addr

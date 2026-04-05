@@ -239,6 +239,41 @@ enum SlashResult {
 }
 
 /// Compute dynamic editor height from the editor's wrapped visual rows.
+fn path_contains_executable(candidate: &std::path::Path) -> bool {
+    candidate.is_file()
+}
+
+fn detect_auspex_target() -> Option<String> {
+    if let Ok(explicit) = std::env::var("AUSPEX_BIN") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            let path = std::path::Path::new(trimmed);
+            if path_contains_executable(path) {
+                return Some(format!("AUSPEX_BIN={trimmed}"));
+            }
+        }
+    }
+
+    if let Ok(path_env) = std::env::var("PATH") {
+        for entry in std::env::split_paths(&path_env) {
+            let candidate = entry.join("auspex");
+            if path_contains_executable(&candidate) {
+                return Some(candidate.display().to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_bundle = std::path::Path::new("/Applications/Auspex.app");
+        if app_bundle.exists() {
+            return Some(app_bundle.display().to_string());
+        }
+    }
+
+    None
+}
+
 fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
     let content_width = main_area.width.saturating_sub(2).max(1);
     let editor_rows = editor.visual_line_count(content_width) as u16;
@@ -265,6 +300,31 @@ impl App {
             branch: None,      // populated lazily if needed
             duration_ms: None, // set on completion
         }
+    }
+
+    fn auspex_status_text(&self) -> String {
+        let cwd = self.cwd().to_path_buf();
+        let ipc_cfg = crate::ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"));
+        let socket_exists = ipc_cfg.socket_path.exists();
+        let dash_status = self
+            .web_server_addr
+            .map(|addr| format!("running at http://{addr}"))
+            .unwrap_or_else(|| "not running".into());
+        let auspex_status = detect_auspex_target()
+            .map(|target| format!("detected ({target})"))
+            .unwrap_or_else(|| "not detected".into());
+
+        format!(
+            "Auspex attach status\n\nIPC\n  protocol: v{}\n  socket: {}\n  socket exists: {}\n  server instance: {}\n  cwd: {}\n\nSession\n  binding: current interactive session\n  session id: not yet exposed in TUI handoff metadata\n\nRuntime\n  omegon version: {}\n  /dash compatibility view: {}\n\nAuspex\n  app: {}\n\nNext step\n  `/auspex` launch/focus is not implemented yet.\n  `/dash` remains the local compatibility path.",
+            omegon_traits::IPC_PROTOCOL_VERSION,
+            ipc_cfg.socket_path.display(),
+            if socket_exists { "yes" } else { "no" },
+            ipc_cfg.server_instance_id,
+            ipc_cfg.cwd,
+            ipc_cfg.omegon_version,
+            dash_status,
+            auspex_status,
+        )
     }
 
     pub fn new(settings: crate::settings::SharedSettings) -> Self {
@@ -2255,7 +2315,16 @@ impl App {
             "import from other tools",
             &["auto", "claude-code", "pi", "codex", "cursor", "aider"],
         ),
-        ("dash", "open Auspex in browser (/dash compatibility path)", &["status"]),
+        (
+            "dash",
+            "open Auspex in browser (/dash compatibility path)",
+            &["status"],
+        ),
+        (
+            "auspex",
+            "show Auspex attachability and handoff status",
+            &["status"],
+        ),
         (
             "secrets",
             "manage stored secrets",
@@ -2949,6 +3018,15 @@ impl App {
                 match crate::tools::chronos::execute(sub, None, None, None) {
                     Ok(text) => SlashResult::Display(text),
                     Err(e) => SlashResult::Display(format!("❌ {e}")),
+                }
+            }
+
+            "auspex" => {
+                match args {
+                    "" | "status" => SlashResult::Display(self.auspex_status_text()),
+                    other => SlashResult::Display(format!(
+                        "Usage: /auspex status\n\nUnknown subcommand: {other}"
+                    )),
                 }
             }
 

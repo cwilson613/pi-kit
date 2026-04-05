@@ -1456,6 +1456,13 @@ fn slash_command_aliases_dispatch_correctly() {
         "/dashboard should be handled, not fall through"
     );
 
+    // /auspex should resolve to the status surface, not fall through
+    let result = app.handle_slash_command("/auspex", &tx);
+    assert!(
+        matches!(result, SlashResult::Display(_)),
+        "/auspex should display status information"
+    );
+
     // /version should display build info
     let result = app.handle_slash_command("/version", &tx);
     assert!(
@@ -1467,6 +1474,26 @@ fn slash_command_aliases_dispatch_correctly() {
     let result = app.handle_slash_command("/q", &tx);
     assert!(matches!(result, SlashResult::Quit), "/q should quit");
 }
+
+#[test]
+fn slash_auspex_status_reports_attach_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = test_app();
+    app.footer_data.cwd = tmp.path().to_string_lossy().to_string();
+    let tx = test_tx();
+
+    let result = app.handle_slash_command("/auspex status", &tx);
+    let SlashResult::Display(text) = result else {
+        panic!("expected Display result");
+    };
+
+    assert!(text.contains("Auspex attach status"), "got: {text}");
+    assert!(text.contains("protocol: v1"), "got: {text}");
+    assert!(text.contains("ipc.sock"), "got: {text}");
+    assert!(text.contains("session id: not yet exposed"), "got: {text}");
+    assert!(text.contains("`/dash` remains the local compatibility path"), "got: {text}");
+}
+
 
 #[test]
 fn unknown_slash_commands_show_error() {

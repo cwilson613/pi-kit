@@ -1,30 +1,28 @@
 ---
 task_id: 1
-label: tui-copy
-siblings: [0:docs-copy, 2:tests-validate]
+label: tests
+siblings: [0:registry]
 ---
 
-# Task 1: tui-copy
+# Task 1: tests
 
 ## Root Directive
 
-> Migrate Omegon docs and in-product copy from /dash framing to /auspex framing, without changing command behavior yet. Update design/docs/tutorial/help text so Auspex is presented as the primary browser surface and /dash remains only compatibility/local context where necessary. Reconcile tests affected by copy changes and validate the touched Rust code/docs.
+> Remove the misleading /clear command, assess /context clear correctness, and deduplicate duplicate slash commands such as /cleave across command/help/completion tables and handler dispatch, with tests.
 
 ## Mission
 
-Update in-product copy in the TUI/tutorial/help surfaces so operator-facing text points to Auspex as the primary browser UI, while leaving current `/dash` command behavior intact as compatibility wording. Focus on core/crates/omegon/src/tui/mod.rs, core/crates/omegon/src/tui/tutorial.rs, and nearby help/command descriptions only.
+Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.
 
 ## Scope
 
-- `core/crates/omegon/src/tui/mod.rs`
-- `core/crates/omegon/src/tui/tutorial.rs`
+- `core/crates/omegon/src/tui/tests.rs`
 
-**Depends on:** none (independent)
+**Depends on:** registry
 
 ## Siblings
 
-- **docs-copy**: Update long-lived docs that currently frame the browser experience around `/dash` or the embedded web dashboard. Rewrite them to present Auspex as the primary browser surface, while keeping any necessary historical/local compatibility notes. Focus on docs/embedded-web-dashboard.md, docs/display-tool-artifacts.md, docs/native-plan-mode.md, docs/conversation-rendering-engine.md, and other directly relevant docs that mention `/dash` as the primary browser path.
-- **tests-validate**: After docs and TUI copy changes land, reconcile any affected tests/comments and run targeted validation for the touched Rust TUI surfaces. Update only test expectations or comments made stale by the copy migration; do not change command behavior.
+- **registry**: Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.
 
 ## Dependency Versions
 

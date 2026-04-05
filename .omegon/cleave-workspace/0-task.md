@@ -1,33 +1,122 @@
 ---
 task_id: 0
-label: docs-copy
-siblings: [1:tui-copy, 2:tests-validate]
+label: registry
+siblings: [1:tests]
 ---
 
-# Task 0: docs-copy
+# Task 0: registry
 
 ## Root Directive
 
-> Migrate Omegon docs and in-product copy from /dash framing to /auspex framing, without changing command behavior yet. Update design/docs/tutorial/help text so Auspex is presented as the primary browser surface and /dash remains only compatibility/local context where necessary. Reconcile tests affected by copy changes and validate the touched Rust code/docs.
+> Remove the misleading /clear command, assess /context clear correctness, and deduplicate duplicate slash commands such as /cleave across command/help/completion tables and handler dispatch, with tests.
 
 ## Mission
 
-Update long-lived docs that currently frame the browser experience around `/dash` or the embedded web dashboard. Rewrite them to present Auspex as the primary browser surface, while keeping any necessary historical/local compatibility notes. Focus on docs/embedded-web-dashboard.md, docs/display-tool-artifacts.md, docs/native-plan-mode.md, docs/conversation-rendering-engine.md, and other directly relevant docs that mention `/dash` as the primary browser path.
+Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.
 
 ## Scope
 
-- `docs/embedded-web-dashboard.md`
-- `docs/display-tool-artifacts.md`
-- `docs/native-plan-mode.md`
-- `docs/conversation-rendering-engine.md`
-- `docs/auspex-ipc-contract.md`
+- `core/crates/omegon/src/tui/mod.rs`
 
 **Depends on:** none (independent)
 
 ## Siblings
 
-- **tui-copy**: Update in-product copy in the TUI/tutorial/help surfaces so operator-facing text points to Auspex as the primary browser UI, while leaving current `/dash` command behavior intact as compatibility wording. Focus on core/crates/omegon/src/tui/mod.rs, core/crates/omegon/src/tui/tutorial.rs, and nearby help/command descriptions only.
-- **tests-validate**: After docs and TUI copy changes land, reconcile any affected tests/comments and run targeted validation for the touched Rust TUI surfaces. Update only test expectations or comments made stale by the copy migration; do not change command behavior.
+- **tests**: Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.
+
+## Dependency Versions
+
+Use these exact versions — do not rely on training data for API shapes:
+
+```toml
+# core/crates/omegon/Cargo.toml
+[dependencies]
+omegon-extension = { path = "../omegon-extension" }
+omegon-traits = { path = "../omegon-traits" }
+omegon-git = { path = "../omegon-git" }
+omegon-memory = { path = "../omegon-memory" }
+omegon-codescan = { path = "../omegon-codescan" }
+omegon-secrets = { path = "../omegon-secrets" }
+opsx-core = { path = "../opsx-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+toml = "0.8"
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+rusqlite = { workspace = true }
+tokio-util = { workspace = true }
+indexmap = { workspace = true }
+dirs = "6.0.0"
+unicode-truncate = "2.0"
+chrono = "0.4"
+libc = "0.2"
+regex-lite = "0.1"
+ratatui = "0.30.0"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
+tui-syntax-highlight = "0.2"
+tachyonfx = { version = "0.25.0", features = ["sendable"] }
+crossterm = "0.29.0"
+reqwest = { version = "0.13.2", features = ["json", "stream"] }
+tokio-stream = "0.1.18"
+sha2 = "0.10.9"
+secrecy = "0.10"
+sysinfo = "0.33"
+getrandom = "0.4.2"
+open = "5.3.3"
+tracing-appender = "0.2.4"
+unicode-width = "0.2.2"
+ratatui-image = { version = "10.0.6", default-features = false, features = ["crossterm", "image-defaults"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+axum = { version = "0.8.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6.8", features = ["cors"] }
+futures-util = "0.3.32"
+base64 = "0.22"
+hmac = "0.12"
+ansi-to-tui = "8.0"
+tui-tree-widget = "0.24"
+ratatui-toaster = "0.1"
+ratatui-textarea = { version = "0.8", features = ["crossterm"] }
+tui-popup = "0.7"
+hyperrat = "0.1"
+rmcp = { version = "1.2", features = ["transport-child-process", "client", "transport-streamable-http-client-reqwest", "auth"], default-features = false }
+tar = "0.4"
+flate2 = "1.0"
+sigstore = { version = "0.13.0", default-features = false, features = ["cosign", "rustls-tls"] }
+x509-parser = "0.17"
+rpassword = "7"
+
+[dev-dependencies]
+insta = "1.46"
+tempfile = "3.27.0"
+
+```
+
+## Test Convention
+
+Follow this pattern from an existing test in the same crate:
+
+```rust
+// From bridge.rs
+    #[test]
+    fn llm_message_user_round_trip() {
+        let msg = LlmMessage::User {
+            content: "hello".into(),
+            images: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""role":"user"#));
+        let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            LlmMessage::User { content, .. } => assert_eq!(content, "hello"),
+            _ => panic!("wrong variant"),
+        }
+    }
+```
 
 
 
@@ -35,7 +124,27 @@ Update long-lived docs that currently frame the browser experience around `/dash
 
 ### Test Convention
 
-Write tests for new functions and changed behavior — co-locate as *.test.ts
+Write tests as #[test] functions in the same file or a tests submodule
+
+Example from codebase:
+
+```rust
+// From bridge.rs
+    #[test]
+    fn llm_message_user_round_trip() {
+        let msg = LlmMessage::User {
+            content: "hello".into(),
+            images: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""role":"user"#));
+        let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            LlmMessage::User { content, .. } => assert_eq!(content, "hello"),
+            _ => panic!("wrong variant"),
+        }
+    }
+```
 
 
 ## Contract

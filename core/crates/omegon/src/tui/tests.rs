@@ -1511,6 +1511,36 @@ fn hidden_model_aliases_do_not_appear_in_palette() {
 }
 
 #[test]
+fn palette_deduplicates_builtin_and_bus_commands() {
+    let mut app = test_app();
+    app.bus_commands = vec![omegon_traits::CommandDefinition {
+        name: "cleave".into(),
+        description: "parallel work".into(),
+        subcommands: vec!["status".into()],
+    }];
+    app.editor.set_text("/cl");
+    let matches = app.matching_commands();
+    let cleave_count = matches.iter().filter(|(name, _)| name == "cleave").count();
+    assert_eq!(cleave_count, 1, "expected one /cleave entry, got: {matches:?}");
+}
+
+#[test]
+fn clear_command_is_not_documented_or_handled() {
+    let mut app = test_app();
+    let tx = test_tx();
+
+    assert!(!App::COMMANDS.iter().any(|(name, _, _)| *name == "clear"));
+
+    let result = app.handle_slash_command("/clear", &tx);
+    match result {
+        SlashResult::Display(text) => {
+            assert!(text.contains("Unknown command: /clear"), "got: {text}");
+        }
+        other => panic!("/clear should be unknown, got: {other:?}"),
+    }
+}
+
+#[test]
 fn slash_cleave_warns_on_anthropic_subscription_but_proceeds() {
     unsafe {
         std::env::remove_var("ANTHROPIC_API_KEY");

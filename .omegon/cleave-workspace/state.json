@@ -1,98 +1,62 @@
 {
-  "runId": "clv-5qb8q0xj-pl7j",
-  "directive": "Migrate Omegon docs and in-product copy from /dash framing to /auspex framing, without changing command behavior yet. Update design/docs/tutorial/help text so Auspex is presented as the primary browser surface and /dash remains only compatibility/local context where necessary. Reconcile tests affected by copy changes and validate the touched Rust code/docs.",
+  "runId": "clv-01ivapo8-kvei",
+  "directive": "Remove the misleading /clear command, assess /context clear correctness, and deduplicate duplicate slash commands such as /cleave across command/help/completion tables and handler dispatch, with tests.",
   "repoPath": "/Users/cwilson/workspace/black-meridian/omegon",
   "workspacePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace",
   "children": [
     {
       "childId": 0,
-      "label": "docs-copy",
-      "description": "Update long-lived docs that currently frame the browser experience around `/dash` or the embedded web dashboard. Rewrite them to present Auspex as the primary browser surface, while keeping any necessary historical/local compatibility notes. Focus on docs/embedded-web-dashboard.md, docs/display-tool-artifacts.md, docs/native-plan-mode.md, docs/conversation-rendering-engine.md, and other directly relevant docs that mention `/dash` as the primary browser path.",
+      "label": "registry",
+      "description": "Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.",
       "scope": [
-        "docs/embedded-web-dashboard.md",
-        "docs/display-tool-artifacts.md",
-        "docs/native-plan-mode.md",
-        "docs/conversation-rendering-engine.md",
-        "docs/auspex-ipc-contract.md"
+        "core/crates/omegon/src/tui/mod.rs"
       ],
       "dependsOn": [],
       "status": "completed",
-      "branch": "cleave/0-docs-copy",
+      "branch": "cleave/0-registry",
       "backend": "native",
       "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 160.428160208
+      "durationSecs": 367.738254292
     },
     {
       "childId": 1,
-      "label": "tui-copy",
-      "description": "Update in-product copy in the TUI/tutorial/help surfaces so operator-facing text points to Auspex as the primary browser UI, while leaving current `/dash` command behavior intact as compatibility wording. Focus on core/crates/omegon/src/tui/mod.rs, core/crates/omegon/src/tui/tutorial.rs, and nearby help/command descriptions only.",
+      "label": "tests",
+      "description": "Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.",
       "scope": [
-        "core/crates/omegon/src/tui/mod.rs",
-        "core/crates/omegon/src/tui/tutorial.rs"
-      ],
-      "dependsOn": [],
-      "status": "completed",
-      "branch": "cleave/1-tui-copy",
-      "backend": "native",
-      "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 362.431146125
-    },
-    {
-      "childId": 2,
-      "label": "tests-validate",
-      "description": "After docs and TUI copy changes land, reconcile any affected tests/comments and run targeted validation for the touched Rust TUI surfaces. Update only test expectations or comments made stale by the copy migration; do not change command behavior.",
-      "scope": [
-        "core/crates/omegon/src/tui/tests.rs",
-        "core/crates/omegon/src/tui/mod.rs",
-        "core/crates/omegon/src/tui/tutorial.rs"
+        "core/crates/omegon/src/tui/tests.rs"
       ],
       "dependsOn": [
-        "tui-copy"
+        "registry"
       ],
       "status": "completed",
-      "branch": "cleave/2-tests-validate",
+      "branch": "cleave/1-tests",
       "backend": "native",
       "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 328.097038291
+      "durationSecs": 311.580829584
     }
   ],
   "plan": {
     "children": [
       {
         "depends_on": [],
-        "description": "Update long-lived docs that currently frame the browser experience around `/dash` or the embedded web dashboard. Rewrite them to present Auspex as the primary browser surface, while keeping any necessary historical/local compatibility notes. Focus on docs/embedded-web-dashboard.md, docs/display-tool-artifacts.md, docs/native-plan-mode.md, docs/conversation-rendering-engine.md, and other directly relevant docs that mention `/dash` as the primary browser path.",
-        "label": "docs-copy",
+        "description": "Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.",
+        "label": "registry",
         "scope": [
-          "docs/embedded-web-dashboard.md",
-          "docs/display-tool-artifacts.md",
-          "docs/native-plan-mode.md",
-          "docs/conversation-rendering-engine.md",
-          "docs/auspex-ipc-contract.md"
-        ]
-      },
-      {
-        "depends_on": [],
-        "description": "Update in-product copy in the TUI/tutorial/help surfaces so operator-facing text points to Auspex as the primary browser UI, while leaving current `/dash` command behavior intact as compatibility wording. Focus on core/crates/omegon/src/tui/mod.rs, core/crates/omegon/src/tui/tutorial.rs, and nearby help/command descriptions only.",
-        "label": "tui-copy",
-        "scope": [
-          "core/crates/omegon/src/tui/mod.rs",
-          "core/crates/omegon/src/tui/tutorial.rs"
+          "core/crates/omegon/src/tui/mod.rs"
         ]
       },
       {
         "depends_on": [
-          "tui-copy"
+          "registry"
         ],
-        "description": "After docs and TUI copy changes land, reconcile any affected tests/comments and run targeted validation for the touched Rust TUI surfaces. Update only test expectations or comments made stale by the copy migration; do not change command behavior.",
-        "label": "tests-validate",
+        "description": "Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.",
+        "label": "tests",
         "scope": [
-          "core/crates/omegon/src/tui/tests.rs",
-          "core/crates/omegon/src/tui/mod.rs",
-          "core/crates/omegon/src/tui/tutorial.rs"
+          "core/crates/omegon/src/tui/tests.rs"
         ]
       }
     ],
     "default_model": "openai-codex:gpt-5.4",
-    "rationale": "The migration has two distinct surface areas: long-lived design/docs and operator-facing TUI copy. Test reconciliation depends on the TUI copy but not on docs changes, so it can follow after the relevant edits land."
+    "rationale": "Separate the UI command registry/dispatch cleanup from the test surface so command-list dedupe and behavioral assertions stay aligned."
   }
 }

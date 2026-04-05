@@ -2407,7 +2407,6 @@ impl App {
         ),
         ("stats", "session telemetry", &[]),
         ("compact", "trigger context compaction", &[]),
-        ("clear", "clear conversation display", &[]),
         ("new", "save current session and start fresh", &[]),
         (
             "detail",
@@ -2951,11 +2950,6 @@ impl App {
             "compact" => {
                 let _ = tx.try_send(TuiCommand::ContextCompact);
                 SlashResult::Display("Requesting context compaction…".into())
-            }
-
-            "clear" => {
-                self.conversation = ConversationView::new();
-                SlashResult::Display("Display cleared.".into())
             }
 
             "new" => {
@@ -3745,12 +3739,14 @@ impl App {
                     .map(|(n, d, _)| (n.to_string(), d.to_string()))
                     .collect()
             };
-            // Append bus feature commands
+            let mut seen: std::collections::HashSet<String> =
+                matches.iter().map(|(name, _)| name.clone()).collect();
+            // Append bus feature commands without duplicating built-ins.
             for cmd in &self.bus_commands {
                 if Self::is_hidden_bus_command(&cmd.name) {
                     continue;
                 }
-                if prefix.is_empty() || cmd.name.starts_with(prefix) {
+                if (prefix.is_empty() || cmd.name.starts_with(prefix)) && seen.insert(cmd.name.clone()) {
                     matches.push((cmd.name.clone(), cmd.description.clone()));
                 }
             }

@@ -1375,6 +1375,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 );
                 match web::start_server(web_state, 7842).await {
                     Ok((startup, web_cmd_rx)) => {
+                        if let Ok(startup_json) = serde_json::to_value(&startup) {
+                            let _ = events_tx.send(AgentEvent::WebDashboardStarted { startup_json });
+                        }
                         let url = format!("http://{}/?token={}", startup.addr, startup.token);
                         tui::open_browser(&url);
                         let _ = events_tx.send(AgentEvent::SystemNotification {

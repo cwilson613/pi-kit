@@ -212,6 +212,10 @@ fn refresh_sections(event: &AgentEvent) -> Option<&'static [&'static str]> {
 }
 
 fn serialize_ws_messages(event: &AgentEvent) -> Vec<Value> {
+    if matches!(event, AgentEvent::WebDashboardStarted { .. }) {
+        return Vec::new();
+    }
+
     let mut messages = vec![serialize_agent_event(event)];
     if let Some(sections) = refresh_sections(event) {
         messages.push(state_changed_message(sections));
@@ -340,6 +344,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "event_name": "harness.changed",
             "status": status_json,
         }),
+        AgentEvent::WebDashboardStarted { .. } => unreachable!("filtered by serialize_ws_messages"),
         AgentEvent::ContextUpdated {
             tokens,
             context_window,

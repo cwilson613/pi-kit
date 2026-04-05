@@ -1463,6 +1463,13 @@ fn slash_command_aliases_dispatch_correctly() {
         "/auspex should display status information"
     );
 
+    // /auspex open should also be routed, even before launch is fully configured
+    let result = app.handle_slash_command("/auspex open", &tx);
+    assert!(
+        matches!(result, SlashResult::Display(_)),
+        "/auspex open should display launch status information"
+    );
+
     // /version should display build info
     let result = app.handle_slash_command("/version", &tx);
     assert!(
@@ -1473,6 +1480,20 @@ fn slash_command_aliases_dispatch_correctly() {
     // /q should quit
     let result = app.handle_slash_command("/q", &tx);
     assert!(matches!(result, SlashResult::Quit), "/q should quit");
+}
+
+#[test]
+fn slash_auspex_open_requests_bridge_start_when_dashboard_not_running() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = test_app();
+    app.footer_data.cwd = tmp.path().to_string_lossy().to_string();
+    let tx = test_tx();
+
+    let result = app.handle_slash_command("/auspex open", &tx);
+    let SlashResult::Display(text) = result else {
+        panic!("expected Display result");
+    };
+    assert!(text.contains("Starting the local compatibility surface first"), "got: {text}");
 }
 
 #[test]
@@ -1494,6 +1515,34 @@ fn slash_auspex_status_reports_attach_metadata() {
     assert!(text.contains("`/dash` remains the local compatibility path"), "got: {text}");
 }
 
+
+#[test]
+fn web_dashboard_started_event_updates_cached_addr() {
+    let mut app = test_app();
+    let startup = crate::web::WebStartupInfo {
+        schema_version: 2,
+        addr: "127.0.0.1:7842".into(),
+        http_base: "http://127.0.0.1:7842".into(),
+        state_url: "http://127.0.0.1:7842/api/state".into(),
+        startup_url: "http://127.0.0.1:7842/api/startup".into(),
+        health_url: "http://127.0.0.1:7842/api/healthz".into(),
+        ready_url: "http://127.0.0.1:7842/api/readyz".into(),
+        ws_url: "ws://127.0.0.1:7842/ws?token=test".into(),
+        token: "test".into(),
+        auth_mode: "ephemeral-bearer".into(),
+        auth_source: "generated".into(),
+        control_plane_state: crate::web::ControlPlaneState::Ready,
+    };
+
+    app.handle_agent_event(AgentEvent::WebDashboardStarted {
+        startup_json: serde_json::to_value(startup).unwrap(),
+    });
+
+    assert_eq!(
+        app.web_server_addr.map(|addr| addr.to_string()),
+        Some("127.0.0.1:7842".into())
+    );
+}
 
 #[test]
 fn unknown_slash_commands_show_error() {

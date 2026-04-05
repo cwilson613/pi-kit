@@ -971,6 +971,12 @@ pub enum AgentEvent {
     HarnessStatusChanged {
         status_json: Value,
     },
+    /// Embedded web compatibility surface started — carries discovery metadata
+    /// so the TUI can track the local compatibility server without scraping
+    /// human-readable notifications.
+    WebDashboardStarted {
+        startup_json: Value,
+    },
     /// Context updated — authoritative snapshot after compaction, clear, or turn completion.
     /// TUI + web consumers should use this as the canonical context status source.
     ContextUpdated {

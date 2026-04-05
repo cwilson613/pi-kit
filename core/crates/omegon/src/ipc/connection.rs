@@ -406,6 +406,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
         AgentEvent::MessageStart { .. } => None,
         AgentEvent::MessageAbort => None,
         AgentEvent::ContextUpdated { .. } => None,
+        AgentEvent::WebDashboardStarted { .. } => None,
     }
 }
 

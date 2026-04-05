@@ -239,6 +239,47 @@ enum SlashResult {
 }
 
 /// Compute dynamic editor height from the editor's wrapped visual rows.
+fn launch_auspex_with_startup(startup: &crate::web::WebStartupInfo) -> anyhow::Result<String> {
+    let target = detect_auspex_target().ok_or_else(|| anyhow::anyhow!(
+        "Auspex not detected. Set AUSPEX_BIN or install Auspex first."
+    ))?;
+
+    let mut command = if let Some(explicit) = target.strip_prefix("AUSPEX_BIN=") {
+        std::process::Command::new(explicit)
+    } else if target.ends_with(".app") {
+        #[cfg(target_os = "macos")]
+        {
+            let mut cmd = std::process::Command::new("open");
+            cmd.arg("-a").arg(target.clone());
+            cmd
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::process::Command::new(target.clone())
+        }
+    } else {
+        std::process::Command::new(target.clone())
+    };
+
+    command
+        .env("AUSPEX_OMEGON_STARTUP_URL", startup.startup_url.clone())
+        .env("AUSPEX_OMEGON_WS_URL", startup.ws_url.clone())
+        .env("AUSPEX_OMEGON_WS_TOKEN", startup.token.clone())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    #[cfg(target_os = "macos")]
+    if target.ends_with(".app") {
+        command.arg("--env").arg(format!("AUSPEX_OMEGON_STARTUP_URL={}", startup.startup_url));
+        command.arg("--env").arg(format!("AUSPEX_OMEGON_WS_URL={}", startup.ws_url));
+        command.arg("--env").arg(format!("AUSPEX_OMEGON_WS_TOKEN={}", startup.token));
+    }
+
+    command.spawn()?;
+    Ok(target)
+}
+
 fn path_contains_executable(candidate: &std::path::Path) -> bool {
     candidate.is_file()
 }
@@ -3024,8 +3065,37 @@ impl App {
             "auspex" => {
                 match args {
                     "" | "status" => SlashResult::Display(self.auspex_status_text()),
+                    "open" => {
+                        if let Some(addr) = self.web_server_addr {
+                            let startup = crate::web::WebStartupInfo {
+                                schema_version: 2,
+                                addr: addr.to_string(),
+                                http_base: format!("http://{addr}"),
+                                state_url: format!("http://{addr}/api/state"),
+                                startup_url: format!("http://{addr}/api/startup"),
+                                health_url: format!("http://{addr}/api/healthz"),
+                                ready_url: format!("http://{addr}/api/readyz"),
+                                ws_url: format!("ws://{addr}/ws"),
+                                token: String::new(),
+                                auth_mode: "unknown".into(),
+                                auth_source: "tui-cached".into(),
+                                control_plane_state: crate::web::ControlPlaneState::Ready,
+                            };
+                            match launch_auspex_with_startup(&startup) {
+                                Ok(target) => SlashResult::Display(format!(
+                                    "Launching Auspex via compatibility bridge ({target}).\n\nThis path currently bootstraps Auspex from Omegon's embedded startup URL. Native IPC attach remains the target design."
+                                )),
+                                Err(e) => SlashResult::Display(format!("Failed to launch Auspex: {e}")),
+                            }
+                        } else {
+                            let _ = tx.try_send(TuiCommand::StartWebDashboard);
+                            SlashResult::Display(
+                                "Starting the local compatibility surface first. Re-run `/auspex open` once the embedded browser bridge is ready.".into()
+                            )
+                        }
+                    }
                     other => SlashResult::Display(format!(
-                        "Usage: /auspex status\n\nUnknown subcommand: {other}"
+                        "Usage: /auspex status | /auspex open\n\nUnknown subcommand: {other}"
                     )),
                 }
             }
@@ -3945,6 +4015,13 @@ impl App {
                 };
                 self.conversation
                     .push_lifecycle("⚡", &format!("Cleave {status}"));
+            }
+            AgentEvent::WebDashboardStarted { startup_json } => {
+                if let Ok(startup) = serde_json::from_value::<crate::web::WebStartupInfo>(startup_json)
+                    && let Ok(addr) = startup.addr.parse()
+                {
+                    self.web_server_addr = Some(addr);
+                }
             }
             AgentEvent::SystemNotification { message } => {
                 // Transient retry notifications → toast (operator sees them but they

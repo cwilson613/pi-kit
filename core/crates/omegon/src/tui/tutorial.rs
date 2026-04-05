@@ -17,6 +17,53 @@ pub enum Anchor {
     Upper,
 }
 
+/// Whether the tutorial may fire AutoPrompt agent turns.
+///
+/// Determined at start time from env vars and capability tier.
+/// Does NOT gate demo mode — the demo project is an explicit opt-in
+/// that always intends agent work.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TutorialMode {
+    /// AutoPrompt steps fire real agent turns.
+    /// Granted when Victory+ is routable via Codex OAuth, OpenAI API key,
+    /// or any non-subscription cloud API key.
+    Interactive,
+    /// Anthropic OAuth subscription detected with no other Victory provider.
+    /// User must explicitly type `/tutorial consent` to enable AutoPrompt.
+    /// Shows orientation steps until consent is given.
+    ConsentRequired,
+    /// No Victory-tier cloud model available.
+    /// AutoPrompt steps render as Tab (description only, no agent turn).
+    OrientationOnly,
+}
+
+/// Determine the appropriate tutorial mode based on current auth state.
+///
+/// Checks env vars directly — does not depend on startup probe results,
+/// which may not be set yet. Called at `/tutorial` invocation time.
+pub fn tutorial_gate() -> TutorialMode {
+    let has_anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok_and(|v| !v.is_empty());
+    let has_openai_api_key = std::env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty());
+    let has_codex_oauth = std::env::var("CHATGPT_OAUTH_TOKEN").is_ok_and(|v| !v.is_empty());
+    let has_openrouter = std::env::var("OPENROUTER_API_KEY").is_ok_and(|v| !v.is_empty());
+    let has_anthropic_oauth = std::env::var("ANTHROPIC_OAUTH_TOKEN").is_ok_and(|v| !v.is_empty());
+
+    // Codex OAuth is purpose-built for programmatic/agent use — clear.
+    // Any direct API key is also clear: operator controls the account.
+    if has_codex_oauth || has_anthropic_api_key || has_openai_api_key || has_openrouter {
+        return TutorialMode::Interactive;
+    }
+
+    // Anthropic subscription OAuth: ToS restricts automated/programmatic use
+    // without operator consent. Require explicit confirmation before AutoPrompt.
+    if has_anthropic_oauth {
+        return TutorialMode::ConsentRequired;
+    }
+
+    // No cloud model available — show orientation tour only.
+    TutorialMode::OrientationOnly
+}
+
 /// How a step advances to the next one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Trigger {
@@ -175,6 +222,45 @@ Finally, briefly explain what was fixed and that the user can now use the board.
     },
 ];
 
+// ─── Orientation mode STEPS (no agent turns — for OrientationOnly and pre-consent) ──
+
+/// Steps for orientation mode — Tab-only, no AutoPrompt.
+/// Used when no Victory-tier model is available, or before consent for Anthropic OAuth.
+/// Describes each feature without executing it.
+pub const STEPS_ORIENTATION: &[Step] = &[
+    STEP_WELCOME_HANDS_ON,
+    STEP_COCKPIT,
+    Step {
+        title: "Project Memory",
+        body: "With a cloud model, Omegon reads your\nproject and stores durable facts:\n\n  \u{2022} What the project does and its purpose\n  \u{2022} Key structure: modules, files, stack\n  \u{2022} Testing practices and coverage\n\nThese persist across sessions \u{2014} no\nre-explaining next time you open Omegon.\n\n(Requires API key or Codex to activate.)",
+        anchor: Anchor::Upper,
+        trigger: Trigger::Tab,
+        highlight: Some(Highlight::InstrumentPanel),
+    },
+    Step {
+        title: "Design Notes",
+        body: "The sidebar tracks architecture decisions\nas living design nodes:\n\n  seed \u{2192} exploring \u{2192} decided \u{2192} implemented\n\nOmegon explores open questions, records\nresearch, and commits decisions with\nrationale. View any time with /dash.\n\n(Requires API key or Codex to activate.)",
+        anchor: Anchor::Center,
+        trigger: Trigger::Tab,
+        highlight: Some(Highlight::Dashboard),
+    },
+    Step {
+        title: "OpenSpec",
+        body: "Before changing code, the agent writes\na spec: what must be true when done.\n\n  Given [starting state]\n  When  [action]\n  Then  [expected result]\n\nLives in ai/openspec/ in your project.\n/assess spec verifies it after the fix.\n\n(Requires API key or Codex to activate.)",
+        anchor: Anchor::Center,
+        trigger: Trigger::Tab,
+        highlight: None,
+    },
+    STEP_WEB_DASHBOARD,
+    Step {
+        title: "Unlock Interactive Mode",
+        body: "To run the full tutorial with real agent\nwork, add a cloud model:\n\n  Any API key:\n    export ANTHROPIC_API_KEY=sk-ant-...\n    export OPENAI_API_KEY=sk-...\n\n  ChatGPT Plus/Pro (free quota):\n    /login openai-codex\n\nThen restart and type /tutorial.\n/help for all commands.",
+        anchor: Anchor::Center,
+        trigger: Trigger::Tab,
+        highlight: None,
+    },
+];
+
 // ─── Hands-on mode STEPS (user's own project, adaptive) ─────────────────────
 
 /// Steps for hands-on mode — run in the operator's own project.
@@ -262,12 +348,13 @@ pub struct Tutorial {
     /// Reset to false when advancing to a new step.
     pub auto_prompt_sent: bool,
     /// Whether the project has pre-existing design tree content.
-    /// When false, step 0 shows a project-choice widget instead of
-    /// the normal passive welcome.
     pub has_design_tree: bool,
-    /// True when running inside the bundled demo project (--tutorial flag).
-    /// Selects STEPS_DEMO instead of STEPS_HANDS_ON.
+    /// True when running inside the bundled demo project.
+    /// Selects STEPS_DEMO instead of STEPS_HANDS_ON / STEPS_ORIENTATION.
+    /// Demo mode is always Interactive — it's an explicit opt-in.
     pub is_demo: bool,
+    /// Tutorial mode: whether AutoPrompt steps are allowed to fire agent turns.
+    pub mode: TutorialMode,
     /// Current selection in the project-choice widget (step 0, empty project).
     pub choice: TutorialChoice,
     /// Set to true when the operator confirms a choice — caller reads
@@ -280,34 +367,45 @@ impl Tutorial {
         Self::with_context(false)
     }
 
-    /// Create a tutorial with project context so steps can adapt.
+    /// Create a tutorial with project context and auto-detected gate.
     pub fn with_context(has_design_tree: bool) -> Self {
-        Self::new_mode(has_design_tree, false)
+        Self::new_mode(has_design_tree, false, tutorial_gate())
     }
 
-    /// Create a demo-mode tutorial (--tutorial flag, bundled project).
+    /// Create a tutorial with an explicit mode (e.g. after consent granted).
+    pub fn with_mode(has_design_tree: bool, mode: TutorialMode) -> Self {
+        Self::new_mode(has_design_tree, false, mode)
+    }
+
+    /// Create a demo-mode tutorial (bundled demo project).
+    /// Demo mode always runs Interactive — it is an explicit operator opt-in.
     pub fn new_demo(has_design_tree: bool) -> Self {
-        Self::new_mode(has_design_tree, true)
+        Self::new_mode(has_design_tree, true, TutorialMode::Interactive)
     }
 
-    fn new_mode(has_design_tree: bool, is_demo: bool) -> Self {
+    fn new_mode(has_design_tree: bool, is_demo: bool, mode: TutorialMode) -> Self {
         Self {
             current: 0,
             active: true,
             auto_prompt_sent: false,
             has_design_tree,
             is_demo,
+            mode,
             choice: TutorialChoice::Demo,
             choice_confirmed: false,
         }
     }
 
-    /// The active steps array — STEPS_DEMO in demo mode, STEPS_HANDS_ON otherwise.
+    /// The active steps array.
+    /// Demo mode → STEPS_DEMO. Interactive hands-on → STEPS_HANDS_ON.
+    /// OrientationOnly or ConsentRequired → STEPS_ORIENTATION.
     pub fn steps(&self) -> &'static [Step] {
         if self.is_demo {
             STEPS_DEMO
-        } else {
+        } else if self.mode == TutorialMode::Interactive {
             STEPS_HANDS_ON
+        } else {
+            STEPS_ORIENTATION
         }
     }
 

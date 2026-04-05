@@ -1021,21 +1021,60 @@ impl App {
                 }
                 SlashResult::Display("No lesson files found in .omegon/tutorial/".into())
             }
+            "consent" => {
+                // Operator explicitly grants consent for Anthropic OAuth subscription usage.
+                // Enables AutoPrompt steps for the hands-on tutorial.
+                let has_design = self.dashboard.status_counts.total > 0;
+                self.tutorial_overlay = Some(tutorial::Tutorial::with_mode(
+                    has_design,
+                    tutorial::TutorialMode::Interactive,
+                ));
+                SlashResult::Display(
+                    "Consent recorded. Starting interactive tutorial.\n\
+                     Omegon will perform real work using your Anthropic subscription.\n\
+                     Tab to advance, Esc to dismiss.".into()
+                )
+            }
             _ => {
                 // Resume existing overlay if still active
                 if let Some(ref overlay) = self.tutorial_overlay {
                     if overlay.active {
+                        let mode_note = match overlay.mode {
+                            tutorial::TutorialMode::ConsentRequired =>
+                                "\n\nℹ Anthropic subscription detected. Type /tutorial consent\nto enable interactive agent steps (uses subscription quota).",
+                            tutorial::TutorialMode::OrientationOnly =>
+                                "\n\nℹ No Victory-tier cloud model found. Add an API key or\n/login openai-codex for the full interactive tutorial.",
+                            tutorial::TutorialMode::Interactive => "",
+                        };
                         return SlashResult::Display(format!(
-                            "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.",
+                            "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.{}",
                             overlay.step_index() + 1,
                             overlay.total_steps(),
+                            mode_note,
                         ));
                     }
                 }
-                // Always start the overlay tutorial — it works in any project
+                // Gate: detect what the operator has available
                 let has_design = self.dashboard.status_counts.total > 0;
-                self.tutorial_overlay = Some(tutorial::Tutorial::with_context(has_design));
-                SlashResult::Display("Tutorial started. Tab to advance, Esc to dismiss.".into())
+                let mode = tutorial::tutorial_gate();
+                let mode_msg = match mode {
+                    tutorial::TutorialMode::Interactive =>
+                        "Tutorial started. Tab to advance, Esc to dismiss.".to_string(),
+                    tutorial::TutorialMode::ConsentRequired =>
+                        "Tutorial started (orientation mode).\n\n\
+                         Anthropic subscription detected. Omegon's ToS restricts automated use\n\
+                         of subscriptions without your explicit consent.\n\n\
+                         Type /tutorial consent to enable interactive agent steps,\n\
+                         or add an API key / /login openai-codex for automatic access.\n\n\
+                         Tab to advance orientation steps, Esc to dismiss.".to_string(),
+                    tutorial::TutorialMode::OrientationOnly =>
+                        "Tutorial started (orientation mode).\n\n\
+                         No Victory-tier cloud model found. Add an API key or\n\
+                         /login openai-codex for the full interactive tutorial.\n\n\
+                         Tab to advance, Esc to dismiss.".to_string(),
+                };
+                self.tutorial_overlay = Some(tutorial::Tutorial::with_mode(has_design, mode));
+                SlashResult::Display(mode_msg)
             }
         }
     }
@@ -2242,7 +2281,7 @@ impl App {
         (
             "tutorial",
             "interactive tutorial (replaces /demo)",
-            &["status", "reset"],
+            &["status", "reset", "consent", "demo"],
         ),
         ("next", "advance to next tutorial lesson", &[]),
         ("prev", "go back to previous tutorial lesson", &[]),

@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 13,
+    "rc_count": 14,
     "notes": [
       "feat(compliance): enforce Anthropic subscription ToS interactive-only boundary",
       "feat(compliance): subscription-aware cleave fallback routing",
@@ -451,7 +451,7 @@
       "fix(tui): unify tool result block backgrounds",
       "fix(tutorial): restore Tutorial::with_context() as gate-free constructor"
     ],
-    "rc_version": "0.15.10-rc.14",
-    "last_rc": "2026-04-05T16:32:05Z"
+    "rc_version": "0.15.10-rc.15",
+    "last_rc": "2026-04-05T16:35:13Z"
   }
 }

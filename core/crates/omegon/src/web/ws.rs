@@ -62,10 +62,7 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
 
     // Send initial state snapshot
     let snapshot = build_snapshot(&state);
-    let init_msg = json!({
-        "type": "state_snapshot",
-        "data": snapshot,
-    });
+    let init_msg = snapshot_message(snapshot);
     let snapshot_json = init_msg.to_string();
     tracing::debug!(bytes = snapshot_json.len(), "sending initial snapshot");
     if ws_tx
@@ -93,9 +90,10 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
                 event = events_rx.recv() => {
                     match event {
                         Ok(event) => {
-                            let msg = serialize_agent_event(&event);
-                            if ws_tx.send(Message::Text(msg.to_string().into())).await.is_err() {
-                                break;
+                            for msg in serialize_ws_messages(&event) {
+                                if ws_tx.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                    return;
+                                }
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -170,8 +168,7 @@ async fn handle_client_command(
         }
         "request_snapshot" => {
             let snapshot = build_snapshot(state);
-            let msg = json!({ "type": "state_snapshot", "data": snapshot });
-            let _ = snapshot_tx.send(msg).await;
+            let _ = snapshot_tx.send(snapshot_message(snapshot)).await;
         }
         other => {
             tracing::debug!("Unknown WebSocket command: {other}");
@@ -187,17 +184,66 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn snapshot_message(snapshot: impl serde::Serialize) -> Value {
+    json!({
+        "type": "state_snapshot",
+        "event_name": "state.snapshot",
+        "name": "state.snapshot",
+        "data": snapshot,
+    })
+}
+
+fn state_changed_message(sections: &[&str]) -> Value {
+    json!({
+        "type": "state_changed",
+        "event_name": "state.changed",
+        "name": "state.changed",
+        "sections": sections,
+    })
+}
+
+fn refresh_sections(event: &AgentEvent) -> Option<&'static [&'static str]> {
+    match event {
+        AgentEvent::TurnEnd { .. } => Some(&["session", "design", "openspec", "cleave"]),
+        AgentEvent::HarnessStatusChanged { .. } => Some(&["harness"]),
+        AgentEvent::SessionReset => Some(&["session", "design", "openspec", "cleave", "harness"]),
+        _ => None,
+    }
+}
+
+fn serialize_ws_messages(event: &AgentEvent) -> Vec<Value> {
+    let mut messages = vec![serialize_agent_event(event)];
+    if let Some(sections) = refresh_sections(event) {
+        messages.push(state_changed_message(sections));
+    }
+    messages
+}
+
 /// Serialize an AgentEvent to a JSON event message.
 /// Text fields that may contain user-controlled content are HTML-escaped.
 fn serialize_agent_event(event: &AgentEvent) -> Value {
     match event {
         AgentEvent::TurnStart { turn } => json!({
             "type": "turn_start",
+            "event_name": "turn.started",
             "turn": turn,
         }),
-        AgentEvent::TurnEnd { turn, .. } => json!({
+        AgentEvent::TurnEnd {
+            turn,
+            estimated_tokens,
+            actual_input_tokens,
+            actual_output_tokens,
+            cache_read_tokens,
+            provider_telemetry,
+        } => json!({
             "type": "turn_end",
+            "event_name": "turn.ended",
             "turn": turn,
+            "estimated_tokens": estimated_tokens,
+            "actual_input_tokens": actual_input_tokens,
+            "actual_output_tokens": actual_output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "provider_telemetry": provider_telemetry,
         }),
         AgentEvent::MessageStart { role } => json!({
             "type": "message_start",
@@ -205,22 +251,27 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
         }),
         AgentEvent::MessageChunk { text } => json!({
             "type": "message_chunk",
+            "event_name": "message.delta",
             "text": escape_html(text),
         }),
         AgentEvent::ThinkingChunk { text } => json!({
             "type": "thinking_chunk",
+            "event_name": "thinking.delta",
             "text": escape_html(text),
         }),
         AgentEvent::MessageEnd => json!({
             "type": "message_end",
+            "event_name": "message.completed",
         }),
         AgentEvent::MessageAbort => json!({
             "type": "message_abort",
         }),
         AgentEvent::ToolStart { id, name, args } => json!({
             "type": "tool_start",
+            "event_name": "tool.started",
             "id": id,
             "name": name,
+            "tool_name": name,
             "args": args,
         }),
         AgentEvent::ToolUpdate { id, partial } => {
@@ -232,6 +283,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
                 .join("\n");
             json!({
                 "type": "tool_update",
+                "event_name": "tool.updated",
                 "id": id,
                 "partial": escape_html(&text),
             })
@@ -246,6 +298,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             let result_text = texts.join("\n");
             json!({
                 "type": "tool_end",
+                "event_name": "tool.ended",
                 "id": id,
                 "result": escape_html(&result_text),
                 "is_error": is_error,
@@ -254,30 +307,37 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
         }
         AgentEvent::AgentEnd => json!({
             "type": "agent_end",
+            "event_name": "agent.completed",
         }),
         AgentEvent::PhaseChanged { phase } => json!({
             "type": "phase_changed",
+            "event_name": "phase.changed",
             "phase": format!("{phase:?}"),
         }),
         AgentEvent::DecompositionStarted { children } => json!({
             "type": "decomposition_started",
+            "event_name": "decomposition.started",
             "children": children,
         }),
         AgentEvent::DecompositionChildCompleted { label, success } => json!({
             "type": "decomposition_child_completed",
+            "event_name": "decomposition.child_completed",
             "label": escape_html(label),
             "success": success,
         }),
         AgentEvent::DecompositionCompleted { merged } => json!({
             "type": "decomposition_completed",
+            "event_name": "decomposition.completed",
             "merged": merged,
         }),
         AgentEvent::SystemNotification { message } => json!({
             "type": "system_notification",
+            "event_name": "system.notification",
             "message": escape_html(message),
         }),
         AgentEvent::HarnessStatusChanged { status_json } => json!({
             "type": "harness_status_changed",
+            "event_name": "harness.changed",
             "status": status_json,
         }),
         AgentEvent::ContextUpdated {
@@ -294,6 +354,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
         }),
         AgentEvent::SessionReset => json!({
             "type": "session_reset",
+            "event_name": "session.reset",
         }),
     }
 }
@@ -307,6 +368,7 @@ mod tests {
         let event = AgentEvent::TurnStart { turn: 5 };
         let json = serialize_agent_event(&event);
         assert_eq!(json["type"], "turn_start");
+        assert_eq!(json["event_name"], "turn.started");
         assert_eq!(json["turn"], 5);
     }
 
@@ -340,10 +402,69 @@ mod tests {
         };
         let json = serialize_agent_event(&event);
         assert_eq!(json["type"], "tool_end");
+        assert_eq!(json["event_name"], "tool.ended");
         let result = json["result"].as_str().unwrap();
         assert!(result.contains("first"), "should contain first block");
         assert!(result.contains("second"), "should contain second block");
         assert_eq!(json["block_count"], 2);
+    }
+
+    #[test]
+    fn serialize_turn_end_includes_usage_and_refresh_hint() {
+        let event = AgentEvent::TurnEnd {
+            turn: 2,
+            estimated_tokens: 123,
+            actual_input_tokens: 45,
+            actual_output_tokens: 67,
+            cache_read_tokens: 8,
+            provider_telemetry: Some(omegon_traits::ProviderTelemetrySnapshot {
+                provider: "anthropic".into(),
+                source: "headers".into(),
+                ..Default::default()
+            }),
+        };
+        let messages = serialize_ws_messages(&event);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["type"], "turn_end");
+        assert_eq!(messages[0]["event_name"], "turn.ended");
+        assert_eq!(messages[0]["estimated_tokens"], 123);
+        assert_eq!(messages[0]["actual_input_tokens"], 45);
+        assert_eq!(messages[0]["actual_output_tokens"], 67);
+        assert_eq!(messages[0]["cache_read_tokens"], 8);
+        assert_eq!(messages[0]["provider_telemetry"]["provider"], "anthropic");
+        assert_eq!(messages[1]["type"], "state_changed");
+        assert_eq!(messages[1]["event_name"], "state.changed");
+        assert_eq!(messages[1]["sections"], serde_json::json!(["session", "design", "openspec", "cleave"]));
+    }
+
+    #[test]
+    fn serialize_harness_change_emits_state_refresh() {
+        let event = AgentEvent::HarnessStatusChanged {
+            status_json: serde_json::json!({"thinking_level": "high"}),
+        };
+        let messages = serialize_ws_messages(&event);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["type"], "harness_status_changed");
+        assert_eq!(messages[0]["event_name"], "harness.changed");
+        assert_eq!(messages[1]["sections"], serde_json::json!(["harness"]));
+    }
+
+    #[test]
+    fn serialize_session_reset_emits_full_refresh() {
+        let messages = serialize_ws_messages(&AgentEvent::SessionReset);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["type"], "session_reset");
+        assert_eq!(messages[0]["event_name"], "session.reset");
+        assert_eq!(messages[1]["sections"], serde_json::json!(["session", "design", "openspec", "cleave", "harness"]));
+    }
+
+    #[test]
+    fn snapshot_message_uses_canonical_name() {
+        let json = snapshot_message(serde_json::json!({"session": {"turns": 1}}));
+        assert_eq!(json["type"], "state_snapshot");
+        assert_eq!(json["event_name"], "state.snapshot");
+        assert_eq!(json["name"], "state.snapshot");
+        assert_eq!(json["data"]["session"]["turns"], 1);
     }
 
     #[test]

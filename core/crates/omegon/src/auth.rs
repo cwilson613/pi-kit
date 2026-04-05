@@ -55,7 +55,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
     ProviderCredential {
         id: "anthropic",
         auth_key: "anthropic",
-        display_name: "Anthropic (Claude)",
+        display_name: "Anthropic/Claude",
         env_vars: &["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
         auth_method: AuthMethod::OAuth,
         description: "OAuth — Claude Pro/Max subscription",
@@ -71,7 +71,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
     ProviderCredential {
         id: "openai-codex",
         auth_key: "openai-codex",
-        display_name: "ChatGPT/Codex",
+        display_name: "OpenAI/Codex",
         env_vars: &["CHATGPT_OAUTH_TOKEN"],
         auth_method: AuthMethod::OAuth,
         description: "OAuth — experimental consumer ChatGPT/Codex route",
@@ -1415,5 +1415,17 @@ mod tests {
     async fn default_prompt_type_is_constructible() {
         // Verify the LoginPrompt type compiles and the default factory works
         let _prompt = default_prompt();
+    }
+
+    #[test]
+    fn canonical_provider_display_names_are_stable() {
+        assert_eq!(
+            provider_by_id("anthropic").map(|p| p.display_name),
+            Some("Anthropic/Claude")
+        );
+        assert_eq!(
+            provider_by_id("openai-codex").map(|p| p.display_name),
+            Some("OpenAI/Codex")
+        );
     }
 }

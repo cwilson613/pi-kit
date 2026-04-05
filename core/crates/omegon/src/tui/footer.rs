@@ -311,7 +311,7 @@ impl FooterData {
             if let Some(quota_line) = format_provider_telemetry_line(&self.provider_telemetry) {
                 push_row(
                     &mut lines,
-                    "quota",
+                    "limit",
                     quota_line,
                     t.border_dim(),
                     t.accent_muted(),
@@ -926,7 +926,7 @@ fn format_provider_telemetry_line(
         }
         "openai-codex" => {
             if let Some(ref name) = t.codex_limit_name {
-                parts.push(name.clone());
+                parts.push(format!("bucket {name}"));
             }
             if let Some(active) = &t.codex_active_limit {
                 parts.push(active.clone());
@@ -1318,8 +1318,8 @@ mod tests {
         };
         let text = render_left_panel_text(&data, 96, 10);
 
-        assert!(text.contains("quota"), "got {text}");
-        assert!(text.contains("GPT-5.3-Codex-Spark"), "got {text}");
+        assert!(text.contains("limit"), "got {text}");
+        assert!(text.contains("bucket GPT-5.3-Codex-Spark"), "got {text}");
         assert!(text.contains("primary 0%"), "got {text}");
     }
 

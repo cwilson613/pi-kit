@@ -53,6 +53,7 @@ mod web;
 
 use bridge::LlmBridge;
 use omegon_traits::AgentEvent;
+use tokio::sync::oneshot;
 
 /// Short version: `0.14.0 (3a4b5c6 2026-03-21)`
 const fn build_version() -> &'static str {
@@ -995,6 +996,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let login_prompt_tx: std::sync::Arc<
         tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
     > = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let extension_widgets = std::mem::take(&mut agent.extension_widgets);
+    let widget_receivers = std::mem::take(&mut agent.widget_receivers);
     let tui_config = tui::TuiConfig {
         cwd: agent.cwd.to_string_lossy().to_string(),
         is_oauth,
@@ -1006,8 +1009,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         start_tutorial: cli.tutorial,
         resume_info: agent.resume_info.clone(),
         login_prompt_tx: login_prompt_tx.clone(),
-        extension_widgets: agent.extension_widgets,
-        widget_receivers: agent.widget_receivers,
+        extension_widgets,
+        widget_receivers,
     };
     let tui_cancel = shared_cancel.clone();
     let tui_settings = shared_settings.clone();
@@ -1334,26 +1337,10 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::ListSessions => {
-                let sessions = session::list_sessions(&agent.cwd);
-                let text = if sessions.is_empty() {
-                    "No saved sessions for this directory.".to_string()
-                } else {
-                    let lines: Vec<String> = sessions
-                        .iter()
-                        .take(10)
-                        .map(|s| {
-                            format!(
-                                "  {} — {} turns, {} tools — {}",
-                                s.meta.session_id,
-                                s.meta.turns,
-                                s.meta.tool_calls,
-                                s.meta.last_prompt_snippet
-                            )
-                        })
-                        .collect();
-                    format!("Recent sessions:\n{}", lines.join("\n"))
-                };
-                // Send back to TUI as a system message
+                let text = list_sessions_message(&agent.cwd);
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: text.clone(),
+                });
                 let _ = events_tx.send(AgentEvent::AgentEnd);
                 tracing::info!("{text}");
             }
@@ -1403,8 +1390,16 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                     web::WebCommand::UserPrompt(text) => {
                                         tui::TuiCommand::UserPrompt(text)
                                     }
-                                    web::WebCommand::SlashCommand { name, args } => {
-                                        tui::TuiCommand::BusCommand { name, args }
+                                    web::WebCommand::SlashCommand {
+                                        name,
+                                        args,
+                                        respond_to,
+                                    } => {
+                                        tui::TuiCommand::RunSlashCommand {
+                                            name,
+                                            args,
+                                            respond_to,
+                                        }
                                     }
                                     web::WebCommand::Cancel => {
                                         if let Ok(guard) = cancel_clone.lock()
@@ -1426,6 +1421,27 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                             message: format!("Failed to start dashboard: {e}"),
                         });
                     }
+                }
+            }
+
+            tui::TuiCommand::RunSlashCommand {
+                name,
+                args,
+                respond_to,
+            } => {
+                let response = execute_remote_slash_command(
+                    &mut agent,
+                    &events_tx,
+                    &shared_settings,
+                    &bridge,
+                    &login_prompt_tx,
+                    &cli,
+                    &name,
+                    &args,
+                )
+                .await;
+                if let Some(reply) = respond_to {
+                    let _ = reply.send(response);
                 }
             }
 
@@ -2257,6 +2273,403 @@ async fn login_api_key(
     Ok(creds)
 }
 
+fn list_sessions_message(cwd: &Path) -> String {
+    let sessions = session::list_sessions(cwd);
+    if sessions.is_empty() {
+        "No saved sessions for this directory.".to_string()
+    } else {
+        let lines: Vec<String> = sessions
+            .iter()
+            .take(10)
+            .map(|s| {
+                format!(
+                    "  {} — {} turns, {} tools — {}",
+                    s.meta.session_id, s.meta.turns, s.meta.tool_calls, s.meta.last_prompt_snippet
+                )
+            })
+            .collect();
+        format!("Recent sessions:\n{}", lines.join("\n"))
+    }
+}
+
+async fn execute_remote_slash_command(
+    agent: &mut setup::AgentSetup,
+    events_tx: &broadcast::Sender<AgentEvent>,
+    shared_settings: &settings::SharedSettings,
+    bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
+    login_prompt_tx: &std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
+    cli: &Cli,
+    name: &str,
+    args: &str,
+) -> omegon_traits::SlashCommandResponse {
+    use crate::tui::{canonical_slash_command, CanonicalSlashCommand};
+    use omegon_traits::SlashCommandResponse;
+
+    let Some(command) = canonical_slash_command(name, args) else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(format!(
+                "Command /{name} is interactive-only or unavailable via remote slash execution."
+            )),
+        };
+    };
+
+    match command {
+        CanonicalSlashCommand::ModelList => {
+            let catalog = crate::tui::model_catalog::ModelCatalog::discover();
+            let mut output = String::from("Available models:\n");
+            for (provider_name, models) in &catalog.providers {
+                output.push_str(&format!("\n{}:\n", provider_name));
+                for model in models {
+                    output.push_str(&format!("  {} ({})\n", model.name, model.id));
+                }
+            }
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(output),
+            }
+        }
+        CanonicalSlashCommand::SetModel(requested_model) => {
+            let effective_model = providers::resolve_execution_model_spec(&requested_model)
+                .await
+                .unwrap_or_else(|| requested_model.clone());
+            let (old_model, old_provider) = shared_settings
+                .lock()
+                .ok()
+                .map(|s| {
+                    (
+                        s.model.clone(),
+                        crate::providers::infer_provider_id(&s.model),
+                    )
+                })
+                .unwrap_or_else(|| (String::new(), String::new()));
+            let new_provider = crate::providers::infer_provider_id(&effective_model);
+            if let Ok(mut s) = shared_settings.lock() {
+                s.set_model(&effective_model);
+                let mut profile = settings::Profile::load(&agent.cwd);
+                profile.capture_from(&s);
+                let _ = profile.save(&agent.cwd);
+            }
+            let mut messages = Vec::new();
+            if effective_model != requested_model {
+                let provider_label = crate::auth::provider_by_id(&new_provider)
+                    .map(|p| p.display_name)
+                    .unwrap_or(new_provider.as_str());
+                messages.push(format!(
+                    "Requested {requested_model}; using executable route {effective_model} via {provider_label}."
+                ));
+            }
+            if old_provider != new_provider {
+                let provider = crate::providers::infer_provider_id(&effective_model);
+                if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await {
+                    let mut guard = bridge.write().await;
+                    *guard = new_bridge;
+                    if let Ok(mut s) = shared_settings.lock() {
+                        s.provider_connected = true;
+                    }
+                    let provider_label = crate::auth::provider_by_id(&provider)
+                        .map(|p| p.display_name)
+                        .unwrap_or(provider.as_str());
+                    messages.push(format!(
+                        "Provider switched to {provider_label} ({effective_model})."
+                    ));
+                } else {
+                    if let Ok(mut s) = shared_settings.lock() {
+                        s.provider_connected = false;
+                    }
+                    let provider_label = crate::auth::provider_by_id(&provider)
+                        .map(|p| p.display_name)
+                        .unwrap_or(provider.as_str());
+                    messages.push(format!(
+                        "⚠ No credentials for {provider_label}. Use /login to authenticate."
+                    ));
+                }
+            } else if old_model != effective_model {
+                let provider_label = crate::auth::provider_by_id(&new_provider)
+                    .map(|p| p.display_name)
+                    .unwrap_or(new_provider.as_str());
+                messages.push(format!(
+                    "Model switched to {effective_model} via {provider_label}."
+                ));
+            }
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(messages.join("\n")),
+            }
+        }
+        CanonicalSlashCommand::SetThinking(level) => {
+            if let Ok(mut s) = shared_settings.lock() {
+                s.thinking = level;
+            }
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format!("Thinking → {} {}", level.icon(), level.as_str())),
+            }
+        }
+        CanonicalSlashCommand::ContextStatus => {
+            let est = agent.conversation.estimate_tokens();
+            let settings = shared_settings.lock().unwrap();
+            let ctx_window = settings.context_window;
+            let pct = if ctx_window > 0 {
+                ((est as f64 / ctx_window as f64) * 100.0).min(100.0) as u32
+            } else {
+                0
+            };
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format!(
+                    "Context: {}/{} tokens ({}%)\nClass: {}\nThinking: {}",
+                    est,
+                    ctx_window,
+                    pct,
+                    settings.context_class.label(),
+                    settings.thinking.as_str()
+                )),
+            }
+        }
+        CanonicalSlashCommand::ContextCompact => {
+            let bridge_guard = bridge.read().await;
+            let stream_options = {
+                let s = shared_settings.lock().unwrap();
+                crate::bridge::StreamOptions {
+                    model: Some(s.model.clone()),
+                    reasoning: Some(s.thinking.as_str().to_string()),
+                    extended_context: false,
+                    ..Default::default()
+                }
+            };
+            if let Some((payload, _)) = agent.conversation.build_compaction_payload() {
+                match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options).await
+                {
+                    Ok(summary) => {
+                        agent.conversation.apply_compaction(summary);
+                        let est = agent.conversation.estimate_tokens();
+                        let settings = shared_settings.lock().unwrap();
+                        if let Ok::<
+                            std::sync::MutexGuard<'_, crate::features::context::SharedContextMetrics>,
+                            _,
+                        >(mut metrics) = agent.context_metrics.lock()
+                        {
+                            metrics.update(
+                                est,
+                                settings.context_window,
+                                &settings.context_class.label(),
+                                settings.thinking.as_str(),
+                            );
+                        }
+                        let _ = events_tx.send(AgentEvent::ContextUpdated {
+                            tokens: est as u64,
+                            context_window: settings.context_window as u64,
+                            context_class: settings.context_class.label().to_string(),
+                            thinking_level: settings.thinking.as_str().to_string(),
+                        });
+                        SlashCommandResponse {
+                            accepted: true,
+                            output: Some(format!("Context compressed. Now using {est} tokens.")),
+                        }
+                    }
+                    Err(e) => SlashCommandResponse {
+                        accepted: false,
+                        output: Some(format!("Compression failed: {e}")),
+                    },
+                }
+            } else {
+                SlashCommandResponse {
+                    accepted: true,
+                    output: Some(
+                        "Nothing to compress yet — compaction only summarizes older turns after the decay window."
+                            .to_string(),
+                    ),
+                }
+            }
+        }
+        CanonicalSlashCommand::ContextClear => {
+            if !cli.no_session {
+                let _ = session::save_session(
+                    &agent.conversation,
+                    &agent.cwd,
+                    Some(agent.session_id.as_str()),
+                );
+            }
+            agent.conversation = crate::conversation::ConversationState::new();
+            agent.session_id = crate::session::allocate_session_id();
+            agent.resume_info = None;
+            let context_window = if let Ok(mut metrics) = agent.context_metrics.lock() {
+                let context_window = metrics.context_window;
+                metrics.update(0, context_window, "Squad", "off");
+                context_window
+            } else {
+                200_000
+            };
+            let _ = events_tx.send(AgentEvent::ContextUpdated {
+                tokens: 0,
+                context_window: context_window as u64,
+                context_class: "Squad".to_string(),
+                thinking_level: "off".to_string(),
+            });
+            let _ = events_tx.send(AgentEvent::SessionReset);
+            SlashCommandResponse {
+                accepted: true,
+                output: Some("Context cleared. Starting fresh conversation.".to_string()),
+            }
+        }
+        CanonicalSlashCommand::SetContextClass(class) => {
+            if let Ok(mut s) = shared_settings.lock() {
+                s.context_class = class;
+                s.context_window = class.nominal_tokens();
+                s.context_mode = class.context_mode();
+                let mut profile = settings::Profile::load(&agent.cwd);
+                profile.capture_from(&s);
+                let _ = profile.save(&agent.cwd);
+            }
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format!("Context → {}", class.label())),
+            }
+        }
+        CanonicalSlashCommand::NewSession => {
+            if !cli.no_session {
+                let _ = session::save_session(
+                    &agent.conversation,
+                    &agent.cwd,
+                    Some(agent.session_id.as_str()),
+                );
+            }
+            agent.conversation = crate::conversation::ConversationState::new();
+            agent.session_id = crate::session::allocate_session_id();
+            agent.resume_info = None;
+            let _ = events_tx.send(AgentEvent::SessionReset);
+            SlashCommandResponse {
+                accepted: true,
+                output: Some("Started a fresh session.".to_string()),
+            }
+        }
+        CanonicalSlashCommand::ListSessions => SlashCommandResponse {
+            accepted: true,
+            output: Some(list_sessions_message(&agent.cwd)),
+        },
+        CanonicalSlashCommand::AuthStatus => {
+            let status = auth::probe_all_providers().await;
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format_auth_status(&status)),
+            }
+        }
+        CanonicalSlashCommand::AuthUnlock => SlashCommandResponse {
+            accepted: true,
+            output: Some("🔒 Secrets store unlock not yet implemented".to_string()),
+        },
+        CanonicalSlashCommand::AuthLogin(provider) => {
+            let provider = provider.trim();
+            let provider = if provider.is_empty() { "anthropic" } else { provider };
+            if provider == "openai" {
+                return SlashCommandResponse {
+                    accepted: false,
+                    output: Some(
+                        "OpenAI API login is interactive-only in the TUI. Use /login in the terminal session or set OPENAI_API_KEY."
+                            .to_string(),
+                    ),
+                };
+            }
+            if login_prompt_tx.lock().await.is_some() {
+                return SlashCommandResponse {
+                    accepted: false,
+                    output: Some("Login is already waiting for interactive input in the TUI.".to_string()),
+                };
+            }
+            let events_tx_clone = events_tx.clone();
+            let progress_tx = events_tx.clone();
+            let prompt_tx_for_login = events_tx.clone();
+            let login_prompt_slot = login_prompt_tx.clone();
+            let provider_clone = provider.to_string();
+            let bridge_clone = bridge.clone();
+            let model_for_redetect = shared_settings
+                .lock()
+                .ok()
+                .map(|s| s.model.clone())
+                .unwrap_or_else(|| cli.model.clone());
+            let settings_for_login = shared_settings.clone();
+            tokio::spawn(async move {
+                let progress: auth::LoginProgress = Box::new(move |msg| {
+                    let _ = progress_tx.send(AgentEvent::SystemNotification {
+                        message: msg.to_string(),
+                    });
+                });
+                let prompt: auth::LoginPrompt = Box::new(move |msg| {
+                    let slot = login_prompt_slot.clone();
+                    let tx = prompt_tx_for_login.clone();
+                    Box::pin(async move {
+                        let (otx, orx) = tokio::sync::oneshot::channel();
+                        {
+                            let mut guard = slot.lock().await;
+                            *guard = Some(otx);
+                        }
+                        let _ = tx.send(AgentEvent::SystemNotification { message: msg });
+                        orx.await
+                            .map_err(|_| anyhow::anyhow!("Login prompt cancelled"))
+                    })
+                });
+                let result = match provider_clone.as_str() {
+                    "anthropic" | "claude" => {
+                        auth::login_anthropic_with_callbacks(progress, prompt).await
+                    }
+                    "openai-codex" | "chatgpt" | "codex" => {
+                        auth::login_openai_with_callbacks(progress, prompt).await
+                    }
+                    "openai" => Err(anyhow::anyhow!(
+                        "OpenAI API login in the TUI uses hidden API-key entry. Run /login and choose OpenAI API, or set OPENAI_API_KEY."
+                    )),
+                    _ => Err(anyhow::anyhow!(
+                        "Unknown provider: {}. Use: anthropic, openai, openai-codex",
+                        provider_clone
+                    )),
+                };
+                let provider_label = crate::auth::provider_by_id(&provider_clone)
+                    .map(|p| p.display_name)
+                    .unwrap_or(provider_clone.as_str())
+                    .to_string();
+                let message = match &result {
+                    Ok(_) => format!("✓ Successfully logged in to {provider_label}"),
+                    Err(e) => format!("❌ Login failed: {}", e),
+                };
+                let _ = events_tx_clone.send(AgentEvent::SystemNotification { message });
+                if result.is_ok() {
+                    let effective_model = providers::resolve_execution_model_spec(&model_for_redetect)
+                        .await
+                        .unwrap_or(model_for_redetect.clone());
+                    if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await {
+                        let mut guard = bridge_clone.write().await;
+                        *guard = new_bridge;
+                        if let Ok(mut s) = settings_for_login.lock() {
+                            s.set_model(&effective_model);
+                            s.provider_connected = true;
+                        }
+                        let _ = events_tx_clone.send(AgentEvent::SystemNotification {
+                            message: format!("Provider connected — active route {}.", effective_model),
+                        });
+                    }
+                }
+            });
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format!(
+                    "Login started for {provider}. Complete any interactive prompts in the TUI."
+                )),
+            }
+        }
+        CanonicalSlashCommand::AuthLogout(provider) => {
+            let message = match auth::logout_provider(&provider) {
+                Ok(()) => format!("✓ Logged out from {}", provider),
+                Err(e) => format!("❌ Logout failed: {}", e),
+            };
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(message),
+            }
+        }
+    }
+}
+
 async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
     let result = match provider {
         "anthropic" | "claude" => auth::login_anthropic().await,
@@ -2451,16 +2864,61 @@ mod tests {
     }
 
     #[test]
-    fn backward_compat_login_command_still_works() {
-        // Test that the deprecated login command still parses
-        let cli = Cli::try_parse_from(vec!["omegon", "login", "anthropic"])
-            .expect("should parse legacy login");
-        match cli.command.unwrap() {
-            Commands::Login { provider } => {
-                assert_eq!(provider, "anthropic");
-            }
-            _ => panic!("Expected Login command"),
-        }
+    fn remote_slash_login_is_classified_as_interactive_only_for_openai_api() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut agent = rt.block_on(setup::AgentSetup::new(Path::new("."), None, None)).unwrap();
+        let (events_tx, _) = broadcast::channel(16);
+        let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
+            "anthropic:claude-sonnet-4-6",
+        )));
+        let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(
+            Box::new(crate::bridge::NullBridge) as Box<dyn LlmBridge>
+        ));
+        let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
+
+        let response = rt.block_on(execute_remote_slash_command(
+            &mut agent,
+            &events_tx,
+            &shared_settings,
+            &bridge,
+            &login_prompt_tx,
+            &cli,
+            "login",
+            "openai",
+        ));
+
+        assert!(!response.accepted);
+        assert!(response.output.unwrap().contains("interactive-only"));
+    }
+
+    #[test]
+    fn remote_slash_logout_defaults_to_anthropic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut agent = rt.block_on(setup::AgentSetup::new(Path::new("."), None, None)).unwrap();
+        let (events_tx, _) = broadcast::channel(16);
+        let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
+            "anthropic:claude-sonnet-4-6",
+        )));
+        let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(
+            Box::new(crate::bridge::NullBridge) as Box<dyn LlmBridge>
+        ));
+        let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
+
+        let response = rt.block_on(execute_remote_slash_command(
+            &mut agent,
+            &events_tx,
+            &shared_settings,
+            &bridge,
+            &login_prompt_tx,
+            &cli,
+            "logout",
+            "",
+        ));
+
+        assert!(response.accepted);
+        assert!(response.output.unwrap().contains("anthropic"));
     }
 
     #[test]

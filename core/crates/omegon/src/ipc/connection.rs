@@ -301,22 +301,38 @@ impl IpcConnection {
                 "run_slash_command" => {
                     let req = serde_json::from_value::<SlashCommandRequest>(payload)
                         .context("parse run_slash_command")?;
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                     let accepted = cfg
                         .command_tx
-                        .send(TuiCommand::BusCommand {
+                        .send(TuiCommand::RunSlashCommand {
                             name: req.name,
                             args: req.args,
+                            respond_to: Some(reply_tx),
                         })
                         .await
                         .is_ok();
+                    let response = if accepted {
+                        match reply_rx.await {
+                            Ok(response) => response,
+                            Err(_) => SlashCommandResponse {
+                                accepted: false,
+                                output: Some(
+                                    "slash command executor dropped response before completion"
+                                        .to_string(),
+                                ),
+                            },
+                        }
+                    } else {
+                        SlashCommandResponse {
+                            accepted: false,
+                            output: None,
+                        }
+                    };
                     send_response(
                         &out_tx,
                         req_id,
                         "run_slash_command",
-                        serde_json::to_value(SlashCommandResponse {
-                            accepted,
-                            output: None,
-                        })?,
+                        serde_json::to_value(response)?,
                     )
                     .await;
                 }

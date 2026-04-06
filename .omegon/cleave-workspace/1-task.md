@@ -1,28 +1,31 @@
 ---
 task_id: 1
-label: tests
-siblings: [0:registry]
+label: ipc-web-bridge
+siblings: [0:executor-core, 2:tests-docs]
 ---
 
-# Task 1: tests
+# Task 1: ipc-web-bridge
 
 ## Root Directive
 
-> Remove the misleading /clear command, assess /context clear correctness, and deduplicate duplicate slash commands such as /cleave across command/help/completion tables and handler dispatch, with tests.
+> Implement a canonical slash command executor layer so TUI, IPC run_slash_command, and web WebSocket slash_command all share one command semantics path. Remote callers must reach model switching, context status/compact/clear, new session, sessions, and auth flows through structured outcomes instead of bypassing to BusCommand only.
 
 ## Mission
 
-Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.
+Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.
 
 ## Scope
 
-- `core/crates/omegon/src/tui/tests.rs`
+- `core/crates/omegon/src/ipc/connection.rs`
+- `core/crates/omegon/src/web/ws.rs`
+- `core/crates/omegon/src/main.rs`
 
-**Depends on:** registry
+**Depends on:** executor-core
 
 ## Siblings
 
-- **registry**: Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.
+- **executor-core**: Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.
+- **tests-docs**: Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.
 
 ## Dependency Versions
 

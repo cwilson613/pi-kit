@@ -1,62 +1,109 @@
 {
-  "runId": "clv-01ivapo8-kvei",
-  "directive": "Remove the misleading /clear command, assess /context clear correctness, and deduplicate duplicate slash commands such as /cleave across command/help/completion tables and handler dispatch, with tests.",
+  "runId": "clv-ubmkb8xr-ubmk",
+  "directive": "Implement a canonical slash command executor layer so TUI, IPC run_slash_command, and web WebSocket slash_command all share one command semantics path. Remote callers must reach model switching, context status/compact/clear, new session, sessions, and auth flows through structured outcomes instead of bypassing to BusCommand only.",
   "repoPath": "/Users/cwilson/workspace/black-meridian/omegon",
   "workspacePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace",
   "children": [
     {
       "childId": 0,
-      "label": "registry",
-      "description": "Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.",
+      "label": "executor-core",
+      "description": "Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.",
       "scope": [
-        "core/crates/omegon/src/tui/mod.rs"
+        "core/crates/omegon/src/main.rs",
+        "core/crates/omegon/src/tui/mod.rs",
+        "core/crates/omegon/src/setup.rs",
+        "core/crates/omegon/src/features/context.rs"
       ],
       "dependsOn": [],
       "status": "completed",
-      "branch": "cleave/0-registry",
+      "branch": "cleave/0-executor-core",
       "backend": "native",
       "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 367.738254292
+      "durationSecs": 425.242453125
     },
     {
       "childId": 1,
-      "label": "tests",
-      "description": "Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.",
+      "label": "ipc-web-bridge",
+      "description": "Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.",
       "scope": [
-        "core/crates/omegon/src/tui/tests.rs"
+        "core/crates/omegon/src/ipc/connection.rs",
+        "core/crates/omegon/src/web/ws.rs",
+        "core/crates/omegon/src/main.rs"
       ],
       "dependsOn": [
-        "registry"
+        "executor-core"
       ],
       "status": "completed",
-      "branch": "cleave/1-tests",
+      "branch": "cleave/1-ipc-web-bridge",
       "backend": "native",
       "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 311.580829584
+      "durationSecs": 623.594131084
+    },
+    {
+      "childId": 2,
+      "label": "tests-docs",
+      "description": "Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.",
+      "scope": [
+        "core/crates/omegon/src/tui/tests.rs",
+        "core/crates/omegon/src/ipc/connection.rs",
+        "core/crates/omegon/src/web/ws.rs",
+        "core/crates/omegon/src/main.rs"
+      ],
+      "dependsOn": [
+        "executor-core",
+        "ipc-web-bridge"
+      ],
+      "status": "completed",
+      "branch": "cleave/2-tests-docs",
+      "backend": "native",
+      "executeModel": "openai-codex:gpt-5.4",
+      "durationSecs": 164.248522167
     }
   ],
   "plan": {
     "children": [
       {
         "depends_on": [],
-        "description": "Audit and fix slash command registry/help/completion surfaces in core/crates/omegon/src/tui/mod.rs so /clear is removed and duplicate commands such as /cleave do not appear twice in UI-facing command lists. Update any related matching/completion logic as needed.",
-        "label": "registry",
+        "description": "Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.",
+        "label": "executor-core",
+        "model": "openai-codex:gpt-5.4",
         "scope": [
-          "core/crates/omegon/src/tui/mod.rs"
+          "core/crates/omegon/src/main.rs",
+          "core/crates/omegon/src/tui/mod.rs",
+          "core/crates/omegon/src/setup.rs",
+          "core/crates/omegon/src/features/context.rs"
         ]
       },
       {
         "depends_on": [
-          "registry"
+          "executor-core"
         ],
-        "description": "Audit and update TUI slash command tests in core/crates/omegon/src/tui/tests.rs to reflect removal of /clear and deduped command surfaces, while preserving coverage that every documented command is handled and aliases dispatch correctly.",
-        "label": "tests",
+        "description": "Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.",
+        "label": "ipc-web-bridge",
+        "model": "openai-codex:gpt-5.4",
         "scope": [
-          "core/crates/omegon/src/tui/tests.rs"
+          "core/crates/omegon/src/ipc/connection.rs",
+          "core/crates/omegon/src/web/ws.rs",
+          "core/crates/omegon/src/main.rs"
+        ]
+      },
+      {
+        "depends_on": [
+          "executor-core",
+          "ipc-web-bridge"
+        ],
+        "description": "Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.",
+        "label": "tests-docs",
+        "model": "openai-codex:gpt-5.4",
+        "scope": [
+          "core/crates/omegon/src/tui/tests.rs",
+          "core/crates/omegon/src/ipc/connection.rs",
+          "core/crates/omegon/src/web/ws.rs",
+          "core/crates/omegon/src/main.rs"
         ]
       }
     ],
     "default_model": "openai-codex:gpt-5.4",
-    "rationale": "Separate the UI command registry/dispatch cleanup from the test surface so command-list dedupe and behavioral assertions stay aligned."
+    "rationale": "Split the shared executor work from the transport adapters and final parity tests so semantics are defined once and then wired into IPC/web cleanly."
   }
 }

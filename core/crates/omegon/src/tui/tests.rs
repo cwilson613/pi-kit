@@ -1060,20 +1060,7 @@ fn slash_auth_no_args_shows_status() {
     let mut app = test_app();
     let tx = test_tx();
     let result = app.handle_slash_command("/auth", &tx);
-    if let SlashResult::Display(text) = result {
-        assert!(
-            text.to_lowercase().contains("auth")
-                || text.contains("Provider")
-                || text.contains("status"),
-            "should show auth info: {text}"
-        );
-    } else {
-        // May return Handled if it opens an overlay
-        assert!(matches!(
-            result,
-            SlashResult::Handled | SlashResult::Display(_)
-        ));
-    }
+    assert!(matches!(result, SlashResult::Handled));
 }
 
 #[test]
@@ -1085,6 +1072,22 @@ fn slash_auth_login_redirects_to_top_level_login() {
         panic!("expected Display result");
     };
     assert!(text.contains("Use /login <provider> or /logout <provider>"), "got: {text}");
+}
+
+#[test]
+fn slash_login_provider_dispatches_to_runtime() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/login anthropic", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+}
+
+#[test]
+fn slash_logout_without_provider_dispatches_to_runtime() {
+    let mut app = test_app();
+    let tx = test_tx();
+    let result = app.handle_slash_command("/logout", &tx);
+    assert!(matches!(result, SlashResult::Handled));
 }
 
 #[test]

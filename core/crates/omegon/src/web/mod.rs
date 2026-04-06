@@ -212,10 +212,14 @@ impl WebState {
 }
 
 /// Commands received from WebSocket clients, forwarded to the main loop.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum WebCommand {
     UserPrompt(String),
-    SlashCommand { name: String, args: String },
+    SlashCommand {
+        name: String,
+        args: String,
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::SlashCommandResponse>>,
+    },
     Cancel,
 }
 

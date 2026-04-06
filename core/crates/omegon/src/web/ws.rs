@@ -169,7 +169,11 @@ async fn handle_client_command(
             let name = cmd["name"].as_str().unwrap_or("").to_string();
             let args = cmd["args"].as_str().unwrap_or("").to_string();
             let _ = command_tx
-                .send(WebCommand::SlashCommand { name, args })
+                .send(WebCommand::SlashCommand {
+                    name,
+                    args,
+                    respond_to: None,
+                })
                 .await;
         }
         "cancel" => {

@@ -71,6 +71,12 @@ pub enum TuiCommand {
     Quit,
     /// Switch the model for the next turn.
     SetModel(String),
+    /// Execute canonical slash semantics from a non-TUI caller.
+    RunSlashCommand {
+        name: String,
+        args: String,
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::SlashCommandResponse>>,
+    },
     /// Dispatch a bus command from a feature (name, args).
     BusCommand { name: String, args: String },
     /// Trigger manual compaction.
@@ -237,6 +243,55 @@ enum SlashResult {
     NotACommand,
     /// Quit requested.
     Quit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CanonicalSlashCommand {
+    ModelList,
+    SetModel(String),
+    SetThinking(crate::settings::ThinkingLevel),
+    ContextStatus,
+    ContextCompact,
+    ContextClear,
+    SetContextClass(crate::settings::ContextClass),
+    NewSession,
+    ListSessions,
+    AuthStatus,
+    AuthUnlock,
+    AuthLogin(String),
+    AuthLogout(String),
+}
+
+pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<CanonicalSlashCommand> {
+    let args = args.trim();
+    match cmd {
+        "model" if args == "list" => Some(CanonicalSlashCommand::ModelList),
+        "model" if !args.is_empty() => Some(CanonicalSlashCommand::SetModel(args.to_string())),
+        "think" => crate::settings::ThinkingLevel::parse(args)
+            .map(CanonicalSlashCommand::SetThinking),
+        "context" if !args.is_empty() => {
+            let (sub, _) = args.split_once(' ').unwrap_or((args, ""));
+            match sub {
+                "status" => Some(CanonicalSlashCommand::ContextStatus),
+                "compact" | "compress" => Some(CanonicalSlashCommand::ContextCompact),
+                "clear" => Some(CanonicalSlashCommand::ContextClear),
+                _ => crate::settings::ContextClass::parse(sub)
+                    .map(CanonicalSlashCommand::SetContextClass),
+            }
+        }
+        "new" if args.is_empty() => Some(CanonicalSlashCommand::NewSession),
+        "sessions" if args.is_empty() => Some(CanonicalSlashCommand::ListSessions),
+        "auth" => match args {
+            "" | "status" => Some(CanonicalSlashCommand::AuthStatus),
+            "unlock" => Some(CanonicalSlashCommand::AuthUnlock),
+            _ => None,
+        },
+        "login" if !args.is_empty() => Some(CanonicalSlashCommand::AuthLogin(args.to_string())),
+        "logout" => Some(CanonicalSlashCommand::AuthLogout(
+            if args.is_empty() { "anthropic" } else { args }.to_string(),
+        )),
+        _ => None,
+    }
 }
 
 /// Compute dynamic editor height from the editor's wrapped visual rows.
@@ -2591,24 +2646,28 @@ impl App {
                     // No args → open interactive selector
                     self.open_model_selector();
                     SlashResult::Handled
-                } else if args == "list" {
-                    // /model list → show all models from catalog
-                    let catalog = self::model_catalog::ModelCatalog::discover();
-                    let mut output = String::from("Available models:\n");
-                    for (provider_name, models) in &catalog.providers {
-                        output.push_str(&format!("\n{}:\n", provider_name));
-                        for model in models {
-                            output.push_str(&format!(
-                                "  {} ({})\n",
-                                model.name, model.id
-                            ));
-                        }
-                    }
-                    SlashResult::Display(output)
                 } else {
-                    // Direct switch: /model anthropic:claude-opus-4-6
-                    let _ = tx.try_send(TuiCommand::SetModel(args.to_string()));
-                    SlashResult::Display(format!("Switching model → {args}"))
+                    match canonical_slash_command("model", args) {
+                        Some(CanonicalSlashCommand::ModelList) => {
+                            let catalog = self::model_catalog::ModelCatalog::discover();
+                            let mut output = String::from("Available models:\n");
+                            for (provider_name, models) in &catalog.providers {
+                                output.push_str(&format!("\n{}:\n", provider_name));
+                                for model in models {
+                                    output.push_str(&format!(
+                                        "  {} ({})\n",
+                                        model.name, model.id
+                                    ));
+                                }
+                            }
+                            SlashResult::Display(output)
+                        }
+                        Some(CanonicalSlashCommand::SetModel(model)) => {
+                            let _ = tx.try_send(TuiCommand::SetModel(model.clone()));
+                            SlashResult::Display(format!("Switching model → {model}"))
+                        }
+                        _ => SlashResult::Display("Usage: /model [list|<provider:model>]".into()),
+                    }
                 }
             }
 
@@ -2617,7 +2676,9 @@ impl App {
                     // No args → open interactive selector
                     self.open_thinking_selector();
                     SlashResult::Handled
-                } else if let Some(level) = crate::settings::ThinkingLevel::parse(args) {
+                } else if let Some(CanonicalSlashCommand::SetThinking(level)) =
+                    canonical_slash_command("think", args)
+                {
                     self.update_settings(|s| s.thinking = level);
                     SlashResult::Display(format!("Thinking → {} {}", level.icon(), level.as_str()))
                 } else {
@@ -2904,38 +2965,36 @@ impl App {
                     self.open_context_selector();
                     SlashResult::Handled
                 } else {
-                    let (sub, _sub_args) = args.split_once(' ').unwrap_or((args, ""));
-                    match sub {
-                        "status" => {
+                    match canonical_slash_command("context", args) {
+                        Some(CanonicalSlashCommand::ContextStatus) => {
                             let _ = tx.try_send(TuiCommand::ContextStatus);
                             SlashResult::Handled
                         }
-                        "compact" | "compress" => {
+                        Some(CanonicalSlashCommand::ContextCompact) => {
                             let _ = tx.try_send(TuiCommand::ContextCompact);
                             SlashResult::Display("Requesting context compaction…".into())
                         }
-                        "clear" => {
+                        Some(CanonicalSlashCommand::ContextClear) => {
                             let _ = tx.try_send(TuiCommand::ContextClear);
                             SlashResult::Display("Clearing context…".into())
                         }
+                        Some(CanonicalSlashCommand::SetContextClass(class)) => {
+                            self.update_settings(|s| {
+                                s.context_class = class;
+                                s.context_window = class.nominal_tokens();
+                                s.context_mode = class.context_mode();
+                            });
+                            let s = self.settings();
+                            self.footer_data.context_window = s.context_window;
+                            SlashResult::Display(format!("Context → {}", class.label()))
+                        }
                         _ => {
-                            // Fall back to class parsing (squad, maniple, clan, legion)
-                            if let Some(class) = crate::settings::ContextClass::parse(sub) {
-                                self.update_settings(|s| {
-                                    s.context_class = class;
-                                    s.context_window = class.nominal_tokens();
-                                    s.context_mode = class.context_mode();
-                                });
-                                let s = self.settings();
-                                self.footer_data.context_window = s.context_window;
-                                SlashResult::Display(format!("Context → {}", class.label()))
-                            } else {
-                                SlashResult::Display(format!(
-                                    "Unknown context option: {sub}.\n\
-                                     Use: /context [status|compact|compress|clear|<class>]\n\
-                                     Classes: squad, maniple, clan, legion"
-                                ))
-                            }
+                            let (sub, _) = args.split_once(' ').unwrap_or((args, ""));
+                            SlashResult::Display(format!(
+                                "Unknown context option: {sub}.\n\
+                                 Use: /context [status|compact|compress|clear|<class>]\n\
+                                 Classes: squad, maniple, clan, legion"
+                            ))
                         }
                     }
                 }
@@ -2960,17 +3019,15 @@ impl App {
             )),
 
             "auth" => {
-                match args {
-                    "" | "status" => {
-                        // Show authentication status
+                match canonical_slash_command("auth", args) {
+                    Some(CanonicalSlashCommand::AuthStatus) => {
                         let _ = tx.try_send(TuiCommand::BusCommand {
                             name: "auth_status".to_string(),
                             args: String::new(),
                         });
                         SlashResult::Handled
                     }
-                    "unlock" => {
-                        // Unlock secrets store
+                    Some(CanonicalSlashCommand::AuthUnlock) => {
                         let _ = tx.try_send(TuiCommand::BusCommand {
                             name: "auth_unlock".to_string(),
                             args: String::new(),
@@ -3312,23 +3369,32 @@ impl App {
                     SlashResult::Display(format!(
                         "🔒 Paste your {args} API key into {key_name} (input is hidden):"
                     ))
-                } else {
+                } else if let Some(CanonicalSlashCommand::AuthLogin(provider)) =
+                    canonical_slash_command("login", args)
+                {
                     let _ = tx.try_send(TuiCommand::BusCommand {
                         name: "auth_login".to_string(),
-                        args: args.to_string(),
+                        args: provider,
                     });
                     SlashResult::Handled
+                } else {
+                    SlashResult::Display("Usage: /login <provider>".into())
                 }
             }
 
             // /logout [provider] — alias for /auth logout <provider>
             "logout" => {
-                let provider = if args.is_empty() { "anthropic" } else { args };
-                let _ = tx.try_send(TuiCommand::BusCommand {
-                    name: "auth_logout".to_string(),
-                    args: provider.to_string(),
-                });
-                SlashResult::Handled
+                if let Some(CanonicalSlashCommand::AuthLogout(provider)) =
+                    canonical_slash_command("logout", args)
+                {
+                    let _ = tx.try_send(TuiCommand::BusCommand {
+                        name: "auth_logout".to_string(),
+                        args: provider,
+                    });
+                    SlashResult::Handled
+                } else {
+                    SlashResult::Display("Usage: /logout [provider]".into())
+                }
             }
 
             // /note <text> — append a deferred investigation note

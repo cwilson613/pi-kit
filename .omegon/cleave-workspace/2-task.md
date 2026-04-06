@@ -1,10 +1,10 @@
 ---
-task_id: 0
-label: executor-core
-siblings: [1:ipc-web-bridge, 2:tests-docs]
+task_id: 2
+label: tests-docs
+siblings: [0:executor-core, 1:ipc-web-bridge]
 ---
 
-# Task 0: executor-core
+# Task 2: tests-docs
 
 ## Root Directive
 
@@ -12,21 +12,21 @@ siblings: [1:ipc-web-bridge, 2:tests-docs]
 
 ## Mission
 
-Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.
+Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.
 
 ## Scope
 
+- `core/crates/omegon/src/tui/tests.rs`
+- `core/crates/omegon/src/ipc/connection.rs`
+- `core/crates/omegon/src/web/ws.rs`
 - `core/crates/omegon/src/main.rs`
-- `core/crates/omegon/src/tui/mod.rs`
-- `core/crates/omegon/src/setup.rs`
-- `core/crates/omegon/src/features/context.rs`
 
-**Depends on:** none (independent)
+**Depends on:** executor-core, ipc-web-bridge
 
 ## Siblings
 
+- **executor-core**: Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.
 - **ipc-web-bridge**: Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.
-- **tests-docs**: Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.
 
 ## Dependency Versions
 

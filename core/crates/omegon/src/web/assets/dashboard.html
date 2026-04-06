@@ -231,6 +231,34 @@
     font-size: 12px;
   }
   .msg-text pre code { background: none; padding: 0; }
+  .msg-text .md-table-wrap {
+    margin: 8px 0;
+    overflow-x: auto;
+  }
+  .msg-text table.md-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card-bg);
+    border: 1px solid var(--border-dim);
+    border-radius: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .msg-text table.md-table th,
+  .msg-text table.md-table td {
+    padding: 6px 8px;
+    border: 1px solid var(--border-dim);
+    text-align: left;
+    vertical-align: top;
+  }
+  .msg-text table.md-table th {
+    color: var(--accent);
+    background: rgba(42, 180, 200, 0.08);
+    font-weight: 700;
+  }
+  .msg-text table.md-table td {
+    background: var(--surface-bg);
+  }
 
   #prompt-bar {
     margin-top: 12px; display: flex; gap: 8px;
@@ -641,14 +669,80 @@ function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function formatText(text, role) {
+function formatInline(text) {
   let html = escapeHtml(text);
-  // Code blocks: ```...```
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  // Inline code: `...`
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  // Bold: **...**
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return html;
+}
+
+function parseTableRow(line) {
+  return line.trim().slice(1, -1).split('|').map(cell => cell.trim());
+}
+
+function isTableLine(line) {
+  const trimmed = line.trim();
+  return trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.length > 2;
+}
+
+function isTableSeparator(line) {
+  const trimmed = line.trim();
+  return trimmed.startsWith('|') && trimmed.endsWith('|') && /^[|:\- ]+$/.test(trimmed);
+}
+
+function renderMarkdownTable(lines) {
+  const header = parseTableRow(lines[0]);
+  const body = lines.slice(2).filter(line => isTableLine(line) && !isTableSeparator(line));
+  const headHtml = `<thead><tr>${header.map(cell => `<th>${formatInline(cell)}</th>`).join('')}</tr></thead>`;
+  const bodyHtml = body.length
+    ? `<tbody>${body.map(line => `<tr>${parseTableRow(line).map(cell => `<td>${formatInline(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`
+    : '';
+  return `<div class="md-table-wrap"><table class="md-table">${headHtml}${bodyHtml}</table></div>`;
+}
+
+function formatPlainSegment(text) {
+  const lines = text.split('\n');
+  const parts = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    if (i + 1 < lines.length && isTableLine(lines[i]) && isTableSeparator(lines[i + 1])) {
+      const tableLines = [lines[i], lines[i + 1]];
+      i += 2;
+      while (i < lines.length && isTableLine(lines[i])) {
+        tableLines.push(lines[i]);
+        i += 1;
+      }
+      parts.push(renderMarkdownTable(tableLines));
+      continue;
+    }
+
+    const plainLines = [];
+    while (i < lines.length && !(i + 1 < lines.length && isTableLine(lines[i]) && isTableSeparator(lines[i + 1]))) {
+      plainLines.push(lines[i]);
+      i += 1;
+    }
+    if (plainLines.length > 0) {
+      parts.push(formatInline(plainLines.join('\n')).replace(/\n/g, '<br>'));
+    }
+  }
+
+  return parts.join('');
+}
+
+function formatText(text, role) {
+  const fenceRe = /```(\w*)\n([\s\S]*?)```/g;
+  let html = '';
+  let lastIndex = 0;
+  let match;
+
+  while ((match = fenceRe.exec(text)) !== null) {
+    html += formatPlainSegment(text.slice(lastIndex, match.index));
+    html += `<pre><code>${escapeHtml(match[2])}</code></pre>`;
+    lastIndex = match.index + match[0].length;
+  }
+
+  html += formatPlainSegment(text.slice(lastIndex));
   return html;
 }
 

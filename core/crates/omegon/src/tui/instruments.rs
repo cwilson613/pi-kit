@@ -374,12 +374,11 @@ impl InstrumentPanel {
         inference_height.max(tools_height).clamp(10, 16)
     }
 
-    fn context_legend_entries() -> [(&'static str, &'static str, Color); 5] {
+    fn context_legend_entries() -> [(&'static str, &'static str, Color); 4] {
         [
             ("≡", "conv", Self::band_color(ContextBand::Conversation)),
             ("⊟", "sys", Self::band_color(ContextBand::System)),
             ("◈", "mem", Self::band_color(ContextBand::Memory)),
-            ("⚒", "tools", Self::band_color(ContextBand::Tools)),
             ("◔", "think", Self::band_color(ContextBand::Thinking)),
         ]
     }
@@ -436,7 +435,7 @@ impl InstrumentPanel {
         self.render_tools_panel(panels[1], frame, t);
     }
 
-    fn context_breakdown(&self) -> [(ContextBand, f64); 6] {
+    fn context_breakdown(&self) -> [(ContextBand, f64); 5] {
         let total_used = self.context_fill.clamp(0.0, 1.0);
         let ctx_window_f = self.context_window.max(1) as f64;
 
@@ -469,23 +468,17 @@ impl InstrumentPanel {
 
         // ── CONVERSATION ──
         // Everything else: user input, conversation history, message text.
-        // Note: tool calls are part of conversation tokens, so tools don't subtract.
-        // The tool band is purely visual (animation overlay), not a space allocation.
+        // Tool calls are part of conversation tokens; tool activity is visualized as an
+        // animation overlay on conversation, not as a separate token bucket.
         let conversation = (total_used - system - memory - thinking).max(0.0);
 
         // ── FREE SPACE ──
         let free = (1.0 - total_used).max(0.0);
 
-        // ── TOOLS ──
-        // Not a real token allocation — tool calls are part of conversation.
-        // Show as 0.0 here; visual emphasis comes from animated color shifts.
-        let tools = 0.0;
-
         [
             (ContextBand::Conversation, conversation),
             (ContextBand::System, system),
             (ContextBand::Memory, memory),
-            (ContextBand::Tools, tools),
             (ContextBand::Thinking, thinking),
             (ContextBand::Free, free),
         ]
@@ -1938,9 +1931,8 @@ mod tests {
         assert_eq!(breakdown[0].0, ContextBand::Conversation);
         assert_eq!(breakdown[1].0, ContextBand::System);
         assert_eq!(breakdown[2].0, ContextBand::Memory);
-        assert_eq!(breakdown[3].0, ContextBand::Tools);
-        assert_eq!(breakdown[4].0, ContextBand::Thinking);
-        assert_eq!(breakdown[5].0, ContextBand::Free);
+        assert_eq!(breakdown[3].0, ContextBand::Thinking);
+        assert_eq!(breakdown[4].0, ContextBand::Free);
     }
 
     #[test]
@@ -2055,8 +2047,8 @@ mod tests {
             "memory bucket legend should be visible: {legend_row}"
         );
         assert!(
-            legend_row.contains('⚒') && legend_row.contains("tools"),
-            "tools bucket legend should be visible: {legend_row}"
+            !legend_row.contains('⚒') && !legend_row.contains("tools"),
+            "tools should not appear as a context bucket legend because tool activity is an overlay, not a token class: {legend_row}"
         );
         assert!(
             legend_row.contains('◔') && legend_row.contains("think"),

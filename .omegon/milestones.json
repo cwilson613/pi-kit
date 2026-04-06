@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 25,
+    "rc_count": 26,
     "notes": [
       "feat(code-survey): Inspect the codebase for telemetry, metrics, tracing, event logging, and dashboard/session instrumentation surfaces. Summarize what telemetry the harness currently captures, where it lives, and notable gaps or inconsistencies.",
       "feat(compliance): enforce Anthropic subscription ToS interactive-only boundary",
@@ -458,6 +458,7 @@
       "fix(providers): cache Ollama probe result and tighten TCP timeout",
       "fix(providers): classify subscription routes conservatively",
       "fix(providers): log codex response headers when telemetry is absent",
+      "fix(providers): route ollama-cloud through native api chat",
       "fix(release): derive Homebrew updates from published release manifest",
       "fix(release): harden signing detection and brew push flow",
       "fix(release): script preflight checks and ignore python bytecode",
@@ -486,7 +487,7 @@
       "refactor(tui): make /auspex open the primary browser launch path",
       "refactor(tui): simplify slash command auth and context paths"
     ],
-    "rc_version": "0.15.10-rc.26",
-    "last_rc": "2026-04-06T19:20:50Z"
+    "rc_version": "0.15.10-rc.27",
+    "last_rc": "2026-04-06T19:46:49Z"
   }
 }

@@ -15,6 +15,13 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitSyncAction {
+    Noop,
+    FastForwardMain,
+    Diverged,
+}
+
 // ── Detection ───────────────────────────────────────────────────────────
 
 /// Check if a directory has jj initialized (co-located mode).
@@ -137,6 +144,126 @@ pub fn diff_summary(repo_path: &Path) -> Result<Vec<String>> {
     }
 }
 
+/// Export jj state into git, fast-forward `main` when jj is strictly ahead,
+/// and reattach HEAD to `main` if it is currently detached.
+///
+/// This keeps git branch semantics aligned with jj-backed commits so trunk work
+/// does not remain on a detached HEAD until release time.
+pub fn sync_to_git_main(repo_path: &Path) -> Result<()> {
+    if !is_jj_repo(repo_path) {
+        return Ok(());
+    }
+
+    let _ = std::process::Command::new("jj")
+        .args(["git", "export"])
+        .current_dir(repo_path)
+        .output();
+
+    let jj_parent = std::process::Command::new("jj")
+        .args(["log", "--no-graph", "-r", "@-", "--template", "commit_id"])
+        .current_dir(repo_path)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    let main_sha = std::process::Command::new("git")
+        .args(["rev-parse", "refs/heads/main"])
+        .current_dir(repo_path)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    match classify_sync_action(
+        if jj_parent.is_empty() { None } else { Some(jj_parent.as_str()) },
+        if main_sha.is_empty() { None } else { Some(main_sha.as_str()) },
+        |ancestor, descendant| {
+            std::process::Command::new("git")
+                .args(["merge-base", "--is-ancestor", ancestor, descendant])
+                .current_dir(repo_path)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        },
+    ) {
+        GitSyncAction::Noop => {}
+        GitSyncAction::FastForwardMain => {
+            run_git(repo_path, &["branch", "-f", "main", &jj_parent])?;
+        }
+        GitSyncAction::Diverged => {
+            anyhow::bail!(
+                "jj+git divergence detected; cannot auto-sync main to {}",
+                jj_parent.chars().take(12).collect::<String>()
+            );
+        }
+    }
+
+    let branch = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(repo_path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if branch.is_empty() {
+        let _ = std::process::Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(repo_path)
+            .output();
+    }
+
+    Ok(())
+}
+
+fn classify_sync_action<F>(
+    jj_parent: Option<&str>,
+    main_sha: Option<&str>,
+    is_ancestor: F,
+) -> GitSyncAction
+where
+    F: Fn(&str, &str) -> bool,
+{
+    match (jj_parent, main_sha) {
+        (Some(jj_parent), Some(main_sha)) if !jj_parent.is_empty() && !main_sha.is_empty() => {
+            if jj_parent == main_sha {
+                GitSyncAction::Noop
+            } else if is_ancestor(main_sha, jj_parent) {
+                GitSyncAction::FastForwardMain
+            } else {
+                GitSyncAction::Diverged
+            }
+        }
+        _ => GitSyncAction::Noop,
+    }
+}
+
+fn run_git(repo_path: &Path, args: &[&str]) -> Result<()> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("git {} failed to execute", args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git {} failed: {}", args.join(" "), stderr.trim());
+    }
+    Ok(())
+}
+
 // ── Internal helper ─────────────────────────────────────────────────────
 
 fn run_jj(repo_path: &Path, args: &[&str]) -> Result<()> {
@@ -183,6 +310,30 @@ mod tests {
     fn not_jj_outside_repo() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!is_jj_repo(dir.path()));
+    }
+
+    #[test]
+    fn classify_sync_action_fast_forward() {
+        let action = classify_sync_action(Some("new"), Some("old"), |ancestor, descendant| {
+            ancestor == "old" && descendant == "new"
+        });
+        assert_eq!(action, GitSyncAction::FastForwardMain);
+    }
+
+    #[test]
+    fn classify_sync_action_diverged() {
+        let action = classify_sync_action(Some("new"), Some("old"), |_ancestor, _descendant| false);
+        assert_eq!(action, GitSyncAction::Diverged);
+    }
+
+    #[test]
+    fn classify_sync_action_noop_when_equal_or_missing() {
+        assert_eq!(
+            classify_sync_action(Some("same"), Some("same"), |_a, _d| false),
+            GitSyncAction::Noop
+        );
+        assert_eq!(classify_sync_action(None, Some("main"), |_a, _d| true), GitSyncAction::Noop);
+        assert_eq!(classify_sync_action(Some("jj"), None, |_a, _d| true), GitSyncAction::Noop);
     }
 
     #[cfg(feature = "jj-lib")]

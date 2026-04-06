@@ -542,6 +542,7 @@ impl ToolProvider for CoreTools {
                 if self.repo_model.as_ref().is_some_and(|m| m.is_jj()) {
                     omegon_git::jj::describe(&self.cwd, message)?;
                     omegon_git::jj::new_change(&self.cwd, "")?;
+                    omegon_git::jj::sync_to_git_main(&self.cwd)?;
 
                     // Get the change ID of the just-committed change (parent of @)
                     let committed_id = std::process::Command::new("jj")
@@ -565,12 +566,20 @@ impl ToolProvider for CoreTools {
                     }
 
                     let summary = format!("Committed (jj): {committed_id}\n{message}");
+                    let branch = std::process::Command::new("git")
+                        .args(["branch", "--show-current"])
+                        .current_dir(&self.cwd)
+                        .output()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
                     return Ok(ToolResult {
                         content: vec![omegon_traits::ContentBlock::Text { text: summary }],
                         details: json!({
                             "jj_change_id": committed_id,
                             "message": message,
                             "backend": "jj",
+                            "git_branch": if branch.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(branch) },
                         }),
                     });
                 }

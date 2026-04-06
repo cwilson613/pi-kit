@@ -15,6 +15,8 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/model [name]</code></td><td>View or switch model. Opens selector popup, or pass a model ID directly.</td></tr>
       <tr><td><code>/think [level]</code></td><td>Set thinking level: <code>off</code>, <code>low</code>, <code>medium</code>, <code>high</code>.</td></tr>
       <tr><td><code>/context [class]</code></td><td>Select context class: <code>squad</code> (128k), <code>maniple</code> (272k), <code>clan</code> (400k), <code>legion</code> (1M).</td></tr>
+      <tr><td><code>/context compact</code></td><td>Trigger context compaction to free context window space.</td></tr>
+      <tr><td><code>/context clear</code></td><td>Save the current session and start a fresh conversation with cleared live context.</td></tr>
       <tr><td><code>/detail [mode]</code></td><td>Toggle tool display: <code>compact</code> or <code>detailed</code>.</td></tr>
     </tbody>
   </table>
@@ -24,8 +26,7 @@ import Docs from "../../layouts/Docs.astro";
     <thead><tr><th>Command</th><th>Description</th></tr></thead>
     <tbody>
       <tr><td><code>/stats</code></td><td>Session telemetry — turns, tool calls, tokens, duration.</td></tr>
-      <tr><td><code>/compact</code></td><td>Trigger context compaction to free context window space.</td></tr>
-      <tr><td><code>/clear</code></td><td>Clear conversation display (doesn't affect durable memory).</td></tr>
+      <tr><td><code>/new</code></td><td>Save the current session and start a fresh one.</td></tr>
       <tr><td><code>/memory</code></td><td>Memory statistics — facts, episodes, working memory.</td></tr>
       <tr><td><code>/sessions</code></td><td>List saved sessions. Resume with <code>--resume</code> flag.</td></tr>
       <tr><td><code>/note [text]</code></td><td>Capture a note for later (persists across sessions).</td></tr>
@@ -39,7 +40,7 @@ import Docs from "../../layouts/Docs.astro";
     <tbody>
       <tr><td><code>/login [provider]</code></td><td>Log in to a provider such as <code>anthropic</code>, <code>openai-codex</code>, <code>openai</code>, <code>openrouter</code>, or <code>github</code>.</td></tr>
       <tr><td><code>/logout [provider]</code></td><td>Log out of a provider.</td></tr>
-      <tr><td><code>/auth [action]</code></td><td>Authentication management: <code>status</code>, <code>login</code>, <code>logout</code>, <code>unlock</code>.</td></tr>
+      <tr><td><code>/auth [action]</code></td><td>Authentication management: <code>status</code>, <code>unlock</code>.</td></tr>
       <tr><td><code>/secrets [action]</code></td><td>Manage stored secrets: <code>list</code>, <code>set</code>, <code>get</code>, <code>delete</code>.</td></tr>
       <tr><td><code>/vault [action]</code></td><td>HashiCorp Vault integration: <code>status</code>, <code>unseal</code>, <code>login</code>, <code>configure</code>, <code>init-policy</code>.</td></tr>
     </tbody>
@@ -77,9 +78,10 @@ import Docs from "../../layouts/Docs.astro";
   <table>
     <thead><tr><th>Command</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>/dash</code></td><td>Open Omegon's local browser compatibility surface (real-time live state over WebSocket).</td></tr>
-      <tr><td><code>/dashboard</code></td><td>Alias for <code>/dash</code>.</td></tr>
-      <tr><td><code>/focus</code></td><td>Toggle unified console footer (full engine/inference/tools panel).</td></tr>
+      <tr><td><code>/auspex</code></td><td>Show Auspex attachability and handoff status.</td></tr>
+      <tr><td><code>/auspex open</code></td><td>Launch the primary browser surface. If the local compatibility server is not running yet, Omegon starts it first.</td></tr>
+      <tr><td><code>/dash</code></td><td>Open Omegon's local browser compatibility/debug surface (real-time live state over WebSocket).</td></tr>
+      <tr><td><code>/focus</code></td><td>Toggle selected-segment focus mode for terminal-native text selection.</td></tr>
       <tr><td><code>/tree [sub]</code></td><td>Design tree summary: <code>list</code>, <code>frontier</code>, <code>ready</code>, <code>blocked</code>.</td></tr>
       <tr><td><code>/tutorial [action]</code></td><td>Interactive tutorial overlay. Primary paths: <code>/tutorial</code> for the current-project flow and <code>/tutorial demo</code> for the scripted showcase. Management args: <code>status</code>, <code>reset</code>.</td></tr>
       <tr><td><code>/splash</code></td><td>Replay the splash animation.</td></tr>

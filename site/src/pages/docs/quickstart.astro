@@ -70,11 +70,10 @@ omegon</code></pre>
 /cleave</code></pre>
 
   <h2>7. Browser surfaces</h2>
-  <pre><code>/dash</code></pre>
+  <pre><code>/auspex open</code></pre>
   <p>
-    Opens Omegon's local compatibility browser surface for live in-process state.
-    It is useful for monitoring, demos, or a wider viewport. The canonical backend truth remains in-process,
-    with IPC as the strongest machine-facing surface.
+    Launches Omegon's primary browser surface. If the local compatibility bridge is not running yet,
+    Omegon starts it first. For direct local compatibility/debug access, <code>/dash</code> remains available.
   </p>
 
   <h2>8. Tutorial</h2>

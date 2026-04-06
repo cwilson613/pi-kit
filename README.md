@@ -93,7 +93,8 @@ It gives you:
 - collapsible tool cards
 - wrapped multiline editor
 - live engine, memory, and system telemetry
-- local browser compatibility surface via `/dash`
+- primary browser surface launch via `/auspex open`
+- local browser compatibility/debug surface via `/dash`
 
 ### 2. Keeps provider identity honest
 

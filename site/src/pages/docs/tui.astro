@@ -117,10 +117,13 @@ import Docs from "../../layouts/Docs.astro";
   </ul>
 
   <h2>Browser surface</h2>
-  <pre><code>/dash</code></pre>
+  <pre><code>/auspex open</code></pre>
   <p>
-    Opens Omegon's local compatibility browser surface over WebSocket. It is useful for a wider viewport,
-    remote monitoring, demos, or local in-process inspection. It is not the same thing as a broader external
-    browser portal; it is Omegon's own local live surface.
+    Launches Omegon's primary browser surface. If the local compatibility bridge is not running yet,
+    Omegon starts it first and then hands the browser launch off to Auspex.
+  </p>
+  <p>
+    <code>/dash</code> remains available as the local compatibility/debug command for the in-process browser surface.
+    It is useful for demos, wider live inspection, and compatibility testing, but it is not the primary operator-facing launch path.
   </p>
 </Docs>

@@ -1687,11 +1687,11 @@ fn slash_auspex_open_requests_bridge_start_when_dashboard_not_running() {
         "expected the primary command to be named in guidance: {text}"
     );
     assert!(
-        text.contains("desktop handoff"),
-        "expected primary handoff wording: {text}"
+        text.contains("native desktop handoff"),
+        "expected native handoff wording: {text}"
     );
     assert!(
-        text.contains("compatibility surface"),
+        text.contains("compatibility/debug browser path"),
         "got: {text}"
     );
 }

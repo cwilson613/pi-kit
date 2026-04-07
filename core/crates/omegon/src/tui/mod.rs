@@ -3255,14 +3255,14 @@ impl App {
                         if let Some(ref startup) = self.web_startup {
                             match launch_auspex_with_startup(startup) {
                                 Ok(target) => SlashResult::Display(format!(
-                                    "Launching Auspex via the primary local desktop handoff ({target}).\n\nThis path currently bootstraps Auspex from Omegon's embedded startup payload. `/dash` remains the compatibility/debug browser path while native IPC attach is completed."
+                                    "Launching Auspex via the primary local desktop handoff ({target}).\n\nOmegon is passing native attach metadata for the current live session over `AUSPEX_OMEGON_ATTACH_JSON` with `transport=omegon-ipc`. The embedded browser bridge remains available only as compatibility/debug support behind `/dash`."
                                 )),
                                 Err(e) => SlashResult::Display(format!("Failed to launch Auspex: {e}")),
                             }
                         } else {
                             let _ = tx.try_send(TuiCommand::StartWebDashboard);
                             SlashResult::Display(
-                                "Starting the local compatibility surface first so `/auspex open` can complete the desktop handoff once the embedded browser bridge is ready.".into()
+                                "Preparing the local compatibility surface so `/auspex open` can complete the native desktop handoff once startup metadata is available. `/dash` remains the explicit compatibility/debug browser path.".into()
                             )
                         }
                     }

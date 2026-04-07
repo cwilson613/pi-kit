@@ -49,6 +49,12 @@ The handoff must preserve that exact session identity, must not destabilize the 
 
 **Rationale:** Operator-facing copy should present Auspex as the first-class desktop handoff path now. Keeping `/dash` as the compatibility/debug browser path preserves the embedded surface for diagnostics and transition work without presenting it as the product-default local UI.
 
+### Native attach metadata is the primary local handoff contract
+
+**Status:** decided
+
+**Rationale:** Omegon should launch Auspex with a structured attach envelope for the exact live session (`AUSPEX_OMEGON_ATTACH_JSON`, `transport=omegon-ipc`) and treat the embedded browser surface only as compatibility/bootstrap support when startup metadata is not yet available. This keeps local desktop control anchored on IPC semantics even while `/dash` still exists for diagnostics and transition work.
+
 ## Open Questions
 
 - Should the initial attach-to-running-instance path use a custom URL scheme, an Auspex single-instance control socket, or both?

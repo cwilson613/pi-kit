@@ -322,6 +322,7 @@ pub fn project_instance_descriptor(
         },
         runtime: OmegonRuntime {
             deployment_kind: OmegonDeploymentKind::InteractiveTui,
+            runtime_mode: omegon_traits::OmegonRuntimeMode::Standalone,
             health: match health.state {
                 IpcHealthState::Ready => OmegonRuntimeHealth::Ready,
                 IpcHealthState::Degraded => OmegonRuntimeHealth::Degraded,
@@ -331,6 +332,9 @@ pub fn project_instance_descriptor(
             provider_ok: health.provider_ok,
             memory_ok: health.memory_ok,
             cleave_available: harness.cleave_available,
+            queued_events: 0,
+            transport_warnings: vec![],
+            runtime_dir: None,
             context_class: Some(harness.context_class.clone()),
             thinking_level: Some(harness.thinking_level.clone()),
             capability_tier: Some(harness.capability_tier.clone()),

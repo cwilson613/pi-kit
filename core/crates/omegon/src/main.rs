@@ -1251,6 +1251,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                     let context_composition = crate::r#loop::compute_context_composition(
                                         &system_prompt,
                                         &llm_messages,
+                                        &agent.bus.tool_definitions(),
                                         ctx_window,
                                     );
                                     let _ = events_tx.send(AgentEvent::TurnEnd {

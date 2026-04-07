@@ -37,12 +37,28 @@ pub enum ControlPlaneState {
     Failed,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DaemonChildRuntimeStatus {
+    pub label: String,
+    pub status: String,
+    pub model: Option<String>,
+    pub thinking_level: Option<String>,
+    pub context_class: Option<String>,
+    pub enabled_tools: Vec<String>,
+    pub disabled_tools: Vec<String>,
+    pub skills: Vec<String>,
+    pub enabled_extensions: Vec<String>,
+    pub disabled_extensions: Vec<String>,
+    pub preloaded_files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct WebDaemonStatus {
     pub queued_events: usize,
     pub processed_events: usize,
     pub worker_running: bool,
     pub transport_warnings: Vec<String>,
+    pub active_child_runtimes: Vec<DaemonChildRuntimeStatus>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -359,10 +375,38 @@ fn default_transport_warnings() -> Vec<String> {
 }
 
 fn refresh_startup_daemon_status(state: &WebState) {
-    let daemon_status = match state.daemon_status.lock() {
+    let mut daemon_status = match state.daemon_status.lock() {
         Ok(status) => status.clone(),
         Err(_) => return,
     };
+    daemon_status.active_child_runtimes = state
+        .handles
+        .cleave
+        .as_ref()
+        .and_then(|lock| lock.lock().ok())
+        .map(|cleave| {
+            cleave
+                .children
+                .iter()
+                .filter_map(|child| {
+                    let runtime = child.runtime.as_ref()?;
+                    Some(DaemonChildRuntimeStatus {
+                        label: child.label.clone(),
+                        status: child.status.clone(),
+                        model: runtime.model.clone(),
+                        thinking_level: runtime.thinking_level.clone(),
+                        context_class: runtime.context_class.clone(),
+                        enabled_tools: runtime.enabled_tools.clone(),
+                        disabled_tools: runtime.disabled_tools.clone(),
+                        skills: runtime.skills.clone(),
+                        enabled_extensions: runtime.enabled_extensions.clone(),
+                        disabled_extensions: runtime.disabled_extensions.clone(),
+                        preloaded_files: runtime.preloaded_files.clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     if let Ok(mut startup) = state.startup_info.lock()
         && let Some(startup) = startup.as_mut()
     {

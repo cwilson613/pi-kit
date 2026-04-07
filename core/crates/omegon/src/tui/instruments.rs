@@ -421,7 +421,8 @@ enum ContextBand {
     Conversation,
     System,
     Memory,
-    Tools,
+    ToolSchema,
+    ToolHistory,
     Thinking,
     Free,
 }
@@ -435,12 +436,13 @@ impl InstrumentPanel {
         inference_height.max(tools_height).clamp(10, 16)
     }
 
-    fn context_legend_entries() -> [(&'static str, &'static str, Color); 5] {
+    fn context_legend_entries() -> [(&'static str, &'static str, Color); 6] {
         [
             ("=", "conv", Self::band_color(ContextBand::Conversation)),
             ("+", "sys", Self::band_color(ContextBand::System)),
             ("*", "mem", Self::band_color(ContextBand::Memory)),
-            ("#", "tool", Self::band_color(ContextBand::Tools)),
+            ("#", "defs", Self::band_color(ContextBand::ToolSchema)),
+            ("%", "hist", Self::band_color(ContextBand::ToolHistory)),
             ("^", "think", Self::band_color(ContextBand::Thinking)),
         ]
     }
@@ -450,7 +452,8 @@ impl InstrumentPanel {
             ContextBand::Conversation => '=',
             ContextBand::System => '+',
             ContextBand::Memory => '*',
-            ContextBand::Tools => '#',
+            ContextBand::ToolSchema => '#',
+            ContextBand::ToolHistory => '%',
             ContextBand::Thinking => '^',
             ContextBand::Free => '·',
         }
@@ -560,7 +563,7 @@ impl InstrumentPanel {
         self.render_tools_panel(panels[1], frame, t);
     }
 
-    fn context_breakdown(&self) -> [(ContextBand, f64); 6] {
+    fn context_breakdown(&self) -> [(ContextBand, f64); 7] {
         let composition = &self.context_composition;
         let used_target = self.context_fill.clamp(0.0, 1.0);
         let free_target = (1.0 - used_target).clamp(0.0, 1.0);
@@ -568,9 +571,11 @@ impl InstrumentPanel {
         let conversation = composition.conversation_tokens as f64;
         let system = composition.system_tokens as f64;
         let memory = composition.memory_tokens as f64;
-        let tools = composition.tool_tokens as f64;
+        let tool_schema = composition.tool_schema_tokens as f64;
+        let tool_history = composition.tool_history_tokens as f64;
         let thinking = composition.thinking_tokens as f64;
-        let used_reported = conversation + system + memory + tools + thinking;
+        let used_reported =
+            conversation + system + memory + tool_schema + tool_history + thinking;
         let scale = if used_reported > 0.0 {
             used_target / used_reported
         } else {
@@ -581,7 +586,8 @@ impl InstrumentPanel {
             (ContextBand::Conversation, conversation * scale),
             (ContextBand::System, system * scale),
             (ContextBand::Memory, memory * scale),
-            (ContextBand::Tools, tools * scale),
+            (ContextBand::ToolSchema, tool_schema * scale),
+            (ContextBand::ToolHistory, tool_history * scale),
             (ContextBand::Thinking, thinking * scale),
             (ContextBand::Free, free_target),
         ]
@@ -679,7 +685,8 @@ impl InstrumentPanel {
             ContextBand::Conversation => Color::Rgb(232, 236, 242),
             ContextBand::System => Color::Rgb(88, 182, 116),
             ContextBand::Memory => Color::Rgb(148, 108, 212),
-            ContextBand::Tools => Color::Rgb(214, 156, 74),
+            ContextBand::ToolSchema => Color::Rgb(214, 156, 74),
+            ContextBand::ToolHistory => Color::Rgb(196, 124, 56),
             ContextBand::Thinking => Color::Rgb(70, 126, 214),
             ContextBand::Free => Color::Rgb(16, 24, 34),
         }
@@ -1974,7 +1981,8 @@ mod tests {
                 conversation_tokens: 24_000,
                 system_tokens: 8_000,
                 memory_tokens: 0,
-                tool_tokens: 18_000,
+                tool_schema_tokens: 10_000,
+                tool_history_tokens: 8_000,
                 thinking_tokens: 0,
                 free_tokens: 150_000,
             },
@@ -2198,7 +2206,8 @@ mod tests {
                 conversation_tokens: 68_000,
                 system_tokens: 10_000,
                 memory_tokens: 12_000,
-                tool_tokens: 6_000,
+                tool_schema_tokens: 3_000,
+                tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
             },
@@ -2223,18 +2232,19 @@ mod tests {
         assert_eq!(breakdown[0].0, ContextBand::Conversation);
         assert_eq!(breakdown[1].0, ContextBand::System);
         assert_eq!(breakdown[2].0, ContextBand::Memory);
-        assert_eq!(breakdown[3].0, ContextBand::Tools);
-        assert_eq!(breakdown[4].0, ContextBand::Thinking);
-        assert_eq!(breakdown[5].0, ContextBand::Free);
-        let used: f64 = breakdown[..5].iter().map(|(_, frac)| frac).sum();
+        assert_eq!(breakdown[3].0, ContextBand::ToolSchema);
+        assert_eq!(breakdown[4].0, ContextBand::ToolHistory);
+        assert_eq!(breakdown[5].0, ContextBand::Thinking);
+        assert_eq!(breakdown[6].0, ContextBand::Free);
+        let used: f64 = breakdown[..6].iter().map(|(_, frac)| frac).sum();
         assert!(
             (used - 0.62).abs() < 0.0001,
             "used bands should match footer percent, got {used}"
         );
         assert!(
-            (breakdown[5].1 - 0.38).abs() < 0.0001,
+            (breakdown[6].1 - 0.38).abs() < 0.0001,
             "free band should be the complement of footer percent, got {}",
-            breakdown[5].1
+            breakdown[6].1
         );
     }
 
@@ -2322,7 +2332,8 @@ mod tests {
                 conversation_tokens: 68_000,
                 system_tokens: 10_000,
                 memory_tokens: 12_000,
-                tool_tokens: 6_000,
+                tool_schema_tokens: 3_000,
+                tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
             },
@@ -2365,8 +2376,8 @@ mod tests {
             "memory bucket legend should be visible: {legend_row}"
         );
         assert!(
-            legend_row.contains("# tool"),
-            "tool surface legend should be visible as prompt composition: {legend_row}"
+            legend_row.contains("# defs"),
+            "tool definition legend should be visible as prompt composition: {legend_row}"
         );
         assert!(
             legend_row.contains("^ think"),
@@ -2390,7 +2401,8 @@ mod tests {
                 conversation_tokens: 68_000,
                 system_tokens: 10_000,
                 memory_tokens: 12_000,
-                tool_tokens: 6_000,
+                tool_schema_tokens: 3_000,
+                tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
             },
@@ -2457,7 +2469,8 @@ mod tests {
                 conversation_tokens: 68_000,
                 system_tokens: 10_000,
                 memory_tokens: 12_000,
-                tool_tokens: 6_000,
+                tool_schema_tokens: 3_000,
+                tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
             },
@@ -2521,7 +2534,8 @@ mod tests {
                 conversation_tokens: 68_000,
                 system_tokens: 10_000,
                 memory_tokens: 12_000,
-                tool_tokens: 6_000,
+                tool_schema_tokens: 3_000,
+                tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
             },
@@ -2560,7 +2574,8 @@ mod tests {
                 conversation_tokens: 105_100,
                 system_tokens: 538,
                 memory_tokens: 0,
-                tool_tokens: 0,
+                tool_schema_tokens: 0,
+                tool_history_tokens: 0,
                 thinking_tokens: 0,
                 free_tokens: 166_362,
             },
@@ -2616,7 +2631,8 @@ mod tests {
                 conversation_tokens: 68_000,
                 system_tokens: 10_000,
                 memory_tokens: 12_000,
-                tool_tokens: 6_000,
+                tool_schema_tokens: 3_000,
+                tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
             },
@@ -2625,16 +2641,21 @@ mod tests {
         panel.update_telemetry(68.0, 200_000, Some("read"), false, "high", None, true, 0.016);
 
         let breakdown = panel.context_breakdown();
-        let tools = breakdown
+        let tool_schema = breakdown
             .iter()
-            .find_map(|(band, frac)| (*band == ContextBand::Tools).then_some(*frac))
+            .find_map(|(band, frac)| (*band == ContextBand::ToolSchema).then_some(*frac))
+            .unwrap_or(0.0);
+        let tool_history = breakdown
+            .iter()
+            .find_map(|(band, frac)| (*band == ContextBand::ToolHistory).then_some(*frac))
             .unwrap_or(0.0);
         let conversation = breakdown
             .iter()
             .find_map(|(band, frac)| (*band == ContextBand::Conversation).then_some(*frac))
             .unwrap_or(0.0);
 
-        assert!(tools > 0.0, "active tools should reserve some context surface");
+        assert!(tool_schema > 0.0, "active tool definitions should reserve some context surface");
+        assert!(tool_history > 0.0, "tool history should reserve some context surface");
         assert!(conversation > 0.0, "conversation should still retain its own band");
     }
 }

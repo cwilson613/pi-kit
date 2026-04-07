@@ -47,7 +47,8 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
             conversation_tokens: 120_000,
             system_tokens: 8_000,
             memory_tokens: 6_000,
-            tool_tokens: 4_000,
+            tool_schema_tokens: 2_000,
+            tool_history_tokens: 2_000,
             thinking_tokens: 6_000,
             free_tokens: 128_000,
         },
@@ -1720,6 +1721,7 @@ fn slash_auspex_status_reports_attach_metadata() {
             processed_events: 3,
             worker_running: true,
             transport_warnings: vec!["HTTP and WebSocket control-plane transports use insecure bootstrap tokens on localhost.".into()],
+            active_child_runtimes: vec![],
         },
         instance_descriptor: None,
     });
@@ -1774,6 +1776,7 @@ fn slash_dash_status_uses_compatibility_wording() {
             processed_events: 7,
             worker_running: true,
             transport_warnings: vec!["HTTP and WebSocket control-plane transports use insecure bootstrap tokens on localhost.".into()],
+            active_child_runtimes: vec![],
         },
         instance_descriptor: None,
     });
@@ -1811,6 +1814,7 @@ fn web_dashboard_started_event_updates_cached_addr() {
             processed_events: 3,
             worker_running: true,
             transport_warnings: vec!["HTTP and WebSocket control-plane transports use insecure bootstrap tokens on localhost.".into()],
+            active_child_runtimes: vec![],
         },
         instance_descriptor: None,
     };
@@ -1855,6 +1859,7 @@ fn auspex_attach_payload_carries_startup_and_instance_metadata() {
             processed_events: 0,
             worker_running: false,
             transport_warnings: vec!["HTTP and WebSocket control-plane transports use insecure bootstrap tokens on localhost.".into()],
+            active_child_runtimes: vec![],
         },
         instance_descriptor: Some(omegon_traits::OmegonInstanceDescriptor {
             schema_version: 1,

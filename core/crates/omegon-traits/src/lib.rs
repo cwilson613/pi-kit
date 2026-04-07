@@ -813,7 +813,10 @@ pub struct ContextComposition {
     pub conversation_tokens: usize,
     pub system_tokens: usize,
     pub memory_tokens: usize,
-    pub tool_tokens: usize,
+    /// Provider-request tool definition/schema overhead for the active tool set.
+    pub tool_schema_tokens: usize,
+    /// Tool-call and tool-result payload preserved in conversation history.
+    pub tool_history_tokens: usize,
     pub thinking_tokens: usize,
     pub free_tokens: usize,
 }

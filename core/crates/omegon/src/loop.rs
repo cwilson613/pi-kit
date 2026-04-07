@@ -78,15 +78,27 @@ fn estimate_chars_to_tokens(chars: usize) -> usize {
     chars / 4
 }
 
+fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize {
+    tools
+        .iter()
+        .map(|tool| {
+            let schema_json = serde_json::to_string(&tool.parameters).unwrap_or_default();
+            estimate_chars_to_tokens(tool.name.len() + tool.description.len() + schema_json.len())
+        })
+        .sum()
+}
+
 pub(crate) fn compute_context_composition(
     system_prompt: &str,
     llm_messages: &[LlmMessage],
+    tools: &[omegon_traits::ToolDefinition],
     context_window: usize,
 ) -> ContextComposition {
     let system_tokens = estimate_chars_to_tokens(system_prompt.len());
+    let tool_schema_tokens = estimate_tool_schema_tokens(tools);
     let mut conversation_tokens = 0usize;
     let mut memory_tokens = 0usize;
-    let mut tool_tokens = 0usize;
+    let mut tool_history_tokens = 0usize;
     let mut thinking_tokens = 0usize;
 
     for message in llm_messages {
@@ -104,7 +116,7 @@ pub(crate) fn compute_context_composition(
                     estimate_chars_to_tokens(text.iter().map(|t| t.len()).sum::<usize>());
                 thinking_tokens +=
                     estimate_chars_to_tokens(thinking.iter().map(|t| t.len()).sum::<usize>());
-                tool_tokens += estimate_chars_to_tokens(
+                tool_history_tokens += estimate_chars_to_tokens(
                     tool_calls
                         .iter()
                         .map(|tc| tc.name.len() + tc.arguments.to_string().len())
@@ -116,7 +128,8 @@ pub(crate) fn compute_context_composition(
                 tool_name,
                 ..
             } => {
-                tool_tokens += estimate_chars_to_tokens(content.len() + tool_name.len());
+                tool_history_tokens +=
+                    estimate_chars_to_tokens(content.len() + tool_name.len());
                 if tool_name.starts_with("memory_") {
                     memory_tokens += estimate_chars_to_tokens(content.len());
                 }
@@ -127,7 +140,8 @@ pub(crate) fn compute_context_composition(
     let used = system_tokens
         .saturating_add(conversation_tokens)
         .saturating_add(memory_tokens)
-        .saturating_add(tool_tokens)
+        .saturating_add(tool_schema_tokens)
+        .saturating_add(tool_history_tokens)
         .saturating_add(thinking_tokens);
     let free_tokens = context_window.saturating_sub(used);
 
@@ -135,7 +149,8 @@ pub(crate) fn compute_context_composition(
         conversation_tokens,
         system_tokens,
         memory_tokens,
-        tool_tokens,
+        tool_schema_tokens,
+        tool_history_tokens,
         thinking_tokens,
         free_tokens,
     }
@@ -486,6 +501,7 @@ pub async fn run(
                     context_composition: compute_context_composition(
                         &context.build_system_prompt(conversation.last_user_prompt(), conversation),
                         &conversation.build_llm_view(),
+                        &tool_defs,
                         context_window,
                     ),
                     actual_input_tokens: act_in,
@@ -500,6 +516,7 @@ pub async fn run(
                     context_composition: compute_context_composition(
                         &context.build_system_prompt(conversation.last_user_prompt(), conversation),
                         &conversation.build_llm_view(),
+                        &tool_defs,
                         context_window,
                     ),
                     actual_input_tokens: act_in,
@@ -512,6 +529,7 @@ pub async fn run(
             let turn_context_composition = compute_context_composition(
                 &context.build_system_prompt(conversation.last_user_prompt(), conversation),
                 &conversation.build_llm_view(),
+                &tool_defs,
                 context_window,
             );
             bus.emit(&omegon_traits::BusEvent::TurnEnd {
@@ -600,6 +618,7 @@ pub async fn run(
         let turn_context_composition = compute_context_composition(
             &context.build_system_prompt(conversation.last_user_prompt(), conversation),
             &conversation.build_llm_view(),
+            &tool_defs,
             context_window,
         );
         bus.emit(&omegon_traits::BusEvent::TurnEnd {

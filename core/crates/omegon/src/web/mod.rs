@@ -700,6 +700,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_event_worker_preserves_child_runtime_metadata_in_startup_status() {
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(4);
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        let state = WebState::with_auth_state(
+            DashboardHandles {
+                cleave: Some(Arc::new(Mutex::new(crate::features::cleave::CleaveProgress {
+                    active: true,
+                    run_id: "run-1".into(),
+                    total_children: 1,
+                    completed: 0,
+                    failed: 0,
+                    children: vec![crate::features::cleave::ChildProgress {
+                        label: "child-1".into(),
+                        status: "running".into(),
+                        duration_secs: None,
+                        last_tool: None,
+                        last_turn: None,
+                        started_at: None,
+                        tokens_in: 0,
+                        tokens_out: 0,
+                        runtime: Some(crate::features::cleave::ChildRuntimeSummary {
+                            model: Some("anthropic:claude-sonnet-4-6".into()),
+                            thinking_level: Some("high".into()),
+                            context_class: Some("legion".into()),
+                            enabled_tools: vec!["read".into()],
+                            disabled_tools: vec!["bash".into()],
+                            skills: vec!["security".into()],
+                            enabled_extensions: vec!["alpha".into()],
+                            disabled_extensions: vec!["beta".into()],
+                            preloaded_files: vec!["docs/runtime-preload.md".into()],
+                        }),
+                    }],
+                    total_tokens_in: 0,
+                    total_tokens_out: 0,
+                }))),
+                ..DashboardHandles::default()
+            },
+            events_tx,
+            WebAuthState::ephemeral_generated("test".into()),
+        );
+        let startup = WebStartupInfo {
+            schema_version: 2,
+            addr: "127.0.0.1:7842".into(),
+            http_base: "http://127.0.0.1:7842".into(),
+            state_url: "http://127.0.0.1:7842/api/state".into(),
+            startup_url: "http://127.0.0.1:7842/api/startup".into(),
+            health_url: "http://127.0.0.1:7842/api/healthz".into(),
+            ready_url: "http://127.0.0.1:7842/api/readyz".into(),
+            ws_url: "ws://127.0.0.1:7842/ws?token=test".into(),
+            token: "test".into(),
+            auth_mode: "ephemeral-bearer".into(),
+            auth_source: "generated".into(),
+            control_plane_state: ControlPlaneState::Ready,
+            daemon_status: WebDaemonStatus::default(),
+            instance_descriptor: None,
+        };
+        let state = WebState {
+            command_tx,
+            startup_info: Arc::new(Mutex::new(Some(startup))),
+            ..state
+        };
+        refresh_startup_daemon_status(&state);
+        state.daemon_events.lock().unwrap().push(DaemonEventEnvelope {
+            event_id: "evt-rt-1".into(),
+            source: "manual/test".into(),
+            trigger_kind: "prompt".into(),
+            payload: serde_json::json!({"text": "runtime check"}),
+        });
+        state.daemon_status.lock().unwrap().queued_events = 1;
+
+        let processed = process_next_daemon_event(&state).await.unwrap();
+        assert!(processed);
+        let command = command_rx.recv().await.unwrap();
+        match command {
+            WebCommand::UserPrompt(text) => assert_eq!(text, "runtime check"),
+            other => panic!("wrong command: {other:?}"),
+        }
+
+        let startup_status = state
+            .startup_info
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .daemon_status
+            .clone();
+        assert_eq!(startup_status.processed_events, 1);
+        assert_eq!(startup_status.active_child_runtimes.len(), 1);
+        let child = &startup_status.active_child_runtimes[0];
+        assert_eq!(child.label, "child-1");
+        assert_eq!(child.model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
+        assert_eq!(child.thinking_level.as_deref(), Some("high"));
+        assert_eq!(child.context_class.as_deref(), Some("legion"));
+        assert_eq!(child.disabled_tools, vec!["bash"]);
+        assert_eq!(child.enabled_extensions, vec!["alpha"]);
+        assert_eq!(child.preloaded_files, vec!["docs/runtime-preload.md"]);
+    }
+
+    #[tokio::test]
     async fn daemon_event_worker_marks_unsupported_trigger_as_degraded() {
         let (events_tx, mut events_rx) = tokio::sync::broadcast::channel(4);
         let state = WebState::new(DashboardHandles::default(), events_tx);

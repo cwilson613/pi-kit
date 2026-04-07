@@ -123,14 +123,32 @@ impl ShadowEntry {
         }
     }
 
-    pub fn combined_score(&self) -> f32 {
-        let tier_weight = match self.kind.tier() {
+    pub fn tier_weight(&self) -> f32 {
+        match self.kind.tier() {
             0 => 10_000.0,
             1 => 1_000.0,
             2 => 100.0,
             _ => 10.0,
-        };
-        tier_weight + self.priority as f32 + (self.relevance * 10.0) + self.recency
+        }
+    }
+
+    pub fn priority_weight(&self) -> f32 {
+        self.priority as f32
+    }
+
+    pub fn relevance_weight(&self) -> f32 {
+        self.relevance * 10.0
+    }
+
+    pub fn recency_weight(&self) -> f32 {
+        self.recency
+    }
+
+    pub fn combined_score(&self) -> f32 {
+        self.tier_weight()
+            + self.priority_weight()
+            + self.relevance_weight()
+            + self.recency_weight()
     }
 
     pub fn is_expired(&self, turn: u32) -> bool {
@@ -233,13 +251,17 @@ impl ShadowContext {
             .iter()
             .map(|entry| {
                 format!(
-                    "{} kind={:?} tier={} prio={} rel={:.3} rec={:.3} tok={} score={:.3}",
+                    "{} kind={:?} tier={} tier_w={:.3} prio={} prio_w={:.3} rel={:.3} rel_w={:.3} rec={:.3} rec_w={:.3} tok={} score={:.3}",
                     entry.id,
                     entry.kind,
                     entry.kind.tier(),
+                    entry.tier_weight(),
                     entry.priority,
+                    entry.priority_weight(),
                     entry.relevance,
+                    entry.relevance_weight(),
                     entry.recency,
+                    entry.recency_weight(),
                     entry.token_estimate,
                     entry.combined_score(),
                 )
@@ -269,8 +291,13 @@ impl ShadowContext {
                     id = %entry.id,
                     kind = ?entry.kind,
                     priority = entry.priority,
+                    tier = entry.kind.tier(),
+                    tier_weight = entry.tier_weight(),
+                    priority_weight = entry.priority_weight(),
                     relevance = entry.relevance,
+                    relevance_weight = entry.relevance_weight(),
                     recency = entry.recency,
+                    recency_weight = entry.recency_weight(),
                     tokens = entry.token_estimate,
                     score = entry.combined_score(),
                     selected = true,
@@ -289,8 +316,13 @@ impl ShadowContext {
                     id = %entry.id,
                     kind = ?entry.kind,
                     priority = entry.priority,
+                    tier = entry.kind.tier(),
+                    tier_weight = entry.tier_weight(),
+                    priority_weight = entry.priority_weight(),
                     relevance = entry.relevance,
+                    relevance_weight = entry.relevance_weight(),
                     recency = entry.recency,
+                    recency_weight = entry.recency_weight(),
                     tokens = entry.token_estimate,
                     score = entry.combined_score(),
                     selected = true,
@@ -304,8 +336,13 @@ impl ShadowContext {
                     id = %entry.id,
                     kind = ?entry.kind,
                     priority = entry.priority,
+                    tier = entry.kind.tier(),
+                    tier_weight = entry.tier_weight(),
+                    priority_weight = entry.priority_weight(),
                     relevance = entry.relevance,
+                    relevance_weight = entry.relevance_weight(),
                     recency = entry.recency,
+                    recency_weight = entry.recency_weight(),
                     tokens = entry.token_estimate,
                     score = entry.combined_score(),
                     selected = false,

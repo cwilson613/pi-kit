@@ -203,7 +203,7 @@ For direct value storage, `~/.config/omegon/secrets.db` uses:
 
 ### auth.json
 
-Provider OAuth tokens and API keys are stored in `~/.pi/agent/auth.json`:
+Provider OAuth tokens and API keys are stored in `~/.config/omegon/auth.json`:
 
 - File permissions: 0600 enforced on every write
 - OAuth tokens: auto-refreshed when expired (5-minute safety margin)

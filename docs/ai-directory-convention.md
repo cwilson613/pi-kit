@@ -31,7 +31,7 @@ Adopt the emerging ai/ directory convention as the home for all agent-specific a
 - `core/crates/omegon/src/lifecycle/context.rs` (modified) — Change docs_dir from repo/docs to repo/ai/docs (with fallback to repo/docs)
 - `core/crates/omegon/src/lifecycle/design.rs` (modified) — No changes needed — scan functions take a dir parameter
 - `core/crates/omegon/src/features/lifecycle.rs` (modified) — Change openspec path from repo/openspec to repo/ai/openspec (with fallback)
-- `core/crates/omegon/src/setup.rs` (modified) — Change memory_dir from .omegon/memory to ai/memory (with fallback chain: ai/memory → .omegon/memory → .pi/memory)
+- `core/crates/omegon/src/setup.rs` (modified) — Change memory_dir from .omegon/memory to ai/memory (with fallback chain: ai/memory → .omegon/memory)
 - `core/crates/omegon/src/tui/mod.rs` (modified) — Update first-run heuristic to check ai/memory/facts.jsonl
 - `core/crates/omegon/src/features/harness_settings.rs` (modified) — Update memory_stats and sessions paths to ai/ convention
 - `core/crates/omegon-git/src/repo.rs` (modified) — Add ai/ to lifecycle path classification
@@ -42,7 +42,7 @@ Adopt the emerging ai/ directory convention as the home for all agent-specific a
 
 ### Constraints
 
-- Backward compat: every path resolver checks ai/ first, then old location (docs/, openspec/, .omegon/memory/, .omegon/lifecycle/), then .pi/ legacy
+- Backward compat: every path resolver checks ai/ first, then old location (docs/, openspec/, .omegon/memory/, .omegon/lifecycle/), without `.pi` legacy fallbacks
 - AGENTS.md stays at repo root — it's a project convention file, not an agent artifact
 - .omegon/ stays for tool config: profile.json, tutorial_completed, calibration, agents/
 - The ai/ directory should be created on first write, not eagerly on startup

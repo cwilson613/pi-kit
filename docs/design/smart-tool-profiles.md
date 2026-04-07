@@ -50,7 +50,7 @@ The practical lever is **tool activation** — disable tools for extensions that
 
 **Core idea:** A "profile" is a named set of tool activations + any extension-specific config hints. Profiles can be:
 1. **Auto-detected** from project signals (package.json, Cargo.toml, pyproject.toml, .git, etc.)
-2. **Explicitly set** via `/profile <name>` command or `.pi/profile.json` config
+2. **Explicitly set** via `/profile <name>` command or `.omegon/profile.json` config
 3. **Layered** — base profile + additive overrides
 
 **Proposed profiles:**
@@ -67,11 +67,11 @@ The practical lever is **tool activation** — disable tools for extensions that
 
 **Detection at session_start:**
 1. Scan `cwd` for language/framework markers
-2. Check for `.pi/profile.json` override
+2. Check for `.omegon/profile.json` override
 3. Compute effective tool set = union of matched profiles
 4. Call `pi.setActiveTools(effectiveSet)`
 
-**`.pi/profile.json` format:**
+**`.omegon/profile.json` format:**
 ```json
 {
   "include": ["coding", "visual"],

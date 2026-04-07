@@ -38,7 +38,7 @@ The Omegon feature lifecycle has 7 distinct phases where code is produced or eva
 **Core concept: A project-level guardrail registry** — a declarative config (in package.json or a dedicated file) that lists deterministic checks the project requires. The Omegon infrastructure then invokes these checks automatically at the right lifecycle points.
 
 ```jsonc
-// package.json or .pi/guardrails.json
+// package.json or `.omegon/guardrails.json`
 {
   "guardrails": {
     "checks": [

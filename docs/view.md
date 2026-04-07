@@ -40,7 +40,7 @@ URI resolution adds context-aware OSC 8 hyperlinks to file headers:
 ## Design Decisions
 
 - **mdserve is the default markdown handler**: When mdserve is running, `.md` links route to it for rendered preview. Falls back to `file://` when not running.
-- **Editor and URI preferences in `.pi/config.json`**: User sets preferred editor; URI resolution respects it at link-render time.
+- **Editor and URI preferences in `.omegon/profile.json`**: User sets preferred editor; URI resolution respects it at link-render time.
 - **Scale presets**: compact=60, normal=120, large=200, full=terminal-width cells. Multipliers (2x, 3x) also accepted.
 - **`/zoom` fullscreen overlay**: Opens last viewed image at terminal-filling size. Press Escape/q to close. All image-producing renderers stash their output for zoom access.
 

@@ -49,7 +49,7 @@ The `/cleave` command is the primary interface. `/assess` provides code review (
 
 ## Design Decisions
 
-- **Preflight checkpoint phase**: Before dispatching children, cleave checks for dirty git state and offers to stash/commit. Memory sync artifacts (`.pi/memory/`) don't block by default.
+- **Preflight checkpoint phase**: Before dispatching children, cleave checks for dirty git state and offers to stash/commit. Memory sync artifacts (`ai/memory/` or legacy `.omegon/memory/`) don't block by default.
 - **Skill-aware dispatch**: Children receive relevant skill files based on scope glob matching (e.g., `*.py` → python skill, `Dockerfile` → OCI skill). Annotation-first, then auto-match.
 - **Adversarial review loop**: Optional opus-tier reviewer checks each child for bugs, security issues, spec compliance. Severity-gated: nits → accept, warnings → 1 fix iteration, critical → 2 fix iterations, security → immediate escalation. Churn detection (Jaccard >50%) prevents fix loops.
 - **Tier routing**: Child model selection respects effort tiers — local models for simple tasks, sonnet/opus for complex ones via `resolveModelTier()`.

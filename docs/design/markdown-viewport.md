@@ -56,8 +56,8 @@ The fork-mdserve path gets us the document layer cheaply. Lifecycle and intellig
 | OpenSpec design.md | `openspec/changes/*/design.md` | File scope, decisions, constraints |
 | OpenSpec tasks.md | `openspec/changes/*/tasks.md` | Task groups with spec annotations |
 | Baseline specs | `openspec/baseline/*.md` | Archived spec contracts |
-| Memory facts | `.pi/memory/facts.jsonl` | JSONL: id, section, content, confidence, created_at |
-| Memory graph edges | `.pi/memory/facts.db` (runtime) | source_id, target_id, relation |
+| Memory facts | `ai/memory/facts.jsonl` | JSONL: id, section, content, confidence, created_at |
+| Memory graph edges | `ai/memory/facts.db` (runtime) | source_id, target_id, relation |
 | Cleave assessment | `openspec/changes/*/assessment.md` | Review results, issue lists |
 
 ### What the TUI dashboard can't do

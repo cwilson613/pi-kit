@@ -19,7 +19,7 @@ The workflow is designed around three policy decisions:
 
 - cleave should surface a **dirty-tree preflight** instead of failing with a bare git error
 - **checkpoint commits are lifecycle milestones**, not just end-of-change archive events
-- approved **volatile artifacts** such as `.pi/memory/facts.jsonl` stay visible but should not block cleave by default
+- approved **volatile artifacts** such as `ai/memory/facts.jsonl` stay visible but should not block cleave by default
 
 ## Research
 
@@ -46,7 +46,7 @@ When `/cleave` sees a dirty tree, Omegon classifies the changed paths before doi
    - files outside the active change scope
    - low-confidence matches that should not be silently swept into a checkpoint
 3. **Volatile**
-   - approved operational artifacts such as `.pi/memory/facts.jsonl`
+   - approved operational artifacts such as `ai/memory/facts.jsonl`
    - visible to the operator, but not treated like substantive implementation drift
 
 ### Operator actions
@@ -109,7 +109,7 @@ The classification is less informed, so the system should bias even harder towar
 ### Decision: Memory sync artifacts should not block cleave by default
 
 **Status:** decided
-**Rationale:** Tracked memory files like `.pi/memory/facts.jsonl` are operational artifacts that change during normal sessions. Cleave preflight should keep them visible but handle them separately from substantive implementation drift.
+**Rationale:** Tracked memory files like `ai/memory/facts.jsonl` are operational artifacts that change during normal sessions. Cleave preflight should keep them visible but handle them separately from substantive implementation drift.
 
 ## Open Questions
 

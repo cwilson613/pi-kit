@@ -53,10 +53,10 @@ Verified URI schemes and their requirements:
 **Status:** decided
 **Rationale:** mdserve auto-starts on session_start if the binary is on $PATH. All .md/.markdown OSC 8 links route to http://localhost:PORT/path. It's a simple local renderer — no data leaves the machine. /vault command becomes status/config only. If mdserve isn't installed, fall back to file://.
 
-### Decision: D2: Editor and URI preferences in .pi/config.json
+### Decision: D2: Editor and URI preferences in `.omegon/profile.json`
 
 **Status:** decided
-**Rationale:** Project-local .pi/config.json stores editor preference (vscode/cursor/zed) and any URI overrides. Same location as tool profiles (.pi/profile.json). Not coupled to scribe's user_preferences — works for any project.
+**Rationale:** Project-local `.omegon/profile.json` stores editor preference (vscode/cursor/zed) and any URI overrides. Same location as tool profiles (`.omegon/profile.json`). Not coupled to scribe's user_preferences — works for any project.
 
 ### Decision: D3: Smooth dynamic install path for mdserve
 
@@ -73,7 +73,7 @@ Verified URI schemes and their requirements:
 
 - `extensions/view/index.ts` (modified) — Add URI resolver to osc8() — route by file type + available handlers
 - `extensions/vault/index.ts` (modified) — Refactor: auto-start mdserve on session_start, /vault becomes status/config
-- `.pi/config.json` (new) — Project-local config — editor preference, URI overrides
+- `.omegon/profile.json` — Project-local config — editor preference, URI overrides
 - `extensions/view/uri-resolver.ts` (new) — URI resolution logic — detect mdserve, editor scheme, obsidian vault, fallback to file://
 
 ### Constraints

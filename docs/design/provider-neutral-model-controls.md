@@ -23,7 +23,7 @@ Track the implementation that makes model controls provider-neutral in operator-
 
 - `extensions/model-budget.ts` (modified) — Provider-aware tier descriptions and concrete provider/model notifications
 - `extensions/effort/index.ts` (modified) — Restore persisted driver model on startup and report resolved provider/model
-- `extensions/lib/model-preferences.ts` (new) — Persist and load last-used concrete driver model from .pi/config.json
+- `extensions/lib/model-preferences.ts` (new) — Persist and load last-used concrete driver model from `.omegon/profile.json`
 - `extensions/dashboard/footer.ts` (modified) — Compact footer cleanup to a single dashboard-first line with inline model visibility
 - `extensions/model-budget.test.ts` (new) — Coverage for provider-aware model control copy
 - `extensions/lib/model-preferences.test.ts` (new) — Coverage for last-used model persistence helpers

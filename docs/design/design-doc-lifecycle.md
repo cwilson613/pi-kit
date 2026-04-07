@@ -22,7 +22,7 @@ Five distinct knowledge sources, each with different granularity, audience, and 
 |--------|-------|-------------|----------|-----------|
 | **Design docs** (`docs/*.md`) | 34 files, 60-400 lines each | Exploration journal — research, decisions, rejected alternatives | Agent + human during active design | Frozen at "implemented" — never updated post-implementation |
 | **OpenSpec baselines** (`openspec/baseline/`) | 32 spec files | Given/When/Then scenarios — behavioral contracts | Agent during verify/assess | Updated on archive (delta-merge) — always current |
-| **Project memory** (`.pi/memory/facts.jsonl`) | 967 facts | Atomic facts — one sentence each | Agent context injection | Continuously updated, archived when stale |
+| **Project memory** (`ai/memory/facts.jsonl`) | 967 facts | Atomic facts — one sentence each | Agent context injection | Continuously updated, archived when stale |
 | **README.md** | 1 file | High-level overview, extension list | Human onboarding, GitHub visitors | Manually maintained — already drifting |
 | **CHANGELOG.md** | 1 file | Release-oriented summaries | Human + agent for version context | Updated per release — always current |
 

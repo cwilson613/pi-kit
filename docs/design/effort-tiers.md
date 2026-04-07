@@ -91,7 +91,7 @@ interface EffortConfig {
 3. Extensions that load before effort fall back to a sensible default (Substantial / tier 3).
 
 **Persistence:**
-- `.pi/config.json` → `{"effort": "Ruthless"}` for project-level default
+- `.omegon/profile.json` → `{"effort": "Ruthless"}` for project-level default
 - `PI_EFFORT=Servitor` env var for CI / automation / override
 - `/effort <name>` command for mid-session switching
 - Priority: env var > command > config > default (Substantial)

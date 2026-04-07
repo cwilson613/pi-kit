@@ -18,7 +18,7 @@ The Rust binary currently runs one-shot (cleave children). For interactive sessi
 - Session listing and selection
 - Episode generation on session end (via LLM bridge call)
 
-Currently pi manages sessions in `~/.pi/agent/sessions/`. The Rust binary should read/write compatible formats or introduce its own session store.
+Currently pi manages sessions in `~/.config/omegon/sessions/`. The Rust binary should read/write compatible formats or introduce its own session store.
 
 ## Research
 
@@ -31,7 +31,7 @@ Currently pi manages sessions in `~/.pi/agent/sessions/`. The Rust binary should
 - Currently only saves for cleave children (`.cleave-session.json` in worktree)
 
 **What's needed for full session persistence:**
-1. **Session directory management** — create `~/.pi/agent/sessions/<cwd-slug>/` directory structure
+1. **Session directory management** — create `~/.config/omegon/sessions/<cwd-slug>/` directory structure
 2. **Auto-save on exit** — always save after agent loop completes (not just cleave children)
 3. **Session listing** — enumerate saved sessions for a given cwd, sorted by timestamp
 4. **Session resume via CLI** — `omegon-agent --resume [session-id]` loads a previous session
@@ -45,7 +45,7 @@ Currently pi manages sessions in `~/.pi/agent/sessions/`. The Rust binary should
 
 ## Decisions
 
-### Decision: Session storage uses ~/.pi/agent/sessions/<cwd-slug>/<timestamp>_<short-id>.json — compatible with pi's directory structure
+### Decision: Session storage uses ~/.config/omegon/sessions/<cwd-slug>/<timestamp>_<short-id>.json — compatible with pi's directory structure
 
 **Status:** decided
 **Rationale:** Pi already uses this directory structure. Sharing it means the TS parent can see Rust session files and vice versa during the transition. The cwd slug replaces / with - and strips leading --. Session files use .json (our format) rather than .jsonl (pi's format) since the internal structure differs, but they coexist in the same directory.

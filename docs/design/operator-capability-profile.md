@@ -35,8 +35,8 @@ Recent behavior showed that “best available local model” is not the same as 
 ### Chosen profile shape
 
 The implementation splits durable intent from volatile runtime state:
-- `.pi/config.json` stores the durable `operatorProfile`
-- `.pi/runtime/operator-profile.json` stores transient cooldowns and runtime availability state
+- `.omegon/profile.json` stores the durable `operatorProfile`
+- runtime state is tracked in Omegon-owned transient status storage rather than `.pi/runtime/`
 
 Durable profile data is structured as:
 - `roles`: ordered candidates for each public capability role

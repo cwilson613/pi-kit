@@ -981,10 +981,8 @@ impl InstrumentPanel {
                     (c, Self::activity_color(ActivityMode::Idle, activity_phase))
                 }
                 ActivityMode::ToolChurn => {
-                    let c = if activity_phase > 0.82 {
-                        '✦'
-                    } else if activity_phase > 0.58 {
-                        '∿'
+                    let c = if activity_phase > 0.72 {
+                        '•'
                     } else {
                         '·'
                     };
@@ -994,7 +992,7 @@ impl InstrumentPanel {
                     )
                 }
                 ActivityMode::Waiting => {
-                    let c = if activity_phase > 0.66 { '…' } else { '·' };
+                    let c = if activity_phase > 0.66 { '•' } else { '·' };
                     (
                         c,
                         Self::activity_color(ActivityMode::Waiting, activity_phase),
@@ -1002,9 +1000,7 @@ impl InstrumentPanel {
                 }
                 ActivityMode::Thinking => {
                     let c = if activity_phase > 0.72 {
-                        '◉'
-                    } else if activity_phase > 0.42 {
-                        '◌'
+                        '•'
                     } else {
                         '·'
                     };
@@ -2252,8 +2248,8 @@ mod tests {
         assert!(
             activity_row
                 .chars()
-                .any(|ch| matches!(ch, '·' | '…' | '✦' | '∿' | '◌' | '◉')),
-            "activity row should use runtime-state glyphs: {activity_row}"
+                .any(|ch| matches!(ch, ' ' | '·' | '•')),
+            "activity row should use restrained runtime-state dot glyphs: {activity_row}"
         );
         assert_ne!(
             composition_row, activity_row,

@@ -30,7 +30,7 @@ Bootstrap runs on first session start, probing dependencies (d2, pandoc, pdftopp
 | `extensions/bootstrap/deps.ts` | Dependency checks — d2, pandoc, pdftoppm, Ollama, clipboard tools |
 | `extensions/lib/operator-profile.ts` | Profile schema, role-to-candidate mapping, fallback policy |
 | `extensions/lib/operator-fallback.ts` | Alternate candidate resolution using profile preferences |
-| `extensions/lib/model-preferences.ts` | Persisted model preferences (`.pi/config.json`) |
+| `extensions/lib/model-preferences.ts` | Persisted model preferences (`.omegon/profile.json`) |
 
 ## Design Decisions
 
@@ -46,7 +46,7 @@ See `openspec/baseline/models/profile.md` for Given/When/Then scenarios covering
 
 ## Constraints & Known Limitations
 
-- Profile is per-machine (`.pi/config.json`), not per-project
+- Profile is per-repo (`.omegon/profile.json`), not per-machine
 - No automatic provider re-authentication — if an API key expires, operator must reconfigure
 - Hardware detection is macOS-focused (sysctl for GPU, system_profiler for RAM)
 

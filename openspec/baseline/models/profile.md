@@ -2,10 +2,10 @@
 
 ### Requirement: Operator capability profile persists public role mappings in config
 
-Omegon must support a durable operator capability profile stored in `.pi/config.json` that defines the full public capability ladder and maps each role to ordered concrete candidates.
+Omegon must support a durable operator capability profile stored in `.omegon/profile.json` that defines the full public capability ladder and maps each role to ordered concrete candidates.
 
 #### Scenario: Default profile is synthesized when none exists
-Given a project has no operator capability profile in `.pi/config.json`
+Given a project has no operator capability profile in `.omegon/profile.json`
 When Omegon resolves a requested capability role
 Then it synthesizes a conservative default profile
 And the default profile includes the public roles `archmagos`, `magos`, `adept`, `servitor`, and `servoskull`

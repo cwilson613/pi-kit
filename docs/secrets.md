@@ -17,7 +17,7 @@ The secrets extension manages provider API keys and credentials needed by Omegon
 2. **1Password references**: Store `op://vault/item/field` references that resolve at runtime via 1Password CLI
 3. **Shell command evaluation**: Store `$(command)` patterns that evaluate at runtime (e.g., `$(aws secretsmanager get-secret-value ...)`)
 
-Secrets are stored in `~/.pi/secrets.json` with mode-appropriate handling. The extension probes for clipboard commands (`pbpaste`, `xclip`, `xsel`, `wl-paste`) at runtime.
+Secrets are stored in `~/.config/omegon/auth.json` and the configured Omegon secrets backend, with mode-appropriate handling. The extension probes for clipboard commands (`pbpaste`, `xclip`, `xsel`, `wl-paste`) at runtime.
 
 ## Key Files
 
@@ -35,7 +35,7 @@ Secrets are stored in `~/.pi/secrets.json` with mode-appropriate handling. The e
 
 - Clipboard-based input requires `pbpaste` (macOS), `xclip`/`xsel` (Linux X11), or `wl-paste` (Wayland)
 - `ExtensionUIDialogOptions` supports only `signal` and `timeout` — no `secret`/`password` field
-- Secrets file is per-machine (`~/.pi/secrets.json`), not per-project
+- Secrets state is Omegon-owned under `~/.config/omegon/` and the configured backend, not per-project
 
 ## Related Subsystems
 

@@ -21,8 +21,8 @@ Auth is fragmented across 6 mechanisms with 3 different UX paths: CLI-only for L
 ### Current state — 6 auth mechanisms, 3 UX paths
 
 **LLM Providers (auth.rs)**
-- Anthropic OAuth: PKCE flow → `~/.pi/agent/auth.json["anthropic"]`
-- OpenAI OAuth: PKCE flow → `~/.pi/agent/auth.json["openai"]`
+- Anthropic OAuth: PKCE flow → `~/.config/omegon/auth.json["anthropic"]`
+- OpenAI OAuth: PKCE flow → `~/.config/omegon/auth.json["openai"]`
 - CLI only: `omegon login anthropic` / `omegon login openai`
 - No TUI command, no agent tool
 - Token refresh on expiry is automatic in `resolve_api_key_sync()`

@@ -4,8 +4,8 @@
 
 Installed Omegon must reuse persistent provider auth and other mutable user state from the stable shared user config directory instead of redirecting it into the package install root.
 
-#### Scenario: Existing Claude Code auth remains valid in Omegon
-Given a machine already has `~/.pi/agent/auth.json`
+#### Scenario: Existing Omegon auth remains valid across installs
+Given a machine already has `~/.config/omegon/auth.json`
 And Omegon is installed globally from npm
 When the user launches `omegon`
 Then Omegon reads auth from the stable shared user config directory
@@ -26,7 +26,7 @@ Given Omegon is installed from npm
 When `omegon` starts without an explicit `PI_CODING_AGENT_DIR` override
 Then the coding agent loads Omegon-packaged extensions from the installed Omegon root
 And it loads Omegon-packaged skills and prompt templates from the installed Omegon root
-And mutable state paths still resolve under `~/.pi/agent`
+And mutable state paths still resolve under `~/.config/omegon`
 
 ### Requirement: Regressed package-root state is migrated forward safely
 

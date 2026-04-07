@@ -40,7 +40,7 @@ The effort extension writes `sharedState.effort` on initialization and on every 
 
 #### Scenario: Shared state populated on session start
 
-Given no PI_EFFORT env var and no .pi/config.json effort key
+Given no PI_EFFORT env var and no `.omegon/profile.json` effort key
 When session_start fires
 Then sharedState.effort contains the default tier config (Substantial, level 3)
 
@@ -50,16 +50,16 @@ Given PI_EFFORT=Servitor
 When session_start fires
 Then sharedState.effort.level is 1 and sharedState.effort.name is "Servitor"
 
-#### Scenario: .pi/config.json effort key sets default
+#### Scenario: .omegon/profile.json effort key sets default
 
-Given .pi/config.json contains {"effort": "Ruthless"}
+Given `.omegon/profile.json` contains {"effort": "Ruthless"}
 And no PI_EFFORT env var
 When session_start fires
 Then sharedState.effort.level is 4
 
 #### Scenario: Env var takes priority over config file
 
-Given PI_EFFORT=Omnissiah and .pi/config.json contains {"effort": "Servitor"}
+Given PI_EFFORT=Omnissiah and `.omegon/profile.json` contains {"effort": "Servitor"}
 When session_start fires
 Then sharedState.effort.level is 7
 

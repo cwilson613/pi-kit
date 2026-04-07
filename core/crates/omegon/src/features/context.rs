@@ -7,7 +7,7 @@
 //! - context_clear: clear history, start fresh
 
 use async_trait::async_trait;
-use omegon_memory::{FactFilter, FactStatus, MemoryBackend, Section};
+use omegon_memory::{MemoryBackend, Section};
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -770,29 +770,17 @@ mod tests {
 
     #[tokio::test]
     async fn request_context_returns_decision_pack_from_focused_node() {
-        use std::collections::HashMap;
-        use std::path::PathBuf;
-
         let tmp = tempfile::tempdir().unwrap();
         let docs_dir = tmp.path().join("docs");
         std::fs::create_dir_all(&docs_dir).unwrap();
         let doc_path = docs_dir.join("decision-node.md");
         std::fs::write(
             &doc_path,
-            "---\nid: decision-node\ntitle: Decision Node\nstatus: exploring\n---\n\n# Decision Node\n\n## Overview\n\nOverview.\n\n## Decisions\n\n### Use selector policy\n\n**Status:** decided\n\n**Rationale:** Keeps request shaping bounded.\n",
+            "---\nid: decision-node\ntitle: Decision Node\nstatus: exploring\nopen_questions: []\ndependencies: []\nrelated: []\n---\n\n# Decision Node\n\n## Overview\n\nOverview.\n\n## Decisions\n\n### Use selector policy\n\n**Status:** decided\n\n**Rationale:** Keeps request shaping bounded.\n",
         )
         .unwrap();
-        let fm = design::parse_frontmatter(&std::fs::read_to_string(&doc_path).unwrap()).unwrap();
-        let node = design::node_from_frontmatter(&fm, doc_path.clone()).unwrap();
-        let mut nodes = HashMap::new();
-        nodes.insert("decision-node".to_string(), node);
-        let lifecycle = LifecycleContextProvider {
-            nodes,
-            sections_cache: HashMap::new(),
-            changes: vec![],
-            focused_node: Some("decision-node".into()),
-            repo_path: tmp.path().to_path_buf(),
-        };
+        let mut lifecycle = LifecycleContextProvider::new(tmp.path());
+        lifecycle.set_focus(Some("decision-node".into()));
 
         let provider = ContextProvider::new_with_sources(
             SharedContextMetrics::new(),
@@ -864,6 +852,67 @@ mod tests {
         let text = result.content.iter().filter_map(|c| match c { ContentBlock::Text { text } => Some(text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
         assert!(text.contains("### Memory"), "unexpected text: {text}");
         assert!(text.contains("bounded and mediated"), "unexpected text: {text}");
+    }
+
+    #[tokio::test]
+    async fn request_context_returns_specs_pack_from_active_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec_dir = tmp
+            .path()
+            .join("openspec")
+            .join("changes")
+            .join("ctx-pack")
+            .join("specs");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            tmp.path().join("openspec").join("changes").join("ctx-pack").join("proposal.md"),
+            "# proposal\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("openspec").join("changes").join("ctx-pack").join("design.md"),
+            "# design\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("openspec").join("changes").join("ctx-pack").join("tasks.md"),
+            "- [ ] task\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("context.md"),
+            "# context — Delta Spec\n\n## ADDED Requirements\n\n### Requirement: Context requests are mediated\n\nrequest_context must return bounded packs.\n\n#### Scenario: Session orientation request\nGiven the model lacks orientation\nWhen it calls request_context\nThen the harness returns a bounded pack\n",
+        )
+        .unwrap();
+
+        let lifecycle = LifecycleContextProvider::new(tmp.path());
+        let provider = ContextProvider::new_with_sources(
+            SharedContextMetrics::new(),
+            new_shared_command_tx(),
+            Some(Arc::new(Mutex::new(lifecycle))),
+            None,
+            None,
+        );
+        let result = provider
+            .execute(
+                crate::tool_registry::context::REQUEST_CONTEXT,
+                "call-ctx-specs",
+                json!({
+                    "requests": [
+                        {
+                            "kind": "specs",
+                            "query": "bounded pack",
+                            "reason": "Need current behavioral contract"
+                        }
+                    ]
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("tool result");
+        let text = result.content.iter().filter_map(|c| match c { ContentBlock::Text { text } => Some(text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("### Specs"), "unexpected text: {text}");
+        assert!(text.contains("Context requests are mediated") || text.contains("Session orientation request"), "unexpected text: {text}");
     }
 
     #[tokio::test]

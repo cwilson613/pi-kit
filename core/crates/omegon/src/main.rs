@@ -1587,6 +1587,45 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         sub => format!("Unknown: /secrets {sub}\n\nType /secrets to see usage."),
                     };
                     let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                } else if name == "context_request" {
+                    let (kind, query) = args.split_once(' ').unwrap_or((args.as_str(), ""));
+                    if kind.trim().is_empty() || query.trim().is_empty() {
+                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                            message: "Usage: /context request <kind> <query>".to_string(),
+                        });
+                        continue;
+                    }
+
+                    let tool_args = serde_json::json!({
+                        "requests": [{
+                            "kind": kind.trim(),
+                            "query": query.trim(),
+                            "reason": "Operator-requested direct context inspection from slash command"
+                        }]
+                    });
+
+                    let message = match agent
+                        .bus
+                        .execute_tool(
+                            crate::tool_registry::context::REQUEST_CONTEXT,
+                            "tui-context-request",
+                            tool_args,
+                            tokio_util::sync::CancellationToken::new(),
+                        )
+                        .await
+                    {
+                        Ok(result) => result
+                            .content
+                            .iter()
+                            .filter_map(|c| match c {
+                                omegon_traits::ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                        Err(e) => format!("Context request failed: {e}"),
+                    };
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message });
                 } else if name.starts_with("auth_") {
                     match name.as_str() {
                         "auth_status" => {

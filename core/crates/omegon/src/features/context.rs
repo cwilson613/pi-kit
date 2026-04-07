@@ -584,25 +584,55 @@ impl Feature for ContextProvider {
                     match kind {
                         "session_state" => {
                             supported += 1;
-                            sections.push(format!(
+                            let pack_text = format!(
                                 "### Session State\n- Why selected: session orientation request for `{query}`\n- Reason: {reason}\n- Current context: {}/{} tokens ({}%)\n- Policy: {}\n- Thinking: {}",
                                 metrics.tokens_used,
                                 metrics.context_window,
                                 metrics.usage_percent(),
                                 metrics.context_class,
                                 metrics.thinking_level
-                            ));
+                            );
+                            sections.push(pack_text.clone());
+                            pack_details.push(json!({
+                                "kind": "Session State",
+                                "query": query,
+                                "reason": reason,
+                                "selected_ids": [],
+                                "dropped_ids": [],
+                                "total_tokens": pack_text.len() / 4,
+                                "selected_entries": [{
+                                    "id": "session_state",
+                                    "kind": "SessionState",
+                                    "content": pack_text,
+                                }],
+                                "dropped_entries": [],
+                            }));
                         }
                         "recent_runtime" => {
                             supported += 1;
-                            sections.push(format!(
+                            let pack_text = format!(
                                 "### Recent Runtime\n- Why selected: recent runtime evidence request for `{query}`\n- Reason: {reason}\n- Current runtime snapshot: context {}/{} tokens ({}%), policy {}, thinking {}",
                                 metrics.tokens_used,
                                 metrics.context_window,
                                 metrics.usage_percent(),
                                 metrics.context_class,
                                 metrics.thinking_level
-                            ));
+                            );
+                            sections.push(pack_text.clone());
+                            pack_details.push(json!({
+                                "kind": "Recent Runtime",
+                                "query": query,
+                                "reason": reason,
+                                "selected_ids": [],
+                                "dropped_ids": [],
+                                "total_tokens": pack_text.len() / 4,
+                                "selected_entries": [{
+                                    "id": "recent_runtime",
+                                    "kind": "RecentRuntime",
+                                    "content": pack_text,
+                                }],
+                                "dropped_entries": [],
+                            }));
                         }
                         "decisions" => {
                             if let Some(pack) = self.summarize_decisions(query, reason, Self::request_max_items(req)) {
@@ -948,6 +978,8 @@ mod tests {
         assert!(text.contains("Session State"), "unexpected text: {text}");
         assert!(text.contains("96433/272000"), "unexpected text: {text}");
         assert!(result.details["packs"].is_array(), "missing structured packs: {}", result.details);
+        assert_eq!(result.details["packs"].as_array().unwrap().len(), 1);
+        assert_eq!(result.details["packs"][0]["kind"], "Session State");
     }
 
     #[tokio::test]

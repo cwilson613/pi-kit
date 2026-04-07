@@ -29,7 +29,22 @@ struct SmokeScenario {
     expect_status_line: &'static str,
     expect_merge_line: &'static str,
     runtime_profile: Option<crate::cleave::CleaveChildRuntimeProfile>,
-    assert_runtime: Option<fn(&serde_json::Value) -> anyhow::Result<()>>,
+    assert_runtime: Option<Box<dyn Fn(&serde_json::Value) -> anyhow::Result<()> + Send + Sync>>,
+}
+
+fn runtime_matrix_assert(
+    expected_model: &'static str,
+    expected_provider: &'static str,
+) -> Box<dyn Fn(&serde_json::Value) -> anyhow::Result<()> + Send + Sync> {
+    Box::new(move |report| {
+        if report["model"] != expected_model {
+            anyhow::bail!("model mismatch: expected {expected_model}, got {report}");
+        }
+        if report["provider"] != expected_provider {
+            anyhow::bail!("provider mismatch: expected {expected_provider}, got {report}");
+        }
+        Ok(())
+    })
 }
 
 pub async fn run(cli: &Cli) -> anyhow::Result<()> {
@@ -92,7 +107,85 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                 preloaded_files: vec!["docs/runtime-preload.md".into()],
                 ..Default::default()
             }),
-            assert_runtime: Some(assert_runtime_profile_report),
+            assert_runtime: Some(Box::new(assert_runtime_profile_report)),
+        },
+        SmokeScenario {
+            name: "runtime_model_matrix_claude",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                model: Some("anthropic:claude-sonnet-4-6".into()),
+                ..Default::default()
+            }),
+            assert_runtime: Some(runtime_matrix_assert("claude-sonnet-4-6", "anthropic")),
+        },
+        SmokeScenario {
+            name: "runtime_model_matrix_openai_gpt54",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                model: Some("openai:gpt-5.4".into()),
+                ..Default::default()
+            }),
+            assert_runtime: Some(runtime_matrix_assert("gpt-5.4", "openai")),
+        },
+        SmokeScenario {
+            name: "runtime_model_matrix_openai_gpt41",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                model: Some("openai:gpt-4.1".into()),
+                ..Default::default()
+            }),
+            assert_runtime: Some(runtime_matrix_assert("gpt-4.1", "openai")),
+        },
+        SmokeScenario {
+            name: "runtime_model_matrix_ollama_local",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                model: Some("qwen3:32b".into()),
+                ..Default::default()
+            }),
+            assert_runtime: Some(runtime_matrix_assert("qwen3:32b", "ollama")),
+        },
+        SmokeScenario {
+            name: "runtime_model_matrix_local_alias",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                model: Some("local:qwen3:30b".into()),
+                ..Default::default()
+            }),
+            assert_runtime: Some(runtime_matrix_assert("qwen3:30b", "ollama")),
+        },
+        SmokeScenario {
+            name: "runtime_model_matrix_ollama_cloud",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                model: Some("ollama-cloud:gpt-oss:120b-cloud".into()),
+                ..Default::default()
+            }),
+            assert_runtime: Some(runtime_matrix_assert("gpt-oss:120b-cloud", "ollama-cloud")),
         },
     ];
 
@@ -263,7 +356,7 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
         );
     }
 
-    if let Some(assert_runtime) = scenario.assert_runtime {
+    if let Some(assert_runtime) = &scenario.assert_runtime {
         let stdout = result.state.children[0].stdout.as_deref().unwrap_or("");
         let report: serde_json::Value = serde_json::from_str(stdout.trim())
             .with_context(|| format!("expected JSON runtime report, got: {stdout:?}"))?;

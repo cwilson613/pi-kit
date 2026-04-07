@@ -110,6 +110,12 @@ pub struct ContextProvider {
     repo_path: Option<PathBuf>,
 }
 
+struct PackReport {
+    heading: String,
+    text: String,
+    details: Value,
+}
+
 impl ContextProvider {
     pub fn new(metrics: Arc<Mutex<SharedContextMetrics>>, command_tx: SharedCommandTx) -> Self {
         Self {
@@ -162,7 +168,7 @@ impl ContextProvider {
         query: &str,
         reason: &str,
         mut entries: Vec<ShadowEntry>,
-    ) -> Option<String> {
+    ) -> Option<PackReport> {
         if entries.is_empty() {
             tracing::debug!(kind = kind_heading, query, "request_context: no candidate entries");
             return None;
@@ -186,6 +192,52 @@ impl ContextProvider {
             tracing::debug!(kind = kind_heading, query, "request_context: empty pack after selection");
             None
         } else {
+            let selected_entries = selected
+                .selected_ids
+                .iter()
+                .filter_map(|id| shadow.entry_by_id(id))
+                .map(|entry| {
+                    json!({
+                        "id": entry.id,
+                        "kind": format!("{:?}", entry.kind),
+                        "priority": entry.priority,
+                        "tier": entry.kind.tier(),
+                        "tier_weight": entry.tier_weight(),
+                        "priority_weight": entry.priority_weight(),
+                        "relevance": entry.relevance,
+                        "relevance_weight": entry.relevance_weight(),
+                        "recency": entry.recency,
+                        "recency_weight": entry.recency_weight(),
+                        "token_estimate": entry.token_estimate,
+                        "diversity_key": entry.diversity_key,
+                        "diversity_cap": entry.diversity_cap,
+                        "content": entry.body.materialize(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let dropped_entries = selected
+                .dropped_ids
+                .iter()
+                .filter_map(|id| shadow.entry_by_id(id))
+                .map(|entry| {
+                    json!({
+                        "id": entry.id,
+                        "kind": format!("{:?}", entry.kind),
+                        "priority": entry.priority,
+                        "tier": entry.kind.tier(),
+                        "tier_weight": entry.tier_weight(),
+                        "priority_weight": entry.priority_weight(),
+                        "relevance": entry.relevance,
+                        "relevance_weight": entry.relevance_weight(),
+                        "recency": entry.recency,
+                        "recency_weight": entry.recency_weight(),
+                        "token_estimate": entry.token_estimate,
+                        "diversity_key": entry.diversity_key,
+                        "diversity_cap": entry.diversity_cap,
+                        "content": entry.body.materialize(),
+                    })
+                })
+                .collect::<Vec<_>>();
             tracing::debug!(
                 kind = kind_heading,
                 query,
@@ -194,11 +246,24 @@ impl ContextProvider {
                 selected_ids = ?selected.selected_ids,
                 "request_context: pack selected"
             );
-            Some(format!("### {kind_heading}\n- Reason: {reason}\n- Query: {query}\n{body}"))
+            Some(PackReport {
+                heading: kind_heading.to_string(),
+                text: format!("### {kind_heading}\n- Reason: {reason}\n- Query: {query}\n{body}"),
+                details: json!({
+                    "kind": kind_heading,
+                    "query": query,
+                    "reason": reason,
+                    "selected_ids": selected.selected_ids,
+                    "dropped_ids": selected.dropped_ids,
+                    "total_tokens": selected.total_tokens,
+                    "selected_entries": selected_entries,
+                    "dropped_entries": dropped_entries,
+                }),
+            })
         }
     }
 
-    fn summarize_decisions(&self, query: &str, reason: &str, max_items: usize) -> Option<String> {
+    fn summarize_decisions(&self, query: &str, reason: &str, max_items: usize) -> Option<PackReport> {
         let lifecycle = self.lifecycle.as_ref()?;
         let provider = lifecycle.lock().ok()?;
         let mut entries = Vec::new();
@@ -236,9 +301,10 @@ impl ContextProvider {
         }
 
         Self::select_pack("Decisions", query, reason, entries)
+            .map(|report| report)
     }
 
-    fn summarize_specs(&self, query: &str, reason: &str, max_items: usize) -> Option<String> {
+    fn summarize_specs(&self, query: &str, reason: &str, max_items: usize) -> Option<PackReport> {
         let lifecycle = self.lifecycle.as_ref()?;
         let provider = lifecycle.lock().ok()?;
         let mut entries = Vec::new();
@@ -310,6 +376,7 @@ impl ContextProvider {
         }
 
         Self::select_pack("Specs", query, reason, entries)
+            .map(|report| report)
     }
 
     async fn summarize_memory(
@@ -317,7 +384,7 @@ impl ContextProvider {
         query: &str,
         reason: &str,
         max_items: usize,
-    ) -> Option<String> {
+    ) -> Option<PackReport> {
         let backend = self.memory_backend.as_ref()?;
         let mind = self.memory_mind.as_deref()?;
         let results = backend.fts_search(mind, query, max_items).await.ok()?;
@@ -352,7 +419,7 @@ impl ContextProvider {
         Self::select_pack("Memory", query, reason, entries)
     }
 
-    fn summarize_code(&self, query: &str, reason: &str, max_items: usize) -> Option<String> {
+    fn summarize_code(&self, query: &str, reason: &str, max_items: usize) -> Option<PackReport> {
         let repo_path = self.repo_path.as_ref()?;
         let db_path = repo_path.join(".omegon").join("codescan.db");
         let mut cache = ScanCache::open(&db_path).ok()?;
@@ -506,6 +573,7 @@ impl Feature for ContextProvider {
                     metrics.clone()
                 };
                 let mut sections = Vec::new();
+                let mut pack_details = Vec::new();
                 let mut supported = 0usize;
                 let mut unsupported = 0usize;
 
@@ -539,7 +607,8 @@ impl Feature for ContextProvider {
                         "decisions" => {
                             if let Some(pack) = self.summarize_decisions(query, reason, Self::request_max_items(req)) {
                                 supported += 1;
-                                sections.push(pack);
+                                sections.push(pack.text.clone());
+                                pack_details.push(pack.details);
                             } else {
                                 unsupported += 1;
                                 sections.push(format!(
@@ -550,7 +619,8 @@ impl Feature for ContextProvider {
                         "specs" => {
                             if let Some(pack) = self.summarize_specs(query, reason, Self::request_max_items(req)) {
                                 supported += 1;
-                                sections.push(pack);
+                                sections.push(pack.text.clone());
+                                pack_details.push(pack.details);
                             } else {
                                 unsupported += 1;
                                 sections.push(format!(
@@ -561,7 +631,8 @@ impl Feature for ContextProvider {
                         "memory" => {
                             if let Some(pack) = self.summarize_memory(query, reason, Self::request_max_items(req)).await {
                                 supported += 1;
-                                sections.push(pack);
+                                sections.push(pack.text.clone());
+                                pack_details.push(pack.details);
                             } else {
                                 unsupported += 1;
                                 sections.push(format!(
@@ -572,7 +643,8 @@ impl Feature for ContextProvider {
                         "code" => {
                             if let Some(pack) = self.summarize_code(query, reason, Self::request_max_items(req)) {
                                 supported += 1;
-                                sections.push(pack);
+                                sections.push(pack.text.clone());
+                                pack_details.push(pack.details);
                             } else {
                                 unsupported += 1;
                                 sections.push(format!(
@@ -603,6 +675,7 @@ impl Feature for ContextProvider {
                         "tokens_used": metrics.tokens_used,
                         "thinking": metrics.thinking_level,
                         "class": metrics.context_class,
+                        "packs": pack_details,
                     }),
                 })
             }
@@ -874,6 +947,7 @@ mod tests {
         );
         assert!(text.contains("Session State"), "unexpected text: {text}");
         assert!(text.contains("96433/272000"), "unexpected text: {text}");
+        assert!(result.details["packs"].is_array(), "missing structured packs: {}", result.details);
     }
 
     #[tokio::test]

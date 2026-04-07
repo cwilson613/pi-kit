@@ -165,6 +165,7 @@ impl ShadowEntry {
 #[derive(Debug, Clone)]
 pub struct SelectedContext {
     pub selected_ids: Vec<EntryId>,
+    pub dropped_ids: Vec<EntryId>,
     pub total_tokens: usize,
     pub policy: SelectorPolicy,
 }
@@ -412,9 +413,14 @@ impl ShadowContext {
 
         SelectedContext {
             selected_ids,
+            dropped_ids,
             total_tokens,
             policy: self.selector_policy,
         }
+    }
+
+    pub fn entry_by_id(&self, id: &str) -> Option<&ShadowEntry> {
+        self.entries.iter().find(|entry| entry.id == id)
     }
 
     pub fn render_selection(&self, selected: &SelectedContext) -> String {

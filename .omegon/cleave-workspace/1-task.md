@@ -1,31 +1,33 @@
 ---
 task_id: 1
-label: ipc-web-bridge
-siblings: [0:executor-core, 2:tests-docs]
+label: surfaces
+siblings: [0:primitives]
 ---
 
-# Task 1: ipc-web-bridge
+# Task 1: surfaces
 
 ## Root Directive
 
-> Implement a canonical slash command executor layer so TUI, IPC run_slash_command, and web WebSocket slash_command all share one command semantics path. Remote callers must reach model switching, context status/compact/clear, new session, sessions, and auth flows through structured outcomes instead of bypassing to BusCommand only.
+> Audit the TUI for any occurrences where terminal garbage leaks through behind the UI, identify root causes with evidence, and implement/tests for any defects found.
 
 ## Mission
 
-Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.
+Audit higher-level TUI surfaces and layouts for incomplete clearing, width mismatches, border/overlay gaps, stale frame retention, and other cases where background terminal garbage could show through. Fix confirmed defects and add focused tests.
 
 ## Scope
 
-- `core/crates/omegon/src/ipc/connection.rs`
-- `core/crates/omegon/src/web/ws.rs`
-- `core/crates/omegon/src/main.rs`
+- `core/crates/omegon/src/tui/mod.rs`
+- `core/crates/omegon/src/tui/dashboard.rs`
+- `core/crates/omegon/src/tui/instruments.rs`
+- `core/crates/omegon/src/tui/footer.rs`
+- `core/crates/omegon/src/tui/tests.rs`
+- `core/crates/omegon/src/tui/snapshot_tests.rs`
 
-**Depends on:** executor-core
+**Depends on:** none (independent)
 
 ## Siblings
 
-- **executor-core**: Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.
-- **tests-docs**: Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.
+- **primitives**: Audit shared TUI rendering primitives and low-level drawing helpers for overdraw, underdraw, clipping, stale-cell retention, wide-glyph handling, and transparent/background issues that could leak terminal content behind the UI. Fix confirmed defects and add focused tests.
 
 ## Dependency Versions
 

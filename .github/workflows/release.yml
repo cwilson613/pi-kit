@@ -143,6 +143,53 @@ jobs:
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
 
+  live-upstream-smoke:
+    name: Live upstream smoke (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      CARGO_TERM_COLOR: always
+      OMEGON_RUN_LIVE_UPSTREAM_TESTS: "1"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: ${{ secrets.OLLAMA_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run live upstream smoke suite
+        id: live_smoke
+        run: |
+          set -o pipefail
+          cd core
+          cargo test -p omegon --test live_upstream_smoke -- --nocapture 2>&1 | tee /tmp/live-upstream-smoke.log
+
+      - name: Upload live upstream smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-upstream-smoke-log
+          path: /tmp/live-upstream-smoke.log
+
+      - name: Summarize live upstream smoke outcome
+        if: always()
+        run: |
+          {
+            echo "## Live upstream smoke (non-blocking)"
+            echo
+            echo "Outcome: ${{ steps.live_smoke.outcome }}"
+            echo
+            echo "This job does not block release publication."
+            echo
+            echo '```'
+            tail -n 80 /tmp/live-upstream-smoke.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   release:
     name: Create release
     needs: build

@@ -1,109 +1,75 @@
 {
-  "runId": "clv-ubmkb8xr-ubmk",
-  "directive": "Implement a canonical slash command executor layer so TUI, IPC run_slash_command, and web WebSocket slash_command all share one command semantics path. Remote callers must reach model switching, context status/compact/clear, new session, sessions, and auth flows through structured outcomes instead of bypassing to BusCommand only.",
+  "runId": "clv-f6piorxi-01lt",
+  "directive": "Audit the TUI for any occurrences where terminal garbage leaks through behind the UI, identify root causes with evidence, and implement/tests for any defects found.",
   "repoPath": "/Users/cwilson/workspace/black-meridian/omegon",
   "workspacePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace",
   "children": [
     {
       "childId": 0,
-      "label": "executor-core",
-      "description": "Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.",
+      "label": "primitives",
+      "description": "Audit shared TUI rendering primitives and low-level drawing helpers for overdraw, underdraw, clipping, stale-cell retention, wide-glyph handling, and transparent/background issues that could leak terminal content behind the UI. Fix confirmed defects and add focused tests.",
       "scope": [
-        "core/crates/omegon/src/main.rs",
-        "core/crates/omegon/src/tui/mod.rs",
-        "core/crates/omegon/src/setup.rs",
-        "core/crates/omegon/src/features/context.rs"
+        "core/crates/omegon/src/tui/shared.rs",
+        "core/crates/omegon/src/tui/instruments.rs",
+        "core/crates/omegon/src/tui/footer.rs",
+        "core/crates/omegon/src/tui/tests.rs",
+        "core/crates/omegon/src/tui/snapshot_tests.rs"
       ],
       "dependsOn": [],
-      "status": "completed",
-      "branch": "cleave/0-executor-core",
+      "status": "running",
+      "branch": "cleave/0-primitives",
+      "worktreePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace/0-wt-primitives",
       "backend": "native",
-      "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 425.242453125
+      "executeModel": "anthropic:claude-sonnet-4-6"
     },
     {
       "childId": 1,
-      "label": "ipc-web-bridge",
-      "description": "Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.",
+      "label": "surfaces",
+      "description": "Audit higher-level TUI surfaces and layouts for incomplete clearing, width mismatches, border/overlay gaps, stale frame retention, and other cases where background terminal garbage could show through. Fix confirmed defects and add focused tests.",
       "scope": [
-        "core/crates/omegon/src/ipc/connection.rs",
-        "core/crates/omegon/src/web/ws.rs",
-        "core/crates/omegon/src/main.rs"
-      ],
-      "dependsOn": [
-        "executor-core"
-      ],
-      "status": "completed",
-      "branch": "cleave/1-ipc-web-bridge",
-      "backend": "native",
-      "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 623.594131084
-    },
-    {
-      "childId": 2,
-      "label": "tests-docs",
-      "description": "Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.",
-      "scope": [
+        "core/crates/omegon/src/tui/mod.rs",
+        "core/crates/omegon/src/tui/dashboard.rs",
+        "core/crates/omegon/src/tui/instruments.rs",
+        "core/crates/omegon/src/tui/footer.rs",
         "core/crates/omegon/src/tui/tests.rs",
-        "core/crates/omegon/src/ipc/connection.rs",
-        "core/crates/omegon/src/web/ws.rs",
-        "core/crates/omegon/src/main.rs"
+        "core/crates/omegon/src/tui/snapshot_tests.rs"
       ],
-      "dependsOn": [
-        "executor-core",
-        "ipc-web-bridge"
-      ],
-      "status": "completed",
-      "branch": "cleave/2-tests-docs",
+      "dependsOn": [],
+      "status": "running",
+      "branch": "cleave/1-surfaces",
+      "worktreePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace/1-wt-surfaces",
       "backend": "native",
-      "executeModel": "openai-codex:gpt-5.4",
-      "durationSecs": 164.248522167
+      "executeModel": "anthropic:claude-sonnet-4-6"
     }
   ],
   "plan": {
     "children": [
       {
         "depends_on": [],
-        "description": "Create a shared slash command executor abstraction in the Omegon core that can execute canonical slash semantics without going through the TUI-only parser. It must represent structured outcomes and cover model switching, context status/compact/clear, new session, sessions, bus command forwarding, and auth command routing with explicit remote-safe vs interactive-only outcomes.",
-        "label": "executor-core",
-        "model": "openai-codex:gpt-5.4",
+        "description": "Audit shared TUI rendering primitives and low-level drawing helpers for overdraw, underdraw, clipping, stale-cell retention, wide-glyph handling, and transparent/background issues that could leak terminal content behind the UI. Fix confirmed defects and add focused tests.",
+        "label": "primitives",
         "scope": [
-          "core/crates/omegon/src/main.rs",
-          "core/crates/omegon/src/tui/mod.rs",
-          "core/crates/omegon/src/setup.rs",
-          "core/crates/omegon/src/features/context.rs"
-        ]
-      },
-      {
-        "depends_on": [
-          "executor-core"
-        ],
-        "description": "Update IPC run_slash_command and web WebSocket slash_command handling to use the new shared slash command executor path instead of emitting BusCommand directly. Ensure structured results are returned or surfaced consistently for remote callers.",
-        "label": "ipc-web-bridge",
-        "model": "openai-codex:gpt-5.4",
-        "scope": [
-          "core/crates/omegon/src/ipc/connection.rs",
-          "core/crates/omegon/src/web/ws.rs",
-          "core/crates/omegon/src/main.rs"
-        ]
-      },
-      {
-        "depends_on": [
-          "executor-core",
-          "ipc-web-bridge"
-        ],
-        "description": "Add or update tests covering parity between TUI, IPC, and web slash execution for at least model switching, context compact/clear, and remote handling of auth/login paths. Update any command-surface assertions affected by the new shared executor semantics.",
-        "label": "tests-docs",
-        "model": "openai-codex:gpt-5.4",
-        "scope": [
+          "core/crates/omegon/src/tui/shared.rs",
+          "core/crates/omegon/src/tui/instruments.rs",
+          "core/crates/omegon/src/tui/footer.rs",
           "core/crates/omegon/src/tui/tests.rs",
-          "core/crates/omegon/src/ipc/connection.rs",
-          "core/crates/omegon/src/web/ws.rs",
-          "core/crates/omegon/src/main.rs"
+          "core/crates/omegon/src/tui/snapshot_tests.rs"
+        ]
+      },
+      {
+        "depends_on": [],
+        "description": "Audit higher-level TUI surfaces and layouts for incomplete clearing, width mismatches, border/overlay gaps, stale frame retention, and other cases where background terminal garbage could show through. Fix confirmed defects and add focused tests.",
+        "label": "surfaces",
+        "scope": [
+          "core/crates/omegon/src/tui/mod.rs",
+          "core/crates/omegon/src/tui/dashboard.rs",
+          "core/crates/omegon/src/tui/instruments.rs",
+          "core/crates/omegon/src/tui/footer.rs",
+          "core/crates/omegon/src/tui/tests.rs",
+          "core/crates/omegon/src/tui/snapshot_tests.rs"
         ]
       }
     ],
-    "default_model": "openai-codex:gpt-5.4",
-    "rationale": "Split the shared executor work from the transport adapters and final parity tests so semantics are defined once and then wired into IPC/web cleanly."
+    "rationale": "The defect class can originate either in shared cell-writing primitives or in specific panel/layout code that fails to clear/pad its region. Auditing both in parallel reduces blind spots while keeping file ownership bounded."
   }
 }

@@ -43,6 +43,8 @@ pub struct ChildState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<CleaveChildRuntimeProfile>,
 }
 
@@ -109,6 +111,7 @@ impl CleaveState {
                     execute_model,
                     provider_id: None,
                     duration_secs: None,
+                    stdout: None,
                     runtime: c.runtime.clone(),
                 }
             })

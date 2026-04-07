@@ -1062,6 +1062,7 @@ mod tests {
             execute_model: None,
             provider_id: None,
             duration_secs: None,
+            stdout: None,
             runtime: None,
         };
 

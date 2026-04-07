@@ -368,6 +368,7 @@ pub async fn run_cleave(
                 Ok(output) => {
                     state.children[child_idx].status = ChildStatus::Completed;
                     state.children[child_idx].duration_secs = Some(output.duration_secs);
+                    state.children[child_idx].stdout = Some(output.stdout.clone());
                     tracing::info!(
                         child = %label,
                         duration = format!("{:.0}s", output.duration_secs),
@@ -472,6 +473,8 @@ pub async fn run_cleave(
                                         state.children[child_idx].status = ChildStatus::Completed;
                                         state.children[child_idx].duration_secs =
                                             Some(output.duration_secs);
+                                        state.children[child_idx].stdout =
+                                            Some(output.stdout.clone());
                                         tracing::info!(
                                             child = %label, fallback = %fb_model,
                                             duration = format!("{:.0}s", output.duration_secs),
@@ -1324,6 +1327,7 @@ mod tests {
                 execute_model: None,
                 provider_id: None,
                 duration_secs: None,
+                stdout: None,
                 runtime: None,
             },
             crate::cleave::state::ChildState {
@@ -1340,6 +1344,7 @@ mod tests {
                 execute_model: None,
                 provider_id: None,
                 duration_secs: None,
+                stdout: None,
                 runtime: None,
             },
         ];
@@ -1376,6 +1381,7 @@ mod tests {
             execute_model: None,
             provider_id: None,
             duration_secs: None,
+            stdout: None,
             runtime: None,
         };
 
@@ -1420,6 +1426,7 @@ fn build_task_file_includes_all_sections() {
             execute_model: None,
             provider_id: None,
             duration_secs: None,
+            stdout: None,
             runtime: None,
         },
         crate::cleave::state::ChildState {
@@ -1436,6 +1443,7 @@ fn build_task_file_includes_all_sections() {
             execute_model: None,
             provider_id: None,
             duration_secs: None,
+            stdout: None,
             runtime: None,
         },
     ];
@@ -1499,6 +1507,7 @@ fn build_task_file_rust_scope_gets_rust_test_convention() {
         execute_model: None,
         provider_id: None,
         duration_secs: None,
+        stdout: None,
         runtime: None,
     }];
     let task = build_task_file(

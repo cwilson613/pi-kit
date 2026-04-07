@@ -28,6 +28,8 @@ struct SmokeScenario {
     expect_exit_ok: bool,
     expect_status_line: &'static str,
     expect_merge_line: &'static str,
+    runtime_profile: Option<crate::cleave::CleaveChildRuntimeProfile>,
+    assert_runtime: Option<fn(&serde_json::Value) -> anyhow::Result<()>>,
 }
 
 pub async fn run(cli: &Cli) -> anyhow::Result<()> {
@@ -39,6 +41,8 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             expect_exit_ok: false,
             expect_status_line: "0 completed, 0 failed, 1 upstream exhausted, 0 unfinished",
             expect_merge_line: "upstream exhausted (no repo changes to merge)",
+            runtime_profile: None,
+            assert_runtime: None,
         },
         SmokeScenario {
             name: "failed_no_changes",
@@ -47,6 +51,8 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             expect_exit_ok: false,
             expect_status_line: "0 completed, 1 failed, 0 upstream exhausted, 0 unfinished",
             expect_merge_line: "failed (no repo changes to merge)",
+            runtime_profile: None,
+            assert_runtime: None,
         },
         SmokeScenario {
             name: "completed_no_changes",
@@ -55,6 +61,8 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             expect_exit_ok: true,
             expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
             expect_merge_line: "completed (no changes)",
+            runtime_profile: None,
+            assert_runtime: None,
         },
         SmokeScenario {
             name: "completed_with_merge",
@@ -63,6 +71,26 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             expect_exit_ok: true,
             expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
             expect_merge_line: "merged",
+            runtime_profile: None,
+            assert_runtime: None,
+        },
+        SmokeScenario {
+            name: "runtime_profile_enforced",
+            child_mode: "report-runtime",
+            write_file: None,
+            expect_exit_ok: true,
+            expect_status_line: "1 completed, 0 failed, 0 upstream exhausted, 0 unfinished",
+            expect_merge_line: "completed (no changes)",
+            runtime_profile: Some(crate::cleave::CleaveChildRuntimeProfile {
+                thinking_level: Some("high".into()),
+                context_class: Some("legion".into()),
+                disabled_tools: vec!["bash".into()],
+                skills: vec!["security".into()],
+                enabled_extensions: vec!["alpha".into()],
+                disabled_extensions: vec!["beta".into()],
+                ..Default::default()
+            }),
+            assert_runtime: Some(assert_runtime_profile_report),
         },
     ];
 
@@ -129,7 +157,7 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
 "#;
     let plan: cleave::CleavePlan = serde_json::from_str(plan_json)?;
     let injected_env = scenario_env(scenario);
-    let config = cleave::orchestrator::CleaveConfig {
+    let mut config = cleave::orchestrator::CleaveConfig {
         agent_binary: std::env::current_exe()?,
         bridge_path: PathBuf::new(),
         node: String::new(),
@@ -141,9 +169,12 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
         inventory: None,
         inherited_env: vec![],
         injected_env,
-        child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
+        child_runtime: scenario.runtime_profile.clone().unwrap_or_default(),
         progress_sink: cleave::progress::stdout_progress_sink(),
     };
+    if let Some(profile) = &scenario.runtime_profile {
+        config.child_runtime = profile.clone();
+    }
 
     let result = cleave::run_cleave(
         &plan,
@@ -190,6 +221,41 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
         );
     }
 
+    if let Some(assert_runtime) = scenario.assert_runtime {
+        let stdout = result.state.children[0].stdout.as_deref().unwrap_or("");
+        let report: serde_json::Value = serde_json::from_str(stdout.trim())
+            .with_context(|| format!("expected JSON runtime report, got: {stdout:?}"))?;
+        assert_runtime(&report)?;
+    }
+
+    Ok(())
+}
+
+fn assert_runtime_profile_report(report: &serde_json::Value) -> anyhow::Result<()> {
+    let tool_names = report["tool_names"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("tool_names missing"))?
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    if tool_names.contains(&"bash") {
+        anyhow::bail!("bash should be disabled in runtime report: {tool_names:?}");
+    }
+    let plugin_names = report["plugin_names"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("plugin_names missing"))?
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    if plugin_names.iter().any(|name| *name == "Beta Plugin") {
+        anyhow::bail!("disabled extension loaded: {plugin_names:?}");
+    }
+    if report["thinking_level"] != "high" {
+        anyhow::bail!("thinking level not applied: {report}");
+    }
+    if report["context_class"] != "legion" && report["context_class"] != "Legion" {
+        anyhow::bail!("context class not applied: {report}");
+    }
     Ok(())
 }
 

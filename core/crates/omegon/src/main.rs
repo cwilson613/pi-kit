@@ -2252,6 +2252,29 @@ fn maybe_run_injected_cleave_smoke_child(cwd: &Path) -> anyhow::Result<bool> {
             println!("simulated cleave smoke child success (dirty)");
             Ok(true)
         }
+        "report-runtime" => {
+            let shared_settings = settings::shared("anthropic:claude-sonnet-4-6");
+            let agent = tokio::runtime::Handle::current().block_on(async {
+                setup::AgentSetup::new(cwd, None, Some(shared_settings)).await
+            })?;
+            let status = agent.initial_harness_status.clone();
+            let tool_names: Vec<String> = agent
+                .bus
+                .tool_definitions()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+            let report = serde_json::json!({
+                "mode": "report-runtime",
+                "tool_names": tool_names,
+                "plugin_names": status.installed_plugins.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                "active_persona_skills": status.active_persona.as_ref().map(|p| p.activated_skills.clone()).unwrap_or_default(),
+                "context_class": status.context_class,
+                "thinking_level": status.thinking_level,
+            });
+            println!("{}", serde_json::to_string(&report)?);
+            Ok(true)
+        }
         "fail" => {
             eprintln!("Error: simulated cleave smoke child failure");
             std::process::exit(1);
@@ -3087,6 +3110,7 @@ mod tests {
                 execute_model: None,
                 provider_id: None,
                 duration_secs: None,
+                stdout: None,
                 runtime: None,
             },
             cleave::state::ChildState {
@@ -3103,6 +3127,7 @@ mod tests {
                 execute_model: None,
                 provider_id: None,
                 duration_secs: None,
+                stdout: None,
                 runtime: None,
             },
             cleave::state::ChildState {
@@ -3119,6 +3144,7 @@ mod tests {
                 execute_model: None,
                 provider_id: None,
                 duration_secs: None,
+                stdout: None,
                 runtime: None,
             },
             cleave::state::ChildState {
@@ -3135,6 +3161,7 @@ mod tests {
                 execute_model: None,
                 provider_id: None,
                 duration_secs: None,
+                stdout: None,
                 runtime: None,
             },
         ];
@@ -3163,6 +3190,7 @@ mod tests {
             execute_model: None,
             provider_id: None,
             duration_secs: None,
+            stdout: None,
             runtime: None,
         };
 

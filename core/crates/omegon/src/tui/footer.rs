@@ -935,17 +935,17 @@ fn format_provider_telemetry_line(
             }
         }
         "openai-codex" => {
-            if let Some(active) = &t.codex_active_limit {
-                parts.push(active.clone());
-            }
+            let family = t.codex_active_limit.as_deref().unwrap_or("codex");
             if let Some(pct) = t.codex_primary_pct {
-                parts.push(format!("primary {}%", pct));
+                parts.push(format!("{family} {pct}%"));
+            } else {
+                parts.push(family.to_string());
             }
             if let Some(secs) = t.codex_primary_reset_secs {
-                parts.push(format!("primary↻ {}", format_duration_compact(secs)));
+                parts.push(format!("resets {}", format_duration_compact(secs)));
             }
             if let Some(secs) = t.codex_secondary_reset_secs {
-                parts.push(format!("secondary↻ {}", format_duration_compact(secs)));
+                parts.push(format!("weekly {}", format_duration_compact(secs)));
             }
             if let Some(unlimited) = t.codex_credits_unlimited {
                 parts.push(if unlimited {
@@ -1175,12 +1175,12 @@ mod tests {
             }))
             .expect("telemetry line");
         assert!(!text.contains("GPT-5.3-Codex-Spark"), "got {text}");
-        assert!(text.contains("codex"), "got {text}");
-        assert!(text.contains("primary 0%"), "got {text}");
-        assert!(text.contains("primary↻ 3h47m"), "got {text}");
-        assert!(text.contains("secondary↻ 4d"), "got {text}");
+        assert!(text.contains("codex 0%"), "got {text}");
+        assert!(text.contains("resets 3h47m"), "got {text}");
+        assert!(text.contains("weekly 4d"), "got {text}");
         assert!(text.contains("credits metered"), "got {text}");
-        assert!(!text.contains("5h 0%"), "got {text}");
+        assert!(!text.contains("primary"), "got {text}");
+        assert!(!text.contains('↻'), "got {text}");
     }
 
     #[test]
@@ -1363,7 +1363,8 @@ mod tests {
         assert!(text.contains("limit"), "got {text}");
         assert!(!text.contains("bucket GPT-5.3-Codex-Spark"), "got {text}");
         assert!(!text.contains("GPT-5.3-Codex-Spark"), "got {text}");
-        assert!(text.contains("primary 0%"), "got {text}");
+        assert!(text.contains("codex 0%"), "got {text}");
+        assert!(text.contains("resets 3h47m"), "got {text}");
     }
 
     #[test]

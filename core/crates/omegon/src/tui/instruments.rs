@@ -501,15 +501,17 @@ impl InstrumentPanel {
         let intensity = intensity.clamp(0.0, 1.0);
         match mode {
             ActivityMode::Idle => Color::Rgb(52, 72, 88),
-            ActivityMode::ToolChurn => Color::Rgb(
-                (214.0 + 24.0 * intensity) as u8,
-                (156.0 + 40.0 * intensity) as u8,
-                (74.0 + 22.0 * intensity) as u8,
-            ),
+            ActivityMode::ToolChurn => {
+                if intensity > 0.5 {
+                    Self::band_color(ContextBand::ToolSchema)
+                } else {
+                    Self::band_color(ContextBand::ToolHistory)
+                }
+            }
             ActivityMode::Waiting => Color::Rgb(
-                (184.0 + 48.0 * intensity) as u8,
-                (140.0 + 46.0 * intensity) as u8,
-                (78.0 + 26.0 * intensity) as u8,
+                (92.0 + 28.0 * intensity) as u8,
+                (112.0 + 34.0 * intensity) as u8,
+                (136.0 + 42.0 * intensity) as u8,
             ),
             ActivityMode::Thinking => Self::thinking_pulse_color(intensity.max(0.25)),
         }
@@ -1057,7 +1059,7 @@ impl InstrumentPanel {
                     (c, Self::activity_color(ActivityMode::Idle, activity_phase))
                 }
                 ActivityMode::ToolChurn => {
-                    let c = if activity_phase > 0.72 { '+' } else { '=' };
+                    let c = if activity_phase > 0.66 { '#' } else { '%' };
                     (c, Self::activity_color(ActivityMode::ToolChurn, activity_phase))
                 }
                 ActivityMode::Waiting => {
@@ -2288,6 +2290,22 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_reuses_tool_band_colors() {
+        let schema = InstrumentPanel::activity_color(ActivityMode::ToolChurn, 0.9);
+        let history = InstrumentPanel::activity_color(ActivityMode::ToolChurn, 0.1);
+        assert_eq!(schema, InstrumentPanel::band_color(ContextBand::ToolSchema));
+        assert_eq!(history, InstrumentPanel::band_color(ContextBand::ToolHistory));
+    }
+
+    #[test]
+    fn waiting_activity_stays_distinct_from_tool_and_thinking_bands() {
+        let waiting = InstrumentPanel::activity_color(ActivityMode::Waiting, 0.8);
+        assert_ne!(waiting, InstrumentPanel::band_color(ContextBand::ToolSchema));
+        assert_ne!(waiting, InstrumentPanel::band_color(ContextBand::ToolHistory));
+        assert_ne!(waiting, InstrumentPanel::band_color(ContextBand::Thinking));
+    }
+
+    #[test]
     fn fact_count_changes_pluck_project_wave() {
         let mut panel = InstrumentPanel::default();
         panel.update_mind_facts(10, 0, 0, 0.02);
@@ -2449,6 +2467,10 @@ mod tests {
                 .chars()
                 .any(|ch| matches!(ch, ':' | '^')),
             "thinking activity row should use sane ASCII support glyphs: {activity_row}"
+        );
+        assert!(
+            !activity_row.chars().any(|ch| matches!(ch, '+' | '=')),
+            "activity row should not use legacy generic tool glyphs anymore: {activity_row}"
         );
         assert_ne!(
             composition_row, activity_row,

@@ -136,6 +136,42 @@ omegon \
   --log-file /tmp/omegon-ollama-cloud.log
 ```
 
+### Example: Anthropic-managed project daemon
+
+```bash
+ANTHROPIC_API_KEY=... \
+omegon \
+  --cwd /path/to/project \
+  --model anthropic:claude-sonnet-4-6 \
+  serve \
+  --control-port 7842 \
+  --strict-port
+```
+
+### Example: OpenRouter-managed project daemon
+
+```bash
+OPENROUTER_API_KEY=... \
+omegon \
+  --cwd /path/to/project \
+  --model openrouter:openai/gpt-4o \
+  serve \
+  --control-port 7842 \
+  --strict-port
+```
+
+### Example: local Ollama daemon
+
+```bash
+OLLAMA_HOST=http://127.0.0.1:11434 \
+omegon \
+  --cwd /path/to/project \
+  --model ollama:qwen3:32b \
+  serve \
+  --control-port 7842 \
+  --strict-port
+```
+
 ## Authentication inputs
 
 Auspex may choose whatever valid config it wants. Omegon must not require a

@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=float, default=10.0, help="Seconds to wait for startup metadata")
     parser.add_argument("--ready-timeout", type=float, default=10.0, help="Seconds to wait for readyz")
     parser.add_argument(
+        "--keep-running",
+        action="store_true",
+        help="Leave the daemon running after printing metadata (manual handoff mode)",
+    )
+    parser.add_argument(
         "--set-env",
         action="append",
         default=[],
@@ -186,6 +191,8 @@ def main() -> int:
         json.dump(result, sys.stdout, indent=2)
         sys.stdout.write("\n")
         sys.stdout.flush()
+        if not args.keep_running:
+            terminate_process(proc)
         return 0
     except Exception:
         terminate_process(proc)

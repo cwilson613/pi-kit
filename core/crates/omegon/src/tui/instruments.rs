@@ -878,14 +878,14 @@ impl InstrumentPanel {
             );
         }
 
-        // Tree + memory strings: break through the left border
+        // Tree + memory strings: break through the left border only.
+        // Do not paint through the right boundary — in the split layout that would
+        // bleed into the adjacent tools panel.
         if inner.height > bar_h + 2 && !active_minds.is_empty() {
-            // Start at the panel's left BORDER (area.x, not inner.x)
-            // so the tree trunk overlays the border character
             let tree_area = Rect {
                 x: area.x,
                 y: inner.y + bar_h + 2,
-                width: inner.width + 1, // include border column
+                width: inner.width,
                 height: inner.height.saturating_sub(bar_h + 2),
             };
             self.render_memory_strings(&active_minds, tree_area, buf, t);
@@ -2362,6 +2362,61 @@ mod tests {
             !legend_row.contains("free") && !legend_row.contains('~'),
             "free capacity should remain implicit in the grey braille tail, not the legend: {legend_row}"
         );
+    }
+
+    #[test]
+    fn inference_panel_does_not_paint_into_adjacent_tools_panel() {
+        let mut panel = InstrumentPanel::default();
+        panel.update_mind_facts(704, 0, 624, 0.08);
+        panel.update_turn_tokens(
+            105_100,
+            538,
+            0,
+            ContextComposition {
+                conversation_tokens: 105_100,
+                system_tokens: 538,
+                memory_tokens: 0,
+                tool_tokens: 0,
+                thinking_tokens: 0,
+                free_tokens: 166_362,
+            },
+            272_000,
+        );
+        panel.update_telemetry(39.0, 272_000, None, false, "medium", None, true, 0.016);
+
+        let inference_area = Rect::new(0, 0, 36, 10);
+        let tools_area = Rect::new(36, 0, 28, 10);
+        let backend = ratatui::backend::TestBackend::new(64, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let t = crate::tui::theme::Alpharius;
+
+        terminal
+            .draw(|f| {
+                let buf = f.buffer_mut();
+                for y in 0..10 {
+                    for x in 0..64 {
+                        if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+                            cell.set_char(if x < tools_area.x { 'L' } else { 'R' });
+                            cell.set_fg(Color::White);
+                            cell.set_bg(Color::Black);
+                        }
+                    }
+                }
+                panel.render_inference_panel(inference_area, f, &t);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for y in 0..10 {
+            for x in tools_area.x..64 {
+                let cell = &buf[(x, y)];
+                assert_eq!(
+                    cell.symbol(),
+                    "R",
+                    "inference panel painted into adjacent tools area at ({x},{y})"
+                );
+            }
+        }
     }
 
     #[test]

@@ -414,13 +414,13 @@
     ]
   },
   "0.15.10": {
-    "status": "released",
+    "status": "rc",
     "channel": "stable",
     "nodes": [],
-    "frozen": true,
+    "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
-    "released": "2026-04-07T01:40:23Z",
-    "rc_count": 28,
+    "released": null,
+    "rc_count": 30,
     "notes": [
       "feat(code-survey): Inspect the codebase for telemetry, metrics, tracing, event logging, and dashboard/session instrumentation surfaces. Summarize what telemetry the harness currently captures, where it lives, and notable gaps or inconsistencies.",
       "feat(compliance): enforce Anthropic subscription ToS interactive-only boundary",
@@ -467,6 +467,7 @@
       "fix(release): script preflight checks and ignore python bytecode",
       "fix(session): give interactive omegon runs stable live session ids",
       "fix(telemetry): format provider usage by active backend",
+      "fix(tui): align footer context state with inference composition",
       "fix(tui): calm inference activity row glyphs",
       "fix(tui): clip tool rows to panel width",
       "fix(tui): harden cleave panel against border glyph leakage",
@@ -482,6 +483,7 @@
       "fix(tui): show provider telemetry in split footer",
       "fix(tui): show session stats and broaden codex telemetry parsing",
       "fix(tui): show tool surface in context composition",
+      "fix(tui): simplify codex limit telemetry copy",
       "fix(tui): source context composition from turn accounting",
       "fix(tui): stop inference memory rows bleeding into tools panel",
       "fix(tui): support queued prompts with attachment lists",
@@ -495,22 +497,7 @@
       "refactor(tui): make /auspex open the primary browser launch path",
       "refactor(tui): simplify slash command auth and context paths"
     ],
-    "rc_version": "0.15.10-rc.29",
-    "last_rc": "2026-04-07T01:11:01Z"
-  },
-  "0.15.11": {
-    "status": "rc",
-    "channel": "stable",
-    "nodes": [],
-    "frozen": false,
-    "opened": "2026-04-07T01:43:55Z",
-    "released": null,
-    "rc_count": 1,
-    "notes": [
-      "fix(tui): align footer context state with inference composition",
-      "fix(tui): simplify codex limit telemetry copy"
-    ],
-    "rc_version": "0.15.11-rc.2",
-    "last_rc": "2026-04-07T02:13:29Z"
+    "rc_version": "0.15.10-rc.30",
+    "last_rc": "2026-04-07T02:27:38Z"
   }
 }

@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 44,
+    "rc_count": 45,
     "notes": [
       "feat(anthropic): prefer adaptive thinking for claude 4.6",
       "feat(auspex): add mode-aware local handoff probe",
@@ -501,6 +501,8 @@
       "fix(providers): stop sending effort in anthropic requests",
       "fix(release): derive Homebrew updates from published release manifest",
       "fix(release): harden signing detection and brew push flow",
+      "fix(release): make rc lifecycle gate justfile-safe",
+      "fix(release): scope rc lifecycle gate to milestone nodes",
       "fix(release): script preflight checks and ignore python bytecode",
       "fix(runtime): fill new daemon metadata in snapshots",
       "fix(session): give interactive omegon runs stable live session ids",
@@ -563,7 +565,7 @@
       "refactor(tui): remove activity-row phase labels",
       "refactor(tui): simplify slash command auth and context paths"
     ],
-    "rc_version": "0.15.10-rc.49",
-    "last_rc": "2026-04-08T15:26:27Z"
+    "rc_version": "0.15.10-rc.50",
+    "last_rc": "2026-04-08T15:30:50Z"
   }
 }

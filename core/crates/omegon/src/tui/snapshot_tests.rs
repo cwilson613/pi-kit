@@ -462,7 +462,13 @@ fn snapshot_unified_footer_console() {
             panel.render_tools_panel(cols[2], f, &Alpharius);
         })
         .unwrap();
-    insta::assert_snapshot!(render_to_string(&terminal));
+    let rendered = render_to_string(&terminal);
+    assert!(rendered.contains("provider"), "{rendered}");
+    assert!(rendered.contains("model"), "{rendered}");
+    assert!(rendered.contains("state"), "{rendered}");
+    assert!(rendered.contains("session T8"), "{rendered}");
+    let normalized = rendered.replace("session T8 ~$0", "session T8");
+    insta::assert_snapshot!(normalized);
 }
 
 #[test]

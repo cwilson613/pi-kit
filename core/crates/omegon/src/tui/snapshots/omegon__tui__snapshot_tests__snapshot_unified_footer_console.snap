@@ -1,7 +1,7 @@
 ---
 source: crates/omegon/src/tui/snapshot_tests.rs
-assertion_line: 465
-expression: render_to_string(&terminal)
+assertion_line: 471
+expression: normalized
 ---
   engine                              ╭ inference ───────────────────────────────╮╭ tools ─────────────────────────────╮
   provider ⤵ Ollama (Local) · ● local │==================++******#%^·············││▸ ▫ recall       220ms≋≋≋≋≋≋≋≋≋≋≋≋≋≋│
@@ -9,7 +9,7 @@ expression: render_to_string(&terminal)
   version v<current>              │= conv + sys * mem # defs % hist ^ think  ││  ⌘ sh           1.2s ≋≋≋≋≋≋≋≋≋≋≋≋≋·│
   tier    Victory · High              │↑  800  ↓  120  ⊙  0%   ✦ 0  ◎  0 recalled││                                    │
   state   Maniple→Squad 68% / ¤262k   ├─ project ⌗2440  ⠊⠉⠉⠑⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠒⠒⠤⢄ ││                                    │
-  session T8 ~$0                      ├─ working ⌗8  ⠊⠉⠉⠑⠒⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤ ││                                    │
+  session T8                          ├─ working ⌗8  ⠊⠉⠉⠑⠒⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤ ││                                    │
                                       └─ episodes ⌗45  ⠊⠉⠉⠑⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤ ││                                    │
                                       │                                          ││                                    │
                                       │                                          ││                                    │

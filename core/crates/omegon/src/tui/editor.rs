@@ -732,7 +732,7 @@ impl Editor {
         if self.is_empty() {
             return lines;
         }
-        for logical in self.render_text().lines() {
+        for logical in self.render_text().split('\n') {
             lines.extend(wrap_chars_at(logical, width));
         }
         let max_start = lines.len().saturating_sub(visible_rows.max(1) as usize);

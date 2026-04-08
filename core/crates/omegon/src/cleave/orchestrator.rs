@@ -332,16 +332,16 @@ pub async fn run_cleave(
             let child_runtime = config.child_runtime.clone();
 
             let dispatch_config = ChildDispatchConfig {
-                agent_binary: &agent_binary,
-                bridge_path: &bridge_path,
-                node: &node,
-                model: &info.model,
+                agent_binary,
+                bridge_path,
+                node,
+                model: info.model.clone(),
                 max_turns,
                 timeout_secs,
                 idle_timeout_secs,
-                inherited_env: &inherited_env,
-                injected_env: &injected_env,
-                runtime: &child_runtime,
+                inherited_env,
+                injected_env,
+                runtime: child_runtime,
                 progress_sink,
             };
 
@@ -354,17 +354,20 @@ pub async fn run_cleave(
             state.mark_child_spawned(info.child_idx, pid);
             state.save(&state_path)?;
 
+            let monitor_config = dispatch_config.clone();
+            let child_label = info.label.clone();
+            let child_idx = info.child_idx;
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 let result = monitor_child_process(
-                    &dispatch_config,
+                    monitor_config,
                     child_process,
                     pid,
-                    &info.label,
+                    &child_label,
                     child_cancel,
                 )
                 .await;
-                (info.child_idx, result)
+                (child_idx, result)
             });
             handles.push(handle);
         }
@@ -454,20 +457,21 @@ pub async fn run_cleave(
                                     std::fs::read_to_string(wt_path.join(".cleave-prompt.md"))
                                         .unwrap_or_default();
 
+                                let fb_runtime = state.children[child_idx]
+                                    .runtime
+                                    .clone()
+                                    .unwrap_or_else(|| config.child_runtime.clone());
                                 let fb_dispatch = ChildDispatchConfig {
-                                    agent_binary: &config.agent_binary,
-                                    bridge_path: &config.bridge_path,
-                                    node: &config.node,
-                                    model: fb_model,
+                                    agent_binary: config.agent_binary.clone(),
+                                    bridge_path: config.bridge_path.clone(),
+                                    node: config.node.clone(),
+                                    model: fb_model.clone(),
                                     max_turns: config.max_turns,
                                     timeout_secs: config.timeout_secs,
                                     idle_timeout_secs: config.idle_timeout_secs,
-                                    inherited_env: &config.inherited_env,
-                                    injected_env: &config.injected_env,
-                                    runtime: state.children[child_idx]
-                                        .runtime
-                                        .as_ref()
-                                        .unwrap_or(&config.child_runtime),
+                                    inherited_env: config.inherited_env.clone(),
+                                    injected_env: config.injected_env.clone(),
+                                    runtime: fb_runtime,
                                     progress_sink: config.progress_sink.clone(),
                                 };
 
@@ -481,7 +485,7 @@ pub async fn run_cleave(
                                         state.mark_child_spawned(child_idx, pid);
                                         state.save(&state_path)?;
                                         monitor_child_process(
-                                            &fb_dispatch,
+                                            fb_dispatch,
                                             child_process,
                                             pid,
                                             label,
@@ -719,17 +723,18 @@ struct ChildOutput {
 }
 
 /// Configuration for dispatching a child agent process.
-struct ChildDispatchConfig<'a> {
-    agent_binary: &'a Path,
-    bridge_path: &'a Path,
-    node: &'a str,
-    model: &'a str,
+#[derive(Clone)]
+struct ChildDispatchConfig {
+    agent_binary: PathBuf,
+    bridge_path: PathBuf,
+    node: String,
+    model: String,
     max_turns: u32,
     timeout_secs: u64,
     idle_timeout_secs: u64,
-    inherited_env: &'a [(String, String)],
-    injected_env: &'a [(String, String)],
-    runtime: &'a CleaveChildRuntimeProfile,
+    inherited_env: Vec<(String, String)>,
+    injected_env: Vec<(String, String)>,
+    runtime: CleaveChildRuntimeProfile,
     progress_sink: SharedProgressSink,
 }
 
@@ -744,7 +749,7 @@ fn classify_child_error(model: &str, e: anyhow::Error) -> ChildError {
 }
 
 fn spawn_child_process(
-    config: &ChildDispatchConfig<'_>,
+    config: &ChildDispatchConfig,
     cwd: &Path,
     label: &str,
     prompt: &str,
@@ -767,7 +772,7 @@ fn spawn_child_process(
     let mut args = vec![
         "--prompt-file", prompt_arg.as_str(),
         "--cwd", cwd_arg.as_str(),
-        "--model", config.model,
+        "--model", config.model.as_str(),
         "--max-turns", &max_turns_str,
     ];
     if let Some(ref context_class) = config.runtime.context_class {
@@ -775,14 +780,14 @@ fn spawn_child_process(
     }
     if std::env::var("OMEGON_FORCE_BRIDGE").is_ok() {
         args.extend(["--bridge", config.bridge_path.to_str().unwrap()]);
-        args.extend(["--node", config.node]);
+        args.extend(["--node", config.node.as_str()]);
     }
     tracing::info!(child = %label, args = ?args, "spawn args");
     tracing::info!(child = %label, inherited_env = config.inherited_env.len(), injected_env = config.injected_env.len(), inherited_env_names = ?config.inherited_env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), injected_env_names = ?config.injected_env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "child env inheritance");
-    let mut child = Command::new(config.agent_binary);
+    let mut child = Command::new(&config.agent_binary);
     child.args(&args).current_dir(cwd).env("OMEGON_CHILD", "1").stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    for (key, value) in config.inherited_env { child.env(key, value); }
-    for (key, value) in config.injected_env { child.env(key, value); }
+    for (key, value) in &config.inherited_env { child.env(key, value); }
+    for (key, value) in &config.injected_env { child.env(key, value); }
     if let Some(ref thinking) = config.runtime.thinking_level { child.env("OMEGON_CHILD_THINKING_LEVEL", thinking); }
     if let Some(ref context_class) = config.runtime.context_class { child.env("OMEGON_CHILD_CONTEXT_CLASS", context_class); }
     if !config.runtime.enabled_tools.is_empty() { child.env("OMEGON_CHILD_ENABLED_TOOLS", config.runtime.enabled_tools.join(",")); }
@@ -799,7 +804,7 @@ fn spawn_child_process(
 }
 
 async fn monitor_child_process(
-    config: &ChildDispatchConfig<'_>,
+    config: ChildDispatchConfig,
     mut child: Child,
     pid: u32,
     label: &str,
@@ -815,8 +820,8 @@ async fn monitor_child_process(
     let mut last_activity_event = Instant::now() - std::time::Duration::from_secs(2);
     tracing::info!(child = %label, wall_timeout_secs = config.timeout_secs, idle_timeout_secs = config.idle_timeout_secs, "entering IO loop");
     let io_result = tokio::select! {
-        _ = tokio::time::sleep(wall_timeout) => { tracing::warn!(child = %label, timeout = config.timeout_secs, "wall-clock timeout"); Err(classify_child_error(config.model, anyhow::anyhow!("Wall-clock timeout after {}s", config.timeout_secs))) }
-        _ = cancel.cancelled() => { tracing::warn!(child = %label, "cancelled"); Err(classify_child_error(config.model, anyhow::anyhow!("Cancelled"))) }
+        _ = tokio::time::sleep(wall_timeout) => { tracing::warn!(child = %label, timeout = config.timeout_secs, "wall-clock timeout"); Err(classify_child_error(&config.model, anyhow::anyhow!("Wall-clock timeout after {}s", config.timeout_secs))) }
+        _ = cancel.cancelled() => { tracing::warn!(child = %label, "cancelled"); Err(classify_child_error(&config.model, anyhow::anyhow!("Cancelled"))) }
         result = async {
             let mut line_count = 0u64;
             loop {
@@ -838,7 +843,7 @@ async fn monitor_child_process(
                     Err(_) => {
                         let idle_secs = last_activity.elapsed().as_secs();
                         tracing::warn!(child = %label, idle_secs, line_count, "idle timeout");
-                        return Err(classify_child_error(config.model, anyhow::anyhow!("Idle timeout — no output for {}s", config.idle_timeout_secs)));
+                        return Err(classify_child_error(&config.model, anyhow::anyhow!("Idle timeout — no output for {}s", config.idle_timeout_secs)));
                     }
                 }
             }
@@ -846,7 +851,7 @@ async fn monitor_child_process(
         } => { result }
     };
     let _ = child.kill().await;
-    let exit = child.wait().await.map_err(|e| classify_child_error(config.model, e.into()))?;
+    let exit = child.wait().await.map_err(|e| classify_child_error(&config.model, e.into()))?;
     tracing::info!(child = %label, exit_code = ?exit.code(), success = exit.success(), "child process exited");
     let mut stdout_buf = String::new();
     if let Some(mut stdout) = child.stdout.take() {
@@ -865,8 +870,8 @@ async fn monitor_child_process(
     };
     match io_result {
         Ok(()) if exit.success() => Ok(ChildOutput { duration_secs, stdout: stdout_buf, pid }),
-        Ok(()) => Err(classify_child_error(config.model, anyhow::anyhow!("Child exited with code {}{}", exit.code().unwrap_or(-1), tail_snippet(&stderr_tail)))),
-        Err(e) => Err(classify_child_error(config.model, anyhow::anyhow!("{}{}", e, tail_snippet(&stderr_tail)))),
+        Ok(()) => Err(classify_child_error(&config.model, anyhow::anyhow!("Child exited with code {}{}", exit.code().unwrap_or(-1), tail_snippet(&stderr_tail)))),
+        Err(e) => Err(classify_child_error(&config.model, anyhow::anyhow!("{}{}", e, tail_snippet(&stderr_tail)))),
     }
 }
 

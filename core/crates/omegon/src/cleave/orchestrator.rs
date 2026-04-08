@@ -334,6 +334,7 @@ pub async fn run_cleave(
             let child_runtime = config.child_runtime.clone();
 
             let dispatch_config = ChildDispatchConfig {
+                workspace_path: workspace_path.to_path_buf(),
                 agent_binary,
                 bridge_path,
                 node,
@@ -474,6 +475,7 @@ pub async fn run_cleave(
                                     .clone()
                                     .unwrap_or_else(|| config.child_runtime.clone());
                                 let fb_dispatch = ChildDispatchConfig {
+                                    workspace_path: workspace_path.to_path_buf(),
                                     agent_binary: config.agent_binary.clone(),
                                     bridge_path: config.bridge_path.clone(),
                                     node: config.node.clone(),
@@ -737,6 +739,7 @@ struct ChildOutput {
 /// Configuration for dispatching a child agent process.
 #[derive(Clone)]
 struct ChildDispatchConfig {
+    workspace_path: PathBuf,
     agent_binary: PathBuf,
     bridge_path: PathBuf,
     node: String,
@@ -757,6 +760,20 @@ fn classify_child_error(model: &str, e: anyhow::Error) -> ChildError {
         ChildError::UpstreamExhausted { provider, message: msg }
     } else {
         ChildError::Failed(msg)
+    }
+}
+
+fn child_activity_log_path(config: &ChildDispatchConfig, label: &str) -> PathBuf {
+    config.workspace_path.join(format!("child-{}.activity.log", label))
+}
+
+fn append_child_activity_log(path: &Path, line: &str) {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
     }
 }
 
@@ -841,6 +858,7 @@ async fn monitor_child_process(
     cancel: CancellationToken,
 ) -> Result<ChildOutput, ChildError> {
     let started = Instant::now();
+    let activity_log = child_activity_log_path(&config, label);
     let stderr = child.stderr.take().unwrap();
     let mut reader = BufReader::new(stderr).lines();
     let mut stderr_tail: VecDeque<String> = VecDeque::with_capacity(30);
@@ -861,6 +879,7 @@ async fn monitor_child_process(
                         line_count += 1;
                         if stderr_tail.len() == 30 { stderr_tail.pop_front(); }
                         stderr_tail.push_back(line.clone());
+                        append_child_activity_log(&activity_log, &line);
                         if last_activity.duration_since(last_activity_event).as_secs() >= 1
                             && let Some(activity) = progress::parse_child_activity(label, &line) {
                                 config.progress_sink.emit(&activity);

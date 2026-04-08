@@ -469,6 +469,45 @@ impl CleaveFeature {
         self.repo_path.join(".omegon/cleave-workspace/state.json")
     }
 
+    fn child_activity_log_path(&self, label: &str) -> PathBuf {
+        self.repo_path
+            .join(".omegon/cleave-workspace")
+            .join(format!("child-{}.activity.log", label))
+    }
+
+    fn replay_child_activity_log(&self, progress: &mut ChildProgress) {
+        let path = self.child_activity_log_path(&progress.label);
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return;
+        };
+        for line in content.lines() {
+            if let Some(event) = crate::cleave::progress::parse_child_activity(&progress.label, line) {
+                match event {
+                    crate::cleave::progress::ProgressEvent::ChildActivity { turn, tool, .. } => {
+                        if let Some(turn) = turn { progress.last_turn = Some(turn); }
+                        if let Some(tool) = tool { progress.last_tool = Some(tool); }
+                    }
+                    crate::cleave::progress::ProgressEvent::ChildTokens { input_tokens, output_tokens, .. } => {
+                        progress.tokens_in = progress.tokens_in.saturating_add(input_tokens);
+                        progress.tokens_out = progress.tokens_out.saturating_add(output_tokens);
+                        if let Some(turn_pos) = line.find("Turn ") {
+                            let rest = &line[turn_pos + 5..];
+                            if let Some(num) = rest
+                                .split_whitespace()
+                                .next()
+                                .and_then(|v| v.parse::<u32>().ok())
+                            {
+                                progress.last_turn = Some(num);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                progress.last_activity_at = Some(std::time::Instant::now());
+            }
+        }
+    }
+
     fn refresh_progress_from_workspace_state(&self) {
         let state_path = self.workspace_state_path();
         let Ok(state) = crate::cleave::state::CleaveState::load(&state_path) else {
@@ -491,24 +530,28 @@ impl CleaveFeature {
         progress.children = state
             .children
             .iter()
-            .map(|c| ChildProgress {
-                label: c.label.clone(),
-                status: match c.status {
-                    ChildStatus::Completed => "completed".into(),
-                    ChildStatus::Failed => "failed".into(),
-                    ChildStatus::UpstreamExhausted => "upstream_exhausted".into(),
-                    ChildStatus::Running => "running".into(),
-                    ChildStatus::Pending => "pending".into(),
-                },
-                duration_secs: c.duration_secs,
-                pid: c.pid,
-                last_tool: None,
-                last_turn: None,
-                started_at: None,
-                last_activity_at: None,
-                tokens_in: 0,
-                tokens_out: 0,
-                runtime: c.runtime.as_ref().map(child_runtime_summary),
+            .map(|c| {
+                let mut child = ChildProgress {
+                    label: c.label.clone(),
+                    status: match c.status {
+                        ChildStatus::Completed => "completed".into(),
+                        ChildStatus::Failed => "failed".into(),
+                        ChildStatus::UpstreamExhausted => "upstream_exhausted".into(),
+                        ChildStatus::Running => "running".into(),
+                        ChildStatus::Pending => "pending".into(),
+                    },
+                    duration_secs: c.duration_secs,
+                    pid: c.pid,
+                    last_tool: None,
+                    last_turn: None,
+                    started_at: None,
+                    last_activity_at: None,
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    runtime: c.runtime.as_ref().map(child_runtime_summary),
+                };
+                self.replay_child_activity_log(&mut child);
+                child
             })
             .collect();
     }
@@ -1142,6 +1185,55 @@ mod tests {
         let saved = crate::cleave::state::CleaveState::load(&state_path).unwrap();
         assert_eq!(saved.children[0].status, ChildStatus::Failed);
         assert!(saved.children[0].pid.is_none());
+    }
+
+    #[test]
+    fn new_replays_activity_log_from_workspace_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join(".omegon/cleave-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let worktree = workspace.join("alpha-wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            workspace.join("child-alpha.activity.log"),
+            "2026-01-01T00:00:00Z  INFO → bash cargo test
+2026-01-01T00:00:01Z  INFO ── Turn 3 complete — in:123 out:45 ──
+",
+        )
+        .unwrap();
+        let state_json = serde_json::json!({
+            "runId": "run-1",
+            "directive": "test",
+            "repoPath": dir.path().display().to_string(),
+            "workspacePath": workspace.display().to_string(),
+            "supervisorToken": "test-supervisor",
+            "children": [{
+                "childId": 0,
+                "label": "alpha",
+                "description": "do alpha",
+                "scope": [],
+                "dependsOn": [],
+                "status": "running",
+                "backend": "native",
+                "worktreePath": worktree.display().to_string(),
+                "executeModel": "model",
+                "pid": std::process::id(),
+                "adoptionWorktreePath": std::fs::canonicalize(&worktree).unwrap().to_string_lossy().to_string(),
+                "adoptionModel": "model",
+                "supervisorToken": "test-supervisor"
+            }],
+            "plan": {"children": []}
+        });
+        std::fs::write(workspace.join("state.json"), serde_json::to_string_pretty(&state_json).unwrap()).unwrap();
+
+        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let progress = feature.progress();
+        let child = &progress.children[0];
+        assert_eq!(child.last_tool.as_deref(), Some("bash"));
+        assert_eq!(child.last_turn, Some(3));
+        assert_eq!(child.tokens_in, 123);
+        assert_eq!(child.tokens_out, 45);
+        assert!(child.last_activity_at.is_some());
     }
 
     #[test]

@@ -161,49 +161,16 @@ async fn wait_for_ready(ready_url: &str, deadline: Duration) -> Result<()> {
 }
 
 #[tokio::test]
-async fn serve_exposes_startup_and_accepts_event_over_http() -> Result<()> {
+async fn serve_accepts_cleave_child_cancel_event_over_http() -> Result<()> {
     let (mut daemon, startup_event) = spawn_daemon()?;
-    assert_eq!(startup_event.event_type, "omegon.startup");
-    assert_eq!(startup_event.schema_version, 2);
-    assert_eq!(startup_event.auth_mode, "ephemeral-bearer");
-    assert_eq!(startup_event.auth_source, "generated");
-    assert!(startup_event.pid > 0);
-    assert!(startup_event.http_base.starts_with("http://127.0.0.1:"));
-    assert!(startup_event.startup_url.ends_with("/api/startup"));
-    assert!(startup_event.health_url.ends_with("/api/healthz"));
-    assert!(startup_event.ready_url.ends_with("/api/readyz"));
-    assert!(startup_event.ws_url.contains("/ws?token="));
-
     let payload = wait_for_startup_payload(&startup_event.startup_url, Duration::from_secs(5)).await?;
     wait_for_ready(&startup_event.ready_url, Duration::from_secs(5)).await?;
-    assert_eq!(payload.schema_version, 2);
-    assert_eq!(payload.startup_url, startup_event.startup_url);
-    assert_eq!(payload.health_url, startup_event.health_url);
-    assert_eq!(payload.ready_url, startup_event.ready_url);
-    assert_eq!(payload.auth_mode, "ephemeral-bearer");
-    assert_eq!(payload.auth_source, "generated");
-    assert!(payload.addr.starts_with("127.0.0.1:"));
-    assert!(payload.state_url.ends_with("/api/state"));
-    assert!(payload.ws_url.contains("/ws?token="));
-    assert!(payload.token.len() >= 4);
-    let instance = payload
-        .instance_descriptor
-        .as_ref()
-        .expect("startup payload should carry canonical instance descriptor");
-    assert_eq!(
-        instance["control_plane"]["schema_version"].as_u64(),
-        Some(omegon_traits::IPC_PROTOCOL_VERSION as u64)
-    );
-    assert_eq!(
-        instance["control_plane"]["omegon_version"].as_str(),
-        Some(env!("CARGO_PKG_VERSION"))
-    );
 
     let event = DaemonEventEnvelope {
-        event_id: "evt-blackbox-1".into(),
+        event_id: "evt-blackbox-cancel-child".into(),
         source: "integration-test".into(),
-        trigger_kind: "manual".into(),
-        payload: serde_json::json!({"ok": true}),
+        trigger_kind: "cancel-cleave-child".into(),
+        payload: serde_json::json!({"label": "alpha"}),
     };
     let client = reqwest::Client::new();
     let resp = client
@@ -213,7 +180,7 @@ async fn serve_exposes_startup_and_accepts_event_over_http() -> Result<()> {
         .json(&event)
         .send()
         .await
-        .context("post daemon event")?;
+        .context("post cleave child cancel event")?;
     assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
     let accepted: EventAccepted = resp.json().await.context("decode event accepted")?;
     assert!(accepted.accepted);

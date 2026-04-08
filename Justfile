@@ -277,6 +277,8 @@ rc:
         cd ..
     else
         REPORT=$(mktemp)
+        NODES_FILE=$(mktemp)
+        printf '%s\n' "$MILESTONE_NODES" > "$NODES_FILE"
         cd core && cargo run --quiet -p omegon -- doctor > "$REPORT"
         cd ..
         BLOCKING_NODE=""
@@ -286,9 +288,8 @@ rc:
                 BLOCKING_NODE="$node"
                 break
             fi
-        done <<EOF
-$MILESTONE_NODES
-EOF
+        done < "$NODES_FILE"
+        rm -f "$NODES_FILE"
         if [ -n "$BLOCKING_NODE" ]; then
             echo "✗ Lifecycle audit found milestone-scoped drift in node: $BLOCKING_NODE"
             cat "$REPORT"

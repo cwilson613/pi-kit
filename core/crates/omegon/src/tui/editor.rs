@@ -9,6 +9,8 @@
 //! The textarea handles all basic editing: cursor movement, word ops,
 //! clipboard paste (bracketed paste), undo/redo, and character insertion.
 
+use std::path::{Path, PathBuf};
+
 use ratatui::prelude::*;
 use ratatui_textarea::TextArea;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -75,9 +77,16 @@ pub struct Editor {
     kill_ring: Option<String>,
     /// Tracked vertical scroll offset for wrapped multiline rendering.
     scroll_row: u16,
+    /// Internal text model. Attachment tokens are stored as OBJECT REPLACEMENT
+    /// characters and projected into visible placeholders for rendering.
+    model_text: String,
+    /// Attachment payloads in token order as they appear in `model_text`.
+    attachments: Vec<PathBuf>,
 }
 
 impl Editor {
+    const ATTACHMENT_SENTINEL: char = '\u{FFFC}';
+
     pub fn new() -> Self {
         let mut ta = TextArea::default();
         ta.set_cursor_line_style(Style::default());
@@ -89,8 +98,182 @@ impl Editor {
             mode: EditorMode::Normal,
             kill_ring: None,
             scroll_row: 0,
+            model_text: String::new(),
+            attachments: Vec::new(),
         }
     }
+
+    fn attachment_placeholder(path: &Path, idx: usize) -> String {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        let kind = match ext.as_deref() {
+            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "tif") => "image",
+            Some("pdf") => "pdf",
+            _ => "attachment",
+        };
+        format!("[{kind}{idx}]")
+    }
+
+    fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
+        text.char_indices()
+            .nth(char_idx)
+            .map(|(idx, _)| idx)
+            .unwrap_or(text.len())
+    }
+
+    fn model_lines(&self) -> Vec<&str> {
+        if self.model_text.is_empty() {
+            vec![""]
+        } else {
+            self.model_text.split('\n').collect()
+        }
+    }
+
+    fn raw_set_textarea_text(&mut self, text: &str) {
+        self.textarea.select_all();
+        self.textarea.cut();
+        if !text.is_empty() {
+            self.textarea.insert_str(text);
+        }
+    }
+
+    fn projection(&self) -> Projection {
+        let mut text = String::new();
+        let mut token_spans = Vec::new();
+        let mut attachment_ord = 0usize;
+        let mut projected_char_idx = 0usize;
+
+        for (model_char_idx, ch) in self.model_text.chars().enumerate() {
+            if ch == Self::ATTACHMENT_SENTINEL {
+                let label = self
+                    .attachments
+                    .get(attachment_ord)
+                    .map(|path| Self::attachment_placeholder(path, attachment_ord))
+                    .unwrap_or_else(|| format!("[attachment{}]", attachment_ord));
+                let label_len = label.chars().count();
+                token_spans.push(TokenSpan {
+                    model_char_idx,
+                    attachment_ord,
+                    start: projected_char_idx,
+                    end: projected_char_idx + label_len,
+                });
+                text.push_str(&label);
+                projected_char_idx += label_len;
+                attachment_ord += 1;
+            } else {
+                text.push(ch);
+                projected_char_idx += 1;
+            }
+        }
+
+        Projection { text, token_spans }
+    }
+
+    fn projected_cursor(&self) -> usize {
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        let mut idx = 0usize;
+        for (row_idx, line) in self.textarea.lines().iter().enumerate() {
+            if row_idx < cursor_row {
+                idx += line.chars().count() + 1;
+            } else {
+                idx += cursor_col;
+                break;
+            }
+        }
+        idx
+    }
+
+    fn set_projected_cursor(&mut self, projected_idx: usize) {
+        self.textarea.move_cursor(ratatui_textarea::CursorMove::Head);
+        for _ in 0..projected_idx {
+            self.textarea
+                .move_cursor(ratatui_textarea::CursorMove::Forward);
+        }
+    }
+
+    fn sync_textarea_from_model(&mut self, projected_cursor: usize) {
+        let projection = self.projection();
+        let text = projection.text.clone();
+        let projected_len = text.chars().count();
+        self.raw_set_textarea_text(&text);
+        self.set_projected_cursor(projected_cursor.min(projected_len));
+    }
+
+    fn projected_cursor_to_model_insert_idx(&self, projected_idx: usize) -> usize {
+        let projection = self.projection();
+        for span in &projection.token_spans {
+            if projected_idx <= span.start {
+                return span.model_char_idx;
+            }
+            if projected_idx <= span.end {
+                return span.model_char_idx + 1;
+            }
+        }
+
+        let mut model_idx = 0usize;
+        let mut projected_count = 0usize;
+        let mut attachment_ord = 0usize;
+        for ch in self.model_text.chars() {
+            if ch == Self::ATTACHMENT_SENTINEL {
+                let width = self
+                    .attachments
+                    .get(attachment_ord)
+                    .map(|path| Self::attachment_placeholder(path, attachment_ord).chars().count())
+                    .unwrap_or(1);
+                if projected_count >= projected_idx {
+                    return model_idx;
+                }
+                projected_count += width;
+                attachment_ord += 1;
+            } else {
+                if projected_count >= projected_idx {
+                    return model_idx;
+                }
+                projected_count += 1;
+            }
+            model_idx += 1;
+        }
+        model_idx
+    }
+
+    fn token_span_for_backspace(&self, projected_idx: usize) -> Option<TokenSpan> {
+        self.projection()
+            .token_spans
+            .into_iter()
+            .find(|span| projected_idx > span.start && projected_idx <= span.end)
+    }
+
+    fn token_ord_before_model_idx(&self, model_idx: usize) -> usize {
+        self.model_text
+            .chars()
+            .take(model_idx)
+            .filter(|ch| *ch == Self::ATTACHMENT_SENTINEL)
+            .count()
+    }
+
+    fn remove_token(&mut self, span: TokenSpan) {
+        let start = Self::char_to_byte_idx(&self.model_text, span.model_char_idx);
+        let end = Self::char_to_byte_idx(&self.model_text, span.model_char_idx + 1);
+        self.model_text.replace_range(start..end, "");
+        if span.attachment_ord < self.attachments.len() {
+            self.attachments.remove(span.attachment_ord);
+        }
+        self.sync_textarea_from_model(span.start);
+    }
+
+    fn delete_model_char_before(&mut self, model_insert_idx: usize) {
+        if model_insert_idx == 0 {
+            return;
+        }
+        let start = Self::char_to_byte_idx(&self.model_text, model_insert_idx - 1);
+        let end = Self::char_to_byte_idx(&self.model_text, model_insert_idx);
+        self.model_text.replace_range(start..end, "");
+        let new_cursor = self.projected_cursor().saturating_sub(1);
+        self.sync_textarea_from_model(new_cursor);
+    }
+
 
     /// Apply theme styles to the textarea.
     pub fn apply_theme(&mut self, t: &dyn Theme) {
@@ -106,7 +289,7 @@ impl Editor {
 
     /// Number of content lines in the editor (for dynamic height).
     pub fn line_count(&self) -> usize {
-        self.textarea.lines().len().max(1)
+        self.model_lines().len().max(1)
     }
 
     /// Number of visual rows needed to display the current buffer within the
@@ -331,7 +514,7 @@ impl Editor {
     /// Yank (paste) from kill ring (Ctrl+Y).
     pub fn yank(&mut self) {
         if let Some(ref text) = self.kill_ring.clone() {
-            self.textarea.insert_str(text);
+            self.insert_paste(text);
         }
     }
 
@@ -339,10 +522,21 @@ impl Editor {
 
     /// Take the current text and clear the editor.
     pub fn take_text(&mut self) -> String {
+        self.take_submission().0
+    }
+
+    pub fn take_submission(&mut self) -> (String, Vec<PathBuf>) {
         self.mode = EditorMode::Normal;
-        let text = self.textarea.lines().join("\n");
-        self.set_text("");
-        text
+        let text: String = self
+            .model_text
+            .chars()
+            .filter(|ch| *ch != Self::ATTACHMENT_SENTINEL)
+            .collect();
+        let attachments = std::mem::take(&mut self.attachments);
+        self.model_text.clear();
+        self.raw_set_textarea_text("");
+        self.scroll_row = 0;
+        (text, attachments)
     }
 
     /// Get cursor column position (display width).
@@ -353,22 +547,22 @@ impl Editor {
 
     /// Set the buffer text (for history navigation).
     pub fn set_text(&mut self, text: &str) {
-        // Clear and replace
-        self.textarea.select_all();
-        self.textarea.cut();
-        if !text.is_empty() {
-            self.textarea.insert_str(text);
-        }
+        self.model_text = text.to_string();
+        self.attachments.clear();
+        let projection = self.projection();
+        let projected_len = projection.text.chars().count();
+        self.raw_set_textarea_text(&projection.text);
+        self.set_projected_cursor(projected_len);
         self.scroll_row = 0;
     }
 
     /// Get current text for display/inspection.
     pub fn render_text(&self) -> String {
-        self.textarea.lines().join("\n")
+        self.projection().text
     }
 
     pub fn is_empty(&self) -> bool {
-        self.textarea.is_empty()
+        self.model_text.is_empty()
     }
 
     // ─── Input passthrough ──────────────────────────────────────
@@ -384,17 +578,46 @@ impl Editor {
     /// Terminals may deliver CRLF or bare CR; the editor should treat both as LF.
     pub fn insert_paste(&mut self, text: &str) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.textarea.insert_str(&normalized);
+        let projected_idx = self.projected_cursor();
+        let model_idx = self.projected_cursor_to_model_insert_idx(projected_idx);
+        let byte_idx = Self::char_to_byte_idx(&self.model_text, model_idx);
+        self.model_text.insert_str(byte_idx, &normalized);
+        self.sync_textarea_from_model(projected_idx + normalized.chars().count());
     }
 
     /// Insert a character directly (for compat with old API).
     pub fn insert(&mut self, c: char) {
-        self.textarea.insert_char(c);
+        let projected_idx = self.projected_cursor();
+        let model_idx = self.projected_cursor_to_model_insert_idx(projected_idx);
+        let byte_idx = Self::char_to_byte_idx(&self.model_text, model_idx);
+        self.model_text.insert(byte_idx, c);
+        self.sync_textarea_from_model(projected_idx + 1);
     }
 
     /// Delete backward (for compat).
     pub fn backspace(&mut self) {
-        self.textarea.delete_char();
+        let projected_idx = self.projected_cursor();
+        if let Some(span) = self.token_span_for_backspace(projected_idx) {
+            self.remove_token(span);
+        } else {
+            let model_idx = self.projected_cursor_to_model_insert_idx(projected_idx);
+            self.delete_model_char_before(model_idx);
+        }
+    }
+
+    pub fn insert_attachment(&mut self, path: PathBuf) {
+        let projected_idx = self.projected_cursor();
+        let model_idx = self.projected_cursor_to_model_insert_idx(projected_idx);
+        let byte_idx = Self::char_to_byte_idx(&self.model_text, model_idx);
+        self.model_text.insert(byte_idx, Self::ATTACHMENT_SENTINEL);
+        let ord = self.token_ord_before_model_idx(model_idx + 1).saturating_sub(1);
+        self.attachments.insert(ord, path);
+        let label_len = self
+            .attachments
+            .get(ord)
+            .map(|p| Self::attachment_placeholder(p, ord).chars().count())
+            .unwrap_or(1);
+        self.sync_textarea_from_model(projected_idx + label_len);
     }
 
     pub fn move_left(&mut self) {
@@ -444,7 +667,7 @@ impl Editor {
 
     /// Insert a newline at the current cursor position (for Shift+Enter multiline input).
     pub fn insert_newline(&mut self) {
-        self.textarea.insert_newline();
+        self.insert('\n');
     }
 
     /// Current cursor row (0-based). Used to decide if Up/Down should navigate
@@ -475,7 +698,7 @@ impl Editor {
         let mut visual_row: u16 = 0;
         let mut visual_col: u16 = 0;
 
-        for (row_idx, line) in self.textarea.lines().iter().enumerate() {
+        for (row_idx, line) in self.model_lines().iter().enumerate() {
             if row_idx < cursor_row {
                 visual_row =
                     visual_row.saturating_add(wrap_chars_at(line, content_width).len() as u16);
@@ -509,7 +732,7 @@ impl Editor {
         if self.is_empty() {
             return lines;
         }
-        for logical in self.textarea.lines() {
+        for logical in self.render_text().lines() {
             lines.extend(wrap_chars_at(logical, width));
         }
         let max_start = lines.len().saturating_sub(visible_rows.max(1) as usize);
@@ -537,6 +760,20 @@ impl Editor {
     }
 }
 
+#[derive(Clone)]
+struct Projection {
+    text: String,
+    token_spans: Vec<TokenSpan>,
+}
+
+#[derive(Clone, Copy)]
+struct TokenSpan {
+    model_char_idx: usize,
+    attachment_ord: usize,
+    start: usize,
+    end: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,6 +793,46 @@ mod tests {
         assert_eq!(e.render_text(), "hi");
         assert_eq!(e.take_text(), "hi");
         assert_eq!(e.render_text(), "");
+    }
+
+    #[test]
+    fn attachment_insert_is_inline_at_cursor() {
+        let mut e = Editor::new();
+        e.set_text("hello world");
+        for _ in 0..5 {
+            e.move_left();
+        }
+        e.insert_attachment(PathBuf::from("/tmp/paste.png"));
+        assert_eq!(e.render_text(), "hello [image0]world");
+    }
+
+    #[test]
+    fn backspace_inside_attachment_removes_whole_token() {
+        let mut e = Editor::new();
+        e.insert('a');
+        e.insert_attachment(PathBuf::from("/tmp/paste.png"));
+        e.insert('b');
+        assert_eq!(e.render_text(), "a[image0]b");
+        e.move_left();
+        e.move_left();
+        e.move_left();
+        e.backspace();
+        assert_eq!(e.render_text(), "ab");
+    }
+
+    #[test]
+    fn take_submission_strips_tokens_and_returns_attachments_in_order() {
+        let mut e = Editor::new();
+        e.insert('x');
+        e.insert_attachment(PathBuf::from("/tmp/one.png"));
+        e.insert('y');
+        e.insert_attachment(PathBuf::from("/tmp/two.png"));
+        let (text, attachments) = e.take_submission();
+        assert_eq!(text, "xy");
+        assert_eq!(
+            attachments,
+            vec![PathBuf::from("/tmp/one.png"), PathBuf::from("/tmp/two.png")]
+        );
     }
 
     #[test]

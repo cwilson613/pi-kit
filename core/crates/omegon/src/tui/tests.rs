@@ -45,6 +45,36 @@ fn render_app_to_string(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn editor_inline_attachment_tokens_submit_as_multimodal_prompt() {
+    let mut app = test_app();
+    app.editor.set_text("please inspect this");
+    app.editor.insert_attachment(std::path::PathBuf::from("/tmp/paste.png"));
+
+    assert_eq!(app.editor.render_text(), "please inspect this[image0]");
+
+    let (text, attachments) = app.editor.take_submission();
+    assert_eq!(text, "please inspect this");
+    assert_eq!(attachments, vec![std::path::PathBuf::from("/tmp/paste.png")]);
+
+    app.conversation.push_user_with_attachments(&text, &attachments);
+    let rendered = render_app_to_string(&mut app, 100, 20);
+    assert!(rendered.contains("please inspect this"), "{rendered}");
+    assert!(rendered.contains("[image0]"), "{rendered}");
+}
+
+#[test]
+fn queued_prompt_preview_mentions_attachment_count() {
+    let mut app = test_app();
+    app.queue_prompt(
+        "describe this".to_string(),
+        vec![std::path::PathBuf::from("/tmp/paste.png")],
+    );
+    let rendered = render_app_to_string(&mut app, 100, 20);
+    assert!(rendered.contains("Queued"), "{rendered}");
+    assert!(rendered.contains("+1 attachment"), "{rendered}");
+}
+
+#[test]
 fn modal_overlay_clears_stale_wrapped_rows_when_content_shrinks() {
     let mut app = test_app();
     app.active_modal = Some((

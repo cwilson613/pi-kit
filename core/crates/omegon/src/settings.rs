@@ -431,6 +431,13 @@ impl ThinkingLevel {
         }
     }
 
+    /// Heuristic reserve for local context planning, not a provider contract.
+    ///
+    /// This value is used by selector/context budgeting (`selector_policy`) to
+    /// leave room for deeper reasoning turns. It is intentionally approximate:
+    /// provider-native request knobs differ substantially (Anthropic adaptive
+    /// thinking vs manual budgets, OpenAI reasoning effort enums, Ollama `think`).
+    /// Do not treat this as the exact upstream budget sent on the wire.
     pub fn budget_tokens(&self) -> Option<u32> {
         match self {
             Self::Off => None,

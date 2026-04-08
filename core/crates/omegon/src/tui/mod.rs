@@ -2600,7 +2600,7 @@ impl App {
                 "📎 Image pasted — send a message to include it",
                 ratatui_toaster::ToastType::Info,
             );
-            self.pending_attachments.push(path);
+            self.editor.insert_attachment(path);
         }
         // No feedback on failure — the user might just be pressing Ctrl+V
         // for a normal text paste that crossterm handles separately.
@@ -5971,8 +5971,8 @@ pub async fn run_tui(
 
                         // Submit
                         (KeyCode::Enter, _) => {
-                            let text = app.editor.take_text();
-                            if !text.is_empty() {
+                            let (text, attachments) = app.editor.take_submission();
+                            if !text.is_empty() || !attachments.is_empty() {
                                 // Check if a headless login prompt is waiting for input
                                 if let Ok(mut guard) = app.login_prompt_tx.try_lock() {
                                     if let Some(tx) = guard.take() {
@@ -5995,24 +5995,37 @@ pub async fn run_tui(
                                         SlashResult::NotACommand => {
                                             // Not a slash command (no / prefix) — send as prompt
                                             if app.agent_active {
-                                                app.queue_prompt(text.clone(), Vec::new());
+                                                app.queue_prompt(text.clone(), attachments);
                                             } else {
-                                                app.conversation.push_user(&text);
+                                                if attachments.is_empty() {
+                                                    app.conversation.push_user(&text);
+                                                } else {
+                                                    app.conversation
+                                                        .push_user_with_attachments(&text, &attachments);
+                                                }
                                                 app.history.push(text.clone());
                                                 app.history_idx = None;
                                                 app.agent_active = true;
                                                 if let Ok(mut ss) = app.dashboard_handles.session.lock() {
                                                     ss.busy = true;
                                                 }
-                                                let _ = command_tx
-                                                    .send(TuiCommand::UserPrompt(text))
-                                                    .await;
+                                                if attachments.is_empty() {
+                                                    let _ = command_tx
+                                                        .send(TuiCommand::UserPrompt(text))
+                                                        .await;
+                                                } else {
+                                                    let _ = command_tx
+                                                        .send(TuiCommand::UserPromptWithImages(
+                                                            text,
+                                                            attachments,
+                                                        ))
+                                                        .await;
+                                                }
                                             }
                                         }
                                     }
                                 } else if app.agent_active {
                                     // Agent busy — queue the prompt
-                                    let attachments = std::mem::take(&mut app.pending_attachments);
                                     app.queue_prompt(text.clone(), attachments);
                                     // Notify tutorial overlay of user input
                                     if let Some(ref mut overlay) = app.tutorial_overlay {
@@ -6020,7 +6033,6 @@ pub async fn run_tui(
                                     }
                                 } else {
                                     // Agent idle — send immediately
-                                    let attachments = std::mem::take(&mut app.pending_attachments);
                                     if attachments.is_empty() {
                                         app.conversation.push_user(&text);
                                     } else {

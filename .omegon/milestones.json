@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 41,
+    "rc_count": 42,
     "notes": [
       "feat(auspex): add mode-aware local handoff probe",
       "feat(auspex): launch desktop handoff from cached startup payload",
@@ -506,6 +506,7 @@
       "fix(tui): harden cleave panel against border glyph leakage",
       "fix(tui): keep thinking telemetry in blue family",
       "fix(tui): keep version visible in persistent footer",
+      "fix(tui): make arrow keys terminal-first and add focus hotkey",
       "fix(tui): make focus mode track and navigate selected segments",
       "fix(tui): make inference activity glyphs explicit",
       "fix(tui): make inference legend composition-only",
@@ -513,6 +514,7 @@
       "fix(tui): reflect runtime activity in inference bar",
       "fix(tui): remove /clear and deduplicate slash palette commands",
       "fix(tui): remove fake tools context bucket",
+      "fix(tui): remove side gutters from focus copy view",
       "fix(tui): remove unused widget renderer test import",
       "fix(tui): render markdown tool output and split context activity",
       "fix(tui): render operator attachments as inline placeholders",
@@ -543,7 +545,7 @@
       "refactor(tui): remove activity-row phase labels",
       "refactor(tui): simplify slash command auth and context paths"
     ],
-    "rc_version": "0.15.10-rc.41",
-    "last_rc": "2026-04-08T01:41:46Z"
+    "rc_version": "0.15.10-rc.42",
+    "last_rc": "2026-04-08T02:16:00Z"
   }
 }

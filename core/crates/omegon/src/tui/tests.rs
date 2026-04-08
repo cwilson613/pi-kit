@@ -948,11 +948,62 @@ fn slash_focus_toggles_segment_isolation_mode() {
     assert!(matches!(result, SlashResult::Display(_)));
     assert!(app.focus_mode);
     assert!(!app.mouse_capture_enabled);
+    assert_eq!(app.conversation.selected_or_focused_segment(), Some(1));
 
     let result = app.handle_slash_command("/focus", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
     assert!(!app.focus_mode);
     assert!(app.mouse_capture_enabled);
+}
+
+#[test]
+fn focus_mode_selects_last_real_segment_when_none_was_selected() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.conversation.push_user("operator prompt");
+    app.conversation.append_streaming("assistant answer");
+    app.conversation.finalize_message();
+
+    let _ = app.handle_slash_command("/focus", &tx);
+
+    assert!(app.focus_mode);
+    assert_eq!(app.conversation.selected_or_focused_segment(), Some(1));
+}
+
+#[test]
+fn focus_mode_navigation_skips_turn_separators() {
+    let mut app = test_app();
+    app.conversation.push_user("first user");
+    app.conversation.append_streaming("first answer");
+    app.conversation.finalize_message();
+    app.conversation.push_user("second user");
+    app.conversation.append_streaming("second answer");
+    app.conversation.finalize_message();
+
+    app.conversation.select_segment(4);
+    assert_eq!(app.conversation.move_selected_segment_prev(), Some(3));
+    assert_eq!(app.conversation.move_selected_segment_prev(), Some(1));
+    assert_eq!(app.conversation.move_selected_segment_prev(), Some(0));
+    assert_eq!(app.conversation.move_selected_segment_prev(), Some(0));
+
+    assert_eq!(app.conversation.move_selected_segment_next(), Some(1));
+    assert_eq!(app.conversation.move_selected_segment_next(), Some(3));
+    assert_eq!(app.conversation.move_selected_segment_next(), Some(4));
+    assert_eq!(app.conversation.move_selected_segment_next(), Some(4));
+}
+
+#[test]
+fn focus_mode_render_shows_segment_position() {
+    let mut app = test_app();
+    app.conversation.push_user("operator prompt");
+    app.conversation.append_streaming("assistant answer");
+    app.conversation.finalize_message();
+    app.conversation.select_segment(1);
+    app.set_focus_mode(true);
+
+    let rendered = render_app_to_string(&mut app, 80, 20);
+    assert!(rendered.contains("focus — segment 2/2"), "{rendered}");
+    assert!(rendered.contains("assistant answer"), "{rendered}");
 }
 
 #[test]

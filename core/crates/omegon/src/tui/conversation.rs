@@ -434,14 +434,24 @@ impl ConversationView {
     }
 
     pub fn selected_or_focused_segment(&self) -> Option<usize> {
-        self.selected_segment.or_else(|| {
-            self.segments
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, seg)| !matches!(seg.content, SegmentContent::TurnSeparator))
-                .map(|(idx, _)| idx)
-        })
+        self.selected_segment.or_else(|| self.last_selectable_segment())
+    }
+
+    pub fn last_selectable_segment(&self) -> Option<usize> {
+        self.segments
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, seg)| !matches!(seg.content, SegmentContent::TurnSeparator))
+            .map(|(idx, _)| idx)
+    }
+
+    pub fn first_selectable_segment(&self) -> Option<usize> {
+        self.segments
+            .iter()
+            .enumerate()
+            .find(|(_, seg)| !matches!(seg.content, SegmentContent::TurnSeparator))
+            .map(|(idx, _)| idx)
     }
 
     pub fn selected_segment_text(&self) -> Option<String> {
@@ -452,6 +462,37 @@ impl ConversationView {
         self.selected_or_focused_segment()
             .and_then(|idx| self.segments.get(idx))
             .map(|segment| segment.export_text(mode))
+    }
+
+    pub fn move_selected_segment_prev(&mut self) -> Option<usize> {
+        let start = self
+            .selected_or_focused_segment()
+            .or_else(|| self.last_selectable_segment())?;
+        let idx = self.segments[..start]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, seg)| !matches!(seg.content, SegmentContent::TurnSeparator))
+            .map(|(idx, _)| idx)
+            .unwrap_or(start);
+        self.selected_segment = Some(idx);
+        Some(idx)
+    }
+
+    pub fn move_selected_segment_next(&mut self) -> Option<usize> {
+        let start = self
+            .selected_or_focused_segment()
+            .or_else(|| self.first_selectable_segment())?;
+        let idx = self
+            .segments
+            .iter()
+            .enumerate()
+            .skip(start.saturating_add(1))
+            .find(|(_, seg)| !matches!(seg.content, SegmentContent::TurnSeparator))
+            .map(|(idx, _)| idx)
+            .unwrap_or(start);
+        self.selected_segment = Some(idx);
+        Some(idx)
     }
 
     pub fn segment_at(&self, viewport: ratatui::prelude::Rect, row: u16) -> Option<usize> {

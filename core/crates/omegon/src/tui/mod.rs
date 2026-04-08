@@ -732,6 +732,10 @@ impl App {
         }
         self.focus_mode = enabled;
         if enabled {
+            if let Some(idx) = self.conversation.selected_or_focused_segment() {
+                self.conversation.select_segment(idx);
+                self.pane_focus = PaneFocus::Conversation;
+            }
             self.terminal_copy_mode = false;
             self.set_mouse_capture(false);
             self.show_toast(
@@ -2404,6 +2408,25 @@ impl App {
     }
 
     fn render_focus_view(&self, frame: &mut Frame, area: Rect) {
+        let selected = self.conversation.selected_or_focused_segment();
+        let selectable_count = self
+            .conversation
+            .segments()
+            .iter()
+            .filter(|segment| !matches!(segment.content, SegmentContent::TurnSeparator))
+            .count();
+        let ordinal = selected.map(|idx| {
+            self.conversation.segments()[..=idx]
+                .iter()
+                .filter(|segment| !matches!(segment.content, SegmentContent::TurnSeparator))
+                .count()
+        });
+        let title = match (ordinal, selectable_count) {
+            (Some(position), total) if total > 0 => {
+                format!(" focus — segment {position}/{total} ")
+            }
+            _ => " focus — no selectable segment ".to_string(),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
@@ -2413,7 +2436,7 @@ impl App {
                     .bg(self.theme.surface_bg()),
             )
             .title(Span::styled(
-                " focus — selected segment ",
+                title,
                 Style::default()
                     .fg(self.theme.accent())
                     .bg(self.theme.surface_bg())
@@ -2421,7 +2444,7 @@ impl App {
             ))
             .title_bottom(
                 Line::from(Span::styled(
-                    " drag to select · Ctrl+Y copy · Esc or /focus to return ",
+                    " ↑/↓ move between segments · drag to select · Ctrl+Y copy · Esc or /focus to return ",
                     Style::default()
                         .fg(self.theme.dim())
                         .bg(self.theme.surface_bg()),
@@ -2433,7 +2456,7 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let Some(idx) = self.conversation.selected_or_focused_segment() else {
+        let Some(idx) = selected else {
             let empty = Paragraph::new("No segment selected.").style(
                 Style::default()
                     .fg(self.theme.dim())
@@ -5724,6 +5747,32 @@ pub async fn run_tui(
                                     continue;
                                 }
                             }
+                        }
+                    }
+
+                    if app.focus_mode {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Up, _) | (KeyCode::Left, _) | (KeyCode::PageUp, _) => {
+                                app.conversation.move_selected_segment_prev();
+                                continue;
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Right, _) | (KeyCode::PageDown, _) => {
+                                app.conversation.move_selected_segment_next();
+                                continue;
+                            }
+                            (KeyCode::Home, _) => {
+                                if let Some(idx) = app.conversation.first_selectable_segment() {
+                                    app.conversation.select_segment(idx);
+                                }
+                                continue;
+                            }
+                            (KeyCode::End, _) => {
+                                if let Some(idx) = app.conversation.last_selectable_segment() {
+                                    app.conversation.select_segment(idx);
+                                }
+                                continue;
+                            }
+                            _ => {}
                         }
                     }
 

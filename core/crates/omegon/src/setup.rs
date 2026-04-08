@@ -397,6 +397,9 @@ impl AgentSetup {
         // ─── Session log (context injection) ────────────────────────────
         bus.register(Box::new(features::session_log::SessionLog::new(&cwd)));
 
+        // ─── Usage advisory (/usage from captured provider telemetry) ───
+        bus.register(Box::new(features::usage::UsageFeature::new()));
+
         // ─── Model budget (tier switching + thinking) ───────────────────
         if let Some(ref settings) = settings {
             bus.register(Box::new(features::model_budget::ModelBudget::new(

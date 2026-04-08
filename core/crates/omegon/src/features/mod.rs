@@ -33,4 +33,5 @@ pub mod model_budget;
 pub mod persona;
 pub mod session_log;
 pub mod terminal_title;
+pub mod usage;
 pub mod version_check;

@@ -1702,10 +1702,8 @@ impl LlmBridge for CodexClient {
         if !wire_tools.is_empty() {
             body["tools"] = Value::Array(wire_tools);
         }
-        if let Some(ref level) = options.reasoning {
-            body["reasoning"] = json!({"effort": match level.as_str() {
-                "low" | "minimal" => "low", "high" | "xhigh" => "high", _ => "medium",
-            }, "summary": "auto"});
+        if let Some(effort) = openai_reasoning_effort(options.reasoning.as_deref()) {
+            body["reasoning"] = json!({"effort": effort, "summary": "auto"});
         }
 
         let url = format!("{}/codex/responses", self.base_url.trim_end_matches('/'));
@@ -2133,6 +2131,23 @@ fn ollama_think_value(model: &str, reasoning: Option<&str>) -> Option<Value> {
     }
 
     Some(Value::Bool(true))
+}
+
+/// Map Omegon thinking levels onto OpenAI Responses API reasoning effort.
+///
+/// Upstream docs indicate effort is model-dependent and can include:
+/// none, minimal, low, medium, high, xhigh.
+/// We preserve minimal instead of collapsing it to low.
+fn openai_reasoning_effort(reasoning: Option<&str>) -> Option<&'static str> {
+    match reasoning? {
+        "off" => None,
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        _ => Some("medium"),
+    }
 }
 
 /// Default model for each compat provider (used when no model is specified).
@@ -3220,6 +3235,17 @@ mod tests {
             client.default_model.as_deref(),
             Some("llama-3.3-70b-versatile")
         );
+    }
+
+    #[test]
+    fn openai_reasoning_effort_preserves_minimal() {
+        assert_eq!(openai_reasoning_effort(Some("minimal")), Some("minimal"));
+        assert_eq!(openai_reasoning_effort(Some("low")), Some("low"));
+        assert_eq!(openai_reasoning_effort(Some("medium")), Some("medium"));
+        assert_eq!(openai_reasoning_effort(Some("high")), Some("high"));
+        assert_eq!(openai_reasoning_effort(Some("xhigh")), Some("xhigh"));
+        assert_eq!(openai_reasoning_effort(Some("off")), None);
+        assert_eq!(openai_reasoning_effort(Some("unknown")), Some("medium"));
     }
 
     #[test]

@@ -748,6 +748,24 @@ fn classify_child_error(model: &str, e: anyhow::Error) -> ChildError {
     }
 }
 
+async fn terminate_child_process(
+    config: &ChildDispatchConfig,
+    child: &mut Child,
+) -> Result<std::process::ExitStatus, ChildError> {
+    let shutdown_grace = tokio::time::Duration::from_secs(2);
+    if child.id().is_some() {
+        let _ = child.start_kill();
+    }
+    match tokio::time::timeout(shutdown_grace, child.wait()).await {
+        Ok(Ok(exit)) => Ok(exit),
+        Ok(Err(e)) => Err(classify_child_error(&config.model, e.into())),
+        Err(_) => {
+            let _ = child.kill().await;
+            child.wait().await.map_err(|e| classify_child_error(&config.model, e.into()))
+        }
+    }
+}
+
 fn spawn_child_process(
     config: &ChildDispatchConfig,
     cwd: &Path,
@@ -850,8 +868,7 @@ async fn monitor_child_process(
             Ok::<(), ChildError>(())
         } => { result }
     };
-    let _ = child.kill().await;
-    let exit = child.wait().await.map_err(|e| classify_child_error(&config.model, e.into()))?;
+    let exit = terminate_child_process(&config, &mut child).await?;
     tracing::info!(child = %label, exit_code = ?exit.code(), success = exit.success(), "child process exited");
     let mut stdout_buf = String::new();
     if let Some(mut stdout) = child.stdout.take() {

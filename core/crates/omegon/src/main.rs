@@ -2634,6 +2634,18 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
 
     let resume = cli.resume.as_ref().map(|r| r.as_deref());
     let mut agent = setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
+    agent.initial_harness_status.update_runtime_posture(
+        omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+        omegon_traits::OmegonAutonomyMode::OperatorDriven,
+    );
+    if let Some(ref harness) = agent.dashboard_handles.harness
+        && let Ok(mut status) = harness.lock()
+    {
+        status.update_runtime_posture(
+            omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+            omegon_traits::OmegonAutonomyMode::OperatorDriven,
+        );
+    }
     agent.conversation.push_user(prompt_text.clone());
 
     // ─── Build loop config ──────────────────────────────────────────────

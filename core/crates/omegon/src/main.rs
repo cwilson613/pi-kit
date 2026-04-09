@@ -1149,6 +1149,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     }
 
     // ─── Interactive agent loop ─────────────────────────────────────────
+    let mut runtime = InteractiveRuntimeSupervisor::default();
     loop {
         let cmd = match command_rx.recv().await {
             Some(cmd) => cmd,
@@ -1920,10 +1921,44 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::SubmitPrompt(prompt) => {
-                if prompt.image_paths.is_empty() {
-                    agent.conversation.push_user(prompt.text.clone());
+                let actor = RuntimeActor {
+                    kind: match prompt.via {
+                        "tui" => RuntimeActorKind::Tui,
+                        "ipc" => RuntimeActorKind::IpcClient,
+                        "websocket" => RuntimeActorKind::WebClient,
+                        _ => RuntimeActorKind::System,
+                    },
+                    label: prompt.submitted_by.clone(),
+                };
+                let via = match prompt.via {
+                    "tui" => ControlSurface::Tui,
+                    "ipc" => ControlSurface::Ipc,
+                    "websocket" => ControlSurface::WebSocket,
+                    _ => ControlSurface::Internal,
+                };
 
-                    // Read current settings for this turn
+                runtime.enqueue_prompt(
+                    prompt.text,
+                    prompt.image_paths,
+                    actor,
+                    via,
+                );
+
+                if runtime.is_busy() {
+                    continue;
+                }
+
+                let Some(active) = runtime.maybe_start_next_turn() else {
+                    continue;
+                };
+
+                if let Ok(mut ss) = agent.dashboard_handles.session.lock() {
+                    ss.busy = true;
+                }
+
+                if active.prompt.image_paths.is_empty() {
+                    agent.conversation.push_user(active.prompt.text.clone());
+
                     let (model, max_turns) = {
                         let s = shared_settings.lock().unwrap();
                         (s.model.clone(), s.max_turns)
@@ -1970,9 +2005,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         guard.take();
                     }
                 } else {
-                    let image_paths = prompt.image_paths;
-                    let text = prompt.text;
-                    // Encode images and attach to the next LLM call
+                    let image_paths = active.prompt.image_paths;
+                    let text = active.prompt.text;
                     let mut images = Vec::new();
                     for path in &image_paths {
                         if let Ok(data) = std::fs::read(path) {
@@ -1994,9 +2028,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                             });
                         }
                     }
-                    agent
-                        .conversation
-                        .push_user_with_images(text.clone(), images);
+                    agent.conversation.push_user_with_images(text.clone(), images);
 
                     let (model, max_turns) = {
                         let s = shared_settings.lock().unwrap();
@@ -2063,103 +2095,33 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         guard.take();
                     }
                 }
+
+                runtime.complete_active_turn();
+                if let Ok(mut ss) = agent.dashboard_handles.session.lock() {
+                    ss.busy = runtime.is_busy();
+                }
             }
 
             tui::TuiCommand::UserPromptWithImages(text, image_paths) => {
-                // Encode images and attach to the next LLM call
-                let mut images = Vec::new();
-                for path in &image_paths {
-                    if let Ok(data) = std::fs::read(path) {
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
-                        let media_type = match ext {
-                            "jpg" | "jpeg" => "image/jpeg",
-                            "gif" => "image/gif",
-                            "webp" => "image/webp",
-                            "bmp" => "image/bmp",
-                            "tiff" | "tif" => "image/tiff",
-                            _ => "image/png",
-                        };
-                        use base64::Engine;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        images.push(crate::bridge::ImageAttachment {
-                            data: b64,
-                            media_type: media_type.to_string(),
-                            source_path: Some(path.display().to_string()),
-                        });
-                    }
-                }
-                // Push user text and images together so attachments survive
-                // compaction, role alternation, save/resume, and provider translation.
-                agent
-                    .conversation
-                    .push_user_with_images(text.clone(), images);
-
-                // Read current settings for this turn
-                let (model, max_turns) = {
-                    let s = shared_settings.lock().unwrap();
-                    (s.model.clone(), s.max_turns)
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: "legacy prompt path used; normalizing through SubmitPrompt compatibility".to_string(),
+                });
+                let compat = tui::PromptSubmission {
+                    text,
+                    image_paths,
+                    submitted_by: "legacy-tui".to_string(),
+                    via: "tui",
                 };
-
-                let loop_config = r#loop::LoopConfig {
-                    max_turns,
-                    soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
-                    max_retries: 0, // TUI: retry indefinitely, operator switches manually
-                    retry_delay_ms: 750,
-                    model,
-                    cwd: agent.cwd.clone(),
-                    extended_context: false,
-                    settings: Some(shared_settings.clone()),
-                    secrets: Some(agent.secrets.clone()),
-                    force_compact: Some(pending_compact.clone()),
+                let actor = RuntimeActor {
+                    kind: RuntimeActorKind::Tui,
+                    label: compat.submitted_by.clone(),
                 };
-
-                let cancel = CancellationToken::new();
-                if let Ok(mut guard) = shared_cancel.lock() {
-                    *guard = Some(cancel.clone());
+                runtime.enqueue_prompt(compat.text, compat.image_paths, actor, ControlSurface::Tui);
+                if runtime.is_busy() {
+                    continue;
                 }
-
-                let bridge_guard = bridge.read().await;
-                if let Err(e) = r#loop::run(
-                    bridge_guard.as_ref(),
-                    &mut agent.bus,
-                    &mut agent.context_manager,
-                    &mut agent.conversation,
-                    &events_tx,
-                    cancel,
-                    &loop_config,
-                )
-                .await
-                {
-                    drop(bridge_guard); // release before error handling
-                    let user_msg = format_agent_error(&e);
-                    tracing::error!("Agent loop error: {e}");
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: user_msg });
-                    let _ = events_tx.send(AgentEvent::AgentEnd);
-                }
-
-                // Update context metrics + notify TUI/web consumers after turn completion.
-                {
-                    let est = agent.conversation.estimate_tokens();
-                    let settings = shared_settings.lock().unwrap();
-                    if let Ok(mut metrics) = agent.context_metrics.lock() {
-                        metrics.update(
-                            est,
-                            settings.context_window,
-                            &settings.effective_requested_class().label(),
-                            settings.thinking.as_str(),
-                        );
-                    }
-                    let _ = events_tx.send(AgentEvent::ContextUpdated {
-                        tokens: est as u64,
-                        context_window: settings.context_window as u64,
-                        context_class: settings.effective_requested_class().label().to_string(),
-                        thinking_level: settings.thinking.as_str().to_string(),
-                    });
-                }
-
-                if let Ok(mut guard) = shared_cancel.lock() {
-                    guard.take();
-                }
+                let _ = runtime.maybe_start_next_turn();
+                runtime.complete_active_turn();
             }
         }
     }

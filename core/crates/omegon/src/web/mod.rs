@@ -274,6 +274,7 @@ pub enum WebCommand {
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::SlashCommandResponse>>,
     },
     Cancel,
+    NewSession,
     Shutdown,
     CancelCleaveChild {
         label: String,
@@ -493,6 +494,7 @@ pub(crate) async fn process_next_daemon_event(state: &WebState) -> anyhow::Resul
                 respond_to: None,
             }),
         "cancel" => Some(WebCommand::Cancel),
+        "new-session" => Some(WebCommand::NewSession),
         "shutdown" => Some(WebCommand::Shutdown),
         "cancel-cleave-child" => event
             .payload
@@ -729,6 +731,35 @@ mod tests {
             .daemon_status
             .clone();
         assert_eq!(startup_status.processed_events, 1);
+    }
+
+    #[tokio::test]
+    async fn daemon_event_worker_dispatches_new_session_trigger() {
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(4);
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        let state = WebState::new(DashboardHandles::default(), events_tx);
+        let state = WebState {
+            command_tx,
+            ..state
+        };
+        state.daemon_events.lock().unwrap().push(DaemonEventEnvelope {
+            event_id: "evt-new-session".into(),
+            source: "manual/test".into(),
+            trigger_kind: "new-session".into(),
+            payload: serde_json::json!({}),
+        });
+        state.daemon_status.lock().unwrap().queued_events = 1;
+
+        let processed = process_next_daemon_event(&state).await.unwrap();
+        assert!(processed);
+        let command = command_rx.recv().await.unwrap();
+        match command {
+            WebCommand::NewSession => {}
+            other => panic!("wrong command: {other:?}"),
+        }
+        let status = state.daemon_status.lock().unwrap().clone();
+        assert_eq!(status.queued_events, 0);
+        assert_eq!(status.processed_events, 1);
     }
 
     #[tokio::test]

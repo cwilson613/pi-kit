@@ -774,6 +774,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_event_accepts_new_session_trigger() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer test"),
+        );
+        let state = test_state();
+        let event = DaemonEventEnvelope {
+            event_id: "evt-new-session".into(),
+            source: "manual/test".into(),
+            trigger_kind: "new-session".into(),
+            payload: serde_json::json!({}),
+        };
+        let (status, Json(payload)) = post_event(axum::extract::State(state.clone()), headers, Json(event)).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(payload.accepted);
+        assert_eq!(payload.queued_events, 1);
+        assert_eq!(state.daemon_events.lock().unwrap().len(), 1);
+        assert_eq!(state.daemon_status.lock().unwrap().queued_events, 1);
+    }
+
+    #[tokio::test]
     async fn post_event_accepts_shutdown_trigger() {
         let mut headers = HeaderMap::new();
         headers.insert(

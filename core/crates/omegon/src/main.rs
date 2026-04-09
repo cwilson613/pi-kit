@@ -1572,6 +1572,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         }
                                         continue;
                                     }
+                                    web::WebCommand::NewSession => {
+                                        if cmd_tx_clone.send(tui::TuiCommand::NewSession).await.is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
                                     web::WebCommand::Shutdown => {
                                         if cmd_tx_clone.send(tui::TuiCommand::Quit).await.is_err() {
                                             break;

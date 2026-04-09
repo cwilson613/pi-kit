@@ -164,6 +164,23 @@ def select_model(spec: TaskSpec, explicit: str | None) -> str | None:
     return explicit or spec.model
 
 
+def normalize_model_for_harness(harness: str, model: str | None) -> str | None:
+    if model is None:
+        return None
+    if harness == "claude-code" and model.startswith("anthropic:"):
+        return model.split(":", 1)[1]
+    return model
+
+
+def ensure_model_supported_for_harness(harness: str, model: str | None) -> None:
+    if model is None:
+        return
+    if harness == "claude-code" and ":" in model and not model.startswith("anthropic:"):
+        raise TaskSpecError(
+            f"claude-code benchmark runs do not support provider-prefixed non-Anthropic model specs: {model}"
+        )
+
+
 def prepare_clean_repo(repo_path: Path, base_ref: str) -> Path:
     clean_root = Path(tempfile.mkdtemp(prefix="benchmark-repo-"))
     if (repo_path / ".git").exists():
@@ -453,12 +470,13 @@ def adapter_for(
     model: str | None,
     clean_repo_path: Path,
 ) -> HarnessAdapter:
+    normalized_model = normalize_model_for_harness(harness, model)
     if harness == "omegon":
-        return OmegonAdapter(repo_path, spec, model, clean_repo_path)
+        return OmegonAdapter(repo_path, spec, normalized_model, clean_repo_path)
     if harness == "pi":
-        return PiAdapter(repo_path, spec, model, clean_repo_path)
+        return PiAdapter(repo_path, spec, normalized_model, clean_repo_path)
     if harness == "claude-code":
-        return ClaudeCodeAdapter(repo_path, spec, model, clean_repo_path)
+        return ClaudeCodeAdapter(repo_path, spec, normalized_model, clean_repo_path)
     raise TaskSpecError(f"unsupported harness: {harness}")
 
 
@@ -746,6 +764,7 @@ def main() -> int:
         spec = load_task_spec(task_path)
         harness = select_harness(spec, args.harness)
         model = select_model(spec, args.model)
+        ensure_model_supported_for_harness(harness, model)
     except TaskSpecError as err:
         print(str(err), file=sys.stderr)
         return 1

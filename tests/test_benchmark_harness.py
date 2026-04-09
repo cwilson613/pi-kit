@@ -256,6 +256,73 @@ acceptance:
             self.assertEqual(payload["tokens"]["total"], 145)
             self.assertEqual(payload["tokens"]["cache_write"], 9)
 
+    def test_claude_adapter_normalizes_anthropic_prefixed_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            fake_claude = repo / "scripts" / "claude"
+            captured = repo / "captured-model.txt"
+            fake_claude.write_text(
+                "#!/bin/sh\n"
+                "model=''\n"
+                "prev=''\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$prev\" = \"--model\" ]; then model=\"$arg\"; fi\n"
+                "  prev=\"$arg\"\n"
+                "done\n"
+                f"printf '%s\\n' \"$model\" > \"{captured}\"\n"
+                "cat <<'JSON'\n"
+                '{"model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}\n'
+                "JSON\n"
+            )
+            fake_claude.chmod(0o755)
+            task = self.write_task(
+                repo,
+                """
+id: claude-model
+repo: .
+base_ref: main
+model: anthropic:claude-sonnet-4-6
+prompt: hi
+harnesses: [claude-code]
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{repo / 'scripts'}:{env['PATH']}"
+            result = subprocess.run(
+                ["python3", str(SCRIPT), str(task), "--root", str(repo), "--harness", "claude-code"],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(captured.read_text().strip(), "claude-sonnet-4-6")
+
+    def test_claude_adapter_rejects_non_anthropic_provider_prefixed_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            task = self.write_task(
+                repo,
+                """
+id: claude-model
+repo: .
+base_ref: main
+model: openai:gpt-4o
+prompt: hi
+harnesses: [claude-code]
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            result = self.run_script(str(task), "--root", str(repo), "--harness", "claude-code")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("do not support provider-prefixed non-Anthropic model specs", result.stderr)
+
     def test_claude_adapter_error_result_becomes_benchmark_error_even_if_acceptance_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

@@ -1152,7 +1152,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         secrets: agent.secrets.clone(),
         context_metrics: agent.context_metrics.clone(),
     };
-    let mut runtime_state = InteractiveAgentState {
+    let mut runtime_state = Some(InteractiveAgentState {
         bus: std::mem::take(&mut agent.bus),
         context_manager: std::mem::replace(
             &mut agent.context_manager,
@@ -1162,15 +1162,24 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             &mut agent.conversation,
             crate::conversation::ConversationState::new(),
         ),
-    };
+    });
 
     // ─── Emit session start to bus features ────────────────────────────
-    runtime_state.bus.emit(&omegon_traits::BusEvent::SessionStart {
+    runtime_state
+        .as_mut()
+        .expect("interactive runtime state initialized")
+        .bus
+        .emit(&omegon_traits::BusEvent::SessionStart {
         cwd: agent.cwd.clone(),
         session_id: agent.session_id.clone(),
     });
     // Drain any requests from session_start handlers
-    for request in runtime_state.bus.drain_requests() {
+    for request in runtime_state
+        .as_mut()
+        .expect("interactive runtime state initialized")
+        .bus
+        .drain_requests()
+    {
         match request {
             omegon_traits::BusRequest::Notify { message, .. } => {
                 let _ = events_tx.send(AgentEvent::SystemNotification { message });
@@ -1289,6 +1298,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::Compact => {
+                let runtime_state = runtime_state
+                    .as_mut()
+                    .expect("interactive runtime state available for compaction");
                 tracing::info!("manual compaction requested");
 
                 let bridge_guard = bridge.read().await;
@@ -1366,6 +1378,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::ContextStatus => {
+                let runtime_state = runtime_state
+                    .as_ref()
+                    .expect("interactive runtime state available for context status");
                 let est = runtime_state.conversation.estimate_tokens();
                 let settings = shared_settings.lock().unwrap();
                 let ctx_window = settings.context_window;
@@ -1388,6 +1403,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::ContextCompact => {
+                let runtime_state = runtime_state
+                    .as_mut()
+                    .expect("interactive runtime state available for context compact");
                 tracing::info!("context compaction requested via /context compact");
 
                 let bridge_guard = bridge.read().await;
@@ -1446,6 +1464,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::ContextClear => {
+                let runtime_state = runtime_state
+                    .as_mut()
+                    .expect("interactive runtime state available for context clear");
                 tracing::info!("context clear requested via /context clear");
                 // Same as /new: save session, reset conversation
                 if !cli.no_session {
@@ -1492,6 +1513,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::NewSession => {
+                let runtime_state = runtime_state
+                    .as_mut()
+                    .expect("interactive runtime state available for new session");
                 // Save the current session before resetting
                 if !cli.no_session {
                     let _ = session::save_session(
@@ -1587,8 +1611,11 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 args,
                 respond_to,
             } => {
+                let runtime_state = runtime_state
+                    .as_mut()
+                    .expect("interactive runtime state available for remote slash command");
                 let response = execute_remote_slash_command(
-                    &mut runtime_state,
+                    runtime_state,
                     &mut agent,
                     &events_tx,
                     &shared_settings,
@@ -1605,6 +1632,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::BusCommand { name, args } => {
+                let runtime_state = runtime_state
+                    .as_mut()
+                    .expect("interactive runtime state available for bus command");
                 // Handle special auth commands directly
                 if name == "secrets" {
                     let parts: Vec<&str> = args.splitn(3, ' ').collect();
@@ -1977,17 +2007,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     }
 
                     let mut quit_after_turn = false;
-                    let state_for_turn = std::mem::replace(
-                        &mut runtime_state,
-                        InteractiveAgentState {
-                            bus: crate::bus::EventBus::default(),
-                            context_manager: crate::context::ContextManager::new(
-                                String::new(),
-                                vec![],
-                            ),
-                            conversation: crate::conversation::ConversationState::new(),
-                        },
-                    );
+                    let state_for_turn = runtime_state
+                        .take()
+                        .expect("interactive runtime state available before turn spawn");
                     let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
                         state_for_turn,
                         runtime_resources.clone(),
@@ -2002,13 +2024,13 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     loop {
                         tokio::select! {
                             turn_result = &mut turn_task => {
-                                runtime_state = match turn_result {
+                                runtime_state = Some(match turn_result {
                                     Ok(runtime_state) => runtime_state,
                                     Err(join_err) => {
                                         tracing::error!("interactive turn task failed: {join_err}");
                                         break 'interactive;
                                     }
-                                };
+                                });
                                 break;
                             }
                             maybe_cmd = command_rx.recv() => {
@@ -2059,14 +2081,18 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     }
 
     // Save session + profile
-    if !cli.no_session
-        && let Err(e) = session::save_session(
-            &runtime_state.conversation,
-            &agent.cwd,
-            Some(agent.session_id.as_str()),
-        )
-    {
-        tracing::debug!("Session save failed: {e}");
+    if let Some(runtime_state) = runtime_state.as_ref() {
+        if !cli.no_session
+            && let Err(e) = session::save_session(
+                &runtime_state.conversation,
+                &agent.cwd,
+                Some(agent.session_id.as_str()),
+            )
+        {
+            tracing::debug!("Session save failed: {e}");
+        }
+    } else {
+        tracing::error!("interactive runtime state unavailable at shutdown; skipping session save");
     }
     // Always persist profile on exit (captures thinking level changes, etc.)
     if let Ok(s) = shared_settings.lock() {

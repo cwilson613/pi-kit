@@ -1905,8 +1905,10 @@ fn slash_skills_returns_display() {
     let result = app.handle_slash_command("/skills", &tx);
     match result {
         SlashResult::Display(text) => {
-            assert!(text.contains("Bundled skills"), "{text}");
-            assert!(text.contains("Use /skills install"), "{text}");
+            assert!(text.contains("Skills"), "{text}");
+            assert!(text.contains("Installed:"), "{text}");
+            assert!(text.contains("/skills install"), "{text}");
+            assert!(text.contains("/skills list"), "{text}");
         }
         _ => panic!("/skills should display bundled skill summary, got: {result:?}"),
     }

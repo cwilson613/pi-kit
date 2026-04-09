@@ -3079,10 +3079,16 @@ impl App {
                     let install_dir = dirs::home_dir()
                         .map(|h| h.join(".omegon").join("skills"))
                         .unwrap_or_else(|| std::path::PathBuf::from("~/.omegon/skills"));
-                    let mut lines = vec![format!(
-                        "Bundled skills ({})\n",
-                        crate::skills::BUNDLED.len()
-                    )];
+                    let installed_count = crate::skills::BUNDLED
+                        .iter()
+                        .filter(|(name, _)| install_dir.join(name).join("SKILL.md").exists())
+                        .count();
+                    let mut lines = vec![
+                        format!(
+                            "Skills\n  Installed: {installed_count}/{} bundled skills\n",
+                            crate::skills::BUNDLED.len()
+                        ),
+                    ];
                     for (name, content) in crate::skills::BUNDLED {
                         let installed = install_dir.join(name).join("SKILL.md").exists();
                         let desc = content
@@ -3090,12 +3096,15 @@ impl App {
                             .find_map(|line| line.strip_prefix("description:"))
                             .map(str::trim)
                             .unwrap_or("(no description)");
-                        let status = if installed { "✓" } else { "○" };
-                        lines.push(format!("  {status} {name:<14} {desc}"));
+                        let status = if installed { "Installed" } else { "Available" };
+                        let icon = if installed { "✓" } else { "○" };
+                        lines.push(format!("  {icon} {name:<14} {status:<10} {desc}"));
                     }
                     lines.push(String::new());
-                    lines.push(format!("Install location: {}", install_dir.display()));
-                    lines.push("Use /skills install to install or refresh bundled skills.".into());
+                    lines.push(format!("Install Location: {}", install_dir.display()));
+                    lines.push("Actions".into());
+                    lines.push("  /skills install   Install or refresh bundled skills".into());
+                    lines.push("  /skills list      Show this summary".into());
                     SlashResult::Display(lines.join("\n"))
                 }
                 "install" => match crate::skills::cmd_install() {

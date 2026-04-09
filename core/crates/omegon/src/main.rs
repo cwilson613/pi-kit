@@ -919,6 +919,9 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
 }
 
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
     tracing::info!(model = %cli.model, "omegon interactive starting");
 
     // Check .omegon-version — show in bootstrap panel (before TUI takes over stderr)
@@ -1144,6 +1147,11 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         );
     }
 
+    let runtime_resources = InteractiveRuntimeResources {
+        cwd: agent.cwd.clone(),
+        secrets: agent.secrets.clone(),
+        context_metrics: agent.context_metrics.clone(),
+    };
     let mut runtime_state = InteractiveAgentState {
         bus: std::mem::take(&mut agent.bus),
         context_manager: std::mem::replace(
@@ -1969,53 +1977,69 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     }
 
                     let mut quit_after_turn = false;
-                    {
-                        let mut turn_fut = std::pin::pin!(run_interactive_active_turn(
-                            &mut runtime_state,
-                            &agent,
-                            &bridge,
-                            &shared_settings,
-                            &shared_cancel,
-                            &pending_compact,
-                            &events_tx,
-                            active,
-                        ));
+                    let state_for_turn = std::mem::replace(
+                        &mut runtime_state,
+                        InteractiveAgentState {
+                            bus: crate::bus::EventBus::default(),
+                            context_manager: crate::context::ContextManager::new(
+                                String::new(),
+                                vec![],
+                            ),
+                            conversation: crate::conversation::ConversationState::new(),
+                        },
+                    );
+                    let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
+                        state_for_turn,
+                        runtime_resources.clone(),
+                        bridge.clone(),
+                        shared_settings.clone(),
+                        shared_cancel.clone(),
+                        pending_compact.clone(),
+                        events_tx.clone(),
+                        active,
+                    ));
 
-                        loop {
-                            tokio::select! {
-                                _ = &mut turn_fut => {
-                                    break;
-                                }
-                                maybe_cmd = command_rx.recv() => {
-                                    let Some(cmd) = maybe_cmd else {
+                    loop {
+                        tokio::select! {
+                            turn_result = &mut turn_task => {
+                                runtime_state = match turn_result {
+                                    Ok(runtime_state) => runtime_state,
+                                    Err(join_err) => {
+                                        tracing::error!("interactive turn task failed: {join_err}");
+                                        break 'interactive;
+                                    }
+                                };
+                                break;
+                            }
+                            maybe_cmd = command_rx.recv() => {
+                                let Some(cmd) = maybe_cmd else {
+                                    quit_after_turn = true;
+                                    if let Ok(guard) = shared_cancel.lock()
+                                        && let Some(ref cancel) = *guard
+                                    {
+                                        cancel.cancel();
+                                    }
+                                    continue;
+                                };
+
+                                match cmd {
+                                    tui::TuiCommand::SubmitPrompt(prompt) => {
+                                        let actor = RuntimeActor {
+                                            kind: runtime_actor_kind_from_via(&prompt.via),
+                                            label: prompt.submitted_by.clone(),
+                                        };
+                                        let via = control_surface_from_via(&prompt.via);
+                                        runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via);
+                                    }
+                                    tui::TuiCommand::Quit => {
                                         quit_after_turn = true;
                                         if let Ok(guard) = shared_cancel.lock()
                                             && let Some(ref cancel) = *guard
                                         {
                                             cancel.cancel();
                                         }
-                                        continue;
-                                    };
-
-                                    match cmd {
-                                        tui::TuiCommand::SubmitPrompt(prompt) => {
-                                            let actor = RuntimeActor {
-                                                kind: runtime_actor_kind_from_via(&prompt.via),
-                                                label: prompt.submitted_by.clone(),
-                                            };
-                                            let via = control_surface_from_via(&prompt.via);
-                                            runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via);
-                                        }
-                                        tui::TuiCommand::Quit => {
-                                            quit_after_turn = true;
-                                            if let Ok(guard) = shared_cancel.lock()
-                                                && let Some(ref cancel) = *guard
-                                            {
-                                                cancel.cancel();
-                                            }
-                                        }
-                                        other => deferred_commands.push_back(other),
                                     }
+                                    other => deferred_commands.push_back(other),
                                 }
                             }
                         }
@@ -2037,7 +2061,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     // Save session + profile
     if !cli.no_session
         && let Err(e) = session::save_session(
-            &agent.conversation,
+            &runtime_state.conversation,
             &agent.cwd,
             Some(agent.session_id.as_str()),
         )
@@ -2054,6 +2078,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     bridge.read().await.shutdown().await;
     tui_handle.abort();
     Ok(())
+        })
+        .await
 }
 
 /// Format an agent loop error into a concise user-facing message.
@@ -2233,8 +2259,16 @@ struct InteractiveAgentState {
     conversation: crate::conversation::ConversationState,
 }
 
+#[derive(Clone)]
+struct InteractiveRuntimeResources {
+    cwd: PathBuf,
+    secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
+    context_metrics:
+        std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
+}
+
 fn build_interactive_loop_config(
-    agent: &setup::AgentSetup,
+    runtime: &InteractiveRuntimeResources,
     shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
     pending_compact: &Arc<std::sync::atomic::AtomicBool>,
 ) -> r#loop::LoopConfig {
@@ -2249,25 +2283,25 @@ fn build_interactive_loop_config(
         max_retries: 0,
         retry_delay_ms: 750,
         model,
-        cwd: agent.cwd.clone(),
+        cwd: runtime.cwd.clone(),
         extended_context: false,
         settings: Some(shared_settings.clone()),
-        secrets: Some(agent.secrets.clone()),
+        secrets: Some(runtime.secrets.clone()),
         force_compact: Some(pending_compact.clone()),
     }
 }
 
 async fn run_interactive_active_turn(
-    runtime_state: &mut InteractiveAgentState,
-    agent: &setup::AgentSetup,
-    bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
-    shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
-    shared_cancel: &tui::SharedCancel,
-    pending_compact: &Arc<std::sync::atomic::AtomicBool>,
-    events_tx: &broadcast::Sender<AgentEvent>,
+    mut runtime_state: InteractiveAgentState,
+    runtime: InteractiveRuntimeResources,
+    bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
+    shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
+    shared_cancel: tui::SharedCancel,
+    pending_compact: Arc<std::sync::atomic::AtomicBool>,
+    events_tx: broadcast::Sender<AgentEvent>,
     active: ActiveTurnMeta,
-) {
-    let loop_config = build_interactive_loop_config(agent, shared_settings, pending_compact);
+) -> InteractiveAgentState {
+    let loop_config = build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
 
     if active.prompt.image_paths.is_empty() {
         runtime_state
@@ -2311,7 +2345,7 @@ async fn run_interactive_active_turn(
         &mut runtime_state.bus,
         &mut runtime_state.context_manager,
         &mut runtime_state.conversation,
-        events_tx,
+        &events_tx,
         cancel,
         &loop_config,
     )
@@ -2330,7 +2364,7 @@ async fn run_interactive_active_turn(
 
     let est = runtime_state.conversation.estimate_tokens();
     let settings = shared_settings.lock().unwrap();
-    if let Ok(mut metrics) = agent.context_metrics.lock() {
+    if let Ok(mut metrics) = runtime.context_metrics.lock() {
         metrics.update(
             est,
             settings.context_window,
@@ -2344,6 +2378,8 @@ async fn run_interactive_active_turn(
         context_class: settings.effective_requested_class().label().to_string(),
         thinking_level: settings.thinking.as_str().to_string(),
     });
+
+    runtime_state
 }
 
 #[derive(Debug, Default)]

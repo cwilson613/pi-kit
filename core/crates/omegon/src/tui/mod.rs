@@ -2379,7 +2379,7 @@ impl App {
                     .into_iter()
                     .map(|vl| {
                         if let Some(summary) = vl.strip_prefix("[Pasted text #") {
-                            let summary = summary.strip_suffix(']').unwrap_or(summary);
+                            let summary = summary.strip_suffix(']').unwrap_or(summary).to_string();
                             Line::from(vec![
                                 Span::styled("▌", Style::default().fg(t.accent())),
                                 Span::styled(" paste ", Style::default().fg(t.bg()).bg(t.accent())),
@@ -2387,7 +2387,7 @@ impl App {
                                 Span::styled(summary, Style::default().fg(t.accent_bright())),
                             ])
                         } else {
-                            Line::from(Span::styled(vl, Style::default().fg(t.fg())))
+                            Line::from(Span::styled(vl.to_string(), Style::default().fg(t.fg())))
                         }
                     })
                     .collect()

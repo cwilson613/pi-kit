@@ -52,6 +52,7 @@ class TaskSpec:
     success_files: list[str]
     budget: dict[str, Any]
     model: str | None = None
+    slim: bool = False
     notes: str | None = None
 
 
@@ -74,11 +75,12 @@ class AdapterError(RuntimeError):
 class HarnessAdapter:
     harness_name: str
 
-    def __init__(self, repo_path: Path, spec: TaskSpec, model: str | None, clean_repo_path: Path) -> None:
+    def __init__(self, repo_path: Path, spec: TaskSpec, model: str | None, clean_repo_path: Path, slim: bool = False) -> None:
         self.repo_path = repo_path
         self.spec = spec
         self.model = model
         self.clean_repo_path = clean_repo_path
+        self.slim = slim
 
     def validate_environment(self) -> None:
         raise NotImplementedError
@@ -93,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", default=".", help="Repo root for relative task paths")
     parser.add_argument("--harness", help="Harness to run; defaults to first declared harness")
     parser.add_argument("--model", help="Optional model override for implemented adapters")
+    parser.add_argument("--slim", action="store_true", help="Enable Omegon slim mode for this run")
     parser.add_argument(
         "--out-dir",
         help="Directory for JSON result artifacts (default: <root>/ai/benchmarks/runs)",
@@ -136,6 +139,7 @@ def load_task_spec(path: Path) -> TaskSpec:
         success_files=[str(v) for v in raw.get("success_files", [])],
         budget=raw.get("budget") or {},
         model=str(raw["model"]) if raw.get("model") is not None else None,
+        slim=bool(raw.get("slim", False)),
         notes=str(raw["notes"]) if raw.get("notes") is not None else None,
     )
 
@@ -162,6 +166,10 @@ def select_harness(spec: TaskSpec, explicit: str | None) -> str:
 
 def select_model(spec: TaskSpec, explicit: str | None) -> str | None:
     return explicit or spec.model
+
+
+def select_slim(spec: TaskSpec, explicit: bool) -> bool:
+    return explicit or spec.slim
 
 
 def normalize_model_for_harness(harness: str, model: str | None) -> str | None:
@@ -233,6 +241,8 @@ class OmegonAdapter(HarnessAdapter):
         ]
         if self.model:
             cmd.extend(["--model", self.model])
+        if self.slim:
+            cmd.append("--slim")
 
         with log_file.open("w") as handle:
             proc = subprocess.run(
@@ -496,14 +506,15 @@ def adapter_for(
     spec: TaskSpec,
     model: str | None,
     clean_repo_path: Path,
+    slim: bool,
 ) -> HarnessAdapter:
     normalized_model = normalize_model_for_harness(harness, model)
     if harness == "omegon":
-        return OmegonAdapter(repo_path, spec, normalized_model, clean_repo_path)
+        return OmegonAdapter(repo_path, spec, normalized_model, clean_repo_path, slim=slim)
     if harness == "pi":
-        return PiAdapter(repo_path, spec, normalized_model, clean_repo_path)
+        return PiAdapter(repo_path, spec, normalized_model, clean_repo_path, slim=slim)
     if harness == "claude-code":
-        return ClaudeCodeAdapter(repo_path, spec, normalized_model, clean_repo_path)
+        return ClaudeCodeAdapter(repo_path, spec, normalized_model, clean_repo_path, slim=slim)
     raise TaskSpecError(f"unsupported harness: {harness}")
 
 
@@ -799,6 +810,7 @@ def main() -> int:
         spec = load_task_spec(task_path)
         harness = select_harness(spec, args.harness)
         model = select_model(spec, args.model)
+        slim = select_slim(spec, args.slim)
         ensure_model_supported_for_harness(harness, model)
     except TaskSpecError as err:
         print(str(err), file=sys.stderr)
@@ -809,7 +821,7 @@ def main() -> int:
     clean_repo_path = prepare_clean_repo(repo_path, spec.base_ref)
 
     try:
-        adapter_impl = adapter_for(harness, repo_path, spec, model, clean_repo_path)
+        adapter_impl = adapter_for(harness, repo_path, spec, model, clean_repo_path, slim)
         adapter_impl.validate_environment()
     except (TaskSpecError, AdapterError) as err:
         print(str(err), file=sys.stderr)

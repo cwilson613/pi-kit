@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -8,6 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "benchmark_harness.py"
+SPEC = importlib.util.spec_from_file_location("benchmark_harness_module", SCRIPT)
+assert SPEC and SPEC.loader
+BENCHMARK_HARNESS = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = BENCHMARK_HARNESS
+SPEC.loader.exec_module(BENCHMARK_HARNESS)
 
 
 class BenchmarkHarnessTests(unittest.TestCase):
@@ -94,7 +100,7 @@ acceptance: [echo ok]
             (repo / "core").mkdir(parents=True)
             (clean / "core").mkdir(parents=True)
 
-            env = __import__("benchmark_harness").benchmark_process_env(repo, clean, "omegon", "task:alpha")
+            env = BENCHMARK_HARNESS.benchmark_process_env(repo, clean, "omegon", "task:alpha")
             expected = (repo / "core" / "target" / "benchmark-harness" / "task-alpha" / "omegon").resolve()
             self.assertEqual(env["CARGO_TARGET_DIR"], str(expected))
 
@@ -375,6 +381,104 @@ acceptance:
             self.assertEqual(payload["adapter"]["execution_status"], "error")
             self.assertEqual(payload["adapter"]["error_message"], "model access denied")
             self.assertEqual(payload["acceptance"]["commands"][0]["exit"], 0)
+
+    def test_task_spec_slim_mode_is_used_when_cli_flag_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            fake_cargo = repo / "scripts" / "cargo"
+            captured = repo / "captured-args.txt"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$@\" > \"{captured}\"\n"
+                "usage_json=''\n"
+                "prev=''\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$prev\" = \"--usage-json\" ]; then usage_json=\"$arg\"; fi\n"
+                "  prev=\"$arg\"\n"
+                "done\n"
+                "if [ -n \"$usage_json\" ]; then\n"
+                "  cat > \"$usage_json\" <<'JSON'\n"
+                '{"input_tokens": 1, "output_tokens": 1, "cache_tokens": 0}\n'
+                "JSON\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            fake_cargo.chmod(0o755)
+            task = self.write_task(
+                repo,
+                """
+id: slim-task
+repo: .
+base_ref: main
+model: anthropic:claude-sonnet-4-6
+slim: true
+prompt: hi
+harnesses: [omegon]
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{repo / 'scripts'}:{env['PATH']}"
+            result = subprocess.run(
+                ["python3", str(SCRIPT), str(task), "--root", str(repo)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--slim", captured.read_text())
+
+    def test_cli_slim_flag_overrides_task_default_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            fake_cargo = repo / "scripts" / "cargo"
+            captured = repo / "captured-args.txt"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$@\" > \"{captured}\"\n"
+                "usage_json=''\n"
+                "prev=''\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$prev\" = \"--usage-json\" ]; then usage_json=\"$arg\"; fi\n"
+                "  prev=\"$arg\"\n"
+                "done\n"
+                "if [ -n \"$usage_json\" ]; then\n"
+                "  cat > \"$usage_json\" <<'JSON'\n"
+                '{"input_tokens": 1, "output_tokens": 1, "cache_tokens": 0}\n'
+                "JSON\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            fake_cargo.chmod(0o755)
+            task = self.write_task(
+                repo,
+                """
+id: slim-task
+repo: .
+base_ref: main
+prompt: hi
+harnesses: [omegon]
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{repo / 'scripts'}:{env['PATH']}"
+            result = subprocess.run(
+                ["python3", str(SCRIPT), str(task), "--root", str(repo), "--slim"],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--slim", captured.read_text())
 
     def test_task_spec_model_is_used_when_cli_override_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

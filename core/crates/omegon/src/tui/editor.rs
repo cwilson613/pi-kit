@@ -77,15 +77,17 @@ pub struct Editor {
     kill_ring: Option<String>,
     /// Tracked vertical scroll offset for wrapped multiline rendering.
     scroll_row: u16,
-    /// Internal text model. Attachment tokens are stored as OBJECT REPLACEMENT
+    /// Internal text model. Inline tokens are stored as OBJECT REPLACEMENT
     /// characters and projected into visible placeholders for rendering.
     model_text: String,
-    /// Attachment payloads in token order as they appear in `model_text`.
-    attachments: Vec<PathBuf>,
+    /// Inline token payloads in token order as they appear in `model_text`.
+    inline_tokens: Vec<InlineToken>,
 }
 
 impl Editor {
-    const ATTACHMENT_SENTINEL: char = '\u{FFFC}';
+    const INLINE_TOKEN_SENTINEL: char = '\u{FFFC}';
+    const COLLAPSIBLE_PASTE_MIN_LINES: usize = 3;
+    const COLLAPSIBLE_PASTE_MIN_CHARS: usize = 120;
 
     pub fn new() -> Self {
         let mut ta = TextArea::default();
@@ -99,7 +101,7 @@ impl Editor {
             kill_ring: None,
             scroll_row: 0,
             model_text: String::new(),
-            attachments: Vec::new(),
+            inline_tokens: Vec::new(),
         }
     }
 
@@ -114,6 +116,29 @@ impl Editor {
             _ => "attachment",
         };
         format!("[{kind}{idx}]")
+    }
+
+    fn paste_placeholder(text: &str, idx: usize) -> String {
+        let newline_count = text.chars().filter(|ch| *ch == '\n').count();
+        let extra_lines = newline_count.saturating_sub(1);
+        if extra_lines > 0 {
+            format!("[Pasted text #{} +{} lines]", idx + 1, extra_lines)
+        } else {
+            format!("[Pasted text #{}]", idx + 1)
+        }
+    }
+
+    fn token_placeholder(token: &InlineToken, idx: usize) -> String {
+        match token {
+            InlineToken::Attachment(path) => Self::attachment_placeholder(path, idx),
+            InlineToken::CollapsedPaste { text } => Self::paste_placeholder(text, idx),
+        }
+    }
+
+    fn should_collapse_paste(text: &str) -> bool {
+        let line_count = text.split('\n').count();
+        line_count >= Self::COLLAPSIBLE_PASTE_MIN_LINES
+            || text.chars().count() >= Self::COLLAPSIBLE_PASTE_MIN_CHARS
     }
 
     fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
@@ -151,26 +176,26 @@ impl Editor {
     fn projection(&self) -> Projection {
         let mut text = String::new();
         let mut token_spans = Vec::new();
-        let mut attachment_ord = 0usize;
+        let mut token_ord = 0usize;
         let mut projected_char_idx = 0usize;
 
         for (model_char_idx, ch) in self.model_text.chars().enumerate() {
-            if ch == Self::ATTACHMENT_SENTINEL {
+            if ch == Self::INLINE_TOKEN_SENTINEL {
                 let label = self
-                    .attachments
-                    .get(attachment_ord)
-                    .map(|path| Self::attachment_placeholder(path, attachment_ord))
-                    .unwrap_or_else(|| format!("[attachment{}]", attachment_ord));
+                    .inline_tokens
+                    .get(token_ord)
+                    .map(|token| Self::token_placeholder(token, token_ord))
+                    .unwrap_or_else(|| format!("[token{}]", token_ord));
                 let label_len = label.chars().count();
                 token_spans.push(TokenSpan {
                     model_char_idx,
-                    attachment_ord,
+                    token_ord,
                     start: projected_char_idx,
                     end: projected_char_idx + label_len,
                 });
                 text.push_str(&label);
                 projected_char_idx += label_len;
-                attachment_ord += 1;
+                token_ord += 1;
             } else {
                 text.push(ch);
                 projected_char_idx += 1;
@@ -223,19 +248,19 @@ impl Editor {
 
         let mut model_idx = 0usize;
         let mut projected_count = 0usize;
-        let mut attachment_ord = 0usize;
+        let mut token_ord = 0usize;
         for ch in self.model_text.chars() {
-            if ch == Self::ATTACHMENT_SENTINEL {
+            if ch == Self::INLINE_TOKEN_SENTINEL {
                 let width = self
-                    .attachments
-                    .get(attachment_ord)
-                    .map(|path| Self::attachment_placeholder(path, attachment_ord).chars().count())
+                    .inline_tokens
+                    .get(token_ord)
+                    .map(|token| Self::token_placeholder(token, token_ord).chars().count())
                     .unwrap_or(1);
                 if projected_count >= projected_idx {
                     return model_idx;
                 }
                 projected_count += width;
-                attachment_ord += 1;
+                token_ord += 1;
             } else {
                 if projected_count >= projected_idx {
                     return model_idx;
@@ -265,24 +290,24 @@ impl Editor {
         self.model_text
             .chars()
             .take(model_idx)
-            .filter(|ch| *ch == Self::ATTACHMENT_SENTINEL)
+            .filter(|ch| *ch == Self::INLINE_TOKEN_SENTINEL)
             .count()
     }
 
     fn projected_char_positions(&self) -> Vec<usize> {
         let mut positions = Vec::new();
         let mut projected = 0usize;
-        let mut attachment_ord = 0usize;
+        let mut token_ord = 0usize;
         for ch in self.model_text.chars() {
             positions.push(projected);
-            if ch == Self::ATTACHMENT_SENTINEL {
+            if ch == Self::INLINE_TOKEN_SENTINEL {
                 let width = self
-                    .attachments
-                    .get(attachment_ord)
-                    .map(|path| Self::attachment_placeholder(path, attachment_ord).chars().count())
+                    .inline_tokens
+                    .get(token_ord)
+                    .map(|token| Self::token_placeholder(token, token_ord).chars().count())
                     .unwrap_or(1);
                 projected += width;
-                attachment_ord += 1;
+                token_ord += 1;
             } else {
                 projected += 1;
             }
@@ -302,8 +327,8 @@ impl Editor {
         let start = Self::char_to_byte_idx(&self.model_text, span.model_char_idx);
         let end = Self::char_to_byte_idx(&self.model_text, span.model_char_idx + 1);
         self.model_text.replace_range(start..end, "");
-        if span.attachment_ord < self.attachments.len() {
-            self.attachments.remove(span.attachment_ord);
+        if span.token_ord < self.inline_tokens.len() {
+            self.inline_tokens.remove(span.token_ord);
         }
         self.sync_textarea_from_model(span.start);
     }
@@ -327,37 +352,37 @@ impl Editor {
         let positions = self.projected_char_positions();
         let model_chars: Vec<char> = self.model_text.chars().collect();
         let mut new_model = String::new();
-        let mut new_attachments = Vec::new();
-        let mut attachment_ord = 0usize;
+        let mut new_tokens = Vec::new();
+        let mut token_ord = 0usize;
 
         for (idx, ch) in model_chars.iter().copied().enumerate() {
             let projected_pos = positions.get(idx).copied().unwrap_or(0);
-            let remove = if ch == Self::ATTACHMENT_SENTINEL {
+            let remove = if ch == Self::INLINE_TOKEN_SENTINEL {
                 let width = self
-                    .attachments
-                    .get(attachment_ord)
-                    .map(|path| Self::attachment_placeholder(path, attachment_ord).chars().count())
+                    .inline_tokens
+                    .get(token_ord)
+                    .map(|token| Self::token_placeholder(token, token_ord).chars().count())
                     .unwrap_or(1);
                 projected_pos < end && projected_pos + width > start
             } else {
                 projected_pos >= start && projected_pos < end
             };
 
-            if ch == Self::ATTACHMENT_SENTINEL {
+            if ch == Self::INLINE_TOKEN_SENTINEL {
                 if !remove {
                     new_model.push(ch);
-                    if let Some(path) = self.attachments.get(attachment_ord).cloned() {
-                        new_attachments.push(path);
+                    if let Some(token) = self.inline_tokens.get(token_ord).cloned() {
+                        new_tokens.push(token);
                     }
                 }
-                attachment_ord += 1;
+                token_ord += 1;
             } else if !remove {
                 new_model.push(ch);
             }
         }
 
         self.model_text = new_model;
-        self.attachments = new_attachments;
+        self.inline_tokens = new_tokens;
         self.sync_textarea_from_model(start);
     }
 
@@ -614,12 +639,23 @@ impl Editor {
 
     pub fn take_submission(&mut self) -> (String, Vec<PathBuf>) {
         self.mode = EditorMode::Normal;
-        let text: String = self
-            .model_text
-            .chars()
-            .filter(|ch| *ch != Self::ATTACHMENT_SENTINEL)
-            .collect();
-        let attachments = std::mem::take(&mut self.attachments);
+        let mut text = String::new();
+        let mut attachments = Vec::new();
+        let mut token_ord = 0usize;
+        for ch in self.model_text.chars() {
+            if ch == Self::INLINE_TOKEN_SENTINEL {
+                if let Some(token) = self.inline_tokens.get(token_ord) {
+                    match token {
+                        InlineToken::Attachment(path) => attachments.push(path.clone()),
+                        InlineToken::CollapsedPaste { text: pasted } => text.push_str(pasted),
+                    }
+                }
+                token_ord += 1;
+            } else {
+                text.push(ch);
+            }
+        }
+        self.inline_tokens.clear();
         self.model_text.clear();
         self.raw_set_textarea_text("");
         self.scroll_row = 0;
@@ -635,7 +671,7 @@ impl Editor {
     /// Set the buffer text (for history navigation).
     pub fn set_text(&mut self, text: &str) {
         self.model_text = text.to_string();
-        self.attachments.clear();
+        self.inline_tokens.clear();
         let projection = self.projection();
         let projected_len = projection.text.chars().count();
         self.raw_set_textarea_text(&projection.text);
@@ -668,8 +704,21 @@ impl Editor {
         let projected_idx = self.projected_cursor();
         let model_idx = self.projected_cursor_to_model_insert_idx(projected_idx);
         let byte_idx = Self::char_to_byte_idx(&self.model_text, model_idx);
-        self.model_text.insert_str(byte_idx, &normalized);
-        self.sync_textarea_from_model(projected_idx + normalized.chars().count());
+        if Self::should_collapse_paste(&normalized) {
+            self.model_text.insert(byte_idx, Self::INLINE_TOKEN_SENTINEL);
+            let ord = self.token_ord_before_model_idx(model_idx + 1).saturating_sub(1);
+            self.inline_tokens
+                .insert(ord, InlineToken::CollapsedPaste { text: normalized.clone() });
+            let label_len = self
+                .inline_tokens
+                .get(ord)
+                .map(|token| Self::token_placeholder(token, ord).chars().count())
+                .unwrap_or(1);
+            self.sync_textarea_from_model(projected_idx + label_len);
+        } else {
+            self.model_text.insert_str(byte_idx, &normalized);
+            self.sync_textarea_from_model(projected_idx + normalized.chars().count());
+        }
     }
 
     /// Insert a character directly (for compat with old API).
@@ -696,13 +745,13 @@ impl Editor {
         let projected_idx = self.projected_cursor();
         let model_idx = self.projected_cursor_to_model_insert_idx(projected_idx);
         let byte_idx = Self::char_to_byte_idx(&self.model_text, model_idx);
-        self.model_text.insert(byte_idx, Self::ATTACHMENT_SENTINEL);
+        self.model_text.insert(byte_idx, Self::INLINE_TOKEN_SENTINEL);
         let ord = self.token_ord_before_model_idx(model_idx + 1).saturating_sub(1);
-        self.attachments.insert(ord, path);
+        self.inline_tokens.insert(ord, InlineToken::Attachment(path));
         let label_len = self
-            .attachments
+            .inline_tokens
             .get(ord)
-            .map(|p| Self::attachment_placeholder(p, ord).chars().count())
+            .map(|token| Self::token_placeholder(token, ord).chars().count())
             .unwrap_or(1);
         self.sync_textarea_from_model(projected_idx + label_len);
     }
@@ -876,10 +925,16 @@ struct Projection {
     token_spans: Vec<TokenSpan>,
 }
 
+#[derive(Clone, Debug)]
+enum InlineToken {
+    Attachment(PathBuf),
+    CollapsedPaste { text: String },
+}
+
 #[derive(Clone, Copy)]
 struct TokenSpan {
     model_char_idx: usize,
-    attachment_ord: usize,
+    token_ord: usize,
     start: usize,
     end: usize,
 }
@@ -914,6 +969,30 @@ mod tests {
         }
         e.insert_attachment(PathBuf::from("/tmp/paste.png"));
         assert_eq!(e.render_text(), "hello [image0]world");
+    }
+
+    #[test]
+    fn large_multiline_paste_collapses_into_single_token() {
+        let mut e = Editor::new();
+        e.insert_paste("alpha\n\nbeta\n");
+        assert_eq!(e.render_text(), "[Pasted text #1 +2 lines]");
+        let (text, attachments) = e.take_submission();
+        assert_eq!(text, "alpha\n\nbeta\n");
+        assert!(attachments.is_empty());
+    }
+
+    #[test]
+    fn backspace_inside_collapsed_paste_removes_whole_token() {
+        let mut e = Editor::new();
+        e.insert('a');
+        e.insert_paste("alpha\n\nbeta\n");
+        e.insert('b');
+        assert_eq!(e.render_text(), "a[Pasted text #1 +2 lines]b");
+        e.move_left();
+        e.move_left();
+        e.move_left();
+        e.backspace();
+        assert_eq!(e.render_text(), "ab");
     }
 
     #[test]

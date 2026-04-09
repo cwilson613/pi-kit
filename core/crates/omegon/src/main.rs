@@ -366,6 +366,10 @@ enum BenchAction {
         /// Path to write benchmark usage/result JSON.
         #[arg(long)]
         usage_json: PathBuf,
+
+        /// Enable slim runtime mode for this benchmark run.
+        #[arg(long)]
+        slim: bool,
     },
 }
 
@@ -585,7 +589,7 @@ async fn main() -> anyhow::Result<()> {
             SkillsAction::Install => skills::cmd_install().map_err(Into::into),
         },
         Some(Commands::Bench { ref action }) => match action {
-            BenchAction::RunTask { prompt, usage_json } => {
+            BenchAction::RunTask { prompt, usage_json, slim } => {
                 let mut bench_cli = Cli {
                     command: None,
                     cwd: cli.cwd.clone(),
@@ -596,7 +600,7 @@ async fn main() -> anyhow::Result<()> {
                     max_retries: cli.max_retries,
                     resume: cli.resume.clone(),
                     fresh: cli.fresh,
-                    slim: cli.slim,
+                    slim: cli.slim || *slim,
                     no_session: cli.no_session,
                     no_splash: cli.no_splash,
                     tutorial: cli.tutorial,
@@ -3985,15 +3989,21 @@ mod tests {
             "benchmark prompt",
             "--usage-json",
             "usage.json",
+            "--slim",
         ])
         .expect("bench run-task should parse");
 
         match cli.command.unwrap() {
             Commands::Bench {
-                action: BenchAction::RunTask { prompt, usage_json },
+                action: BenchAction::RunTask {
+                    prompt,
+                    usage_json,
+                    slim,
+                },
             } => {
                 assert_eq!(prompt, "benchmark prompt");
                 assert_eq!(usage_json, PathBuf::from("usage.json"));
+                assert!(slim);
             }
             _ => panic!("wrong command parsed"),
         }

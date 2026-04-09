@@ -26,6 +26,10 @@ fn test_tx() -> mpsc::Sender<TuiCommand> {
     tx
 }
 
+fn test_tx_with_rx() -> (mpsc::Sender<TuiCommand>, mpsc::Receiver<TuiCommand>) {
+    mpsc::channel(16)
+}
+
 fn render_app_to_string(app: &mut App, width: u16, height: u16) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -86,6 +90,48 @@ fn session_reset_clears_instrument_panel_tool_activity() {
     let after = render_app_to_string(&mut app, 140, 36);
     assert!(!after.contains("context_clear"), "got {after}");
     assert!(after.contains("New session started. Previous session saved."), "got {after}");
+}
+
+#[tokio::test]
+async fn submit_editor_buffer_sends_plain_prompt_after_attachment_token_removed() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    app.editor.set_text("please inspect this");
+    app.editor.insert_attachment(std::path::PathBuf::from("/tmp/paste.png"));
+    assert_eq!(app.editor.render_text(), "please inspect this[image0]");
+
+    app.editor.backspace();
+    assert_eq!(app.editor.render_text(), "please inspect this");
+
+    app.submit_editor_buffer(&tx).await;
+
+    let command = rx.recv().await.expect("submission command");
+    match command {
+        TuiCommand::UserPrompt(text) => assert_eq!(text, "please inspect this"),
+        other => panic!("expected plain prompt after removing attachment token, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "unexpected extra command emitted");
+}
+
+#[tokio::test]
+async fn submit_editor_buffer_sends_prompt_with_images_when_attachment_token_present() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    app.editor.set_text("please inspect this");
+    app.editor.insert_attachment(std::path::PathBuf::from("/tmp/paste.png"));
+
+    app.submit_editor_buffer(&tx).await;
+
+    let command = rx.recv().await.expect("submission command");
+    match command {
+        TuiCommand::UserPromptWithImages(text, attachments) => {
+            assert_eq!(text, "please inspect this");
+            assert_eq!(attachments, vec![std::path::PathBuf::from("/tmp/paste.png")]);
+        }
+        other => panic!("expected multimodal prompt, got {other:?}"),
+    }
 }
 
 #[test]

@@ -1778,6 +1778,91 @@ impl App {
             .push_system(&format!("⏳ Queued [{queued}]: {preview}"));
     }
 
+    async fn submit_editor_buffer(&mut self, command_tx: &mpsc::Sender<TuiCommand>) {
+        let (text, attachments) = self.editor.take_submission();
+        if text.is_empty() && attachments.is_empty() {
+            return;
+        }
+
+        if let Ok(mut guard) = self.login_prompt_tx.try_lock()
+            && let Some(tx) = guard.take()
+        {
+            let _ = tx.send(text.clone());
+            self.conversation.push_system(&format!("> {text}"));
+            return;
+        }
+
+        if text.starts_with('/') {
+            match self.handle_slash_command(&text, command_tx) {
+                SlashResult::Display(response) => {
+                    self.conversation.push_system(&response);
+                }
+                SlashResult::Handled => {}
+                SlashResult::Quit => {
+                    self.should_quit = true;
+                    let _ = command_tx.send(TuiCommand::Quit).await;
+                }
+                SlashResult::NotACommand => {
+                    if self.agent_active {
+                        self.queue_prompt(text.clone(), attachments);
+                    } else {
+                        if attachments.is_empty() {
+                            self.conversation.push_user(&text);
+                        } else {
+                            self.conversation
+                                .push_user_with_attachments(&text, &attachments);
+                        }
+                        self.history.push(text.clone());
+                        self.history_idx = None;
+                        self.agent_active = true;
+                        if let Ok(mut ss) = self.dashboard_handles.session.lock() {
+                            ss.busy = true;
+                        }
+                        if attachments.is_empty() {
+                            let _ = command_tx.send(TuiCommand::UserPrompt(text)).await;
+                        } else {
+                            let _ = command_tx
+                                .send(TuiCommand::UserPromptWithImages(text, attachments))
+                                .await;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        if self.agent_active {
+            self.queue_prompt(text.clone(), attachments);
+            if let Some(ref mut overlay) = self.tutorial_overlay {
+                overlay.check_any_input();
+            }
+            return;
+        }
+
+        if attachments.is_empty() {
+            self.conversation.push_user(&text);
+        } else {
+            self.conversation
+                .push_user_with_attachments(&text, &attachments);
+        }
+        self.history.push(text.clone());
+        self.history_idx = None;
+        self.agent_active = true;
+        if let Ok(mut ss) = self.dashboard_handles.session.lock() {
+            ss.busy = true;
+        }
+        if !attachments.is_empty() {
+            let _ = command_tx
+                .send(TuiCommand::UserPromptWithImages(text, attachments))
+                .await;
+        } else {
+            let _ = command_tx.send(TuiCommand::UserPrompt(text)).await;
+        }
+        if let Some(ref mut overlay) = self.tutorial_overlay {
+            overlay.check_any_input();
+        }
+    }
+
     fn interrupt(&self) -> bool {
         if let Ok(guard) = self.cancel.lock()
             && let Some(ref token) = *guard
@@ -5971,96 +6056,7 @@ pub async fn run_tui(
 
                         // Submit
                         (KeyCode::Enter, _) => {
-                            let (text, attachments) = app.editor.take_submission();
-                            if !text.is_empty() || !attachments.is_empty() {
-                                // Check if a headless login prompt is waiting for input
-                                if let Ok(mut guard) = app.login_prompt_tx.try_lock() {
-                                    if let Some(tx) = guard.take() {
-                                        let _ = tx.send(text.clone());
-                                        app.conversation.push_system(&format!("> {text}"));
-                                        continue;
-                                    }
-                                }
-                                // Slash commands always execute immediately
-                                if text.starts_with('/') {
-                                    match app.handle_slash_command(&text, &command_tx) {
-                                        SlashResult::Display(response) => {
-                                            app.conversation.push_system(&response);
-                                        }
-                                        SlashResult::Handled => {}
-                                        SlashResult::Quit => {
-                                            app.should_quit = true;
-                                            let _ = command_tx.send(TuiCommand::Quit).await;
-                                        }
-                                        SlashResult::NotACommand => {
-                                            // Not a slash command (no / prefix) — send as prompt
-                                            if app.agent_active {
-                                                app.queue_prompt(text.clone(), attachments);
-                                            } else {
-                                                if attachments.is_empty() {
-                                                    app.conversation.push_user(&text);
-                                                } else {
-                                                    app.conversation
-                                                        .push_user_with_attachments(&text, &attachments);
-                                                }
-                                                app.history.push(text.clone());
-                                                app.history_idx = None;
-                                                app.agent_active = true;
-                                                if let Ok(mut ss) = app.dashboard_handles.session.lock() {
-                                                    ss.busy = true;
-                                                }
-                                                if attachments.is_empty() {
-                                                    let _ = command_tx
-                                                        .send(TuiCommand::UserPrompt(text))
-                                                        .await;
-                                                } else {
-                                                    let _ = command_tx
-                                                        .send(TuiCommand::UserPromptWithImages(
-                                                            text,
-                                                            attachments,
-                                                        ))
-                                                        .await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else if app.agent_active {
-                                    // Agent busy — queue the prompt
-                                    app.queue_prompt(text.clone(), attachments);
-                                    // Notify tutorial overlay of user input
-                                    if let Some(ref mut overlay) = app.tutorial_overlay {
-                                        overlay.check_any_input();
-                                    }
-                                } else {
-                                    // Agent idle — send immediately
-                                    if attachments.is_empty() {
-                                        app.conversation.push_user(&text);
-                                    } else {
-                                        app.conversation
-                                            .push_user_with_attachments(&text, &attachments);
-                                    }
-                                    app.history.push(text.clone());
-                                    app.history_idx = None;
-                                    app.agent_active = true;
-                                    if let Ok(mut ss) = app.dashboard_handles.session.lock() {
-                                        ss.busy = true;
-                                    }
-                                    if !attachments.is_empty() {
-                                        let _ = command_tx
-                                            .send(TuiCommand::UserPromptWithImages(
-                                                text,
-                                                attachments,
-                                            ))
-                                            .await;
-                                    } else {
-                                        let _ = command_tx.send(TuiCommand::UserPrompt(text)).await;
-                                    }
-                                    // Notify tutorial overlay of user input
-                                    if let Some(ref mut overlay) = app.tutorial_overlay {
-                                        overlay.check_any_input();
-                                    }
-                                }
-                            }
+                            app.submit_editor_buffer(&command_tx).await;
                         }
 
                         // Basic editing — only insert if no Ctrl modifier

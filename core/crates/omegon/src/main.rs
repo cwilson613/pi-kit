@@ -655,8 +655,16 @@ struct EmbeddedStartupEvent {
 }
 
 async fn run_embedded_command(control_port: u16, strict_port: bool) -> anyhow::Result<()> {
+    let mut harness_status = crate::status::HarnessStatus::assemble();
+    harness_status.update_runtime_posture(
+        omegon_traits::OmegonRuntimeProfile::LongRunningDaemon,
+        omegon_traits::OmegonAutonomyMode::GuardedAutonomous,
+    );
     let state = web::WebState::new(
-        crate::tui::dashboard::DashboardHandles::default(),
+        crate::tui::dashboard::DashboardHandles {
+            harness: Some(std::sync::Arc::new(std::sync::Mutex::new(harness_status))),
+            ..Default::default()
+        },
         tokio::sync::broadcast::channel::<AgentEvent>(32).0,
     );
 
@@ -966,6 +974,18 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         Some(None) // try most recent
     };
     let mut agent = setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
+    agent.initial_harness_status.update_runtime_posture(
+        omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+        omegon_traits::OmegonAutonomyMode::OperatorDriven,
+    );
+    if let Some(ref harness) = agent.dashboard_handles.harness
+        && let Ok(mut status) = harness.lock()
+    {
+        status.update_runtime_posture(
+            omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+            omegon_traits::OmegonAutonomyMode::OperatorDriven,
+        );
+    }
 
     // LLM provider ──────────────────────────────────────────────────────
     // Native Rust clients by default. --bridge flag forces the Node.js subprocess.
@@ -1924,6 +1944,10 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         omegon_traits::BusRequest::RefreshHarnessStatus => {
                             // Re-assemble and broadcast
                             let mut status = crate::status::HarnessStatus::assemble();
+                            status.update_runtime_posture(
+                                omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+                                omegon_traits::OmegonAutonomyMode::OperatorDriven,
+                            );
                             let auth_status = auth::probe_all_providers().await;
                             status.providers =
                                 crate::auth::auth_status_to_provider_statuses(&auth_status);

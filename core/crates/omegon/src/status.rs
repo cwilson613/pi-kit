@@ -478,6 +478,16 @@ impl HarnessStatus {
         self.capability_tier = capability_tier.into();
     }
 
+    /// Update deployment/autonomy posture exported to IPC/Web/Auspex surfaces.
+    pub fn update_runtime_posture(
+        &mut self,
+        runtime_profile: omegon_traits::OmegonRuntimeProfile,
+        autonomy_mode: omegon_traits::OmegonAutonomyMode,
+    ) {
+        self.runtime_profile = runtime_profile;
+        self.autonomy_mode = autonomy_mode;
+    }
+
     /// Update memory stats.
     pub fn update_memory(&mut self, stats: MemoryStatus) {
         self.memory = stats;

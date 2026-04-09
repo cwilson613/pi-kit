@@ -306,13 +306,9 @@ impl Feature for AuthFeature {
             }
             BusEvent::ContextBuild { .. } => {
                 // Refresh provider cache on context build
-                tokio::spawn({
-                    // Note: This is a workaround since on_event can't be async
-                    // In a real implementation, we'd use channels or other async mechanisms
-                    async {
-                        let _providers = crate::auth::probe_all_providers().await;
-                        // Cache would be updated here if we had a handle
-                    }
+                crate::task_spawn::spawn_best_effort("auth-context-refresh", async {
+                    let _providers = crate::auth::probe_all_providers().await;
+                    // Cache would be updated here if we had a handle
                 });
             }
             _ => {}

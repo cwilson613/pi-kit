@@ -54,7 +54,7 @@ impl Feature for VersionCheck {
             //
             // TODO: Use a channel to send BusRequest back from the spawned task.
             let current = self.current_version.clone();
-            tokio::spawn(async move {
+            crate::task_spawn::spawn_best_effort("version-check", async move {
                 match fetch_latest().await {
                     Some(latest) if is_newer(&latest, &current) => {
                         tracing::info!(

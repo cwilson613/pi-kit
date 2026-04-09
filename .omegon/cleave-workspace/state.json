@@ -42,17 +42,11 @@
       "dependsOn": [
         "real-run"
       ],
-      "status": "running",
+      "status": "pending",
       "branch": "cleave/1-aggregate-mode",
       "worktreePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace/1-wt-aggregate-mode",
       "backend": "native",
-      "executeModel": "anthropic:claude-sonnet-4-6",
-      "pid": 2469,
-      "startedAtUnixMs": 1775743211668,
-      "lastActivityUnixMs": 1775743211668,
-      "adoptionWorktreePath": "/Users/cwilson/workspace/black-meridian/omegon/.omegon/cleave-workspace/1-wt-aggregate-mode",
-      "adoptionModel": "anthropic:claude-sonnet-4-6",
-      "supervisorToken": "supv-18a4b4cb8ce78938"
+      "executeModel": "anthropic:claude-sonnet-4-6"
     }
   ],
   "plan": {

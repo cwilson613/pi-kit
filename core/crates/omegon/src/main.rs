@@ -1922,27 +1922,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
 
             tui::TuiCommand::SubmitPrompt(prompt) => {
                 let actor = RuntimeActor {
-                    kind: match prompt.via {
-                        "tui" => RuntimeActorKind::Tui,
-                        "ipc" => RuntimeActorKind::IpcClient,
-                        "websocket" => RuntimeActorKind::WebClient,
-                        _ => RuntimeActorKind::System,
-                    },
+                    kind: runtime_actor_kind_from_via(&prompt.via),
                     label: prompt.submitted_by.clone(),
                 };
-                let via = match prompt.via {
-                    "tui" => ControlSurface::Tui,
-                    "ipc" => ControlSurface::Ipc,
-                    "websocket" => ControlSurface::WebSocket,
-                    _ => ControlSurface::Internal,
-                };
+                let via = control_surface_from_via(&prompt.via);
 
-                runtime.enqueue_prompt(
-                    prompt.text,
-                    prompt.image_paths,
-                    actor,
-                    via,
-                );
+                runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via);
 
                 if runtime.is_busy() {
                     continue;
@@ -1956,145 +1941,16 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     ss.busy = true;
                 }
 
-                if active.prompt.image_paths.is_empty() {
-                    agent.conversation.push_user(active.prompt.text.clone());
-
-                    let (model, max_turns) = {
-                        let s = shared_settings.lock().unwrap();
-                        (s.model.clone(), s.max_turns)
-                    };
-
-                    let loop_config = r#loop::LoopConfig {
-                        max_turns,
-                        soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
-                        max_retries: 0,
-                        retry_delay_ms: 750,
-                        model,
-                        cwd: agent.cwd.clone(),
-                        extended_context: false,
-                        settings: Some(shared_settings.clone()),
-                        secrets: Some(agent.secrets.clone()),
-                        force_compact: Some(pending_compact.clone()),
-                    };
-
-                    let cancel = CancellationToken::new();
-                    if let Ok(mut guard) = shared_cancel.lock() {
-                        *guard = Some(cancel.clone());
-                    }
-
-                    let bridge_guard = bridge.read().await;
-                    if let Err(e) = r#loop::run(
-                        bridge_guard.as_ref(),
-                        &mut agent.bus,
-                        &mut agent.context_manager,
-                        &mut agent.conversation,
-                        &events_tx,
-                        cancel,
-                        &loop_config,
-                    )
-                    .await
-                    {
-                        drop(bridge_guard);
-                        let user_msg = format_agent_error(&e);
-                        tracing::error!("Agent loop error: {e}");
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: user_msg });
-                        let _ = events_tx.send(AgentEvent::AgentEnd);
-                    }
-
-                    if let Ok(mut guard) = shared_cancel.lock() {
-                        guard.take();
-                    }
-                } else {
-                    let image_paths = active.prompt.image_paths;
-                    let text = active.prompt.text;
-                    let mut images = Vec::new();
-                    for path in &image_paths {
-                        if let Ok(data) = std::fs::read(path) {
-                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
-                            let media_type = match ext {
-                                "jpg" | "jpeg" => "image/jpeg",
-                                "gif" => "image/gif",
-                                "webp" => "image/webp",
-                                "bmp" => "image/bmp",
-                                "tiff" | "tif" => "image/tiff",
-                                _ => "image/png",
-                            };
-                            use base64::Engine;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            images.push(crate::bridge::ImageAttachment {
-                                data: b64,
-                                media_type: media_type.to_string(),
-                                source_path: Some(path.display().to_string()),
-                            });
-                        }
-                    }
-                    agent.conversation.push_user_with_images(text.clone(), images);
-
-                    let (model, max_turns) = {
-                        let s = shared_settings.lock().unwrap();
-                        (s.model.clone(), s.max_turns)
-                    };
-
-                    let loop_config = r#loop::LoopConfig {
-                        max_turns,
-                        soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
-                        max_retries: 0,
-                        retry_delay_ms: 750,
-                        model,
-                        cwd: agent.cwd.clone(),
-                        extended_context: false,
-                        settings: Some(shared_settings.clone()),
-                        secrets: Some(agent.secrets.clone()),
-                        force_compact: Some(pending_compact.clone()),
-                    };
-
-                    let cancel = CancellationToken::new();
-                    if let Ok(mut guard) = shared_cancel.lock() {
-                        *guard = Some(cancel.clone());
-                    }
-
-                    let bridge_guard = bridge.read().await;
-                    if let Err(e) = r#loop::run(
-                        bridge_guard.as_ref(),
-                        &mut agent.bus,
-                        &mut agent.context_manager,
-                        &mut agent.conversation,
-                        &events_tx,
-                        cancel,
-                        &loop_config,
-                    )
-                    .await
-                    {
-                        drop(bridge_guard);
-                        let user_msg = format_agent_error(&e);
-                        tracing::error!("Agent loop error: {e}");
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: user_msg });
-                        let _ = events_tx.send(AgentEvent::AgentEnd);
-                    }
-
-                    {
-                        let est = agent.conversation.estimate_tokens();
-                        let settings = shared_settings.lock().unwrap();
-                        if let Ok(mut metrics) = agent.context_metrics.lock() {
-                            metrics.update(
-                                est,
-                                settings.context_window,
-                                &settings.effective_requested_class().label(),
-                                settings.thinking.as_str(),
-                            );
-                        }
-                        let _ = events_tx.send(AgentEvent::ContextUpdated {
-                            tokens: est as u64,
-                            context_window: settings.context_window as u64,
-                            context_class: settings.effective_requested_class().label().to_string(),
-                            thinking_level: settings.thinking.as_str().to_string(),
-                        });
-                    }
-
-                    if let Ok(mut guard) = shared_cancel.lock() {
-                        guard.take();
-                    }
-                }
+                run_interactive_active_turn(
+                    &mut agent,
+                    &bridge,
+                    &shared_settings,
+                    &shared_cancel,
+                    &pending_compact,
+                    &events_tx,
+                    active,
+                )
+                .await;
 
                 runtime.complete_active_turn();
                 if let Ok(mut ss) = agent.dashboard_handles.session.lock() {
@@ -2277,6 +2133,134 @@ struct ActiveTurnMeta {
     runtime_turn_id: u64,
     prompt: PromptEnvelope,
     phase: ActiveTurnPhase,
+}
+
+fn runtime_actor_kind_from_via(via: &str) -> RuntimeActorKind {
+    match via {
+        "tui" => RuntimeActorKind::Tui,
+        "ipc" => RuntimeActorKind::IpcClient,
+        "websocket" => RuntimeActorKind::WebClient,
+        _ => RuntimeActorKind::System,
+    }
+}
+
+fn control_surface_from_via(via: &str) -> ControlSurface {
+    match via {
+        "tui" => ControlSurface::Tui,
+        "ipc" => ControlSurface::Ipc,
+        "websocket" => ControlSurface::WebSocket,
+        _ => ControlSurface::Internal,
+    }
+}
+
+fn build_interactive_loop_config(
+    agent: &setup::AgentSetup,
+    shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
+    pending_compact: &Arc<std::sync::atomic::AtomicBool>,
+) -> r#loop::LoopConfig {
+    let (model, max_turns) = {
+        let s = shared_settings.lock().unwrap();
+        (s.model.clone(), s.max_turns)
+    };
+
+    r#loop::LoopConfig {
+        max_turns,
+        soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
+        max_retries: 0,
+        retry_delay_ms: 750,
+        model,
+        cwd: agent.cwd.clone(),
+        extended_context: false,
+        settings: Some(shared_settings.clone()),
+        secrets: Some(agent.secrets.clone()),
+        force_compact: Some(pending_compact.clone()),
+    }
+}
+
+async fn run_interactive_active_turn(
+    agent: &mut setup::AgentSetup,
+    bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
+    shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
+    shared_cancel: &tui::SharedCancel,
+    pending_compact: &Arc<std::sync::atomic::AtomicBool>,
+    events_tx: &broadcast::Sender<AgentEvent>,
+    active: ActiveTurnMeta,
+) {
+    let loop_config = build_interactive_loop_config(agent, shared_settings, pending_compact);
+
+    if active.prompt.image_paths.is_empty() {
+        agent.conversation.push_user(active.prompt.text.clone());
+    } else {
+        let mut images = Vec::new();
+        for path in &active.prompt.image_paths {
+            if let Ok(data) = std::fs::read(path) {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
+                let media_type = match ext {
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    "bmp" => "image/bmp",
+                    "tiff" | "tif" => "image/tiff",
+                    _ => "image/png",
+                };
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                images.push(crate::bridge::ImageAttachment {
+                    data: b64,
+                    media_type: media_type.to_string(),
+                    source_path: Some(path.display().to_string()),
+                });
+            }
+        }
+        agent
+            .conversation
+            .push_user_with_images(active.prompt.text.clone(), images);
+    }
+
+    let cancel = CancellationToken::new();
+    if let Ok(mut guard) = shared_cancel.lock() {
+        *guard = Some(cancel.clone());
+    }
+
+    let bridge_guard = bridge.read().await;
+    if let Err(e) = r#loop::run(
+        bridge_guard.as_ref(),
+        &mut agent.bus,
+        &mut agent.context_manager,
+        &mut agent.conversation,
+        events_tx,
+        cancel,
+        &loop_config,
+    )
+    .await
+    {
+        drop(bridge_guard);
+        let user_msg = format_agent_error(&e);
+        tracing::error!(runtime_turn_id = active.runtime_turn_id, "Agent loop error: {e}");
+        let _ = events_tx.send(AgentEvent::SystemNotification { message: user_msg });
+        let _ = events_tx.send(AgentEvent::AgentEnd);
+    }
+
+    if let Ok(mut guard) = shared_cancel.lock() {
+        guard.take();
+    }
+
+    let est = agent.conversation.estimate_tokens();
+    let settings = shared_settings.lock().unwrap();
+    if let Ok(mut metrics) = agent.context_metrics.lock() {
+        metrics.update(
+            est,
+            settings.context_window,
+            &settings.effective_requested_class().label(),
+            settings.thinking.as_str(),
+        );
+    }
+    let _ = events_tx.send(AgentEvent::ContextUpdated {
+        tokens: est as u64,
+        context_window: settings.context_window as u64,
+        context_class: settings.effective_requested_class().label().to_string(),
+        thinking_level: settings.thinking.as_str().to_string(),
+    });
 }
 
 #[derive(Debug, Default)]

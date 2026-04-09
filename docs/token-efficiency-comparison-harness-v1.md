@@ -141,6 +141,7 @@ Suggested format:
 id: shadow-context-assembly
 repo: .
 base_ref: main
+model: anthropic:claude-sonnet-4-6
 prompt: |
   Finish the shadow-context assembly wiring.
 harnesses:
@@ -170,6 +171,7 @@ notes: |
 ### Optional fields
 
 - `harnesses`
+- `model` — benchmark-default model for the task; CLI `--model` still overrides it
 - `success_files`
 - `budget`
 - `notes`

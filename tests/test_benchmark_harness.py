@@ -256,6 +256,116 @@ acceptance:
             self.assertEqual(payload["tokens"]["total"], 145)
             self.assertEqual(payload["tokens"]["cache_write"], 9)
 
+    def test_task_spec_model_is_used_when_cli_override_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            fake_cargo = repo / "scripts" / "cargo"
+            captured = repo / "captured-model.txt"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "usage_json=''\n"
+                "model=''\n"
+                "prev=''\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$prev\" = \"--usage-json\" ]; then usage_json=\"$arg\"; fi\n"
+                "  if [ \"$prev\" = \"--model\" ]; then model=\"$arg\"; fi\n"
+                "  prev=\"$arg\"\n"
+                "done\n"
+                f"printf '%s\\n' \"$model\" > \"{captured}\"\n"
+                "if [ -n \"$usage_json\" ]; then\n"
+                "  cat > \"$usage_json\" <<'JSON'\n"
+                '{"input_tokens": 1, "output_tokens": 1, "cache_tokens": 0}\n'
+                "JSON\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            fake_cargo.chmod(0o755)
+            task = self.write_task(
+                repo,
+                """
+id: model-task
+repo: .
+base_ref: main
+model: anthropic:claude-sonnet-4-6
+prompt: hi
+harnesses: [omegon]
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{repo / 'scripts'}:{env['PATH']}"
+            result = subprocess.run(
+                ["python3", str(SCRIPT), str(task), "--root", str(repo)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(captured.read_text().strip(), "anthropic:claude-sonnet-4-6")
+
+    def test_cli_model_overrides_task_spec_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            fake_cargo = repo / "scripts" / "cargo"
+            captured = repo / "captured-model.txt"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                "usage_json=''\n"
+                "model=''\n"
+                "prev=''\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$prev\" = \"--usage-json\" ]; then usage_json=\"$arg\"; fi\n"
+                "  if [ \"$prev\" = \"--model\" ]; then model=\"$arg\"; fi\n"
+                "  prev=\"$arg\"\n"
+                "done\n"
+                f"printf '%s\\n' \"$model\" > \"{captured}\"\n"
+                "if [ -n \"$usage_json\" ]; then\n"
+                "  cat > \"$usage_json\" <<'JSON'\n"
+                '{"input_tokens": 1, "output_tokens": 1, "cache_tokens": 0}\n'
+                "JSON\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            fake_cargo.chmod(0o755)
+            task = self.write_task(
+                repo,
+                """
+id: model-task
+repo: .
+base_ref: main
+model: anthropic:claude-sonnet-4-6
+prompt: hi
+harnesses: [omegon]
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{repo / 'scripts'}:{env['PATH']}"
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    str(task),
+                    "--root",
+                    str(repo),
+                    "--model",
+                    "openai:gpt-4o",
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(captured.read_text().strip(), "openai:gpt-4o")
+
     def test_report_mode_prints_plaintext_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

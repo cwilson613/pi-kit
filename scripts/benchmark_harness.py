@@ -50,6 +50,7 @@ class TaskSpec:
     harnesses: list[str]
     success_files: list[str]
     budget: dict[str, Any]
+    model: str | None = None
     notes: str | None = None
 
 
@@ -131,6 +132,7 @@ def load_task_spec(path: Path) -> TaskSpec:
         harnesses=harnesses,
         success_files=[str(v) for v in raw.get("success_files", [])],
         budget=raw.get("budget") or {},
+        model=str(raw["model"]) if raw.get("model") is not None else None,
         notes=str(raw["notes"]) if raw.get("notes") is not None else None,
     )
 
@@ -153,6 +155,10 @@ def select_harness(spec: TaskSpec, explicit: str | None) -> str:
     if harness not in spec.harnesses:
         raise TaskSpecError(f"harness '{harness}' not declared in task harnesses")
     return harness
+
+
+def select_model(spec: TaskSpec, explicit: str | None) -> str | None:
+    return explicit or spec.model
 
 
 def prepare_clean_repo(repo_path: Path, base_ref: str) -> Path:
@@ -645,6 +651,7 @@ def main() -> int:
     try:
         spec = load_task_spec(task_path)
         harness = select_harness(spec, args.harness)
+        model = select_model(spec, args.model)
     except TaskSpecError as err:
         print(str(err), file=sys.stderr)
         return 1
@@ -654,7 +661,7 @@ def main() -> int:
     clean_repo_path = prepare_clean_repo(repo_path, spec.base_ref)
 
     try:
-        adapter_impl = adapter_for(harness, repo_path, spec, args.model, clean_repo_path)
+        adapter_impl = adapter_for(harness, repo_path, spec, model, clean_repo_path)
         adapter_impl.validate_environment()
     except (TaskSpecError, AdapterError) as err:
         print(str(err), file=sys.stderr)

@@ -1,6 +1,7 @@
 id: example-shadow-context
 repo: .
 base_ref: main
+model: anthropic:claude-sonnet-4-6
 prompt: |
   Finish the shadow-context assembly wiring.
 harnesses:

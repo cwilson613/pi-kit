@@ -1144,13 +1144,25 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         );
     }
 
+    let mut runtime_state = InteractiveAgentState {
+        bus: std::mem::take(&mut agent.bus),
+        context_manager: std::mem::replace(
+            &mut agent.context_manager,
+            crate::context::ContextManager::new(String::new(), vec![]),
+        ),
+        conversation: std::mem::replace(
+            &mut agent.conversation,
+            crate::conversation::ConversationState::new(),
+        ),
+    };
+
     // ─── Emit session start to bus features ────────────────────────────
-    agent.bus.emit(&omegon_traits::BusEvent::SessionStart {
+    runtime_state.bus.emit(&omegon_traits::BusEvent::SessionStart {
         cwd: agent.cwd.clone(),
         session_id: agent.session_id.clone(),
     });
     // Drain any requests from session_start handlers
-    for request in agent.bus.drain_requests() {
+    for request in runtime_state.bus.drain_requests() {
         match request {
             omegon_traits::BusRequest::Notify { message, .. } => {
                 let _ = events_tx.send(AgentEvent::SystemNotification { message });
@@ -1281,14 +1293,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         ..Default::default()
                     }
                 };
-                if let Some((payload, _evict_count)) = agent.conversation.build_compaction_payload()
+                if let Some((payload, _evict_count)) = runtime_state.conversation.build_compaction_payload()
                 {
                     match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options)
                         .await
                     {
                         Ok(summary) => {
-                            agent.conversation.apply_compaction(summary);
-                            let est = agent.conversation.estimate_tokens();
+                            runtime_state.conversation.apply_compaction(summary);
+                            let est = runtime_state.conversation.estimate_tokens();
                             if let Ok(s) = shared_settings.lock() {
                                 let ctx_window = s.context_window;
 
@@ -1303,19 +1315,19 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                 }
 
                                 if ctx_window > 0 {
-                                    let system_prompt = agent.context_manager.build_system_prompt(
-                                        agent.conversation.last_user_prompt(),
-                                        &agent.conversation,
+                                    let system_prompt = runtime_state.context_manager.build_system_prompt(
+                                        runtime_state.conversation.last_user_prompt(),
+                                        &runtime_state.conversation,
                                     );
-                                    let llm_messages = agent.conversation.build_llm_view();
+                                    let llm_messages = runtime_state.conversation.build_llm_view();
                                     let context_composition = crate::r#loop::compute_context_composition(
                                         &system_prompt,
                                         &llm_messages,
-                                        &agent.bus.tool_definitions(),
+                                        &runtime_state.bus.tool_definitions(),
                                         ctx_window,
                                     );
                                     let _ = events_tx.send(AgentEvent::TurnEnd {
-                                        turn: agent.conversation.intent.stats.turns,
+                                        turn: runtime_state.conversation.intent.stats.turns,
                                         model: None,
                                         provider: None,
                                         estimated_tokens: est,
@@ -1346,7 +1358,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::ContextStatus => {
-                let est = agent.conversation.estimate_tokens();
+                let est = runtime_state.conversation.estimate_tokens();
                 let settings = shared_settings.lock().unwrap();
                 let ctx_window = settings.context_window;
                 let pct = if ctx_window > 0 {
@@ -1380,14 +1392,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         ..Default::default()
                     }
                 };
-                if let Some((payload, _evict_count)) = agent.conversation.build_compaction_payload()
+                if let Some((payload, _evict_count)) = runtime_state.conversation.build_compaction_payload()
                 {
                     match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options)
                         .await
                     {
                         Ok(summary) => {
-                            agent.conversation.apply_compaction(summary);
-                            let est = agent.conversation.estimate_tokens();
+                            runtime_state.conversation.apply_compaction(summary);
+                            let est = runtime_state.conversation.estimate_tokens();
 
                             // Update metrics
                             let settings = shared_settings.lock().unwrap();
@@ -1430,12 +1442,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 // Same as /new: save session, reset conversation
                 if !cli.no_session {
                     let _ = session::save_session(
-                        &agent.conversation,
+                        &runtime_state.conversation,
                         &agent.cwd,
                         Some(agent.session_id.as_str()),
                     );
                 }
-                agent.conversation = crate::conversation::ConversationState::new();
+                runtime_state.conversation = crate::conversation::ConversationState::new();
                 agent.session_id = crate::session::allocate_session_id();
                 agent.resume_info = None;
 
@@ -1475,12 +1487,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 // Save the current session before resetting
                 if !cli.no_session {
                     let _ = session::save_session(
-                        &agent.conversation,
+                        &runtime_state.conversation,
                         &agent.cwd,
                         Some(agent.session_id.as_str()),
                     );
                 }
-                agent.conversation = crate::conversation::ConversationState::new();
+                runtime_state.conversation = crate::conversation::ConversationState::new();
                 agent.session_id = crate::session::allocate_session_id();
                 agent.resume_info = None;
                 let _ = events_tx.send(AgentEvent::SessionReset);
@@ -1568,6 +1580,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 respond_to,
             } => {
                 let response = execute_remote_slash_command(
+                    &mut runtime_state,
                     &mut agent,
                     &events_tx,
                     &shared_settings,
@@ -1856,7 +1869,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         }
                         _ => {
                             // Unknown auth command - fall through to bus
-                            let result = agent.bus.dispatch_command(&name, &args);
+                            let result = runtime_state.bus.dispatch_command(&name, &args);
                             match result {
                                 omegon_traits::CommandResult::Display(msg) => {
                                     let _ = events_tx
@@ -1873,7 +1886,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     }
                 } else {
                     // Regular bus command
-                    let result = agent.bus.dispatch_command(&name, &args);
+                    let result = runtime_state.bus.dispatch_command(&name, &args);
                     match result {
                         omegon_traits::CommandResult::Display(msg) => {
                             // Send back to TUI as a system notification (not into LLM conversation)
@@ -1888,14 +1901,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     }
                 }
                 // Drain any requests generated by the command
-                let cmd_requests = agent.bus.drain_requests();
+                let cmd_requests = runtime_state.bus.drain_requests();
                 for request in cmd_requests {
                     match request {
                         omegon_traits::BusRequest::Notify { message, .. } => {
                             let _ = events_tx.send(AgentEvent::SystemNotification { message });
                         }
                         omegon_traits::BusRequest::InjectSystemMessage { content } => {
-                            agent.conversation.push_user(format!("[System: {content}]"));
+                            runtime_state.conversation.push_user(format!("[System: {content}]"));
                         }
                         omegon_traits::BusRequest::RequestCompaction => {
                             tracing::info!("Bus: compaction requested");
@@ -1907,7 +1920,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                             status.providers =
                                 crate::auth::auth_status_to_provider_statuses(&auth_status);
                             status.annotate_provider_runtime_health();
-                            status.update_from_bus(&agent.bus);
+                            status.update_from_bus(&runtime_state.bus);
                             if let Ok(json) = serde_json::to_value(&status) {
                                 let _ = events_tx
                                     .send(AgentEvent::HarnessStatusChanged { status_json: json });
@@ -1958,7 +1971,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     let mut quit_after_turn = false;
                     {
                         let mut turn_fut = std::pin::pin!(run_interactive_active_turn(
-                            &mut agent,
+                            &mut runtime_state,
+                            &agent,
                             &bridge,
                             &shared_settings,
                             &shared_cancel,
@@ -2213,6 +2227,12 @@ fn control_surface_from_via(via: &str) -> ControlSurface {
     }
 }
 
+struct InteractiveAgentState {
+    bus: crate::bus::EventBus,
+    context_manager: crate::context::ContextManager,
+    conversation: crate::conversation::ConversationState,
+}
+
 fn build_interactive_loop_config(
     agent: &setup::AgentSetup,
     shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
@@ -2238,7 +2258,8 @@ fn build_interactive_loop_config(
 }
 
 async fn run_interactive_active_turn(
-    agent: &mut setup::AgentSetup,
+    runtime_state: &mut InteractiveAgentState,
+    agent: &setup::AgentSetup,
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
     shared_cancel: &tui::SharedCancel,
@@ -2249,7 +2270,9 @@ async fn run_interactive_active_turn(
     let loop_config = build_interactive_loop_config(agent, shared_settings, pending_compact);
 
     if active.prompt.image_paths.is_empty() {
-        agent.conversation.push_user(active.prompt.text.clone());
+        runtime_state
+            .conversation
+            .push_user(active.prompt.text.clone());
     } else {
         let mut images = Vec::new();
         for path in &active.prompt.image_paths {
@@ -2272,7 +2295,7 @@ async fn run_interactive_active_turn(
                 });
             }
         }
-        agent
+        runtime_state
             .conversation
             .push_user_with_images(active.prompt.text.clone(), images);
     }
@@ -2285,9 +2308,9 @@ async fn run_interactive_active_turn(
     let bridge_guard = bridge.read().await;
     if let Err(e) = r#loop::run(
         bridge_guard.as_ref(),
-        &mut agent.bus,
-        &mut agent.context_manager,
-        &mut agent.conversation,
+        &mut runtime_state.bus,
+        &mut runtime_state.context_manager,
+        &mut runtime_state.conversation,
         events_tx,
         cancel,
         &loop_config,
@@ -2305,7 +2328,7 @@ async fn run_interactive_active_turn(
         guard.take();
     }
 
-    let est = agent.conversation.estimate_tokens();
+    let est = runtime_state.conversation.estimate_tokens();
     let settings = shared_settings.lock().unwrap();
     if let Ok(mut metrics) = agent.context_metrics.lock() {
         metrics.update(
@@ -2883,6 +2906,7 @@ fn list_sessions_message(cwd: &Path) -> String {
 }
 
 async fn execute_remote_slash_command(
+    runtime_state: &mut InteractiveAgentState,
     agent: &mut setup::AgentSetup,
     events_tx: &broadcast::Sender<AgentEvent>,
     shared_settings: &settings::SharedSettings,
@@ -3673,7 +3697,20 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
+        let mut runtime_state = InteractiveAgentState {
+            bus: std::mem::take(&mut agent.bus),
+            context_manager: std::mem::replace(
+                &mut agent.context_manager,
+                crate::context::ContextManager::new(String::new(), vec![]),
+            ),
+            conversation: std::mem::replace(
+                &mut agent.conversation,
+                crate::conversation::ConversationState::new(),
+            ),
+        };
+
         let response = rt.block_on(execute_remote_slash_command(
+            &mut runtime_state,
             &mut agent,
             &events_tx,
             &shared_settings,
@@ -3702,7 +3739,20 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
+        let mut runtime_state = InteractiveAgentState {
+            bus: std::mem::take(&mut agent.bus),
+            context_manager: std::mem::replace(
+                &mut agent.context_manager,
+                crate::context::ContextManager::new(String::new(), vec![]),
+            ),
+            conversation: std::mem::replace(
+                &mut agent.conversation,
+                crate::conversation::ConversationState::new(),
+            ),
+        };
+
         let response = rt.block_on(execute_remote_slash_command(
+            &mut runtime_state,
             &mut agent,
             &events_tx,
             &shared_settings,

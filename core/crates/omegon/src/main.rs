@@ -3676,6 +3676,51 @@ mod tests {
         assert_eq!(supervisor.queue_depth(), 0);
     }
 
+    #[tokio::test]
+    async fn split_interactive_agent_moves_runtime_state_and_preserves_host_metadata() {
+        let agent = setup::AgentSetup::new(Path::new("."), None, None)
+            .await
+            .expect("agent setup");
+        let expected_session_id = agent.session_id.clone();
+        let expected_cwd = agent.cwd.clone();
+        let expected_resume = agent.resume_info.as_ref().map(|r| r.session_id.clone());
+        let expected_message_count = agent.conversation.message_count();
+        let expected_tool_count = agent.bus.tool_definitions().len();
+
+        let (host, runtime_state) = split_interactive_agent(agent);
+
+        assert_eq!(host.session_id, expected_session_id);
+        assert_eq!(host.cwd, expected_cwd);
+        assert_eq!(host.resume_info.as_ref().map(|r| r.session_id.clone()), expected_resume);
+        assert_eq!(runtime_state.conversation.message_count(), expected_message_count);
+        assert_eq!(runtime_state.bus.tool_definitions().len(), expected_tool_count);
+    }
+
+    #[tokio::test]
+    async fn split_interactive_agent_keeps_runtime_state_mutable_after_split() {
+        let agent = setup::AgentSetup::new(Path::new("."), None, None)
+            .await
+            .expect("agent setup");
+        let expected_cwd = agent.cwd.clone();
+        let (host, mut runtime_state) = split_interactive_agent(agent);
+
+        runtime_state.conversation.push_user("hello from runtime state".to_string());
+        let system_prompt = runtime_state.context_manager.build_system_prompt(
+            runtime_state.conversation.last_user_prompt(),
+            &runtime_state.conversation,
+        );
+
+        assert_eq!(host.cwd, expected_cwd);
+        assert!(
+            runtime_state.conversation.message_count() >= 1,
+            "conversation should remain writable after split"
+        );
+        assert!(
+            !system_prompt.is_empty(),
+            "context manager should still build prompts after split"
+        );
+    }
+
     #[test]
     fn cli_auth_commands_parse_correctly() {
         // Test the auth status command

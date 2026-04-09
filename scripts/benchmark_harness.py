@@ -191,6 +191,18 @@ def prepare_clean_repo(repo_path: Path, base_ref: str) -> Path:
     return clean_root
 
 
+def benchmark_process_env(repo_path: Path, clean_repo_path: Path, harness: str, task_id: str) -> dict[str, str]:
+    env = dict(os.environ)
+    source_core = repo_path / "core"
+    clean_core = clean_repo_path / "core"
+    if source_core.exists() and clean_core.exists():
+        safe_task = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in task_id)
+        shared_target = source_core / "target" / "benchmark-harness" / safe_task / harness
+        shared_target.mkdir(parents=True, exist_ok=True)
+        env["CARGO_TARGET_DIR"] = str(shared_target.resolve())
+    return env
+
+
 class OmegonAdapter(HarnessAdapter):
     harness_name = "omegon"
 
@@ -223,7 +235,15 @@ class OmegonAdapter(HarnessAdapter):
             cmd.extend(["--model", self.model])
 
         with log_file.open("w") as handle:
-            proc = subprocess.run(cmd, cwd=self.clean_repo_path, check=False, stdout=handle, stderr=subprocess.STDOUT, text=True)
+            proc = subprocess.run(
+                cmd,
+                cwd=self.clean_repo_path,
+                check=False,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=benchmark_process_env(self.repo_path, self.clean_repo_path, self.harness_name, self.spec.id),
+            )
 
         usage: dict[str, Any] = {}
         if usage_file.exists():
@@ -321,7 +341,14 @@ class ClaudeCodeAdapter(HarnessAdapter):
         if self.model:
             cmd.extend(["--model", self.model])
         cmd.append(self.spec.prompt)
-        proc = subprocess.run(cmd, cwd=self.clean_repo_path, check=False, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            cwd=self.clean_repo_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=benchmark_process_env(self.repo_path, self.clean_repo_path, self.harness_name, self.spec.id),
+        )
         log_file.write_text(proc.stdout + ("\n" if proc.stdout and proc.stderr else "") + proc.stderr)
 
         payload: dict[str, Any] | None = None
@@ -480,12 +507,20 @@ def adapter_for(
     raise TaskSpecError(f"unsupported harness: {harness}")
 
 
-def run_acceptance(commands: list[str], repo_path: Path) -> tuple[str, float, list[dict[str, Any]]]:
+def run_acceptance(commands: list[str], repo_path: Path, env: dict[str, str] | None = None) -> tuple[str, float, list[dict[str, Any]]]:
     started = time.monotonic()
     results: list[dict[str, Any]] = []
     status = "pass"
     for cmd in commands:
-        proc = subprocess.run(cmd, cwd=repo_path, shell=True, check=False, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            cwd=repo_path,
+            shell=True,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
         results.append(
             {
                 "cmd": cmd,
@@ -783,9 +818,11 @@ def main() -> int:
     run_started = time.monotonic()
     adapter = adapter_impl.run()
 
+    process_env = benchmark_process_env(repo_path, clean_repo_path, harness, spec.id)
     acceptance_status, acceptance_elapsed, acceptance_results = run_acceptance(
         spec.acceptance,
         clean_repo_path,
+        env=process_env,
     )
     payload = build_result(
         spec=spec,

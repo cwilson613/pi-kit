@@ -87,6 +87,17 @@ acceptance: [echo ok]
             self.assertEqual(result.returncode, 2)
             self.assertIn("claude-code adapter requires 'claude' in PATH", result.stderr)
 
+    def test_benchmark_process_env_uses_dedicated_target_dir_per_task_and_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            clean = Path(tmpdir) / "clean"
+            (repo / "core").mkdir(parents=True)
+            (clean / "core").mkdir(parents=True)
+
+            env = __import__("benchmark_harness").benchmark_process_env(repo, clean, "omegon", "task:alpha")
+            expected = (repo / "core" / "target" / "benchmark-harness" / "task-alpha" / "omegon").resolve()
+            self.assertEqual(env["CARGO_TARGET_DIR"], str(expected))
+
     def test_writes_result_for_mocked_omegon_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

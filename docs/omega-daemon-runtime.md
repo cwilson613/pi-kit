@@ -54,6 +54,12 @@ Define the persistent runtime mode that lets Omegon/Omega run as a long-lived lo
 
 **Rationale:** Plain HTTP and raw WebSocket are acceptable only for tightly-scoped local/bootstrap use. They must not become the normative remote control or event-ingress posture. Secure network transports should be HTTPS/WSS, and the long-term managed-instance path should converge on Styrene identity-based RPC with mutual authentication semantics.
 
+### Interactive session runtime uses a main-owned turn supervisor with a runtime-owned prompt queue
+
+**Status:** decided
+
+**Rationale:** The interactive/session runtime must stop coupling input ingestion to active turn execution. `main.rs` should own a command-driven turn supervisor with one active turn, a FIFO runtime-owned prompt queue, and explicit Running/Cancelling/Idle truth. TUI, IPC, web, and Auspex become adapters over runtime state rather than owners of prompt lifecycle. This preserves clean multi-surface semantics and enables queueing, honest cancel behavior, and future identity-aware supervision.
+
 ## Open Questions
 
 - What is the minimum daemon v1 process model: single long-lived server with one active session, or a server managing multiple named agent instances from day one?

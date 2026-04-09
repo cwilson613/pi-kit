@@ -1,0 +1,48 @@
+{
+  "task_id": "example-shadow-context",
+  "harness": "omegon",
+  "model": "anthropic:claude-sonnet-4-6",
+  "status": "pass",
+  "score": 1.0,
+  "wall_clock_sec": 812.0,
+  "attempts": 1,
+  "benchmark_mode": {
+    "clean_room": true,
+    "adapter_profile": "omegon-native"
+  },
+  "tokens": {
+    "input": 18234,
+    "output": 1102,
+    "cache": 0,
+    "cache_write": null,
+    "total": 19336
+  },
+  "omegon_context": {
+    "sys": 6200,
+    "tools": 4100,
+    "conv": 2800,
+    "mem": 700,
+    "hist": 3100,
+    "think": 1134,
+    "free": 181966
+  },
+  "telemetry": {
+    "estimated_tokens": 19380,
+    "context_window": 200000
+  },
+  "acceptance": {
+    "commands": [
+      {
+        "cmd": "cargo test -p omegon shadow_context --manifest-path core/Cargo.toml",
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    ]
+  },
+  "artifact_paths": {
+    "patch": null,
+    "log": "./ai/benchmarks/runs/2026-04-09T02-26-39Z-example-shadow-context-omegon.log"
+  },
+  "extra": {}
+}

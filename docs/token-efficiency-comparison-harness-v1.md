@@ -86,14 +86,14 @@ If acceptance checks fail, the default should be `0.0` unless an operator explic
 
 ### Token accounting
 
-A run records:
+A run records **run-level totals** for:
 
 - `input_tokens`
 - `output_tokens`
 - `cache_tokens` when available
 - `total_tokens`
 
-For Omegon runs, also record the latest or aggregated context-composition estimate:
+For Omegon runs, also record the **latest context-composition snapshot** seen during the run as `omegon_context`:
 
 - `sys`
 - `tools`
@@ -103,7 +103,12 @@ For Omegon runs, also record the latest or aggregated context-composition estima
 - `think`
 - `free`
 
-These buckets are heuristic, not tokenizer-accurate. That is acceptable as long as they are used for **relative diagnosis** inside Omegon rather than provider-billing claims.
+Additionally, preserve Omegon's estimator metadata when available:
+
+- `telemetry.estimated_tokens`
+- `telemetry.context_window`
+
+Important: these context buckets are a **snapshot diagnostic**, not an aggregate over the entire run. The token totals are run-level metrics; the context buckets describe the most recent turn shape observed by Omegon. These buckets are heuristic, not tokenizer-accurate. That is acceptable as long as they are used for **relative diagnosis** inside Omegon rather than provider-billing claims.
 
 ## v1 scope
 
@@ -188,6 +193,7 @@ Suggested shape:
     "input": 18234,
     "output": 1102,
     "cache": 0,
+    "cache_write": null,
     "total": 19336
   },
   "omegon_context": {
@@ -198,6 +204,10 @@ Suggested shape:
     "hist": 3100,
     "think": 1134,
     "free": 181966
+  },
+  "telemetry": {
+    "estimated_tokens": 19380,
+    "context_window": 200000
   },
   "acceptance": {
     "commands": [
@@ -228,8 +238,9 @@ Each harness adapter should implement the smallest contract that can work.
 1. prepare an isolated run directory from `base_ref`
 2. execute the task prompt through the harness
 3. capture usage data the harness exposes
-4. stop after budget exhaustion or task completion
-5. return a normalized run summary
+4. run deterministic acceptance commands against that same isolated run directory
+5. stop after budget exhaustion or task completion
+6. return a normalized run summary
 
 ### Minimal normalized adapter output
 
@@ -331,6 +342,8 @@ Suggested layout:
 ai/benchmarks/
   tasks/
     shadow-context-assembly.yaml
+  examples/
+    shadow-context-assembly-omegon.result.json
   runs/
     2026-04-09-shadow-context-assembly-omegon.json
     2026-04-09-shadow-context-assembly-claude-code.json
@@ -341,7 +354,8 @@ Whether `runs/` is tracked or ignored should be decided conservatively.
 Default recommendation:
 
 - task specs tracked
-- run artifacts ignored unless manually promoted into docs
+- example artifacts tracked when they document the current schema
+- live run artifacts ignored unless manually promoted into docs/examples
 
 ## Phased implementation plan
 
@@ -402,7 +416,7 @@ Only proceed if Phase 2 produces useful signals.
 
 1. What is the thinnest viable Claude Code adapter surface for v1?
 2. Should partial scoring exist in v1, or should v1 remain pass/fail only?
-3. Should Omegon runs record only final-turn context composition, or an aggregate over the whole run?
+3. Should the harness eventually emit both latest-snapshot and aggregated-per-run context diagnostics for Omegon, or is latest-snapshot sufficient for v1?
 4. Where should benchmark task specs live if they need repo-specific setup scripts?
 
 ## Recommendation

@@ -2401,9 +2401,20 @@ impl BenchmarkUsageSummary {
         self.cache_tokens = self.cache_tokens.saturating_add(cache_read_tokens);
         self.estimated_tokens = self.estimated_tokens.saturating_add(estimated_tokens);
         self.context_window = context_window;
-        self.context_composition = context_composition;
+        if has_nonempty_context_snapshot(&context_composition) {
+            self.context_composition = context_composition;
+        }
         self.provider_telemetry = provider_telemetry;
     }
+}
+
+fn has_nonempty_context_snapshot(context: &omegon_traits::ContextComposition) -> bool {
+    context.system_tokens > 0
+        || context.tool_schema_tokens > 0
+        || context.conversation_tokens > 0
+        || context.memory_tokens > 0
+        || context.tool_history_tokens > 0
+        || context.thinking_tokens > 0
 }
 
 fn write_benchmark_usage_json(path: &Path, summary: &BenchmarkUsageSummary) -> anyhow::Result<()> {
@@ -2498,7 +2509,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     let benchmark_summary_task = std::sync::Arc::clone(&benchmark_summary);
 
     // ─── Event printer (headless mode: print to stderr) ─────────────────
-    tokio::spawn(async move {
+    let event_task = tokio::spawn(async move {
         while let Ok(event) = events_rx.recv().await {
             match event {
                 AgentEvent::TurnStart { turn } => {
@@ -2621,6 +2632,8 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
 
     // Graceful bridge shutdown
     bridge.shutdown().await;
+    drop(events_tx);
+    let _ = event_task.await;
 
     if let Some(path) = usage_json.as_ref() {
         let summary = benchmark_summary
@@ -4049,6 +4062,113 @@ mod tests {
                 tool_history_tokens: 24,
                 thinking_tokens: 36,
                 free_tokens: 199_663,
+            }
+        );
+    }
+
+    #[test]
+    fn benchmark_usage_summary_ignores_empty_context_snapshots() {
+        let mut summary = BenchmarkUsageSummary::default();
+        summary.observe_turn(
+            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic".into()),
+            100,
+            1_000_000,
+            omegon_traits::ContextComposition {
+                system_tokens: 101,
+                tool_schema_tokens: 202,
+                conversation_tokens: 303,
+                memory_tokens: 404,
+                tool_history_tokens: 505,
+                thinking_tokens: 606,
+                free_tokens: 997_879,
+            },
+            1,
+            2,
+            3,
+            None,
+        );
+        summary.observe_turn(
+            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic".into()),
+            200,
+            1_000_000,
+            omegon_traits::ContextComposition {
+                free_tokens: 1_000_000,
+                ..Default::default()
+            },
+            4,
+            5,
+            6,
+            None,
+        );
+
+        assert_eq!(
+            summary.context_composition,
+            omegon_traits::ContextComposition {
+                system_tokens: 101,
+                tool_schema_tokens: 202,
+                conversation_tokens: 303,
+                memory_tokens: 404,
+                tool_history_tokens: 505,
+                thinking_tokens: 606,
+                free_tokens: 997_879,
+            }
+        );
+    }
+
+    #[test]
+    fn benchmark_usage_summary_keeps_latest_context_snapshot() {
+        let mut summary = BenchmarkUsageSummary::default();
+        summary.observe_turn(
+            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic".into()),
+            100,
+            1_000_000,
+            omegon_traits::ContextComposition {
+                system_tokens: 10,
+                tool_schema_tokens: 20,
+                conversation_tokens: 30,
+                memory_tokens: 40,
+                tool_history_tokens: 50,
+                thinking_tokens: 60,
+                free_tokens: 999_790,
+            },
+            1,
+            2,
+            3,
+            None,
+        );
+        summary.observe_turn(
+            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic".into()),
+            200,
+            1_000_000,
+            omegon_traits::ContextComposition {
+                system_tokens: 101,
+                tool_schema_tokens: 202,
+                conversation_tokens: 303,
+                memory_tokens: 404,
+                tool_history_tokens: 505,
+                thinking_tokens: 606,
+                free_tokens: 997_879,
+            },
+            4,
+            5,
+            6,
+            None,
+        );
+
+        assert_eq!(
+            summary.context_composition,
+            omegon_traits::ContextComposition {
+                system_tokens: 101,
+                tool_schema_tokens: 202,
+                conversation_tokens: 303,
+                memory_tokens: 404,
+                tool_history_tokens: 505,
+                thinking_tokens: 606,
+                free_tokens: 997_879,
             }
         );
     }

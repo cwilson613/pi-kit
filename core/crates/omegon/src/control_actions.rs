@@ -1,6 +1,7 @@
 use crate::tui::canonical_slash_command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ControlRole {
     Read,
     Edit,
@@ -55,6 +56,18 @@ pub struct ClassifiedAction {
     pub ingress: ControlIngress,
     pub action: CanonicalAction,
     pub role: ControlRole,
+}
+
+pub fn is_role_sufficient(actual: ControlRole, required: ControlRole) -> bool {
+    role_rank(actual) >= role_rank(required)
+}
+
+fn role_rank(role: ControlRole) -> u8 {
+    match role {
+        ControlRole::Read => 0,
+        ControlRole::Edit => 1,
+        ControlRole::Admin => 2,
+    }
 }
 
 pub fn classify_ipc_method(method: &str) -> ClassifiedAction {

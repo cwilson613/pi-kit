@@ -241,6 +241,22 @@ pub async fn post_event(
         );
     }
 
+    let caller_role = match event.caller_role.as_deref().unwrap_or("admin") {
+        "read" => crate::control_actions::ControlRole::Read,
+        "edit" => crate::control_actions::ControlRole::Edit,
+        _ => crate::control_actions::ControlRole::Admin,
+    };
+    let required = crate::control_actions::classify_daemon_trigger(&event.trigger_kind).role;
+    if !crate::control_actions::is_role_sufficient(caller_role, required) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(EventAccepted {
+                accepted: false,
+                queued_events: 0,
+            }),
+        );
+    }
+
     match state.daemon_events.lock() {
         Ok(mut queue) => {
             queue.push(event);
@@ -740,6 +756,7 @@ mod tests {
             source: "manual/test".into(),
             trigger_kind: "manual".into(),
             payload: serde_json::json!({"ok": true}),
+            caller_role: Some("admin".into()),
         };
         let (status, Json(payload)) = post_event(
             axum::extract::State(test_state()),
@@ -749,6 +766,28 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(!payload.accepted);
+    }
+
+    #[tokio::test]
+    async fn post_event_rejects_insufficient_role_for_shutdown_trigger() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer test"),
+        );
+        let state = test_state();
+        let event = DaemonEventEnvelope {
+            event_id: "evt-shutdown-read".into(),
+            source: "manual/test".into(),
+            trigger_kind: "shutdown".into(),
+            payload: serde_json::json!({}),
+            caller_role: Some("read".into()),
+        };
+        let (status, Json(payload)) = post_event(axum::extract::State(state.clone()), headers, Json(event)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!payload.accepted);
+        assert_eq!(payload.queued_events, 0);
+        assert!(state.daemon_events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -764,6 +803,7 @@ mod tests {
             source: "manual/test".into(),
             trigger_kind: "manual".into(),
             payload: serde_json::json!({"ok": true}),
+            caller_role: Some("admin".into()),
         };
         let (status, Json(payload)) = post_event(axum::extract::State(state.clone()), headers, Json(event)).await;
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -786,6 +826,7 @@ mod tests {
             source: "manual/test".into(),
             trigger_kind: "new-session".into(),
             payload: serde_json::json!({}),
+            caller_role: Some("admin".into()),
         };
         let (status, Json(payload)) = post_event(axum::extract::State(state.clone()), headers, Json(event)).await;
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -808,6 +849,7 @@ mod tests {
             source: "manual/test".into(),
             trigger_kind: "shutdown".into(),
             payload: serde_json::json!({}),
+            caller_role: Some("admin".into()),
         };
         let (status, Json(payload)) = post_event(axum::extract::State(state.clone()), headers, Json(event)).await;
         assert_eq!(status, StatusCode::ACCEPTED);

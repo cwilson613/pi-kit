@@ -25,6 +25,14 @@ use super::wire::{decode_envelope, encode_envelope, read_frame};
 use crate::tui::dashboard::DashboardHandles;
 use crate::tui::{SharedCancel, TuiCommand};
 
+fn parse_caller_role(raw: Option<&str>) -> crate::control_actions::ControlRole {
+    match raw.unwrap_or("admin") {
+        "read" => crate::control_actions::ControlRole::Read,
+        "edit" => crate::control_actions::ControlRole::Edit,
+        _ => crate::control_actions::ControlRole::Admin,
+    }
+}
+
 /// Passed from the server into each connection task.
 pub struct ConnectionConfig {
     pub omegon_version: String,
@@ -220,6 +228,18 @@ impl IpcConnection {
                 "submit_prompt" => {
                     let req = serde_json::from_value::<SubmitPromptRequest>(payload)
                         .context("parse submit_prompt")?;
+                    let caller_role = parse_caller_role(req.caller_role.as_deref());
+                    let required = crate::control_actions::classify_ipc_method("submit_prompt").role;
+                    if !crate::control_actions::is_role_sufficient(caller_role, required) {
+                        send_error(
+                            &out_tx,
+                            req_id,
+                            IpcErrorCode::InvalidPayload,
+                            "caller role is insufficient for submit_prompt",
+                        )
+                        .await;
+                        continue;
+                    }
                     let turn_busy = cfg
                         .handles
                         .session
@@ -256,6 +276,20 @@ impl IpcConnection {
                 }
 
                 "cancel" => {
+                    let caller_role = parse_caller_role(
+                        payload.get("caller_role").and_then(|v| v.as_str()),
+                    );
+                    let required = crate::control_actions::classify_ipc_method("cancel").role;
+                    if !crate::control_actions::is_role_sufficient(caller_role, required) {
+                        send_error(
+                            &out_tx,
+                            req_id,
+                            IpcErrorCode::InvalidPayload,
+                            "caller role is insufficient for cancel",
+                        )
+                        .await;
+                        continue;
+                    }
                     let accepted = if let Ok(guard) = cfg.shared_cancel.lock()
                         && let Some(ref cancel) = *guard
                     {
@@ -363,6 +397,20 @@ impl IpcConnection {
                 }
 
                 "shutdown" => {
+                    let caller_role = parse_caller_role(
+                        payload.get("caller_role").and_then(|v| v.as_str()),
+                    );
+                    let required = crate::control_actions::classify_ipc_method("shutdown").role;
+                    if !crate::control_actions::is_role_sufficient(caller_role, required) {
+                        send_error(
+                            &out_tx,
+                            req_id,
+                            IpcErrorCode::InvalidPayload,
+                            "caller role is insufficient for shutdown",
+                        )
+                        .await;
+                        continue;
+                    }
                     send_response(
                         &out_tx,
                         req_id,

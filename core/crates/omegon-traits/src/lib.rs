@@ -237,6 +237,10 @@ pub struct SubmitPromptRequest {
     /// Optional hint to the server ("tui", "auspex", "api", …).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Optional caller role for transport-side authorization. Defaults to admin
+    /// when omitted for backward compatibility with existing clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +252,10 @@ pub struct AcceptedResponse {
 pub struct SlashCommandRequest {
     pub name: String,
     pub args: String,
+    /// Optional caller role for transport-side authorization. Defaults to admin
+    /// when omitted for backward compatibility with existing clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +281,10 @@ pub struct DaemonEventEnvelope {
     pub source: String,
     pub trigger_kind: String,
     pub payload: Value,
+    /// Optional caller role for transport-side authorization. Defaults to admin
+    /// when omitted for backward compatibility with existing clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<String>,
 }
 
 // ── Typed state snapshot ─────────────────────────────────────────────────────

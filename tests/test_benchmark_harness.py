@@ -65,6 +65,71 @@ acceptance: [echo ok]
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unsupported harness", result.stderr)
 
+    def test_load_task_spec_accepts_richer_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            task = self.write_task(
+                repo,
+                """
+id: t-rich
+kind: diagnosis
+repo: .
+base_ref: main
+prompt: inspect and fix
+matrix:
+  harnesses: [omegon, pi]
+  models: [anthropic:claude-sonnet-4-6, openai-codex:gpt-5.4]
+acceptance:
+  required:
+    - python3 -c \"print('ok')\"
+  optional:
+    - python3 -c \"print('optional')\"
+  failure_if:
+    - python3 -c \"print('guard')\"
+process_expectations:
+  max_orientation_only_turns: 1
+expected_solution:
+  primary_files: [core/crates/omegon/src/context.rs]
+notes: richer schema
+""",
+            )
+            spec = BENCHMARK_HARNESS.load_task_spec(task)
+            self.assertEqual(spec.kind, "diagnosis")
+            self.assertEqual(spec.harnesses, ["omegon", "pi"])
+            self.assertEqual(spec.models, ["anthropic:claude-sonnet-4-6", "openai-codex:gpt-5.4"])
+            self.assertEqual(spec.acceptance, ["python3 -c \"print('ok')\""])
+            self.assertEqual(spec.acceptance_optional, ["python3 -c \"print('optional')\""])
+            self.assertEqual(spec.acceptance_failure_if, ["python3 -c \"print('guard')\""])
+            self.assertEqual(spec.process_expectations["max_orientation_only_turns"], 1)
+            self.assertEqual(spec.expected_solution["primary_files"], ["core/crates/omegon/src/context.rs"])
+            self.assertEqual(spec.notes, "richer schema")
+
+    def test_load_task_spec_legacy_schema_still_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self.init_repo(repo)
+            task = self.write_task(
+                repo,
+                """
+id: t-legacy
+repo: .
+base_ref: main
+prompt: hi
+harnesses: [omegon]
+model: anthropic:claude-sonnet-4-6
+acceptance:
+  - python3 -c \"print('ok')\"
+""",
+            )
+            spec = BENCHMARK_HARNESS.load_task_spec(task)
+            self.assertEqual(spec.kind, "implementation")
+            self.assertEqual(spec.harnesses, ["omegon"])
+            self.assertEqual(spec.models, ["anthropic:claude-sonnet-4-6"])
+            self.assertEqual(spec.acceptance, ["python3 -c \"print('ok')\""])
+            self.assertEqual(spec.acceptance_optional, [])
+            self.assertEqual(spec.acceptance_failure_if, [])
+
     def test_declared_harness_without_binary_fails_usefully(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

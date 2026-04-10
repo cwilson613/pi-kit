@@ -3178,6 +3178,18 @@ mod tests {
     // ── OpenAI-compat client tests ──────────────────────────────────
 
     #[test]
+    fn fallback_order_does_not_allow_anthropic_to_codex() {
+        assert_eq!(
+            super::fallback_order_for_model("anthropic:claude-sonnet-4-6"),
+            vec!["anthropic"]
+        );
+        assert_eq!(
+            super::fallback_order_for_model("claude-sonnet-4-6"),
+            vec!["anthropic"]
+        );
+    }
+
+    #[test]
     fn compat_base_url_covers_all_providers() {
         for id in ["groq", "xai", "mistral", "cerebras", "huggingface", "ollama"] {
             assert!(

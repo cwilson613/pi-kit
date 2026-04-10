@@ -2544,6 +2544,9 @@ async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 struct BenchmarkUsageSummary {
+    requested_model: Option<String>,
+    requested_provider: Option<String>,
+    resolved_provider: Option<String>,
     model: Option<String>,
     provider: Option<String>,
     turn_count: u32,
@@ -2616,6 +2619,9 @@ fn write_benchmark_usage_json(path: &Path, summary: &BenchmarkUsageSummary) -> a
         std::fs::create_dir_all(parent)?;
     }
     let payload = serde_json::json!({
+        "requested_model": summary.requested_model,
+        "requested_provider": summary.requested_provider,
+        "resolved_provider": summary.resolved_provider,
         "model": summary.model,
         "provider": summary.provider,
         "turn_count": summary.turn_count,
@@ -2642,6 +2648,9 @@ fn write_benchmark_usage_json(path: &Path, summary: &BenchmarkUsageSummary) -> a
 
 async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Result<()> {
     tracing::info!(model = %cli.model, "omegon-agent starting");
+
+    let requested_model = cli.model.clone();
+    let requested_provider = providers::infer_provider_id(&requested_model);
 
     if maybe_run_injected_cleave_smoke_child(&cli.cwd)? {
         return Ok(());
@@ -2723,6 +2732,23 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     };
 
     // ─── LLM provider (native Rust clients only) ─────────────────────
+    let resolved_provider = providers::resolve_execution_provider(&cli.model).await;
+    tracing::info!(
+        requested_model = %requested_model,
+        requested_provider = %requested_provider,
+        resolved_provider = resolved_provider.as_deref().unwrap_or("none"),
+        "bench/headless provider resolution"
+    );
+    if requested_provider == "anthropic"
+        && resolved_provider
+            .as_deref()
+            .is_some_and(|provider| provider != "anthropic")
+    {
+        anyhow::bail!(
+            "provider resolution invariant violated: requested anthropic model '{requested_model}' resolved to '{}'; this should never fall through to another provider",
+            resolved_provider.as_deref().unwrap_or("none")
+        );
+    }
     let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&cli.model).await {
         Some(native) => {
             tracing::info!("using native LLM provider");
@@ -2737,7 +2763,12 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
 
     // ─── Event channel ──────────────────────────────────────────────────
     let (events_tx, mut events_rx) = broadcast::channel::<AgentEvent>(256);
-    let benchmark_summary = std::sync::Arc::new(std::sync::Mutex::new(BenchmarkUsageSummary::default()));
+    let benchmark_summary = std::sync::Arc::new(std::sync::Mutex::new(BenchmarkUsageSummary {
+        requested_model: Some(requested_model.clone()),
+        requested_provider: Some(requested_provider.clone()),
+        resolved_provider: resolved_provider.clone(),
+        ..BenchmarkUsageSummary::default()
+    }));
     let benchmark_summary_task = std::sync::Arc::clone(&benchmark_summary);
 
     // ─── Event printer (headless mode: print to stderr) ─────────────────
@@ -3987,7 +4018,12 @@ mod tests {
 
     #[test]
     fn benchmark_usage_summary_accumulates_run_totals() {
-        let mut summary = BenchmarkUsageSummary::default();
+        let mut summary = BenchmarkUsageSummary {
+            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
+            requested_provider: Some("anthropic".into()),
+            resolved_provider: Some("anthropic".into()),
+            ..BenchmarkUsageSummary::default()
+        };
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
@@ -4032,6 +4068,9 @@ mod tests {
         );
 
         assert_eq!(summary.turn_count, 2);
+        assert_eq!(summary.requested_model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
+        assert_eq!(summary.requested_provider.as_deref(), Some("anthropic"));
+        assert_eq!(summary.resolved_provider.as_deref(), Some("anthropic"));
         assert_eq!(summary.input_tokens, 200);
         assert_eq!(summary.output_tokens, 54);
         assert_eq!(summary.cache_tokens, 10);
@@ -4172,6 +4211,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bench").join("usage.json");
         let summary = BenchmarkUsageSummary {
+            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
+            requested_provider: Some("anthropic".into()),
+            resolved_provider: Some("anthropic".into()),
             model: Some("anthropic:claude-sonnet-4-6".into()),
             provider: Some("anthropic".into()),
             turn_count: 3,
@@ -4200,6 +4242,9 @@ mod tests {
         write_benchmark_usage_json(&path, &summary).unwrap();
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["requested_model"], "anthropic:claude-sonnet-4-6");
+        assert_eq!(written["requested_provider"], "anthropic");
+        assert_eq!(written["resolved_provider"], "anthropic");
         assert_eq!(written["turn_count"], 3);
         assert_eq!(written["input_tokens"], 123);
         assert_eq!(written["cache_write_tokens"], 2);

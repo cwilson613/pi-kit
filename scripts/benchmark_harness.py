@@ -49,13 +49,19 @@ class TaskSpecError(ValueError):
 @dataclass
 class TaskSpec:
     id: str
+    kind: str
     repo: str
     base_ref: str
     prompt: str
     acceptance: list[str]
+    acceptance_optional: list[str]
+    acceptance_failure_if: list[str]
     harnesses: list[str]
+    models: list[str]
     success_files: list[str]
     budget: dict[str, Any]
+    process_expectations: dict[str, Any]
+    expected_solution: dict[str, Any]
     model: str | None = None
     slim: bool = False
     notes: str | None = None
@@ -113,6 +119,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _parse_acceptance(raw: Any) -> tuple[list[str], list[str], list[str]]:
+    if isinstance(raw, list) and raw and all(isinstance(v, str) for v in raw):
+        return list(raw), [], []
+    if isinstance(raw, dict):
+        required = raw.get("required") or []
+        optional = raw.get("optional") or []
+        failure_if = raw.get("failure_if") or []
+        if not isinstance(required, list) or not required or not all(isinstance(v, str) for v in required):
+            raise TaskSpecError("acceptance.required must be a non-empty list of shell commands")
+        if not isinstance(optional, list) or not all(isinstance(v, str) for v in optional):
+            raise TaskSpecError("acceptance.optional must be a list of shell commands")
+        if not isinstance(failure_if, list) or not all(isinstance(v, str) for v in failure_if):
+            raise TaskSpecError("acceptance.failure_if must be a list of shell commands")
+        return list(required), list(optional), list(failure_if)
+    raise TaskSpecError("acceptance must be either a non-empty list of shell commands or an object with required/optional/failure_if lists")
+
+
+def _parse_matrix(raw: dict[str, Any], default_harnesses: list[str], default_model: str | None) -> tuple[list[str], list[str]]:
+    matrix = raw.get("matrix")
+    if matrix is None:
+        models = [default_model] if default_model else []
+        return default_harnesses, models
+    if not isinstance(matrix, dict):
+        raise TaskSpecError("matrix must be an object")
+    harnesses = matrix.get("harnesses") or default_harnesses
+    models = matrix.get("models") or ([default_model] if default_model else [])
+    if not isinstance(harnesses, list) or not all(isinstance(v, str) for v in harnesses):
+        raise TaskSpecError("matrix.harnesses must be a list of strings")
+    if not isinstance(models, list) or not all(isinstance(v, str) for v in models):
+        raise TaskSpecError("matrix.models must be a list of strings")
+    return list(harnesses), list(models)
+
+
 def load_task_spec(path: Path) -> TaskSpec:
     raw = yaml.safe_load(path.read_text())
     if not isinstance(raw, dict):
@@ -123,27 +162,42 @@ def load_task_spec(path: Path) -> TaskSpec:
     if missing:
         raise TaskSpecError(f"missing required fields: {', '.join(missing)}")
 
-    harnesses = raw.get("harnesses") or ["omegon"]
-    if not isinstance(harnesses, list) or not all(isinstance(v, str) for v in harnesses):
+    default_harnesses = raw.get("harnesses") or ["omegon"]
+    if not isinstance(default_harnesses, list) or not all(isinstance(v, str) for v in default_harnesses):
         raise TaskSpecError("harnesses must be a list of strings")
+
+    default_model = str(raw["model"]) if raw.get("model") is not None else None
+    harnesses, models = _parse_matrix(raw, list(default_harnesses), default_model)
     for harness in harnesses:
         if harness not in SUPPORTED_HARNESSES:
             raise TaskSpecError(f"unsupported harness: {harness}")
 
-    acceptance = raw["acceptance"]
-    if not isinstance(acceptance, list) or not acceptance or not all(isinstance(v, str) for v in acceptance):
-        raise TaskSpecError("acceptance must be a non-empty list of shell commands")
+    acceptance_required, acceptance_optional, acceptance_failure_if = _parse_acceptance(raw["acceptance"])
+
+    process_expectations = raw.get("process_expectations") or {}
+    if not isinstance(process_expectations, dict):
+        raise TaskSpecError("process_expectations must be an object")
+
+    expected_solution = raw.get("expected_solution") or {}
+    if not isinstance(expected_solution, dict):
+        raise TaskSpecError("expected_solution must be an object")
 
     return TaskSpec(
         id=str(raw["id"]),
+        kind=str(raw.get("kind") or "implementation"),
         repo=str(raw["repo"]),
         base_ref=str(raw["base_ref"]),
         prompt=str(raw["prompt"]),
-        acceptance=acceptance,
+        acceptance=acceptance_required,
+        acceptance_optional=acceptance_optional,
+        acceptance_failure_if=acceptance_failure_if,
         harnesses=harnesses,
+        models=models,
         success_files=[str(v) for v in raw.get("success_files", [])],
         budget=raw.get("budget") or {},
-        model=str(raw["model"]) if raw.get("model") is not None else None,
+        process_expectations=process_expectations,
+        expected_solution=expected_solution,
+        model=default_model,
         slim=bool(raw.get("slim", False)),
         notes=str(raw["notes"]) if raw.get("notes") is not None else None,
     )

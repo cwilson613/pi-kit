@@ -318,6 +318,12 @@ rc:
     # Mutate version and milestone state only after validation passes.
     sed -i '' "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" core/Cargo.toml
     ./scripts/milestone-update.sh rc "$NEW_VERSION"
+
+    # Refresh the lockfile before commit/tag so release steps do not dirty the
+    # tree after the RC is already cut.
+    echo "Refreshing lockfile..."
+    cd core && cargo check -p omegon -q
+    cd ..
     MUTATED=1
 
     # Commit and tag BEFORE final build so the binary has the right sha
@@ -390,6 +396,11 @@ release:
 
     # Mark milestone as released
     ./scripts/milestone-update.sh release "$NEW_VERSION"
+
+    # Refresh the lockfile before commit/tag so stable release steps do not
+    # rewrite tracked files after the release commit already exists.
+    cd core && cargo check -p omegon -q
+    cd ..
 
     git add core/Cargo.toml core/Cargo.lock .omegon/milestones.json
     git commit -m "chore(release): ${NEW_VERSION}"

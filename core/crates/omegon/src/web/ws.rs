@@ -184,7 +184,8 @@ async fn handle_client_command(
             }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
-                .send(WebCommand::ModelView {
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::ModelView,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -227,7 +228,8 @@ async fn handle_client_command(
             }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
-                .send(WebCommand::ModelList {
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::ModelList,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -282,8 +284,10 @@ async fn handle_client_command(
                 }
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
-                    .send(WebCommand::SetModel {
-                        model: model.to_string(),
+                    .send(WebCommand::ExecuteControl {
+                        request: crate::control_runtime::ControlRequest::SetModel {
+                            requested_model: model.to_string(),
+                        },
                         respond_to: Some(reply_tx),
                     })
                     .await
@@ -330,8 +334,8 @@ async fn handle_client_command(
                 }
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
-                    .send(WebCommand::SetThinking {
-                        level,
+                    .send(WebCommand::ExecuteControl {
+                        request: crate::control_runtime::ControlRequest::SetThinking { level },
                         respond_to: Some(reply_tx),
                     })
                     .await
@@ -375,7 +379,8 @@ async fn handle_client_command(
             }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
-                .send(WebCommand::AuthStatus {
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::AuthStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -418,7 +423,8 @@ async fn handle_client_command(
             }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
-                .send(WebCommand::ContextStatus {
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::ContextStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -461,7 +467,8 @@ async fn handle_client_command(
             }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
-                .send(WebCommand::ContextCompact {
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::ContextCompact,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -504,7 +511,8 @@ async fn handle_client_command(
             }
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
-                .send(WebCommand::ContextClear {
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::ContextClear,
                     respond_to: Some(reply_tx),
                 })
                 .await

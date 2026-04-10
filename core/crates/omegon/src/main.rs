@@ -1618,56 +1618,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         }
                                         continue;
                                     }
-                                    web::WebCommand::NewSession => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::NewSession { respond_to: None }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::ModelView { respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ModelView { respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::ModelList { respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ModelList { respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::SetModel { model, respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::SetModel { model, respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::SetThinking { level, respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::SetThinking { level, respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::AuthStatus { respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::AuthStatus { respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::ContextStatus { respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ContextStatus { respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::ContextCompact { respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ContextCompact { respond_to }).await.is_err() {
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    web::WebCommand::ContextClear { respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ContextClear { respond_to }).await.is_err() {
+                                    web::WebCommand::ExecuteControl { request, respond_to } => {
+                                        if cmd_tx_clone.send(tui::TuiCommand::ExecuteControl { request, respond_to }).await.is_err() {
                                             break;
                                         }
                                         continue;

@@ -3186,16 +3186,78 @@ async fn execute_remote_slash_command(
     };
 
     match command {
-        CanonicalSlashCommand::ModelList => control_runtime::model_list_response().await,
-        CanonicalSlashCommand::SetModel(requested_model) => {
-            control_runtime::set_model_response(agent, shared_settings, bridge, &requested_model)
+        CanonicalSlashCommand::ModelList => {
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(&mut ctx, control_runtime::ControlRequest::ModelList)
                 .await
         }
+        CanonicalSlashCommand::SetModel(requested_model) => {
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(
+                &mut ctx,
+                control_runtime::ControlRequest::SetModel { requested_model },
+            )
+            .await
+        }
         CanonicalSlashCommand::SetThinking(level) => {
-            control_runtime::set_thinking_response(shared_settings, level).await
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(
+                &mut ctx,
+                control_runtime::ControlRequest::SetThinking { level },
+            )
+            .await
         }
         CanonicalSlashCommand::ContextStatus => {
-            control_runtime::context_status_response(runtime_state, shared_settings).await
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(
+                &mut ctx,
+                control_runtime::ControlRequest::ContextStatus,
+            )
+            .await
         }
         CanonicalSlashCommand::ContextCompact => {
             let bridge_guard = bridge.read().await;
@@ -3377,36 +3439,106 @@ async fn execute_remote_slash_command(
             }
         }
         CanonicalSlashCommand::NewSession => {
-            control_runtime::new_session_response(
+            let mut ctx = control_runtime::ControlContext {
                 runtime_state,
                 agent,
-                &CliRuntimeView {
-                    no_session: cli.no_session,
-                    model: &cli.model,
-                },
-                events_tx,
-            )
-            .await
-        }
-        CanonicalSlashCommand::ListSessions => control_runtime::list_sessions_response(agent).await,
-        CanonicalSlashCommand::AuthStatus => control_runtime::auth_status_response().await,
-        CanonicalSlashCommand::AuthUnlock => control_runtime::auth_unlock_response().await,
-        CanonicalSlashCommand::AuthLogin(provider) => {
-            control_runtime::auth_login_response(
                 shared_settings,
                 bridge,
                 login_prompt_tx,
                 events_tx,
-                &CliRuntimeView {
+                cli: &CliRuntimeView {
                     no_session: cli.no_session,
                     model: &cli.model,
                 },
-                &provider,
+            };
+            control_runtime::execute_control(&mut ctx, control_runtime::ControlRequest::NewSession)
+                .await
+        }
+        CanonicalSlashCommand::ListSessions => {
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(&mut ctx, control_runtime::ControlRequest::ListSessions)
+                .await
+        }
+        CanonicalSlashCommand::AuthStatus => {
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(&mut ctx, control_runtime::ControlRequest::AuthStatus)
+                .await
+        }
+        CanonicalSlashCommand::AuthUnlock => {
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(&mut ctx, control_runtime::ControlRequest::AuthUnlock)
+                .await
+        }
+        CanonicalSlashCommand::AuthLogin(provider) => {
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(
+                &mut ctx,
+                control_runtime::ControlRequest::AuthLogin { provider },
             )
             .await
         }
         CanonicalSlashCommand::AuthLogout(provider) => {
-            control_runtime::auth_logout_response(&provider).await
+            let mut ctx = control_runtime::ControlContext {
+                runtime_state,
+                agent,
+                shared_settings,
+                bridge,
+                login_prompt_tx,
+                events_tx,
+                cli: &CliRuntimeView {
+                    no_session: cli.no_session,
+                    model: &cli.model,
+                },
+            };
+            control_runtime::execute_control(
+                &mut ctx,
+                control_runtime::ControlRequest::AuthLogout { provider },
+            )
+            .await
         }
     }
 }

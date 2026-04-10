@@ -11,6 +11,66 @@ use crate::settings;
 use crate::{CliRuntimeView, InteractiveAgentHost, InteractiveAgentState};
 use omegon_traits::{AgentEvent, SlashCommandResponse};
 
+pub struct ControlContext<'a> {
+    pub runtime_state: &'a mut InteractiveAgentState,
+    pub agent: &'a mut InteractiveAgentHost,
+    pub shared_settings: &'a settings::SharedSettings,
+    pub bridge: &'a Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
+    pub login_prompt_tx:
+        &'a std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
+    pub events_tx: &'a broadcast::Sender<AgentEvent>,
+    pub cli: &'a CliRuntimeView<'a>,
+}
+
+pub enum ControlRequest {
+    ModelList,
+    SetModel { requested_model: String },
+    SetThinking { level: crate::settings::ThinkingLevel },
+    ContextStatus,
+    NewSession,
+    ListSessions,
+    AuthStatus,
+    AuthUnlock,
+    AuthLogin { provider: String },
+    AuthLogout { provider: String },
+}
+
+pub async fn execute_control(
+    ctx: &mut ControlContext<'_>,
+    request: ControlRequest,
+) -> SlashCommandResponse {
+    match request {
+        ControlRequest::ModelList => model_list_response().await,
+        ControlRequest::SetModel { requested_model } => {
+            set_model_response(ctx.agent, ctx.shared_settings, ctx.bridge, &requested_model).await
+        }
+        ControlRequest::SetThinking { level } => {
+            set_thinking_response(ctx.shared_settings, level).await
+        }
+        ControlRequest::ContextStatus => {
+            context_status_response(ctx.runtime_state, ctx.shared_settings).await
+        }
+        ControlRequest::NewSession => {
+            new_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
+        }
+        ControlRequest::ListSessions => list_sessions_response(ctx.agent).await,
+        ControlRequest::AuthStatus => auth_status_response().await,
+        ControlRequest::AuthUnlock => auth_unlock_response().await,
+        ControlRequest::AuthLogin { provider } => {
+            auth_login_response(
+                ctx.shared_settings,
+                ctx.bridge,
+                ctx.login_prompt_tx,
+                ctx.events_tx,
+                ctx.cli,
+                &provider,
+            )
+            .await
+        }
+        ControlRequest::AuthLogout { provider } => auth_logout_response(&provider).await,
+    }
+}
+
 pub fn list_sessions_message(cwd: &Path) -> String {
     let sessions = session::list_sessions(cwd);
     if sessions.is_empty() {

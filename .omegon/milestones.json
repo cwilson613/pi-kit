@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 56,
+    "rc_count": 57,
     "notes": [
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
       "feat(anthropic): prefer adaptive thinking for claude 4.6",
@@ -548,6 +548,7 @@
       "fix(release): harden signing detection and brew push flow",
       "fix(release): install zig for Linux release builds",
       "fix(release): make rc lifecycle gate justfile-safe",
+      "fix(release): refresh lockfile before tagging rc cuts",
       "fix(release): relink local binary after rc cuts",
       "fix(release): scope rc lifecycle gate to milestone nodes",
       "fix(release): script preflight checks and ignore python bytecode",
@@ -647,7 +648,7 @@
       "refactor(web): migrate dashboard prompt bar to typed control messages",
       "refactor(web): route typed control commands through dispatcher"
     ],
-    "rc_version": "0.15.10-rc.62",
-    "last_rc": "2026-04-10T13:20:54Z"
+    "rc_version": "0.15.10-rc.63",
+    "last_rc": "2026-04-10T13:31:07Z"
   }
 }

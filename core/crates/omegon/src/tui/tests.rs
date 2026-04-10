@@ -1943,6 +1943,51 @@ fn slash_skills_enqueues_execute_control() {
 }
 
 #[test]
+fn slash_secrets_enqueues_execute_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    let result = app.handle_slash_command("/secrets", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+
+    match rx.try_recv().expect("queued command") {
+        TuiCommand::ExecuteControl {
+            request: crate::control_runtime::ControlRequest::SecretsView,
+            ..
+        } => {}
+        other => panic!("expected secrets view control request, got: {other:?}"),
+    }
+}
+
+#[test]
+fn slash_vault_status_enqueues_execute_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    let result = app.handle_slash_command("/vault status", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+
+    match rx.try_recv().expect("queued command") {
+        TuiCommand::ExecuteControl {
+            request: crate::control_runtime::ControlRequest::VaultStatus,
+            ..
+        } => {}
+        other => panic!("expected vault status control request, got: {other:?}"),
+    }
+}
+
+#[test]
+fn slash_secrets_set_without_value_opens_selector() {
+    let mut app = test_app();
+    let tx = test_tx();
+
+    let result = app.handle_slash_command("/secrets set", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+    assert!(app.selector.is_some(), "expected secret selector to open");
+    assert!(matches!(app.selector_kind, Some(super::SelectorKind::SecretName)));
+}
+
+#[test]
 fn hidden_model_aliases_do_not_appear_in_palette() {
     let mut app = test_app();
     app.bus_commands = vec![

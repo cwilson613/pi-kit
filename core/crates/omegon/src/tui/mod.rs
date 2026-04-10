@@ -5685,9 +5685,12 @@ pub async fn run_tui(
                                     } else {
                                         // Store in secrets engine
                                         let _ = command_tx
-                                            .send(TuiCommand::BusCommand {
-                                                name: "secrets".to_string(),
-                                                args: format!("set {} {}", label, value),
+                                            .send(TuiCommand::ExecuteControl {
+                                                request: crate::control_runtime::ControlRequest::SecretsSet {
+                                                    name: label.clone(),
+                                                    value: value.clone(),
+                                                },
+                                                respond_to: None,
                                             })
                                             .await;
 

@@ -658,7 +658,7 @@ pub async fn run(
         } else if should_inject_execution_pressure(turn, config, conversation, tool_calls) {
             tracing::info!("Execution stall detected after repo inspection — injecting execution-pressure nudge");
             conversation.push_user(
-                "[System: You have enough local evidence to stop searching and start acting. Do not spend another turn on broad inspection only. Pick the smallest justified code change now, make it, then validate with the narrowest relevant test or check.]"
+                "[System: You now have enough local evidence. Do not use broad inspection/search tools again until you do one of these two things: (1) make one concrete code edit, or (2) name one specific blocking ambiguity tied to a file or symbol. Stop narrating. Pick the smallest justified patch now, apply it, then run the narrowest relevant validation.]"
                     .to_string(),
             );
         }
@@ -2382,6 +2382,32 @@ mod tests {
             },
         ];
         assert!(should_inject_execution_pressure(4, &config, &conversation, &tool_calls));
+    }
+
+    #[test]
+    fn execution_pressure_not_detected_for_mixed_noninspection_tool_batches() {
+        let config = LoopConfig {
+            enforce_first_turn_execution_bias: true,
+            ..LoopConfig::default()
+        };
+        let mut conversation = ConversationState::new();
+        conversation
+            .intent
+            .files_read
+            .insert(std::path::PathBuf::from("core/src/context.rs"));
+        let tool_calls = vec![
+            ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                arguments: Value::Null,
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "bash".into(),
+                arguments: Value::Null,
+            },
+        ];
+        assert!(!should_inject_execution_pressure(4, &config, &conversation, &tool_calls));
     }
 
     #[test]

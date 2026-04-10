@@ -14,10 +14,10 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
 use omegon_traits::{
-    AcceptedResponse, AgentEvent, HelloRequest, HelloResponse, IPC_PROTOCOL_VERSION, IpcCapability,
-    IpcEnvelope, IpcEnvelopeKind, IpcErrorCode, IpcEventPayload, PingRequest, PingResponse,
-    SlashCommandRequest, SlashCommandResponse, SubmitPromptRequest, SubscriptionRequest,
-    SubscriptionResponse,
+    AcceptedResponse, AgentEvent, ControlOutputResponse, ControlRequest, HelloRequest,
+    HelloResponse, IPC_PROTOCOL_VERSION, IpcCapability, IpcEnvelope, IpcEnvelopeKind,
+    IpcErrorCode, IpcEventPayload, PingRequest, PingResponse, SlashCommandRequest,
+    SlashCommandResponse, SubmitPromptRequest, SubscriptionRequest, SubscriptionResponse,
 };
 
 use super::snapshot::build_state_snapshot;
@@ -353,6 +353,86 @@ impl IpcConnection {
                         req_id,
                         "get_graph",
                         serde_json::to_value(graph)?,
+                    )
+                    .await;
+                }
+
+                "context_status" | "context_compact" | "context_clear" | "new_session"
+                | "auth_status" => {
+                    let req = serde_json::from_value::<ControlRequest>(payload)
+                        .unwrap_or_default();
+                    let caller_role = parse_caller_role(req.caller_role.as_deref());
+                    let required = crate::control_actions::classify_ipc_method(&method).role;
+                    if !crate::control_actions::is_role_sufficient(caller_role, required) {
+                        send_error(
+                            &out_tx,
+                            req_id,
+                            IpcErrorCode::InvalidPayload,
+                            &format!("caller role is insufficient for {method}"),
+                        )
+                        .await;
+                        continue;
+                    }
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    let accepted = match method.as_str() {
+                        "context_status" => cfg
+                            .command_tx
+                            .send(TuiCommand::ContextStatus {
+                                respond_to: Some(reply_tx),
+                            })
+                            .await
+                            .is_ok(),
+                        "context_compact" => cfg
+                            .command_tx
+                            .send(TuiCommand::ContextCompact {
+                                respond_to: Some(reply_tx),
+                            })
+                            .await
+                            .is_ok(),
+                        "context_clear" => cfg
+                            .command_tx
+                            .send(TuiCommand::ContextClear {
+                                respond_to: Some(reply_tx),
+                            })
+                            .await
+                            .is_ok(),
+                        "new_session" => cfg
+                            .command_tx
+                            .send(TuiCommand::NewSession {
+                                respond_to: Some(reply_tx),
+                            })
+                            .await
+                            .is_ok(),
+                        "auth_status" => cfg
+                            .command_tx
+                            .send(TuiCommand::AuthStatus {
+                                respond_to: Some(reply_tx),
+                            })
+                            .await
+                            .is_ok(),
+                        _ => false,
+                    };
+                    let response = if accepted {
+                        match reply_rx.await {
+                            Ok(response) => response,
+                            Err(_) => ControlOutputResponse {
+                                accepted: false,
+                                output: Some(format!(
+                                    "{method} executor dropped response before completion"
+                                )),
+                            },
+                        }
+                    } else {
+                        ControlOutputResponse {
+                            accepted: false,
+                            output: Some(format!("failed to enqueue {method}")),
+                        }
+                    };
+                    send_response(
+                        &out_tx,
+                        req_id,
+                        &method,
+                        serde_json::to_value(response)?,
                     )
                     .await;
                 }

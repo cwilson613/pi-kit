@@ -88,17 +88,29 @@ pub enum TuiCommand {
     /// Trigger manual compaction.
     Compact,
     /// Show context usage and status.
-    ContextStatus,
+    ContextStatus {
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    },
     /// Compress context and clear history.
-    ContextCompact,
+    ContextCompact {
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    },
     /// Clear context completely (fresh start).
-    ContextClear,
+    ContextClear {
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    },
     /// List saved sessions.
     ListSessions,
     /// Start the local browser surface server used by Auspex compatibility flows.
     StartWebDashboard,
     /// Discard the current session and start fresh (saves current first).
-    NewSession,
+    NewSession {
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    },
+    /// Probe and report auth/provider status.
+    AuthStatus {
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    },
 }
 
 /// Shared cancel token — the TUI writes it on Escape/Ctrl+C,
@@ -3383,20 +3395,20 @@ impl App {
 
             "context" => {
                 if args.is_empty() {
-                    let _ = tx.try_send(TuiCommand::ContextStatus);
+                    let _ = tx.try_send(TuiCommand::ContextStatus { respond_to: None });
                     SlashResult::Handled
                 } else {
                     match canonical_slash_command("context", args) {
                         Some(CanonicalSlashCommand::ContextStatus) => {
-                            let _ = tx.try_send(TuiCommand::ContextStatus);
+                            let _ = tx.try_send(TuiCommand::ContextStatus { respond_to: None });
                             SlashResult::Handled
                         }
                         Some(CanonicalSlashCommand::ContextCompact) => {
-                            let _ = tx.try_send(TuiCommand::ContextCompact);
+                            let _ = tx.try_send(TuiCommand::ContextCompact { respond_to: None });
                             SlashResult::Display("Requesting context compaction…".into())
                         }
                         Some(CanonicalSlashCommand::ContextClear) => {
-                            let _ = tx.try_send(TuiCommand::ContextClear);
+                            let _ = tx.try_send(TuiCommand::ContextClear { respond_to: None });
                             SlashResult::Display("Clearing context…".into())
                         }
                         Some(CanonicalSlashCommand::ContextRequest { kind, query }) => {
@@ -3436,7 +3448,7 @@ impl App {
             }
 
             "new" => {
-                let _ = tx.try_send(TuiCommand::NewSession);
+                let _ = tx.try_send(TuiCommand::NewSession { respond_to: None });
                 SlashResult::Handled
             }
 
@@ -3456,10 +3468,7 @@ impl App {
             "auth" => {
                 match canonical_slash_command("auth", args) {
                     Some(CanonicalSlashCommand::AuthStatus) => {
-                        let _ = tx.try_send(TuiCommand::BusCommand {
-                            name: "auth_status".to_string(),
-                            args: String::new(),
-                        });
+                        let _ = tx.try_send(TuiCommand::AuthStatus { respond_to: None });
                         SlashResult::Handled
                     }
                     Some(CanonicalSlashCommand::AuthUnlock) => {

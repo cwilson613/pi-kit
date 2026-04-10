@@ -153,6 +153,16 @@ pub enum IpcCapability {
     TurnCancel,
     /// `get_graph` is available.
     GraphRead,
+    /// `context_status` is available.
+    ContextView,
+    /// `context_compact` is available.
+    ContextCompact,
+    /// `context_clear` is available.
+    ContextClear,
+    /// `new_session` is available.
+    SessionNew,
+    /// `auth_status` is available.
+    AuthStatus,
     /// `run_slash_command` is available.
     SlashCommands,
     /// `shutdown` is available.
@@ -167,6 +177,11 @@ impl IpcCapability {
             Self::PromptSubmit => "prompt.submit",
             Self::TurnCancel => "turn.cancel",
             Self::GraphRead => "graph.read",
+            Self::ContextView => "context.view",
+            Self::ContextCompact => "context.compact",
+            Self::ContextClear => "context.clear",
+            Self::SessionNew => "session.new",
+            Self::AuthStatus => "auth.status",
             Self::SlashCommands => "slash_commands",
             Self::Shutdown => "shutdown",
         }
@@ -180,6 +195,11 @@ impl IpcCapability {
             Self::PromptSubmit.as_str(),
             Self::TurnCancel.as_str(),
             Self::GraphRead.as_str(),
+            Self::ContextView.as_str(),
+            Self::ContextCompact.as_str(),
+            Self::ContextClear.as_str(),
+            Self::SessionNew.as_str(),
+            Self::AuthStatus.as_str(),
             Self::SlashCommands.as_str(),
             Self::Shutdown.as_str(),
         ]
@@ -246,6 +266,21 @@ pub struct SubmitPromptRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptedResponse {
     pub accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ControlRequest {
+    /// Optional caller role for transport-side authorization. Defaults to admin
+    /// when omitted for backward compatibility with existing clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlOutputResponse {
+    pub accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1524,6 +1559,11 @@ mod tests {
         assert!(set.contains(&"prompt.submit"));
         assert!(set.contains(&"turn.cancel"));
         assert!(set.contains(&"graph.read"));
+        assert!(set.contains(&"context.view"));
+        assert!(set.contains(&"context.compact"));
+        assert!(set.contains(&"context.clear"));
+        assert!(set.contains(&"session.new"));
+        assert!(set.contains(&"auth.status"));
         assert!(set.contains(&"slash_commands"));
         assert!(set.contains(&"shutdown"));
     }
@@ -1611,6 +1651,7 @@ mod tests {
             source: "webhook/github".into(),
             trigger_kind: "webhook".into(),
             payload: serde_json::json!({"ref": "refs/heads/main"}),
+            caller_role: None,
         };
         let raw = rmp_serde::to_vec_named(&ev).unwrap();
         let decoded: DaemonEventEnvelope = rmp_serde::from_slice(&raw).unwrap();
@@ -1634,10 +1675,32 @@ mod tests {
         let req = SlashCommandRequest {
             name: "compact".into(),
             args: "200k".into(),
+            caller_role: None,
         };
         let raw = rmp_serde::to_vec_named(&req).unwrap();
         let decoded: SlashCommandRequest = rmp_serde::from_slice(&raw).unwrap();
         assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn control_request_roundtrip() {
+        let req = ControlRequest {
+            caller_role: Some("edit".into()),
+        };
+        let raw = rmp_serde::to_vec_named(&req).unwrap();
+        let decoded: ControlRequest = rmp_serde::from_slice(&raw).unwrap();
+        assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn control_output_response_roundtrip() {
+        let resp = ControlOutputResponse {
+            accepted: true,
+            output: Some("ok".into()),
+        };
+        let raw = rmp_serde::to_vec_named(&resp).unwrap();
+        let decoded: ControlOutputResponse = rmp_serde::from_slice(&raw).unwrap();
+        assert_eq!(decoded, resp);
     }
 
     #[test]

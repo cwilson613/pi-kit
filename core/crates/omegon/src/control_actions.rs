@@ -76,6 +76,11 @@ pub fn classify_ipc_method(method: &str) -> ClassifiedAction {
         "get_state" | "get_graph" | "subscribe" | "unsubscribe" => {
             (CanonicalAction::StatusView, ControlRole::Read, true)
         }
+        "context_status" => (CanonicalAction::ContextView, ControlRole::Read, true),
+        "context_compact" => (CanonicalAction::ContextCompact, ControlRole::Edit, true),
+        "context_clear" => (CanonicalAction::ContextClear, ControlRole::Edit, true),
+        "new_session" => (CanonicalAction::SessionNew, ControlRole::Edit, true),
+        "auth_status" => (CanonicalAction::AuthStatus, ControlRole::Read, true),
         "submit_prompt" => (CanonicalAction::PromptSubmit, ControlRole::Edit, true),
         "cancel" => (CanonicalAction::TurnCancel, ControlRole::Edit, true),
         "run_slash_command" => (CanonicalAction::Unknown, ControlRole::Edit, false),

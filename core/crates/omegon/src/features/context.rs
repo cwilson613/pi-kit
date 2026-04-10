@@ -554,7 +554,10 @@ impl Feature for ContextProvider {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::context::CONTEXT_STATUS => {
-                let dispatched = dispatch_command(&self.command_tx, TuiCommand::ContextStatus);
+                let dispatched = dispatch_command(
+                    &self.command_tx,
+                    TuiCommand::ContextStatus { respond_to: None },
+                );
                 let metrics = self.metrics.lock().unwrap();
                 let pct = metrics.usage_percent();
                 let thinking = {

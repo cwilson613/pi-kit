@@ -1378,7 +1378,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 }
             }
 
-            tui::TuiCommand::ContextStatus => {
+            tui::TuiCommand::ContextStatus { respond_to } => {
                 let est = runtime_state.conversation.estimate_tokens();
                 let settings = shared_settings.lock().unwrap();
                 let ctx_window = settings.context_window;
@@ -1401,14 +1401,21 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         None => String::new(),
                     }
                 };
+                let message = format!(
+                    "Context\n  Usage:           {est}/{ctx_window} tokens ({pct}%)\n  Meter:           {bar}\n  Requested Class: {requested_class}\n  Actual Class:    {actual_class}\n  Model:           {model}\n  Thinking Level:  {thinking}\n\nActions\n  /context compact   Compact older turns\n  /context clear     Start a fresh conversation\n  /context request   Pull a mediated context pack"
+                );
                 let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: format!(
-                        "Context\n  Usage:           {est}/{ctx_window} tokens ({pct}%)\n  Meter:           {bar}\n  Requested Class: {requested_class}\n  Actual Class:    {actual_class}\n  Model:           {model}\n  Thinking Level:  {thinking}\n\nActions\n  /context compact   Compact older turns\n  /context clear     Start a fresh conversation\n  /context request   Pull a mediated context pack"
-                    ),
+                    message: message.clone(),
                 });
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: true,
+                        output: Some(message),
+                    });
+                }
             }
 
-            tui::TuiCommand::ContextCompact => {
+            tui::TuiCommand::ContextCompact { respond_to } => {
                 tracing::info!("context compaction requested via /context compact");
 
                 let bridge_guard = bridge.read().await;
@@ -1449,24 +1456,45 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                 thinking_level: settings.thinking.as_str().to_string(),
                             });
 
+                            let message = format!("Context compressed. Now using {est} tokens.");
                             let _ = events_tx.send(AgentEvent::SystemNotification {
-                                message: format!("Context compressed. Now using {est} tokens."),
+                                message: message.clone(),
                             });
+                            if let Some(respond_to) = respond_to {
+                                let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                                    accepted: true,
+                                    output: Some(message),
+                                });
+                            }
                         }
                         Err(e) => {
+                            let message = format!("Compression failed: {e}");
                             let _ = events_tx.send(AgentEvent::SystemNotification {
-                                message: format!("Compression failed: {e}"),
+                                message: message.clone(),
                             });
+                            if let Some(respond_to) = respond_to {
+                                let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                                    accepted: false,
+                                    output: Some(message),
+                                });
+                            }
                         }
                     }
                 } else {
+                    let message = "Nothing to compress yet — compaction only summarizes older turns after the decay window.".to_string();
                     let _ = events_tx.send(AgentEvent::SystemNotification {
-                        message: "Nothing to compress yet — compaction only summarizes older turns after the decay window.".into(),
+                        message: message.clone(),
                     });
+                    if let Some(respond_to) = respond_to {
+                        let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                            accepted: true,
+                            output: Some(message),
+                        });
+                    }
                 }
             }
 
-            tui::TuiCommand::ContextClear => {
+            tui::TuiCommand::ContextClear { respond_to } => {
                 tracing::info!("context clear requested via /context clear");
                 // Same as /new: save session, reset conversation
                 if !cli.no_session {
@@ -1497,10 +1525,17 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     thinking_level: "off".to_string(),
                 });
 
+                let message = "Context cleared. Starting fresh conversation.".to_string();
                 let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: "Context cleared. Starting fresh conversation.".into(),
+                    message: message.clone(),
                 });
                 let _ = events_tx.send(AgentEvent::SessionReset);
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: true,
+                        output: Some(message),
+                    });
+                }
             }
 
             tui::TuiCommand::ListSessions => {
@@ -1512,7 +1547,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 tracing::info!("{text}");
             }
 
-            tui::TuiCommand::NewSession => {
+            tui::TuiCommand::NewSession { respond_to } => {
                 // Save the current session before resetting
                 if !cli.no_session {
                     let _ = session::save_session(
@@ -1525,6 +1560,26 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 agent.session_id = crate::session::allocate_session_id();
                 agent.resume_info = None;
                 let _ = events_tx.send(AgentEvent::SessionReset);
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: true,
+                        output: Some("Started a fresh session.".to_string()),
+                    });
+                }
+            }
+
+            tui::TuiCommand::AuthStatus { respond_to } => {
+                let status = auth::probe_all_providers().await;
+                let message = format_auth_status(&status);
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: message.clone(),
+                });
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: true,
+                        output: Some(message),
+                    });
+                }
             }
 
             tui::TuiCommand::StartWebDashboard => {
@@ -1582,7 +1637,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         continue;
                                     }
                                     web::WebCommand::NewSession => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::NewSession).await.is_err() {
+                                        if cmd_tx_clone.send(tui::TuiCommand::NewSession { respond_to: None }).await.is_err() {
                                             break;
                                         }
                                         continue;

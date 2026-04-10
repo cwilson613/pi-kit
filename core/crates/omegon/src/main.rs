@@ -2346,6 +2346,7 @@ fn build_interactive_loop_config(
         settings: Some(shared_settings.clone()),
         secrets: Some(runtime.secrets.clone()),
         force_compact: Some(pending_compact.clone()),
+        allow_commit_nudge: true,
     }
 }
 
@@ -2705,6 +2706,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         settings: Some(shared_settings.clone()),
         secrets: Some(agent.secrets.clone()),
         force_compact: None,
+        allow_commit_nudge: false,
     };
 
     // ─── LLM provider (native Rust clients only) ─────────────────────

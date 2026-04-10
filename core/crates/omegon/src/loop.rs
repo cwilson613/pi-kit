@@ -48,6 +48,9 @@ pub struct LoopConfig {
     pub secrets: Option<std::sync::Arc<omegon_secrets::SecretsManager>>,
     /// Force a compaction pass before the next turn regardless of threshold.
     pub force_compact: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether the loop may spend an extra turn nudging the agent to commit.
+    /// Interactive mode wants this; headless/benchmark mode generally does not.
+    pub allow_commit_nudge: bool,
 }
 
 impl Default for LoopConfig {
@@ -63,6 +66,7 @@ impl Default for LoopConfig {
             settings: None,
             secrets: None,
             force_compact: None,
+            allow_commit_nudge: true,
         }
     }
 }
@@ -494,7 +498,8 @@ pub async fn run(
             // Check if the agent skipped committing.
             // If the conversation has edit/write calls but hasn't been nudged yet,
             // give it one more turn to commit.
-            if !conversation.intent.commit_nudged
+            if config.allow_commit_nudge
+                && !conversation.intent.commit_nudged
                 && has_mutations(conversation)
                 && turn < config.max_turns
             {
@@ -2101,6 +2106,7 @@ mod tests {
             settings: None,
             secrets: None,
             force_compact: None,
+            allow_commit_nudge: true,
         };
         // soft_limit_turns=0 → loop should compute 2/3 of max_turns (40)
         assert_eq!(config.soft_limit_turns, 0, "0 = auto-calculate in run()");
@@ -2227,6 +2233,11 @@ mod tests {
     fn extract_mutation_path_missing() {
         let args = serde_json::json!({"command": "ls"});
         assert_eq!(extract_mutation_path(&args), None);
+    }
+
+    #[test]
+    fn default_loop_config_allows_commit_nudge() {
+        assert!(LoopConfig::default().allow_commit_nudge);
     }
 
     // ── Stuck detector edge cases ──────────────────────────────────────

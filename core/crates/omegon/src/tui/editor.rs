@@ -932,7 +932,7 @@ impl Editor {
         if self.is_empty() {
             return lines;
         }
-        let visual_text = self.viewport_text();
+        let visual_text = self.render_text();
         for logical in visual_text.split('\n') {
             lines.extend(wrap_chars_at(logical, width));
         }

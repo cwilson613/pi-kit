@@ -543,13 +543,13 @@ fn editor_visible_visual_lines_follow_cursor_scroll() {
 }
 
 #[test]
-fn editor_visible_visual_lines_preserve_blank_lines_from_paste() {
+fn editor_visible_visual_lines_keep_collapsed_paste_token_visible() {
     let mut editor = crate::tui::editor::Editor::new();
     editor.insert_paste("top\n\nbottom\n");
 
     let visible = editor.visible_visual_lines(20, 6);
 
-    assert_eq!(visible, vec!["top", "", "bottom", ""]);
+    assert_eq!(visible, vec!["[Pasted text #1 +2 l", "ines]"]);
 }
 
 #[test]
@@ -1522,18 +1522,26 @@ fn slash_memory_returns_stats() {
 }
 
 #[test]
-fn slash_think_with_level_changes_settings() {
+fn slash_think_with_level_does_not_optimistically_mutate_settings() {
     let mut app = test_app();
     let tx = test_tx();
+    let original_thinking = app.settings().thinking;
+
     let result = app.handle_slash_command("/think high", &tx);
     if let SlashResult::Display(text) = result {
         assert!(
             text.to_lowercase().contains("high"),
             "should confirm high: {text}"
         );
+    } else {
+        panic!("expected display confirmation from /think high");
     }
-    let s = app.settings.lock().unwrap();
-    assert_eq!(s.thinking, ThinkingLevel::High);
+
+    assert_eq!(
+        app.settings().thinking,
+        original_thinking,
+        "/think should wait for runtime confirmation before changing visible settings"
+    );
 }
 
 #[test]

@@ -340,11 +340,14 @@ mod tests {
             plugin.join("plugin.toml"),
             r#"
 [plugin]
+type = "persona"
+id = "dev.styrene.example-plugin"
 name = "example-plugin"
-plugin_type = "persona"
 version = "0.1.0"
 description = "Example"
-entry = "plugin.md"
+
+[persona.identity]
+directive = "plugin.md"
 "#,
         )
         .unwrap();

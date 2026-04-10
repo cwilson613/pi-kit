@@ -1661,6 +1661,9 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             actual_output_tokens,
             cache_read_tokens,
             provider_telemetry,
+            dominant_phase,
+            drift_kind,
+            progress_nudge_reason,
             ..
         } => json!({
             "type": "turn_end",
@@ -1674,6 +1677,9 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "actual_output_tokens": actual_output_tokens,
             "cache_read_tokens": cache_read_tokens,
             "provider_telemetry": provider_telemetry,
+            "dominant_phase": dominant_phase,
+            "drift_kind": drift_kind,
+            "progress_nudge_reason": progress_nudge_reason,
         }),
         AgentEvent::MessageStart { role } => json!({
             "type": "message_start",
@@ -2156,6 +2162,9 @@ mod tests {
                 source: "headers".into(),
                 ..Default::default()
             }),
+            dominant_phase: Some(omegon_traits::OodaPhase::Act),
+            drift_kind: Some(omegon_traits::DriftKind::ClosureStall),
+            progress_nudge_reason: Some(omegon_traits::ProgressNudgeReason::ClosurePressure),
         };
         let messages = serialize_ws_messages(&event);
         assert_eq!(messages.len(), 2);
@@ -2167,6 +2176,9 @@ mod tests {
         assert_eq!(messages[0]["actual_output_tokens"], 67);
         assert_eq!(messages[0]["cache_read_tokens"], 8);
         assert_eq!(messages[0]["provider_telemetry"]["provider"], "anthropic");
+        assert_eq!(messages[0]["dominant_phase"], "act");
+        assert_eq!(messages[0]["drift_kind"], "closure_stall");
+        assert_eq!(messages[0]["progress_nudge_reason"], "closure_pressure");
         assert_eq!(messages[1]["type"], "state_changed");
         assert_eq!(messages[1]["event_name"], "state.changed");
         assert_eq!(
@@ -2225,6 +2237,9 @@ mod tests {
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
                 provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_nudge_reason: None,
             },
             AgentEvent::MessageStart {
                 role: "assistant".into(),

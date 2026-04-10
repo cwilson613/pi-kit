@@ -1358,6 +1358,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         cache_read_tokens: 0,
                                         cache_creation_tokens: 0,
                                         provider_telemetry: None,
+                                        dominant_phase: None,
+                                        drift_kind: None,
+                                        progress_nudge_reason: None,
                                     });
                                 }
                             }
@@ -2549,6 +2552,9 @@ struct BenchmarkUsageSummary {
     resolved_provider: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    dominant_phases: std::collections::BTreeMap<String, u32>,
+    drift_kinds: std::collections::BTreeMap<String, u32>,
+    progress_nudge_reasons: std::collections::BTreeMap<String, u32>,
     turn_count: u32,
     turn_end_reasons: std::collections::BTreeMap<String, u32>,
     input_tokens: u64,
@@ -2576,6 +2582,9 @@ impl BenchmarkUsageSummary {
         provider: Option<String>,
         turn_end_reason: omegon_traits::TurnEndReason,
         estimated_tokens: usize,
+        dominant_phase: Option<omegon_traits::OodaPhase>,
+        drift_kind: Option<omegon_traits::DriftKind>,
+        progress_nudge_reason: Option<omegon_traits::ProgressNudgeReason>,
         context_window: usize,
         context_composition: omegon_traits::ContextComposition,
         actual_input_tokens: u64,
@@ -2592,6 +2601,27 @@ impl BenchmarkUsageSummary {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| format!("{:?}", turn_end_reason));
         *self.turn_end_reasons.entry(reason_key).or_insert(0) += 1;
+        if let Some(phase) = dominant_phase {
+            let key = serde_json::to_value(phase)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{:?}", phase));
+            *self.dominant_phases.entry(key).or_insert(0) += 1;
+        }
+        if let Some(drift) = drift_kind {
+            let key = serde_json::to_value(drift)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{:?}", drift));
+            *self.drift_kinds.entry(key).or_insert(0) += 1;
+        }
+        if let Some(reason) = progress_nudge_reason {
+            let key = serde_json::to_value(reason)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{:?}", reason));
+            *self.progress_nudge_reasons.entry(key).or_insert(0) += 1;
+        }
         self.input_tokens = self.input_tokens.saturating_add(actual_input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(actual_output_tokens);
         self.cache_tokens = self.cache_tokens.saturating_add(cache_read_tokens);
@@ -2626,6 +2656,9 @@ fn write_benchmark_usage_json(path: &Path, summary: &BenchmarkUsageSummary) -> a
         "provider": summary.provider,
         "turn_count": summary.turn_count,
         "turn_end_reasons": summary.turn_end_reasons,
+        "dominant_phases": summary.dominant_phases,
+        "drift_kinds": summary.drift_kinds,
+        "progress_nudge_reasons": summary.progress_nudge_reasons,
         "input_tokens": summary.input_tokens,
         "output_tokens": summary.output_tokens,
         "cache_tokens": summary.cache_tokens,
@@ -2816,6 +2849,9 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                     model,
                     provider,
                     estimated_tokens,
+                    dominant_phase,
+                    drift_kind,
+                    progress_nudge_reason,
                     context_window,
                     context_composition,
                     actual_input_tokens,
@@ -2830,6 +2866,9 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                             provider,
                             turn_end_reason,
                             estimated_tokens,
+                            dominant_phase,
+                            drift_kind,
+                            progress_nudge_reason,
                             context_window,
                             context_composition,
                             actual_input_tokens,
@@ -4029,6 +4068,9 @@ mod tests {
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             321,
+            Some(omegon_traits::OodaPhase::Act),
+            None,
+            None,
             200_000,
             omegon_traits::ContextComposition {
                 system_tokens: 100,
@@ -4050,6 +4092,9 @@ mod tests {
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ToolContinuation,
             111,
+            Some(omegon_traits::OodaPhase::Observe),
+            Some(omegon_traits::DriftKind::OrientationChurn),
+            Some(omegon_traits::ProgressNudgeReason::AntiOrientation),
             200_000,
             omegon_traits::ContextComposition {
                 system_tokens: 120,
@@ -4099,6 +4144,9 @@ mod tests {
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             100,
+            Some(omegon_traits::OodaPhase::Observe),
+            None,
+            None,
             1_000_000,
             omegon_traits::ContextComposition {
                 system_tokens: 101,
@@ -4120,6 +4168,9 @@ mod tests {
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ToolContinuation,
             200,
+            Some(omegon_traits::OodaPhase::Observe),
+            Some(omegon_traits::DriftKind::OrientationChurn),
+            Some(omegon_traits::ProgressNudgeReason::AntiOrientation),
             1_000_000,
             omegon_traits::ContextComposition {
                 free_tokens: 1_000_000,
@@ -4154,6 +4205,9 @@ mod tests {
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             100,
+            Some(omegon_traits::OodaPhase::Observe),
+            None,
+            None,
             1_000_000,
             omegon_traits::ContextComposition {
                 system_tokens: 10,
@@ -4173,8 +4227,11 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
-            omegon_traits::TurnEndReason::CommitNudge,
+            omegon_traits::TurnEndReason::ProgressNudge,
             200,
+            None,
+            Some(omegon_traits::DriftKind::ClosureStall),
+            Some(omegon_traits::ProgressNudgeReason::CommitHygiene),
             1_000_000,
             omegon_traits::ContextComposition {
                 system_tokens: 101,
@@ -4216,6 +4273,9 @@ mod tests {
             resolved_provider: Some("anthropic".into()),
             model: Some("anthropic:claude-sonnet-4-6".into()),
             provider: Some("anthropic".into()),
+            dominant_phases: std::collections::BTreeMap::new(),
+            drift_kinds: std::collections::BTreeMap::new(),
+            progress_nudge_reasons: std::collections::BTreeMap::new(),
             turn_count: 3,
             turn_end_reasons: std::collections::BTreeMap::from([
                 ("assistant_completed".to_string(), 2),

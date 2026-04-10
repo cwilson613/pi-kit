@@ -1257,8 +1257,38 @@ pub trait Feature: Send + Sync {
 pub enum TurnEndReason {
     AssistantCompleted,
     ToolContinuation,
-    CommitNudge,
+    ProgressNudge,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OodaPhase {
+    Observe,
+    Orient,
+    Decide,
+    Act,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriftKind {
+    OrientationChurn,
+    RepeatedActionFailure,
+    ValidationThrash,
+    ClosureStall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressNudgeReason {
+    AntiOrientation,
+    DecisionPressure,
+    ExecutionPressure,
+    ActionRecovery,
+    ValidationPressure,
+    ClosurePressure,
+    CommitHygiene,
 }
 
 #[derive(Debug, Clone)]
@@ -1316,6 +1346,12 @@ pub enum AgentEvent {
         cache_creation_tokens: u64,
         /// Parsed provider quota/headroom telemetry from response headers or status endpoints.
         provider_telemetry: Option<ProviderTelemetrySnapshot>,
+        /// Controller-classified dominant OODA phase for the turn.
+        dominant_phase: Option<OodaPhase>,
+        /// Optional controller-detected drift kind over the recent turn window.
+        drift_kind: Option<DriftKind>,
+        /// If the harness injected a progress nudge, the reason subtype.
+        progress_nudge_reason: Option<ProgressNudgeReason>,
     },
     AgentEnd,
     PhaseChanged {

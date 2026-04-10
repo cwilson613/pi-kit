@@ -13,7 +13,10 @@ use crate::upstream_errors::{
     TransientFailureKind, UpstreamFailureLogEntry, append_upstream_failure_log,
     classify_upstream_error_for_provider, is_context_overflow, is_malformed_history,
 };
-use omegon_traits::{AgentEvent, ContentBlock, ContextComposition, TurnEndReason};
+use omegon_traits::{
+    AgentEvent, ContentBlock, ContextComposition, DriftKind, OodaPhase,
+    ProgressNudgeReason, TurnEndReason,
+};
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -102,6 +105,125 @@ fn is_orientation_tool(name: &str) -> bool {
 
 fn is_repo_inspection_tool(name: &str) -> bool {
     matches!(name, "read" | "codebase_search" | "view")
+}
+
+fn is_mutation_tool_name(name: &str) -> bool {
+    matches!(name, "write" | "edit" | "change")
+}
+
+fn is_validation_tool(call: &ToolCall) -> bool {
+    if call.name != "bash" {
+        return false;
+    }
+    let Some(command) = call.arguments.get("command").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let lower = command.to_ascii_lowercase();
+    [
+        "cargo test",
+        "cargo check",
+        "cargo clippy",
+        "cargo fmt",
+        "pytest",
+        "npm test",
+        "npm run test",
+        "npm run check",
+        "npm run typecheck",
+        "tsc --noemit",
+        "ruff check",
+        "ruff format --check",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn classify_turn_phase(tool_calls: &[ToolCall], results: &[ToolResultEntry]) -> Option<OodaPhase> {
+    if tool_calls.is_empty() {
+        return None;
+    }
+
+    if tool_calls.iter().any(|call| call.name == "commit") {
+        return Some(OodaPhase::Act);
+    }
+
+    let successful_mutation = tool_calls.iter().any(|call| {
+        is_mutation_tool_name(&call.name)
+            && results
+                .iter()
+                .find(|result| result.call_id == call.id)
+                .is_some_and(|result| !result.is_error)
+    });
+    if successful_mutation {
+        return Some(OodaPhase::Act);
+    }
+
+    if tool_calls.iter().all(|call| is_orientation_tool(&call.name)) {
+        return Some(OodaPhase::Observe);
+    }
+
+    if tool_calls.iter().all(|call| is_repo_inspection_tool(&call.name)) {
+        return Some(OodaPhase::Observe);
+    }
+
+    if tool_calls.iter().all(is_validation_tool) {
+        return Some(OodaPhase::Act);
+    }
+
+    if tool_calls
+        .iter()
+        .any(|call| is_mutation_tool_name(&call.name) || is_validation_tool(call))
+    {
+        return Some(OodaPhase::Act);
+    }
+
+    Some(OodaPhase::Orient)
+}
+
+fn classify_drift_kind(
+    turn: u32,
+    conversation: &ConversationState,
+    tool_calls: &[ToolCall],
+    results: &[ToolResultEntry],
+) -> Option<DriftKind> {
+    if conversation.intent.files_modified.is_empty()
+        && !conversation.intent.files_read.is_empty()
+        && tool_calls.iter().all(|call| is_repo_inspection_tool(&call.name))
+        && turn >= 3
+    {
+        return Some(DriftKind::OrientationChurn);
+    }
+
+    let repeated_mutation_failures = tool_calls
+        .iter()
+        .filter(|call| is_mutation_tool_name(&call.name))
+        .count()
+        >= 2
+        && results.iter().filter(|result| result.is_error).count() >= 2;
+    if repeated_mutation_failures {
+        return Some(DriftKind::RepeatedActionFailure);
+    }
+
+    let validation_calls = tool_calls.iter().filter(|call| is_validation_tool(call)).count();
+    if validation_calls >= 2 && conversation.intent.files_modified.is_empty() {
+        return Some(DriftKind::ValidationThrash);
+    }
+
+    if !conversation.intent.files_modified.is_empty()
+        && tool_calls.iter().all(|call| is_repo_inspection_tool(&call.name))
+    {
+        return Some(DriftKind::ClosureStall);
+    }
+
+    None
+}
+
+fn progress_nudge_reason_for_drift(drift: DriftKind) -> ProgressNudgeReason {
+    match drift {
+        DriftKind::OrientationChurn => ProgressNudgeReason::AntiOrientation,
+        DriftKind::RepeatedActionFailure => ProgressNudgeReason::ActionRecovery,
+        DriftKind::ValidationThrash => ProgressNudgeReason::ValidationPressure,
+        DriftKind::ClosureStall => ProgressNudgeReason::ClosurePressure,
+    }
 }
 
 fn is_first_turn_orientation_churn(
@@ -285,6 +407,9 @@ pub async fn run(
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
                 provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_nudge_reason: None,
             });
             break;
         }
@@ -513,6 +638,9 @@ pub async fn run(
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
                     provider_telemetry: None,
+                    dominant_phase: None,
+                    drift_kind: None,
+                    progress_nudge_reason: None,
                 });
                 break;
             }
@@ -569,7 +697,7 @@ pub async fn run(
                 });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
-                    turn_end_reason: TurnEndReason::CommitNudge,
+                    turn_end_reason: TurnEndReason::ProgressNudge,
                     model: Some(config.model.clone()),
                     provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
@@ -585,6 +713,9 @@ pub async fn run(
                     cache_read_tokens: act_cr,
                     cache_creation_tokens: act_cc,
                     provider_telemetry: provider_telemetry.clone(),
+                    dominant_phase: None,
+                    drift_kind: Some(DriftKind::ClosureStall),
+                    progress_nudge_reason: Some(ProgressNudgeReason::CommitHygiene),
                 });
                 continue; // give it one more turn to commit
             }
@@ -619,6 +750,9 @@ pub async fn run(
                 cache_read_tokens: act_cr,
                 cache_creation_tokens: act_cc,
                 provider_telemetry: provider_telemetry.clone(),
+                dominant_phase: None,
+                drift_kind: None,
+                progress_nudge_reason: None,
             });
             break;
         }
@@ -648,6 +782,9 @@ pub async fn run(
             conversation.push_tool_result(result.clone());
         }
         conversation.intent.update_from_tools(tool_calls, &results);
+
+        let dominant_phase = classify_turn_phase(tool_calls, &results);
+        let drift_kind = classify_drift_kind(turn, conversation, tool_calls, &results);
 
         if is_first_turn_orientation_churn(turn, config, conversation, tool_calls) {
             tracing::info!("First-turn orientation churn detected — injecting execution-bias nudge");
@@ -797,6 +934,9 @@ pub async fn run(
             cache_read_tokens: act_cr,
             cache_creation_tokens: act_cc,
             provider_telemetry,
+            dominant_phase,
+            drift_kind,
+            progress_nudge_reason: drift_kind.map(progress_nudge_reason_for_drift),
         });
     }
 

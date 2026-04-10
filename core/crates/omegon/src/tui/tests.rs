@@ -287,6 +287,9 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
         cache_read_tokens: 0,
         cache_creation_tokens: 0,
         provider_telemetry: None,
+        dominant_phase: None,
+        drift_kind: None,
+        progress_nudge_reason: None,
     });
 
     let after = app.footer_data.context_percent;
@@ -314,6 +317,9 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
         cache_read_tokens: 0,
         cache_creation_tokens: 0,
         provider_telemetry: None,
+        dominant_phase: None,
+        drift_kind: None,
+        progress_nudge_reason: None,
     });
     app.handle_agent_event(AgentEvent::TurnEnd {
         turn: 2,
@@ -328,6 +334,9 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
         cache_read_tokens: 0,
         cache_creation_tokens: 0,
         provider_telemetry: None,
+        dominant_phase: None,
+        drift_kind: None,
+        progress_nudge_reason: None,
     });
 
     assert_eq!(app.footer_data.session_input_tokens, 112_000);

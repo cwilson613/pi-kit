@@ -487,6 +487,38 @@ mod tests {
     }
 
     #[test]
+    fn classifies_ipc_secrets_view_as_edit_local_only() {
+        let action = classify_ipc_method("secrets_view");
+        assert_eq!(action.action, CanonicalAction::SecretsView);
+        assert_eq!(action.role, ControlRole::Edit);
+        assert!(!action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_ipc_vault_status_as_read_local_only() {
+        let action = classify_ipc_method("vault_status");
+        assert_eq!(action.action, CanonicalAction::StatusView);
+        assert_eq!(action.role, ControlRole::Read);
+        assert!(!action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_web_secrets_set_as_edit_local_only() {
+        let action = classify_web_method("secrets_set");
+        assert_eq!(action.action, CanonicalAction::SecretsSet);
+        assert_eq!(action.role, ControlRole::Edit);
+        assert!(!action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_web_vault_login_as_admin_local_only() {
+        let action = classify_web_method("vault_login");
+        assert_eq!(action.action, CanonicalAction::Unknown);
+        assert_eq!(action.role, ControlRole::Admin);
+        assert!(!action.remote_safe);
+    }
+
+    #[test]
     fn classifies_daemon_new_session_as_edit() {
         let action = classify_daemon_trigger("new-session");
         assert_eq!(action.action, CanonicalAction::SessionNew);

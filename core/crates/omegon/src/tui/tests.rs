@@ -268,6 +268,7 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
 
     app.handle_agent_event(AgentEvent::TurnEnd {
         turn: 3,
+        turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
         model: Some("anthropic:claude-sonnet-4-6".into()),
         provider: Some("anthropic".into()),
         estimated_tokens: 144_000,
@@ -302,6 +303,7 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
 
     app.handle_agent_event(AgentEvent::TurnEnd {
         turn: 1,
+        turn_end_reason: omegon_traits::TurnEndReason::ToolContinuation,
         model: Some("openai:gpt-5.4".into()),
         provider: Some("openai".into()),
         estimated_tokens: 50_000,
@@ -315,6 +317,7 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
     });
     app.handle_agent_event(AgentEvent::TurnEnd {
         turn: 2,
+        turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
         model: Some("openrouter:qwen/qwen-qwq-32b".into()),
         provider: Some("openrouter".into()),
         estimated_tokens: 60_000,

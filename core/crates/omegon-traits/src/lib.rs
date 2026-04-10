@@ -1215,6 +1215,15 @@ pub trait Feature: Send + Sync {
 /// The bus uses BusEvent internally, but the TUI still receives AgentEvent
 /// via tokio::broadcast for rendering. These will converge once the TUI
 /// consumes BusEvent directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnEndReason {
+    AssistantCompleted,
+    ToolContinuation,
+    CommitNudge,
+    Cancelled,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     TurnStart {
@@ -1248,6 +1257,8 @@ pub enum AgentEvent {
     },
     TurnEnd {
         turn: u32,
+        /// Why the loop ended or continued after this turn.
+        turn_end_reason: TurnEndReason,
         /// Model that produced this turn's usage. Optional on legacy/early-exit paths.
         model: Option<String>,
         /// Provider that produced this turn's usage. Optional on legacy/early-exit paths.

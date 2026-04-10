@@ -1347,6 +1347,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                     );
                                     let _ = events_tx.send(AgentEvent::TurnEnd {
                                         turn: runtime_state.conversation.intent.stats.turns,
+                                        turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
                                         model: None,
                                         provider: None,
                                         estimated_tokens: est,
@@ -2533,6 +2534,7 @@ struct BenchmarkUsageSummary {
     model: Option<String>,
     provider: Option<String>,
     turn_count: u32,
+    turn_end_reasons: std::collections::BTreeMap<String, u32>,
     input_tokens: u64,
     output_tokens: u64,
     cache_tokens: u64,
@@ -2556,6 +2558,7 @@ impl BenchmarkUsageSummary {
         &mut self,
         model: Option<String>,
         provider: Option<String>,
+        turn_end_reason: omegon_traits::TurnEndReason,
         estimated_tokens: usize,
         context_window: usize,
         context_composition: omegon_traits::ContextComposition,
@@ -2568,6 +2571,11 @@ impl BenchmarkUsageSummary {
         self.model = model;
         self.provider = provider;
         self.turn_count = self.turn_count.saturating_add(1);
+        let reason_key = serde_json::to_value(turn_end_reason)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("{:?}", turn_end_reason));
+        *self.turn_end_reasons.entry(reason_key).or_insert(0) += 1;
         self.input_tokens = self.input_tokens.saturating_add(actual_input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(actual_output_tokens);
         self.cache_tokens = self.cache_tokens.saturating_add(cache_read_tokens);
@@ -2598,6 +2606,7 @@ fn write_benchmark_usage_json(path: &Path, summary: &BenchmarkUsageSummary) -> a
         "model": summary.model,
         "provider": summary.provider,
         "turn_count": summary.turn_count,
+        "turn_end_reasons": summary.turn_end_reasons,
         "input_tokens": summary.input_tokens,
         "output_tokens": summary.output_tokens,
         "cache_tokens": summary.cache_tokens,
@@ -2757,6 +2766,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                 }
                 AgentEvent::TurnEnd {
                     turn,
+                    turn_end_reason,
                     model,
                     provider,
                     estimated_tokens,
@@ -2772,6 +2782,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                         summary.observe_turn(
                             model,
                             provider,
+                            turn_end_reason,
                             estimated_tokens,
                             context_window,
                             context_composition,
@@ -3942,6 +3953,7 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
+            omegon_traits::TurnEndReason::AssistantCompleted,
             321,
             200_000,
             omegon_traits::ContextComposition {
@@ -3962,6 +3974,7 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
+            omegon_traits::TurnEndReason::ToolContinuation,
             111,
             200_000,
             omegon_traits::ContextComposition {
@@ -4007,6 +4020,7 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
+            omegon_traits::TurnEndReason::AssistantCompleted,
             100,
             1_000_000,
             omegon_traits::ContextComposition {
@@ -4027,6 +4041,7 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
+            omegon_traits::TurnEndReason::ToolContinuation,
             200,
             1_000_000,
             omegon_traits::ContextComposition {
@@ -4060,6 +4075,7 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
+            omegon_traits::TurnEndReason::AssistantCompleted,
             100,
             1_000_000,
             omegon_traits::ContextComposition {
@@ -4080,6 +4096,7 @@ mod tests {
         summary.observe_turn(
             Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
+            omegon_traits::TurnEndReason::CommitNudge,
             200,
             1_000_000,
             omegon_traits::ContextComposition {
@@ -4120,6 +4137,10 @@ mod tests {
             model: Some("anthropic:claude-sonnet-4-6".into()),
             provider: Some("anthropic".into()),
             turn_count: 3,
+            turn_end_reasons: std::collections::BTreeMap::from([
+                ("assistant_completed".to_string(), 2),
+                ("tool_continuation".to_string(), 1),
+            ]),
             input_tokens: 123,
             output_tokens: 45,
             cache_tokens: 6,

@@ -1545,6 +1545,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             turn,
             model,
             provider,
+            turn_end_reason,
             estimated_tokens,
             actual_input_tokens,
             actual_output_tokens,
@@ -1558,6 +1559,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "estimated_tokens": estimated_tokens,
             "model": model,
             "provider": provider,
+            "turn_end_reason": turn_end_reason,
             "actual_input_tokens": actual_input_tokens,
             "actual_output_tokens": actual_output_tokens,
             "cache_read_tokens": cache_read_tokens,
@@ -1950,6 +1952,7 @@ mod tests {
     fn serialize_turn_end_includes_usage_and_refresh_hint() {
         let event = AgentEvent::TurnEnd {
             turn: 2,
+            turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
             model: Some("anthropic:claude-sonnet-4-6".into()),
             provider: Some("anthropic".into()),
             estimated_tokens: 123,
@@ -1970,6 +1973,7 @@ mod tests {
         assert_eq!(messages[0]["type"], "turn_end");
         assert_eq!(messages[0]["event_name"], "turn.ended");
         assert_eq!(messages[0]["estimated_tokens"], 123);
+        assert_eq!(messages[0]["turn_end_reason"], "assistant_completed");
         assert_eq!(messages[0]["actual_input_tokens"], 45);
         assert_eq!(messages[0]["actual_output_tokens"], 67);
         assert_eq!(messages[0]["cache_read_tokens"], 8);
@@ -2021,6 +2025,7 @@ mod tests {
             AgentEvent::TurnStart { turn: 1 },
             AgentEvent::TurnEnd {
                 turn: 1,
+                turn_end_reason: omegon_traits::TurnEndReason::ToolContinuation,
                 model: None,
                 provider: None,
                 estimated_tokens: 0,

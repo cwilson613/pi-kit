@@ -13,7 +13,7 @@ use crate::upstream_errors::{
     TransientFailureKind, UpstreamFailureLogEntry, append_upstream_failure_log,
     classify_upstream_error_for_provider, is_context_overflow, is_malformed_history,
 };
-use omegon_traits::{AgentEvent, ContentBlock, ContextComposition};
+use omegon_traits::{AgentEvent, ContentBlock, ContextComposition, TurnEndReason};
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -230,6 +230,7 @@ pub async fn run(
             });
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
+                turn_end_reason: TurnEndReason::AssistantCompleted,
                 model: Some(config.model.clone()),
                 provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                 estimated_tokens: conversation.estimate_tokens(),
@@ -457,6 +458,7 @@ pub async fn run(
                 });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
+                    turn_end_reason: TurnEndReason::Cancelled,
                     model: Some(config.model.clone()),
                     provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
@@ -522,6 +524,7 @@ pub async fn run(
                 });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
+                    turn_end_reason: TurnEndReason::CommitNudge,
                     model: Some(config.model.clone()),
                     provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
@@ -560,6 +563,7 @@ pub async fn run(
             });
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
+                turn_end_reason: TurnEndReason::AssistantCompleted,
                 model: Some(config.model.clone()),
                 provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                 estimated_tokens: conversation.estimate_tokens(),
@@ -723,6 +727,7 @@ pub async fn run(
         });
         let _ = events.send(AgentEvent::TurnEnd {
             turn,
+            turn_end_reason: TurnEndReason::ToolContinuation,
             model: Some(config.model.clone()),
             provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
             estimated_tokens,

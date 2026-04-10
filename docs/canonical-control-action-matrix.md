@@ -325,15 +325,22 @@ That does **not** mean slash should remain the semantic owner.
 Preferred execution stack:
 
 1. slash UX in Auspex
-2. parse to canonical `ControlRequest` where available
+2. parse to canonical `ControlRequest`
 3. dispatch through shared control runtime
-4. fall back to a narrow slash adapter only for non-promoted families
+4. use a slash adapter only as a short-lived migration bridge while promotion is in flight
 
 Decision rule for residual families:
 
-- **Preferred** — promote to canonical `ControlRequest`
-- **Allowed temporarily** — keep Auspex slash UX via compatibility adapter
+- **Default** — promote to canonical `ControlRequest`
+- **Migration only** — use a compatibility adapter briefly while the canonical action lands
 - **Avoid** — require terminal-only execution for common operator workflows
+
+Project stance at current maturity:
+
+- Omegon is still early enough that command-surface churn is acceptable.
+- We should prefer promotion over preserving legacy slash tunnels.
+- Generic slash execution should be treated as transitional scaffolding, not a first-class long-term control surface.
+- If a command represents real operator intent, the bias should be to give it a canonical action id rather than defend string-based compatibility.
 
 ### Residual family prioritization for Auspex
 
@@ -348,8 +355,9 @@ Why it matters:
 
 Recommended direction:
 - expose full slash UX in Auspex immediately
-- promote listing/status flows first
+- promote listing/status flows first only as an implementation sequencing choice
 - promote install/remove/update flows next with explicit role gating
+- do not preserve a permanent `skills` / `plugin` slash-only execution path
 
 Target canonical actions (illustrative):
 - `skills.view`
@@ -369,6 +377,7 @@ Recommended direction:
 - expose read/status surfaces in Auspex first
 - promote mutating actions carefully with explicit admin gating and auditability
 - keep sensitive value entry ergonomics in mind; some flows may need guided UI
+- do not preserve a permanent `secrets` / `vault` slash-only execution path
 
 Target canonical actions (illustrative):
 - `secrets.view`
@@ -392,6 +401,7 @@ Recommended direction:
 - expose slash UX in Auspex immediately
 - promote status/list/cancel/read flows before broad mutating orchestration
 - preserve explicit role boundaries for spawning or dispatching work
+- do not preserve a permanent `cleave` / `delegate` slash-only execution path
 
 Target canonical actions (illustrative):
 - `cleave.view`
@@ -410,7 +420,8 @@ Why it matters:
 Recommended direction:
 - distinguish self-management from attached-instance control explicitly
 - prefer canonical actions for status/open flows that make sense remotely
-- avoid transport loops where Auspex-in-Ausepx style commands become ambiguous
+- avoid transport loops where Auspex-in-Auspex style commands become ambiguous
+- do not preserve a permanent `auspex` / `dash` slash-only execution path unless a command is proven to be pure local presentation state
 
 Target canonical actions (illustrative):
 - `dashboard.status`

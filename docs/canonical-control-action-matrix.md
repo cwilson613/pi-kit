@@ -369,17 +369,31 @@ Target canonical actions (illustrative):
 
 #### 2. `secrets` / `vault`
 
+Status:
+- promoted to canonical `ControlRequest` routing in TUI, IPC, and WebSocket
+- no longer depends on the bespoke `main.rs` slash-era `secrets` branch
+- residual generic slash compatibility still exists repo-wide for other families, but not as the semantic owner for this family
+
 Why it matters:
 - operators need credential and backend visibility from the orchestration plane
 - local-only terminal workflows here create high friction during setup and recovery
 
-Recommended direction:
-- expose read/status surfaces in Auspex first
-- promote mutating actions carefully with explicit admin gating and auditability
+Current posture:
+- `secrets.view`, `secrets.set`, `secrets.get`, `secrets.delete` are typed control actions
+- `vault.status`, `vault.unseal`, `vault.login`, `vault.configure`, `vault.init_policy` are typed control actions
+- transport role policy is currently conservative:
+  - `secrets.*` are edit-scoped and local-only / non-remote-safe
+  - `vault.status` is read-scoped but still local-only / non-remote-safe
+  - mutating vault flows remain admin-scoped and local-only
+- some vault actions are still instructional UX rather than fully interactive workflows
+
+Recommended next work:
+- add/maintain focused IPC and WebSocket tests for the typed methods
 - keep sensitive value entry ergonomics in mind; some flows may need guided UI
+- if remote execution is ever widened, do it intentionally with explicit policy and auditability
 - do not preserve a permanent `secrets` / `vault` slash-only execution path
 
-Target canonical actions (illustrative):
+Canonical actions (landed):
 - `secrets.view`
 - `secrets.set`
 - `secrets.get`

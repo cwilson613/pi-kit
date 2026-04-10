@@ -1388,124 +1388,59 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::ContextCompact { respond_to } => {
-                tracing::info!("context compaction requested via /context compact");
-
-                let bridge_guard = bridge.read().await;
-                let stream_options = {
-                    let s = shared_settings.lock().unwrap();
-                    crate::bridge::StreamOptions {
-                        model: Some(s.model.clone()),
-                        reasoning: Some(s.thinking.as_str().to_string()),
-                        extended_context: false,
-                        ..Default::default()
-                    }
+                let mut ctx = control_runtime::ControlContext {
+                    runtime_state: &mut runtime_state,
+                    agent: &mut agent,
+                    shared_settings: &shared_settings,
+                    bridge: &bridge,
+                    login_prompt_tx: &login_prompt_tx,
+                    events_tx: &events_tx,
+                    cli: &CliRuntimeView {
+                        no_session: cli.no_session,
+                        model: &cli.model,
+                    },
                 };
-                if let Some((payload, _evict_count)) = runtime_state.conversation.build_compaction_payload()
-                {
-                    match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options)
-                        .await
-                    {
-                        Ok(summary) => {
-                            runtime_state.conversation.apply_compaction(summary);
-                            let est = runtime_state.conversation.estimate_tokens();
-
-                            // Update metrics
-                            let settings = shared_settings.lock().unwrap();
-                            if let Ok(mut metrics) = agent.context_metrics.lock() {
-                                metrics.update(
-                                    est,
-                                    settings.context_window,
-                                    &settings.effective_requested_class().label(),
-                                    settings.thinking.as_str(),
-                                );
-                            }
-
-                            // Send authoritative context snapshot to TUI/web consumers.
-                            let _ = events_tx.send(AgentEvent::ContextUpdated {
-                                tokens: est as u64,
-                                context_window: settings.context_window as u64,
-                                context_class: settings.effective_requested_class().label().to_string(),
-                                thinking_level: settings.thinking.as_str().to_string(),
-                            });
-
-                            let message = format!("Context compressed. Now using {est} tokens.");
-                            let _ = events_tx.send(AgentEvent::SystemNotification {
-                                message: message.clone(),
-                            });
-                            if let Some(respond_to) = respond_to {
-                                let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                                    accepted: true,
-                                    output: Some(message),
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            let message = format!("Compression failed: {e}");
-                            let _ = events_tx.send(AgentEvent::SystemNotification {
-                                message: message.clone(),
-                            });
-                            if let Some(respond_to) = respond_to {
-                                let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                                    accepted: false,
-                                    output: Some(message),
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    let message = "Nothing to compress yet — compaction only summarizes older turns after the decay window.".to_string();
-                    let _ = events_tx.send(AgentEvent::SystemNotification {
-                        message: message.clone(),
+                let response = control_runtime::execute_control(
+                    &mut ctx,
+                    control_runtime::ControlRequest::ContextCompact,
+                )
+                .await;
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
                     });
-                    if let Some(respond_to) = respond_to {
-                        let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                            accepted: true,
-                            output: Some(message),
-                        });
-                    }
                 }
             }
 
             tui::TuiCommand::ContextClear { respond_to } => {
-                tracing::info!("context clear requested via /context clear");
-                // Same as /new: save session, reset conversation
-                if !cli.no_session {
-                    let _ = session::save_session(
-                        &runtime_state.conversation,
-                        &agent.cwd,
-                        Some(agent.session_id.as_str()),
-                    );
-                }
-                runtime_state.conversation = crate::conversation::ConversationState::new();
-                agent.session_id = crate::session::allocate_session_id();
-                agent.resume_info = None;
-
-                // Reset metrics — extract context_window in single lock scope to avoid deadlock
-                let context_window = if let Ok(mut metrics) = agent.context_metrics.lock() {
-                    let context_window = metrics.context_window;
-                    metrics.update(0, context_window, "Squad", "off");
-                    context_window
-                } else {
-                    200_000
+                let mut ctx = control_runtime::ControlContext {
+                    runtime_state: &mut runtime_state,
+                    agent: &mut agent,
+                    shared_settings: &shared_settings,
+                    bridge: &bridge,
+                    login_prompt_tx: &login_prompt_tx,
+                    events_tx: &events_tx,
+                    cli: &CliRuntimeView {
+                        no_session: cli.no_session,
+                        model: &cli.model,
+                    },
                 };
-
-                // Send authoritative context snapshot to TUI/web consumers.
-                let _ = events_tx.send(AgentEvent::ContextUpdated {
-                    tokens: 0,
-                    context_window: context_window as u64,
-                    context_class: "Squad".to_string(),
-                    thinking_level: "off".to_string(),
-                });
-
-                let message = "Context cleared. Starting fresh conversation.".to_string();
-                let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: message.clone(),
-                });
-                let _ = events_tx.send(AgentEvent::SessionReset);
+                let response = control_runtime::execute_control(
+                    &mut ctx,
+                    control_runtime::ControlRequest::ContextClear,
+                )
+                .await;
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
                 if let Some(respond_to) = respond_to {
                     let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: true,
-                        output: Some(message),
+                        accepted: response.accepted,
+                        output: response.output,
                     });
                 }
             }

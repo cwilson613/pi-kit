@@ -23,10 +23,13 @@ pub struct ControlContext<'a> {
 }
 
 pub enum ControlRequest {
+    ModelView,
     ModelList,
     SetModel { requested_model: String },
     SetThinking { level: crate::settings::ThinkingLevel },
     ContextStatus,
+    ContextCompact,
+    ContextClear,
     NewSession,
     ListSessions,
     AuthStatus,
@@ -40,6 +43,7 @@ pub async fn execute_control(
     request: ControlRequest,
 ) -> SlashCommandResponse {
     match request {
+        ControlRequest::ModelView => model_view_response(ctx.shared_settings).await,
         ControlRequest::ModelList => model_list_response().await,
         ControlRequest::SetModel { requested_model } => {
             set_model_response(ctx.agent, ctx.shared_settings, ctx.bridge, &requested_model).await
@@ -49,6 +53,13 @@ pub async fn execute_control(
         }
         ControlRequest::ContextStatus => {
             context_status_response(ctx.runtime_state, ctx.shared_settings).await
+        }
+        ControlRequest::ContextCompact => {
+            context_compact_response(ctx.runtime_state, ctx.agent, ctx.shared_settings, ctx.bridge)
+                .await
+        }
+        ControlRequest::ContextClear => {
+            context_clear_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
         }
         ControlRequest::NewSession => {
             new_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
@@ -247,6 +258,92 @@ pub async fn context_status_response(
             settings.context_class.label(),
             settings.thinking.as_str()
         )),
+    }
+}
+
+pub async fn context_compact_response(
+    runtime_state: &mut InteractiveAgentState,
+    agent: &mut InteractiveAgentHost,
+    shared_settings: &settings::SharedSettings,
+    bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
+) -> SlashCommandResponse {
+    let bridge_guard = bridge.read().await;
+    let stream_options = {
+        let s = shared_settings.lock().unwrap();
+        crate::bridge::StreamOptions {
+            model: Some(s.model.clone()),
+            reasoning: Some(s.thinking.as_str().to_string()),
+            extended_context: false,
+            ..Default::default()
+        }
+    };
+    if let Some((payload, _)) = runtime_state.conversation.build_compaction_payload() {
+        match crate::r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options).await {
+            Ok(summary) => {
+                runtime_state.conversation.apply_compaction(summary);
+                let est = runtime_state.conversation.estimate_tokens();
+                let settings = shared_settings.lock().unwrap();
+                if let Ok(mut metrics) = agent.context_metrics.lock() {
+                    metrics.update(
+                        est,
+                        settings.context_window,
+                        &settings.effective_requested_class().label(),
+                        settings.thinking.as_str(),
+                    );
+                }
+                SlashCommandResponse {
+                    accepted: true,
+                    output: Some(format!("Context compressed. Now using {est} tokens.")),
+                }
+            }
+            Err(e) => SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("Compression failed: {e}")),
+            },
+        }
+    } else {
+        SlashCommandResponse {
+            accepted: true,
+            output: Some(
+                "Nothing to compress yet — compaction only summarizes older turns after the decay window.".to_string(),
+            ),
+        }
+    }
+}
+
+pub async fn context_clear_response(
+    runtime_state: &mut InteractiveAgentState,
+    agent: &mut InteractiveAgentHost,
+    cli: &CliRuntimeView<'_>,
+    events_tx: &broadcast::Sender<AgentEvent>,
+) -> SlashCommandResponse {
+    if !cli.no_session {
+        let _ = session::save_session(
+            &runtime_state.conversation,
+            &agent.cwd,
+            Some(agent.session_id.as_str()),
+        );
+    }
+    runtime_state.conversation = crate::conversation::ConversationState::new();
+    agent.session_id = crate::session::allocate_session_id();
+    agent.resume_info = None;
+    let context_window = if let Ok(mut metrics) = agent.context_metrics.lock() {
+        let context_window = metrics.context_window;
+        metrics.update(0, context_window, "Squad", "off");
+        context_window
+    } else {
+        200_000
+    };
+    let _ = events_tx.send(AgentEvent::ContextUpdated {
+        tokens: 0,
+        context_window: context_window as u64,
+        context_class: "Squad".to_string(),
+        thinking_level: "off".to_string(),
+    });
+    let _ = events_tx.send(AgentEvent::SessionReset);
+    SlashCommandResponse {
+        accepted: true,
+        output: Some("Context cleared. Starting fresh conversation.".to_string()),
     }
 }
 

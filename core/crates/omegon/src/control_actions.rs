@@ -542,6 +542,46 @@ mod tests {
     }
 
     #[test]
+    fn classifies_slash_cleave_status_as_read_remote_safe() {
+        let action = classify_slash_command("cleave", "status");
+        assert_eq!(action.action, CanonicalAction::CleaveView);
+        assert_eq!(action.role, ControlRole::Read);
+        assert!(action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_slash_cleave_cancel_as_edit_remote_safe() {
+        let action = classify_slash_command("cleave", "cancel alpha");
+        assert_eq!(action.action, CanonicalAction::CleaveCancelChild);
+        assert_eq!(action.role, ControlRole::Edit);
+        assert!(action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_slash_delegate_status_as_read_remote_safe() {
+        let action = classify_slash_command("delegate", "status");
+        assert_eq!(action.action, CanonicalAction::DelegateStatus);
+        assert_eq!(action.role, ControlRole::Read);
+        assert!(action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_ipc_cleave_status_as_read_remote_safe() {
+        let action = classify_ipc_method("cleave_status");
+        assert_eq!(action.action, CanonicalAction::CleaveView);
+        assert_eq!(action.role, ControlRole::Read);
+        assert!(action.remote_safe);
+    }
+
+    #[test]
+    fn classifies_web_delegate_status_as_read_remote_safe() {
+        let action = classify_web_method("delegate_status");
+        assert_eq!(action.action, CanonicalAction::DelegateStatus);
+        assert_eq!(action.role, ControlRole::Read);
+        assert!(action.remote_safe);
+    }
+
+    #[test]
     fn classifies_daemon_new_session_as_edit() {
         let action = classify_daemon_trigger("new-session");
         assert_eq!(action.action, CanonicalAction::SessionNew);

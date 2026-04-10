@@ -105,6 +105,34 @@ Current request methods implemented in IPC:
 - `subscribe`
 - `unsubscribe`
 - `get_graph`
+- `context_status`
+- `context_compact`
+- `context_clear`
+- `new_session`
+- `list_sessions`
+- `auth_status`
+- `model_view`
+- `model_list`
+- `set_model`
+- `set_thinking`
+- `skills_view`
+- `skills_install`
+- `plugin_view`
+- `plugin_install`
+- `plugin_remove`
+- `plugin_update`
+- `secrets_view`
+- `secrets_set`
+- `secrets_get`
+- `secrets_delete`
+- `vault_status`
+- `vault_unseal`
+- `vault_login`
+- `vault_configure`
+- `vault_init_policy`
+- `cleave_status`
+- `cleave_cancel_child`
+- `delegate_status`
 - `run_slash_command`
 - `shutdown`
 
@@ -127,6 +155,33 @@ Primary transport handler:
 Current inbound command types:
 
 - `user_prompt`
+- `model_view`
+- `model_list`
+- `set_model`
+- `set_thinking`
+- `auth_status`
+- `context_status`
+- `context_compact`
+- `context_clear`
+- `new_session`
+- `skills_view`
+- `skills_install`
+- `plugin_view`
+- `plugin_install`
+- `plugin_remove`
+- `plugin_update`
+- `secrets_view`
+- `secrets_set`
+- `secrets_get`
+- `secrets_delete`
+- `vault_status`
+- `vault_unseal`
+- `vault_login`
+- `vault_configure`
+- `vault_init_policy`
+- `cleave_status`
+- `delegate_status`
+- `cancel_cleave_child`
 - `slash_command`
 - `cancel`
 - `request_snapshot`
@@ -177,6 +232,32 @@ contract because operators and controllers rely on them for observation:
 ## Observed drift points
 
 These are the concrete reasons the command surfaces are not yet unified.
+
+### Minimal typed promotion now landed for cleave/delegate
+
+`cleave` and `delegate` intentionally remain **partially** promoted.
+The current typed surface is:
+
+- `cleave status`
+- `cleave cancel <label>`
+- `delegate status`
+
+These are exposed as canonical typed control requests across TUI, IPC, and
+WebSocket.
+
+What is **not** promoted on purpose:
+
+- `cleave run ...`
+- general delegate execution/invocation flows
+
+Rationale:
+
+- status/cancel are observation/control-plane intents and are safe to unify
+- execution remains orchestration-owned and feature-local
+- typed control should not absorb the cleave/delegate ownership boundary
+
+This is the same pattern used for the earlier minimal-scope decision: promote
+status and child cancellation, but leave execution on the feature-owned path.
 
 ### Generic slash tunneling still carries too much control traffic
 

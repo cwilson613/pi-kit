@@ -238,6 +238,95 @@ The intended end state is:
 5. **Parity tests validate bindings across surfaces**
    - same operator intent, different transport wrappers
 
+## Remaining slash inventory after dispatcher migration
+
+The promoted control families are now largely dispatcher-backed across slash,
+IPC, and Web. What remains is the residual slash surface in
+`core/crates/omegon/src/tui/mod.rs::handle_slash_command(...)`.
+
+### Dispatcher-backed slash families
+
+These slash forms now primarily act as syntax veneers over
+`ControlRequest -> execute_control(...)`:
+
+- `/model`
+- `/model list`
+- `/model <spec>`
+- `/think <level>`
+- `/context`
+- `/context status`
+- `/context compact`
+- `/context clear`
+- `/context request <kind> <query>`
+- `/context request {json}`
+- `/context <class>`
+- `/new`
+- `/sessions`
+- `/auth`
+- `/auth status`
+- `/auth unlock`
+- `/login <provider>`
+- `/logout <provider>`
+
+### Slash commands that still appear intentionally TUI-local or UX-local
+
+These are not yet on the canonical control rail, and many probably should stay
+presentation-local unless there is a strong remote-use case:
+
+- `/help`
+- `/mouse [on|off]`
+- `/persona ...`
+- `/tone ...`
+- `/detail ...`
+- `/focus`
+- `/copy [raw|plain]`
+- `/tree`
+- tutorial flow: `/tutorial`, `/demo`, `/next`, `/prev`
+- note-taking flow: `/note`, `/notes`, `/checkin`
+- quick exit aliases: `/exit`, `/quit`, `/q`
+
+These are mostly UI affordances, editor/view state, or operator guidance.
+They do not obviously belong in the remote control plane.
+
+### Slash commands that are feature/workflow surfaces and need explicit decisions
+
+These are not mere UI affordances. They represent real capability surfaces, but
+have not yet been normalized into the canonical dispatcher:
+
+- `/skills [list|install]`
+- `/plugin ...`
+- `/secrets ...`
+- `/vault ...`
+- `/cleave ...`
+- `/milestone ...`
+- `/update ...`
+- `/init`
+- `/migrate`
+- `/chronos`
+- `/delegate ...`
+- `/splash`
+- `/auspex ...`
+- `/dash ...`
+
+These need an explicit decision per family:
+
+1. promote to canonical `ControlRequest`
+2. keep slash-only by design
+3. expose only via CLI or local TUI, not remote transports
+
+### Compatibility tunnel scope is now much smaller
+
+The remaining generic slash adapters exist primarily for the families above,
+not for the promoted control set.
+
+- IPC `run_slash_command` is now mostly a compatibility path for non-promoted
+  slash families.
+- WebSocket `slash_command` is now mostly the dashboard fallback for the same
+  residual slash-only families.
+
+This means removal planning can now be scoped against a concrete residual set
+instead of the entire slash surface.
+
 ---
 
 ## Design rule

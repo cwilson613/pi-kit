@@ -614,10 +614,12 @@ pub async fn workspace_status_view_response(agent: &InteractiveAgentHost) -> Sla
         .unwrap_or(1);
     let owner = lease.owner_session_id.as_deref().unwrap_or("(none)");
     let text = format!(
-        "Workspace\n  ID:           {}\n  Project:      {}\n  Path:         {}\n  Branch:       {}\n  Role:         {:?}\n  Kind:         {:?}\n  Mutability:   {:?}\n  Owner:        {}\n  Source:       {}\n  Local Views:  {}",
+        "Workspace\n  ID:           {}\n  Label:        {}\n  Project:      {}\n  Path:         {}\n  Backend:      {}\n  Branch:       {}\n  Role:         {:?}\n  Kind:         {:?}\n  Mutability:   {:?}\n  Owner:        {}\n  Source:       {}\n  Local Views:  {}",
         lease.workspace_id,
+        lease.label,
         lease.project_id,
         lease.path,
+        lease.backend_kind.as_str(),
         lease.branch,
         lease.role,
         lease.workspace_kind,
@@ -684,9 +686,11 @@ pub async fn workspace_list_view_response(agent: &InteractiveAgentHost) -> Slash
     for workspace in registry.workspaces {
         let owner = workspace.owner_session_id.as_deref().unwrap_or("(none)");
         lines.push(format!(
-            "- {}\n    path: {}\n    branch: {}\n    role/kind: {:?} / {:?}\n    mutability: {:?}\n    owner: {}\n    stale: {}",
+            "- {} ({})\n    path: {}\n    backend: {}\n    branch: {}\n    role/kind: {:?} / {:?}\n    mutability: {:?}\n    owner: {}\n    stale: {}",
             workspace.workspace_id,
+            workspace.label,
             workspace.path,
+            workspace.backend_kind.as_str(),
             workspace.branch,
             workspace.role,
             workspace.workspace_kind,

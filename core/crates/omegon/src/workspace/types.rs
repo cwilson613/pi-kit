@@ -23,6 +23,38 @@ pub enum WorkspaceKind {
     Generic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceBackendKind {
+    LocalDir,
+    GitWorktree,
+    GitClone,
+    JjCheckout,
+    RemoteDir,
+    PodVolume,
+}
+
+impl WorkspaceBackendKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::LocalDir => "local-dir",
+            Self::GitWorktree => "git-worktree",
+            Self::GitClone => "git-clone",
+            Self::JjCheckout => "jj-checkout",
+            Self::RemoteDir => "remote-dir",
+            Self::PodVolume => "pod-volume",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceVcsRef {
+    pub vcs: String,
+    pub branch: Option<String>,
+    pub revision: Option<String>,
+    pub remote: Option<String>,
+}
+
 impl WorkspaceKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
@@ -87,7 +119,10 @@ pub enum AdmissionOutcome {
 pub struct WorkspaceLease {
     pub project_id: String,
     pub workspace_id: String,
+    pub label: String,
     pub path: String,
+    pub backend_kind: WorkspaceBackendKind,
+    pub vcs_ref: Option<WorkspaceVcsRef>,
     pub branch: String,
     pub role: WorkspaceRole,
     pub workspace_kind: WorkspaceKind,
@@ -103,7 +138,10 @@ pub struct WorkspaceLease {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     pub workspace_id: String,
+    pub label: String,
     pub path: String,
+    pub backend_kind: WorkspaceBackendKind,
+    pub vcs_ref: Option<WorkspaceVcsRef>,
     pub branch: String,
     pub role: WorkspaceRole,
     pub workspace_kind: WorkspaceKind,
@@ -144,7 +182,15 @@ mod tests {
         let lease = WorkspaceLease {
             project_id: "proj".into(),
             workspace_id: "ws".into(),
+            label: "feature-demo".into(),
             path: "/tmp/ws".into(),
+            backend_kind: WorkspaceBackendKind::GitWorktree,
+            vcs_ref: Some(WorkspaceVcsRef {
+                vcs: "git".into(),
+                branch: Some("feature/demo".into()),
+                revision: None,
+                remote: Some("origin".into()),
+            }),
             branch: "feature/demo".into(),
             role: WorkspaceRole::Feature,
             workspace_kind: WorkspaceKind::Mixed,
@@ -168,7 +214,15 @@ mod tests {
             repo_root: "/repo".into(),
             workspaces: vec![WorkspaceSummary {
                 workspace_id: "ws".into(),
+                label: "primary".into(),
                 path: "/repo".into(),
+                backend_kind: WorkspaceBackendKind::LocalDir,
+                vcs_ref: Some(WorkspaceVcsRef {
+                    vcs: "git".into(),
+                    branch: Some("main".into()),
+                    revision: None,
+                    remote: Some("origin".into()),
+                }),
                 branch: "main".into(),
                 role: WorkspaceRole::Primary,
                 workspace_kind: WorkspaceKind::Code,

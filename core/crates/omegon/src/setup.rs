@@ -744,7 +744,18 @@ impl AgentSetup {
         let workspace_lease = crate::workspace::types::WorkspaceLease {
             project_id: project_id.clone(),
             workspace_id: crate::workspace::runtime::workspace_id_from_path(&cwd),
+            label: existing_workspace_lease
+                .as_ref()
+                .map(|lease| lease.label.clone())
+                .unwrap_or_else(|| "primary".into()),
             path: cwd.display().to_string(),
+            backend_kind: crate::workspace::types::WorkspaceBackendKind::LocalDir,
+            vcs_ref: repo_model.as_ref().map(|model| crate::workspace::types::WorkspaceVcsRef {
+                vcs: "git".into(),
+                branch: model.branch(),
+                revision: None,
+                remote: Some("origin".into()),
+            }),
             branch: existing_workspace_lease
                 .as_ref()
                 .map(|lease| lease.branch.clone())
@@ -767,7 +778,10 @@ impl AgentSetup {
         };
         let workspace_summary = crate::workspace::types::WorkspaceSummary {
             workspace_id: workspace_lease.workspace_id.clone(),
+            label: workspace_lease.label.clone(),
             path: workspace_lease.path.clone(),
+            backend_kind: workspace_lease.backend_kind,
+            vcs_ref: workspace_lease.vcs_ref.clone(),
             branch: workspace_lease.branch.clone(),
             role: workspace_lease.role,
             workspace_kind: workspace_lease.workspace_kind,
@@ -846,10 +860,12 @@ impl AgentSetup {
             focused_node: self.startup_snapshot.lifecycle.focused_node.clone(),
             active_changes: self.startup_snapshot.lifecycle.active_changes.clone(),
             workspace_status: Some(format!(
-                "Workspace {} [{:?}/{:?}] owner={} admission={:?}",
+                "Workspace {} ({}) [{:?}/{:?}] backend={} owner={} admission={:?}",
                 self.workspace_state.lease.workspace_id,
+                self.workspace_state.lease.label,
                 self.workspace_state.lease.role,
                 self.workspace_state.lease.workspace_kind,
+                self.workspace_state.lease.backend_kind.as_str(),
                 self.workspace_state
                     .lease
                     .owner_session_id

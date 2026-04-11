@@ -77,11 +77,21 @@ fn authority_denial_reason(
 mod tests {
     use super::*;
 
+    use crate::workspace::types::{WorkspaceBackendKind, WorkspaceVcsRef};
+
     fn occupied_feature_lease() -> WorkspaceLease {
         WorkspaceLease {
             project_id: "proj".into(),
             workspace_id: "ws".into(),
+            label: "feature-demo".into(),
             path: "/tmp/ws".into(),
+            backend_kind: WorkspaceBackendKind::GitWorktree,
+            vcs_ref: Some(WorkspaceVcsRef {
+                vcs: "git".into(),
+                branch: Some("feature/demo".into()),
+                revision: None,
+                remote: Some("origin".into()),
+            }),
             branch: "feature/demo".into(),
             role: WorkspaceRole::Feature,
             workspace_kind: WorkspaceKind::Mixed,

@@ -99,7 +99,8 @@ pub fn heartbeat_is_stale(now_epoch_secs: i64, heartbeat_epoch_secs: i64) -> boo
 mod tests {
     use super::*;
     use crate::workspace::types::{
-        Mutability, WorkspaceKind, WorkspaceRole, WorkspaceSummary,
+        Mutability, WorkspaceBackendKind, WorkspaceKind, WorkspaceRole, WorkspaceSummary,
+        WorkspaceVcsRef,
     };
 
     #[test]
@@ -135,7 +136,15 @@ mod tests {
             repo_root: dir.path().display().to_string(),
             workspaces: vec![WorkspaceSummary {
                 workspace_id: "ws".into(),
+                label: "primary".into(),
                 path: dir.path().display().to_string(),
+                backend_kind: WorkspaceBackendKind::LocalDir,
+                vcs_ref: Some(WorkspaceVcsRef {
+                    vcs: "git".into(),
+                    branch: Some("main".into()),
+                    revision: None,
+                    remote: Some("origin".into()),
+                }),
                 branch: "main".into(),
                 role: WorkspaceRole::Primary,
                 workspace_kind: WorkspaceKind::Mixed,

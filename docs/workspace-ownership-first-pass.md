@@ -94,7 +94,15 @@ Proposed schema:
 {
   "project_id": "string",
   "workspace_id": "string",
+  "label": "string",
   "path": "string",
+  "backend_kind": "local-dir|git-worktree|git-clone|jj-checkout|remote-dir|pod-volume",
+  "vcs_ref": {
+    "vcs": "git|jj",
+    "branch": "string|null",
+    "revision": "string|null",
+    "remote": "string|null"
+  },
   "branch": "string",
   "role": "primary|feature|cleave-child|benchmark|release|exploratory|read-only",
   "workspace_kind": "code|vault|knowledge|spec|mixed|generic",
@@ -128,7 +136,15 @@ Proposed shape:
   "workspaces": [
     {
       "workspace_id": "string",
+      "label": "string",
       "path": "string",
+      "backend_kind": "local-dir|git-worktree|git-clone|jj-checkout|remote-dir|pod-volume",
+      "vcs_ref": {
+        "vcs": "git|jj",
+        "branch": "string|null",
+        "revision": "string|null",
+        "remote": "string|null"
+      },
       "branch": "string",
       "role": "feature",
       "workspace_kind": "mixed",
@@ -141,7 +157,18 @@ Proposed shape:
 }
 ```
 
-## Workspace admission flow
+### Identity boundary
+
+The first pass must keep workspace coordination identity separate from backing substrate identity.
+
+Required distinction:
+- `workspace_id` = machine/runtime coordination identity
+- `label` = human-facing operator name
+- `backend_kind` = how the surface is realized
+- `vcs_ref` = optional descriptive VCS linkage, not identity
+
+This keeps workspace from collapsing into a shadow branch/worktree system.
+
 
 ### Inputs
 

@@ -52,14 +52,46 @@ Local filesystem, bare git, self-hosted Forgejo/Gitea/GitLab, GitHub Enterprise,
 
 ## Decisions
 
-### Workspace ownership is a first-class runtime primitive
+### Workspace is a coordination object, not a branch wrapper
 
-**Status:** decided
+A workspace is **not**:
+- a branch
+- a worktree
+- a clone
+- a jj checkout
+- a pod
+- a filesystem path label
 
-**Rationale:** Parallel mutable Omegon agents must behave like parallel engineers. Project state remains durable and git-tracked, but workspace ownership, leases, and occupancy are machine-local runtime coordination state. One mutable agent per workspace becomes the core filesystem hygiene rule, and cleave uses the same workspace model as all other parallel execution.
+Those are backing substrates.
 
-### Workspace kinds are first-class and git transport is forge-neutral
+A workspace **is** a runtime ownership and coordination boundary over a mutable plaintext surface.
 
-**Status:** decided
+That means the workspace abstraction is responsible for:
+- mutability ownership
+- workspace kind
+- runtime role / authority
+- local coordination state
 
-**Rationale:** Omegon must not assume a filesystem tree or git repository is a code project. Versioned plaintext workspaces such as Obsidian vaults are first-class. Workspace kind should be inferred heuristically but operator-declarable, and git sovereignty means Forgejo/Gitea/GitLab/GitHub/Azure DevOps/local bare git are transport variants, not different workspace ontologies.
+It is **not** responsible for VCS topology.
+
+### Workspace identity must remain separate from substrate identity
+
+The model must keep distinct:
+- `workspace_id` — machine/runtime coordination identity
+- `label` — operator-facing human name
+- `backend_kind` — how the surface is realized (`local-dir`, `git-worktree`, `git-clone`, `jj-checkout`, etc.)
+- `vcs_ref` — optional descriptive VCS linkage (`git`/`jj`, branch/bookmark, remote, revision)
+
+This separation is required so a workspace remains valid even if:
+- branch names change
+- history is rebased
+- jj bookmarks move
+- the same upstream project is mounted at different local paths
+- the workspace has no VCS backing at all (for example a vault)
+
+### Workspace must remain valid without VCS semantics
+
+If removing git/jj semantics would make the workspace model collapse, then the model is incorrectly defined.
+
+A workspace may reference VCS state, but VCS state must remain descriptive rather than identity-defining.
+

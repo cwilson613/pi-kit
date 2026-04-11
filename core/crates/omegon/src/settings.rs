@@ -157,6 +157,35 @@ pub struct RuntimeIdentity {
     pub session_kind: Option<String>,
 }
 
+impl RuntimeIdentity {
+    /// Descriptive local interactive identity.
+    ///
+    /// This is intentionally metadata-only. It is not an authorization grant.
+    pub fn local_interactive() -> Self {
+        Self {
+            principal_id: Some("local-operator".into()),
+            issuer: Some("local-session".into()),
+            session_kind: Some("interactive".into()),
+        }
+    }
+
+    /// Descriptive local control-plane identity.
+    ///
+    /// This exists so daemon/control-plane surfaces can describe themselves
+    /// before Styrene Identity is wired.
+    pub fn local_control_plane() -> Self {
+        Self {
+            principal_id: Some("daemon-supervisor".into()),
+            issuer: Some("local-daemon".into()),
+            session_kind: Some("control-plane".into()),
+        }
+    }
+
+    pub fn summary_principal(&self) -> &str {
+        self.principal_id.as_deref().unwrap_or("anonymous")
+    }
+}
+
 /// Placeholder authorization shape.
 ///
 /// Capability and role semantics will move here once RBAC is threaded into the
@@ -196,20 +225,25 @@ pub struct OperatingProfile {
 }
 
 impl OperatingProfile {
+    pub fn with_identity(mut self, identity: RuntimeIdentity) -> Self {
+        self.identity = identity;
+        self
+    }
+
     pub fn with_persona(mut self, persona: PersonaState) -> Self {
         self.persona = persona;
         self
     }
 
     pub fn summary(&self) -> String {
-        let persona = self
+        let persona_or_identity = self
             .persona
             .persona_id
             .as_deref()
-            .unwrap_or("anonymous");
+            .unwrap_or_else(|| self.identity.summary_principal());
         format!(
             "{} / {} / {} / {}",
-            persona,
+            persona_or_identity,
             self.posture.effective.display_name(),
             self.resources.thinking.as_str(),
             self.resources.requested_context_class.short()
@@ -571,7 +605,7 @@ impl Settings {
     /// Composed operating profile for the current runtime state.
     pub fn operating_profile(&self) -> OperatingProfile {
         OperatingProfile {
-            identity: RuntimeIdentity::default(),
+            identity: RuntimeIdentity::local_interactive(),
             authorization: AuthorizationContext::default(),
             persona: PersonaState::default(),
             posture: self.posture,
@@ -1112,20 +1146,34 @@ mod tests {
         assert_eq!(profile.posture, BehavioralPosture::fixed(PosturePreset::Fabricator));
         assert_eq!(profile.resources.thinking, ThinkingLevel::Low);
         assert_eq!(profile.resources.requested_context_class, ContextClass::Maniple);
-        assert_eq!(profile.identity, RuntimeIdentity::default());
+        assert_eq!(profile.identity, RuntimeIdentity::local_interactive());
         assert_eq!(profile.authorization, AuthorizationContext::default());
         assert_eq!(profile.persona, PersonaState::default());
-        assert_eq!(profile.summary(), "anonymous / Fabricator / low / Maniple");
+        assert_eq!(profile.summary(), "local-operator / Fabricator / low / Maniple");
+    }
+
+    #[test]
+    fn runtime_identity_presets_are_descriptive_only() {
+        let interactive = RuntimeIdentity::local_interactive();
+        assert_eq!(interactive.principal_id.as_deref(), Some("local-operator"));
+        assert_eq!(interactive.issuer.as_deref(), Some("local-session"));
+        assert_eq!(interactive.session_kind.as_deref(), Some("interactive"));
+        assert_eq!(interactive.summary_principal(), "local-operator");
+
+        let daemon = RuntimeIdentity::local_control_plane();
+        assert_eq!(daemon.principal_id.as_deref(), Some("daemon-supervisor"));
+        assert_eq!(daemon.issuer.as_deref(), Some("local-daemon"));
+        assert_eq!(daemon.session_kind.as_deref(), Some("control-plane"));
     }
 
     #[test]
     fn operating_profile_persona_overlay_is_descriptive_only() {
-        let profile = Settings::default().operating_profile().with_persona(
-            PersonaState::from_ids(
+        let profile = Settings::default()
+            .operating_profile()
+            .with_persona(PersonaState::from_ids(
                 Some("dev.styrene.omegon.systems-engineer".into()),
                 Some("persona:dev.styrene.omegon.systems-engineer".into()),
-            ),
-        );
+            ));
         assert_eq!(
             profile.persona.persona_id.as_deref(),
             Some("dev.styrene.omegon.systems-engineer")
@@ -1137,6 +1185,17 @@ mod tests {
         assert_eq!(
             profile.summary(),
             "dev.styrene.omegon.systems-engineer / Architect / medium / Clan"
+        );
+    }
+
+    #[test]
+    fn operating_profile_can_overlay_identity() {
+        let profile = Settings::default()
+            .operating_profile()
+            .with_identity(RuntimeIdentity::local_control_plane());
+        assert_eq!(
+            profile.summary(),
+            "daemon-supervisor / Architect / medium / Clan"
         );
     }
 

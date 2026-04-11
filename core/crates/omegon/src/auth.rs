@@ -185,9 +185,42 @@ pub static PROVIDERS: &[ProviderCredential] = &[
     },
 ];
 
+/// Normalize operator-facing provider aliases to canonical provider ids.
+pub fn canonical_provider_id(id: &str) -> &str {
+    match id.trim().to_ascii_lowercase().as_str() {
+        "claude" => "anthropic",
+        "chatgpt" | "codex" => "openai-codex",
+        other => {
+            // Lifetime widen: only return canonical static ids for recognized aliases.
+            // Unknown providers fall back to the original caller-owned id path elsewhere.
+            if other == "anthropic"
+                || other == "openai"
+                || other == "openai-codex"
+                || other == "openrouter"
+                || other == "ollama-cloud"
+                || other == "ollama"
+                || other == "groq"
+                || other == "xai"
+                || other == "mistral"
+                || other == "cerebras"
+                || other == "brave"
+                || other == "tavily"
+                || other == "serper"
+                || other == "github"
+                || other == "gitlab"
+                || other == "huggingface"
+                {
+                    return provider_by_id(other).map(|p| p.id).unwrap_or("anthropic");
+                }
+            id
+        }
+    }
+}
+
 /// Look up a provider by its id (e.g. "openai", "anthropic").
 pub fn provider_by_id(id: &str) -> Option<&'static ProviderCredential> {
-    PROVIDERS.iter().find(|p| p.id == id)
+    let canonical = canonical_provider_id(id);
+    PROVIDERS.iter().find(|p| p.id == canonical)
 }
 
 /// Get the auth.json key for a provider id. Falls back to the id itself
@@ -1518,5 +1551,13 @@ mod tests {
             provider_by_id("openai-codex").map(|p| p.display_name),
             Some("OpenAI/Codex")
         );
+    }
+
+    #[test]
+    fn canonical_provider_id_normalizes_operator_aliases() {
+        assert_eq!(canonical_provider_id("claude"), "anthropic");
+        assert_eq!(canonical_provider_id("chatgpt"), "openai-codex");
+        assert_eq!(canonical_provider_id("codex"), "openai-codex");
+        assert_eq!(canonical_provider_id("openai"), "openai");
     }
 }

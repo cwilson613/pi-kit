@@ -3240,9 +3240,10 @@ async fn execute_remote_slash_command(
 }
 
 async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
+    let provider = auth::canonical_provider_id(provider);
     let result = match provider {
-        "anthropic" | "claude" => auth::login_anthropic().await,
-        "openai-codex" | "chatgpt" | "codex" => auth::login_openai().await,
+        "anthropic" => auth::login_anthropic().await,
+        "openai-codex" => auth::login_openai().await,
         "openai" => {
             login_api_key(
                 "openai",

@@ -1978,7 +1978,11 @@ pub async fn auth_login_response(
     provider: &str,
 ) -> SlashCommandResponse {
     let provider = provider.trim();
-    let provider = if provider.is_empty() { "anthropic" } else { provider };
+    let provider = if provider.is_empty() {
+        "anthropic"
+    } else {
+        crate::auth::canonical_provider_id(provider)
+    };
     if provider == "openai" {
         return SlashCommandResponse {
             accepted: false,
@@ -2091,6 +2095,7 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
             ),
         };
     }
+    let provider = crate::auth::canonical_provider_id(provider);
     let provider_label = crate::auth::provider_by_id(provider)
         .map(|p| p.display_name)
         .unwrap_or(provider);

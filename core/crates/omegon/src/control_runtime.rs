@@ -38,6 +38,7 @@ pub enum ControlRequest {
     WorkspaceListView,
     WorkspaceNew { label: String },
     WorkspaceAdopt,
+    WorkspaceRelease,
     WorkspaceBindMilestone { milestone_id: String },
     WorkspaceBindNode { design_node_id: String },
     WorkspaceBindClear,
@@ -107,6 +108,7 @@ pub fn control_request_from_slash(
             ControlRequest::WorkspaceNew { label: label.clone() }
         }
         crate::tui::CanonicalSlashCommand::WorkspaceAdopt => ControlRequest::WorkspaceAdopt,
+        crate::tui::CanonicalSlashCommand::WorkspaceRelease => ControlRequest::WorkspaceRelease,
         crate::tui::CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
             ControlRequest::WorkspaceBindMilestone {
                 milestone_id: milestone_id.clone(),
@@ -241,6 +243,7 @@ pub async fn execute_control(
         ControlRequest::WorkspaceListView => workspace_list_view_response(ctx.agent).await,
         ControlRequest::WorkspaceNew { label } => workspace_new_response(ctx.agent, &label).await,
         ControlRequest::WorkspaceAdopt => workspace_adopt_response(ctx.agent).await,
+        ControlRequest::WorkspaceRelease => workspace_release_response(ctx.agent).await,
         ControlRequest::WorkspaceBindMilestone { milestone_id } => {
             workspace_bind_milestone_response(ctx.agent, &milestone_id).await
         }
@@ -895,12 +898,54 @@ where
                 workspace.bindings = lease.bindings.clone();
                 workspace.role = lease.role;
                 workspace.workspace_kind = lease.workspace_kind;
+                workspace.owner_session_id = lease.owner_session_id.clone();
+                workspace.last_heartbeat = lease.last_heartbeat.clone();
             }
         }
         crate::workspace::runtime::write_workspace_registry(&agent.cwd, &registry)
             .map_err(|err| format!("Failed to update workspace registry: {err}"))?;
     }
     Ok(lease)
+}
+
+pub async fn workspace_release_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
+    let lease = match crate::workspace::runtime::read_workspace_lease(&agent.cwd)
+        .ok()
+        .flatten()
+    {
+        Some(lease) => lease,
+        None => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some("Workspace release requires existing local workspace metadata.".into()),
+            }
+        }
+    };
+    if lease.owner_session_id.as_deref() != Some(agent.session_id.as_str()) {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(format!(
+                "Workspace release requires current ownership. Current owner: {}",
+                lease.owner_session_id.as_deref().unwrap_or("(none)")
+            )),
+        };
+    }
+    match rewrite_current_workspace(agent, |lease| {
+        lease.owner_session_id = None;
+        lease.owner_agent_id = None;
+    }) {
+        Ok(lease) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Released workspace {} ({}). It remains registered but is no longer owned.",
+                lease.workspace_id, lease.label
+            )),
+        },
+        Err(message) => SlashCommandResponse {
+            accepted: false,
+            output: Some(message),
+        },
+    }
 }
 
 pub async fn workspace_bind_milestone_response(

@@ -13,12 +13,17 @@
         "revision": null,
         "remote": "origin"
       },
+      "bindings": {
+        "milestone_id": null,
+        "design_node_id": null,
+        "openspec_change": null
+      },
       "branch": "main",
       "role": "primary",
       "workspace_kind": "mixed",
       "mutability": "mutable",
-      "owner_session_id": "2026-04-11T03-55-16_e47d327f",
-      "last_heartbeat": "2026-04-11T10:07:45.953695+00:00",
+      "owner_session_id": "2026-04-11T10-46-46_eb504f17",
+      "last_heartbeat": "2026-04-11T10:46:47.076125+00:00",
       "stale": false
     }
   ]

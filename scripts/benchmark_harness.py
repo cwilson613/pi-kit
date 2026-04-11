@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -314,7 +315,7 @@ def ensure_model_supported_for_harness(harness: str, model: str | None) -> None:
 
 
 def prepare_clean_repo(repo_path: Path, base_ref: str) -> Path:
-    clean_root = Path(tempfile.mkdtemp(prefix="benchmark-repo-"))
+    clean_root = Path(tempfile.mkdtemp(prefix="benchmark-repo-", dir=benchmark_temp_root()))
     audit(f"prepare clean repo: source={repo_path} base_ref={base_ref} target={clean_root}")
     if (repo_path / ".git").exists():
         subprocess.run(["git", "clone", "--quiet", "--no-checkout", str(repo_path), str(clean_root)], check=True)
@@ -323,6 +324,44 @@ def prepare_clean_repo(repo_path: Path, base_ref: str) -> Path:
         copytree(repo_path, clean_root, dirs_exist_ok=True)
     audit(f"clean repo ready: {clean_root}")
     return clean_root
+
+
+def benchmark_temp_root() -> Path:
+    explicit = os.environ.get("OMEGON_BENCHMARK_TEMP_DIR")
+    if explicit:
+        root = Path(explicit).expanduser().resolve()
+    else:
+        root = Path(tempfile.gettempdir()).resolve() / "omegon-benchmark"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def should_preserve_benchmark_tempfiles() -> bool:
+    value = os.environ.get("OMEGON_BENCHMARK_PRESERVE_TEMP", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def cleanup_benchmark_tempfiles(paths: Iterable[Path]) -> None:
+    for path in paths:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as err:
+            audit(f"temp cleanup skipped for {path}: {err}")
+
+
+def cleanup_stale_benchmark_tempdirs() -> None:
+    if should_preserve_benchmark_tempfiles():
+        return
+    root = benchmark_temp_root()
+    leaked = [child for child in root.iterdir() if child.name.startswith("benchmark-repo-")]
+    if leaked:
+        audit(f"cleaning {len(leaked)} leaked benchmark temp director{'y' if len(leaked) == 1 else 'ies'} from {root}")
+        cleanup_benchmark_tempfiles(leaked)
 
 
 def benchmark_cache_root() -> Path:
@@ -434,7 +473,7 @@ class OmegonAdapter(HarnessAdapter):
         return AdapterResult(
             model=self.model or usage.get("model") or "omegon-default",
             usage=usage,
-            extra=usage.get("extra", {}),
+            extra={**usage.get("extra", {}), "usage_json_path": str(usage_file)},
             profile="omegon-native",
             execution_status="ok" if proc.returncode == 0 else "error",
             error_message=None if proc.returncode == 0 else f"omegon exited with code {proc.returncode}",
@@ -1800,6 +1839,7 @@ def main() -> int:
         sys.stderr.reconfigure(line_buffering=True)
     except AttributeError:
         pass
+    cleanup_stale_benchmark_tempdirs()
     args = parse_args()
     if args.report:
         return run_report_mode(args.report, baseline_paths=args.baseline)
@@ -1886,6 +1926,14 @@ def main() -> int:
         f"wall={payload.get('wall_clock_sec')}s result={result_path}"
     )
     print(result_path)
+    if not should_preserve_benchmark_tempfiles():
+        cleanup_targets = [clean_repo_path]
+        if adapter.log_path is not None:
+            cleanup_targets.append(adapter.log_path)
+        usage_json_path = (adapter.extra or {}).get("usage_json_path")
+        if isinstance(usage_json_path, str) and usage_json_path:
+            cleanup_targets.append(Path(usage_json_path))
+        cleanup_benchmark_tempfiles(cleanup_targets)
     return 0 if payload.get("status") == "pass" else 3
 
 

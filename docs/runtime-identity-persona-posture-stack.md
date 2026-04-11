@@ -324,6 +324,53 @@ A deeper diagnostic view could additionally include:
 - session / workload trust domain
 - active capabilities
 
+## Surface boundary (implemented)
+
+The runtime model now has a deliberate boundary between **rich local state** and **compatibility/export projections**.
+
+### Canonical internal model
+The canonical internal composition is:
+- `OperatingProfile` in `core/crates/omegon/src/settings.rs`
+
+This is where the layered stack is modeled directly:
+- identity
+- authorization
+- persona
+- posture
+- resource envelope
+
+### Canonical local observable surface
+The canonical rich local observable surface is:
+- `HarnessStatus` in `core/crates/omegon/src/status.rs`
+
+This is the runtime-facing projection used by:
+- TUI footer and local runtime views
+- local status/bootstrap rendering
+- other in-process diagnostics
+
+`HarnessStatus` is allowed to be richer than the external/shared transport contract.
+
+### Compatibility/export surface
+The current IPC/web/export surface remains the existing compatibility projection layer:
+- `core/crates/omegon/src/ipc/snapshot.rs`
+- `core/crates/omegon/src/web/mod.rs`
+- `core/crates/omegon/src/web/api.rs`
+- shared `omegon_traits::*Snapshot` contracts
+
+These projections are intentionally narrower than `HarnessStatus` today.
+
+### Rule
+Do **not** silently widen compatibility/export contracts just because richer local state exists.
+
+If external consumers need the richer model, evolve the shared snapshot contract explicitly as an interface change.
+
+### Current implementation rule
+- add new runtime concepts to `OperatingProfile` first
+- project them into `HarnessStatus` when they are useful for local observability
+- only then decide whether IPC/web/export consumers should receive them
+
+This prevents local architecture work from accidentally becoming an undeclared wire-contract migration.
+
 ## Interaction implications
 
 ### `/ascend`

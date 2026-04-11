@@ -1,0 +1,96 @@
+id: litmus-at-symbol-file-selection
+kind: implementation
+repo: .
+base_ref: v0.15.9
+model: anthropic:claude-sonnet-4-6
+slim: false
+prompt: |
+  I want to include @ symbol file selection in the Omegon TUI input area,
+  similar to what Claude Code provides. Typing `@` in the prompt should
+  pop up a fuzzy file picker that lets the user select a file from the
+  current workspace, with the chosen path inserted at the cursor
+  position. How do I accomplish this?
+harnesses:
+  - omegon
+  - claude-code
+acceptance:
+  required:
+    # Soft "did the agent do something" gate. The litmus character of
+    # this benchmark is cost-based, not correctness-based — the grep
+    # below is intentionally loose. If it's flaky in practice, drop it
+    # and grade purely on cost + success_files touched.
+    - 'grep -RIEq "(@|at[_-])(symbol|file).*pick|pick.*file" core/crates/omegon/src/tui/'
+success_files:
+  - core/crates/omegon/src/tui/mod.rs
+budget:
+  # Secondary fences against runaway loops.
+  max_turns: 30
+  max_minutes: 30
+  # Load-bearing pass/fail criterion. Tokens are the only discrete unit
+  # the harness actually records (`tokens.input + tokens.output + cache`
+  # on the result JSON). 5,000,000 total tokens is an extremely low bar:
+  # a healthy autonomous Sonnet run on a medium TUI feature task lands
+  # well under 1M total. A run that exceeds 5M is unambiguously broken,
+  # which is exactly what 0.15.9 was. The litmus question this gate
+  # answers is "are we still THAT bad" — not "are we as good as
+  # claude-code" — and the answer needs to be no.
+  max_total_tokens: 5000000
+process_expectations:
+  must_complete_feature: true
+  must_stay_within_token_budget: true
+notes: |
+  Litmus benchmark gating the 0.15.9 → 0.15.10 release.
+
+  Captures the operator-observed regression where 0.15.9 was roughly
+  an order of magnitude more token-expensive than claude-code on the
+  same task ("add @ symbol file selection to the TUI input"). Both
+  agents completed the work; omegon had a visual bug, claude-code
+  did not — but the release blocker is the cost gap, not the
+  correctness gap.
+
+  This is an "extremely low bar" gate, not a precision measurement.
+  The 5M-total-token threshold is the point past which a run is
+  unambiguously broken, not a target. A healthy autonomous Sonnet
+  run on a medium TUI feature task should land well under 1M total —
+  exceeding 5M means we're back in 0.15.9 territory. The litmus
+  question this gate answers is "are we still THAT bad", and the
+  answer needs to be no before 0.15.10 ships.
+
+  We deliberately do NOT express this in dollars, plan-percentages,
+  or "% of 5h window". Those are not discrete observable units —
+  they depend on opaque backend pricing/window decisions that change
+  without notice. Tokens are what the harness records, tokens are
+  what we grade against.
+
+  Faithfulness notes:
+  - The original was an interactive task (operator drove turn-by-turn).
+    This benchmark is single-shot autonomous because the harness only
+    supports that mode. The exploration / context-burn inefficiency
+    that drove the regression surfaces in autonomous runs too — and
+    autonomous runs are strictly harder than the operator-steered
+    original (no human nudges between turns), so they're a more
+    pessimistic test of the same property.
+  - The acceptance grep is intentionally crude. A TUI feature is
+    hard to deterministically test from outside the binary; the
+    token-budget criterion is the load-bearing part of this litmus.
+  - The harness records `budget` but does not currently enforce
+    `max_total_tokens` as a hard kill-switch. Today the gate is
+    eyeballed against the result JSON's `tokens.total`. A grading
+    script that pass/fails automatically against this field is a
+    worthwhile follow-up.
+
+  Certifying a release candidate:
+  1. Run with base_ref: v0.15.9 (this spec) → re-establishes the
+     regression baseline. Expect omegon to blow well past 5M tokens.
+  2. To certify a candidate, override base_ref to the candidate
+     (e.g. v0.15.10-rc.NN) for the run only. Do NOT merge the
+     override — the in-tree spec stays pinned to v0.15.9 as durable
+     evidence of the regression baseline. Certification evidence
+     lives in the run artifact under `ai/benchmarks/runs/`. Pass
+     criterion: `tokens.total` on the candidate run is ≤ 5,000,000.
+
+  Out of scope for this spec (worth follow-ups):
+  - A `--base-ref-override` CLI flag on `benchmark_harness.py` so
+    certification runs don't need an out-of-tree YAML edit.
+  - A grading script that pass/fails automatically against
+    `budget.max_total_tokens` instead of eyeballing the result JSON.

@@ -365,13 +365,15 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         "workspace" if args == "adopt" => Some(CanonicalSlashCommand::WorkspaceAdopt),
         "workspace" if args == "kind" => Some(CanonicalSlashCommand::WorkspaceKindView),
         "workspace" if args == "kind clear" => Some(CanonicalSlashCommand::WorkspaceKindClear),
-        "workspace" if let Some(label) = args.strip_prefix("new ").map(str::trim).filter(|label| !label.is_empty()) => {
-            Some(CanonicalSlashCommand::WorkspaceNew(label.to_string()))
+        "workspace" => {
+            if let Some(label) = args.strip_prefix("new ").map(str::trim).filter(|label| !label.is_empty()) {
+                Some(CanonicalSlashCommand::WorkspaceNew(label.to_string()))
+            } else {
+                args.strip_prefix("kind set ")
+                    .and_then(crate::workspace::types::WorkspaceKind::parse)
+                    .map(CanonicalSlashCommand::WorkspaceKindSet)
+            }
         }
-        "workspace" => args
-            .strip_prefix("kind set ")
-            .and_then(crate::workspace::types::WorkspaceKind::parse)
-            .map(CanonicalSlashCommand::WorkspaceKindSet),
         "stats" if args.is_empty() => Some(CanonicalSlashCommand::SessionStatsView),
         "tree" => Some(CanonicalSlashCommand::TreeView {
             args: if args.is_empty() { "list".to_string() } else { args.to_string() },

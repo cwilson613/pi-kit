@@ -1798,6 +1798,32 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "event_name": "decomposition.completed",
             "merged": merged,
         }),
+        AgentEvent::FamilyVitalSignsUpdated { signs } => json!({
+            "type": "family_vital_signs",
+            "event_name": "family.vital_signs",
+            "signs": {
+                "run_id": signs.run_id,
+                "active": signs.active,
+                "total_children": signs.total_children,
+                "completed": signs.completed,
+                "failed": signs.failed,
+                "running": signs.running,
+                "pending": signs.pending,
+                "total_tokens_in": signs.total_tokens_in,
+                "total_tokens_out": signs.total_tokens_out,
+                "children": signs.children.iter().map(|c| json!({
+                    "label": c.label,
+                    "status": c.status,
+                    "started_at_unix_ms": c.started_at_unix_ms,
+                    "last_activity_unix_ms": c.last_activity_unix_ms,
+                    "duration_secs": c.duration_secs,
+                    "last_tool": c.last_tool,
+                    "last_turn": c.last_turn,
+                    "tokens_in": c.tokens_in,
+                    "tokens_out": c.tokens_out,
+                })).collect::<Vec<_>>(),
+            },
+        }),
         AgentEvent::SystemNotification { message } => json!({
             "type": "system_notification",
             "event_name": "system.notification",
@@ -2330,6 +2356,30 @@ mod tests {
                 success: true,
             },
             AgentEvent::DecompositionCompleted { merged: true },
+            AgentEvent::FamilyVitalSignsUpdated {
+                signs: omegon_traits::FamilyVitalSigns {
+                    run_id: "test-run".into(),
+                    active: true,
+                    total_children: 2,
+                    completed: 1,
+                    failed: 0,
+                    running: 1,
+                    pending: 0,
+                    total_tokens_in: 100,
+                    total_tokens_out: 50,
+                    children: vec![omegon_traits::ChildVitalSigns {
+                        label: "alpha".into(),
+                        status: "completed".into(),
+                        started_at_unix_ms: Some(1_700_000_000_000),
+                        last_activity_unix_ms: Some(1_700_000_005_000),
+                        duration_secs: Some(5.0),
+                        last_tool: Some("bash".into()),
+                        last_turn: Some(3),
+                        tokens_in: 60,
+                        tokens_out: 30,
+                    }],
+                },
+            },
             AgentEvent::SystemNotification {
                 message: "test".into(),
             },
@@ -2338,7 +2388,82 @@ mod tests {
             let json = serialize_agent_event(event);
             assert!(json["type"].is_string(), "event should have a type field");
         }
-        assert_eq!(events.len(), 15, "should cover all 15 AgentEvent variants");
+        assert_eq!(events.len(), 16, "should cover all 16 AgentEvent variants");
+    }
+
+    #[test]
+    fn serialize_family_vital_signs_renders_full_tree() {
+        let event = AgentEvent::FamilyVitalSignsUpdated {
+            signs: omegon_traits::FamilyVitalSigns {
+                run_id: "run-42".into(),
+                active: true,
+                total_children: 3,
+                completed: 1,
+                failed: 0,
+                running: 1,
+                pending: 1,
+                total_tokens_in: 1000,
+                total_tokens_out: 500,
+                children: vec![
+                    omegon_traits::ChildVitalSigns {
+                        label: "auth".into(),
+                        status: "completed".into(),
+                        started_at_unix_ms: Some(1_700_000_000_000),
+                        last_activity_unix_ms: Some(1_700_000_010_000),
+                        duration_secs: Some(10.0),
+                        last_tool: Some("commit".into()),
+                        last_turn: Some(5),
+                        tokens_in: 600,
+                        tokens_out: 300,
+                    },
+                    omegon_traits::ChildVitalSigns {
+                        label: "api".into(),
+                        status: "running".into(),
+                        started_at_unix_ms: Some(1_700_000_005_000),
+                        last_activity_unix_ms: Some(1_700_000_012_000),
+                        duration_secs: None,
+                        last_tool: Some("write".into()),
+                        last_turn: Some(2),
+                        tokens_in: 400,
+                        tokens_out: 200,
+                    },
+                    omegon_traits::ChildVitalSigns {
+                        label: "ui".into(),
+                        status: "pending".into(),
+                        started_at_unix_ms: None,
+                        last_activity_unix_ms: None,
+                        duration_secs: None,
+                        last_tool: None,
+                        last_turn: None,
+                        tokens_in: 0,
+                        tokens_out: 0,
+                    },
+                ],
+            },
+        };
+        let json = serialize_agent_event(&event);
+        assert_eq!(json["type"], "family_vital_signs");
+        assert_eq!(json["event_name"], "family.vital_signs");
+        assert_eq!(json["signs"]["run_id"], "run-42");
+        assert_eq!(json["signs"]["active"], true);
+        assert_eq!(json["signs"]["total_children"], 3);
+        assert_eq!(json["signs"]["completed"], 1);
+        assert_eq!(json["signs"]["running"], 1);
+        assert_eq!(json["signs"]["pending"], 1);
+        assert_eq!(json["signs"]["total_tokens_in"], 1000);
+        assert_eq!(json["signs"]["children"].as_array().unwrap().len(), 3);
+        assert_eq!(json["signs"]["children"][0]["label"], "auth");
+        assert_eq!(json["signs"]["children"][0]["status"], "completed");
+        assert_eq!(json["signs"]["children"][1]["status"], "running");
+        assert_eq!(
+            json["signs"]["children"][1]["duration_secs"],
+            serde_json::Value::Null
+        );
+        assert_eq!(json["signs"]["children"][2]["status"], "pending");
+        assert_eq!(
+            json["signs"]["children"][2]["started_at_unix_ms"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]

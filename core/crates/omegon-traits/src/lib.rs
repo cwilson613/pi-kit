@@ -896,6 +896,14 @@ pub enum IpcEventPayload {
     #[serde(rename = "decomposition.completed")]
     DecompositionCompleted { merged: bool },
 
+    /// Periodic family-tree rollup carrying the cleave run's current
+    /// shape + per-child digest. See [`FamilyVitalSigns`] for the field
+    /// reference. Subscribers that just want a coherent tree view consume
+    /// this event instead of stitching together the per-child decomposition
+    /// events themselves.
+    #[serde(rename = "family.vital_signs")]
+    FamilyVitalSignsUpdated { signs: FamilyVitalSigns },
+
     // ── Harness ────────────────────────────────────────────────────────────
     /// Harness state changed. Call `get_state` to refresh the `harness` section.
     #[serde(rename = "harness.changed")]
@@ -1525,6 +1533,100 @@ pub enum ProgressNudgeReason {
     CommitHygiene,
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// L3 family vital signs — multi-agent (cleave) coordination rollup
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Periodic snapshot of a cleave family's tree state and per-child digest.
+///
+/// Emitted on meaningful state transitions inside the cleave orchestrator
+/// (child spawned, child completed, activity tick, token accumulation).
+/// Consumers — Auspex via IPC, the web dashboard, the TUI — can render the
+/// family tree directly without reconstructing it from the per-event stream.
+///
+/// This is the L3 ("family / deployment") layer in the process → pod →
+/// family → cluster instrumentation hierarchy: a downsampled rollup of the
+/// individual `Decomposition*` events that the orchestrator already emits.
+/// Subscribers that only want a coherent tree view subscribe to this event
+/// instead of stitching together \`DecompositionStarted\` +
+/// \`DecompositionChildCompleted\` themselves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FamilyVitalSigns {
+    /// Stable id for this cleave run. Empty when no run is active.
+    #[serde(default)]
+    pub run_id: String,
+    /// True while the orchestrator is actively dispatching children.
+    #[serde(default)]
+    pub active: bool,
+    /// Total children in the plan.
+    #[serde(default)]
+    pub total_children: usize,
+    /// Children with terminal status `completed` or `merged_after_failure`.
+    #[serde(default)]
+    pub completed: usize,
+    /// Children with terminal status `failed` or `upstream_exhausted`.
+    #[serde(default)]
+    pub failed: usize,
+    /// Children currently in `running` status.
+    #[serde(default)]
+    pub running: usize,
+    /// Children still in `pending` status (waiting for a free slot or
+    /// for upstream dependencies to clear).
+    #[serde(default)]
+    pub pending: usize,
+    /// Cumulative input tokens consumed across all children. Useful for
+    /// rolling family-level cost into a parent dashboard.
+    #[serde(default)]
+    pub total_tokens_in: u64,
+    /// Cumulative output tokens consumed across all children.
+    #[serde(default)]
+    pub total_tokens_out: u64,
+    /// Per-child digest, in plan order.
+    pub children: Vec<ChildVitalSigns>,
+}
+
+/// Per-child digest carried inside [`FamilyVitalSigns`].
+///
+/// This is the cleave-side analog of L2's per-pod vital signs: enough
+/// detail for an operator to spot which child is moving, which is stuck,
+/// and what each is currently working on, without subscribing to every
+/// underlying activity event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildVitalSigns {
+    /// Stable child label from the cleave plan.
+    pub label: String,
+    /// Status string: `pending` / `running` / `completed` / `failed` /
+    /// `merged_after_failure` / `upstream_exhausted`.
+    pub status: String,
+    /// Wall-clock timestamp when the child transitioned to `running`,
+    /// in unix milliseconds. `None` if not yet started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<u64>,
+    /// Wall-clock timestamp of the most recent activity (tool call,
+    /// turn end, status update), in unix milliseconds. `None` if no
+    /// activity has been observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_unix_ms: Option<u64>,
+    /// Final wall-clock duration in seconds, populated once the child
+    /// reaches a terminal status. `None` while still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f64>,
+    /// Most recent tool name observed inside the child (e.g. `"bash"`,
+    /// `"write"`). `None` until first activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<String>,
+    /// Most recent turn number reported by the child. `None` until first
+    /// turn-end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn: Option<u32>,
+    /// Cumulative input tokens consumed by this child.
+    #[serde(default)]
+    pub tokens_in: u64,
+    /// Cumulative output tokens produced by this child.
+    #[serde(default)]
+    pub tokens_out: u64,
+}
+
 /// Multi-turn streak counts from the agent loop's controller.
 ///
 /// Bundled into a struct so they can be carried as a single field on
@@ -1661,6 +1763,12 @@ pub enum AgentEvent {
     },
     DecompositionCompleted {
         merged: bool,
+    },
+    /// Periodic family-tree rollup. See [`FamilyVitalSigns`] for the full
+    /// shape and emission semantics. Fired by the cleave orchestrator on
+    /// every state change inside an active run.
+    FamilyVitalSignsUpdated {
+        signs: FamilyVitalSigns,
     },
     /// System notification — displayed in TUI but not sent to the LLM.
     SystemNotification {

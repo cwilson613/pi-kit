@@ -820,6 +820,11 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
         AgentEvent::SystemNotification { message } => Some(IpcEventPayload::SystemNotification {
             message: message.clone(),
         }),
+        AgentEvent::FamilyVitalSignsUpdated { signs } => {
+            Some(IpcEventPayload::FamilyVitalSignsUpdated {
+                signs: signs.clone(),
+            })
+        }
         AgentEvent::HarnessStatusChanged { .. } => Some(IpcEventPayload::HarnessChanged),
         AgentEvent::SessionReset => Some(IpcEventPayload::SessionReset),
         // Internal-only events — not projected to IPC
@@ -846,6 +851,7 @@ fn event_name(ev: &IpcEventPayload) -> &'static str {
         IpcEventPayload::DecompositionStarted { .. } => "decomposition.started",
         IpcEventPayload::DecompositionChildCompleted { .. } => "decomposition.child_completed",
         IpcEventPayload::DecompositionCompleted { .. } => "decomposition.completed",
+        IpcEventPayload::FamilyVitalSignsUpdated { .. } => "family.vital_signs",
         IpcEventPayload::HarnessChanged => "harness.changed",
         IpcEventPayload::StateChanged { .. } => "state.changed",
         IpcEventPayload::SystemNotification { .. } => "system.notification",

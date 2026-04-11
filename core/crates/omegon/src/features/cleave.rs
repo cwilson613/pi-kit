@@ -815,6 +815,22 @@ impl CleaveFeature {
                         }
                     }
                 }
+
+                // ── Family vital signs (L3 rollup) ─────────────────────
+                // Snapshot the family tree on every progress event so
+                // subscribers see fresh per-child digest without having
+                // to reconstruct it from the per-event stream. The
+                // orchestrator doesn't fire ProgressEvents at high
+                // frequency (a handful per child per minute) so no
+                // rate-limiting is needed here.
+                if let Ok(slot) = event_slot.lock() {
+                    if let Some(tx) = slot.as_ref() {
+                        if let Ok(progress_guard) = shared.lock() {
+                            let signs = build_family_vital_signs(&progress_guard);
+                            let _ = tx.send(AgentEvent::FamilyVitalSignsUpdated { signs });
+                        }
+                    }
+                }
             })
         };
         let child_cancel_tokens = Arc::clone(&self.child_cancel_tokens);
@@ -1194,6 +1210,69 @@ fn text_result(text: &str) -> ToolResult {
     }
 }
 
+/// Snapshot the live `CleaveProgress` into the public typed
+/// [`omegon_traits::FamilyVitalSigns`] shape that's carried on
+/// `AgentEvent::FamilyVitalSignsUpdated`. The internal representation uses
+/// `std::time::Instant` for timestamps; the public type uses absolute unix
+/// milliseconds, so we convert via `(Instant::now(), SystemTime::now())`
+/// at snapshot time to get a stable wall-clock anchor.
+fn build_family_vital_signs(progress: &CleaveProgress) -> omegon_traits::FamilyVitalSigns {
+    let now_instant = std::time::Instant::now();
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let to_unix_ms = |inst: std::time::Instant| -> u64 {
+        // Saturate at 0 if the Instant is somehow ahead of "now" — should
+        // never happen in practice but the conversion is fallible.
+        let elapsed_ms = now_instant
+            .checked_duration_since(inst)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        now_unix_ms.saturating_sub(elapsed_ms)
+    };
+
+    let mut running = 0usize;
+    let mut pending = 0usize;
+    for child in &progress.children {
+        match child.status.as_str() {
+            "running" => running += 1,
+            "pending" => pending += 1,
+            _ => {}
+        }
+    }
+
+    let children = progress
+        .children
+        .iter()
+        .map(|c| omegon_traits::ChildVitalSigns {
+            label: c.label.clone(),
+            status: c.status.clone(),
+            started_at_unix_ms: c.started_at.map(to_unix_ms),
+            last_activity_unix_ms: c.last_activity_at.map(to_unix_ms),
+            duration_secs: c.duration_secs,
+            last_tool: c.last_tool.clone(),
+            last_turn: c.last_turn,
+            tokens_in: c.tokens_in,
+            tokens_out: c.tokens_out,
+        })
+        .collect();
+
+    omegon_traits::FamilyVitalSigns {
+        run_id: progress.run_id.clone(),
+        active: progress.active,
+        total_children: progress.total_children,
+        completed: progress.completed,
+        failed: progress.failed,
+        running,
+        pending,
+        total_tokens_in: progress.total_tokens_in,
+        total_tokens_out: progress.total_tokens_out,
+        children,
+    }
+}
+
 fn should_cleanup_workspace(result: &cleave::orchestrator::CleaveResult) -> bool {
     result
         .state
@@ -1281,6 +1360,133 @@ mod tests {
             feature.event_sender_slot().lock().unwrap().is_none(),
             "slot should still be empty"
         );
+    }
+
+    #[test]
+    fn build_family_vital_signs_snapshots_progress_state() {
+        // Construct a CleaveProgress with a mix of statuses and partial
+        // per-child fields and confirm the snapshot helper produces a
+        // typed FamilyVitalSigns with the right derived counts and
+        // children in plan order.
+        let mut prog = CleaveProgress::default();
+        prog.run_id = "test-run".into();
+        prog.active = true;
+        prog.total_children = 3;
+        prog.completed = 1;
+        prog.failed = 0;
+        prog.total_tokens_in = 1500;
+        prog.total_tokens_out = 750;
+        prog.children = vec![
+            ChildProgress {
+                label: "alpha".into(),
+                status: "completed".into(),
+                duration_secs: Some(12.5),
+                supervision_mode: None,
+                pid: None,
+                last_tool: Some("commit".into()),
+                last_turn: Some(8),
+                started_at: Some(std::time::Instant::now()),
+                last_activity_at: Some(std::time::Instant::now()),
+                tokens_in: 800,
+                tokens_out: 400,
+                runtime: None,
+            },
+            ChildProgress {
+                label: "beta".into(),
+                status: "running".into(),
+                duration_secs: None,
+                supervision_mode: None,
+                pid: Some(42_u32),
+                last_tool: Some("write".into()),
+                last_turn: Some(3),
+                started_at: Some(std::time::Instant::now()),
+                last_activity_at: Some(std::time::Instant::now()),
+                tokens_in: 700,
+                tokens_out: 350,
+                runtime: None,
+            },
+            ChildProgress {
+                label: "gamma".into(),
+                status: "pending".into(),
+                duration_secs: None,
+                supervision_mode: None,
+                pid: None,
+                last_tool: None,
+                last_turn: None,
+                started_at: None,
+                last_activity_at: None,
+                tokens_in: 0,
+                tokens_out: 0,
+                runtime: None,
+            },
+        ];
+
+        let signs = build_family_vital_signs(&prog);
+        assert_eq!(signs.run_id, "test-run");
+        assert!(signs.active);
+        assert_eq!(signs.total_children, 3);
+        assert_eq!(signs.completed, 1);
+        assert_eq!(signs.failed, 0);
+        // Derived counts from the children list
+        assert_eq!(signs.running, 1, "one child in running status");
+        assert_eq!(signs.pending, 1, "one child in pending status");
+        assert_eq!(signs.total_tokens_in, 1500);
+        assert_eq!(signs.total_tokens_out, 750);
+        assert_eq!(signs.children.len(), 3);
+        assert_eq!(signs.children[0].label, "alpha");
+        assert_eq!(signs.children[0].status, "completed");
+        assert_eq!(signs.children[0].duration_secs, Some(12.5));
+        assert!(signs.children[0].started_at_unix_ms.is_some());
+        assert_eq!(signs.children[1].label, "beta");
+        assert_eq!(signs.children[1].duration_secs, None);
+        assert_eq!(signs.children[2].label, "gamma");
+        assert_eq!(signs.children[2].started_at_unix_ms, None);
+        assert_eq!(signs.children[2].last_activity_unix_ms, None);
+    }
+
+    #[tokio::test]
+    async fn event_slot_routes_family_vital_signs() {
+        // Wire a real broadcast channel into the slot and assert that
+        // FamilyVitalSignsUpdated reaches a subscribed receiver.
+        let dir = tempfile::tempdir().unwrap();
+        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let (tx, mut rx) = broadcast::channel::<AgentEvent>(8);
+        *feature.event_sender_slot().lock().unwrap() = Some(tx);
+
+        let signs = omegon_traits::FamilyVitalSigns {
+            run_id: "test".into(),
+            active: true,
+            total_children: 1,
+            completed: 0,
+            failed: 0,
+            running: 1,
+            pending: 0,
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+            children: vec![omegon_traits::ChildVitalSigns {
+                label: "alpha".into(),
+                status: "running".into(),
+                started_at_unix_ms: Some(1),
+                last_activity_unix_ms: Some(2),
+                duration_secs: None,
+                last_tool: Some("bash".into()),
+                last_turn: Some(1),
+                tokens_in: 0,
+                tokens_out: 0,
+            }],
+        };
+        feature.emit_decomposition_event(AgentEvent::FamilyVitalSignsUpdated {
+            signs: signs.clone(),
+        });
+
+        match rx.recv().await.unwrap() {
+            AgentEvent::FamilyVitalSignsUpdated { signs: got } => {
+                assert_eq!(got.run_id, "test");
+                assert_eq!(got.children.len(), 1);
+                assert_eq!(got.children[0].label, "alpha");
+            }
+            other => panic!("expected FamilyVitalSignsUpdated, got {other:?}"),
+        }
     }
 
     #[tokio::test]

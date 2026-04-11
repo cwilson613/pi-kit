@@ -27,6 +27,12 @@ pub struct ResumeInfo {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorkspaceStartupState {
+    pub lease: crate::workspace::types::WorkspaceLease,
+    pub admission: crate::workspace::types::AdmissionOutcome,
+}
+
 /// Everything needed to run an agent loop.
 pub struct AgentSetup {
     /// The event bus — owns all features. The loop dispatches tools and
@@ -59,6 +65,8 @@ pub struct AgentSetup {
     pub initial_harness_status: crate::status::HarnessStatus,
     /// Present when a prior session was loaded; None for fresh starts.
     pub resume_info: Option<ResumeInfo>,
+    /// Startup-local workspace ownership metadata.
+    pub workspace_state: WorkspaceStartupState,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Widget event receivers — one per discovered extension.
@@ -706,6 +714,89 @@ impl AgentSetup {
             conversation.set_slim_mode(true);
         }
 
+        let workspace_kind = crate::workspace::infer::infer_workspace_kind(&cwd);
+        let workspace_project_root = find_project_root(&cwd);
+        let project_id = crate::workspace::runtime::workspace_id_from_path(&workspace_project_root);
+        let existing_workspace_lease = crate::workspace::runtime::read_workspace_lease(&cwd)
+            .ok()
+            .flatten();
+        let existing_heartbeat = existing_workspace_lease
+            .as_ref()
+            .and_then(|lease| crate::workspace::runtime::heartbeat_epoch_secs(&lease.last_heartbeat));
+        let startup_session_id_hint = existing_workspace_lease
+            .as_ref()
+            .and_then(|lease| lease.owner_session_id.clone())
+            .or_else(|| resume_info.as_ref().map(|info| info.session_id.clone()))
+            .unwrap_or_else(crate::session::allocate_session_id);
+        let workspace_admission_request = crate::workspace::types::WorkspaceAdmissionRequest {
+            requested_role: crate::workspace::types::WorkspaceRole::Primary,
+            requested_kind: workspace_kind,
+            requested_mutability: crate::workspace::types::Mutability::Mutable,
+            session_id: Some(startup_session_id_hint.clone()),
+            action: crate::workspace::types::WorkspaceActionKind::SessionStart,
+        };
+        let workspace_admission = crate::workspace::admission::classify_admission(
+            existing_workspace_lease.as_ref(),
+            &workspace_admission_request,
+            chrono::Utc::now().timestamp(),
+            existing_heartbeat,
+        );
+        let workspace_lease = crate::workspace::types::WorkspaceLease {
+            project_id: project_id.clone(),
+            workspace_id: crate::workspace::runtime::workspace_id_from_path(&cwd),
+            path: cwd.display().to_string(),
+            branch: existing_workspace_lease
+                .as_ref()
+                .map(|lease| lease.branch.clone())
+                .or_else(|| repo_model.as_ref().and_then(|model| model.branch()))
+                .unwrap_or_else(|| "(unknown)".into()),
+            role: crate::workspace::types::WorkspaceRole::Primary,
+            workspace_kind,
+            mutability: crate::workspace::types::Mutability::Mutable,
+            owner_session_id: Some(startup_session_id_hint.clone()),
+            owner_agent_id: Some("omegon-local".into()),
+            created_at: existing_workspace_lease
+                .as_ref()
+                .map(|lease| lease.created_at.clone())
+                .unwrap_or_else(crate::workspace::runtime::current_timestamp),
+            last_heartbeat: crate::workspace::runtime::current_timestamp(),
+            parent_workspace_id: existing_workspace_lease
+                .as_ref()
+                .and_then(|lease| lease.parent_workspace_id.clone()),
+            source: "operator".into(),
+        };
+        let workspace_summary = crate::workspace::types::WorkspaceSummary {
+            workspace_id: workspace_lease.workspace_id.clone(),
+            path: workspace_lease.path.clone(),
+            branch: workspace_lease.branch.clone(),
+            role: workspace_lease.role,
+            workspace_kind: workspace_lease.workspace_kind,
+            mutability: workspace_lease.mutability,
+            owner_session_id: workspace_lease.owner_session_id.clone(),
+            last_heartbeat: workspace_lease.last_heartbeat.clone(),
+            stale: false,
+        };
+        let mut workspace_registry = crate::workspace::runtime::read_workspace_registry(&cwd)
+            .ok()
+            .flatten()
+            .unwrap_or(crate::workspace::types::WorkspaceRegistry {
+                project_id: project_id.clone(),
+                repo_root: workspace_project_root.display().to_string(),
+                workspaces: vec![],
+            });
+        workspace_registry.project_id = project_id;
+        workspace_registry.repo_root = workspace_project_root.display().to_string();
+        workspace_registry
+            .workspaces
+            .retain(|workspace| workspace.path != workspace_lease.path);
+        workspace_registry.workspaces.push(workspace_summary);
+        let _ = crate::workspace::runtime::write_workspace_lease(&cwd, &workspace_lease);
+        let _ = crate::workspace::runtime::write_workspace_registry(&cwd, &workspace_registry);
+        let workspace_state = WorkspaceStartupState {
+            lease: workspace_lease,
+            admission: workspace_admission,
+        };
+
         let startup_snapshot = StartupSnapshot {
             total_facts: initial_memory_status.total_facts,
             lifecycle: lifecycle_snapshot,
@@ -714,7 +805,7 @@ impl AgentSetup {
         let session_id = resume_info
             .as_ref()
             .map(|r| r.session_id.clone())
-            .unwrap_or_else(crate::session::allocate_session_id);
+            .unwrap_or_else(|| startup_session_id_hint.clone());
 
         let initial_harness_status = harness_status;
 
@@ -730,6 +821,7 @@ impl AgentSetup {
             web_auth_state,
             session_secret_env,
             resume_info,
+            workspace_state,
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),
             extension_widgets,

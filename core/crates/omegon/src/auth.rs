@@ -873,6 +873,21 @@ pub async fn login_openai_with_callbacks(
 
     // Store with accountId as extra field
     write_credentials_with_extra("openai-codex", &creds, account_id.as_deref())?;
+    let persisted = read_credentials("openai-codex")
+        .ok_or_else(|| anyhow::anyhow!("OpenAI login completed but credentials were not persisted"))?;
+    if persisted.access != creds.access {
+        anyhow::bail!("OpenAI login completed but persisted credentials do not match the issued token");
+    }
+    if persisted.refresh != creds.refresh {
+        anyhow::bail!("OpenAI login completed but persisted credentials do not match the issued refresh token");
+    }
+    if let Some(expected_account_id) = account_id.as_deref() {
+        let persisted_account_id = read_credential_extra("openai-codex", "accountId")
+            .ok_or_else(|| anyhow::anyhow!("OpenAI login completed but accountId was not persisted"))?;
+        if persisted_account_id != expected_account_id {
+            anyhow::bail!("OpenAI login completed but persisted accountId does not match the issued accountId");
+        }
+    }
     progress("✓ OpenAI authentication successful. Credentials saved.");
 
     Ok(creds)

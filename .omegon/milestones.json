@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 62,
+    "rc_count": 63,
     "notes": [
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
       "feat(anthropic): prefer adaptive thinking for claude 4.6",
@@ -497,6 +497,22 @@
       "feat(validate-note): After the contract changes land, validate the resulting control-plane surface against the current Auspex client expectations and write a concise migration note documenting the canonical backend fields/events now guaranteed for Auspex. Keep this note in Omegon docs near the control-plane/Auspex contract docs and ensure tests/builds cover the touched code.",
       "feat(web): mirror omegon instance descriptor into startup and state",
       "feat(workflow-issueing): Inspect and repair/replace the stale provider-drift GitHub Actions workflow. Design the daily control-plane workflow, issue dedupe/update behavior, artifact/log strategy, and docs. Implement the workflow and any helper scripts/files needed for issue creation/reporting without making release/nightly blocking.",
+      "feat(workspace): add archive lifecycle command",
+      "feat(workspace): add binding and release lifecycle commands",
+      "feat(workspace): add guarded destroy lifecycle command",
+      "feat(workspace): add kind declaration commands",
+      "feat(workspace): add lifecycle binding commands",
+      "feat(workspace): add lifecycle binding control commands",
+      "feat(workspace): add milestone and design bindings",
+      "feat(workspace): add prune cleanup command",
+      "feat(workspace): add release and archive lifecycle commands",
+      "feat(workspace): add role declaration commands",
+      "feat(workspace): add sibling workspace creation command",
+      "feat(workspace): add sibling workspace creation flow",
+      "feat(workspace): add stale lease adoption command",
+      "feat(workspace): add workspace registry listing",
+      "feat(workspace): surface startup state via workspace status",
+      "feat(workspace): warn on startup admission conflicts",
       "feat(ws-contract): Audit and implement WebSocket event contract changes needed for Auspex compatibility. Focus on core/crates/omegon/src/web/ws.rs plus any upstream event types it serializes so streamed events expose the fields Auspex expects or can safely ignore, especially turn-end/session/harness updates and state snapshot refresh semantics. Add tests for event serialization.",
       "fix(agent): hide attachment redisplay hints from user messages",
       "fix(anthropic): bound Claude 4.6 light thinking",
@@ -641,6 +657,7 @@
       "fix(web): render markdown tables in dashboard tool output",
       "fix(web): return structured slash results to dashboard clients",
       "fix(web): support canceling cleave children from dashboard",
+      "fix(workspace): enforce release and benchmark roles",
       "refactor(auth): route slash auth through typed runtime handlers",
       "refactor(context): route request packs through shadow selector",
       "refactor(control): add canonical control dispatcher",
@@ -671,9 +688,11 @@
       "refactor(web): canonicalize cleave child cancel control",
       "refactor(web): migrate dashboard prompt bar to typed control messages",
       "refactor(web): route canonical slash commands through control",
-      "refactor(web): route typed control commands through dispatcher"
+      "refactor(web): route typed control commands through dispatcher",
+      "refactor(workspace): add backend and vcs identity boundaries",
+      "refactor(workspace): separate labels from substrate identity"
     ],
-    "rc_version": "0.15.10-rc.68",
-    "last_rc": "2026-04-11T02:07:24Z"
+    "rc_version": "0.15.10-rc.69",
+    "last_rc": "2026-04-11T11:16:36Z"
   }
 }

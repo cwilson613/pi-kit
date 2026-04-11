@@ -345,6 +345,22 @@ impl ControllerState {
         *self = Self::default();
     }
 
+    /// Snapshot the streak counters as the public `ControllerStreaks`
+    /// shape that's carried on `AgentEvent::TurnEnd`. The internal
+    /// `consecutive_tool_continuations` field is intentionally not
+    /// exported — it's a continuation-pressure heuristic, not a
+    /// drift-streak signal that operators care about.
+    fn streaks(&self) -> omegon_traits::ControllerStreaks {
+        omegon_traits::ControllerStreaks {
+            orientation_churn: self.orientation_churn_streak,
+            repeated_action_failure: self.repeated_action_failure_streak,
+            validation_thrash: self.validation_thrash_streak,
+            closure_stall: self.closure_stall_streak,
+            constraint_discovery: self.constraint_discovery_streak,
+            evidence_sufficient: self.evidence_sufficient_streak,
+        }
+    }
+
     fn observe_turn(
         &mut self,
         turn_end_reason: TurnEndReason,
@@ -798,6 +814,7 @@ pub async fn run(
                 files_read_count: conversation.intent.files_read.len(),
                 files_modified_count: conversation.intent.files_modified.len(),
                 stats_tool_calls: conversation.intent.stats.tool_calls,
+                streaks: controller.streaks(),
             });
             break;
         }
@@ -1034,6 +1051,7 @@ pub async fn run(
                     files_read_count: conversation.intent.files_read.len(),
                     files_modified_count: conversation.intent.files_modified.len(),
                     stats_tool_calls: conversation.intent.stats.tool_calls,
+                    streaks: controller.streaks(),
                 });
                 break;
             }
@@ -1114,6 +1132,7 @@ pub async fn run(
                     files_read_count: conversation.intent.files_read.len(),
                     files_modified_count: conversation.intent.files_modified.len(),
                     stats_tool_calls: conversation.intent.stats.tool_calls,
+                    streaks: controller.streaks(),
                 });
                 continue; // give it one more turn to commit
             }
@@ -1156,6 +1175,7 @@ pub async fn run(
                 files_read_count: conversation.intent.files_read.len(),
                 files_modified_count: conversation.intent.files_modified.len(),
                 stats_tool_calls: conversation.intent.stats.tool_calls,
+                streaks: controller.streaks(),
             });
             break;
         }
@@ -1378,6 +1398,7 @@ pub async fn run(
             files_read_count: conversation.intent.files_read.len(),
             files_modified_count: conversation.intent.files_modified.len(),
             stats_tool_calls: conversation.intent.stats.tool_calls,
+            streaks: controller.streaks(),
         });
     }
 
@@ -3027,6 +3048,34 @@ mod tests {
             arguments: serde_json::json!({"path": "core/src/context.rs"}),
         }];
         assert!(!should_inject_execution_pressure(4, &config, &conversation, &tool_calls));
+    }
+
+    #[test]
+    fn controller_streaks_snapshot_exports_six_counters_and_omits_internal_state() {
+        // The internal `consecutive_tool_continuations` counter is a
+        // continuation-pressure heuristic, not a drift-streak signal —
+        // it intentionally does not appear on the public ControllerStreaks
+        // shape. The other six counters round-trip 1:1.
+        let controller = ControllerState {
+            consecutive_tool_continuations: 99, // intentionally NOT exported
+            orientation_churn_streak: 4,
+            repeated_action_failure_streak: 2,
+            validation_thrash_streak: 1,
+            closure_stall_streak: 7,
+            constraint_discovery_streak: 3,
+            evidence_sufficient_streak: 5,
+        };
+        let snapshot = controller.streaks();
+        assert_eq!(snapshot.orientation_churn, 4);
+        assert_eq!(snapshot.repeated_action_failure, 2);
+        assert_eq!(snapshot.validation_thrash, 1);
+        assert_eq!(snapshot.closure_stall, 7);
+        assert_eq!(snapshot.constraint_discovery, 3);
+        assert_eq!(snapshot.evidence_sufficient, 5);
+        // Default controller should produce a zero snapshot that
+        // serializes to skip-on-the-wire via `is_zero()`.
+        let zero = ControllerState::default().streaks();
+        assert!(zero.is_zero(), "default controller should be all zeros");
     }
 
     #[test]

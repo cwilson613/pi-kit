@@ -1681,6 +1681,11 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         files_read_count: runtime_state.conversation.intent.files_read.len(),
                                         files_modified_count: runtime_state.conversation.intent.files_modified.len(),
                                         stats_tool_calls: runtime_state.conversation.intent.stats.tool_calls,
+                                        // Compaction-completion synthetic emit — no controller in scope.
+                                        // Streak counters are an in-loop signal; out-of-loop emitters
+                                        // surface zeros and let consumers tell the difference between
+                                        // "no streaks" and "no controller" via the loop's own emissions.
+                                        streaks: omegon_traits::ControllerStreaks::default(),
                                     });
                                 }
                             }

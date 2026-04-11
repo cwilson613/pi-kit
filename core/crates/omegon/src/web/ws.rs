@@ -1664,6 +1664,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             dominant_phase,
             drift_kind,
             progress_nudge_reason,
+            streaks,
             ..
         } => json!({
             "type": "turn_end",
@@ -1680,6 +1681,14 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "dominant_phase": dominant_phase,
             "drift_kind": drift_kind,
             "progress_nudge_reason": progress_nudge_reason,
+            "streaks": {
+                "orientation_churn": streaks.orientation_churn,
+                "repeated_action_failure": streaks.repeated_action_failure,
+                "validation_thrash": streaks.validation_thrash,
+                "closure_stall": streaks.closure_stall,
+                "constraint_discovery": streaks.constraint_discovery,
+                "evidence_sufficient": streaks.evidence_sufficient,
+            },
         }),
         AgentEvent::MessageStart { role } => json!({
             "type": "message_start",
@@ -2190,6 +2199,10 @@ mod tests {
             files_read_count: 0,
             files_modified_count: 0,
             stats_tool_calls: 0,
+            streaks: omegon_traits::ControllerStreaks {
+                closure_stall: 4,
+                ..Default::default()
+            },
         };
         let messages = serialize_ws_messages(&event);
         assert_eq!(messages.len(), 2);
@@ -2204,6 +2217,15 @@ mod tests {
         assert_eq!(messages[0]["dominant_phase"], "act");
         assert_eq!(messages[0]["drift_kind"], "closure_stall");
         assert_eq!(messages[0]["progress_nudge_reason"], "closure_pressure");
+        // Streak counters: only the closure_stall counter was set in the
+        // fixture; the rest should serialize to 0 (not be omitted) so
+        // dashboards can rely on the field always being present.
+        assert_eq!(messages[0]["streaks"]["closure_stall"], 4);
+        assert_eq!(messages[0]["streaks"]["orientation_churn"], 0);
+        assert_eq!(messages[0]["streaks"]["repeated_action_failure"], 0);
+        assert_eq!(messages[0]["streaks"]["validation_thrash"], 0);
+        assert_eq!(messages[0]["streaks"]["constraint_discovery"], 0);
+        assert_eq!(messages[0]["streaks"]["evidence_sufficient"], 0);
         assert_eq!(messages[1]["type"], "state_changed");
         assert_eq!(messages[1]["event_name"], "state.changed");
         assert_eq!(
@@ -2270,6 +2292,7 @@ mod tests {
                 files_read_count: 0,
                 files_modified_count: 0,
                 stats_tool_calls: 0,
+                streaks: omegon_traits::ControllerStreaks::default(),
             },
             AgentEvent::MessageStart {
                 role: "assistant".into(),

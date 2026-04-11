@@ -295,6 +295,7 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
         files_read_count: 0,
         files_modified_count: 0,
         stats_tool_calls: 0,
+        streaks: omegon_traits::ControllerStreaks::default(),
     });
 
     let after = app.footer_data.context_percent;
@@ -330,6 +331,7 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
         files_read_count: 0,
         files_modified_count: 0,
         stats_tool_calls: 0,
+        streaks: omegon_traits::ControllerStreaks::default(),
     });
     app.handle_agent_event(AgentEvent::TurnEnd {
         turn: 2,
@@ -352,6 +354,7 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
         files_read_count: 0,
         files_modified_count: 0,
         stats_tool_calls: 0,
+        streaks: omegon_traits::ControllerStreaks::default(),
     });
 
     assert_eq!(app.footer_data.session_input_tokens, 112_000);

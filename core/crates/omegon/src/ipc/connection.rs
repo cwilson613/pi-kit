@@ -750,6 +750,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
             actual_output_tokens,
             cache_read_tokens,
             provider_telemetry,
+            streaks,
             ..
         } => Some(IpcEventPayload::TurnEnded {
             turn: *turn,
@@ -758,6 +759,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
             actual_output_tokens: *actual_output_tokens,
             cache_read_tokens: *cache_read_tokens,
             provider_telemetry: provider_telemetry.clone(),
+            streaks: *streaks,
         }),
         AgentEvent::MessageChunk { text } => {
             Some(IpcEventPayload::MessageDelta { text: text.clone() })

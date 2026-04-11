@@ -823,6 +823,13 @@ pub enum IpcEventPayload {
         /// Parsed provider quota/headroom telemetry from response headers or status endpoints.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_telemetry: Option<ProviderTelemetrySnapshot>,
+        /// Multi-turn drift / progress streak counts from the agent loop's
+        /// controller. Each is the number of *consecutive* recent turns
+        /// that exhibited the named condition; resets to 0 the moment a
+        /// turn breaks the streak. See `AgentEvent::TurnEnd` for the
+        /// authoritative documentation of each counter's meaning.
+        #[serde(default, skip_serializing_if = "ControllerStreaks::is_zero")]
+        streaks: ControllerStreaks,
     },
 
     // ── Message streaming ──────────────────────────────────────────────────
@@ -1518,6 +1525,51 @@ pub enum ProgressNudgeReason {
     CommitHygiene,
 }
 
+/// Multi-turn streak counts from the agent loop's controller.
+///
+/// Bundled into a struct so they can be carried as a single field on
+/// `AgentEvent::TurnEnd` and `IpcEventPayload::TurnEnded` without
+/// inflating those variants further. Each counter is the number of
+/// *consecutive* recent turns that exhibited the named condition;
+/// the controller resets each one to 0 the moment a turn breaks
+/// the streak.
+///
+/// Consumers can use these to surface "this pod has been in
+/// OrientationChurn for 4 turns" without reconstructing the signal
+/// from the per-turn `drift_kind` history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerStreaks {
+    /// Consecutive turns classified as `DriftKind::OrientationChurn`.
+    #[serde(default)]
+    pub orientation_churn: u32,
+    /// Consecutive turns classified as `DriftKind::RepeatedActionFailure`.
+    #[serde(default)]
+    pub repeated_action_failure: u32,
+    /// Consecutive turns classified as `DriftKind::ValidationThrash`.
+    #[serde(default)]
+    pub validation_thrash: u32,
+    /// Consecutive turns classified as `DriftKind::ClosureStall`.
+    #[serde(default)]
+    pub closure_stall: u32,
+    /// Consecutive turns showing a `ConstraintDiscovery` progress signal —
+    /// exploratory work that's productive but not yet converging.
+    #[serde(default)]
+    pub constraint_discovery: u32,
+    /// Consecutive turns the controller judged to have sufficient
+    /// evidence to act. High values indicate "ready to commit / close
+    /// out" rather than continuing to gather context.
+    #[serde(default)]
+    pub evidence_sufficient: u32,
+}
+
+impl ControllerStreaks {
+    /// True iff every counter is zero — used by serializers to skip the
+    /// field on the wire when nothing of interest is happening.
+    pub fn is_zero(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     TurnStart {
@@ -1589,6 +1641,12 @@ pub enum AgentEvent {
         files_modified_count: usize,
         /// Cumulative tool calls for checkpoint persistence.
         stats_tool_calls: u32,
+        /// Multi-turn drift / progress streak counts from the agent loop's
+        /// controller. Lets consumers see "this pod has been in
+        /// OrientationChurn for 4 turns" without reconstructing the signal
+        /// from the per-turn `drift_kind` history. See [`ControllerStreaks`]
+        /// for the meaning of each counter.
+        streaks: ControllerStreaks,
     },
     AgentEnd,
     PhaseChanged {

@@ -254,20 +254,139 @@ fn should_inject_execution_pressure(
         && tool_calls.iter().all(|call| is_repo_inspection_tool(&call.name))
 }
 
-fn should_inject_continuation_pressure(
-    turn: u32,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ControllerState {
+    consecutive_tool_continuations: u32,
+    orientation_churn_streak: u32,
+    repeated_action_failure_streak: u32,
+    validation_thrash_streak: u32,
+    closure_stall_streak: u32,
+}
+
+impl ControllerState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn observe_turn(
+        &mut self,
+        turn_end_reason: TurnEndReason,
+        drift_kind: Option<DriftKind>,
+        had_progress_boundary: bool,
+    ) {
+        if had_progress_boundary {
+            self.reset();
+            return;
+        }
+
+        if matches!(turn_end_reason, TurnEndReason::ToolContinuation) {
+            self.consecutive_tool_continuations =
+                self.consecutive_tool_continuations.saturating_add(1);
+        } else {
+            self.consecutive_tool_continuations = 0;
+        }
+
+        self.orientation_churn_streak = if matches!(drift_kind, Some(DriftKind::OrientationChurn))
+        {
+            self.orientation_churn_streak.saturating_add(1)
+        } else {
+            0
+        };
+        self.repeated_action_failure_streak =
+            if matches!(drift_kind, Some(DriftKind::RepeatedActionFailure)) {
+                self.repeated_action_failure_streak.saturating_add(1)
+            } else {
+                0
+            };
+        self.validation_thrash_streak =
+            if matches!(drift_kind, Some(DriftKind::ValidationThrash)) {
+                self.validation_thrash_streak.saturating_add(1)
+            } else {
+                0
+            };
+        self.closure_stall_streak = if matches!(drift_kind, Some(DriftKind::ClosureStall)) {
+            self.closure_stall_streak.saturating_add(1)
+        } else {
+            0
+        };
+    }
+}
+
+fn has_successful_tool_call<F>(
+    tool_calls: &[ToolCall],
+    results: &[ToolResultEntry],
+    predicate: F,
+) -> bool
+where
+    F: Fn(&ToolCall) -> bool,
+{
+    tool_calls.iter().any(|call| {
+        predicate(call)
+            && results
+                .iter()
+                .find(|result| result.call_id == call.id)
+                .is_some_and(|result| !result.is_error)
+    })
+}
+
+fn has_progress_boundary(tool_calls: &[ToolCall], results: &[ToolResultEntry]) -> bool {
+    has_successful_tool_call(tool_calls, results, |call| is_mutation_tool_name(&call.name))
+        || has_successful_tool_call(tool_calls, results, is_validation_tool)
+        || has_successful_tool_call(tool_calls, results, |call| call.name == "commit")
+}
+
+fn is_slim_execution_bias(config: &LoopConfig) -> bool {
+    config
+        .settings
+        .as_ref()
+        .and_then(|settings| settings.lock().ok().map(|s| s.slim_mode))
+        .unwrap_or(false)
+}
+
+fn continuation_pressure_tier(
     config: &LoopConfig,
+    controller: &ControllerState,
     conversation: &ConversationState,
     tool_calls: &[ToolCall],
     dominant_phase: Option<OodaPhase>,
-    drift_kind: Option<DriftKind>,
-) -> bool {
-    config.enforce_first_turn_execution_bias
-        && turn >= 6
-        && !tool_calls.is_empty()
-        && conversation.intent.files_modified.is_empty()
-        && matches!(dominant_phase, Some(OodaPhase::Observe | OodaPhase::Orient))
-        && matches!(drift_kind, Some(DriftKind::OrientationChurn))
+) -> Option<u8> {
+    if !config.enforce_first_turn_execution_bias
+        || tool_calls.is_empty()
+        || !conversation.intent.files_modified.is_empty()
+        || !matches!(dominant_phase, Some(OodaPhase::Observe | OodaPhase::Orient))
+    {
+        return None;
+    }
+
+    let (tier1, tier2, tier3) = if is_slim_execution_bias(config) {
+        (4, 6, 8)
+    } else {
+        (6, 8, 10)
+    };
+
+    let continuation = controller.consecutive_tool_continuations;
+    let orient = controller.orientation_churn_streak;
+    let closure = controller.closure_stall_streak;
+    let validation = controller.validation_thrash_streak;
+    let failures = controller.repeated_action_failure_streak;
+
+    if continuation >= tier3 || orient >= tier2 || closure >= tier2 || validation >= tier2 {
+        Some(3)
+    } else if continuation >= tier2 || orient >= tier1 || failures >= 2 {
+        Some(2)
+    } else if continuation >= tier1 {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn continuation_pressure_message(tier: u8) -> String {
+    match tier {
+        1 => "[System: You are accumulating tool-continuation turns without a progress boundary. Stop broad inspection. Next turn: either make the smallest concrete code change justified by current evidence, or run one narrow validation tied to the exact file/symbol already inspected.]".to_string(),
+        2 => "[System: Orientation churn is persisting. Next turn must choose exactly one: (1) mutate one named file, (2) run one targeted validation tied to one named file/symbol, or (3) state one blocker tied to one named file/symbol. Do not call broad search or read tools again before doing one of those.]".to_string(),
+        _ => "[System: Controller escalation: you are burning turns without converging. On the next turn, do exactly one of these and nothing else first: (1) edit/write/change one named file, (2) run one validating command for one named file/symbol, or (3) declare the concrete blocker. Do not call memory_recall, context_status, request_context, codebase_search, read, or view before taking that action.]".to_string(),
+    }
 }
 
 pub(crate) fn compute_context_composition(
@@ -367,6 +486,7 @@ pub async fn run(
 
     let mut stuck_detector = StuckDetector::new();
     let session_start = Instant::now();
+    let mut controller = ControllerState::default();
     let mut turn: u32 = 0;
 
     loop {
@@ -801,6 +921,19 @@ pub async fn run(
 
         let dominant_phase = classify_turn_phase(tool_calls, &results);
         let drift_kind = classify_drift_kind(turn, conversation, tool_calls, &results);
+        let had_progress_boundary = has_progress_boundary(tool_calls, &results);
+        controller.observe_turn(
+            TurnEndReason::ToolContinuation,
+            drift_kind,
+            had_progress_boundary,
+        );
+        let continuation_tier = continuation_pressure_tier(
+            config,
+            &controller,
+            conversation,
+            tool_calls,
+            dominant_phase,
+        );
 
         if is_first_turn_orientation_churn(turn, config, conversation, tool_calls) {
             tracing::info!("First-turn orientation churn detected — injecting execution-bias nudge");
@@ -814,19 +947,9 @@ pub async fn run(
                 "[System: You now have enough local evidence. Do not use broad inspection/search tools again until you do one of these two things: (1) make one concrete code edit, or (2) name one specific blocking ambiguity tied to a file or symbol. Stop narrating. Pick the smallest justified patch now, apply it, then run the narrowest relevant validation.]"
                     .to_string(),
             );
-        } else if should_inject_continuation_pressure(
-            turn,
-            config,
-            conversation,
-            tool_calls,
-            dominant_phase,
-            drift_kind,
-        ) {
-            tracing::info!("Sustained tool-continuation churn detected — injecting continuation-pressure nudge");
-            conversation.push_user(
-                "[System: You are burning turns without converging. Stop broad inspection. On the next turn, either (1) make the smallest concrete code change you can justify from current evidence, or (2) run one narrow validation tied to the exact symbol/file you already inspected. Do not call more than one orientation tool before acting.]"
-                    .to_string(),
-            );
+        } else if let Some(tier) = continuation_tier {
+            tracing::info!(tier, "Sustained tool-continuation churn detected — injecting continuation-pressure nudge");
+            conversation.push_user(continuation_pressure_message(tier));
         }
 
         // ─── Emit tool events to bus features ───────────────────────
@@ -2602,14 +2725,21 @@ mod tests {
                 arguments: Value::Null,
             },
         ];
-        assert!(should_inject_continuation_pressure(
-            6,
-            &config,
-            &conversation,
-            &tool_calls,
-            Some(OodaPhase::Observe),
-            Some(DriftKind::OrientationChurn),
-        ));
+        let controller = ControllerState {
+            consecutive_tool_continuations: 6,
+            orientation_churn_streak: 2,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Observe),
+            ),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2632,14 +2762,21 @@ mod tests {
             name: "read".into(),
             arguments: Value::Null,
         }];
-        assert!(!should_inject_continuation_pressure(
-            6,
-            &config,
-            &conversation,
-            &tool_calls,
-            Some(OodaPhase::Observe),
-            Some(DriftKind::OrientationChurn),
-        ));
+        let controller = ControllerState {
+            consecutive_tool_continuations: 8,
+            orientation_churn_streak: 3,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Observe),
+            ),
+            None
+        );
     }
 
     #[test]
@@ -2658,14 +2795,60 @@ mod tests {
             name: "bash".into(),
             arguments: serde_json::json!({"command": "cargo test"}),
         }];
-        assert!(!should_inject_continuation_pressure(
-            6,
-            &config,
-            &conversation,
-            &tool_calls,
-            Some(OodaPhase::Act),
-            Some(DriftKind::OrientationChurn),
-        ));
+        let controller = ControllerState {
+            consecutive_tool_continuations: 8,
+            orientation_churn_streak: 3,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Act),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn continuation_pressure_escalates_faster_in_slim_mode() {
+        let config = LoopConfig {
+            enforce_first_turn_execution_bias: true,
+            settings: Some(crate::settings::shared("anthropic:claude-sonnet-4-6")),
+            ..LoopConfig::default()
+        };
+        if let Some(settings) = &config.settings
+            && let Ok(mut s) = settings.lock()
+        {
+            s.set_slim_mode(true);
+        }
+        let mut conversation = ConversationState::new();
+        conversation
+            .intent
+            .files_read
+            .insert(std::path::PathBuf::from("core/src/context.rs"));
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            arguments: Value::Null,
+        }];
+        let controller = ControllerState {
+            consecutive_tool_continuations: 6,
+            orientation_churn_streak: 2,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Orient),
+            ),
+            Some(2)
+        );
     }
 
     #[test]

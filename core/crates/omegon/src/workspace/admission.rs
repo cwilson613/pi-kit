@@ -77,7 +77,7 @@ fn authority_denial_reason(
 mod tests {
     use super::*;
 
-    use crate::workspace::types::{WorkspaceBackendKind, WorkspaceVcsRef};
+    use crate::workspace::types::{WorkspaceBackendKind, WorkspaceBindings, WorkspaceVcsRef};
 
     fn occupied_feature_lease() -> WorkspaceLease {
         WorkspaceLease {
@@ -92,7 +92,7 @@ mod tests {
                 revision: None,
                 remote: Some("origin".into()),
             }),
-            bindings: super::types::WorkspaceBindings::default(),
+            bindings: WorkspaceBindings::default(),
             branch: "feature/demo".into(),
             role: WorkspaceRole::Feature,
             workspace_kind: WorkspaceKind::Mixed,

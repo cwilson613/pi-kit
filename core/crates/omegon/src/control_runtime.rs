@@ -38,6 +38,9 @@ pub enum ControlRequest {
     WorkspaceListView,
     WorkspaceNew { label: String },
     WorkspaceAdopt,
+    WorkspaceBindMilestone { milestone_id: String },
+    WorkspaceBindNode { design_node_id: String },
+    WorkspaceBindClear,
     WorkspaceRoleView,
     WorkspaceRoleSet { role: crate::workspace::types::WorkspaceRole },
     WorkspaceRoleClear,
@@ -104,6 +107,17 @@ pub fn control_request_from_slash(
             ControlRequest::WorkspaceNew { label: label.clone() }
         }
         crate::tui::CanonicalSlashCommand::WorkspaceAdopt => ControlRequest::WorkspaceAdopt,
+        crate::tui::CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
+            ControlRequest::WorkspaceBindMilestone {
+                milestone_id: milestone_id.clone(),
+            }
+        }
+        crate::tui::CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
+            ControlRequest::WorkspaceBindNode {
+                design_node_id: design_node_id.clone(),
+            }
+        }
+        crate::tui::CanonicalSlashCommand::WorkspaceBindClear => ControlRequest::WorkspaceBindClear,
         crate::tui::CanonicalSlashCommand::WorkspaceRoleView => ControlRequest::WorkspaceRoleView,
         crate::tui::CanonicalSlashCommand::WorkspaceRoleSet(role) => {
             ControlRequest::WorkspaceRoleSet { role: *role }
@@ -227,6 +241,13 @@ pub async fn execute_control(
         ControlRequest::WorkspaceListView => workspace_list_view_response(ctx.agent).await,
         ControlRequest::WorkspaceNew { label } => workspace_new_response(ctx.agent, &label).await,
         ControlRequest::WorkspaceAdopt => workspace_adopt_response(ctx.agent).await,
+        ControlRequest::WorkspaceBindMilestone { milestone_id } => {
+            workspace_bind_milestone_response(ctx.agent, &milestone_id).await
+        }
+        ControlRequest::WorkspaceBindNode { design_node_id } => {
+            workspace_bind_node_response(ctx.agent, &design_node_id).await
+        }
+        ControlRequest::WorkspaceBindClear => workspace_bind_clear_response(ctx.agent).await,
         ControlRequest::WorkspaceRoleView => workspace_role_view_response(ctx.agent).await,
         ControlRequest::WorkspaceRoleSet { role } => workspace_role_set_response(ctx.agent, role).await,
         ControlRequest::WorkspaceRoleClear => workspace_role_clear_response(ctx.agent).await,
@@ -850,6 +871,95 @@ pub async fn workspace_adopt_response(agent: &InteractiveAgentHost) -> SlashComm
             "Adopted stale workspace lease for {} ({}).",
             lease.workspace_id, lease.label
         )),
+    }
+}
+
+fn rewrite_current_workspace<F>(
+    agent: &InteractiveAgentHost,
+    mutator: F,
+) -> Result<crate::workspace::types::WorkspaceLease, String>
+where
+    F: FnOnce(&mut crate::workspace::types::WorkspaceLease),
+{
+    let mut lease = crate::workspace::runtime::read_workspace_lease(&agent.cwd)
+        .map_err(|err| format!("Failed to read workspace lease: {err}"))?
+        .ok_or_else(|| "Workspace metadata does not exist yet.".to_string())?;
+    mutator(&mut lease);
+    crate::workspace::runtime::write_workspace_lease(&agent.cwd, &lease)
+        .map_err(|err| format!("Failed to update workspace lease: {err}"))?;
+    if let Some(mut registry) = crate::workspace::runtime::read_workspace_registry(&agent.cwd)
+        .map_err(|err| format!("Failed to read workspace registry: {err}"))?
+    {
+        for workspace in &mut registry.workspaces {
+            if workspace.path == lease.path {
+                workspace.bindings = lease.bindings.clone();
+                workspace.role = lease.role;
+                workspace.workspace_kind = lease.workspace_kind;
+            }
+        }
+        crate::workspace::runtime::write_workspace_registry(&agent.cwd, &registry)
+            .map_err(|err| format!("Failed to update workspace registry: {err}"))?;
+    }
+    Ok(lease)
+}
+
+pub async fn workspace_bind_milestone_response(
+    agent: &InteractiveAgentHost,
+    milestone_id: &str,
+) -> SlashCommandResponse {
+    match rewrite_current_workspace(agent, |lease| {
+        lease.bindings.milestone_id = Some(milestone_id.to_string());
+    }) {
+        Ok(lease) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Workspace {} ({}) bound to milestone {}.",
+                lease.workspace_id, lease.label, milestone_id
+            )),
+        },
+        Err(message) => SlashCommandResponse {
+            accepted: false,
+            output: Some(message),
+        },
+    }
+}
+
+pub async fn workspace_bind_node_response(
+    agent: &InteractiveAgentHost,
+    design_node_id: &str,
+) -> SlashCommandResponse {
+    match rewrite_current_workspace(agent, |lease| {
+        lease.bindings.design_node_id = Some(design_node_id.to_string());
+    }) {
+        Ok(lease) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Workspace {} ({}) bound to design node {}.",
+                lease.workspace_id, lease.label, design_node_id
+            )),
+        },
+        Err(message) => SlashCommandResponse {
+            accepted: false,
+            output: Some(message),
+        },
+    }
+}
+
+pub async fn workspace_bind_clear_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
+    match rewrite_current_workspace(agent, |lease| {
+        lease.bindings = crate::workspace::types::WorkspaceBindings::default();
+    }) {
+        Ok(lease) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Workspace {} ({}) lifecycle bindings cleared.",
+                lease.workspace_id, lease.label
+            )),
+        },
+        Err(message) => SlashCommandResponse {
+            accepted: false,
+            output: Some(message),
+        },
     }
 }
 

@@ -1395,6 +1395,61 @@ fn slash_workspace_role_clear_enqueues_execute_control() {
 }
 
 #[test]
+fn slash_workspace_bind_milestone_enqueues_execute_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    let result = app.handle_slash_command("/workspace bind milestone 0.15.10", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+
+    match rx.try_recv().expect("queued command") {
+        TuiCommand::ExecuteControl {
+            request: crate::control_runtime::ControlRequest::WorkspaceBindMilestone {
+                milestone_id,
+            },
+            ..
+        } if milestone_id == "0.15.10" => {}
+        other => panic!("expected workspace bind milestone request, got {other:?}"),
+    }
+}
+
+#[test]
+fn slash_workspace_bind_node_enqueues_execute_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    let result = app.handle_slash_command("/workspace bind node workspace-ownership-model", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+
+    match rx.try_recv().expect("queued command") {
+        TuiCommand::ExecuteControl {
+            request: crate::control_runtime::ControlRequest::WorkspaceBindNode {
+                design_node_id,
+            },
+            ..
+        } if design_node_id == "workspace-ownership-model" => {}
+        other => panic!("expected workspace bind node request, got {other:?}"),
+    }
+}
+
+#[test]
+fn slash_workspace_bind_clear_enqueues_execute_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    let result = app.handle_slash_command("/workspace bind clear", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+
+    match rx.try_recv().expect("queued command") {
+        TuiCommand::ExecuteControl {
+            request: crate::control_runtime::ControlRequest::WorkspaceBindClear,
+            ..
+        } => {}
+        other => panic!("expected workspace bind clear request, got {other:?}"),
+    }
+}
+
+#[test]
 fn slash_workspace_kind_set_enqueues_execute_control() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();

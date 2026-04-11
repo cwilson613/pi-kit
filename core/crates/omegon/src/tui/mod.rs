@@ -310,6 +310,9 @@ pub(crate) enum CanonicalSlashCommand {
     WorkspaceListView,
     WorkspaceNew(String),
     WorkspaceAdopt,
+    WorkspaceBindMilestone(String),
+    WorkspaceBindNode(String),
+    WorkspaceBindClear,
     WorkspaceRoleView,
     WorkspaceRoleSet(crate::workspace::types::WorkspaceRole),
     WorkspaceRoleClear,
@@ -366,6 +369,7 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         "workspace" if args == "status" => Some(CanonicalSlashCommand::WorkspaceStatusView),
         "workspace" if args == "list" => Some(CanonicalSlashCommand::WorkspaceListView),
         "workspace" if args == "adopt" => Some(CanonicalSlashCommand::WorkspaceAdopt),
+        "workspace" if args == "bind clear" => Some(CanonicalSlashCommand::WorkspaceBindClear),
         "workspace" if args == "role" => Some(CanonicalSlashCommand::WorkspaceRoleView),
         "workspace" if args == "role clear" => Some(CanonicalSlashCommand::WorkspaceRoleClear),
         "workspace" if args == "kind" => Some(CanonicalSlashCommand::WorkspaceKindView),
@@ -373,6 +377,10 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         "workspace" => {
             if let Some(label) = args.strip_prefix("new ").map(str::trim).filter(|label| !label.is_empty()) {
                 Some(CanonicalSlashCommand::WorkspaceNew(label.to_string()))
+            } else if let Some(milestone) = args.strip_prefix("bind milestone ").map(str::trim).filter(|value| !value.is_empty()) {
+                Some(CanonicalSlashCommand::WorkspaceBindMilestone(milestone.to_string()))
+            } else if let Some(node) = args.strip_prefix("bind node ").map(str::trim).filter(|value| !value.is_empty()) {
+                Some(CanonicalSlashCommand::WorkspaceBindNode(node.to_string()))
             } else if let Some(role) = args
                 .strip_prefix("role set ")
                 .and_then(crate::workspace::types::WorkspaceRole::parse)
@@ -3374,6 +3382,19 @@ impl App {
                         }
                         CanonicalSlashCommand::WorkspaceAdopt => {
                             crate::control_runtime::ControlRequest::WorkspaceAdopt
+                        }
+                        CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
+                            crate::control_runtime::ControlRequest::WorkspaceBindMilestone {
+                                milestone_id: milestone_id.clone(),
+                            }
+                        }
+                        CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
+                            crate::control_runtime::ControlRequest::WorkspaceBindNode {
+                                design_node_id: design_node_id.clone(),
+                            }
+                        }
+                        CanonicalSlashCommand::WorkspaceBindClear => {
+                            crate::control_runtime::ControlRequest::WorkspaceBindClear
                         }
                         CanonicalSlashCommand::WorkspaceRoleView => {
                             crate::control_runtime::ControlRequest::WorkspaceRoleView

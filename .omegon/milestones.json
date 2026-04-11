@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 60,
+    "rc_count": 61,
     "notes": [
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
       "feat(anthropic): prefer adaptive thinking for claude 4.6",
@@ -544,6 +544,7 @@
       "fix(footer): split model row into model + tier to prevent overflow",
       "fix(ipc): make auspex control-plane payloads authoritative",
       "fix(jj): reattach main after harness commits",
+      "fix(loop): add tiered continuation-pressure controller",
       "fix(loop): curb first-turn benchmark orientation churn",
       "fix(loop): disable commit nudge for headless runs",
       "fix(loop): escalate post-inspection execution pressure",
@@ -668,7 +669,7 @@
       "refactor(web): route canonical slash commands through control",
       "refactor(web): route typed control commands through dispatcher"
     ],
-    "rc_version": "0.15.10-rc.66",
-    "last_rc": "2026-04-11T00:09:58Z"
+    "rc_version": "0.15.10-rc.67",
+    "last_rc": "2026-04-11T00:56:55Z"
   }
 }

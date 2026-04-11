@@ -1306,6 +1306,23 @@ fn slash_workspace_enqueues_execute_control() {
 }
 
 #[test]
+fn slash_workspace_list_enqueues_execute_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+
+    let result = app.handle_slash_command("/workspace list", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+
+    match rx.try_recv().expect("queued command") {
+        TuiCommand::ExecuteControl {
+            request: crate::control_runtime::ControlRequest::WorkspaceListView,
+            ..
+        } => {}
+        other => panic!("expected workspace list request, got {other:?}"),
+    }
+}
+
+#[test]
 fn slash_workspace_kind_set_enqueues_execute_control() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();

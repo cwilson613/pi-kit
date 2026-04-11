@@ -35,6 +35,7 @@ pub enum ControlRequest {
     SetThinking { level: crate::settings::ThinkingLevel },
     StatusView,
     WorkspaceStatusView,
+    WorkspaceListView,
     WorkspaceKindView,
     WorkspaceKindSet { kind: crate::workspace::types::WorkspaceKind },
     WorkspaceKindClear,
@@ -93,6 +94,7 @@ pub fn control_request_from_slash(
         crate::tui::CanonicalSlashCommand::WorkspaceStatusView => {
             ControlRequest::WorkspaceStatusView
         }
+        crate::tui::CanonicalSlashCommand::WorkspaceListView => ControlRequest::WorkspaceListView,
         crate::tui::CanonicalSlashCommand::WorkspaceKindView => {
             ControlRequest::WorkspaceKindView
         }
@@ -208,6 +210,7 @@ pub async fn execute_control(
         }
         ControlRequest::StatusView => status_view_response(ctx.runtime_state, ctx.shared_settings).await,
         ControlRequest::WorkspaceStatusView => workspace_status_view_response(ctx.agent).await,
+        ControlRequest::WorkspaceListView => workspace_list_view_response(ctx.agent).await,
         ControlRequest::WorkspaceKindView => workspace_kind_view_response(ctx.agent).await,
         ControlRequest::WorkspaceKindSet { kind } => workspace_kind_set_response(ctx.agent, kind).await,
         ControlRequest::WorkspaceKindClear => workspace_kind_clear_response(ctx.agent).await,
@@ -653,6 +656,48 @@ pub async fn workspace_kind_view_response(agent: &InteractiveAgentHost) -> Slash
             inferred.as_str(),
             source,
         )),
+    }
+}
+
+pub async fn workspace_list_view_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
+    let registry = crate::workspace::runtime::read_workspace_registry(&agent.cwd)
+        .ok()
+        .flatten();
+    let Some(registry) = registry else {
+        return SlashCommandResponse {
+            accepted: true,
+            output: Some("Workspace registry: no local runtime metadata yet.".into()),
+        };
+    };
+    if registry.workspaces.is_empty() {
+        return SlashCommandResponse {
+            accepted: true,
+            output: Some("Workspace registry is empty.".into()),
+        };
+    }
+    let mut lines = vec![format!(
+        "Workspaces\n  Project:      {}\n  Repo Root:    {}\n  Count:        {}\n",
+        registry.project_id,
+        registry.repo_root,
+        registry.workspaces.len()
+    )];
+    for workspace in registry.workspaces {
+        let owner = workspace.owner_session_id.as_deref().unwrap_or("(none)");
+        lines.push(format!(
+            "- {}\n    path: {}\n    branch: {}\n    role/kind: {:?} / {:?}\n    mutability: {:?}\n    owner: {}\n    stale: {}",
+            workspace.workspace_id,
+            workspace.path,
+            workspace.branch,
+            workspace.role,
+            workspace.workspace_kind,
+            workspace.mutability,
+            owner,
+            workspace.stale,
+        ));
+    }
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(lines.join("\n")),
     }
 }
 

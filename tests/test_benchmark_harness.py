@@ -1913,6 +1913,88 @@ acceptance:
             self.assertIn("token ratio: 2.68x more tokens for omegon", result.stdout)
             self.assertIn("likely excess buckets: sys + tools + hist", result.stdout)
 
+    def test_report_mode_surfaces_telemetry_availability_per_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            full = repo / "omegon.json"
+            none = repo / "pi.json"
+            full.write_text(
+                json.dumps(
+                    {
+                        "task_id": "telemetry-asym",
+                        "harness": "omegon",
+                        "model": "anthropic:claude-sonnet-4-6",
+                        "status": "pass",
+                        "score": 1.0,
+                        "wall_clock_sec": 100,
+                        "tokens": {"total": 1000},
+                        "process": {"availability": "full", "turn_count": 5},
+                    }
+                )
+            )
+            none.write_text(
+                json.dumps(
+                    {
+                        "task_id": "telemetry-asym",
+                        "harness": "pi",
+                        "model": "claude-sonnet-4-6",
+                        "status": "pass",
+                        "score": 1.0,
+                        "wall_clock_sec": 50,
+                        "tokens": {"total": 500},
+                        "process": {"availability": "none"},
+                    }
+                )
+            )
+
+            result = self.run_script("--report", str(full), str(none), cwd=repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Per-row availability should be visible.
+            self.assertIn("process telemetry: full", result.stdout)
+            self.assertIn("process telemetry: none", result.stdout)
+            # The Delta section should explicitly call out asymmetry and
+            # name the harness lacking telemetry.
+            self.assertIn("telemetry asymmetry", result.stdout)
+            self.assertIn("pi", result.stdout)
+
+    def test_report_mode_omits_asymmetry_warning_when_telemetry_is_uniform(self) -> None:
+        # Two rows with `full` availability should not trigger the warning.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            a = repo / "a.json"
+            b = repo / "b.json"
+            a.write_text(
+                json.dumps(
+                    {
+                        "task_id": "uniform",
+                        "harness": "omegon",
+                        "model": "anthropic:claude-sonnet-4-6",
+                        "status": "pass",
+                        "score": 1.0,
+                        "wall_clock_sec": 100,
+                        "tokens": {"total": 1000},
+                        "process": {"availability": "full", "turn_count": 5},
+                    }
+                )
+            )
+            b.write_text(
+                json.dumps(
+                    {
+                        "task_id": "uniform",
+                        "harness": "om",
+                        "model": "anthropic:claude-sonnet-4-6",
+                        "status": "pass",
+                        "score": 1.0,
+                        "wall_clock_sec": 80,
+                        "tokens": {"total": 800},
+                        "process": {"availability": "full", "turn_count": 4},
+                    }
+                )
+            )
+            result = self.run_script("--report", str(a), str(b), cwd=repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("telemetry asymmetry", result.stdout)
+
     def test_report_mode_accepts_directory_and_groups_by_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

@@ -1461,11 +1461,18 @@ def render_report(results: list[dict[str, Any]]) -> str:
         tokens = result.get("tokens") if isinstance(result.get("tokens"), dict) else {}
         total_tokens = tokens.get("total") if isinstance(tokens, dict) else None
         wall_clock = result.get("wall_clock_sec")
+        process = result.get("process") if isinstance(result.get("process"), dict) else {}
+        availability = process.get("availability") if isinstance(process, dict) else None
         lines.append(f"- {harness} / {model}")
         lines.append(f"  status: {status}")
         lines.append(f"  score: {score}")
         lines.append(f"  total tokens: {fmt_tokens(total_tokens)}")
         lines.append(f"  wall clock: {fmt_seconds(wall_clock)}")
+        if availability:
+            # Make telemetry coverage explicit so cross-harness rows do not
+            # silently look comparable when one side has process telemetry
+            # and the other doesn't.
+            lines.append(f"  process telemetry: {availability}")
         omegon_context = result.get("omegon_context")
         if isinstance(omegon_context, dict):
             ordered = ["sys", "tools", "conv", "mem", "hist", "think"]
@@ -1510,6 +1517,27 @@ def render_report(results: list[dict[str, Any]]) -> str:
             likely = find_likely_excess_buckets(results)
             if likely:
                 lines.append(f"- likely excess buckets: {likely}")
+            # Telemetry-asymmetry warning. The four-axis scoring (process /
+            # efficiency / discipline) only works for harnesses that emit
+            # turn-level telemetry. Comparing a harness with `full`
+            # telemetry against one with `none` is honest only on the
+            # outcome / tokens / wall-clock axes. Surface that explicitly
+            # so the operator does not silently extrapolate.
+            availabilities = {
+                (r.get("harness"), ((r.get("process") or {}) or {}).get("availability"))
+                for r in results
+                if isinstance(r.get("process"), dict)
+            }
+            availability_values = {av for _h, av in availabilities if av}
+            if "full" in availability_values and "none" in availability_values:
+                missing = sorted(
+                    h for h, av in availabilities if av == "none" and isinstance(h, str)
+                )
+                lines.append(
+                    "- telemetry asymmetry: tokens/wall-clock comparable, but process / "
+                    "efficiency / discipline scoring is not — "
+                    f"{', '.join(missing) or 'some harnesses'} lack process telemetry"
+                )
         elif baseline.get("harness") == "omegon" and base_tokens == 0:
             lines.append("Delta")
             lines.append("- token ratio: unavailable — baseline result reported zero total tokens")

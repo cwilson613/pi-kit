@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 65,
+    "rc_count": 66,
     "notes": [
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
       "feat(anthropic): prefer adaptive thinking for claude 4.6",
@@ -469,6 +469,7 @@
       "feat(glyph-ui): Rework the inference panel glyph language in core/crates/omegon/src/tui/instruments.rs to use sane, legible symbols for context/activity, update or add focused tests/snapshots that prove the new behavior, and validate the Rust test targets affected by the change. Do not cut the RC inside the child; leave the tree ready for parent verification and release.",
       "feat(ipc): add canonical omegon instance descriptor",
       "feat(ollama): honor thinking level in native requests",
+      "feat(om): reframe slim mode as research harness",
       "feat(omegon): route remote slash commands through canonical runtime executor",
       "feat(otel-research): Research whether OpenTelemetry is an appropriate fit for the harness. Compare current telemetry needs against OpenTelemetry capabilities, integration cost, likely benefits, and adoption risks for this project.",
       "feat(patch): Implement the inference panel legend layout fix in the TUI code, add/update focused tests, run targeted and relevant validation, and leave the repo ready to commit.",
@@ -707,7 +708,7 @@
       "refactor(workspace): add backend and vcs identity boundaries",
       "refactor(workspace): separate labels from substrate identity"
     ],
-    "rc_version": "0.15.10-rc.71",
-    "last_rc": "2026-04-11T14:23:21Z"
+    "rc_version": "0.15.10-rc.72",
+    "last_rc": "2026-04-11T15:37:13Z"
   }
 }

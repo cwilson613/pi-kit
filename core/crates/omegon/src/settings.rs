@@ -146,6 +146,49 @@ pub struct ResourceEnvelope {
     pub compact_tool_schema_reserve: bool,
 }
 
+/// Placeholder runtime identity shape.
+///
+/// This remains intentionally skeletal until Styrene Identity and workload/session
+/// identity are wired through the harness.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeIdentity {
+    pub principal_id: Option<String>,
+    pub issuer: Option<String>,
+    pub session_kind: Option<String>,
+}
+
+/// Placeholder authorization shape.
+///
+/// Capability and role semantics will move here once RBAC is threaded into the
+/// runtime profile model.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizationContext {
+    pub roles: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub trust_domain: Option<String>,
+}
+
+/// Current persona/mind state.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonaState {
+    pub persona_id: Option<String>,
+    pub mind_id: Option<String>,
+}
+
+/// Composed runtime operating profile.
+///
+/// This is the bridge between the conceptual stack and implementation. The
+/// trust layers are placeholders for now; posture and resource envelope are the
+/// first active runtime layers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatingProfile {
+    pub identity: RuntimeIdentity,
+    pub authorization: AuthorizationContext,
+    pub persona: PersonaState,
+    pub posture: BehavioralPosture,
+    pub resources: ResourceEnvelope,
+}
+
 /// Runtime settings that can change mid-session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -494,6 +537,17 @@ impl Settings {
             PosturePreset::Explorator.default_resource_envelope()
         } else {
             self.posture.effective.default_resource_envelope()
+        }
+    }
+
+    /// Composed operating profile for the current runtime state.
+    pub fn operating_profile(&self) -> OperatingProfile {
+        OperatingProfile {
+            identity: RuntimeIdentity::default(),
+            authorization: AuthorizationContext::default(),
+            persona: PersonaState::default(),
+            posture: self.posture,
+            resources: self.resource_envelope(),
         }
     }
 
@@ -1019,6 +1073,20 @@ mod tests {
         let devastator = PosturePreset::Devastator.default_resource_envelope();
         assert_eq!(devastator.thinking, ThinkingLevel::High);
         assert_eq!(devastator.requested_context_class, ContextClass::Legion);
+    }
+
+    #[test]
+    fn operating_profile_reflects_posture_and_resources() {
+        let mut s = Settings::new("anthropic:claude-sonnet-4-6");
+        s.set_posture(PosturePreset::Fabricator);
+
+        let profile = s.operating_profile();
+        assert_eq!(profile.posture, BehavioralPosture::fixed(PosturePreset::Fabricator));
+        assert_eq!(profile.resources.thinking, ThinkingLevel::Low);
+        assert_eq!(profile.resources.requested_context_class, ContextClass::Maniple);
+        assert_eq!(profile.identity, RuntimeIdentity::default());
+        assert_eq!(profile.authorization, AuthorizationContext::default());
+        assert_eq!(profile.persona, PersonaState::default());
     }
 
     #[test]

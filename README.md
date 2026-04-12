@@ -67,13 +67,25 @@ Docs: <https://omegon.styrene.dev/docs/install>
 
 ```sh
 omegon login openai-codex
-omegon --slim
+om
 ```
 
-If you prefer quick interactive chats with a smaller prompt/tool surface, make it the default shell shortcut:
+Omegon now installs two standard entrypoints from the same binary:
+
+- `om` — slim, copy-friendly, familiar terminal mode
+- `omegon` — full harness mode
+
+You can move between them interactively at runtime:
+
+- `/warp` — toggle slim ↔ full
+- `/shackle` — force slim (`om`) mode
+- `/unshackle` — force full (`omegon`) mode
+
+Flags still override the entrypoint default when you need the opposite posture:
 
 ```sh
-alias om='omegon --slim'
+om --full
+omegon --slim
 ```
 
 ### API-key path
@@ -170,8 +182,9 @@ Use it for two things:
 
 Current stance:
 
-- `omegon --slim` is the de-facto comparison profile for mainstream CLI coding agents
-- default Omegon is the premium harness mode when richer systems-engineering behavior is worth extra token cost
+- `om` is the de-facto comparison profile for mainstream CLI coding agents
+- default `omegon` is the premium harness mode when richer systems-engineering behavior is worth extra token cost
+- `omegon --slim` and `om --full` remain valid overrides when you want the opposite posture from the entrypoint default
 - the benchmark harness stays **in-repo for now** because it is still tightly coupled to Omegon internals (`--usage-json`, `omegon_context`, auth/provider behavior, and clean-room runtime mechanics)
 
 Design notes:
@@ -186,7 +199,7 @@ Design notes:
 Launch Omegon in a repo:
 
 ```sh
-omegon
+om
 ```
 
 Then prompt it normally:

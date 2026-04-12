@@ -69,7 +69,7 @@ brew install omegon</code></pre>
 
   <h3>Verify a Download</h3>
   <pre><code># Verify cosign signature (keyless)
-# Replace <release-version> with the release you downloaded
+# Replace 0.15.10 with the release you downloaded
 cosign verify-blob omegon-<release-version>-aarch64-apple-darwin.tar.gz \
   --signature omegon-<release-version>-aarch64-apple-darwin.tar.gz.sig \
   --certificate omegon-<release-version>-aarch64-apple-darwin.tar.gz.pem \

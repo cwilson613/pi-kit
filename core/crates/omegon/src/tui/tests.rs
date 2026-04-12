@@ -189,7 +189,7 @@ fn collapsed_paste_token_renders_as_editor_chip() {
 }
 
 #[tokio::test]
-async fn bang_prefix_wraps_prompt_as_bash_request() {
+async fn bang_prefix_runs_direct_shell_command() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();
     app.editor.set_text("!git status");
@@ -197,11 +197,24 @@ async fn bang_prefix_wraps_prompt_as_bash_request() {
     app.submit_editor_buffer(&tx).await;
 
     match rx.recv().await.expect("queued prompt") {
-        TuiCommand::SubmitPrompt(PromptSubmission { text, .. }) => {
-            assert!(text.contains("Run this bash command"), "{text}");
-            assert!(text.contains("git status"), "{text}");
+        TuiCommand::RunShellCommand { command, .. } => {
+            assert_eq!(command, "git status");
         }
-        other => panic!("expected prompt submission, got {other:?}"),
+        other => panic!("expected direct shell command, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn bare_bang_requests_shell_handoff() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    app.editor.set_text("!");
+
+    app.submit_editor_buffer(&tx).await;
+
+    match rx.recv().await.expect("queued prompt") {
+        TuiCommand::ShellHandoff => {}
+        other => panic!("expected shell handoff, got {other:?}"),
     }
 }
 
@@ -1494,7 +1507,10 @@ fn slash_update_reports_available_version() {
     if let SlashResult::Display(text) = result {
         assert!(text.contains("0.15.3-rc.7"), "{text}");
         assert!(text.contains("/update install"), "{text}");
-        assert!(text.contains("/update channel [stable|rc|nightly]"), "{text}");
+        assert!(
+            text.contains("/update channel [stable|rc|nightly]"),
+            "{text}"
+        );
         assert!(text.contains("rc"), "{text}");
     } else {
         panic!("expected Display result");

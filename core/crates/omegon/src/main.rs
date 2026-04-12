@@ -7,7 +7,11 @@
 //! Phase 3: Native LLM provider clients.
 
 use clap::{Parser, Subcommand};
+use crossterm::ExecutableCommand;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -1238,7 +1242,11 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
 fn cli_binary_name() -> Option<String> {
     std::env::args_os()
         .next()
-        .and_then(|arg| std::path::Path::new(&arg).file_name().map(|name| name.to_os_string()))
+        .and_then(|arg| {
+            std::path::Path::new(&arg)
+                .file_name()
+                .map(|name| name.to_os_string())
+        })
         .and_then(|name| name.into_string().ok())
 }
 
@@ -1628,6 +1636,92 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     let _ = respond_to.send(omegon_traits::ControlOutputResponse {
                         accepted: response.accepted,
                         output: response.output,
+                    });
+                }
+            }
+
+            tui::TuiCommand::RunShellCommand { command, respond_to } => {
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let response = match crate::tools::bash::execute(&command, &agent.cwd, Some(300), cancel).await {
+                    Ok(result) => {
+                        let output = result
+                            .content
+                            .iter()
+                            .filter_map(|block| match block {
+                                omegon_traits::ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        omegon_traits::ControlOutputResponse {
+                            accepted: true,
+                            output: Some(output),
+                        }
+                    }
+                    Err(err) => omegon_traits::ControlOutputResponse {
+                        accepted: false,
+                        output: Some(format!("Shell command failed: {err}")),
+                    },
+                };
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(response);
+                }
+            }
+
+            tui::TuiCommand::ShellHandoff => {
+                if runtime.is_busy() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification {
+                        message: "Shell handoff refused while a turn is active. Cancel first.".into(),
+                    });
+                    continue;
+                }
+
+                #[cfg(unix)]
+                {
+                    use crossterm::event::DisableBracketedPaste;
+                    use crossterm::terminal::LeaveAlternateScreen;
+                    use std::process::Stdio;
+
+                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+                    let _ = disable_raw_mode();
+                    let _ = io::stdout().execute(DisableMouseCapture);
+                    let _ = io::stdout().execute(DisableBracketedPaste);
+                    let _ = io::stdout().execute(LeaveAlternateScreen);
+
+                    let status = std::process::Command::new(&shell)
+                        .arg("-l")
+                        .stdin(Stdio::inherit())
+                        .stdout(Stdio::inherit())
+                        .stderr(Stdio::inherit())
+                        .status();
+
+                    let _ = enable_raw_mode();
+                    let _ = io::stdout().execute(EnterAlternateScreen);
+                    let _ = io::stdout().execute(crossterm::event::EnableBracketedPaste);
+                    let _ = io::stdout().execute(EnableMouseCapture);
+
+                    match status {
+                        Ok(exit) => {
+                            let code = exit.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Resumed Omegon after shell handoff (shell exit: {code})."),
+                            });
+                        }
+                        Err(err) => {
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Shell handoff failed: {err}"),
+                            });
+                        }
+                    }
+                }
+
+                #[cfg(not(unix))]
+                {
+                    let _ = events_tx.send(AgentEvent::SystemNotification {
+                        message: "Shell handoff is not implemented on this platform yet.".into(),
                     });
                 }
             }

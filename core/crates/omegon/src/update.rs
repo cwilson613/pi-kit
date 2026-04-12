@@ -79,11 +79,10 @@ fn find_asset_url(assets: &[GitHubAsset], suffix: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Spawn the background update check.
-pub fn spawn_check(tx: UpdateSender, channel: UpdateChannel) {
+pub fn spawn_check_with_delay(tx: UpdateSender, channel: UpdateChannel, delay: Duration) {
     let current = env!("CARGO_PKG_VERSION").to_string();
     crate::task_spawn::spawn_best_effort_result("update-check", async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(delay).await;
 
         match check_latest_for_channel(&current, channel).await {
             Ok(Some(info)) => {
@@ -107,6 +106,21 @@ pub fn spawn_check(tx: UpdateSender, channel: UpdateChannel) {
             }
         }
         Ok(())
+    });
+}
+
+/// Spawn the background update check.
+pub fn spawn_check(tx: UpdateSender, channel: UpdateChannel) {
+    spawn_check_with_delay(tx, channel, Duration::from_secs(5));
+}
+
+/// Poll for updates periodically so long-running TUI sessions notice new releases.
+pub fn spawn_polling(tx: UpdateSender, channel: UpdateChannel) {
+    crate::task_spawn::spawn_best_effort("update-poller", async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            spawn_check_with_delay(tx.clone(), channel, Duration::from_secs(0));
+        }
     });
 }
 
@@ -503,7 +517,10 @@ mod tests {
     #[test]
     fn rc_channel_parses_distinct_from_nightly() {
         assert_eq!(UpdateChannel::parse("rc"), Some(UpdateChannel::Rc));
-        assert_eq!(UpdateChannel::parse("nightly"), Some(UpdateChannel::Nightly));
+        assert_eq!(
+            UpdateChannel::parse("nightly"),
+            Some(UpdateChannel::Nightly)
+        );
         assert_ne!(UpdateChannel::parse("rc"), UpdateChannel::parse("nightly"));
     }
 

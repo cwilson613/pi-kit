@@ -85,11 +85,24 @@ enum PromptPrefixMode {
     MemoryInject,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateSeverity {
+    Available,
+    StaleMinor,
+}
+
 /// Messages from TUI to the agent coordinator.
 #[derive(Debug)]
 pub enum TuiCommand {
     /// User submitted a prompt with optional image attachments.
     SubmitPrompt(PromptSubmission),
+    /// Execute a local shell command directly without LLM mediation.
+    RunShellCommand {
+        command: String,
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    },
+    /// Temporarily hand terminal control to the operator's real shell.
+    ShellHandoff,
     /// User wants to quit (double Ctrl+C, or /exit).
     Quit,
     /// Show current model/provider posture.
@@ -2380,6 +2393,29 @@ impl App {
         }
     }
 
+    fn update_severity(current: &str, latest: &str) -> UpdateSeverity {
+        let parse_minor = |value: &str| {
+            let base = value.split('-').next().unwrap_or(value);
+            let mut parts = base.split('.');
+            let major = parts
+                .next()
+                .and_then(|p| p.parse::<u64>().ok())
+                .unwrap_or(0);
+            let minor = parts
+                .next()
+                .and_then(|p| p.parse::<u64>().ok())
+                .unwrap_or(0);
+            (major, minor)
+        };
+        let (cur_major, cur_minor) = parse_minor(current);
+        let (latest_major, latest_minor) = parse_minor(latest);
+        if latest_major > cur_major || (latest_major == cur_major && latest_minor > cur_minor + 1) {
+            UpdateSeverity::StaleMinor
+        } else {
+            UpdateSeverity::Available
+        }
+    }
+
     fn queue_prompt(&mut self, text: String, attachments: Vec<std::path::PathBuf>) {
         let preview = Self::queue_prompt_preview(&text, &attachments);
         self.queued_prompts.push_back((text, attachments));
@@ -2439,17 +2475,48 @@ impl App {
     ) {
         let (prefix_mode, text) = Self::detect_prompt_prefix(&raw_text);
         let text = text.trim().to_string();
+
+        match prefix_mode {
+            PromptPrefixMode::Bash => {
+                if text.is_empty() {
+                    if self.agent_active {
+                        self.conversation.push_system(
+                            "Shell handoff requires an idle terminal. Cancel the active turn first.",
+                        );
+                        return;
+                    }
+                    self.conversation.push_system(
+                        "⛩ Entering shell handoff — exit your shell to resume Omegon.",
+                    );
+                    self.history.push(raw_text.clone());
+                    self.history_idx = None;
+                    let _ = command_tx.send(TuiCommand::ShellHandoff).await;
+                    return;
+                }
+
+                self.history.push(raw_text.clone());
+                self.history_idx = None;
+                self.conversation.push_user(&raw_text);
+                let _ = command_tx
+                    .send(TuiCommand::RunShellCommand {
+                        command: text,
+                        respond_to: None,
+                    })
+                    .await;
+                return;
+            }
+            PromptPrefixMode::Agent
+            | PromptPrefixMode::Context
+            | PromptPrefixMode::MemoryInject => {}
+        }
+
         if text.is_empty() && attachments.is_empty() {
             return;
         }
 
         let final_text = match prefix_mode {
             PromptPrefixMode::Agent => text,
-            PromptPrefixMode::Bash => format!("Run this bash command and report the result clearly:
-
-```bash
-{}
-```", text),
+            PromptPrefixMode::Bash => unreachable!(),
             PromptPrefixMode::Context => format!("Before answering, request focused context for this query and use it in your response:
 
 {}", text),
@@ -2570,19 +2637,27 @@ impl App {
         );
 
         // Check for available update (non-blocking)
-        let update_toast: Option<String> = self.update_rx.as_ref().and_then(|rx| {
+        let update_toast: Option<(String, UpdateSeverity)> = self.update_rx.as_ref().and_then(|rx| {
             let info = rx.borrow();
             let info = info.as_ref()?;
-            if info.is_newer && self.footer_data.update_available.is_none() {
-                Some(format!(
-                    "🆕 Update available: v{} → v{} — run /update",
-                    info.current, info.latest
-                ))
+            if info.is_newer && self.footer_data.update_available.as_deref() != Some(info.latest.as_str()) {
+                let severity = Self::update_severity(&info.current, &info.latest);
+                let msg = match severity {
+                    UpdateSeverity::Available => format!(
+                        "🆕 Update available: v{} → v{} — run /update",
+                        info.current, info.latest
+                    ),
+                    UpdateSeverity::StaleMinor => format!(
+                        "⚠ Version lag: v{} → v{} — you are more than one minor behind. Run /update",
+                        info.current, info.latest
+                    ),
+                };
+                Some((msg, severity))
             } else {
                 None
             }
         });
-        if let Some(msg) = update_toast {
+        if let Some((msg, severity)) = update_toast {
             // Extract version before mutable borrow
             let version = self
                 .update_rx
@@ -2591,7 +2666,11 @@ impl App {
             if let Some(v) = version {
                 self.footer_data.update_available = Some(v);
             }
-            self.show_toast(&msg, ratatui_toaster::ToastType::Info);
+            let toast_kind = match severity {
+                UpdateSeverity::Available => ratatui_toaster::ToastType::Info,
+                UpdateSeverity::StaleMinor => ratatui_toaster::ToastType::Warning,
+            };
+            self.show_toast(&msg, toast_kind);
         }
 
         // Update dashboard stats
@@ -4620,7 +4699,8 @@ impl App {
                     s.set_slim_mode(true);
                 }
                 self.set_ui_mode(UiMode::Slim);
-                self.conversation.push_system("⛓ Shackle engaged — slim mode active.");
+                self.conversation
+                    .push_system("⛓ Shackle engaged — slim mode active.");
                 SlashResult::Display("Shackled: slim runtime profile active.".into())
             }
             "unshackle" => {
@@ -4628,7 +4708,8 @@ impl App {
                     s.set_slim_mode(false);
                 }
                 self.set_ui_mode(UiMode::Full);
-                self.conversation.push_system("⛓‍💥 Shackle released — full harness active.");
+                self.conversation
+                    .push_system("⛓‍💥 Shackle released — full harness active.");
                 SlashResult::Display("Unshackled: full runtime profile active.".into())
             }
             "warp" => {
@@ -4638,11 +4719,13 @@ impl App {
                 }
                 if slim_now {
                     self.set_ui_mode(UiMode::Full);
-                    self.conversation.push_system("🌀 Warp complete — full harness active.");
+                    self.conversation
+                        .push_system("🌀 Warp complete — full harness active.");
                     SlashResult::Display("Warped to full harness mode.".into())
                 } else {
                     self.set_ui_mode(UiMode::Slim);
-                    self.conversation.push_system("🌀 Warp complete — slim mode active.");
+                    self.conversation
+                        .push_system("🌀 Warp complete — slim mode active.");
                     SlashResult::Display("Warped to slim mode.".into())
                 }
             }
@@ -6016,9 +6099,11 @@ pub async fn run_tui(
     let update_channel = app.settings().update_channel;
     let channel = crate::update::UpdateChannel::parse(&update_channel)
         .unwrap_or(crate::update::UpdateChannel::Stable);
+    // Kick the first update check quickly at startup, then poll periodically.
     crate::update::spawn_check(update_tx.clone(), channel);
     app.update_rx = Some(update_rx);
-    app.update_tx = Some(update_tx);
+    app.update_tx = Some(update_tx.clone());
+    crate::update::spawn_polling(update_tx, channel);
     app.login_prompt_tx = config.login_prompt_tx;
 
     // Slim starts in a conversation-first layout; richer surfaces remain

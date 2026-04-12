@@ -970,6 +970,17 @@ impl InstrumentPanel {
         label: Color,
         t: &dyn Theme,
     ) {
+        // Clear the ENTIRE allocated area (including the border cells)
+        // before drawing. Block::render writes border symbols and applies
+        // the block's style to interior cells, but it does NOT reset the
+        // SYMBOL of interior cells if a previous rendering pass left
+        // content there. The operator's screenshot showed conversation-
+        // segment text ("omegon", "Bash;3;7;14m") leaking through the
+        // inference panel because the previous frame's cell symbols
+        // survived under the new background color. This nuclear clear
+        // guarantees every cell starts as a space regardless of what
+        // any other rendering pass left behind.
+        clear_area(area, frame.buffer_mut(), panel_bg(t));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border).bg(t.footer_bg()))
@@ -1324,6 +1335,8 @@ impl InstrumentPanel {
         } else {
             Color::Rgb(42, 180, 200) // teal — complete
         };
+        // Same nuclear clear as render_inference/render_tools.
+        clear_area(area, frame.buffer_mut(), panel_bg(t));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border).bg(t.footer_bg()))
@@ -1506,6 +1519,10 @@ impl InstrumentPanel {
         label: Color,
         t: &dyn Theme,
     ) {
+        // Same nuclear clear as render_inference — see the comment
+        // there. Ensures no cross-panel or cross-frame content
+        // survives into the tools panel area.
+        clear_area(area, frame.buffer_mut(), panel_bg(t));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border).bg(t.footer_bg()))

@@ -1350,17 +1350,13 @@ fn draw_owns_full_root_background() {
 }
 
 #[test]
-fn slash_update_channel_without_args_shows_helpful_usage() {
+fn slash_update_channel_without_args_opens_selector() {
     let mut app = test_app();
     let tx = test_tx();
     let result = app.handle_slash_command("/update channel", &tx);
-    if let SlashResult::Display(text) = result {
-        assert!(text.contains("Update channel:"), "{text}");
-        assert!(text.contains("/update channel nightly"), "{text}");
-        assert!(text.contains("/update install"), "{text}");
-    } else {
-        panic!("expected Display result");
-    }
+    assert!(matches!(result, SlashResult::Handled));
+    assert!(app.selector.is_some(), "expected update channel selector to open");
+    assert_eq!(app.selector_kind, Some(SelectorKind::UpdateChannel));
 }
 
 #[test]
@@ -1568,12 +1564,31 @@ fn slash_workspace_new_enqueues_execute_control() {
 }
 
 #[test]
-fn slash_workspace_role_set_enqueues_execute_control() {
+fn slash_workspace_role_without_args_opens_selector() {
+    let mut app = test_app();
+    let tx = test_tx();
+
+    let result = app.handle_slash_command("/workspace role", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+    assert!(app.selector.is_some(), "expected workspace role selector to open");
+    assert_eq!(app.selector_kind, Some(SelectorKind::WorkspaceRole));
+}
+
+#[test]
+fn workspace_role_selector_confirm_enqueues_execute_control() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();
+    app.handle_slash_command("/workspace role", &tx);
+    let selector = app.selector.as_mut().expect("selector should be open");
+    let index = selector
+        .options
+        .iter()
+        .position(|o| o.value == "release")
+        .expect("release option present");
+    selector.cursor = index;
 
-    let result = app.handle_slash_command("/workspace role set release", &tx);
-    assert!(matches!(result, SlashResult::Handled));
+    let message = app.confirm_selector(&tx).expect("confirmation message");
+    assert!(message.contains("Workspace role → release"), "{message}");
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
@@ -1656,12 +1671,31 @@ fn slash_workspace_bind_clear_enqueues_execute_control() {
 }
 
 #[test]
-fn slash_workspace_kind_set_enqueues_execute_control() {
+fn slash_workspace_kind_without_args_opens_selector() {
+    let mut app = test_app();
+    let tx = test_tx();
+
+    let result = app.handle_slash_command("/workspace kind", &tx);
+    assert!(matches!(result, SlashResult::Handled));
+    assert!(app.selector.is_some(), "expected workspace kind selector to open");
+    assert_eq!(app.selector_kind, Some(SelectorKind::WorkspaceKind));
+}
+
+#[test]
+fn workspace_kind_selector_confirm_enqueues_execute_control() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();
+    app.handle_slash_command("/workspace kind", &tx);
+    let selector = app.selector.as_mut().expect("selector should be open");
+    let index = selector
+        .options
+        .iter()
+        .position(|o| o.value == "vault")
+        .expect("vault option present");
+    selector.cursor = index;
 
-    let result = app.handle_slash_command("/workspace kind set vault", &tx);
-    assert!(matches!(result, SlashResult::Handled));
+    let message = app.confirm_selector(&tx).expect("confirmation message");
+    assert!(message.contains("Workspace kind → vault"), "{message}");
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {

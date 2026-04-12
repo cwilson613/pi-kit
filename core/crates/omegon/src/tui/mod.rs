@@ -321,6 +321,9 @@ enum SelectorKind {
     SecretName,
     LoginProvider,
     VaultConfigure,
+    UpdateChannel,
+    WorkspaceRole,
+    WorkspaceKind,
 }
 
 /// Result of handling a slash command.
@@ -1317,6 +1320,71 @@ impl App {
         self.selector_kind = Some(SelectorKind::LoginProvider);
     }
 
+    fn open_update_channel_selector(&mut self) {
+        let current = self.settings().update_channel;
+        let options = [crate::update::UpdateChannel::Stable, crate::update::UpdateChannel::Nightly]
+            .into_iter()
+            .map(|channel| selector::SelectOption {
+                value: channel.as_str().to_string(),
+                label: channel.as_str().to_string(),
+                description: match channel {
+                    crate::update::UpdateChannel::Stable => {
+                        "Release builds only".to_string()
+                    }
+                    crate::update::UpdateChannel::Nightly => {
+                        "Nightly prerelease / RC lane".to_string()
+                    }
+                },
+                active: current == channel.as_str(),
+            })
+            .collect();
+        self.selector = Some(selector::Selector::new("Update Channel", options));
+        self.selector_kind = Some(SelectorKind::UpdateChannel);
+    }
+
+    fn open_workspace_role_selector(&mut self) {
+        let options = [
+            crate::workspace::types::WorkspaceRole::Primary,
+            crate::workspace::types::WorkspaceRole::Feature,
+            crate::workspace::types::WorkspaceRole::CleaveChild,
+            crate::workspace::types::WorkspaceRole::Benchmark,
+            crate::workspace::types::WorkspaceRole::Release,
+            crate::workspace::types::WorkspaceRole::Exploratory,
+            crate::workspace::types::WorkspaceRole::ReadOnly,
+        ]
+        .into_iter()
+        .map(|role| selector::SelectOption {
+            value: role.as_str().to_string(),
+            label: role.as_str().to_string(),
+            description: format!("Set workspace role to {}", role.as_str()),
+            active: false,
+        })
+        .collect();
+        self.selector = Some(selector::Selector::new("Workspace Role", options));
+        self.selector_kind = Some(SelectorKind::WorkspaceRole);
+    }
+
+    fn open_workspace_kind_selector(&mut self) {
+        let options = [
+            crate::workspace::types::WorkspaceKind::Code,
+            crate::workspace::types::WorkspaceKind::Vault,
+            crate::workspace::types::WorkspaceKind::Knowledge,
+            crate::workspace::types::WorkspaceKind::Spec,
+            crate::workspace::types::WorkspaceKind::Mixed,
+            crate::workspace::types::WorkspaceKind::Generic,
+        ]
+        .into_iter()
+        .map(|kind| selector::SelectOption {
+            value: kind.as_str().to_string(),
+            label: kind.as_str().to_string(),
+            description: format!("Set workspace kind to {}", kind.as_str()),
+            active: false,
+        })
+        .collect();
+        self.selector = Some(selector::Selector::new("Workspace Kind", options));
+        self.selector_kind = Some(SelectorKind::WorkspaceKind);
+    }
+
     fn show_status_change_toasts(
         &mut self,
         prev: &crate::status::HarnessStatus,
@@ -1608,6 +1676,42 @@ impl App {
                 let command = format!("/vault configure {}", value);
                 self.editor.set_text(&command);
                 Some(format!("Vault configure → {value}"))
+            }
+            SelectorKind::UpdateChannel => {
+                if let Some(channel) = crate::update::UpdateChannel::parse(&value) {
+                    self.update_settings(|s| s.update_channel = channel.as_str().to_string());
+                    if let Some(tx) = self.update_tx.clone() {
+                        crate::update::spawn_check(tx, channel);
+                    }
+                    Some(format!(
+                        "Update channel set to {}. Rechecking for updates now.",
+                        channel.as_str()
+                    ))
+                } else {
+                    Some(format!("Unknown update channel: {value}"))
+                }
+            }
+            SelectorKind::WorkspaceRole => {
+                if let Some(role) = crate::workspace::types::WorkspaceRole::parse(&value) {
+                    let _ = tx.try_send(TuiCommand::ExecuteControl {
+                        request: crate::control_runtime::ControlRequest::WorkspaceRoleSet { role },
+                        respond_to: None,
+                    });
+                    Some(format!("Workspace role → {}", role.as_str()))
+                } else {
+                    Some(format!("Unknown workspace role: {value}"))
+                }
+            }
+            SelectorKind::WorkspaceKind => {
+                if let Some(kind) = crate::workspace::types::WorkspaceKind::parse(&value) {
+                    let _ = tx.try_send(TuiCommand::ExecuteControl {
+                        request: crate::control_runtime::ControlRequest::WorkspaceKindSet { kind },
+                        respond_to: None,
+                    });
+                    Some(format!("Workspace kind → {}", kind.as_str()))
+                } else {
+                    Some(format!("Unknown workspace kind: {value}"))
+                }
             }
         }
     }
@@ -3579,77 +3683,85 @@ impl App {
             }
 
             "workspace" => {
-                let request = if let Some(command) = canonical_slash_command("workspace", args) {
-                    match command {
-                        CanonicalSlashCommand::WorkspaceStatusView => {
-                            crate::control_runtime::ControlRequest::WorkspaceStatusView
-                        }
-                        CanonicalSlashCommand::WorkspaceListView => {
-                            crate::control_runtime::ControlRequest::WorkspaceListView
-                        }
-                        CanonicalSlashCommand::WorkspaceNew(label) => {
-                            crate::control_runtime::ControlRequest::WorkspaceNew {
-                                label: label.clone(),
-                            }
-                        }
-                        CanonicalSlashCommand::WorkspaceDestroy(target) => {
-                            crate::control_runtime::ControlRequest::WorkspaceDestroy {
-                                target: target.clone(),
-                            }
-                        }
-                        CanonicalSlashCommand::WorkspaceAdopt => {
-                            crate::control_runtime::ControlRequest::WorkspaceAdopt
-                        }
-                        CanonicalSlashCommand::WorkspaceRelease => {
-                            crate::control_runtime::ControlRequest::WorkspaceRelease
-                        }
-                        CanonicalSlashCommand::WorkspaceArchive => {
-                            crate::control_runtime::ControlRequest::WorkspaceArchive
-                        }
-                        CanonicalSlashCommand::WorkspacePrune => {
-                            crate::control_runtime::ControlRequest::WorkspacePrune
-                        }
-                        CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
-                            crate::control_runtime::ControlRequest::WorkspaceBindMilestone {
-                                milestone_id: milestone_id.clone(),
-                            }
-                        }
-                        CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
-                            crate::control_runtime::ControlRequest::WorkspaceBindNode {
-                                design_node_id: design_node_id.clone(),
-                            }
-                        }
-                        CanonicalSlashCommand::WorkspaceBindClear => {
-                            crate::control_runtime::ControlRequest::WorkspaceBindClear
-                        }
-                        CanonicalSlashCommand::WorkspaceRoleView => {
-                            crate::control_runtime::ControlRequest::WorkspaceRoleView
-                        }
-                        CanonicalSlashCommand::WorkspaceRoleSet(role) => {
-                            crate::control_runtime::ControlRequest::WorkspaceRoleSet { role }
-                        }
-                        CanonicalSlashCommand::WorkspaceRoleClear => {
-                            crate::control_runtime::ControlRequest::WorkspaceRoleClear
-                        }
-                        CanonicalSlashCommand::WorkspaceKindView => {
-                            crate::control_runtime::ControlRequest::WorkspaceKindView
-                        }
-                        CanonicalSlashCommand::WorkspaceKindSet(kind) => {
-                            crate::control_runtime::ControlRequest::WorkspaceKindSet { kind }
-                        }
-                        CanonicalSlashCommand::WorkspaceKindClear => {
-                            crate::control_runtime::ControlRequest::WorkspaceKindClear
-                        }
-                        _ => crate::control_runtime::ControlRequest::WorkspaceStatusView,
-                    }
+                if args == "role" {
+                    self.open_workspace_role_selector();
+                    SlashResult::Handled
+                } else if args == "kind" {
+                    self.open_workspace_kind_selector();
+                    SlashResult::Handled
                 } else {
-                    crate::control_runtime::ControlRequest::WorkspaceStatusView
-                };
-                let _ = tx.try_send(TuiCommand::ExecuteControl {
-                    request,
-                    respond_to: None,
-                });
-                SlashResult::Handled
+                    let request = if let Some(command) = canonical_slash_command("workspace", args) {
+                        match command {
+                            CanonicalSlashCommand::WorkspaceStatusView => {
+                                crate::control_runtime::ControlRequest::WorkspaceStatusView
+                            }
+                            CanonicalSlashCommand::WorkspaceListView => {
+                                crate::control_runtime::ControlRequest::WorkspaceListView
+                            }
+                            CanonicalSlashCommand::WorkspaceNew(label) => {
+                                crate::control_runtime::ControlRequest::WorkspaceNew {
+                                    label: label.clone(),
+                                }
+                            }
+                            CanonicalSlashCommand::WorkspaceDestroy(target) => {
+                                crate::control_runtime::ControlRequest::WorkspaceDestroy {
+                                    target: target.clone(),
+                                }
+                            }
+                            CanonicalSlashCommand::WorkspaceAdopt => {
+                                crate::control_runtime::ControlRequest::WorkspaceAdopt
+                            }
+                            CanonicalSlashCommand::WorkspaceRelease => {
+                                crate::control_runtime::ControlRequest::WorkspaceRelease
+                            }
+                            CanonicalSlashCommand::WorkspaceArchive => {
+                                crate::control_runtime::ControlRequest::WorkspaceArchive
+                            }
+                            CanonicalSlashCommand::WorkspacePrune => {
+                                crate::control_runtime::ControlRequest::WorkspacePrune
+                            }
+                            CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
+                                crate::control_runtime::ControlRequest::WorkspaceBindMilestone {
+                                    milestone_id: milestone_id.clone(),
+                                }
+                            }
+                            CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
+                                crate::control_runtime::ControlRequest::WorkspaceBindNode {
+                                    design_node_id: design_node_id.clone(),
+                                }
+                            }
+                            CanonicalSlashCommand::WorkspaceBindClear => {
+                                crate::control_runtime::ControlRequest::WorkspaceBindClear
+                            }
+                            CanonicalSlashCommand::WorkspaceRoleView => {
+                                crate::control_runtime::ControlRequest::WorkspaceRoleView
+                            }
+                            CanonicalSlashCommand::WorkspaceRoleSet(role) => {
+                                crate::control_runtime::ControlRequest::WorkspaceRoleSet { role }
+                            }
+                            CanonicalSlashCommand::WorkspaceRoleClear => {
+                                crate::control_runtime::ControlRequest::WorkspaceRoleClear
+                            }
+                            CanonicalSlashCommand::WorkspaceKindView => {
+                                crate::control_runtime::ControlRequest::WorkspaceKindView
+                            }
+                            CanonicalSlashCommand::WorkspaceKindSet(kind) => {
+                                crate::control_runtime::ControlRequest::WorkspaceKindSet { kind }
+                            }
+                            CanonicalSlashCommand::WorkspaceKindClear => {
+                                crate::control_runtime::ControlRequest::WorkspaceKindClear
+                            }
+                            _ => crate::control_runtime::ControlRequest::WorkspaceStatusView,
+                        }
+                    } else {
+                        crate::control_runtime::ControlRequest::WorkspaceStatusView
+                    };
+                    let _ = tx.try_send(TuiCommand::ExecuteControl {
+                        request,
+                        respond_to: None,
+                    });
+                    SlashResult::Handled
+                }
             }
 
             "persona" => {
@@ -3895,10 +4007,8 @@ impl App {
                 } else if let Some(channel_arg) = trimmed.strip_prefix("channel") {
                     let channel_arg = channel_arg.trim();
                     if channel_arg.is_empty() {
-                        let channel = self.settings().update_channel;
-                        SlashResult::Display(format!(
-                            "Update channel: {channel}\n\nCommands:\n  /update                 — check current channel for updates\n  /update install         — download and restart into the available update\n  /update channel nightly — opt into the nightly prerelease lane\n  /update channel stable  — return to stable releases"
-                        ))
+                        self.open_update_channel_selector();
+                        SlashResult::Handled
                     } else if let Some(channel) = crate::update::UpdateChannel::parse(channel_arg) {
                         self.update_settings(|s| s.update_channel = channel.as_str().to_string());
                         if let Some(tx) = self.update_tx.clone() {

@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 71,
+    "rc_count": 72,
     "notes": [
       "docs(benchmark): seed design node for deferred bwrap sandbox work",
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
@@ -448,6 +448,7 @@
       "feat(benchmark): scaffold token efficiency harness v1",
       "feat(benchmark): support task-level model pinning",
       "feat(benchmark): surface process telemetry availability and asymmetry in --report mode",
+      "feat(brew): RC formula, brew-managed upgrade guard, auto-update workflow",
       "feat(claude-code-friction): Author a markdown engineering note describing the biggest friction points likely to be experienced by a user coming from Claude Code expecting the same interactive experience in omegon, grounded in current code and current UX/runtime architecture. Include ranked friction points, concrete evidence references, and mitigation directions.",
       "feat(cleave): add per-child cancel registry and command",
       "feat(cleave): add structured child runtime controls",
@@ -471,6 +472,7 @@
       "feat(context): retrieve mediated decision spec and memory packs",
       "feat(control): add typed dispatcher switch control path",
       "feat(daemon): close autonomous workflow integration loops",
+      "feat(dev): add just cut-rc for developer-facing RC cuts",
       "feat(doc-survey): Inspect project docs, memory-relevant files, and design/spec artifacts for telemetry-related decisions, standards, and constraints. Summarize the intended telemetry model and any explicit design constraints.",
       "feat(docs): Write user-facing documentation about Anthropic subscription ToS compliance. Two deliverables: (1) A new markdown doc at docs/anthropic-subscription-tos.md covering: what the restriction is (exact ToS quote), which Omegon entry points are allowed vs blocked, the interactive-vs-automated distinction, what to do if you need automation (get an API key), and how this compares to other providers (GitHub Copilot has no such restriction). Include a clear table: TUI mode=allowed, --initial-prompt=allowed, --prompt/--prompt-file=blocked, --smoke=blocked, /cleave=blocked. Include the exact Anthropic ToS URL. Make it factual and non-alarmist — this is a clear boundary that Omegon enforces for the operator's protection. (2) A new Astro page at site/src/pages/docs/providers.astro covering all provider auth modes: Anthropic API key (unrestricted), Anthropic OAuth/subscription (interactive TUI only), OpenAI API key, Codex OAuth, Ollama (local, unrestricted), GitHub Models (official PAT, coming soon), Copilot seat (coming soon). For each: how to configure, what's allowed, any restrictions. Follow the structure and style of existing pages like site/src/pages/docs/quickstart.astro or site/src/pages/docs/security.astro. Files: docs/anthropic-subscription-tos.md, site/src/pages/docs/providers.astro",
       "feat(docs-copy): Update long-lived docs that currently frame the browser experience around `/dash` or the embedded web dashboard. Rewrite them to present Auspex as the primary browser surface, while keeping any necessary historical/local compatibility notes. Focus on docs/embedded-web-dashboard.md, docs/display-tool-artifacts.md, docs/native-plan-mode.md, docs/conversation-rendering-engine.md, and other directly relevant docs that mention `/dash` as the primary browser path.",
@@ -575,6 +577,7 @@
       "fix(benchmark): propagate cache creation tokens through usage summaries",
       "fix(benchmark): run acceptance against clean-room repo",
       "fix(brew): fail early on unsupported Linux glibc",
+      "fix(brew): push formula updates to homebrew-tap, not main repo",
       "fix(cleave): add bootstrap supervisor token to restart adoption",
       "fix(cleave): clean scratch workspace after successful runs",
       "fix(cleave): harden restart recovery with supervisor lease validation",
@@ -595,6 +598,7 @@
       "fix(context): reduce code pack selector false positives",
       "fix(context): sync compact status with authoritative snapshot",
       "fix(context): wait for authoritative slash completion",
+      "fix(dev): extract workspace.json writer to script, fix cut-rc parse error",
       "fix(errors): broaden upstream outage classification",
       "fix(errors): collapse provider-side upstream failures",
       "fix(footer): split model row into model + tier to prevent overflow",
@@ -742,7 +746,7 @@
       "refactor(workspace): add backend and vcs identity boundaries",
       "refactor(workspace): separate labels from substrate identity"
     ],
-    "rc_version": "0.15.10-rc.77",
-    "last_rc": "2026-04-12T03:55:40Z"
+    "rc_version": "0.15.10-rc.78",
+    "last_rc": "2026-04-12T05:06:06Z"
   }
 }

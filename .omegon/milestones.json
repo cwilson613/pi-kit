@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 72,
+    "rc_count": 73,
     "notes": [
       "docs(benchmark): seed design node for deferred bwrap sandbox work",
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
@@ -479,6 +479,7 @@
       "feat(event-loop-status): Implement the basic daemon event worker/dispatcher loop and operator-visible/runtime-visible status surfaces: process queued daemon events in a minimal loop, surface queue depth/transport warnings in startup or status output, and add tests for durable queue behavior and degraded transport reporting.",
       "feat(glyph-ui): Rework the inference panel glyph language in core/crates/omegon/src/tui/instruments.rs to use sane, legible symbols for context/activity, update or add focused tests/snapshots that prove the new behavior, and validate the Rust test targets affected by the change. Do not cut the RC inside the child; leave the tree ready for parent verification and release.",
       "feat(identity): add descriptive runtime identity presets",
+      "feat(install): make install.sh canonical with RC/nightly channels",
       "feat(ipc): add canonical omegon instance descriptor",
       "feat(local_inference): stream Ollama tokens through ToolProgressSink (#31)",
       "feat(mcp): forward server progress notifications through ToolProgressSink (#32)",
@@ -545,6 +546,7 @@
       "feat: adopt animus-cli concepts for autonomous operation",
       "fix(agent): hide attachment redisplay hints from user messages",
       "fix(anthropic): bound Claude 4.6 light thinking",
+      "fix(anthropic): classify stall errors using recent quota telemetry",
       "fix(armory): tolerate broken-pipe race when child closes stdin early (#30)",
       "fix(auspex): gate prompt resume on authoritative turn completion",
       "fix(auspex): report chosen local handoff mode",
@@ -647,6 +649,7 @@
       "fix(tui): align activity row with context band semantics",
       "fix(tui): align cursor with inline attachment tokens",
       "fix(tui): align footer context state with inference composition",
+      "fix(tui): anchor focus mode to the live conversation tail",
       "fix(tui): attribute session pricing to per-turn model usage",
       "fix(tui): calm inference activity row glyphs",
       "fix(tui): clamp engine limit rows before panel overflow",
@@ -678,11 +681,14 @@
       "fix(tui): remove rounded seam artifacts from dashboard and instruments",
       "fix(tui): remove side gutters from focus copy view",
       "fix(tui): remove unused widget renderer test import",
+      "fix(tui): render codebase search results as robust line blocks",
       "fix(tui): render markdown tool output and split context activity",
       "fix(tui): render operator attachments as inline placeholders",
       "fix(tui): render table body rows that omit trailing pipe (#37)",
       "fix(tui): render tool result markdown tables",
       "fix(tui): restore editor token and paste semantics",
+      "fix(tui): restore model selector modal for bare slash command",
+      "fix(tui): restyle system notifications as conversation cards",
       "fix(tui): separate defs and history context colors",
       "fix(tui): shift tool history band to ice blue",
       "fix(tui): show provider telemetry in split footer",
@@ -698,6 +704,7 @@
       "fix(tui): strip control bytes from all panel rendering paths (#35)",
       "fix(tui): support queued prompts with attachment lists",
       "fix(tui): take instrument seam width from the tools panel",
+      "fix(tui): truncate footer engine rows by display width",
       "fix(tui): truncate tools panel labels by display width",
       "fix(tui): unify tool result block backgrounds",
       "fix(tui,web): isolate focus mode and expose auspex startup version handoff",
@@ -746,7 +753,7 @@
       "refactor(workspace): add backend and vcs identity boundaries",
       "refactor(workspace): separate labels from substrate identity"
     ],
-    "rc_version": "0.15.10-rc.78",
-    "last_rc": "2026-04-12T05:06:06Z"
+    "rc_version": "0.15.10-rc.79",
+    "last_rc": "2026-04-12T09:44:30Z"
   }
 }

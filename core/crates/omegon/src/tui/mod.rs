@@ -949,10 +949,13 @@ impl App {
         }
         self.focus_mode = enabled;
         if enabled {
-            let focus_idx = self
-                .conversation
-                .timeline_focused_segment()
-                .or_else(|| self.conversation.last_selectable_segment());
+            // Entering /focus should bias to the live tail, not to a stale
+            // previously-selected segment. Operators use /focus as a
+            // "show me the current conversation clearly" command; if an old
+            // selection remains latched from earlier mouse/keyboard navigation,
+            // preserving it here makes focus mode appear off-by-one (or more)
+            // relative to the latest assistant turn.
+            let focus_idx = self.conversation.last_selectable_segment();
             if let Some(idx) = focus_idx {
                 self.conversation.select_segment(idx);
             }

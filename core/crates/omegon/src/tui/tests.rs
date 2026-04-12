@@ -1178,6 +1178,33 @@ fn focus_mode_starts_on_last_selectable_segment_and_toggle_tracks_expansion() {
 }
 
 #[test]
+fn focus_mode_ignores_stale_selected_segment_and_jumps_to_live_tail() {
+    let mut app = test_app();
+    app.conversation.push_user("older operator prompt");
+    app.conversation.append_streaming("older assistant answer");
+    app.conversation.finalize_message();
+    app.conversation.select_segment(0);
+
+    app.conversation.push_user("latest operator prompt");
+    app.conversation.append_streaming("latest assistant answer");
+    app.conversation.finalize_message();
+
+    app.set_focus_mode(true);
+
+    let selected = app.conversation.selected_or_focused_segment();
+    let text = app
+        .conversation
+        .selected_segment_text_with_mode(SegmentExportMode::Plaintext)
+        .unwrap_or_default();
+
+    assert_eq!(selected, app.conversation.last_selectable_segment());
+    assert!(
+        text.contains("latest assistant answer"),
+        "focus mode should land on the latest tail segment, got: {text:?}"
+    );
+}
+
+#[test]
 fn focus_mode_esc_exits_focus_before_interrupting_agent() {
     let mut app = test_app();
     app.conversation.push_system("segment");

@@ -1384,6 +1384,7 @@ impl App {
         let current = self.settings().update_channel;
         let options = [
             crate::update::UpdateChannel::Stable,
+            crate::update::UpdateChannel::Rc,
             crate::update::UpdateChannel::Nightly,
         ]
         .into_iter()
@@ -1392,7 +1393,10 @@ impl App {
             label: channel.as_str().to_string(),
             description: match channel {
                 crate::update::UpdateChannel::Stable => "Release builds only".to_string(),
-                crate::update::UpdateChannel::Nightly => "Nightly prerelease / RC lane".to_string(),
+                crate::update::UpdateChannel::Rc => "Release candidates only".to_string(),
+                crate::update::UpdateChannel::Nightly => {
+                    "Nightly / dev prereleases only".to_string()
+                }
             },
             active: current == channel.as_str(),
         })
@@ -3641,6 +3645,9 @@ impl App {
             "check for and install updates",
             &["install", "channel"],
         ),
+        ("shackle", "switch to slim constrained mode", &[]),
+        ("unshackle", "switch to full harness mode", &[]),
+        ("warp", "toggle between slim and full harness modes", &[]),
         (
             "migrate",
             "import from other tools",
@@ -4221,7 +4228,7 @@ impl App {
                             channel.as_str()
                         ))
                     } else {
-                        SlashResult::Display("Usage: /update channel [stable|nightly]".into())
+                        SlashResult::Display("Usage: /update channel [stable|rc|nightly]".into())
                     }
                 } else {
                     // Check if an update is available
@@ -4229,7 +4236,7 @@ impl App {
                     let channel = self.settings().update_channel;
                     match info {
                         Some(info) if info.is_newer => SlashResult::Display(format!(
-                            "🆕 Update available on {channel}: v{} → v{}\n\n{}\n\n{}\n\nCommands:\n  /update install\n  /update channel [stable|nightly]",
+                            "🆕 Update available on {channel}: v{} → v{}\n\n{}\n\n{}\n\nCommands:\n  /update install\n  /update channel [stable|rc|nightly]",
                             info.current,
                             info.latest,
                             if info.release_notes.is_empty() {
@@ -4248,7 +4255,7 @@ impl App {
                             },
                         )),
                         _ => SlashResult::Display(format!(
-                            "✓ You're up to date on the {channel} channel.\n\nCommands:\n  /update channel nightly — opt into the nightly prerelease lane\n  /update channel stable  — use stable releases only\n  /update channel         — show current channel"
+                            "✓ You're up to date on the {channel} channel.\n\nCommands:\n  /update channel stable  — use stable releases only\n  /update channel rc      — follow release candidates only\n  /update channel nightly — opt into nightly prereleases\n  /update channel         — show current channel"
                         )),
                     }
                 }
@@ -4608,6 +4615,37 @@ impl App {
             "exit" | "quit" => SlashResult::Quit,
 
             // ── Aliases ─────────────────────────────────────────────
+            "shackle" => {
+                if let Ok(mut s) = self.settings.lock() {
+                    s.set_slim_mode(true);
+                }
+                self.set_ui_mode(UiMode::Slim);
+                self.conversation.push_system("⛓ Shackle engaged — slim mode active.");
+                SlashResult::Display("Shackled: slim runtime profile active.".into())
+            }
+            "unshackle" => {
+                if let Ok(mut s) = self.settings.lock() {
+                    s.set_slim_mode(false);
+                }
+                self.set_ui_mode(UiMode::Full);
+                self.conversation.push_system("⛓‍💥 Shackle released — full harness active.");
+                SlashResult::Display("Unshackled: full runtime profile active.".into())
+            }
+            "warp" => {
+                let slim_now = self.settings.lock().ok().is_some_and(|s| s.slim_mode);
+                if let Ok(mut s) = self.settings.lock() {
+                    s.set_slim_mode(!slim_now);
+                }
+                if slim_now {
+                    self.set_ui_mode(UiMode::Full);
+                    self.conversation.push_system("🌀 Warp complete — full harness active.");
+                    SlashResult::Display("Warped to full harness mode.".into())
+                } else {
+                    self.set_ui_mode(UiMode::Slim);
+                    self.conversation.push_system("🌀 Warp complete — slim mode active.");
+                    SlashResult::Display("Warped to slim mode.".into())
+                }
+            }
             "thinking" => self.handle_slash_command(&format!("/think {args}"), tx),
             "models" => self.handle_slash_command("/model", tx),
             "version" => SlashResult::Display(format!(

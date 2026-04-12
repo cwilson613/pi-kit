@@ -24,6 +24,7 @@ pub struct UpdateInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateChannel {
     Stable,
+    Rc,
     Nightly,
 }
 
@@ -31,7 +32,8 @@ impl UpdateChannel {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "stable" => Some(Self::Stable),
-            "nightly" | "rc" => Some(Self::Nightly),
+            "rc" => Some(Self::Rc),
+            "nightly" => Some(Self::Nightly),
             _ => None,
         }
     }
@@ -39,6 +41,7 @@ impl UpdateChannel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Stable => "stable",
+            Self::Rc => "rc",
             Self::Nightly => "nightly",
         }
     }
@@ -140,9 +143,11 @@ pub async fn check_latest_for_channel(
     let target = platform_archive_target();
     let selected = releases.into_iter().find(|resp| {
         let latest = resp.tag_name.trim_start_matches('v');
+        let latest = latest.to_lowercase();
         let channel_match = match channel {
             UpdateChannel::Stable => !resp.prerelease,
-            UpdateChannel::Nightly => resp.prerelease,
+            UpdateChannel::Rc => resp.prerelease && latest.contains("-rc."),
+            UpdateChannel::Nightly => resp.prerelease && latest.contains("-nightly."),
         };
         channel_match && is_newer(latest, current)
     });

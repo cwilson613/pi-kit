@@ -677,6 +677,11 @@ impl Settings {
             if self.requested_context_class.is_none() {
                 self.requested_context_class = Some(envelope.requested_context_class);
             }
+        } else {
+            self.posture = BehavioralPosture::fixed(PosturePreset::Architect);
+            let envelope = self.resource_envelope();
+            self.thinking = envelope.thinking;
+            self.requested_context_class = Some(envelope.requested_context_class);
         }
     }
 

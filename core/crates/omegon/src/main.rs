@@ -189,6 +189,10 @@ struct Cli {
     #[arg(long)]
     slim: bool,
 
+    /// Force the full Omegon harness profile even when launched via `om`.
+    #[arg(long)]
+    full: bool,
+
     /// Log level: error, warn, info, debug, trace. Overrides RUST_LOG.
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
@@ -1230,6 +1234,20 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cli_prefers_slim_mode(cli: &Cli) -> bool {
+    if cli.full {
+        return false;
+    }
+    if cli.slim {
+        return true;
+    }
+    std::env::args_os()
+        .next()
+        .and_then(|arg| std::path::Path::new(&arg).file_name().map(|name| name.to_os_string()))
+        .and_then(|name| name.into_string().ok())
+        .is_some_and(|name| name == "om")
+}
+
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -1248,7 +1266,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let profile = settings::Profile::load(&cli.cwd);
     if let Ok(mut s) = shared_settings.lock() {
         profile.apply_to(&mut s);
-        if cli.slim {
+        if cli_prefers_slim_mode(cli) {
             s.set_slim_mode(true);
         }
         if let Ok(child_thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL") {
@@ -3243,7 +3261,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     if let Ok(mut s) = shared_settings.lock() {
         profile.apply_to(&mut s);
         s.set_model(&cli.model);
-        if cli.slim {
+        if cli_prefers_slim_mode(cli) {
             s.set_slim_mode(true);
         }
         if cli.max_turns != 50 {

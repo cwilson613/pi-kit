@@ -2051,6 +2051,42 @@ fn context_selector_confirm_changes_settings() {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
+fn draw_clears_stale_completed_cleave_snapshot_from_tools_panel() {
+    let mut app = test_app();
+    app.ui_surfaces.footer = true;
+    app.ui_surfaces.instruments = true;
+    app.instrument_panel.set_cleave_progress(Some(crate::features::cleave::CleaveProgress {
+        active: false,
+        run_id: "done-run".into(),
+        total_children: 3,
+        completed: 3,
+        failed: 0,
+        children: vec![],
+        total_tokens_in: 100,
+        total_tokens_out: 50,
+    }));
+    app.dashboard_handles.cleave = Some(std::sync::Arc::new(std::sync::Mutex::new(
+        crate::features::cleave::CleaveProgress {
+            active: false,
+            run_id: "done-run".into(),
+            total_children: 3,
+            completed: 3,
+            failed: 0,
+            children: vec![],
+            total_tokens_in: 100,
+            total_tokens_out: 50,
+        },
+    )));
+
+    let rendered = render_app_to_string(&mut app, 140, 36);
+
+    assert!(
+        !rendered.contains("⟁ cleave"),
+        "completed cleave snapshot should not keep the cleave panel visible: {rendered}"
+    );
+}
+
+#[test]
 fn harness_status_changed_updates_footer() {
     let mut app = test_app();
 

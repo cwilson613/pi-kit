@@ -2545,11 +2545,7 @@ impl App {
             // so the tools→cleave swap happens without turn-boundary latency.
             if let Some(ref cp_lock) = self.dashboard_handles.cleave {
                 if let Ok(cp) = cp_lock.lock() {
-                    let snapshot = if cp.active || cp.total_children > 0 {
-                        Some(cp.clone())
-                    } else {
-                        None
-                    };
+                    let snapshot = if cp.active { Some(cp.clone()) } else { None };
                     self.instrument_panel.set_cleave_progress(snapshot);
                     // Roll new child tokens into session totals (delta only).
                     let new_in = cp

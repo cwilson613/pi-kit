@@ -63,7 +63,7 @@ pub fn build_base_prompt_with_breakdown(
                 "# Behavior\n\n- Always respond to the user. Tool calls gather information — they are not the answer. After calling tools, synthesize what you found into a direct response. Never end a turn with only tool calls and no text.\n- Be direct — act, don't narrate intent. Disagree when you see a better path.\n- Read files before editing. Edit requires exact text matches.\n- Ground claims in evidence — cite files and lines. Don't assert about unread code.\n- Every non-trivial change needs tests. Commit when done, do NOT push.\n- Prefer `request_context` before making multiple exploratory tool calls when you need session orientation or recent runtime evidence. Use direct read/search tools first only when you already know the exact target.\n"
             },
         ),
-        prompt_section("core_directives", "Core Directives", if slim { "" } else { &lex_imperialis }),
+        prompt_section("core_directives", "Core Directives", &lex_imperialis),
         prompt_section("project_lifecycle", "Project Lifecycle", &lifecycle_context),
         prompt_section("operator_directives", "Operator Directives", &global_directives),
         prompt_section("project_directives", "Project Directives", &project_directives),
@@ -509,11 +509,11 @@ mod tests {
             .collect();
         assert!(!section_keys.contains(&"project_lifecycle"));
         assert!(!section_keys.contains(&"operator_directives"));
-        assert!(!section_keys.contains(&"core_directives"));
+        assert!(section_keys.contains(&"core_directives"));
         assert!(assembly.prompt.contains("OM coding mode"));
         assert!(assembly.prompt.contains("lean terminal coding loop"));
         assert!(!assembly.prompt.contains("recommend escalating to full Omegon"));
-        assert!(!assembly.prompt.contains("Lex Imperialis"));
+        assert!(assembly.prompt.contains("Lex Imperialis"));
     }
 
     #[test]

@@ -1702,11 +1702,13 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         &runtime_state.conversation,
                                     );
                                     let llm_messages = runtime_state.conversation.build_llm_view();
+                                    let prompt_telemetry = runtime_state.context_manager.last_prompt_telemetry();
                                     let context_composition = crate::r#loop::compute_context_composition(
                                         &system_prompt,
                                         &llm_messages,
                                         &runtime_state.bus.tool_definitions(),
                                         ctx_window,
+                                        Some(&prompt_telemetry),
                                     );
                                     let _ = events_tx.send(AgentEvent::TurnEnd {
                                         turn: runtime_state.conversation.intent.stats.turns,
@@ -4675,6 +4677,7 @@ mod tests {
                 tool_history_tokens: 20,
                 thinking_tokens: 30,
                 free_tokens: 199_715,
+                ..Default::default()
             },
             123,
             45,
@@ -4699,6 +4702,7 @@ mod tests {
                 tool_history_tokens: 24,
                 thinking_tokens: 36,
                 free_tokens: 199_663,
+                ..Default::default()
             },
             77,
             9,
@@ -4727,6 +4731,7 @@ mod tests {
                 tool_history_tokens: 24,
                 thinking_tokens: 36,
                 free_tokens: 199_663,
+                ..Default::default()
             }
         );
     }
@@ -4751,6 +4756,7 @@ mod tests {
                 tool_history_tokens: 505,
                 thinking_tokens: 606,
                 free_tokens: 997_879,
+                ..Default::default()
             },
             1,
             2,
@@ -4788,6 +4794,7 @@ mod tests {
                 tool_history_tokens: 505,
                 thinking_tokens: 606,
                 free_tokens: 997_879,
+                ..Default::default()
             }
         );
     }
@@ -4812,6 +4819,7 @@ mod tests {
                 tool_history_tokens: 50,
                 thinking_tokens: 60,
                 free_tokens: 999_790,
+                ..Default::default()
             },
             1,
             2,
@@ -4836,6 +4844,7 @@ mod tests {
                 tool_history_tokens: 505,
                 thinking_tokens: 606,
                 free_tokens: 997_879,
+                ..Default::default()
             },
             4,
             5,
@@ -4854,6 +4863,7 @@ mod tests {
                 tool_history_tokens: 505,
                 thinking_tokens: 606,
                 free_tokens: 997_879,
+                ..Default::default()
             }
         );
     }
@@ -4890,6 +4900,7 @@ mod tests {
                 tool_history_tokens: 20,
                 thinking_tokens: 30,
                 free_tokens: 199_715,
+                ..Default::default()
             },
             provider_telemetry: None,
         };

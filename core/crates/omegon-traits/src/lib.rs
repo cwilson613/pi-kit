@@ -1192,6 +1192,18 @@ pub struct ContextComposition {
     pub tool_history_tokens: usize,
     pub thinking_tokens: usize,
     pub free_tokens: usize,
+    /// Static base prompt before per-turn injections.
+    pub base_prompt_tokens: usize,
+    /// Session HUD line injected each turn.
+    pub session_hud_tokens: usize,
+    /// Intent/session-state block injected each turn.
+    pub intent_tokens: usize,
+    /// Dynamic context from bus features and other external producers.
+    pub external_injection_tokens: usize,
+    /// Long-TTL guidance emitted from recent tool-group usage.
+    pub tool_guidance_tokens: usize,
+    /// File-type guidance emitted from recent file access.
+    pub file_guidance_tokens: usize,
 }
 
 /// Events emitted by the agent loop and delivered to features.

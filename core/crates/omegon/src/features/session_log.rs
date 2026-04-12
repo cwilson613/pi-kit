@@ -93,6 +93,12 @@ struct ParsedContextComposition {
     tool_history_tokens: u64,
     thinking_tokens: u64,
     free_tokens: u64,
+    base_prompt_tokens: u64,
+    session_hud_tokens: u64,
+    intent_tokens: u64,
+    external_injection_tokens: u64,
+    tool_guidance_tokens: u64,
+    file_guidance_tokens: u64,
 }
 
 impl SessionLog {
@@ -440,7 +446,7 @@ impl SessionLog {
 
 fn format_context_composition(comp: &ContextComposition, context_window: usize) -> String {
     format!(
-        "ctx est:{} win:{} sys:{} tools:{} conv:{} mem:{} hist:{} think:{} free:{}",
+        "ctx est:{} win:{} sys:{} tools:{} conv:{} mem:{} hist:{} think:{} free:{} base:{} hud:{} intent:{} ext:{} tguide:{} fguide:{}",
         comp.conversation_tokens
             + comp.system_tokens
             + comp.memory_tokens
@@ -455,6 +461,12 @@ fn format_context_composition(comp: &ContextComposition, context_window: usize) 
         comp.tool_history_tokens,
         comp.thinking_tokens,
         comp.free_tokens,
+        comp.base_prompt_tokens,
+        comp.session_hud_tokens,
+        comp.intent_tokens,
+        comp.external_injection_tokens,
+        comp.tool_guidance_tokens,
+        comp.file_guidance_tokens,
     )
 }
 
@@ -503,6 +515,12 @@ fn parse_context_composition(line: &str) -> Option<ParsedContextComposition> {
         tool_history_tokens: parse_context_field(line, "hist:")?,
         thinking_tokens: parse_context_field(line, "think:")?,
         free_tokens: parse_context_field(line, "free:")?,
+        base_prompt_tokens: parse_context_field(line, "base:").unwrap_or(0),
+        session_hud_tokens: parse_context_field(line, "hud:").unwrap_or(0),
+        intent_tokens: parse_context_field(line, "intent:").unwrap_or(0),
+        external_injection_tokens: parse_context_field(line, "ext:").unwrap_or(0),
+        tool_guidance_tokens: parse_context_field(line, "tguide:").unwrap_or(0),
+        file_guidance_tokens: parse_context_field(line, "fguide:").unwrap_or(0),
     })
 }
 
@@ -726,6 +744,7 @@ impl Feature for SessionLog {
                         "type": "string",
                         "enum": ["read", "recent", "usage"],
                         "description": "Read session log entries or summarize token usage"
+                        ..Default::default()
                     },
                     "count": {
                         "type": "number",
@@ -1002,6 +1021,7 @@ mod tests {
                 tool_history_tokens: 1200,
                 thinking_tokens: 700,
                 free_tokens: 193_350,
+                ..Default::default()
             },
             actual_input_tokens: 1200,
             actual_output_tokens: 300,
@@ -1122,6 +1142,7 @@ mod tests {
                 tool_history_tokens: 15,
                 thinking_tokens: 20,
                 free_tokens: 199_850,
+                ..Default::default()
             },
             actual_input_tokens: 100,
             actual_output_tokens: 20,

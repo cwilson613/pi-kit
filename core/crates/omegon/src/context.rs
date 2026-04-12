@@ -27,6 +27,17 @@ pub struct ContextManager {
     /// Context window size in tokens for budget calculations.
     context_window: usize,
     shadow: ShadowContext,
+    last_prompt_telemetry: PromptTelemetry,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PromptTelemetry {
+    pub base_prompt_chars: usize,
+    pub session_hud_chars: usize,
+    pub intent_chars: usize,
+    pub external_injection_chars: usize,
+    pub tool_guidance_chars: usize,
+    pub file_guidance_chars: usize,
 }
 
 struct ActiveInjection {
@@ -51,6 +62,7 @@ impl ContextManager {
                 reply_reserve: 8_192,
                 tool_schema_reserve: 4_096,
             }),
+            last_prompt_telemetry: PromptTelemetry::default(),
         }
     }
 
@@ -388,14 +400,33 @@ impl ContextManager {
         base.mandatory = true;
         self.shadow.upsert(base);
 
+        let mut telemetry = PromptTelemetry {
+            base_prompt_chars: self.base_prompt.len(),
+            ..PromptTelemetry::default()
+        };
+
         for active in &self.active_injections {
             let kind = match active.injection.source.as_str() {
-                "session-hud" => ContextKind::SessionHud,
-                "intent-document" => ContextKind::IntentDocument,
-                source if source.starts_with("tool-group:") || source.starts_with("file-type:") => {
+                "session-hud" => {
+                    telemetry.session_hud_chars += active.injection.content.len();
+                    ContextKind::SessionHud
+                }
+                "intent-document" => {
+                    telemetry.intent_chars += active.injection.content.len();
+                    ContextKind::IntentDocument
+                }
+                source if source.starts_with("tool-group:") => {
+                    telemetry.tool_guidance_chars += active.injection.content.len();
                     ContextKind::TaskArtifact
                 }
-                _ => ContextKind::TaskArtifact,
+                source if source.starts_with("file-type:") => {
+                    telemetry.file_guidance_chars += active.injection.content.len();
+                    ContextKind::TaskArtifact
+                }
+                _ => {
+                    telemetry.external_injection_chars += active.injection.content.len();
+                    ContextKind::TaskArtifact
+                }
             };
             let mut entry = ShadowEntry::new(
                 format!("inj:{}", active.injection.source),
@@ -411,7 +442,12 @@ impl ContextManager {
         let selected = self
             .shadow
             .select_for_turn(conversation.turn_count(), user_prompt);
+        self.last_prompt_telemetry = telemetry;
         self.shadow.render_selection(&selected)
+    }
+
+    pub fn last_prompt_telemetry(&self) -> PromptTelemetry {
+        self.last_prompt_telemetry.clone()
     }
 }
 

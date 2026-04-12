@@ -288,6 +288,7 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
             tool_history_tokens: 2_000,
             thinking_tokens: 6_000,
             free_tokens: 128_000,
+            ..Default::default()
         },
         actual_input_tokens: 12_345,
         actual_output_tokens: 413,

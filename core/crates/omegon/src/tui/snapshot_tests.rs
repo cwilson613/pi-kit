@@ -415,6 +415,7 @@ fn snapshot_unified_footer_console() {
             tool_history_tokens: 3_000,
             thinking_tokens: 4_000,
             free_tokens: 90_000,
+            ..Default::default()
         },
         200_000,
     );

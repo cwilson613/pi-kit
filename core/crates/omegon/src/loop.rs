@@ -683,6 +683,7 @@ pub(crate) fn compute_context_composition(
     llm_messages: &[LlmMessage],
     tools: &[omegon_traits::ToolDefinition],
     context_window: usize,
+    prompt_telemetry: Option<&crate::context::PromptTelemetry>,
 ) -> ContextComposition {
     let system_tokens = estimate_chars_to_tokens(system_prompt.len());
     let tool_schema_tokens = estimate_tool_schema_tokens(tools);
@@ -734,6 +735,7 @@ pub(crate) fn compute_context_composition(
         .saturating_add(tool_history_tokens)
         .saturating_add(thinking_tokens);
     let free_tokens = context_window.saturating_sub(used);
+    let prompt_telemetry = prompt_telemetry.cloned().unwrap_or_default();
 
     ContextComposition {
         conversation_tokens,
@@ -743,6 +745,12 @@ pub(crate) fn compute_context_composition(
         tool_history_tokens,
         thinking_tokens,
         free_tokens,
+        base_prompt_tokens: estimate_chars_to_tokens(prompt_telemetry.base_prompt_chars),
+        session_hud_tokens: estimate_chars_to_tokens(prompt_telemetry.session_hud_chars),
+        intent_tokens: estimate_chars_to_tokens(prompt_telemetry.intent_chars),
+        external_injection_tokens: estimate_chars_to_tokens(prompt_telemetry.external_injection_chars),
+        tool_guidance_tokens: estimate_chars_to_tokens(prompt_telemetry.tool_guidance_chars),
+        file_guidance_tokens: estimate_chars_to_tokens(prompt_telemetry.file_guidance_chars),
     }
 }
 
@@ -1121,12 +1129,19 @@ pub async fn run(
                     provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
                     context_window,
-                    context_composition: compute_context_composition(
-                        &context.build_system_prompt(conversation.last_user_prompt(), conversation),
-                        &conversation.build_llm_view(),
-                        &tool_defs,
-                        context_window,
-                    ),
+                    context_composition: {
+                        let system_prompt =
+                            context.build_system_prompt(conversation.last_user_prompt(), conversation);
+                        let llm_messages = conversation.build_llm_view();
+                        let prompt_telemetry = context.last_prompt_telemetry();
+                        compute_context_composition(
+                            &system_prompt,
+                            &llm_messages,
+                            &tool_defs,
+                            context_window,
+                            Some(&prompt_telemetry),
+                        )
+                    },
                     actual_input_tokens: act_in,
                     actual_output_tokens: act_out,
                     cache_read_tokens: act_cr,
@@ -1139,12 +1154,19 @@ pub async fn run(
                     provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
                     context_window,
-                    context_composition: compute_context_composition(
-                        &context.build_system_prompt(conversation.last_user_prompt(), conversation),
-                        &conversation.build_llm_view(),
-                        &tool_defs,
-                        context_window,
-                    ),
+                    context_composition: {
+                        let system_prompt =
+                            context.build_system_prompt(conversation.last_user_prompt(), conversation);
+                        let llm_messages = conversation.build_llm_view();
+                        let prompt_telemetry = context.last_prompt_telemetry();
+                        compute_context_composition(
+                            &system_prompt,
+                            &llm_messages,
+                            &tool_defs,
+                            context_window,
+                            Some(&prompt_telemetry),
+                        )
+                    },
                     actual_input_tokens: act_in,
                     actual_output_tokens: act_out,
                     cache_read_tokens: act_cr,
@@ -1162,11 +1184,15 @@ pub async fn run(
                 });
                 continue; // give it one more turn to commit
             }
+            let system_prompt = context.build_system_prompt(conversation.last_user_prompt(), conversation);
+            let llm_messages = conversation.build_llm_view();
+            let prompt_telemetry = context.last_prompt_telemetry();
             let turn_context_composition = compute_context_composition(
-                &context.build_system_prompt(conversation.last_user_prompt(), conversation),
-                &conversation.build_llm_view(),
+                &system_prompt,
+                &llm_messages,
                 &tool_defs,
                 context_window,
+                Some(&prompt_telemetry),
             );
             bus.emit(&omegon_traits::BusEvent::TurnEnd {
                 turn,
@@ -1321,11 +1347,15 @@ pub async fn run(
             stuck_detector.record(call, is_error);
         }
 
+        let system_prompt = context.build_system_prompt(conversation.last_user_prompt(), conversation);
+        let llm_messages = conversation.build_llm_view();
+        let prompt_telemetry = context.last_prompt_telemetry();
         let turn_context_composition = compute_context_composition(
-            &context.build_system_prompt(conversation.last_user_prompt(), conversation),
-            &conversation.build_llm_view(),
+            &system_prompt,
+            &llm_messages,
             &tool_defs,
             context_window,
+            Some(&prompt_telemetry),
         );
         bus.emit(&omegon_traits::BusEvent::TurnEnd {
             turn,

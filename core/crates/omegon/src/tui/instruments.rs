@@ -2345,6 +2345,7 @@ mod tests {
                 tool_history_tokens: 8_000,
                 thinking_tokens: 0,
                 free_tokens: 150_000,
+                ..Default::default()
             },
             200_000,
         );
@@ -2610,6 +2611,7 @@ mod tests {
                 tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
+                ..Default::default()
             },
             200_000,
         );
@@ -2760,6 +2762,7 @@ mod tests {
                 tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
+                ..Default::default()
             },
             200_000,
         );
@@ -2829,6 +2832,7 @@ mod tests {
                 tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
+                ..Default::default()
             },
             200_000,
         );
@@ -2904,6 +2908,7 @@ mod tests {
                 tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
+                ..Default::default()
             },
             200_000,
         );
@@ -2969,6 +2974,7 @@ mod tests {
                 tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
+                ..Default::default()
             },
             200_000,
         );
@@ -3009,6 +3015,7 @@ mod tests {
                 tool_history_tokens: 0,
                 thinking_tokens: 0,
                 free_tokens: 166_362,
+                ..Default::default()
             },
             272_000,
         );
@@ -3066,6 +3073,7 @@ mod tests {
                 tool_history_tokens: 3_000,
                 thinking_tokens: 4_000,
                 free_tokens: 100_000,
+                ..Default::default()
             },
             200_000,
         );

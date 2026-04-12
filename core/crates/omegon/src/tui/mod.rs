@@ -4732,6 +4732,14 @@ impl App {
             AgentEvent::MessageAbort => {
                 self.conversation.abort_streaming();
             }
+            AgentEvent::ToolUpdate { id, partial } => {
+                // Stash the latest streaming partial onto the matching
+                // open tool card. The conversation segment renderer
+                // picks it up via `live_partial` and displays the live
+                // tail / progress / heartbeat in place of the empty
+                // result section while the tool is still in flight.
+                self.conversation.push_tool_update(&id, partial);
+            }
             _ => {}
         }
     }

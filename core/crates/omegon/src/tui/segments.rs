@@ -180,6 +180,12 @@ pub enum SegmentContent {
         complete: bool,
         /// When true, show full result instead of truncated preview.
         expanded: bool,
+        /// Most recent partial result received from the runner while the
+        /// tool is still in flight. Populated by `ToolUpdate` events,
+        /// rendered inside the card body until `ToolEnd` flips
+        /// `complete` to true. `None` for tools that don't stream or
+        /// before the first partial arrives.
+        live_partial: Option<omegon_traits::PartialToolResult>,
     },
 
     /// System notification (slash command response, info message).
@@ -231,6 +237,7 @@ impl Segment {
                 is_error: false,
                 complete: false,
                 expanded: false,
+                live_partial: None,
             },
         }
     }
@@ -448,6 +455,7 @@ impl Segment {
                 is_error,
                 complete,
                 expanded,
+                live_partial,
                 ..
             } => {
                 render_tool_card(
@@ -457,6 +465,7 @@ impl Segment {
                     *is_error,
                     *complete,
                     *expanded,
+                    live_partial.as_ref(),
                     &self.meta,
                     area,
                     buf,
@@ -510,6 +519,8 @@ impl Segment {
                 detail_args,
                 detail_result,
                 expanded,
+                complete,
+                live_partial,
                 ..
             } => {
                 let inner_width = width.saturating_sub(4).max(1);
@@ -530,8 +541,33 @@ impl Segment {
                     .as_ref()
                     .map(|r| wrapped_rows(r, inner_width).min(if *expanded { 220 } else { 12 }))
                     .unwrap_or(0);
-                let separator_rows = u16::from(compact_arg_rows > 0 && compact_result_rows > 0);
-                compact_arg_rows + compact_result_rows + separator_rows + 4
+                // Live section rows: only relevant while the tool is
+                // still in flight. Always at least one row (the status
+                // header) when incomplete; tail rows on top when a
+                // partial with content has arrived.
+                let compact_live_rows: u16 = if !*complete {
+                    let header = 1u16;
+                    let tail = live_partial
+                        .as_ref()
+                        .map(|p| {
+                            let lines = p.tail.lines().count() as u16;
+                            lines.min(if *expanded { 50 } else { 12 })
+                        })
+                        .unwrap_or(0);
+                    header + tail
+                } else {
+                    0
+                };
+                let live_separator_rows =
+                    u16::from(compact_arg_rows > 0 && compact_live_rows > 0);
+                let result_separator_rows =
+                    u16::from(compact_arg_rows > 0 && compact_result_rows > 0);
+                compact_arg_rows
+                    + compact_live_rows
+                    + live_separator_rows
+                    + compact_result_rows
+                    + result_separator_rows
+                    + 4
             }
             SystemNotification { text } => wrapped_rows(text, width.saturating_sub(4)) + 3,
             _ => 4,
@@ -899,6 +935,7 @@ fn render_tool_card(
     is_error: bool,
     complete: bool,
     expanded: bool,
+    live_partial: Option<&omegon_traits::PartialToolResult>,
     meta: &SegmentMeta,
     area: Rect,
     buf: &mut Buffer,
@@ -1107,6 +1144,91 @@ fn render_tool_card(
         }
     }
 
+    // ── Live progress section (in-flight tools only) ────────────
+    // While the tool is still running and we don't yet have a final
+    // result, render the latest streaming partial (if any) as a tail
+    // window inside the card. This is the producer-side instrumentation
+    // from #23/#24/#31/#32 finally surfacing in the operator UI: bash
+    // line counts + tail, local_inference token counts + accumulated
+    // text, mcp progress phase + units. Without this block, in-flight
+    // tools render with an empty card body — the "anemic 17:45 with
+    // nothing to look at" failure mode.
+    let mut live_row_fills: Vec<(u16, Color)> = Vec::new();
+    if !complete {
+        let pre_live_line_count = lines.len();
+        if !lines.is_empty() {
+            let sep_color = t.border_dim();
+            lines.push(Line::from(Span::styled(
+                "─".repeat(card_inner.width as usize),
+                Style::default().fg(sep_color).bg(bg),
+            )));
+            live_row_fills.push((pre_live_line_count as u16, bg));
+        }
+
+        // Status header: ▶ {phase or "running"} · {units} · {elapsed}
+        // — built from whichever fields the partial happens to carry.
+        // Falls back to a bare "▶ running" when no partial has arrived
+        // yet, so the operator at least sees a "we're alive" line
+        // instead of a blank card.
+        let mut status_parts: Vec<String> = Vec::new();
+        let phase_label = live_partial
+            .and_then(|p| p.progress.phase.as_deref())
+            .unwrap_or("running");
+        status_parts.push(phase_label.to_string());
+        if let Some(partial) = live_partial {
+            if let Some(units) = &partial.progress.units {
+                let label = match units.total {
+                    Some(total) => format!("{}/{} {}", units.current, total, units.unit),
+                    None => format!("{} {}", units.current, units.unit),
+                };
+                status_parts.push(label);
+            }
+            if partial.progress.elapsed_ms > 0 {
+                let secs = partial.progress.elapsed_ms / 1000;
+                if secs >= 60 {
+                    status_parts.push(format!("{}m{:02}s", secs / 60, secs % 60));
+                } else {
+                    let tenths = (partial.progress.elapsed_ms % 1000) / 100;
+                    status_parts.push(format!("{secs}.{tenths}s"));
+                }
+            }
+            if partial.progress.heartbeat {
+                status_parts.push("idle".to_string());
+            }
+        }
+        let status_text = format!("▶ {}", status_parts.join(" · "));
+        lines.push(Line::from(vec![
+            Span::styled(
+                status_text,
+                Style::default().fg(t.warning()).bg(bg),
+            ),
+        ]));
+        live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
+
+        // Tail content from the latest partial. Only renders when the
+        // partial actually carries `tail` text (bash + local_inference
+        // both do; mcp progress notifications carry only phase/units
+        // and leave tail empty, which is correct).
+        if let Some(partial) = live_partial {
+            if !partial.tail.is_empty() {
+                let tail_lines: Vec<&str> = partial.tail.lines().collect();
+                let max_tail_lines = if expanded { 50 } else { 12 };
+                let take = tail_lines.len().min(max_tail_lines);
+                // Show the LAST N lines, not the first N — for streaming
+                // output the latest content is what the operator wants.
+                let start = tail_lines.len().saturating_sub(take);
+                let tail_style = Style::default().fg(t.muted()).bg(bg);
+                for line in &tail_lines[start..] {
+                    lines.push(Line::from(Span::styled(
+                        line.to_string(),
+                        tail_style,
+                    )));
+                    live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
+                }
+            }
+        }
+    }
+
     // ── Result section with distinct background ─────────────────
     let pre_result_line_count = lines.len();
     let mut result_row_fills: Vec<(u16, Color)> = Vec::new();
@@ -1280,6 +1402,13 @@ fn render_tool_card(
         .wrap(Wrap { trim: false })
         .render(card_inner, buf);
 
+    // Apply background fills for both the live (in-flight) section and
+    // the completed result section. Both share the same `bg` color in
+    // practice; keeping the two fill streams separate makes the
+    // intent obvious and lets future styling diverge them cheaply.
+    for (row, fill_bg) in live_row_fills {
+        apply_rows_bg(card_inner, row, 1, fill_bg, buf);
+    }
     for (row, fill_bg) in result_row_fills {
         apply_rows_bg(card_inner, row, 1, fill_bg, buf);
     }
@@ -1802,6 +1931,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(80, 8);
@@ -1837,6 +1967,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(90, 8);
@@ -1874,6 +2005,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(80, 12);
@@ -1926,6 +2058,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(100, 16);
@@ -2100,6 +2233,143 @@ mod tests {
     }
 
     #[test]
+    fn in_flight_tool_card_renders_live_tail_and_status_header() {
+        // Construct a still-in-flight bash card with a streaming partial
+        // carrying line counts, elapsed time, and tail content. The card
+        // should render the tail (last few lines) and a status header
+        // showing units + elapsed — replacing the empty body that the
+        // pre-streaming code would have shown for an in-flight tool.
+        let partial = omegon_traits::PartialToolResult {
+            tail: "compiling foo v0.1.0\ncompiling bar v0.2.1\ncompiling baz v0.3.4\nlinking target/debug/myapp".to_string(),
+            progress: omegon_traits::ToolProgress {
+                elapsed_ms: 12_300,
+                heartbeat: false,
+                phase: None,
+                units: Some(omegon_traits::ProgressUnits {
+                    current: 4,
+                    total: None,
+                    unit: "lines".to_string(),
+                }),
+                tally: None,
+            },
+            details: serde_json::json!(null),
+        };
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "bash".into(),
+                args_summary: None,
+                detail_args: Some("cargo build".into()),
+                result_summary: None,
+                detail_result: None,
+                is_error: false,
+                complete: false,
+                expanded: false,
+                live_partial: Some(partial),
+            },
+        };
+        let (area, mut buf) = make_buf(80, 18);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+
+        // Status header populated from progress fields
+        assert!(text.contains("running"), "status header should show 'running' fallback phase: {text}");
+        assert!(
+            text.contains("4 lines"),
+            "status header should show units count from partial: {text}"
+        );
+        assert!(
+            text.contains("12.3s"),
+            "status header should show elapsed time from partial: {text}"
+        );
+
+        // Tail content from the partial — the last lines, not the first
+        assert!(
+            text.contains("linking"),
+            "live tail should render most recent line: {text}"
+        );
+        assert!(
+            text.contains("compiling baz"),
+            "live tail should render recent compile lines: {text}"
+        );
+    }
+
+    #[test]
+    fn in_flight_tool_card_with_no_partial_renders_running_placeholder() {
+        // Before any partial arrives, the card should still show a
+        // "▶ running" status line so the operator sees something
+        // instead of an empty body.
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "bash".into(),
+                args_summary: None,
+                detail_args: Some("sleep 30".into()),
+                result_summary: None,
+                detail_result: None,
+                is_error: false,
+                complete: false,
+                expanded: false,
+                live_partial: None,
+            },
+        };
+        let (area, mut buf) = make_buf(80, 8);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+        assert!(
+            text.contains("running"),
+            "in-flight card with no partial should show 'running' placeholder: {text}"
+        );
+    }
+
+    #[test]
+    fn in_flight_tool_card_renders_idle_marker_for_heartbeat_partials() {
+        // Heartbeat partials carry no tail content, just a "still alive"
+        // signal. The status header should mark the card as idle so
+        // operators know the tool is alive but not actively producing
+        // output (vs. wedged with no signal at all).
+        let partial = omegon_traits::PartialToolResult {
+            tail: String::new(),
+            progress: omegon_traits::ToolProgress {
+                elapsed_ms: 6_000,
+                heartbeat: true,
+                phase: None,
+                units: None,
+                tally: None,
+            },
+            details: serde_json::json!(null),
+        };
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "bash".into(),
+                args_summary: None,
+                detail_args: Some("sleep 30".into()),
+                result_summary: None,
+                detail_result: None,
+                is_error: false,
+                complete: false,
+                expanded: false,
+                live_partial: Some(partial),
+            },
+        };
+        let (area, mut buf) = make_buf(80, 8);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+        assert!(
+            text.contains("idle"),
+            "heartbeat partial should render 'idle' marker: {text}"
+        );
+        assert!(
+            text.contains("6.0s"),
+            "heartbeat should still surface elapsed_ms: {text}"
+        );
+    }
+
+    #[test]
     fn tool_result_markdown_tables_truncate_wide_preview_cells_in_narrow_cards() {
         let seg = Segment {
             meta: SegmentMeta::default(),
@@ -2116,6 +2386,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(90, 18);
@@ -2169,6 +2440,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(60, 10);
@@ -2200,6 +2472,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let short = Segment {
@@ -2214,6 +2487,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
 
@@ -2254,6 +2528,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(28, 8);
@@ -2295,6 +2570,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let short = Segment {
@@ -2309,6 +2585,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
 
@@ -2347,6 +2624,7 @@ mod tests {
                 is_error: true,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(60, 8);
@@ -2377,6 +2655,7 @@ mod tests {
                 is_error: false,
                 complete: false,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(50, 8);
@@ -2434,6 +2713,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let h = tool.height(80, &t);
@@ -2456,6 +2736,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let h_narrow = tool.height(40, &t);
@@ -2485,6 +2766,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let h = tool.height(80, &t);
@@ -2506,6 +2788,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let h = tool.height(80, &t);
@@ -2592,6 +2875,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let seg_expanded = Segment {
@@ -2606,6 +2890,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: true,
+                live_partial: None,
             },
         };
 
@@ -2633,6 +2918,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(80, 12);
@@ -2665,6 +2951,7 @@ mod tests {
                 is_error: false,
                 complete: true,
                 expanded: false,
+                live_partial: None,
             },
         };
         let (area, mut buf) = make_buf(80, 10);

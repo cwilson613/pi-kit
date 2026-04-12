@@ -282,6 +282,29 @@ impl ConversationView {
         self.conv_state.auto_scroll_to_bottom();
     }
 
+    /// Stash the latest streaming partial onto the open tool card with
+    /// the given id. Called from the `AgentEvent::ToolUpdate` handler;
+    /// runners (bash, local_inference, mcp) push these as work happens.
+    /// Silently no-op if the card is already complete or not found —
+    /// late or stale updates shouldn't crash anything.
+    pub fn push_tool_update(&mut self, id: &str, partial: omegon_traits::PartialToolResult) {
+        for seg in self.segments.iter_mut().rev() {
+            if let SegmentContent::ToolCard {
+                id: tool_id,
+                complete: c,
+                live_partial: lp,
+                ..
+            } = &mut seg.content
+                && tool_id == id
+                && !*c
+            {
+                *lp = Some(partial);
+                self.conv_state.invalidate();
+                return;
+            }
+        }
+    }
+
     pub fn push_tool_end(&mut self, id: &str, is_error: bool, result_text: Option<&str>) {
         for seg in self.segments.iter_mut().rev() {
             if let SegmentContent::ToolCard {
@@ -290,6 +313,7 @@ impl ConversationView {
                 is_error: e,
                 result_summary: r,
                 detail_result: dr,
+                live_partial: lp,
                 ..
             } = &mut seg.content
                 && tool_id == id
@@ -297,6 +321,9 @@ impl ConversationView {
             {
                 *c = true;
                 *e = is_error;
+                // The completed-result render path takes over now; the
+                // last in-flight partial is stale.
+                *lp = None;
                 *r = result_text.and_then(|text| {
                     let line = text
                         .lines()

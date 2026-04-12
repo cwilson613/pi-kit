@@ -450,6 +450,7 @@ mod tests {
                     is_error: false,
                     complete: true,
                     expanded: false,
+                    live_partial: None,
                 },
             },
         ];

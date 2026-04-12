@@ -27,9 +27,19 @@ fn panel_bg(t: &dyn Theme) -> Color {
 }
 
 /// Write `text` left-to-right starting at `(x, y)`, clipped to `max_x`.
-/// Each character advances by its CJK-aware cell width (wide chars consume 2 cells;
-/// the second cell is blanked so subsequent characters land in the right column).
-/// Returns the x position after the last written character.
+/// Each character advances by its display cell width. Wide chars consume 2
+/// cells and the overflow cell is blanked so subsequent characters land in
+/// the right column. Returns the x position after the last written character.
+///
+/// **Width function**: uses `UnicodeWidthChar::width()` (non-CJK) rather
+/// than `width_cjk()`. The instruments panel renders Western tool glyphs
+/// (`◇`, `▶`, `▸`, `⚙`, etc.) which are East-Asian-Width=Ambiguous —
+/// `width_cjk()` reports them as 2 cells but most Western terminals
+/// render them in 1 cell. Using `width()` keeps the renderer's cell
+/// math in sync with the actual rendered width and with
+/// `widgets::visible_width()`, which is what the surrounding layout
+/// math uses. Mixing the two produced a 1-cell off-by-one that pushed
+/// names like `read` off-axis (the original "◇  read" extra-space bug).
 fn render_str_colored<F>(
     text: &str,
     x: u16,
@@ -47,7 +57,7 @@ where
         if cur_x >= max_x {
             break;
         }
-        let w = UnicodeWidthChar::width_cjk(ch).unwrap_or(1) as u16;
+        let w = UnicodeWidthChar::width(ch).unwrap_or(1) as u16;
         if cur_x.saturating_add(w) > max_x {
             break;
         }
@@ -127,6 +137,10 @@ fn strip_terminal_control(input: &str) -> String {
     out
 }
 
+/// Truncate `input` to at most `max_width` display cells. Uses
+/// `UnicodeWidthChar::width()` (non-CJK) for the same reason as
+/// `render_str_colored` above — keeps the cell math consistent with
+/// `widgets::visible_width()` and the surrounding layout code.
 fn truncate_display_width(input: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -134,7 +148,7 @@ fn truncate_display_width(input: &str, max_width: usize) -> String {
     let mut out = String::new();
     let mut used = 0usize;
     for ch in input.chars() {
-        let w = UnicodeWidthChar::width_cjk(ch).unwrap_or(1);
+        let w = UnicodeWidthChar::width(ch).unwrap_or(1);
         if used + w > max_width {
             break;
         }
@@ -173,46 +187,69 @@ fn intensity_color(intensity: f64) -> Color {
 }
 
 /// Compact glyph+label for the instrument panel. Keeps tool rows readable
-/// even in narrow terminals. Format: "⌘ label" — 2-char glyph prefix + short name.
+/// even in narrow terminals. Format: "{glyph} {label}" — single-cell glyph
+/// prefix + space + short name.
+///
+/// **Glyph constraints** (load-bearing — drift here breaks layout):
+///
+/// 1. **Single-cell width.** Every glyph must measure 1 cell under
+///    `UnicodeWidthChar::width()` so the renderer's cell math stays in
+///    sync with `widgets::visible_width()`. Wide chars (e.g. `⌛` U+231B
+///    HOURGLASS, `⏱` U+23F1 STOPWATCH) push the name column off-axis.
+///
+/// 2. **Not in the Unicode emoji set.** Even a `width()`-of-1 character
+///    can be rendered as a 2-cell emoji glyph by the terminal if the
+///    font has emoji-presentation for that codepoint. Several previously
+///    used glyphs (`⚙` U+2699 GEAR, `⚿` U+269F SQUARED KEY, `▪` U+25AA,
+///    `▫` U+25AB, `▶` U+25B6, `▲` U+25B2) are in `Emoji=Yes` and have
+///    been replaced with non-emoji equivalents.
+///
+/// 3. **Semantically meaningful where possible.** `chronos` gets a
+///    clock-like glyph, `change` gets a delta, `bash` gets a shell prompt
+///    `>`, etc. Nebulous tools (memory recall) accept abstract glyphs.
+///
+/// The `glyph_width_and_emoji_safety` test enforces (1) at compile/test
+/// time. (2) and (3) are documented constraints — drift would need a
+/// human reviewer to catch.
 pub(crate) fn tool_short_name(name: &str) -> String {
     let (glyph, label) = match name {
         // ── Core file ops ──
-        "bash" => ("⌘", "sh"),
-        "read" | "Read" => ("◇", "read"),
-        "write" | "Write" => ("◆", "write"),
-        "edit" | "Edit" => ("✎", "edit"),
+        "bash" => (">", "sh"),                    // shell prompt — was ⌘
+        "read" | "Read" => ("◇", "read"),         // open diamond = readonly
+        "write" | "Write" => ("◆", "write"),      // filled = mutating
+        "edit" | "Edit" => ("✎", "edit"),         // U+270E (NOT U+270F which is emoji)
         "view" => ("◈", "view"),
         // ── Git / speculate ──
-        "commit" => ("⊕", "commit"),
-        "speculate_start" => ("⊘", "spec∘"),
-        "speculate_check" => ("⊘", "spec?"),
-        "speculate_commit" => ("⊘", "spec✓"),
-        "speculate_rollback" => ("⊘", "spec✗"),
-        // ── Memory ──
-        "memory_store" => ("▪", "mem+"),
-        "memory_recall" => ("▫", "recall"),
-        "memory_query" => ("▫", "memq"),
-        "memory_archive" => ("▪", "mem⌫"),
-        "memory_supersede" => ("▪", "mem↻"),
-        "memory_connect" => ("▪", "mem⊷"),
-        "memory_focus" => ("▪", "focus"),
-        "memory_release" => ("▪", "unfoc"),
-        "memory_episodes" => ("▫", "epis"),
-        "memory_compact" => ("▪", "compct"),
-        "memory_search_archive" => ("▫", "marcv"),
-        "memory_ingest_lifecycle" => ("▪", "mingt"),
+        "commit" => ("⊕", "commit"),              // add to history
+        "speculate_start" => ("⎇", "spec∘"),      // alternative key = branch — was ⊘
+        "speculate_check" => ("⎇", "spec?"),
+        "speculate_commit" => ("⎇", "spec✓"),
+        "speculate_rollback" => ("⎇", "spec✗"),
+        // ── Memory ── (▪/▫ are in the emoji set; using ▣/▢ instead)
+        "memory_store" => ("▣", "mem+"),
+        "memory_recall" => ("▢", "recall"),
+        "memory_query" => ("▢", "memq"),
+        "memory_archive" => ("▣", "mem⌫"),
+        "memory_supersede" => ("▣", "mem↻"),
+        "memory_connect" => ("▣", "mem⊷"),
+        "memory_focus" => ("▣", "focus"),
+        "memory_release" => ("▣", "unfoc"),
+        "memory_episodes" => ("▢", "epis"),
+        "memory_compact" => ("▣", "compct"),
+        "memory_search_archive" => ("▢", "marcv"),
+        "memory_ingest_lifecycle" => ("▣", "mingt"),
         // ── Design + lifecycle ──
         "design_tree" => ("△", "d.tree"),
-        "design_tree_update" => ("▲", "d.tree↑"),
+        "design_tree_update" => ("⟁", "d.tree↑"), // nested triangle — was ▲ (emoji)
         "openspec_manage" => ("◎", "opsx"),
         // ── Cleave / decomposition ──
-        "cleave_assess" => ("⟁", "assess"),
-        "cleave_run" => ("⟁", "cleave"),
+        "cleave_assess" => ("⊳", "assess"),       // math triangle — was ⟁ (now design_tree_update)
+        "cleave_run" => ("⊳", "cleave"),
         "delegate" => ("⇉", "deleg"),
         "delegate_result" => ("⇉", "d.res"),
         "delegate_status" => ("⇉", "d.stat"),
         // ── Web / render ──
-        "web_search" => ("⊕", "search"),
+        "web_search" => ("⌖", "search"),          // position indicator — was ⊕ (collided with commit)
         "codebase_search" => ("⌕", "cbase"),
         "codebase_index" => ("⌕", "cidx"),
         "render_diagram" => ("⬡", "diag"),
@@ -221,22 +258,26 @@ pub(crate) fn tool_short_name(name: &str) -> String {
         "ask_local_model" => ("⊛", "local"),
         "list_local_models" => ("⊛", "l.list"),
         "manage_ollama" => ("⊛", "ollama"),
-        // ── Settings / meta ──
-        "set_model_tier" => ("⚙", "tier"),
-        "set_thinking_level" => ("⚙", "think"),
-        "switch_to_offline_driver" => ("⚙", "offln"),
-        "manage_tools" => ("⚙", "tools"),
-        "whoami" => ("⚙", "whoami"),
-        "chronos" => ("⚙", "chrono"),
-        "change" => ("⚙", "change"),
-        // ── Auth / persona ──
-        "auth_status" => ("⚿", "auth"),
-        "harness_settings" => ("⚿", "hrnss"),
-        "switch_persona" => ("⚿", "persna"),
-        "switch_tone" => ("⚿", "tone"),
-        "list_personas" => ("⚿", "pers?"),
-        // ── Fallback: truncate ──
-        other => return other.to_string(),
+        // ── Settings / meta ── (⚙ is in the emoji set; using ⌥ for settings cluster)
+        "set_model_tier" => ("⌥", "tier"),
+        "set_thinking_level" => ("⌥", "think"),
+        "switch_to_offline_driver" => ("⌥", "offln"),
+        "manage_tools" => ("⌥", "tools"),
+        "whoami" => ("⊙", "whoami"),              // self/identity — was ⚙
+        "chronos" => ("◷", "chrono"),             // clock-quadrant — was ⚙
+        "change" => ("Δ", "change"),              // delta — was ⚙
+        // ── Auth / persona ── (⚿ is in the emoji set; using ※)
+        "auth_status" => ("※", "auth"),
+        "harness_settings" => ("※", "hrnss"),
+        "switch_persona" => ("※", "persna"),
+        "switch_tone" => ("※", "tone"),
+        "list_personas" => ("※", "pers?"),
+        // ── Fallback: prefix with a generic single-cell glyph so the
+        // panel still gets an icon column for unknown tools (the
+        // original `context_status` "no icon at all" bug). Also
+        // truncate the name to a reasonable label length to avoid
+        // immediately blowing the column.
+        other => return format!("· {other}"),
     };
     format!("{glyph} {label}")
 }
@@ -1291,12 +1332,18 @@ impl InstrumentPanel {
             clear_row(y, inner.x, inner.right(), buf, panel_bg(t));
 
             // ── Status indicator ──
+            // Same emoji-safety constraint as `tool_short_name`. The
+            // previous "▶" running glyph (U+25B6) and "⚡" upstream-
+            // exhausted glyph (U+26A1) are both in the Unicode emoji
+            // set. Replaced with `▷` (U+25B7) and `↯` (U+21AF), both
+            // single-cell, neither in the emoji set. The other glyphs
+            // (`✓`, `↺`, `✗`, `○`) are already safe.
             let (ind_ch, ind_color) = match child.status.as_str() {
-                "running" => ("▶ ", Color::Rgb(232, 186, 104)),
+                "running" => ("▷ ", Color::Rgb(232, 186, 104)),
                 "completed" => ("✓ ", Color::Rgb(42, 180, 200)),
                 "merged_after_failure" => ("↺ ", Color::Rgb(214, 170, 40)),
                 "failed" => ("✗ ", Color::Rgb(224, 72, 72)),
-                "upstream_exhausted" => ("⚡ ", Color::Rgb(214, 170, 40)),
+                "upstream_exhausted" => ("↯ ", Color::Rgb(214, 170, 40)),
                 _ => ("○ ", Color::Rgb(40, 56, 72)), // pending / unknown
             };
             let mut x = inner.x;
@@ -1333,8 +1380,18 @@ impl InstrumentPanel {
             }
 
             // ── Activity: tool or turn (dim) ──
+            // Note the explicit space after the arrow. The previous
+            // version was `format!("→{tool}")` and relied on
+            // `render_str_colored` reserving 2 cells for `→` (under
+            // the old `width_cjk` measurement) to produce a visual
+            // gap via the wide-char overflow blank. After fixing the
+            // width function to non-CJK `width()` (which correctly
+            // measures `→` as 1 cell on Western terminals), that
+            // accidental gap disappeared. The space is now explicit
+            // in the source, which both renders correctly and matches
+            // operator expectations.
             let activity = if let Some(ref tool) = child.last_tool {
-                format!("→{tool}")
+                format!("→ {tool}")
             } else if let Some(turn) = child.last_turn {
                 format!("T{turn}")
             } else if child.status == "running" {
@@ -1467,10 +1524,15 @@ impl InstrumentPanel {
                 (1.0 - age / 120.0).max(0.0)
             };
 
+            // Indicator glyphs are subject to the same emoji-safety
+            // constraint as `tool_short_name` — see that function's
+            // doc comment. `▶` U+25B6 (the previous "running"
+            // indicator) is in the Unicode emoji set; `▷` U+25B7 is
+            // not. `✗` U+2717, `▸` U+25B8 are both safe.
             let indicator = if tool.is_error {
                 "✗ "
             } else if tool.running {
-                "▶ "
+                "▷ "
             } else if age < 2.0 {
                 "▸ "
             } else {
@@ -1537,12 +1599,21 @@ impl InstrumentPanel {
             x = render_str_colored(indicator, x, y, inner.right(), panel_bg(t), buf, |_| {
                 ind_color
             });
+            // Truncate-with-ellipsis logic. The previous version had an
+            // off-by-one: it always truncated to `name_w - 1` and only
+            // added `…` when `width > name_w`, so a name whose width
+            // exactly equalled `name_w` was silently chopped by one
+            // character with no visual indicator (the original
+            // "context_statu" bug). Rewritten to:
+            //   - if it fits, render as-is
+            //   - if it doesn't, truncate to `name_w - 1` and append `…`
+            //     so the total displayed width is exactly `name_w`
             let short = tool_short_name(&tool.name);
-            let display_name = truncate_display_width(&short, name_w.saturating_sub(1));
             let display_name = if visible_width(&short) > name_w {
-                format!("{}…", display_name)
+                let truncated = truncate_display_width(&short, name_w.saturating_sub(1));
+                format!("{truncated}…")
             } else {
-                display_name
+                short.clone()
             };
             x = render_str_colored(&display_name, x, y, inner.right(), panel_bg(t), buf, |_| {
                 name_color
@@ -1581,31 +1652,29 @@ impl InstrumentPanel {
                 x += 1;
             }
             // Bar character degrades with recency — three visual channels:
-            // fill length (how much bar), color (teal intensity), character (signal density)
+            // fill length (how much bar), color (teal intensity), character
+            // (signal density). The empty track is rendered with spaces
+            // (NOT dots) so the boundary between filled and empty is
+            // always visually distinct — the previous version used '·'
+            // for both the fading-echo bar AND the empty track, producing
+            // an indistinguishable row of dots at low recency.
             let bar_char = if recency > 0.7 {
-                '≋'
-            }
-            // strong — just fired
-            else if recency > 0.3 {
-                '≈'
-            }
-            // recent — decaying
-            else if recency > 0.05 {
-                '∿'
-            }
-            // fading echo
-            else {
-                '·'
-            }; // nearly silent
+                '≋' // strong — just fired
+            } else if recency > 0.3 {
+                '≈' // recent — decaying
+            } else if recency > 0.05 {
+                '∿' // fading echo
+            } else {
+                '·' // nearly silent
+            };
             for i in 0..bar_w {
                 if x >= inner.right() {
                     break;
                 }
-                let ch = if i < bar_filled { bar_char } else { '·' };
-                let c = if i < bar_filled {
-                    bar_color
+                let (ch, c) = if i < bar_filled {
+                    (bar_char, bar_color)
                 } else {
-                    Color::Rgb(16, 28, 36)
+                    (' ', panel_bg(t))
                 };
                 if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                     cell.set_char(ch);
@@ -1988,6 +2057,118 @@ mod tests {
     fn tool_short_name_compacts_codebase_search() {
         assert_eq!(tool_short_name("codebase_search"), "⌕ cbase");
         assert_eq!(tool_short_name("codebase_index"), "⌕ cidx");
+    }
+
+    #[test]
+    fn tool_short_name_glyphs_are_single_cell_and_well_formed() {
+        // Every entry in the tool_short_name table must satisfy the
+        // layout invariants documented at the top of that function:
+        //
+        //   1. The leading glyph is exactly 1 display cell under
+        //      `UnicodeWidthChar::width()` (non-CJK). This keeps the
+        //      panel's name column on-axis.
+        //   2. The result is "{glyph} {label}" — a glyph, a single
+        //      space, and a non-empty label. No bare names slip
+        //      through.
+        //
+        // The list below is the canonical set of tool names known to
+        // the panel. If you add a new branch to `tool_short_name`,
+        // add the name here so this test exercises it.
+        //
+        // Emoji-presentation safety (constraint 2 in the doc comment)
+        // is NOT enforced here automatically because we don't have
+        // the Unicode emoji table at hand in tests; reviewers must
+        // catch drift on additions. The doc comment lists the known
+        // emoji-set codepoints we deliberately avoid.
+        let known = [
+            // core
+            "bash", "read", "write", "edit", "view",
+            // git/speculate
+            "commit", "speculate_start", "speculate_check",
+            "speculate_commit", "speculate_rollback",
+            // memory
+            "memory_store", "memory_recall", "memory_query",
+            "memory_archive", "memory_supersede", "memory_connect",
+            "memory_focus", "memory_release", "memory_episodes",
+            "memory_compact", "memory_search_archive",
+            "memory_ingest_lifecycle",
+            // design + lifecycle
+            "design_tree", "design_tree_update", "openspec_manage",
+            // cleave
+            "cleave_assess", "cleave_run", "delegate",
+            "delegate_result", "delegate_status",
+            // web/render
+            "web_search", "codebase_search", "codebase_index",
+            "render_diagram", "generate_image_local",
+            // local inference
+            "ask_local_model", "list_local_models", "manage_ollama",
+            // settings/meta
+            "set_model_tier", "set_thinking_level",
+            "switch_to_offline_driver", "manage_tools",
+            "whoami", "chronos", "change",
+            // auth/persona
+            "auth_status", "harness_settings", "switch_persona",
+            "switch_tone", "list_personas",
+        ];
+        for name in known {
+            let result = tool_short_name(name);
+            let mut chars = result.chars();
+            let glyph = chars
+                .next()
+                .unwrap_or_else(|| panic!("tool_short_name({name:?}) returned empty"));
+            let glyph_width = unicode_width::UnicodeWidthChar::width(glyph).unwrap_or(0);
+            assert_eq!(
+                glyph_width, 1,
+                "tool_short_name({name:?}) leading glyph {glyph:?} (U+{:04X}) must be 1 cell wide, got {glyph_width}",
+                glyph as u32
+            );
+            let after_glyph = chars.next();
+            assert_eq!(
+                after_glyph,
+                Some(' '),
+                "tool_short_name({name:?}) must have a space separator after the glyph"
+            );
+            let label: String = chars.collect();
+            assert!(
+                !label.is_empty(),
+                "tool_short_name({name:?}) must have a non-empty label after the glyph + space"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_short_name_unknown_tool_falls_back_to_glyph_prefix() {
+        // The fallback for tools not in the hardcoded match must still
+        // produce a glyph + space + name (the original "context_status
+        // has no icon" bug). Without a fallback prefix, the tools
+        // panel had a misaligned column for unknown tools.
+        let result = tool_short_name("context_status");
+        let mut chars = result.chars();
+        let glyph = chars.next().unwrap();
+        assert_eq!(
+            unicode_width::UnicodeWidthChar::width(glyph).unwrap_or(0),
+            1,
+            "fallback glyph must be single-cell"
+        );
+        assert_eq!(chars.next(), Some(' '));
+        let label: String = chars.collect();
+        assert_eq!(label, "context_status");
+    }
+
+    #[test]
+    fn truncate_display_width_uses_non_cjk_widths_for_ambiguous_glyphs() {
+        // The previous implementation used `UnicodeWidthChar::width_cjk()`,
+        // which reports East-Asian-Width=Ambiguous codepoints as 2 cells.
+        // The instruments panel renders Western glyphs that the terminal
+        // draws in 1 cell — `width_cjk` produced a 1-cell off-by-one
+        // that pushed the name column off-axis (the original "◇  read"
+        // bug). This test pins the non-CJK choice in place.
+        // ◇ U+25C7 is East-Asian-Width=Ambiguous: width_cjk()=2, width()=1.
+        let result = truncate_display_width("◇ read", 6);
+        assert_eq!(
+            result, "◇ read",
+            "ambiguous-width glyphs must be measured as single-cell so the full name fits in 6 columns"
+        );
     }
 
     #[test]

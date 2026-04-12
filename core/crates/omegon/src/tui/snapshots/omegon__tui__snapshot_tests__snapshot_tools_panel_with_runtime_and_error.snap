@@ -1,13 +1,13 @@
 ---
 source: crates/omegon/src/tui/snapshot_tests.rs
-assertion_line: 347
+assertion_line: 495
 expression: render_to_string(&terminal)
 ---
 ┌ tools ─────────────────────────────────┐
 │▸ ⌕ cbase        350ms≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋│
-│▸ ▫ recall       220ms≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋·│
-│✗ ⊕  search      8.1s ≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋·│
-│  ⌘ sh          41.0s ≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋··│
+│▸ ▢ recall       220ms≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋ │
+│✗ ⌖ search       8.1s ≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋ │
+│  > sh          41.0s ≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋  │
 │                                        │
 │                                        │
 │                                        │

@@ -82,13 +82,20 @@ fn session_reset_clears_instrument_panel_tool_activity() {
         args: serde_json::json!({}),
     });
 
+    // Use a substring stem that survives the instruments-panel column
+    // truncation. The panel renders unknown tools (i.e. ones not in
+    // `tool_short_name`'s match table) with a `· ` fallback prefix and
+    // truncates the result to fit a 14-cell name column, so the literal
+    // "context_clear" is not preserved — it ends up as `· context_cl…`.
+    // The negative assertion below uses the same stem so it remains
+    // strict against the post-reset cleared panel.
     let before = render_app_to_string(&mut app, 140, 36);
-    assert!(before.contains("context_clear") || before.contains("context_clear 0"), "got {before}");
+    assert!(before.contains("context_cl"), "got {before}");
 
     app.handle_agent_event(AgentEvent::SessionReset);
 
     let after = render_app_to_string(&mut app, 140, 36);
-    assert!(!after.contains("context_clear"), "got {after}");
+    assert!(!after.contains("context_cl"), "got {after}");
     assert!(after.contains("New session started. Previous session saved."), "got {after}");
 }
 

@@ -186,6 +186,16 @@ pub enum SegmentContent {
         /// `complete` to true. `None` for tools that don't stream or
         /// before the first partial arrives.
         live_partial: Option<omegon_traits::PartialToolResult>,
+        /// Wall-clock instant captured when the tool card was created
+        /// (i.e. when `ToolStart` arrived). The renderer prefers this
+        /// over `live_partial.progress.elapsed_ms` for the displayed
+        /// timer because it ticks with every frame draw — the partial's
+        /// elapsed is captured at flush time and freezes between
+        /// partials, which looks broken to an operator watching a
+        /// long-running tool. `None` for legacy fixtures that don't
+        /// set it; the renderer falls back to the partial's value in
+        /// that case.
+        started_at: Option<std::time::Instant>,
     },
 
     /// System notification (slash command response, info message).
@@ -238,6 +248,7 @@ impl Segment {
                 complete: false,
                 expanded: false,
                 live_partial: None,
+                started_at: Some(std::time::Instant::now()),
             },
         }
     }
@@ -456,6 +467,7 @@ impl Segment {
                 complete,
                 expanded,
                 live_partial,
+                started_at,
                 ..
             } => {
                 render_tool_card(
@@ -466,6 +478,7 @@ impl Segment {
                     *complete,
                     *expanded,
                     live_partial.as_ref(),
+                    *started_at,
                     &self.meta,
                     area,
                     buf,
@@ -936,6 +949,7 @@ fn render_tool_card(
     complete: bool,
     expanded: bool,
     live_partial: Option<&omegon_traits::PartialToolResult>,
+    started_at: Option<std::time::Instant>,
     meta: &SegmentMeta,
     area: Rect,
     buf: &mut Buffer,
@@ -1183,15 +1197,26 @@ fn render_tool_card(
                 };
                 status_parts.push(label);
             }
-            if partial.progress.elapsed_ms > 0 {
-                let secs = partial.progress.elapsed_ms / 1000;
-                if secs >= 60 {
-                    status_parts.push(format!("{}m{:02}s", secs / 60, secs % 60));
-                } else {
-                    let tenths = (partial.progress.elapsed_ms % 1000) / 100;
-                    status_parts.push(format!("{secs}.{tenths}s"));
-                }
+        }
+        // Elapsed time: prefer the live wall-clock from `started_at` so
+        // the displayed timer ticks with every frame draw. Fall back to
+        // the partial's `elapsed_ms` (captured at flush time, freezes
+        // between partials) when no `started_at` is available — that's
+        // the legacy/test path where the segment doesn't carry one.
+        let elapsed_ms: Option<u64> = started_at
+            .map(|started| started.elapsed().as_millis() as u64)
+            .or_else(|| live_partial.map(|p| p.progress.elapsed_ms))
+            .filter(|ms| *ms > 0);
+        if let Some(ms) = elapsed_ms {
+            let secs = ms / 1000;
+            if secs >= 60 {
+                status_parts.push(format!("{}m{:02}s", secs / 60, secs % 60));
+            } else {
+                let tenths = (ms % 1000) / 100;
+                status_parts.push(format!("{secs}.{tenths}s"));
             }
+        }
+        if let Some(partial) = live_partial {
             if partial.progress.heartbeat {
                 status_parts.push("idle".to_string());
             }
@@ -1932,6 +1957,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 8);
@@ -1968,6 +1994,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(90, 8);
@@ -2006,6 +2033,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 12);
@@ -2059,6 +2087,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(100, 16);
@@ -2267,6 +2296,7 @@ mod tests {
                 complete: false,
                 expanded: false,
                 live_partial: Some(partial),
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 18);
@@ -2313,6 +2343,7 @@ mod tests {
                 complete: false,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 8);
@@ -2321,6 +2352,61 @@ mod tests {
         assert!(
             text.contains("running"),
             "in-flight card with no partial should show 'running' placeholder: {text}"
+        );
+    }
+
+    #[test]
+    fn in_flight_tool_card_uses_wall_clock_when_started_at_set() {
+        // When `started_at` is populated, the displayed elapsed timer
+        // should reflect the wall-clock since that instant — NOT the
+        // partial's `elapsed_ms` field. This is the fix for "timer
+        // freezes between partials" — bash can go 5 seconds quiet
+        // between idle heartbeats, but the displayed timer should
+        // keep ticking on every frame draw.
+        //
+        // Construct a card with `started_at` set 8 seconds in the past
+        // and a partial whose internal `elapsed_ms` says only 2 seconds
+        // (i.e. the partial was emitted early in the run and is now
+        // stale). The rendered output should show ~8s, not 2s.
+        let started_in_past =
+            std::time::Instant::now() - std::time::Duration::from_secs(8);
+        let stale_partial = omegon_traits::PartialToolResult {
+            tail: "still working".to_string(),
+            progress: omegon_traits::ToolProgress {
+                elapsed_ms: 2_000, // stale: from when the partial was emitted
+                heartbeat: false,
+                phase: None,
+                units: None,
+                tally: None,
+            },
+            details: serde_json::json!(null),
+        };
+        let seg = Segment {
+            meta: SegmentMeta::default(),
+            content: SegmentContent::ToolCard {
+                id: "1".into(),
+                name: "bash".into(),
+                args_summary: None,
+                detail_args: Some("sleep 60".into()),
+                result_summary: None,
+                detail_result: None,
+                is_error: false,
+                complete: false,
+                expanded: false,
+                live_partial: Some(stale_partial),
+                started_at: Some(started_in_past),
+            },
+        };
+        let (area, mut buf) = make_buf(80, 8);
+        seg.render(area, &mut buf, &Alpharius);
+        let text = buf_text(&buf, area);
+        assert!(
+            text.contains("8.0s") || text.contains("8.1s") || text.contains("7.9s"),
+            "wall-clock should override stale partial elapsed_ms (~8s expected, not 2.0s): {text}"
+        );
+        assert!(
+            !text.contains("2.0s"),
+            "stale partial elapsed_ms (2.0s) should NOT appear when started_at is set: {text}"
         );
     }
 
@@ -2354,6 +2440,7 @@ mod tests {
                 complete: false,
                 expanded: false,
                 live_partial: Some(partial),
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 8);
@@ -2387,6 +2474,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(90, 18);
@@ -2441,6 +2529,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(60, 10);
@@ -2473,6 +2562,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let short = Segment {
@@ -2488,6 +2578,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
 
@@ -2529,6 +2620,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(28, 8);
@@ -2571,6 +2663,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let short = Segment {
@@ -2586,6 +2679,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
 
@@ -2625,6 +2719,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(60, 8);
@@ -2656,6 +2751,7 @@ mod tests {
                 complete: false,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(50, 8);
@@ -2714,6 +2810,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let h = tool.height(80, &t);
@@ -2737,6 +2834,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let h_narrow = tool.height(40, &t);
@@ -2767,6 +2865,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let h = tool.height(80, &t);
@@ -2789,6 +2888,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let h = tool.height(80, &t);
@@ -2876,6 +2976,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let seg_expanded = Segment {
@@ -2891,6 +2992,7 @@ mod tests {
                 complete: true,
                 expanded: true,
                 live_partial: None,
+                started_at: None,
             },
         };
 
@@ -2919,6 +3021,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 12);
@@ -2952,6 +3055,7 @@ mod tests {
                 complete: true,
                 expanded: false,
                 live_partial: None,
+                started_at: None,
             },
         };
         let (area, mut buf) = make_buf(80, 10);

@@ -451,6 +451,7 @@ mod tests {
                     complete: true,
                     expanded: false,
                     live_partial: None,
+                    started_at: None,
                 },
             },
         ];

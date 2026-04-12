@@ -1556,7 +1556,7 @@ fn slash_workspace_new_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceNew { label: ref label },
+            request: crate::control_runtime::ControlRequest::WorkspaceNew { ref label },
             ..
         } if label == "docs-pass" => {}
         other => panic!("expected workspace new request, got {other:?}"),

@@ -7,38 +7,18 @@ use anyhow::{Context, Result};
 use omegon_traits::DaemonEventEnvelope;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
-use serde_json::Value;
 use tempfile::TempDir;
 
 #[derive(Debug, Deserialize)]
 struct StartupEvent {
-    #[serde(rename = "type")]
-    event_type: String,
-    schema_version: u32,
-    pid: u32,
-    http_base: String,
     startup_url: String,
-    health_url: String,
     ready_url: String,
-    ws_url: String,
-    auth_mode: String,
-    auth_source: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct StartupPayload {
-    schema_version: u32,
-    addr: String,
     http_base: String,
-    state_url: String,
-    startup_url: String,
-    health_url: String,
-    ready_url: String,
-    ws_url: String,
     token: String,
-    auth_mode: String,
-    auth_source: String,
-    instance_descriptor: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +69,7 @@ fn spawn_daemon() -> Result<(SpawnedDaemon, StartupEvent)> {
 
     let mut child = Command::new(bin)
         .args(["serve", "--control-port", "7854", "--strict-port"])
+        .env("RUST_LOG", "error")
         .current_dir(tmp.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

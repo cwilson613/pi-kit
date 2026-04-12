@@ -24,12 +24,27 @@ VERSION=0.15.10 curl -fsSL https://omegon.styrene.dev/install.sh | sh
 curl -fsSL https://omegon.styrene.dev/install.sh | sh -s -- --no-confirm</code></pre>
 
   <h2>Homebrew (macOS / Linux)</h2>
+
+  <h3>Stable</h3>
   <pre><code>brew tap styrene-lab/tap
 brew install omegon</code></pre>
   <p>
-    The Homebrew formula downloads the latest GitHub release, verifies the checksum,
-    and installs to your Homebrew prefix. Updates via <code>brew upgrade omegon</code>.
+    Tracks the latest stable release. Updates via <code>brew upgrade omegon</code>.
   </p>
+
+  <h3>RC channel</h3>
+  <pre><code>brew tap styrene-lab/tap
+brew install styrene-lab/tap/omegon-rc</code></pre>
+  <p>
+    Tracks the latest release candidate. Updated automatically by CI on every RC cut.
+    Updates via <code>brew upgrade styrene-lab/tap/omegon-rc</code>.
+  </p>
+  <p>
+    <code>omegon-rc</code> conflicts with <code>omegon</code> — both install the same binary name.
+    Switch back to stable with:
+  </p>
+  <pre><code>brew unlink omegon-rc
+brew install omegon</code></pre>
 
   <h2>GitHub Releases</h2>
   <p>
@@ -101,8 +116,22 @@ omegon</code></pre>
   <h2>Updates</h2>
   <p>
     Omegon checks for updates automatically at startup (non-blocking).
-    When a newer version is available, you can run <code>/update</code> to inspect and install it.
+    When a newer version is available, the TUI shows a notification.
   </p>
+
+  <h3>Homebrew installs</h3>
+  <pre><code># Stable
+brew upgrade omegon
+
+# RC channel
+brew upgrade styrene-lab/tap/omegon-rc</code></pre>
+  <p>
+    The in-app <code>/upgrade</code> command detects Homebrew-managed installs and redirects
+    to the appropriate <code>brew upgrade</code> command automatically. Do not use the install
+    script to update a Homebrew-managed binary — it will conflict with brew's version tracking.
+  </p>
+
+  <h3>Script installs</h3>
   <pre><code># Re-run the install script to update
 curl -fsSL https://omegon.styrene.dev/install.sh | sh</code></pre>
 

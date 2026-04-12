@@ -60,6 +60,7 @@ const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
         <a href="/docs/install">other versions &amp; options →</a>
       </p>
       <p class="hero-alt-install">or <code>brew tap styrene-lab/tap && brew install omegon</code></p>
+      <p class="hero-alt-install hero-alt-rc">RC channel: <code>brew install styrene-lab/tap/omegon-rc</code></p>
 
       <div class="hero-cta">
         <a href="/docs/get-started" class="btn btn-primary">Get Working Fast →</a>
@@ -261,6 +262,12 @@ const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
   }
   .hero-version a { color: var(--muted); }
   .hero-version a:hover { color: var(--fg); }
+  .hero-alt-rc {
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: -10px;
+  }
+
   .version-tag {
     font-family: monospace;
   }

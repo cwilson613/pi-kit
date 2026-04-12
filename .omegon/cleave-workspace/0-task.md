@@ -1,124 +1,29 @@
 ---
 task_id: 0
-label: auth-core-audit
-siblings: [1:startup-and-status-audit, 2:consumer-surface-audit]
+label: changelog
+siblings: [1:landing, 2:install-docs]
 ---
 
-# Task 0: auth-core-audit
+# Task 0: changelog
 
 ## Root Directive
 
-> Perform a full sweep of the auth and login subsystems: audit storage, provider mapping, startup hydration, status surfaces, logout, refresh flows, and consumer checks for consistency; fix any concrete issues found, add tests, and commit the changes.
+> Full pass on CHANGELOG.md, landing page, and install docs to reflect current 0.15.10-rc state: brew RC channel, upgrade path, release flow fixes, and accurate feature descriptions.
 
 ## Mission
 
-Audit and fix auth core consistency in core/crates/omegon/src/auth.rs and closely related provider resolution code: provider map usage, auth.json read/write/refresh/logout semantics, persistence verification, and tests for canonical credential behavior.
+Update CHANGELOG.md Unreleased section to add all changes since 0.15.10 stable entry: brew RC channel (omegon-rc formula, brew install styrene-lab/tap/omegon-rc), brew-managed upgrade guard in update.rs (detects Cellar path, redirects to brew upgrade), developer just cut-rc command, release workflow fixes (draft-before-upload, lifecycle doctor skip, rc validation split), TUI fixes (nuclear panel clear #36, table body trailing pipe #37), and glibc legacy build enforcement with Linux ABI validation matrix.
 
 ## Scope
 
-- `core/crates/omegon/src/auth.rs`
-- `core/crates/omegon/src/providers.rs`
+- `CHANGELOG.md`
 
 **Depends on:** none (independent)
 
 ## Siblings
 
-- **startup-and-status-audit**: Audit and fix startup hydration and status/reporting surfaces so persisted credentials, environment export, and auth status outputs are consistent across runs. Cover setup, main/control auth commands, and add tests where practical.
-- **consumer-surface-audit**: Audit and fix consumer/UI surfaces that infer auth availability so they use canonical auth resolution instead of ad hoc env checks, while preserving explicit product-policy distinctions. Cover tutorial/model catalog/TUI-related surfaces and add tests.
-
-## Dependency Versions
-
-Use these exact versions — do not rely on training data for API shapes:
-
-```toml
-# core/crates/omegon/Cargo.toml
-[dependencies]
-omegon-extension = { path = "../omegon-extension" }
-omegon-traits = { path = "../omegon-traits" }
-omegon-git = { path = "../omegon-git" }
-omegon-memory = { path = "../omegon-memory" }
-omegon-codescan = { path = "../omegon-codescan" }
-omegon-secrets = { path = "../omegon-secrets" }
-opsx-core = { path = "../opsx-core" }
-tokio = { workspace = true }
-serde = { workspace = true }
-toml = "0.8"
-serde_json = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-async-trait = { workspace = true }
-clap = { workspace = true }
-rusqlite = { workspace = true }
-tokio-util = { workspace = true }
-indexmap = { workspace = true }
-dirs = "6.0.0"
-unicode-truncate = "2.0"
-chrono = "0.4"
-libc = "0.2"
-regex-lite = "0.1"
-ratatui = "0.30.0"
-syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
-tui-syntax-highlight = "0.2"
-tachyonfx = { version = "0.25.0", features = ["sendable"] }
-crossterm = "0.29.0"
-reqwest = { version = "0.13.2", features = ["json", "stream"] }
-tokio-stream = "0.1.18"
-sha2 = "0.10.9"
-secrecy = "0.10"
-sysinfo = "0.33"
-getrandom = "0.4.2"
-open = "5.3.3"
-tracing-appender = "0.2.4"
-unicode-width = "0.2.2"
-ratatui-image = { version = "10.0.6", default-features = false, features = ["crossterm", "image-defaults"] }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-axum = { version = "0.8.8", features = ["ws", "macros"] }
-tower-http = { version = "0.6.8", features = ["cors"] }
-futures-util = "0.3.32"
-base64 = "0.22"
-hmac = "0.12"
-ansi-to-tui = "8.0"
-tui-tree-widget = "0.24"
-ratatui-toaster = "0.1"
-ratatui-textarea = { version = "0.8", features = ["crossterm"] }
-tui-popup = "0.7"
-hyperrat = "0.1"
-rmcp = { version = "1.2", features = ["transport-child-process", "client", "transport-streamable-http-client-reqwest", "auth"], default-features = false }
-tar = "0.4"
-flate2 = "1.0"
-sigstore = { version = "0.13.0", default-features = false, features = ["cosign", "rustls-tls"] }
-x509-parser = "0.17"
-rpassword = "7"
-
-[dev-dependencies]
-insta = "1.46"
-tempfile = "3.27.0"
-
-```
-
-## Test Convention
-
-Follow this pattern from an existing test in the same crate:
-
-```rust
-// From bridge.rs
-    #[test]
-    fn llm_message_user_round_trip() {
-        let msg = LlmMessage::User {
-            content: "hello".into(),
-            images: vec![],
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""role":"user"#));
-        let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
-        match parsed {
-            LlmMessage::User { content, .. } => assert_eq!(content, "hello"),
-            _ => panic!("wrong variant"),
-        }
-    }
-```
+- **landing**: Update site/src/pages/index.astro landing page: add RC install option alongside the brew stable line (brew install styrene-lab/tap/omegon-rc), update the hero-alt-install to mention both stable and RC channel, verify and update stats (providers count, tools count, binary size). Keep the existing tone and style.
+- **install-docs**: Update site/src/pages/docs/install.astro: add RC channel section under Homebrew with brew install styrene-lab/tap/omegon-rc and brew upgrade styrene-lab/tap/omegon-rc, update the Updates section to note that brew-managed installs should use brew upgrade (not the install script), document that the in-app /upgrade command redirects brew-managed installs to brew upgrade automatically.
 
 
 
@@ -126,27 +31,7 @@ Follow this pattern from an existing test in the same crate:
 
 ### Test Convention
 
-Write tests as #[test] functions in the same file or a tests submodule
-
-Example from codebase:
-
-```rust
-// From bridge.rs
-    #[test]
-    fn llm_message_user_round_trip() {
-        let msg = LlmMessage::User {
-            content: "hello".into(),
-            images: vec![],
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""role":"user"#));
-        let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
-        match parsed {
-            LlmMessage::User { content, .. } => assert_eq!(content, "hello"),
-            _ => panic!("wrong variant"),
-        }
-    }
-```
+Write tests for new functions and changed behavior — co-locate as *.test.ts
 
 
 ## Contract

@@ -5,17 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Added
+
+- **Homebrew RC channel** — `brew tap styrene-lab/tap && brew install styrene-lab/tap/omegon-rc` installs the latest RC build. The `omegon-rc` formula in the tap is updated automatically by CI on every RC release. Switch back to stable with `brew unlink omegon-rc && brew install omegon`.
+- **`just cut-rc` developer command** — cuts an RC from the main workspace without manual setup. Validates that `main` is clean and pushed, clones a fresh release workspace from GitHub (correct origin, no stale state), runs `just rc`, and pulls the resulting commit + tag back into local `main`.
+- **Brew-managed upgrade guard** — `is_homebrew_managed()` detects when the running binary lives in a Homebrew Cellar path and refuses in-place upgrade, redirecting the operator to `brew upgrade omegon` or `brew upgrade styrene-lab/tap/omegon-rc` as appropriate. Prevents Homebrew version tracking corruption.
 - **Typed control promotion across transport surfaces** — operator-facing control families now route through canonical typed requests instead of bespoke slash-only handlers. Recent promotions include `skills/plugin`, `secrets/vault`, and the minimal `cleave/delegate` status surface, with matching TUI, IPC, and WebSocket routing.
-- **Secrets and vault control normalization** — `/secrets` and `/vault` no longer depend on the old bespoke runtime path. Secret view/set/get/delete and vault status/configuration flows now run through shared control responders, and transport policy is explicit and conservative.
 - **Minimal cleave/delegate typed status surface** — `cleave status`, `cleave cancel <label>`, and `delegate status` are now first-class typed control requests. Cleave execution remains feature-owned and continues to route through the orchestration bus by design.
-- **Control matrix and transport-policy reconciliation** — control docs and focused tests now reflect the live transport vocabulary and role posture for the promoted command families, reducing drift between slash, IPC, WebSocket, and runtime behavior.
-
-- **Linux release compatibility path** — release CI now builds GNU/Linux artifacts with `cargo-zigbuild` instead of inheriting the glibc baseline of `ubuntu-latest` from plain `cargo build`. This is intended to lower the Linux ABI floor for Homebrew/GitHub release users rather than forcing a modern-glibc-only support policy.
-
-- **Linux Homebrew install honesty** — install and distribution docs now explicitly warn that Homebrew on Linux does not solve host glibc ABI mismatches for Omegon release binaries. Users hitting `GLIBC_2.38` / `GLIBC_2.39` runtime errors are now directed toward compatible distro/container baselines instead of being left to infer missing dependencies from a failed launch.
-
-- **Release-line correction** — `v0.15.11-rc.2` was published from a mistaken version-line advance after `0.15.10` had not actually closed cleanly. The active candidate line remains the `0.15.10` RC series; `v0.15.10-rc.30` is the corrective RC. See `docs/release-line-correction-0-15-10.md`.
+- **Linux release ABI validation** — CI gates every release on a 3-distro ABI matrix (ubuntu-22.04, rockylinux-9, amazonlinux-2023) using Docker. The release job cannot publish if any validation fails. Linux binaries are built with `cargo-zigbuild` to widen the glibc compatibility floor.
 - **TUI attachment-token word navigation** — Meta/Alt word motion and word deletion now treat inline attachment placeholders like `[image0]` as atomic tokens instead of stepping into projected placeholder text. This fixes cursor lockups and broken editor navigation introduced with inline attachment token rendering.
+
+### Changed
+
+- **Secrets and vault control normalization** — `/secrets` and `/vault` no longer depend on the old bespoke runtime path. Secret view/set/get/delete and vault status/configuration flows now run through shared control responders, and transport policy is explicit and conservative.
+- **Homebrew formula auto-update** — the `homebrew.yml` CI workflow now correctly pushes stable updates to `styrene-lab/homebrew-tap` (the tap users actually read) and RC updates to `omegon-rc.rb`. Previously it was writing to the wrong file in the wrong repo.
+- **Release assets no longer dropped on immutable release** — `release.yml` now creates the GitHub Release as a draft, uploads all assets (archives, sha256, cosign `.sig`/`.pem` sidecars, SBOM), then publishes. Previously the release was published before upload completed, making it immutable and causing all uploads to fail.
+- **RC lifecycle doctor compile removed** — `just rc` no longer runs a blocking `cargo run -p omegon -- doctor` when no milestone-scoped design nodes exist. The check is warning-only for empty milestones; the compile added several minutes of wall time for zero diagnostic value.
+- **Release validation split** — `just rc` cuts and ships; `just rc-validate` runs the full local test suite. Previously both were mixed into the same recipe, making every RC cut pay for a full test run even when CI would catch failures faster.
+
+### Fixed
+
+- **TUI panel rendering artifacts** — panel area is now fully cleared before re-rendering instruments, eliminating stale content bleed-through on resize or content change (#36).
+- **TUI table body trailing pipe** — table rows that omit the trailing `|` character are now parsed and rendered correctly (#37).
+- **Linux Homebrew install honesty** — install and distribution docs now explicitly warn that Homebrew on Linux does not solve host glibc ABI mismatches for Omegon release binaries. Users hitting `GLIBC_2.38` / `GLIBC_2.39` runtime errors are directed toward compatible distro/container baselines.
+- **Release-line correction** — `v0.15.11-rc.2` was published from a mistaken version-line advance after `0.15.10` had not actually closed cleanly. The active candidate line remains the `0.15.10` RC series. See `docs/release-line-correction-0-15-10.md`.
 
 ## [0.15.10] - 2026-04-05
 

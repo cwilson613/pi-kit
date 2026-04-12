@@ -5408,7 +5408,11 @@ pub async fn run_tui(
 
         if let Some(ref ri) = config.resume_info {
             // ── Resumed session: standard welcome + one-line brief ───────
-            let mut brief = format!("Ω Omegon {version} ({sha}) — {project}");
+            let mut brief = if s.slim_mode {
+                format!("Ω OM {version} ({sha}) — {project}")
+            } else {
+                format!("Ω Omegon {version} ({sha}) — {project}")
+            };
             if s.provider_connected {
                 let model_short = s.model_short();
                 let ctx = s.context_window / 1000;
@@ -5416,13 +5420,19 @@ pub async fn run_tui(
             } else {
                 brief.push_str("\n  ⚠ No provider — use /login to connect");
             }
-            if facts > 0 {
+            if !s.slim_mode && facts > 0 {
                 brief.push_str(&format!("  ·  {facts} facts loaded"));
             }
             brief.push('\n');
-            brief.push_str("\n  /model  switch provider    /think  reasoning level");
-            brief.push_str("\n  /new    fresh session        /help   all commands");
-            brief.push_str("\n  Ctrl+R  search history      Ctrl+C  cancel/quit");
+            if s.slim_mode {
+                brief.push_str("\n  /model  switch provider    /help   commands");
+                brief.push_str("\n  /new    fresh session      Ctrl+R  search history");
+                brief.push_str("\n  Direct loop: inspect → edit → validate");
+            } else {
+                brief.push_str("\n  /model  switch provider    /think  reasoning level");
+                brief.push_str("\n  /new    fresh session        /help   all commands");
+                brief.push_str("\n  Ctrl+R  search history      Ctrl+C  cancel/quit");
+            }
             app.conversation.push_system(&brief);
             // Orientation line: what the model was doing last
             let snippet = if ri.last_prompt_snippet.is_empty() {
@@ -5436,7 +5446,11 @@ pub async fn run_tui(
             ));
         } else {
             // ── Fresh session: standard welcome ───────────────────────────
-            let mut welcome = format!("Ω Omegon {version} ({sha}) — {project}");
+            let mut welcome = if s.slim_mode {
+                format!("Ω OM {version} ({sha}) — {project}")
+            } else {
+                format!("Ω Omegon {version} ({sha}) — {project}")
+            };
             if s.provider_connected {
                 let model_short = s.model_short();
                 let ctx = s.context_window / 1000;
@@ -5444,19 +5458,29 @@ pub async fn run_tui(
             } else {
                 welcome.push_str("\n  ⚠ No provider — use /login to connect");
             }
-            if facts > 0 {
+            if !s.slim_mode && facts > 0 {
                 welcome.push_str(&format!("  ·  {facts} facts loaded"));
             }
             welcome.push('\n');
-            welcome.push_str("\n  /model  switch provider    /think  reasoning level");
-            welcome.push_str("\n  /context  context class      /help   all commands");
-            welcome.push_str("\n  Ctrl+R  search history      Ctrl+C  cancel/quit");
+            if s.slim_mode {
+                welcome.push_str("\n  Lean coding loop: inspect → edit → validate");
+                welcome.push_str("\n  /model  switch provider    /help   commands");
+                welcome.push_str("\n  Ctrl+R  search history      Ctrl+C  cancel/quit");
+            } else {
+                welcome.push_str("\n  /model  switch provider    /think  reasoning level");
+                welcome.push_str("\n  /context  context class      /help   all commands");
+                welcome.push_str("\n  Ctrl+R  search history      Ctrl+C  cancel/quit");
+            }
             app.conversation.push_system(&welcome);
 
             // First-run hint: if no memory facts exist, this is likely a new user.
             if facts == 0 {
                 app.conversation.push_system(
-                    "💡 First time here? Type /tutorial for a guided tour, or just start typing.",
+                    if s.slim_mode {
+                        "💡 Lean mode is active. Start with the file or command you want to inspect."
+                    } else {
+                        "💡 First time here? Type /tutorial for a guided tour, or just start typing."
+                    },
                 );
             }
         }

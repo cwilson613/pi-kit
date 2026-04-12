@@ -620,15 +620,15 @@ fn continuation_pressure_tier(
         && evidence_sufficient
         && has_local_target_hypothesis(conversation);
     let (tier1, tier2, tier3) = if om_local_first_lock {
-        (1, 2, 3)
+        (2, 3, 4)
     } else if evidence_sufficient {
         if is_slim_execution_bias(config) {
-            (2, 3, 4)
+            (3, 4, 5)
         } else {
             (3, 4, 5)
         }
     } else if is_slim_execution_bias(config) {
-        (4, 6, 8)
+        (5, 7, 9)
     } else {
         (6, 8, 10)
     };
@@ -675,7 +675,7 @@ fn evidence_sufficiency_message() -> String {
 }
 
 fn om_local_first_message() -> String {
-    "[System: OM local-first mode engaged. You already have a plausible local target and enough evidence to test one hypothesis. Do not start another analysis loop. Next turn must do exactly one of: (1) apply the smallest reversible patch to the target, (2) run one narrow validation that proves or disproves the hypothesis, or (3) state why full Omegon is required.]".to_string()
+    "[System: OM coding mode has enough local evidence to stop reopening the search space. Keep the loop tight. Next turn must do exactly one of: (1) apply the smallest reversible patch to the current target, (2) run one narrow validation that proves or disproves the current hypothesis, or (3) state the concrete blocker. Do not start another broad analysis pass first.]".to_string()
 }
 
 pub(crate) fn compute_context_composition(
@@ -3415,7 +3415,7 @@ mod tests {
     }
 
     #[test]
-    fn continuation_pressure_escalates_faster_in_slim_mode() {
+    fn continuation_pressure_escalates_in_slim_mode_but_less_aggressively_than_before() {
         let config = LoopConfig {
             enforce_first_turn_execution_bias: true,
             settings: Some(crate::settings::shared("anthropic:claude-sonnet-4-6")),
@@ -3437,7 +3437,7 @@ mod tests {
             arguments: Value::Null,
         }];
         let controller = ControllerState {
-            consecutive_tool_continuations: 6,
+            consecutive_tool_continuations: 7,
             orientation_churn_streak: 2,
             ..ControllerState::default()
         };
@@ -3512,11 +3512,12 @@ mod tests {
     }
 
     #[test]
-    fn om_local_first_message_forces_patch_or_prove() {
+    fn om_local_first_message_forces_patch_or_validate_or_blocker() {
         let text = om_local_first_message();
-        assert!(text.contains("OM local-first mode engaged"));
+        assert!(text.contains("OM coding mode has enough local evidence"));
         assert!(text.contains("smallest reversible patch"));
-        assert!(text.contains("full Omegon is required"));
+        assert!(text.contains("state the concrete blocker"));
+        assert!(!text.contains("full Omegon is required"));
     }
 
     #[test]
@@ -3554,7 +3555,7 @@ mod tests {
                 &tool_calls,
                 Some(OodaPhase::Orient),
             ),
-            Some(3)
+            None
         );
     }
 

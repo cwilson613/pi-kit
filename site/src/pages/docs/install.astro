@@ -6,7 +6,7 @@ import Docs from "../../layouts/Docs.astro";
   <h1>Installation</h1>
 
   <h2>Quick Install (Recommended)</h2>
-  <pre><code>curl -fsSL https://omegon.styrene.dev/install.sh | sh</code></pre>
+  <pre><code>curl -fsSL https://omegon.styrene.io/install.sh | sh</code></pre>
   <p>
     Downloads the latest signed binary for your platform (macOS arm64/x86_64, Linux x86_64/aarch64),
     verifies the SHA-256 checksum, and installs to <code>/usr/local/bin</code> by default.
@@ -16,12 +16,18 @@ import Docs from "../../layouts/Docs.astro";
   <pre><code># Install to a custom directory
 INSTALL_DIR=~/.local/bin curl -fsSL https://omegon.styrene.dev/install.sh | sh
 
+# Install latest RC
+CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh
+
+# Install latest nightly
+CHANNEL=nightly curl -fsSL https://omegon.styrene.io/install.sh | sh
+
 # Install a specific stable or RC version
-VERSION=0.15.10 curl -fsSL https://omegon.styrene.dev/install.sh | sh
-# Replace 0.15.10 with the release you actually want
+VERSION=0.15.10-rc.78 curl -fsSL https://omegon.styrene.io/install.sh | sh
+# Replace 0.15.10-rc.78 with the release you actually want
 
 # Non-interactive (CI)
-curl -fsSL https://omegon.styrene.dev/install.sh | sh -s -- --no-confirm</code></pre>
+curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --no-confirm</code></pre>
 
   <h2>Homebrew (macOS / Linux)</h2>
 
@@ -133,7 +139,7 @@ brew upgrade styrene-lab/tap/omegon-rc</code></pre>
 
   <h3>Script installs</h3>
   <pre><code># Re-run the install script to update
-curl -fsSL https://omegon.styrene.dev/install.sh | sh</code></pre>
+curl -fsSL https://omegon.styrene.io/install.sh | sh</code></pre>
 
   <h2>Supported Platforms</h2>
   <table>

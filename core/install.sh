@@ -24,6 +24,7 @@ REPO="styrene-lab/omegon"
 BINARY="omegon"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-}"
+CHANNEL="${CHANNEL:-stable}"
 GITHUB_API="https://api.github.com/repos/${REPO}"
 TMP=""
 NO_CONFIRM=false
@@ -42,7 +43,8 @@ for arg in "$@"; do
       echo ""
       echo "Environment:"
       echo "  INSTALL_DIR     Installation directory (default: /usr/local/bin)"
-      echo "  VERSION         Pin a specific version (default: latest)"
+      echo "  VERSION         Pin a specific version tag (default: latest for selected channel)"
+      echo "  CHANNEL         Release channel: stable | rc | nightly (default: stable)"
       echo "  NO_COLOR        Disable colored output"
       exit 0
       ;;
@@ -136,14 +138,38 @@ echo ""
 # ── Version resolution ────────────────────────────────────────
 
 if [ -z "$VERSION" ]; then
-  step "Resolving latest release..."
-  RELEASE_JSON=$(curl -fsSL "${GITHUB_API}/releases/latest" 2>/dev/null) || \
-    die "could not reach GitHub API. Check your network connection."
-
-  VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
+  case "$CHANNEL" in
+    stable)
+      step "Resolving latest stable release..."
+      RELEASE_JSON=$(curl -fsSL "${GITHUB_API}/releases/latest" 2>/dev/null) || \
+        die "could not reach GitHub API. Check your network connection."
+      VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
+      ;;
+    rc|nightly)
+      step "Resolving latest ${CHANNEL} release..."
+      RELEASE_JSON=$(curl -fsSL "${GITHUB_API}/releases" 2>/dev/null) || \
+        die "could not reach GitHub API. Check your network connection."
+      VERSION=$(printf '%s' "$RELEASE_JSON" | python3 -c '
+import json, sys
+channel = sys.argv[1]
+releases = json.load(sys.stdin)
+for rel in releases:
+    tag = rel.get("tag_name", "")
+    if channel == "rc" and rel.get("prerelease") and "-rc." in tag:
+        print(tag)
+        break
+    if channel == "nightly" and rel.get("prerelease") and "-nightly." in tag:
+        print(tag)
+        break
+' "$CHANNEL")
+      ;;
+    *)
+      die "unsupported CHANNEL: $CHANNEL (expected stable, rc, or nightly)"
+      ;;
+  esac
 
   if [ -z "$VERSION" ]; then
-    die "could not determine latest release. Check: https://github.com/${REPO}/releases"
+    die "could not determine latest ${CHANNEL} release. Check: https://github.com/${REPO}/releases"
   fi
 fi
 
@@ -172,6 +198,7 @@ fi
 printf "  ${BOLD}Installation Plan${RESET}\n"
 printf "  ${DIM}────────────────────────────────────────${RESET}\n"
 printf "  ${CYAN}Version:${RESET}     %s\n" "${VERSION}"
+printf "  ${CYAN}Channel:${RESET}     %s\n" "${CHANNEL}"
 printf "  ${CYAN}Platform:${RESET}    %s\n" "${PLATFORM}"
 printf "  ${CYAN}Install to:${RESET}  ~/.omegon/versions/%s/omegon\n" "${VERSION}"
 printf "  ${CYAN}Symlink at:${RESET}  %s\n" "${INSTALL_DIR}/${BINARY}"

@@ -43,7 +43,7 @@ const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
       </p>
 
       <div class="hero-install-wrap">
-        <pre class="hero-install" id="hero-install-pre"><code id="hero-install-cmd">curl -fsSL https://omegon.styrene.dev/install.sh | sh</code></pre>
+        <pre class="hero-install" id="hero-install-pre"><code id="hero-install-cmd">curl -fsSL https://omegon.styrene.io/install.sh | sh</code></pre>
         <button class="copy-btn" id="copy-btn" aria-label="Copy install command" title="Copy">
           <svg class="copy-icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.25"/>
@@ -59,8 +59,8 @@ const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
         &thinsp;·&thinsp;
         <a href="/docs/install">other versions &amp; options →</a>
       </p>
-      <p class="hero-alt-install">or <code>brew tap styrene-lab/tap && brew install omegon</code></p>
-      <p class="hero-alt-install hero-alt-rc">RC channel: <code>brew install styrene-lab/tap/omegon-rc</code></p>
+      <p class="hero-alt-install">RC one-shot: <code>CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh</code></p>
+      <p class="hero-alt-install hero-alt-rc">Package manager: <code>brew tap styrene-lab/tap && brew install omegon</code> or <code>brew install styrene-lab/tap/omegon-rc</code></p>
 
       <div class="hero-cta">
         <a href="/docs/get-started" class="btn btn-primary">Get Working Fast →</a>

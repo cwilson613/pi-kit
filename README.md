@@ -40,14 +40,21 @@ That means you get:
 ## Install
 
 ```sh
-curl -fsSL https://omegon.styrene.dev/install.sh | sh
+curl -fsSL https://omegon.styrene.io/install.sh | sh
+```
+
+RC channel one-shot:
+
+```sh
+CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh
 ```
 
 Or with Homebrew:
 
 ```sh
 brew tap styrene-lab/tap
-brew install omegon
+brew install omegon                # stable
+brew install styrene-lab/tap/omegon-rc  # rc
 ```
 
 Docs: <https://omegon.styrene.dev/docs/install>

@@ -38,7 +38,9 @@ jobs:
         run: cd site && node scripts/build-design-tree.mjs
 
       - name: Build Astro site
-        run: cd site && npx astro build
+        run: |
+          cp core/install.sh site/public/install.sh
+          cd site && npx astro build
 
       # Assemble container build context
 

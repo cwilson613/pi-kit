@@ -282,9 +282,7 @@ rc:
         MILESTONE_NODES=""
     fi
     if [ -z "$MILESTONE_NODES" ]; then
-        echo "  ! No milestone-scoped design nodes for $BASE — treating lifecycle audit as warning-only"
-        cd core && cargo run --quiet -p omegon -- doctor || true
-        cd ..
+        echo "  ! No milestone-scoped design nodes for $BASE — skipping warning-only lifecycle doctor"
     else
         REPORT=$(mktemp)
         NODES_FILE=$(mktemp)

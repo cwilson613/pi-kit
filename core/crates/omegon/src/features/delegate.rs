@@ -359,10 +359,10 @@ If blocked, say the blocker plainly.\n",
     ) -> anyhow::Result<String> {
         let prompt_path = write_child_prompt_file(&self.cwd, ".delegate-prompt.md", prompt)?;
 
-        let model = runtime
-            .model
-            .clone()
-            .unwrap_or_else(|| "qwen3:4b".to_string());
+        let model = match runtime.model.clone() {
+            Some(model) => model,
+            None => crate::providers::delegate_default_model().await,
+        };
         let child_config = ChildAgentSpawnConfig {
             agent_binary: std::env::current_exe()
                 .context("delegate runner could not locate current executable")?,

@@ -353,6 +353,38 @@ pub async fn resolve_execution_model_spec(model_spec: &str) -> Option<String> {
     ))
 }
 
+pub async fn delegate_default_model() -> String {
+    // Delegate workers are headless child agents. Prefer providers that are
+    // actually executable in the current environment across the full upstream
+    // matrix, not a brittle hardcoded local-only default.
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("openai-codex", "gpt-5.4"),
+        ("openai", "gpt-4o"),
+        ("anthropic", "claude-sonnet-4-6"),
+        ("openrouter", "openai/gpt-4o"),
+        ("ollama-cloud", "gpt-oss:120b-cloud"),
+        ("groq", "llama-3.3-70b-versatile"),
+        ("xai", "grok-3-mini-fast"),
+        ("mistral", "devstral-small-2505"),
+        ("cerebras", "llama-3.3-70b"),
+        ("huggingface", "Qwen/Qwen3-32B"),
+        ("ollama", "qwen3:32b"),
+    ];
+
+    for (provider, model) in CANDIDATES {
+        if resolve_provider(provider).await.is_some() {
+            return format!("{provider}:{model}");
+        }
+    }
+
+    if let Some(model) = automation_safe_model() {
+        return model;
+    }
+
+    // Absolute last resort when nothing upstream is configured.
+    "ollama:qwen3:32b".to_string()
+}
+
 /// Resolve a single provider by ID.
 /// Resolve a single provider by ID. Returns a bridge if the provider
 /// has credentials and a native client implementation.
@@ -3285,6 +3317,33 @@ mod tests {
         assert_eq!(super::ollama_cloud_base_url(), "https://ollama.com/api");
         assert!(super::compat_base_url("ollama-cloud").is_none());
         assert!(super::compat_base_url("unknown").is_none());
+    }
+
+    #[tokio::test]
+    async fn delegate_default_model_returns_prefixed_spec() {
+        let model = super::delegate_default_model().await;
+        assert!(
+            model.contains(':'),
+            "delegate default model should be provider-prefixed: {model}"
+        );
+        let provider = model.split(':').next().unwrap_or("");
+        assert!(
+            [
+                "openai-codex",
+                "openai",
+                "anthropic",
+                "openrouter",
+                "ollama-cloud",
+                "groq",
+                "xai",
+                "mistral",
+                "cerebras",
+                "huggingface",
+                "ollama",
+            ]
+            .contains(&provider),
+            "unexpected delegate default provider: {provider}"
+        );
     }
 
     #[test]

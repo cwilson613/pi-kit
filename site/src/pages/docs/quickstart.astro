@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
 ---
 
 <Docs title="Quick Start" description="Get productive with Omegon in 5 minutes.">
@@ -11,9 +12,18 @@ import Docs from "../../layouts/Docs.astro";
   </p>
 
   <h2>1. Install &amp; authenticate</h2>
-  <pre><code>curl -fsSL https://omegon.styrene.io/install.sh | sh
+  <pre><code>curl -fsSL {canonicalSiteUrl}/install.sh | sh
 omegon login openai-codex   # or: omegon login ollama-cloud
 om                          # or: export ANTHROPIC_API_KEY="sk-ant-..." && om</code></pre>
+  {isPreviewSite ? (
+    <p>
+      This preview site also tracks RC and nightly workflows. For the public stable install surface, use <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
+    </p>
+  ) : (
+    <p>
+      Need RC or nightly builds instead of stable? Use <a href={previewSiteUrl}>{previewSiteUrl}</a>.
+    </p>
+  )}
   <p>
     <code>om</code> starts the slim terminal-first posture: conversation-first, copy-friendly, and lower-pressure by default.
     Launch <code>omegon</code> instead if you want the full harness surfaces immediately.

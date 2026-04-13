@@ -2,6 +2,12 @@
 import "../styles/global.css";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import {
+  canonicalSiteUrl,
+  installScriptUrl,
+  isPreviewSite,
+  previewSiteUrl,
+} from "../lib/siteVariant";
 
 const changelog = readFileSync(resolve("../CHANGELOG.md"), "utf-8");
 const versionMatch = changelog.match(/## \[([0-9]+\.[0-9]+\.[0-9]+)\]/);
@@ -45,7 +51,7 @@ const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
       </p>
 
       <div class="hero-install-wrap">
-        <pre class="hero-install" id="hero-install-pre"><code id="hero-install-cmd">curl -fsSL https://omegon.styrene.io/install.sh | sh</code></pre>
+        <pre class="hero-install" id="hero-install-pre"><code id="hero-install-cmd">curl -fsSL {installScriptUrl} | sh</code></pre>
         <button class="copy-btn" id="copy-btn" aria-label="Copy install command" title="Copy">
           <svg class="copy-icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.25"/>
@@ -59,10 +65,20 @@ const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
       <p class="hero-version">
         installs <a href={`https://github.com/styrene-lab/omegon/releases/tag/${currentVersion}`} class="version-tag">{currentVersion}</a>
         &thinsp;·&thinsp;
-        <a href="/docs/install">other versions &amp; options →</a>
+        <a href="/docs/install">install docs →</a>
       </p>
-      <p class="hero-alt-install">RC one-shot: <code>CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh</code></p>
-      <p class="hero-alt-install hero-alt-rc">Package manager: <code>brew tap styrene-lab/tap && brew install omegon</code> or <code>brew install styrene-lab/tap/omegon-rc</code></p>
+      {isPreviewSite ? (
+        <>
+          <p class="hero-alt-install">Preview channel: <code>CHANNEL=rc curl -fsSL {previewSiteUrl}/install.sh | sh</code></p>
+          <p class="hero-alt-install">Nightly channel: <code>CHANNEL=nightly curl -fsSL {previewSiteUrl}/install.sh | sh</code></p>
+          <p class="hero-alt-install hero-alt-rc">Public stable releases remain on <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.</p>
+        </>
+      ) : (
+        <>
+          <p class="hero-alt-install">Public stable site only. For RC/nightly builds, use <a href={previewSiteUrl}>{previewSiteUrl}</a>.</p>
+          <p class="hero-alt-install hero-alt-rc">Package manager: <code>brew tap styrene-lab/tap && brew install omegon</code></p>
+        </>
+      )}
       <p class="hero-alt-install">After install: <code>om</code> starts the slim terminal-first mode, <code>omegon</code> starts the full harness.</p>
 
       <div class="hero-cta">

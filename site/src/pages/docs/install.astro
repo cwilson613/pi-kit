@@ -1,33 +1,60 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import {
+  canonicalSiteUrl,
+  installScriptUrl,
+  isPreviewSite,
+  previewSiteUrl,
+} from "../../lib/siteVariant";
 ---
 
 <Docs title="Installation" description="Install Omegon on macOS or Linux.">
   <h1>Installation</h1>
 
   <h2>Quick Install (Recommended)</h2>
-  <pre><code>curl -fsSL https://omegon.styrene.io/install.sh | sh</code></pre>
+  <pre><code>curl -fsSL {installScriptUrl} | sh</code></pre>
   <p>
     Downloads the latest signed binary for your platform (macOS arm64/x86_64, Linux x86_64/aarch64),
     verifies the SHA-256 checksum, and installs to <code>/usr/local/bin</code> by default.
   </p>
+  {isPreviewSite ? (
+    <p>
+      This preview site tracks staging guidance. RC and nightly instructions stay here; public stable installs remain on <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
+    </p>
+  ) : (
+    <p>
+      This public site documents the stable channel only. If you need RC or nightly builds, go to <a href={previewSiteUrl}>{previewSiteUrl}</a>.
+    </p>
+  )}
 
   <h3>Options</h3>
-  <pre><code># Install to a custom directory
-INSTALL_DIR=~/.local/bin curl -fsSL https://omegon.styrene.io/install.sh | sh
+  {isPreviewSite ? (
+    <pre><code># Install to a custom directory
+INSTALL_DIR=~/.local/bin curl -fsSL {previewSiteUrl}/install.sh | sh
 
 # Install latest RC
-CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh
+CHANNEL=rc curl -fsSL {previewSiteUrl}/install.sh | sh
 
 # Install latest nightly
-CHANNEL=nightly curl -fsSL https://omegon.styrene.io/install.sh | sh
+CHANNEL=nightly curl -fsSL {previewSiteUrl}/install.sh | sh
 
-# Install a specific stable or RC version
-VERSION=0.15.10 curl -fsSL https://omegon.styrene.io/install.sh | sh
+# Install a specific stable, RC, or nightly-pinned version
+VERSION=0.15.10 curl -fsSL {previewSiteUrl}/install.sh | sh
 # Replace 0.15.10 with the release you actually want
 
 # Non-interactive (CI)
-curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --no-confirm</code></pre>
+curl -fsSL {previewSiteUrl}/install.sh | sh -s -- --no-confirm</code></pre>
+  ) : (
+    <pre><code># Install to a custom directory
+INSTALL_DIR=~/.local/bin curl -fsSL {canonicalSiteUrl}/install.sh | sh
+
+# Install a specific stable version
+VERSION=0.15.10 curl -fsSL {canonicalSiteUrl}/install.sh | sh
+# Replace 0.15.10 with the stable release you actually want
+
+# Non-interactive (CI)
+curl -fsSL {canonicalSiteUrl}/install.sh | sh -s -- --no-confirm</code></pre>
+  )}
 
   <h2>Homebrew (macOS / Linux)</h2>
 
@@ -38,19 +65,23 @@ brew install omegon</code></pre>
     Tracks the latest stable release. Updates via <code>brew upgrade omegon</code>.
   </p>
 
-  <h3>RC channel</h3>
-  <pre><code>brew tap styrene-lab/tap
+  {isPreviewSite && (
+    <>
+      <h3>RC channel</h3>
+      <pre><code>brew tap styrene-lab/tap
 brew install styrene-lab/tap/omegon-rc</code></pre>
-  <p>
-    Tracks the latest release candidate. Updated automatically by CI on every RC cut.
-    Updates via <code>brew upgrade styrene-lab/tap/omegon-rc</code>.
-  </p>
-  <p>
-    <code>omegon-rc</code> conflicts with <code>omegon</code> — both install the same binary name.
-    Switch back to stable with:
-  </p>
-  <pre><code>brew unlink omegon-rc
+      <p>
+        Tracks the latest release candidate. Updated automatically by CI on every RC cut.
+        Updates via <code>brew upgrade styrene-lab/tap/omegon-rc</code>.
+      </p>
+      <p>
+        <code>omegon-rc</code> conflicts with <code>omegon</code> — both install the same binary name.
+        Switch back to stable with:
+      </p>
+      <pre><code>brew unlink omegon-rc
 brew install omegon</code></pre>
+    </>
+  )}
 
   <h2>GitHub Releases</h2>
   <p>
@@ -146,7 +177,7 @@ brew upgrade styrene-lab/tap/omegon-rc</code></pre>
 
   <h3>Script installs</h3>
   <pre><code># Re-run the install script to update
-curl -fsSL https://omegon.styrene.io/install.sh | sh</code></pre>
+curl -fsSL {installScriptUrl} | sh</code></pre>
 
   <h2>Supported Platforms</h2>
   <table>

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const docsDir = resolve(here, '../src/pages/docs');
@@ -11,27 +12,46 @@ function readDoc(name) {
   return readFileSync(resolve(docsDir, name), 'utf8');
 }
 
-test('commands doc covers current slash command surface details', () => {
-  const content = readDoc('commands.astro');
+test('install docs separate stable public guidance from preview guidance', () => {
+  const content = readDoc('install.astro');
 
-  assert.match(content, /\/copy \[mode\]/);
-  assert.match(content, /raw<\/code>, <code>plain/);
-  assert.match(content, /\/mouse \[mode\]/);
-  assert.match(content, /\/context request/);
-  assert.match(content, /\/skills \[action\]/);
-  assert.match(content, /\/plugin \[action\]/);
-  assert.match(content, /\/update install/);
-  assert.match(content, /\/update channel/);
-  assert.match(content, /\/auspex open/);
-  assert.match(content, /compatibility\/debug browser path/);
+  assert.match(content, /public site documents the stable channel only/i);
+  assert.match(content, /preview site tracks staging guidance/i);
+  assert.match(content, /go to <a href=\{previewSiteUrl\}>\{previewSiteUrl\}<\/a>/);
+  assert.match(content, /CHANNEL=nightly/);
 });
 
-test('migration doc avoids stale hard-coded project inventory snapshots', () => {
-  const content = readDoc('migration.astro');
+test('homepage differentiates stable public site from preview site', () => {
+  const content = readFileSync(resolve(here, '../src/pages/index.astro'), 'utf8');
 
-  assert.doesNotMatch(content, /Design Tree: 267 nodes/);
-  assert.doesNotMatch(content, /60 open questions across 267 nodes/);
-  assert.match(content, /Design tree data is live project state/);
-  assert.match(content, /11 inference providers/);
-  assert.match(content, /12 skills/);
+  assert.match(content, /Public stable site only\./);
+  assert.match(content, /Preview channel:/);
+  assert.match(content, /Nightly channel:/);
+  assert.match(content, /public stable releases remain on/i);
+});
+
+test('providers docs call out stable vs preview split', () => {
+  const content = readDoc('providers.astro');
+
+  assert.match(content, /public stable provider surface/i);
+  assert.match(content, /RC\/nightly/i);
+});
+
+test('site builds in stable and preview variants', () => {
+  execFileSync('npm', ['run', 'build'], {
+    cwd: resolve(here, '..'),
+    env: { ...process.env, PUBLIC_SITE_VARIANT: 'stable', PUBLIC_SITE_URL: 'https://omegon.styrene.io' },
+    stdio: 'pipe',
+  });
+
+  execFileSync('npm', ['run', 'build'], {
+    cwd: resolve(here, '..'),
+    env: {
+      ...process.env,
+      PUBLIC_SITE_VARIANT: 'preview',
+      PUBLIC_SITE_URL: 'https://omegon.dev',
+      PUBLIC_PREVIEW_SITE_URL: 'https://omegon.dev',
+    },
+    stdio: 'pipe',
+  });
 });

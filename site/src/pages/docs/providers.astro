@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
 ---
 <Docs title="Providers" description="Provider authentication modes, runtime identity, and usage boundaries.">
   <h1>Providers</h1>
@@ -8,6 +9,16 @@ import Docs from "../../layouts/Docs.astro";
     The active provider affects routing, allowed entry points, quota semantics, and what the
     operator sees in the engine footer.
   </p>
+
+  {isPreviewSite ? (
+    <p>
+      This preview site may mention RC/nightly-only provider behavior before it reaches the public stable docs. Stable operators should use <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
+    </p>
+  ) : (
+    <p>
+      These docs describe the public stable provider surface. For RC/nightly experiments and staging notes, see <a href={previewSiteUrl}>{previewSiteUrl}</a>.
+    </p>
+  )}
 
   <h2>Current provider auth modes</h2>
   <table>

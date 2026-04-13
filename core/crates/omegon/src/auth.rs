@@ -231,6 +231,44 @@ pub fn provider_env_vars(provider_id: &str) -> &[&str] {
         .unwrap_or(&[])
 }
 
+pub fn operator_auth_provider_ids() -> Vec<&'static str> {
+    PROVIDERS
+        .iter()
+        .filter(|provider| provider.id != "ollama")
+        .map(|provider| provider.id)
+        .collect()
+}
+
+pub fn operator_auth_provider_help_list() -> String {
+    operator_auth_provider_ids().join(", ")
+}
+
+fn provider_session_status_from_sources(
+    env_present: bool,
+    creds: Option<&OAuthCredentials>,
+) -> ProviderSessionStatus {
+    if env_present {
+        return ProviderSessionStatus::Configured;
+    }
+
+    match creds {
+        Some(creds) if creds.cred_type == "oauth" && creds.is_expired() => {
+            ProviderSessionStatus::Expired
+        }
+        Some(creds) if !creds.access.trim().is_empty() => ProviderSessionStatus::Configured,
+        _ => ProviderSessionStatus::Missing,
+    }
+}
+
+pub fn provider_session_status(provider: &ProviderCredential) -> ProviderSessionStatus {
+    let env_present = provider
+        .env_vars
+        .iter()
+        .any(|v| std::env::var(v).is_ok_and(|s| !s.trim().is_empty()));
+    let creds = read_credentials(provider.auth_key);
+    provider_session_status_from_sources(env_present, creds.as_ref())
+}
+
 /// Authentication status for all providers and backends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthStatus {
@@ -256,6 +294,14 @@ pub enum ProviderAuthStatus {
     Expired,
     Missing,
     Error,
+}
+
+/// Operator-visible session state for a provider selector or startup probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSessionStatus {
+    Configured,
+    Expired,
+    Missing,
 }
 
 /// Vault backend information.
@@ -1676,5 +1722,47 @@ mod tests {
                 "provider should resolve: {provider}"
             );
         }
+    }
+
+    #[test]
+    fn provider_session_status_distinguishes_configured_expired_and_missing() {
+        let fresh = OAuthCredentials {
+            cred_type: "oauth".into(),
+            access: "token".into(),
+            refresh: "refresh".into(),
+            expires: u64::MAX,
+        };
+        let expired = OAuthCredentials {
+            cred_type: "oauth".into(),
+            access: "token".into(),
+            refresh: "refresh".into(),
+            expires: 0,
+        };
+
+        assert_eq!(
+            provider_session_status_from_sources(true, Some(&expired)),
+            ProviderSessionStatus::Configured
+        );
+        assert_eq!(
+            provider_session_status_from_sources(false, Some(&fresh)),
+            ProviderSessionStatus::Configured
+        );
+        assert_eq!(
+            provider_session_status_from_sources(false, Some(&expired)),
+            ProviderSessionStatus::Expired
+        );
+        assert_eq!(
+            provider_session_status_from_sources(false, None),
+            ProviderSessionStatus::Missing
+        );
+    }
+
+    #[test]
+    fn operator_auth_provider_help_list_excludes_local_ollama() {
+        let providers = operator_auth_provider_help_list();
+        assert!(providers.contains("anthropic"), "got: {providers}");
+        assert!(providers.contains("openai-codex"), "got: {providers}");
+        assert!(!providers.contains("ollama,"), "got: {providers}");
+        assert!(!providers.contains("ollama "), "got: {providers}");
     }
 }

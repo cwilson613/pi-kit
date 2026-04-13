@@ -175,23 +175,11 @@ fn timed_command(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<std::proce
 fn probe_cloud() -> ProbeResult {
     let mut providers = Vec::new();
 
-    // Check env vars
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        providers.push("anthropic");
-    }
-    if std::env::var("OPENAI_API_KEY").is_ok() {
-        providers.push("openai");
-    }
-    if std::env::var("OPENROUTER_API_KEY").is_ok() {
-        providers.push("openrouter");
-    }
-
-    // Also check stored credentials using canonical provider map
     for p in crate::auth::PROVIDERS {
-        if matches!(
-            p.auth_method,
-            crate::auth::AuthMethod::OAuth | crate::auth::AuthMethod::ApiKey
-        ) && crate::auth::read_credentials(p.auth_key).is_some_and(|c| !c.access.is_empty())
+        if p.id == "ollama" {
+            continue;
+        }
+        if crate::auth::provider_session_status(p) == crate::auth::ProviderSessionStatus::Configured
             && !providers.contains(&p.id)
         {
             providers.push(p.id);

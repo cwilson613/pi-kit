@@ -2411,7 +2411,7 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
             output: Some(
                 format!(
                     "Provider required for logout. Use one of: {}",
-                    auth_logout_provider_help_list()
+                    auth::operator_auth_provider_help_list()
                 ),
             ),
         };
@@ -2422,7 +2422,7 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
             accepted: false,
             output: Some(format!(
                 "❌ Unknown provider: {provider}. Use one of: {}",
-                auth_logout_provider_help_list()
+                auth::operator_auth_provider_help_list()
             )),
         };
     };
@@ -2446,14 +2446,6 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
     }
 }
 
-fn auth_logout_provider_help_list() -> String {
-    crate::auth::PROVIDERS
-        .iter()
-        .filter(|provider| provider.id != "ollama")
-        .map(|provider| provider.id)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 pub async fn skills_view_response() -> SlashCommandResponse {
     match crate::skills::list_summary() {

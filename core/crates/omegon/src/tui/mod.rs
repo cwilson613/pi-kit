@@ -1384,25 +1384,31 @@ impl App {
         let options: Vec<selector::SelectOption> = crate::auth::PROVIDERS
             .iter()
             .map(|p| {
-                let configured = p
-                    .env_vars
-                    .iter()
-                    .any(|v| std::env::var(v).is_ok_and(|s| !s.is_empty()))
-                    || crate::auth::read_credentials(p.auth_key)
-                        .is_some_and(|c| !c.access.is_empty());
+                let session_status = crate::auth::provider_session_status(p);
                 selector::SelectOption {
                     value: p.id.to_string(),
-                    label: if configured {
-                        format!("✓ {}", p.display_name)
-                    } else {
-                        format!("  {}", p.display_name)
+                    label: match session_status {
+                        crate::auth::ProviderSessionStatus::Configured => {
+                            format!("✓ {}", p.display_name)
+                        }
+                        crate::auth::ProviderSessionStatus::Expired => {
+                            format!("⚠ {}", p.display_name)
+                        }
+                        crate::auth::ProviderSessionStatus::Missing => {
+                            format!("  {}", p.display_name)
+                        }
                     },
-                    description: if configured {
-                        "configured ✓".into()
-                    } else {
-                        p.description.to_string()
+                    description: match session_status {
+                        crate::auth::ProviderSessionStatus::Configured => "configured ✓".into(),
+                        crate::auth::ProviderSessionStatus::Expired => {
+                            "expired — re-login required".into()
+                        }
+                        crate::auth::ProviderSessionStatus::Missing => p.description.to_string(),
                     },
-                    active: configured,
+                    active: matches!(
+                        session_status,
+                        crate::auth::ProviderSessionStatus::Configured
+                    ),
                 }
             })
             .collect();
@@ -4662,9 +4668,10 @@ impl App {
                     });
                     SlashResult::Handled
                 } else {
-                    SlashResult::Display(
-                        "Usage: /logout <provider>\n\nProviders: anthropic, openai, openai-codex, openrouter, ollama-cloud".into(),
-                    )
+                    SlashResult::Display(format!(
+                        "Usage: /logout <provider>\n\nProviders: {}",
+                        crate::auth::operator_auth_provider_help_list()
+                    ))
                 }
             }
 

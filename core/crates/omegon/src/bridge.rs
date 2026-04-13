@@ -231,12 +231,14 @@ impl LlmBridge for NullBridge {
         _options: &StreamOptions,
     ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
         anyhow::bail!(
-            "No LLM provider configured. Use /login to authenticate:\n\
-             • /login anthropic    — Claude Pro/Max (OAuth)\n\
-             • /login openai       — OpenAI API key\n\
-             • /login openrouter   — Free tier, API key\n\
-             • /login ollama-cloud — Hosted Ollama API key\n\
-             Or: export ANTHROPIC_API_KEY=sk-..."
+            "No LLM provider configured. Use /login to authenticate or open the login selector.\n\
+             Suggested routes:\n\
+             • /login anthropic      — Claude Pro/Max (OAuth)\n\
+             • /login openai-codex   — ChatGPT/Codex consumer OAuth\n\
+             • /login openai         — OpenAI API key\n\
+             • /login openrouter     — OpenRouter API key\n\
+             • /login ollama-cloud   — Hosted Ollama API key\n\
+             Or set an env var such as ANTHROPIC_API_KEY."
         );
     }
 }

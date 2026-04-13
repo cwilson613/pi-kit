@@ -1381,7 +1381,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     };
     // Update settings with provider status before TUI reads it
     if let Ok(mut s) = shared_settings.lock() {
-        s.provider_connected = provider_connected;
+        s.provider_connected = provider_connected || auth::provider_connected_for_model(&resolved_cli_model);
     }
     let bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>> =
         Arc::new(tokio::sync::RwLock::new(bridge));
@@ -2421,11 +2421,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                             auth::login_openai_with_callbacks(progress, prompt).await
                                         }
                                         "openai" => Err(anyhow::anyhow!(
-                                            "OpenAI API login in the TUI uses hidden API-key entry. Run /login and choose OpenAI API, or set OPENAI_API_KEY."
+                                            "OpenAI API uses hidden key entry in the TUI. Run /login, choose OpenAI API, then paste OPENAI_API_KEY when prompted."
                                         )),
                                         _ => Err(anyhow::anyhow!(
-                                            "Unknown provider: {}. Use: anthropic, openai, openai-codex",
-                                            provider_clone
+                                            "Unknown provider: {}. Use one of: {}",
+                                            provider_clone,
+                                            auth::operator_auth_provider_help_list()
                                         )),
                                     };
                                     let provider_label = crate::auth::provider_by_id(&provider_clone)
@@ -2454,7 +2455,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                             *guard = new_bridge;
                                             if let Ok(mut s) = settings_for_login.lock() {
                                                 s.set_model(&effective_model);
-                                                s.provider_connected = true;
+                                                s.provider_connected = auth::provider_connected_for_model(&effective_model);
                                             }
                                             tracing::info!("bridge hot-swapped after successful login");
                                             let _ =
@@ -2479,7 +2480,10 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                 });
                             } else {
                                 let message = match auth::logout_provider(provider) {
-                                    Ok(()) => format!("✓ Logged out from {}", provider),
+                                    Ok(()) => {
+                                        auth::clear_provider_auth_env(provider);
+                                        format!("✓ Logged out from {}", provider)
+                                    }
                                     Err(e) => format!("❌ Logout failed: {}", e),
                                 };
                                 let _ = events_tx.send(AgentEvent::SystemNotification { message });
@@ -4545,7 +4549,11 @@ mod tests {
         ));
 
         assert!(!response.accepted);
-        assert!(response.output.unwrap().contains("interactive-only"));
+        let output = response.output.unwrap();
+        assert!(
+            output.contains("hidden login selector") || output.contains("choose OpenAI API"),
+            "got: {output}"
+        );
     }
 
     #[test]
@@ -4663,6 +4671,11 @@ mod tests {
         assert!(output.contains("anthropic"), "got: {output}");
         assert!(output.contains("openai-codex"), "got: {output}");
         assert!(!output.contains("ollama,"), "got: {output}");
+    }
+
+    #[test]
+    fn provider_connected_helper_rejects_unknown_model_provider() {
+        assert!(!auth::provider_connected_for_model("nonexistent-provider:test-model"));
     }
 
     #[test]

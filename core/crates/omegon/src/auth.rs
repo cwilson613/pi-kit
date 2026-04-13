@@ -269,6 +269,27 @@ pub fn provider_session_status(provider: &ProviderCredential) -> ProviderSession
     provider_session_status_from_sources(env_present, creds.as_ref())
 }
 
+pub fn provider_connected_for_model(model_spec: &str) -> bool {
+    let trimmed = model_spec.trim();
+    let provider_id = if let Some((head, _tail)) = trimmed.split_once(':') {
+        if head == "local" {
+            "ollama".to_string()
+        } else if provider_by_id(head).is_some() {
+            head.to_string()
+        } else {
+            return false;
+        }
+    } else {
+        crate::providers::infer_provider_id(trimmed)
+    };
+
+    let Some(provider) = provider_by_id(&provider_id) else {
+        return false;
+    };
+
+    provider_session_status(provider) == ProviderSessionStatus::Configured
+}
+
 /// Authentication status for all providers and backends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthStatus {

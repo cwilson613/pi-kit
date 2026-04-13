@@ -275,7 +275,12 @@ impl Feature for AuthFeature {
                     .as_ref()
                     .map(|s| format!(" ({})", s))
                     .unwrap_or_default();
-                format!("{}{}", p.name, method)
+                let route = p
+                    .model
+                    .as_ref()
+                    .map(|model| format!(" → {}", model))
+                    .unwrap_or_default();
+                format!("{}{}{}", p.name, method, route)
             })
             .collect();
 
@@ -468,6 +473,11 @@ mod tests {
         let injection = injection.unwrap();
         assert_eq!(injection.source, "auth");
         assert!(injection.content.contains("Authenticated"));
+        assert!(
+            injection.content.contains("claude-3-5-sonnet-20241022"),
+            "got: {}",
+            injection.content
+        );
     }
 
     #[test]

@@ -427,7 +427,11 @@ pub async fn model_view_response(
 ) -> SlashCommandResponse {
     let s = shared_settings.lock().unwrap().clone();
     let provider = s.provider().to_string();
-    let connected = if s.provider_connected { "Yes" } else { "No" };
+    let connected = if crate::auth::provider_connected_for_model(&s.model) {
+        "Yes"
+    } else {
+        "No"
+    };
     let thinking = {
         let raw = s.thinking.as_str();
         let mut chars = raw.chars();
@@ -506,7 +510,7 @@ pub async fn set_model_response(
             let mut guard = bridge.write().await;
             *guard = new_bridge;
             if let Ok(mut s) = shared_settings.lock() {
-                s.provider_connected = true;
+                s.provider_connected = crate::auth::provider_connected_for_model(&effective_model);
             }
             let provider_label = crate::auth::provider_by_id(&provider)
                 .map(|p| p.display_name)
@@ -516,7 +520,7 @@ pub async fn set_model_response(
             ));
         } else {
             if let Ok(mut s) = shared_settings.lock() {
-                s.provider_connected = false;
+                s.provider_connected = crate::auth::provider_connected_for_model(&effective_model);
             }
             let provider_label = crate::auth::provider_by_id(&provider)
                 .map(|p| p.display_name)
@@ -623,9 +627,9 @@ pub async fn switch_dispatcher_response(
         if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await {
             let mut guard = bridge.write().await;
             *guard = new_bridge;
-            if let Ok(mut s) = shared_settings.lock() {
-                s.provider_connected = true;
-            }
+        }
+        if let Ok(mut s) = shared_settings.lock() {
+            s.provider_connected = crate::auth::provider_connected_for_model(&effective_model);
         }
     }
 
@@ -2294,7 +2298,7 @@ pub async fn auth_login_response(
         return SlashCommandResponse {
             accepted: false,
             output: Some(
-                "OpenAI API login is interactive-only in the TUI. Use /login in the terminal session or set OPENAI_API_KEY."
+                "OpenAI API keys are entered through the hidden login selector. Run /login, choose OpenAI API, then paste the key when prompted. For headless automation, set OPENAI_API_KEY."
                     .to_string(),
             ),
         };
@@ -2343,17 +2347,18 @@ pub async fn auth_login_response(
                 auth::login_openai_with_callbacks(progress, prompt).await
             }
             "openai" => Err(anyhow::anyhow!(
-                "OpenAI API login in the TUI uses hidden API-key entry. Run /login and choose OpenAI API, or set OPENAI_API_KEY."
+                "OpenAI API uses hidden key entry in the TUI. Run /login, choose OpenAI API, then paste OPENAI_API_KEY when prompted."
             )),
             "openrouter" => Err(anyhow::anyhow!(
-                "OpenRouter login in the TUI uses hidden API-key entry. Run /login and choose OpenRouter, or set OPENROUTER_API_KEY."
+                "OpenRouter uses hidden key entry in the TUI. Run /login, choose OpenRouter, then paste OPENROUTER_API_KEY when prompted."
             )),
             "ollama-cloud" => Err(anyhow::anyhow!(
-                "Ollama Cloud login in the TUI uses hidden API-key entry. Run /login and choose Ollama Cloud, or set OLLAMA_API_KEY."
+                "Ollama Cloud uses hidden key entry in the TUI. Run /login, choose Ollama Cloud, then paste OLLAMA_API_KEY when prompted."
             )),
             _ => Err(anyhow::anyhow!(
-                "Unknown provider: {}. Use: anthropic, openai, openai-codex, openrouter, ollama-cloud",
-                provider_clone
+                "Unknown provider: {}. Use one of: {}",
+                provider_clone,
+                auth::operator_auth_provider_help_list()
             )),
         };
         let provider_label = crate::auth::provider_by_id(&provider_clone)
@@ -2365,7 +2370,8 @@ pub async fn auth_login_response(
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .map(|_| {
-                    "Anthropic OAuth login succeeded, but ANTHROPIC_API_KEY is also set. Omegon will prefer ANTHROPIC_API_KEY over the subscription token on requests. Unset or remove ANTHROPIC_API_KEY if you intend to use Claude subscription auth.".to_string()
+                    "Anthropic OAuth login succeeded, but ANTHROPIC_API_KEY is also set. Requests will continue to prefer the API key. If you want Claude subscription auth for this session, unset ANTHROPIC_API_KEY and retry /login anthropic."
+                        .to_string()
                 })
         } else {
             None
@@ -2387,7 +2393,7 @@ pub async fn auth_login_response(
                 *guard = new_bridge;
                 if let Ok(mut s) = settings_for_login.lock() {
                     s.set_model(&effective_model);
-                    s.provider_connected = true;
+                    s.provider_connected = crate::auth::provider_connected_for_model(&effective_model);
                 }
                 let _ = events_tx_clone.send(AgentEvent::SystemNotification {
                     message: format!("Provider connected — active route {}.", effective_model),

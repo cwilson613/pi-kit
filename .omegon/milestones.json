@@ -420,7 +420,7 @@
     "frozen": false,
     "opened": "2026-04-04T04:08:34Z",
     "released": null,
-    "rc_count": 86,
+    "rc_count": 87,
     "notes": [
       "docs(benchmark): seed design node for deferred bwrap sandbox work",
       "feat(aggregate-mode): Add a minimal directory-level aggregation/report mode for benchmark result files, shaped by existing result artifact structure. Include tests and doc updates if the mode is added.",
@@ -649,6 +649,7 @@
       "fix(multimodal): preserve attachment source paths for redisplay",
       "fix(multimodal): store user attachments in canonical conversation state",
       "fix(om): enforce local-first patch-or-prove behavior",
+      "fix(openai): sanitize chat completions tool schemas",
       "fix(providers): cache Ollama probe result and tighten TCP timeout",
       "fix(providers): classify subscription routes conservatively",
       "fix(providers): log codex response headers when telemetry is absent",
@@ -677,6 +678,7 @@
       "fix(site): correct five content bugs across docs",
       "fix(site): keep preview docs on omegon.styrene.dev",
       "fix(site): preserve stable links in preview builds",
+      "fix(site): prevent homepage mobile overflow",
       "fix(telemetry): format provider usage by active backend",
       "fix(tui): accept json context request slash payloads",
       "fix(tui): add a dedicated seam gutter between instrument panels",
@@ -809,7 +811,7 @@
       "refactor(workspace): add backend and vcs identity boundaries",
       "refactor(workspace): separate labels from substrate identity"
     ],
-    "rc_version": "0.15.10-rc.92",
-    "last_rc": "2026-04-13T13:41:07Z"
+    "rc_version": "0.15.10-rc.93",
+    "last_rc": "2026-04-13T14:18:14Z"
   }
 }

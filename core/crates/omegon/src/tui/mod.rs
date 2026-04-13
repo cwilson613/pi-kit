@@ -102,7 +102,10 @@ pub enum TuiCommand {
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
     },
     /// Temporarily hand terminal control to the operator's real shell.
-    ShellHandoff,
+    /// Carries the keyboard-enhancement flag so the handler can pop/push
+    /// the Kitty protocol around the subprocess without querying the
+    /// terminal again (which can fail if stdin is redirected).
+    ShellHandoff { keyboard_enhancement: bool },
     /// User wants to quit (double Ctrl+C, or /exit).
     Quit,
     /// Show current model/provider posture.
@@ -2504,7 +2507,11 @@ impl App {
                     );
                     self.history.push(raw_text.clone());
                     self.history_idx = None;
-                    let _ = command_tx.send(TuiCommand::ShellHandoff).await;
+                    let _ = command_tx
+                        .send(TuiCommand::ShellHandoff {
+                            keyboard_enhancement: self.keyboard_enhancement,
+                        })
+                        .await;
                     return;
                 }
 

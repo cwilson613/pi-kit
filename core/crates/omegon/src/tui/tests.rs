@@ -216,7 +216,7 @@ async fn bare_bang_requests_shell_handoff() {
     app.submit_editor_buffer(&tx).await;
 
     match rx.recv().await.expect("queued prompt") {
-        TuiCommand::ShellHandoff => {}
+        TuiCommand::ShellHandoff { .. } => {}
         other => panic!("expected shell handoff, got {other:?}"),
     }
 }

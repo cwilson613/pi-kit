@@ -1641,37 +1641,101 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
 
             tui::TuiCommand::RunShellCommand { command, respond_to } => {
+                // Spawn so the command loop stays unblocked — operator can
+                // submit new prompts / commands while this is in-flight.
+                let cwd = agent.cwd.clone();
+                let events = events_tx.clone();
                 let cancel = tokio_util::sync::CancellationToken::new();
-                let response = match crate::tools::bash::execute(&command, &agent.cwd, Some(300), cancel).await {
-                    Ok(result) => {
-                        let output = result
+
+                // Unique ID for this command's tool card.  nanos-since-epoch
+                // is fine — shell commands are human-paced, not concurrent.
+                let id = format!(
+                    "shell-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0),
+                );
+
+                // Open a streaming bash card in the conversation immediately
+                // so the operator sees the command before output arrives.
+                let _ = events.send(AgentEvent::ToolStart {
+                    id: id.clone(),
+                    name: "bash".to_string(),
+                    args: serde_json::json!({ "command": command }),
+                });
+
+                tokio::spawn(async move {
+                    // Wire execute_streaming → ToolUpdate so the live-partial
+                    // region of the card refreshes every 150 ms of new output
+                    // (and emits heartbeats every 5 s while silent).
+                    let events_sink = events.clone();
+                    let id_sink = id.clone();
+                    let sink = omegon_traits::ToolProgressSink::from_fn(move |partial| {
+                        let _ = events_sink.send(AgentEvent::ToolUpdate {
+                            id: id_sink.clone(),
+                            partial,
+                        });
+                    });
+
+                    let result = crate::tools::bash::execute_streaming(
+                        &command,
+                        &cwd,
+                        Some(300),
+                        cancel,
+                        sink,
+                    )
+                    .await;
+
+                    let (tool_result, is_error) = match result {
+                        Ok(r) => {
+                            let exited_nonzero = r
+                                .details
+                                .get("exitCode")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0)
+                                != 0;
+                            (r, exited_nonzero)
+                        }
+                        Err(e) => (
+                            omegon_traits::ToolResult {
+                                content: vec![omegon_traits::ContentBlock::Text {
+                                    text: format!("Shell command failed: {e}"),
+                                }],
+                                details: serde_json::json!({ "exitCode": -1 }),
+                            },
+                            true,
+                        ),
+                    };
+
+                    // Close the card with the final result.
+                    let _ = events.send(AgentEvent::ToolEnd {
+                        id: id.clone(),
+                        name: "bash".to_string(),
+                        result: tool_result.clone(),
+                        is_error,
+                    });
+
+                    // Honour control-API callers that pass a respond_to channel.
+                    if let Some(tx) = respond_to {
+                        let output = tool_result
                             .content
                             .iter()
-                            .filter_map(|block| match block {
+                            .filter_map(|b| match b {
                                 omegon_traits::ContentBlock::Text { text } => Some(text.as_str()),
                                 _ => None,
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        omegon_traits::ControlOutputResponse {
-                            accepted: true,
+                        let _ = tx.send(omegon_traits::ControlOutputResponse {
+                            accepted: !is_error,
                             output: Some(output),
-                        }
+                        });
                     }
-                    Err(err) => omegon_traits::ControlOutputResponse {
-                        accepted: false,
-                        output: Some(format!("Shell command failed: {err}")),
-                    },
-                };
-                if let Some(output) = response.output.clone() {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(response);
-                }
+                });
             }
 
-            tui::TuiCommand::ShellHandoff => {
+            tui::TuiCommand::ShellHandoff { keyboard_enhancement } => {
                 if runtime.is_busy() {
                     let _ = events_tx.send(AgentEvent::SystemNotification {
                         message: "Shell handoff refused while a turn is active. Cancel first.".into(),
@@ -1686,6 +1750,13 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     use std::process::Stdio;
 
                     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+                    // Tear down Kitty keyboard enhancement BEFORE disable_raw_mode.
+                    // Skipping this leaves the escape sequences active on the
+                    // subprocess's TTY, which garbles input when we re-enter.
+                    if keyboard_enhancement {
+                        let _ = io::stdout()
+                            .execute(crossterm::event::PopKeyboardEnhancementFlags);
+                    }
                     let _ = disable_raw_mode();
                     let _ = io::stdout().execute(DisableMouseCapture);
                     let _ = io::stdout().execute(DisableBracketedPaste);
@@ -1699,6 +1770,15 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         .status();
 
                     let _ = enable_raw_mode();
+                    // Restore keyboard enhancement before re-entering the TUI
+                    // so crossterm once again receives disambiguated key events.
+                    if keyboard_enhancement {
+                        let _ = io::stdout().execute(
+                            crossterm::event::PushKeyboardEnhancementFlags(
+                                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+                            ),
+                        );
+                    }
                     let _ = io::stdout().execute(EnterAlternateScreen);
                     let _ = io::stdout().execute(crossterm::event::EnableBracketedPaste);
                     let _ = io::stdout().execute(EnableMouseCapture);

@@ -1161,14 +1161,18 @@ fn enforce_role_alternation(messages: &mut Vec<LlmMessage>) {
 /// still participates in continuity without violating provider structure.
 fn strip_orphaned_tool_uses(messages: &mut Vec<LlmMessage>) {
     for idx in 0..messages.len() {
-        let next_ids: std::collections::HashSet<String> = match messages.get(idx + 1) {
-            Some(LlmMessage::ToolResult { call_id, .. }) => {
-                let mut ids = std::collections::HashSet::new();
-                ids.insert(sanitize_tool_like_id(call_id));
-                ids
+        // Scan forward from idx+1 collecting ALL consecutive ToolResult IDs.
+        // An assistant with N tool calls will be followed by N ToolResult
+        // messages — we must collect all of them before comparing.
+        let mut next_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for j in (idx + 1)..messages.len() {
+            match &messages[j] {
+                LlmMessage::ToolResult { call_id, .. } => {
+                    next_ids.insert(sanitize_tool_like_id(call_id));
+                }
+                _ => break, // stop at first non-ToolResult
             }
-            _ => std::collections::HashSet::new(),
-        };
+        }
 
         let Some(LlmMessage::Assistant {
             tool_calls, raw, ..

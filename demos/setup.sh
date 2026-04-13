@@ -31,7 +31,6 @@ pub fn fibonacci(n: u64) -> u64 {
     }
     let mut a: u64 = 0;
     let mut b: u64 = 1;
-    // BUG: off-by-one — should be 1..=n, not 2..n
     for _ in 2..n {
         let tmp = b;
         b = a + b;

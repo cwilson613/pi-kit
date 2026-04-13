@@ -1435,10 +1435,16 @@ impl LlmBridge for OpenAIClient {
 
         let wire_msgs = Self::build_wire_messages(system_prompt, messages);
 
-        let wire_tools: Vec<Value> = tools.iter().map(|t| json!({
-            "type": "function",
-            "function": {"name": t.name, "description": t.description, "parameters": t.parameters},
-        })).collect();
+        let wire_tools: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                let params = openai_function_parameters(&t.parameters);
+                json!({
+                    "type": "function",
+                    "function": {"name": t.name, "description": t.description, "parameters": params},
+                })
+            })
+            .collect();
 
         let mut body = json!({"model": model, "messages": wire_msgs, "stream": true});
         if !wire_tools.is_empty() {
@@ -3149,6 +3155,45 @@ mod tests {
         unsafe {
             std::env::remove_var("OLLAMA_API_KEY");
         }
+    }
+
+    #[test]
+    fn openai_chat_completions_tools_use_sanitized_parameters() {
+        let tools = vec![ToolDefinition {
+            name: "design_tree_update".into(),
+            label: "design_tree_update".into(),
+            description: "Mutate design tree".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "description": "Mutation action" }
+                },
+                "required": ["action"],
+                "allOf": [
+                    {
+                        "if": { "properties": { "action": { "const": "create" } } },
+                        "then": { "required": ["action", "node_id"] }
+                    }
+                ]
+            }),
+        }];
+
+        let wire_tools: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                let params = openai_function_parameters(&t.parameters);
+                json!({
+                    "type": "function",
+                    "function": {"name": t.name, "description": t.description, "parameters": params},
+                })
+            })
+            .collect();
+
+        assert_eq!(wire_tools[0]["function"]["parameters"]["type"], "object");
+        assert!(
+            wire_tools[0]["function"]["parameters"].get("allOf").is_none(),
+            "chat completions tool parameters should not include top-level allOf"
+        );
     }
 
     #[test]

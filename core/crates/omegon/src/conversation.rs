@@ -619,6 +619,12 @@ impl ConversationState {
             }
         }
 
+        // Strip orphaned tool_use assistant calls whose matching tool_result
+        // message was evicted or dropped during compaction/decay. Anthropic
+        // rejects these with "tool_use ids were found without tool_result
+        // blocks immediately after".
+        strip_orphaned_tool_uses(&mut messages);
+
         // Strip orphaned tool_result messages whose tool_use was evicted.
         // After compaction/decay, tool_use blocks may be removed while their
         // corresponding tool_result blocks survive. Anthropic rejects these
@@ -1115,6 +1121,50 @@ fn enforce_role_alternation(messages: &mut Vec<LlmMessage>) {
     *messages = result;
 }
 
+/// Remove assistant tool_use blocks whose matching tool_result does not
+/// appear immediately after them in the rebuilt message list.
+///
+/// Anthropic requires every assistant message containing tool_use blocks to be
+/// followed by a user tool_result message that references those exact IDs. After
+/// compaction/decay, the assistant can survive while the tool_result is evicted,
+/// yielding a 400: "tool_use ids were found without tool_result blocks immediately after".
+///
+/// We keep the assistant message, but clear its tool_calls so the textual reply
+/// still participates in continuity without violating provider structure.
+fn strip_orphaned_tool_uses(messages: &mut Vec<LlmMessage>) {
+    for idx in 0..messages.len() {
+        let next_ids: std::collections::HashSet<String> = match messages.get(idx + 1) {
+            Some(LlmMessage::ToolResult { call_id, .. }) => {
+                let mut ids = std::collections::HashSet::new();
+                ids.insert(sanitize_tool_like_id(call_id));
+                ids
+            }
+            _ => std::collections::HashSet::new(),
+        };
+
+        let Some(LlmMessage::Assistant { tool_calls, .. }) = messages.get_mut(idx) else {
+            continue;
+        };
+        if tool_calls.is_empty() {
+            continue;
+        }
+
+        let expected_ids: std::collections::HashSet<String> = tool_calls
+            .iter()
+            .map(|tc| sanitize_tool_like_id(&tc.id))
+            .collect();
+
+        if expected_ids != next_ids {
+            tracing::debug!(
+                expected = ?expected_ids,
+                actual = ?next_ids,
+                "stripping orphaned assistant tool_use blocks"
+            );
+            tool_calls.clear();
+        }
+    }
+}
+
 /// Remove tool_result messages that reference tool_use IDs not present in any
 /// preceding assistant message. This happens after compaction/decay evicts
 /// assistant messages but leaves their tool_result responses.
@@ -1125,20 +1175,25 @@ fn strip_orphaned_tool_results(messages: &mut Vec<LlmMessage>) {
     for msg in messages.iter() {
         if let LlmMessage::Assistant { tool_calls, .. } = msg {
             for tc in tool_calls {
-                known_ids.insert(tc.id.clone());
+                known_ids.insert(sanitize_tool_like_id(&tc.id));
             }
         }
     }
     // Remove tool_result messages whose call_id isn't in known_ids
     messages.retain(|msg| {
         if let LlmMessage::ToolResult { call_id, .. } = msg {
-            if !known_ids.contains(call_id) {
+            let sanitized = sanitize_tool_like_id(call_id);
+            if !known_ids.contains(&sanitized) {
                 tracing::debug!(call_id, "stripping orphaned tool_result");
                 return false;
             }
         }
         true
     });
+}
+
+fn sanitize_tool_like_id(id: &str) -> String {
+    id.split('|').next().unwrap_or(id).to_string()
 }
 
 /// Returns sequences of `[a-zA-Z0-9_]` that are at least 8 chars long.
@@ -2158,6 +2213,25 @@ mod tests {
         enforce_role_alternation(&mut msgs);
         assert_eq!(msgs.len(), 1);
         assert!(matches!(&msgs[0], LlmMessage::User { .. }));
+    }
+
+    #[test]
+    fn build_llm_view_strips_orphaned_assistant_tool_use() {
+        let mut conv = ConversationState::new();
+        conv.push_user("delegate work".into());
+        push_matching_assistant(&mut conv, "toolu_abc|fc_1");
+        // No matching tool_result survives — this is the Anthropic 400 case.
+        conv.push_user("continue".into());
+        conv.intent.stats.turns = 1;
+
+        let view = conv.build_llm_view();
+        assert!(matches!(&view[0], LlmMessage::User { .. }));
+        match &view[1] {
+            LlmMessage::Assistant { tool_calls, .. } => {
+                assert!(tool_calls.is_empty(), "orphaned tool_use should be stripped");
+            }
+            other => panic!("expected assistant at index 1, got {other:?}"),
+        }
     }
 
     #[test]

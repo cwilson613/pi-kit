@@ -2502,9 +2502,6 @@ impl App {
                         );
                         return;
                     }
-                    self.conversation.push_system(
-                        "⛩ Entering shell handoff — exit your shell to resume Omegon.",
-                    );
                     self.history.push(raw_text.clone());
                     self.history_idx = None;
                     let _ = command_tx

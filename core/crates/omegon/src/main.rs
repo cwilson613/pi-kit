@@ -12,6 +12,7 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -1747,12 +1748,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 {
                     use crossterm::event::DisableBracketedPaste;
                     use crossterm::terminal::LeaveAlternateScreen;
-                    use std::process::Stdio;
 
-                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-                    // Tear down Kitty keyboard enhancement BEFORE disable_raw_mode.
-                    // Skipping this leaves the escape sequences active on the
-                    // subprocess's TTY, which garbles input when we re-enter.
                     if keyboard_enhancement {
                         let _ = io::stdout()
                             .execute(crossterm::event::PopKeyboardEnhancementFlags);
@@ -1761,17 +1757,16 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     let _ = io::stdout().execute(DisableMouseCapture);
                     let _ = io::stdout().execute(DisableBracketedPaste);
                     let _ = io::stdout().execute(LeaveAlternateScreen);
+                    let _ = io::stdout().flush();
 
-                    let status = std::process::Command::new(&shell)
-                        .arg("-l")
-                        .stdin(Stdio::inherit())
-                        .stdout(Stdio::inherit())
-                        .stderr(Stdio::inherit())
-                        .status();
+                    let suspend_result = unsafe { libc::raise(libc::SIGTSTP) };
+                    let handoff_error = if suspend_result != 0 {
+                        Some(std::io::Error::last_os_error().to_string())
+                    } else {
+                        None
+                    };
 
                     let _ = enable_raw_mode();
-                    // Restore keyboard enhancement before re-entering the TUI
-                    // so crossterm once again receives disambiguated key events.
                     if keyboard_enhancement {
                         let _ = io::stdout().execute(
                             crossterm::event::PushKeyboardEnhancementFlags(
@@ -1782,19 +1777,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     let _ = io::stdout().execute(EnterAlternateScreen);
                     let _ = io::stdout().execute(crossterm::event::EnableBracketedPaste);
                     let _ = io::stdout().execute(EnableMouseCapture);
+                    let _ = io::stdout().flush();
 
-                    match status {
-                        Ok(exit) => {
-                            let code = exit.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-                            let _ = events_tx.send(AgentEvent::SystemNotification {
-                                message: format!("Resumed Omegon after shell handoff (shell exit: {code})."),
-                            });
-                        }
-                        Err(err) => {
-                            let _ = events_tx.send(AgentEvent::SystemNotification {
-                                message: format!("Shell handoff failed: {err}"),
-                            });
-                        }
+                    if let Some(err) = handoff_error {
+                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                            message: format!("Shell handoff failed: {err}"),
+                        });
                     }
                 }
 

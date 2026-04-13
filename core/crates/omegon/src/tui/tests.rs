@@ -288,6 +288,21 @@ async fn bare_bang_requests_shell_handoff() {
 }
 
 #[tokio::test]
+async fn bare_bang_does_not_emit_system_banner_before_handoff() {
+    let mut app = test_app();
+    let (tx, _rx) = test_tx_with_rx();
+    app.editor.set_text("!");
+
+    app.submit_editor_buffer(&tx).await;
+
+    let rendered = render_app_to_string(&mut app, 100, 20);
+    assert!(
+        !rendered.contains("Entering shell handoff"),
+        "unexpected handoff banner in conversation: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn at_prefix_wraps_prompt_as_context_request() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();

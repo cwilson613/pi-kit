@@ -1110,6 +1110,37 @@ fn startup_initialization_prefers_terminal_copy_mode_in_slim_default() {
 }
 
 #[test]
+fn slim_mode_renders_without_side_gutters_for_copyable_wrapped_lines() {
+    let seg = crate::tui::segments::Segment::user_prompt(
+        "This is a long wrapped line that should remain copyable without left or right gutter chrome in OM mode. This is a long wrapped line that should remain copyable without left or right gutter chrome in OM mode.",
+    );
+    let backend = ratatui::backend::TestBackend::new(60, 12);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            seg.render(
+                frame.area(),
+                frame.buffer_mut(),
+                &crate::tui::theme::Alpharius,
+                crate::tui::segments::SegmentRenderMode::Slim,
+            );
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let mut rendered = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            rendered.push_str(buf[(x, y)].symbol());
+        }
+        rendered.push('\n');
+    }
+
+    assert!(!rendered.contains("│"), "slim mode should avoid side gutters: {rendered}");
+    assert!(!rendered.contains("╭"), "slim mode should avoid card borders: {rendered}");
+}
+
+#[test]
 fn enable_mouse_interaction_mode_restores_capture_from_copy_mode() {
     let mut app = test_app();
     app.terminal_copy_mode = true;

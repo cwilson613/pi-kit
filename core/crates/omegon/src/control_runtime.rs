@@ -2298,8 +2298,8 @@ pub async fn auth_login_response(
         return SlashCommandResponse {
             accepted: false,
             output: Some(
-                "OpenAI API keys are entered through the hidden login selector. Run /login, choose OpenAI API, then paste the key when prompted. For headless automation, set OPENAI_API_KEY."
-                    .to_string(),
+                auth::operator_api_key_login_guidance("openai", "OPENAI_API_KEY", "OpenAI API")
+                    + " For headless automation, set OPENAI_API_KEY.",
             ),
         };
     }
@@ -2346,20 +2346,24 @@ pub async fn auth_login_response(
             "openai-codex" | "chatgpt" | "codex" => {
                 auth::login_openai_with_callbacks(progress, prompt).await
             }
-            "openai" => Err(anyhow::anyhow!(
-                "OpenAI API uses hidden key entry in the TUI. Run /login, choose OpenAI API, then paste OPENAI_API_KEY when prompted."
-            )),
-            "openrouter" => Err(anyhow::anyhow!(
-                "OpenRouter uses hidden key entry in the TUI. Run /login, choose OpenRouter, then paste OPENROUTER_API_KEY when prompted."
-            )),
-            "ollama-cloud" => Err(anyhow::anyhow!(
-                "Ollama Cloud uses hidden key entry in the TUI. Run /login, choose Ollama Cloud, then paste OLLAMA_API_KEY when prompted."
-            )),
-            _ => Err(anyhow::anyhow!(
-                "Unknown provider: {}. Use one of: {}",
-                provider_clone,
-                auth::operator_auth_provider_help_list()
-            )),
+            "openai" => Err(anyhow::anyhow!(auth::operator_api_key_login_guidance(
+                "openai",
+                "OPENAI_API_KEY",
+                "OpenAI API"
+            ))),
+            "openrouter" => Err(anyhow::anyhow!(auth::operator_api_key_login_guidance(
+                "openrouter",
+                "OPENROUTER_API_KEY",
+                "OpenRouter"
+            ))),
+            "ollama-cloud" => Err(anyhow::anyhow!(auth::operator_api_key_login_guidance(
+                "ollama-cloud",
+                "OLLAMA_API_KEY",
+                "Ollama Cloud"
+            ))),
+            _ => Err(anyhow::anyhow!(auth::operator_auth_unknown_provider_message(
+                &provider_clone
+            ))),
         };
         let provider_label = crate::auth::provider_by_id(&provider_clone)
             .map(|p| p.display_name)
@@ -2396,7 +2400,7 @@ pub async fn auth_login_response(
                     s.provider_connected = crate::auth::provider_connected_for_model(&effective_model);
                 }
                 let _ = events_tx_clone.send(AgentEvent::SystemNotification {
-                    message: format!("Provider connected — active route {}.", effective_model),
+                    message: auth::operator_provider_connected_message(&effective_model),
                 });
             }
         }
@@ -2427,8 +2431,8 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
         return SlashCommandResponse {
             accepted: false,
             output: Some(format!(
-                "❌ Unknown provider: {provider}. Use one of: {}",
-                auth::operator_auth_provider_help_list()
+                "❌ {}",
+                auth::operator_auth_unknown_provider_message(provider)
             )),
         };
     };
@@ -2436,10 +2440,10 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
     match auth::logout_provider(provider) {
         Ok(()) => {
             auth::clear_provider_auth_env(provider);
-            let mut message = format!("✓ Logged out from {provider_label}");
-            if !auth::provider_env_vars(provider).is_empty() {
-                message.push_str(" and cleared this session's cached auth env.");
-            }
+            let message = auth::operator_logout_success_message(
+                provider_label,
+                !auth::provider_env_vars(provider).is_empty(),
+            );
             SlashCommandResponse {
                 accepted: true,
                 output: Some(message),

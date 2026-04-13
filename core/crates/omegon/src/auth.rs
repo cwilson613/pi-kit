@@ -243,6 +243,37 @@ pub fn operator_auth_provider_help_list() -> String {
     operator_auth_provider_ids().join(", ")
 }
 
+pub fn operator_auth_unknown_provider_message(provider: &str) -> String {
+    format!(
+        "Unknown provider: {}. Use one of: {}",
+        provider,
+        operator_auth_provider_help_list()
+    )
+}
+
+pub fn operator_api_key_login_guidance(
+    _provider_id: &str,
+    env_var: &str,
+    provider_label: &str,
+) -> String {
+    format!(
+        "{} uses hidden key entry in the TUI. Run /login, choose {}, then paste {} when prompted.",
+        provider_label, provider_label, env_var
+    )
+}
+
+pub fn operator_provider_connected_message(effective_model: &str) -> String {
+    format!("Provider connected — active route {}.", effective_model)
+}
+
+pub fn operator_logout_success_message(provider_label: &str, cleared_session_env: bool) -> String {
+    let mut message = format!("✓ Logged out from {provider_label}");
+    if cleared_session_env {
+        message.push_str(" and cleared this session's cached auth env.");
+    }
+    message
+}
+
 fn provider_session_status_from_sources(
     env_present: bool,
     creds: Option<&OAuthCredentials>,

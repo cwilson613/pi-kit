@@ -2420,14 +2420,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         "openai-codex" | "chatgpt" | "codex" => {
                                             auth::login_openai_with_callbacks(progress, prompt).await
                                         }
-                                        "openai" => Err(anyhow::anyhow!(
-                                            "OpenAI API uses hidden key entry in the TUI. Run /login, choose OpenAI API, then paste OPENAI_API_KEY when prompted."
-                                        )),
-                                        _ => Err(anyhow::anyhow!(
-                                            "Unknown provider: {}. Use one of: {}",
-                                            provider_clone,
-                                            auth::operator_auth_provider_help_list()
-                                        )),
+                                        "openai" => Err(anyhow::anyhow!(auth::operator_api_key_login_guidance(
+                                            "openai",
+                                            "OPENAI_API_KEY",
+                                            "OpenAI API"
+                                        ))),
+                                        _ => Err(anyhow::anyhow!(auth::operator_auth_unknown_provider_message(
+                                            &provider_clone
+                                        ))),
                                     };
                                     let provider_label = crate::auth::provider_by_id(&provider_clone)
                                         .map(|p| p.display_name)
@@ -2460,10 +2460,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                             tracing::info!("bridge hot-swapped after successful login");
                                             let _ =
                                                 events_tx_clone.send(AgentEvent::SystemNotification {
-                                                    message: format!(
-                                                        "Provider connected — active route {}.",
-                                                        effective_model
-                                                    ),
+                                                    message: auth::operator_provider_connected_message(&effective_model),
                                                 });
                                         }
                                     }
@@ -2479,12 +2476,19 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                     message: "Error: Provider required for logout".to_string(),
                                 });
                             } else {
-                                let message = match auth::logout_provider(provider) {
-                                    Ok(()) => {
-                                        auth::clear_provider_auth_env(provider);
-                                        format!("✓ Logged out from {}", provider)
+                                let message = if provider.is_empty() {
+                                    "Error: Provider required for logout".to_string()
+                                } else {
+                                    match auth::logout_provider(provider) {
+                                        Ok(()) => {
+                                            auth::clear_provider_auth_env(provider);
+                                            auth::operator_logout_success_message(
+                                                provider,
+                                                !auth::provider_env_vars(provider).is_empty(),
+                                            )
+                                        }
+                                        Err(e) => format!("❌ Logout failed: {}", e),
                                     }
-                                    Err(e) => format!("❌ Logout failed: {}", e),
                                 };
                                 let _ = events_tx.send(AgentEvent::SystemNotification { message });
                             }

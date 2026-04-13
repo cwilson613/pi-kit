@@ -197,7 +197,13 @@ impl Feature for AuthFeature {
                     ));
 
                     if let Some(auth_state) = provider.auth_state {
-                        output.push_str(&format!("- **Auth State:** {:?}\n", auth_state));
+                        let auth_state = match auth_state {
+                            crate::status::ProviderAuthState::Configured => "configured",
+                            crate::status::ProviderAuthState::Expired => "expired",
+                            crate::status::ProviderAuthState::Missing => "missing",
+                            crate::status::ProviderAuthState::Error => "error",
+                        };
+                        output.push_str(&format!("- **Auth State:** {}\n", auth_state));
                     }
 
                     if let Some(ref method) = provider.auth_method {

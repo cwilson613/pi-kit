@@ -448,7 +448,7 @@ fn should_inject_execution_pressure(
         .iter()
         .all(|call| is_targeted_repo_inspection_tool(&call.name));
 
-    (turn >= 3 && has_broad_repo_inspection) || (turn >= 5 && only_targeted_reads)
+    (turn >= 3 && has_broad_repo_inspection) || (turn >= 3 && only_targeted_reads)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2533,8 +2533,6 @@ struct StuckDetector {
     recent: Vec<(String, u64, bool)>,
     /// Window size for pattern detection
     window: usize,
-    /// Whether we've already emitted a repeated-read warning in the current window.
-    repeated_read_warned: bool,
 }
 
 impl StuckDetector {
@@ -2542,7 +2540,6 @@ impl StuckDetector {
         Self {
             recent: Vec::new(),
             window: 10,
-            repeated_read_warned: false,
         }
     }
 
@@ -2550,9 +2547,6 @@ impl StuckDetector {
     fn record(&mut self, call: &ToolCall, is_error: bool) {
         let args_hash = hash_value(&call.arguments);
         self.recent.push((call.name.clone(), args_hash, is_error));
-        if call.name != "read" {
-            self.repeated_read_warned = false;
-        }
         if self.recent.len() > self.window * 2 {
             self.recent.drain(..self.window);
         }
@@ -2567,18 +2561,29 @@ impl StuckDetector {
 
         let window = &self.recent[len.saturating_sub(self.window)..];
 
-        // Pattern 1: Same tool + same args called 3+ times
-        if let Some(repeated) = self.find_repeated_call(window, 3) {
-            if repeated.0 == "read" {
-                if self.repeated_read_warned {
-                    return None;
-                }
+        // Pattern 1: read-without-modify loop — same file read 3+ times
+        // without any write/edit to that file. Check this before the generic
+        // repeated-call warning so the operator gets a specific nudge.
+        let reads: Vec<_> = window
+            .iter()
+            .filter(|(name, _, _)| name == "read")
+            .collect();
+        if reads.len() >= 3 {
+            let mut hash_counts: HashMap<u64, u32> = HashMap::new();
+            for (_, h, _) in &reads {
+                *hash_counts.entry(*h).or_default() += 1;
+            }
+            if hash_counts.values().any(|&c| c >= 3) {
                 return Some(
                     "You've read the same file multiple times without modifying it. \
-                     Consider noting what you need from it, or try a different approach."
+                     Stop rereading and either edit, validate, or summarize the blocker plainly."
                         .into(),
                 );
             }
+        }
+
+        // Pattern 2: Same tool + same args called 3+ times
+        if let Some(repeated) = self.find_repeated_call(window, 3) {
             return Some(format!(
                 "You've called `{}` with the same arguments {} times. \
                  If it's not producing the result you need, try a different approach.",
@@ -2586,7 +2591,7 @@ impl StuckDetector {
             ));
         }
 
-        // Pattern 2: Edit failures — repeated error on the same tool
+        // Pattern 3: Edit failures — repeated error on the same tool
         let recent_errors: Vec<_> = window.iter().filter(|(_, _, err)| *err).collect();
         if recent_errors.len() >= 3 {
             let names: Vec<_> = recent_errors.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -2599,26 +2604,7 @@ impl StuckDetector {
             }
         }
 
-        // Pattern 3: read-without-modify loop — same file read 3+ times
-        // without any write/edit to that file
-        let reads: Vec<_> = window
-            .iter()
-            .filter(|(name, _, _)| name == "read")
-            .collect();
-        if reads.len() >= 3 {
-            // Check if the same args hash appears 3+ times
-            let mut hash_counts: HashMap<u64, u32> = HashMap::new();
-            for (_, h, _) in &reads {
-                *hash_counts.entry(*h).or_default() += 1;
-            }
-            if hash_counts.values().any(|&c| c >= 3) {
-                return Some(
-                    "You've read the same file multiple times without modifying it. \
-                     Consider noting what you need from it, or try a different approach."
-                        .into(),
-                );
-            }
-        }
+        // Pattern 3: read-without-modify loop handled before generic repeated-call warning.
 
         None
     }
@@ -3459,7 +3445,7 @@ mod tests {
             arguments: serde_json::json!({"path": "core/src/context.rs"}),
         }];
         assert!(!should_inject_execution_pressure(
-            4,
+            2,
             &config,
             &conversation,
             &tool_calls
@@ -3484,7 +3470,7 @@ mod tests {
             arguments: serde_json::json!({"path": "core/src/context.rs"}),
         }];
         assert!(should_inject_execution_pressure(
-            5,
+            3,
             &config,
             &conversation,
             &tool_calls
@@ -4104,7 +4090,32 @@ mod tests {
         }
         let warning = detector.check().expect("warning");
         assert!(warning.contains("same file multiple times"), "got: {warning}");
+        assert!(warning.contains("edit, validate, or summarize"), "got: {warning}");
         assert!(!warning.contains("same arguments 3 times"), "got: {warning}");
+    }
+
+    #[test]
+    fn targeted_read_only_batches_trigger_execution_pressure_by_turn_three() {
+        let config = LoopConfig {
+            enforce_first_turn_execution_bias: true,
+            ..LoopConfig::default()
+        };
+        let mut conversation = ConversationState::new();
+        conversation
+            .intent
+            .files_read
+            .insert(std::path::PathBuf::from("core/src/context.rs"));
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({"path": "core/src/context.rs"}),
+        }];
+        assert!(should_inject_execution_pressure(
+            3,
+            &config,
+            &conversation,
+            &tool_calls
+        ));
     }
 
     #[test]

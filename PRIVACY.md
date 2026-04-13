@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Effective date:** March 2026  
-**Applies to:** The Omegon software and the omegon.styrene.dev website  
+**Applies to:** The Omegon software, the omegon.styrene.io website, and the omegon.styrene.dev preview site  
 **Controller:** Black Meridian, LLC
 
 ---
@@ -31,9 +31,9 @@ When you configure and use an inference provider through Omegon, that provider's
 
 ---
 
-## 2. The omegon.styrene.dev Website
+## 2. The Omegon Websites
 
-The Omegon website is a static site served from our own infrastructure. We do not use third-party analytics services, tracking pixels, advertising networks, or social media embeds.
+The Omegon websites are static sites served from our own infrastructure. We do not use third-party analytics services, tracking pixels, advertising networks, or social media embeds.
 
 **What our web server logs:** Standard HTTP access logs — IP address, timestamp, requested path, user agent, and referrer. These logs are used for infrastructure monitoring and debugging. They are not sold, shared with third parties, or used for profiling. Logs are retained for a limited period consistent with operational needs.
 

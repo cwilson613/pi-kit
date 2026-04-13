@@ -731,7 +731,7 @@ publish:
     echo ""
     echo "CI workflows triggered:"
     echo "  • release.yml  → GitHub Release with cosign-signed binaries"
-    echo "  • site.yml     → omegon.styrene.dev docs rebuild"
+    echo "  • site.yml     → omegon.styrene.io (stable) + omegon.styrene.dev (preview) docs rebuild"
 
     # ── 3. Build docs site locally (verification) ─────────────
     echo ""
@@ -775,7 +775,7 @@ publish:
     echo ""
     echo "  Binary:   $(which omegon) → $BINARY"
     echo "  Signing:  $SIGN_STATUS"
-    echo "  Docs:     $PAGES pages built → CI deploying to omegon.styrene.dev"
+    echo "  Docs:     $PAGES pages built → CI deploying to omegon.styrene.io (stable) and omegon.styrene.dev (preview)"
     echo "  Packages: downstream packaging automation runs from published release artifacts"
     echo "  Release:  github.com/styrene-lab/omegon/releases/tag/$TAG"
     echo ""

@@ -140,6 +140,10 @@ def update_homebrew_formula(*, manifest_path: Path, formula_path: Path) -> None:
     content = formula_path.read_text()
     content = re.sub(r'version ".*"', f'version "{version}"', content, count=1)
 
+    # Strip any deprecate! directive — version-specific deprecations must not
+    # survive into the next stable formula update.
+    content = re.sub(r'\n  deprecate!.*\n', '\n', content)
+
     replacement_shas = [sha_by_target[target] for target in FORMULA_TARGET_ORDER]
     sha_iter = iter(replacement_shas)
 

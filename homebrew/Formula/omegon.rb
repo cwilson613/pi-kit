@@ -5,9 +5,7 @@ class Omegon < Formula
   desc "Terminal-native AI agent harness — single binary, ten providers, zero dependencies"
   homepage "https://omegon.styrene.dev"
   license "BUSL-1.1"
-  version "0.15.4"
-
-  deprecate! date: "2026-04-12", because: "is outdated — run: brew install styrene-lab/tap/omegon-rc"
+  version "0.15.11"
 
   LINUX_MIN_GLIBC = Version.new("2.39")
 

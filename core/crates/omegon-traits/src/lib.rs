@@ -357,6 +357,15 @@ pub struct DaemonEventEnvelope {
     /// when omitted for backward compatibility with existing clients.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_role: Option<String>,
+    /// Caller identity: user ID from the originating platform (e.g. Slack user ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_user: Option<String>,
+    /// Caller identity: channel/conversation ID from the originating platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_channel: Option<String>,
+    /// Caller identity: thread/topic ID from the originating platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_thread: Option<String>,
 }
 
 // ── Typed state snapshot ─────────────────────────────────────────────────────
@@ -2269,6 +2278,9 @@ mod tests {
             trigger_kind: "webhook".into(),
             payload: serde_json::json!({"ref": "refs/heads/main"}),
             caller_role: None,
+            source_user: None,
+            source_channel: None,
+            source_thread: None,
         };
         let raw = rmp_serde::to_vec_named(&ev).unwrap();
         let decoded: DaemonEventEnvelope = rmp_serde::from_slice(&raw).unwrap();

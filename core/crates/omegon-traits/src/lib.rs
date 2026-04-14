@@ -358,6 +358,7 @@ pub struct DaemonEventEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_role: Option<String>,
     /// Caller identity: user ID from the originating platform (e.g. Slack user ID).
+    /// When absent, the event routes to the default single session for backward compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_user: Option<String>,
     /// Caller identity: channel/conversation ID from the originating platform.

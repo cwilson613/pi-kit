@@ -373,14 +373,29 @@ pub async fn resolve_execution_model_spec(model_spec: &str) -> Option<String> {
 }
 
 pub async fn delegate_default_model() -> String {
-    // Delegate workers are headless child agents. Prefer providers that are
-    // actually executable in the current environment across the full upstream
-    // matrix, not a brittle hardcoded local-only default.
+    // Delegate workers are headless child agents. Respect the operator's
+    // explicit configuration before probing available providers.
+
+    // 1. Explicit operator override via env var.
+    if let Ok(env_model) = std::env::var("OMEGON_MODEL") {
+        if !env_model.is_empty() {
+            return env_model;
+        }
+    }
+
+    // 2. Automation-safe providers (API-key-based, not consumer subscriptions).
+    if let Some(model) = automation_safe_model() {
+        return model;
+    }
+
+    // 3. Probe available providers. Prefer API-key providers over consumer
+    //    subscription routes (openai-codex OAuth) to avoid credential
+    //    mismatches when the parent session uses a different provider.
     const CANDIDATES: &[(&str, &str)] = &[
-        ("openai-codex", "gpt-5.4"),
-        ("openai", "gpt-4o"),
         ("anthropic", "claude-sonnet-4-6"),
+        ("openai", "gpt-4o"),
         ("openrouter", "openai/gpt-4o"),
+        ("openai-codex", "gpt-5.4"),
         ("ollama-cloud", "gpt-oss:120b-cloud"),
         ("groq", "llama-3.3-70b-versatile"),
         ("xai", "grok-3-mini-fast"),
@@ -394,10 +409,6 @@ pub async fn delegate_default_model() -> String {
         if resolve_provider(provider).await.is_some() {
             return format!("{provider}:{model}");
         }
-    }
-
-    if let Some(model) = automation_safe_model() {
-        return model;
     }
 
     // Absolute last resort when nothing upstream is configured.

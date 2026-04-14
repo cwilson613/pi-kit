@@ -872,8 +872,9 @@ impl CleaveFeature {
             agent_binary,
             bridge_path: PathBuf::new(), // Not used in native mode
             node: String::new(),
-            model: std::env::var("OMEGON_MODEL")
-                .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into()),
+            model: std::env::var("OMEGON_MODEL").ok().filter(|s| !s.is_empty())
+                .or_else(crate::providers::automation_safe_model)
+                .unwrap_or_else(|| "anthropic:claude-sonnet-4-6".into()),
             max_parallel,
             timeout_secs: 900,
             idle_timeout_secs: 180,

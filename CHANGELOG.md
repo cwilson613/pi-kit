@@ -30,6 +30,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 - **Linux Homebrew install honesty** — install and distribution docs now explicitly warn that Homebrew on Linux does not solve host glibc ABI mismatches for Omegon release binaries. Users hitting `GLIBC_2.38` / `GLIBC_2.39` runtime errors are directed toward compatible distro/container baselines.
 - **Release-line correction** — `v0.15.11-rc.2` was published from a mistaken version-line advance after `0.15.10` had not actually closed cleanly. The active candidate line remains the `0.15.10` RC series. See `docs/release-line-correction-0-15-10.md`.
 
+## [0.15.12] - 2026-04-14
+
+### Fixed
+
+- **Delegate children ignore parent session provider** — delegate workers defaulted to a hardcoded provider candidate list (with `openai-codex:gpt-5.4` first) instead of inheriting the parent session's active model. Children now inherit the parent model via `TurnEnd` event tracking; the candidate list is only used as a last-resort fallback and now respects `OMEGON_MODEL`, `automation_safe_model()`, and puts API-key providers ahead of consumer subscription routes.
+- **Anthropic prefill rejection after compaction/decay** — `build_llm_view()` could produce a conversation ending with an assistant message after decay or repair stripped surrounding messages. Anthropic rejects this with "This model does not support assistant message prefill." A trailing user continuation is now appended when the final message is assistant-role.
+- **Cleave model fallback ignores operator environment** — cleave config fell back to hardcoded `anthropic:claude-sonnet-4-6` when `OMEGON_MODEL` was unset, ignoring configured API-key providers. Now checks `automation_safe_model()` before the hardcoded default.
+
 ## [0.15.11] - 2026-04-14
 
 ### Fixed

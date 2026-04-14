@@ -475,12 +475,20 @@ If blocked, say the blocker plainly.\n",
         prompt: &str,
         runtime: &DelegateRuntimeRequest,
         mind: Option<&str>,
+        session_model: Option<String>,
     ) -> anyhow::Result<String> {
         let prompt_path = write_child_prompt_file(&self.cwd, ".delegate-prompt.md", prompt)?;
 
         let model = match runtime.model.clone() {
             Some(model) => model,
-            None => crate::providers::delegate_default_model().await,
+            None => {
+                // Inherit the parent session's model so children use the same
+                // provider the operator is actually running on.
+                match session_model {
+                    Some(m) => m,
+                    None => crate::providers::delegate_default_model().await,
+                }
+            }
         };
         let child_config = ChildAgentSpawnConfig {
             agent_binary: std::env::current_exe()
@@ -530,6 +538,7 @@ If blocked, say the blocker plainly.\n",
         worker_profile: DelegateWorkerProfile,
         facts: Option<Vec<String>>,
         mind: Option<String>,
+        session_model: Option<String>,
     ) -> anyhow::Result<()> {
         // Assemble field kit: load persona mind if specified
         let mut field_kit_context = String::new();
@@ -594,10 +603,11 @@ If blocked, say the blocker plainly.\n",
 
         let store = self.result_store.clone();
         let cwd = self.cwd.clone();
+        let parent_model = session_model;
         crate::task_spawn::spawn_best_effort_result("delegate-real-task", async move {
             let runner = DelegateRunner::new(cwd, store.clone());
             match runner
-                .run_delegate_child(&prompt, &runtime, mind.as_deref())
+                .run_delegate_child(&prompt, &runtime, mind.as_deref(), parent_model)
                 .await
             {
                 Ok(result) => {
@@ -662,6 +672,10 @@ pub struct DelegateFeature {
     runner: Arc<DelegateRunner>,
     progress_handle: Arc<Mutex<DelegateProgress>>,
     event_slot: DelegateEventSlot,
+    /// Parent session model, updated on each TurnEnd. Used as the default
+    /// for child delegates so they inherit the operator's active provider
+    /// instead of falling back to a hardcoded candidate list.
+    session_model: Arc<Mutex<Option<String>>>,
 }
 
 impl DelegateFeature {
@@ -677,6 +691,7 @@ impl DelegateFeature {
             runner,
             progress_handle,
             event_slot,
+            session_model: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -861,6 +876,7 @@ impl Feature for DelegateFeature {
                 let task_id = self.result_store.generate_task_id();
 
                 // Spawn the delegate
+                let parent_model = self.session_model.lock().ok().and_then(|s| s.clone());
                 self.runner
                     .spawn_delegate(
                         task_id.clone(),
@@ -872,6 +888,7 @@ impl Feature for DelegateFeature {
                         worker_profile,
                         facts,
                         mind,
+                        parent_model,
                     )
                     .await?;
                 if let Ok(mut handle) = self.progress_handle.lock() {
@@ -1045,7 +1062,14 @@ impl Feature for DelegateFeature {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::TurnEnd { .. } => {
+            BusEvent::TurnEnd { model, .. } => {
+                // Capture the parent session's model so delegate children
+                // inherit it instead of falling back to hardcoded defaults.
+                if let Some(m) = model {
+                    if let Ok(mut slot) = self.session_model.lock() {
+                        *slot = Some(m.clone());
+                    }
+                }
                 if let Ok(mut handle) = self.progress_handle.lock() {
                     *handle = self.result_store.progress_snapshot();
                 }

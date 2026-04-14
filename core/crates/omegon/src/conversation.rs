@@ -665,6 +665,18 @@ impl ConversationState {
             });
         }
 
+        // Anthropic rejects conversations ending with an assistant message
+        // ("This model does not support assistant message prefill"). After
+        // compaction/decay/repair, the final message can be assistant-role.
+        // Append a minimal user continuation so the provider always gets
+        // a legal conversation shape.
+        if matches!(messages.last(), Some(LlmMessage::Assistant { .. })) {
+            messages.push(LlmMessage::User {
+                content: "Continue.".into(),
+                images: vec![],
+            });
+        }
+
         messages
     }
 
@@ -1296,12 +1308,16 @@ mod tests {
         conv.intent.stats.turns = 1; // Advance turn so the message is old
 
         let view = conv.build_llm_view();
-        assert_eq!(view.len(), 1);
+        // The decayed assistant message plus a trailing user continuation
+        // (build_llm_view appends one when the final message is assistant-role
+        // to satisfy provider requirements).
+        assert_eq!(view.len(), 2);
         if let LlmMessage::Assistant { thinking, .. } = &view[0] {
             assert!(thinking.is_empty(), "Thinking should be stripped on decay");
         } else {
             panic!("Expected Assistant message");
         }
+        assert!(matches!(&view[1], LlmMessage::User { .. }));
     }
 
     #[test]

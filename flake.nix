@@ -87,12 +87,13 @@
           default = omegon;
           omegon = omegon;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          oci-base = images.oci-base;
-          oci-dev = images.oci-dev;
-          oci-python = images.oci-python;
-          oci-node = images.oci-node;
+          oci-chat = images.oci-chat;
+          oci-coding = images.oci-coding;
+          oci-coding-python = images.oci-coding-python;
+          oci-coding-node = images.oci-coding-node;
+          oci-coding-rust = images.oci-coding-rust;
+          oci-infra = images.oci-infra;
           oci-full = images.oci-full;
-          oci-ops = images.oci-ops;
         };
 
         # mkOmegonImage for custom compositions:

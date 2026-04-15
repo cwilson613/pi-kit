@@ -1,66 +1,75 @@
 # Omegon container toolset profiles.
 #
-# Each profile defines the binary surface available to the agent inside
-# the container. The agent's `bash` tool can only execute what's in PATH.
-# A minimal container = a constrained agent. This is a security feature.
+# Profiles are organized into two tiers:
 #
-# Profiles compose via layers — each adds packages without removing any
-# from the base. Advanced operators combine profiles for their use case.
+#   1. Foundations — atomic package sets that are never deployed alone.
+#      These are building blocks composed into domains.
 #
-# Usage from flake.nix:
-#   profiles = import ./nix/profiles.nix { inherit pkgs; };
-#   omegonImage = mkOmegonImage { toolsets = [ profiles.base profiles.dev ]; };
+#   2. Domains — deployable agent roles. Each domain targets a specific
+#      operational purpose and composes the foundations it needs.
+#      One domain = one OCI image = one kind of agent Auspex can spawn.
+#
+# The agent's `bash` tool can only execute what's in PATH. A minimal
+# container = a constrained agent. This is a security feature.
 
 { pkgs }:
 
-{
-  # ── Base ─────────────────────────────────────────────────────────────────
-  # Absolute minimum for omegon to function. The agent can run shell
-  # commands but has almost no tools. Suitable for pure LLM tasks
-  # (conversation, analysis) where file/network access is not needed.
-  base = {
-    name = "base";
-    description = "Minimal shell + TLS. No dev tools.";
+let
+  # ── Foundations ────────────────────────────────────────────────────────
+  # Not deployed directly. Composed into domains below.
+
+  shell = {
+    name = "shell";
     packages = with pkgs; [
       bashInteractive
       coreutils
       cacert
-      findutils        # find, xargs
-      gnugrep          # grep
-      gnused           # sed
-      gawk             # awk
+      findutils
+      gnugrep
+      gnused
+      gawk
       less
       which
     ];
   };
 
-  # ── Dev ──────────────────────────────────────────────────────────────────
-  # Standard development tools. The agent can navigate codebases, search
-  # files, make commits, and interact with HTTP APIs. This is the default
-  # profile for coding agents.
-  dev = {
-    name = "dev";
-    description = "Git, search, HTTP. Standard coding agent.";
+  vcs = {
+    name = "vcs";
     packages = with pkgs; [
       gitMinimal
-      curl
-      jq
-      tree
-      ripgrep
-      fd
       diffutils
       patch
+    ];
+  };
+
+  search = {
+    name = "search";
+    packages = with pkgs; [
+      ripgrep
+      fd
+      tree
       file
+    ];
+  };
+
+  http = {
+    name = "http";
+    packages = with pkgs; [
+      curl
+      jq
+    ];
+  };
+
+  archive = {
+    name = "archive";
+    packages = with pkgs; [
       gnutar
       gzip
     ];
   };
 
-  # ── Python ───────────────────────────────────────────────────────────────
-  # Python runtime for agents that need to run or analyze Python code.
-  python = {
-    name = "python";
-    description = "Python 3.12 + pip + venv.";
+  python-runtime = {
+    name = "python-runtime";
     packages = with pkgs; [
       python312
       python312Packages.pip
@@ -68,21 +77,15 @@
     ];
   };
 
-  # ── Node ─────────────────────────────────────────────────────────────────
-  # Node.js runtime for agents working with JavaScript/TypeScript projects.
-  node = {
-    name = "node";
-    description = "Node.js 22 LTS + npm.";
+  node-runtime = {
+    name = "node-runtime";
     packages = with pkgs; [
       nodejs_22
     ];
   };
 
-  # ── Rust ─────────────────────────────────────────────────────────────────
-  # Rust toolchain for agents working on Rust projects.
-  rust = {
-    name = "rust";
-    description = "Rust stable toolchain + cargo.";
+  rust-runtime = {
+    name = "rust-runtime";
     packages = with pkgs; [
       rustc
       cargo
@@ -91,13 +94,9 @@
     ];
   };
 
-  # ── Ops ──────────────────────────────────────────────────────────────────
-  # Operations/infrastructure tools for agents managing deployments.
-  ops = {
-    name = "ops";
-    description = "kubectl, helm, ssh, ops tooling.";
+  k8s-tools = {
+    name = "k8s-tools";
     packages = with pkgs; [
-      openssh
       kubectl
       kubernetes-helm
       k9s
@@ -105,17 +104,87 @@
     ];
   };
 
-  # ── Network ──────────────────────────────────────────────────────────────
-  # Network diagnostic tools for agents troubleshooting connectivity.
-  network = {
-    name = "network";
-    description = "DNS, ping, traceroute, nmap.";
+  ssh-tools = {
+    name = "ssh-tools";
     packages = with pkgs; [
-      iputils        # ping
-      iproute2       # ip, ss
-      dnsutils       # dig, nslookup
+      openssh
+    ];
+  };
+
+  net-diag = {
+    name = "net-diag";
+    packages = with pkgs; [
+      iputils
+      iproute2
+      dnsutils
       nmap
       tcpdump
     ];
+  };
+
+in
+{
+  # Export foundations for custom compositions
+  inherit shell vcs search http archive
+          python-runtime node-runtime rust-runtime
+          k8s-tools ssh-tools net-diag;
+
+  # ── Domains ───────────────────────────────────────────────────────────
+  # Each domain is a deployable agent role. Auspex picks the domain that
+  # matches the task, spawns the corresponding image.
+
+  # Conversational agent. No filesystem tools, no network. Pure LLM
+  # reasoning — summarization, analysis, Q&A, triage.
+  chat = {
+    name = "chat";
+    description = "Conversational agent. No dev tools, no network.";
+    toolsets = [ shell ];
+  };
+
+  # Software engineering agent. Reads and writes code, runs git, searches
+  # codebases. The default for most coding tasks.
+  coding = {
+    name = "coding";
+    description = "Software engineering agent. Git, search, HTTP.";
+    toolsets = [ shell vcs search http archive ];
+  };
+
+  # Coding agent with Python runtime. Can run tests, execute scripts,
+  # manage virtualenvs.
+  coding-python = {
+    name = "coding-python";
+    description = "Python project agent. Coding tools + Python 3.12.";
+    toolsets = [ shell vcs search http archive python-runtime ];
+  };
+
+  # Coding agent with Node.js runtime.
+  coding-node = {
+    name = "coding-node";
+    description = "Node.js project agent. Coding tools + Node 22.";
+    toolsets = [ shell vcs search http archive node-runtime ];
+  };
+
+  # Coding agent with Rust toolchain.
+  coding-rust = {
+    name = "coding-rust";
+    description = "Rust project agent. Coding tools + Rust stable.";
+    toolsets = [ shell vcs search http archive rust-runtime ];
+  };
+
+  # Infrastructure and deployment agent. Manages k8s clusters, runs
+  # helm, SSH into nodes, diagnoses network issues.
+  infra = {
+    name = "infra";
+    description = "Infrastructure agent. kubectl, helm, SSH, network diag.";
+    toolsets = [ shell vcs http archive k8s-tools ssh-tools net-diag ];
+  };
+
+  # Full-stack agent. Everything. Heavy image (~500MB), use sparingly.
+  full = {
+    name = "full";
+    description = "Full-stack agent. All tools, all runtimes.";
+    toolsets = [ shell vcs search http archive
+                 python-runtime node-runtime rust-runtime
+                 k8s-tools ssh-tools net-diag ];
   };
 }

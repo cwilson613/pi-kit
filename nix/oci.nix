@@ -1,23 +1,25 @@
 # Omegon container image builder.
 #
-# Produces minimal OCI images with composable toolset layers.
-# The omegon binary is the only constant — everything else is
-# determined by which profiles the operator selects.
+# Produces minimal OCI images per domain. Each domain is a deployable
+# agent role (chat, coding, infra, etc.) with its own toolset surface.
 #
 # The image contains NO extension binaries. Extensions are installed
 # via init-container sidecar pattern into a shared OMEGON_HOME volume.
 #
-# Example compositions:
-#   base only          → 40-50MB  (conversation agent, no tools)
-#   base + dev         → 80-100MB (coding agent, standard)
-#   base + dev + python → 150MB   (Python project agent)
-#   base + dev + ops   → 120MB   (infrastructure agent)
+# Domain images:
+#   omegon-chat          → ~50MB   (conversational only)
+#   omegon               → ~100MB  (coding agent, default)
+#   omegon-coding-python → ~200MB  (Python project agent)
+#   omegon-coding-node   → ~150MB  (Node.js project agent)
+#   omegon-coding-rust   → ~300MB  (Rust project agent)
+#   omegon-infra         → ~200MB  (infrastructure agent)
+#   omegon-full          → ~500MB  (everything)
 
 { nix2container, pkgs, omegon, profiles, version, commitSha }:
 let
   n2c = nix2container.packages.${pkgs.system}.nix2container;
 
-  # Minimal root filesystem shared by all profiles
+  # Minimal root filesystem shared by all domains
   initDirs = pkgs.runCommand "omegon-container-init" {} ''
     mkdir -p $out/tmp $out/workspace $out/data/omegon $out/etc
     cat > $out/etc/passwd <<'PASSWD'
@@ -69,13 +71,12 @@ let
     '';
   };
 
-  # Build an OCI image from a list of profile sets.
-  # Each profile becomes its own layer for optimal caching.
-  mkOmegonImage = { name ? "omegon", tag ? version, toolsets ? [ profiles.base ] }:
+  # Build an OCI image from a domain definition.
+  # Each foundation in the domain becomes its own layer for caching.
+  mkOmegonImage = { name ? "omegon", tag ? version, domain }:
     let
-      allPackages = builtins.concatMap (p: p.packages) toolsets;
-      profileNames = builtins.map (p: p.name) toolsets;
-      profileDesc = builtins.concatStringsSep ", " profileNames;
+      allPackages = builtins.concatMap (t: t.packages) domain.toolsets;
+      foundationNames = builtins.map (t: t.name) domain.toolsets;
     in
     n2c.buildImage {
       name = "ghcr.io/styrene-lab/${name}";
@@ -100,65 +101,63 @@ let
           "org.opencontainers.image.version" = version;
           "org.opencontainers.image.revision" = commitSha;
           "org.opencontainers.image.title" = name;
-          "org.opencontainers.image.description" = "Omegon agent daemon [${profileDesc}]";
+          "org.opencontainers.image.description" = "Omegon agent — ${domain.description}";
           "org.opencontainers.image.source" = "https://github.com/styrene-lab/omegon";
-          "sh.styrene.omegon.profiles" = builtins.concatStringsSep "," profileNames;
+          "sh.styrene.omegon.domain" = domain.name;
+          "sh.styrene.omegon.foundations" = builtins.concatStringsSep "," foundationNames;
         };
       };
 
       copyToRoot = [ initDirs ];
 
-      layers = [
-        # Layer 1: base shell + coreutils (rarely changes)
-        (n2c.buildLayer { deps = profiles.base.packages; })
-      ]
-      # Layer 2..N: each additional toolset profile
-      ++ builtins.map (profile:
-        n2c.buildLayer { deps = profile.packages; }
-      ) (builtins.filter (p: p.name != "base") toolsets)
-      # Final layer: omegon binary + entrypoint (changes on release)
-      ++ [
-        (n2c.buildLayer { deps = [ omegon entrypoint ]; })
-      ];
+      layers =
+        # One layer per foundation for optimal caching
+        builtins.map (foundation:
+          n2c.buildLayer { deps = foundation.packages; }
+        ) domain.toolsets
+        # Final layer: omegon binary + entrypoint (changes on release)
+        ++ [
+          (n2c.buildLayer { deps = [ omegon entrypoint ]; })
+        ];
     };
 in
 {
-  # Pre-composed images for common use cases
   inherit mkOmegonImage;
 
-  # Minimal — conversation-only agent, no dev tools
-  oci-base = mkOmegonImage {
-    name = "omegon-base";
-    toolsets = [ profiles.base ];
+  # ── Domain images ───────────────────────────────────────────────────
+
+  oci-chat = mkOmegonImage {
+    name = "omegon-chat";
+    domain = profiles.chat;
   };
 
-  # Standard coding agent — git, search, HTTP
-  oci-dev = mkOmegonImage {
+  oci-coding = mkOmegonImage {
     name = "omegon";
-    toolsets = [ profiles.base profiles.dev ];
+    domain = profiles.coding;
   };
 
-  # Python project agent
-  oci-python = mkOmegonImage {
-    name = "omegon-python";
-    toolsets = [ profiles.base profiles.dev profiles.python ];
+  oci-coding-python = mkOmegonImage {
+    name = "omegon-coding-python";
+    domain = profiles.coding-python;
   };
 
-  # Node.js project agent
-  oci-node = mkOmegonImage {
-    name = "omegon-node";
-    toolsets = [ profiles.base profiles.dev profiles.node ];
+  oci-coding-node = mkOmegonImage {
+    name = "omegon-coding-node";
+    domain = profiles.coding-node;
   };
 
-  # Full-stack agent (dev + python + node + rust)
+  oci-coding-rust = mkOmegonImage {
+    name = "omegon-coding-rust";
+    domain = profiles.coding-rust;
+  };
+
+  oci-infra = mkOmegonImage {
+    name = "omegon-infra";
+    domain = profiles.infra;
+  };
+
   oci-full = mkOmegonImage {
     name = "omegon-full";
-    toolsets = [ profiles.base profiles.dev profiles.python profiles.node profiles.rust ];
-  };
-
-  # Infrastructure / ops agent
-  oci-ops = mkOmegonImage {
-    name = "omegon-ops";
-    toolsets = [ profiles.base profiles.dev profiles.ops profiles.network ];
+    domain = profiles.full;
   };
 }

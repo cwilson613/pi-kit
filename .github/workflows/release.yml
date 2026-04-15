@@ -405,18 +405,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: oci-base
-            description: "Minimal conversation agent"
-          - image: oci-dev
-            description: "Standard coding agent (git, search, HTTP)"
-          - image: oci-python
+          - image: oci-chat
+            description: "Conversational agent"
+          - image: oci-coding
+            description: "Software engineering agent"
+          - image: oci-coding-python
             description: "Python project agent"
-          - image: oci-node
+          - image: oci-coding-node
             description: "Node.js project agent"
+          - image: oci-coding-rust
+            description: "Rust project agent"
+          - image: oci-infra
+            description: "Infrastructure agent"
           - image: oci-full
-            description: "Full-stack agent (dev + python + node + rust)"
-          - image: oci-ops
-            description: "Infrastructure / ops agent"
+            description: "Full-stack agent"
 
     steps:
       - uses: actions/checkout@v4

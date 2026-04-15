@@ -1,0 +1,11 @@
+[extension]
+name = "mock-extension"
+version = "0.1.0"
+description = "Test fixture for extension install integration tests"
+
+[runtime]
+type = "native"
+binary = "mock-extension"
+
+[secrets]
+optional = ["MOCK_TOKEN"]

@@ -21,11 +21,17 @@
 //! events synchronously. Features get `&mut self` — no interior mutability
 //! needed. The TUI receives events via a separate `tokio::broadcast` channel.
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use omegon_traits::{
     BusEvent, BusRequest, CommandDefinition, CommandResult, ContextInjection, ContextSignals,
     Feature, ToolDefinition,
 };
 use serde_json::Value;
+
+/// Default tool execution timeout (5 minutes).
+const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The event bus — owns all features and dispatches events to them.
 pub struct EventBus {
@@ -38,6 +44,8 @@ pub struct EventBus {
     command_defs: Vec<(usize, CommandDefinition)>,
     /// Handle to the disabled tools set from ManageTools.
     disabled_tools: Option<crate::features::manage_tools::DisabledTools>,
+    /// Per-tool execution timeouts. Tools not listed use DEFAULT_TOOL_TIMEOUT.
+    tool_timeouts: HashMap<String, Duration>,
 }
 
 impl EventBus {
@@ -48,6 +56,11 @@ impl EventBus {
             tool_defs: Vec::new(),
             command_defs: Vec::new(),
             disabled_tools: None,
+            tool_timeouts: HashMap::from([
+                ("bash".into(), Duration::from_secs(120)),
+                ("web_search".into(), Duration::from_secs(30)),
+                ("web_fetch".into(), Duration::from_secs(60)),
+            ]),
         }
     }
 
@@ -230,14 +243,52 @@ impl EventBus {
         cancel: tokio_util::sync::CancellationToken,
         sink: omegon_traits::ToolProgressSink,
     ) -> anyhow::Result<omegon_traits::ToolResult> {
+        let timeout = self
+            .tool_timeouts
+            .get(tool_name)
+            .copied()
+            .unwrap_or(DEFAULT_TOOL_TIMEOUT);
+
         for (idx, def) in &self.tool_defs {
             if def.name == tool_name {
-                return self.features[*idx]
-                    .execute_with_sink(tool_name, call_id, args, cancel, sink)
-                    .await;
+                return match tokio::time::timeout(
+                    timeout,
+                    self.features[*idx]
+                        .execute_with_sink(tool_name, call_id, args, cancel, sink),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        tracing::error!(
+                            tool = tool_name,
+                            timeout_secs = timeout.as_secs(),
+                            "tool execution timed out"
+                        );
+                        Ok(omegon_traits::ToolResult {
+                            content: vec![omegon_traits::ContentBlock::Text {
+                                text: format!(
+                                    "Tool '{}' timed out after {} seconds. \
+                                     The operation was cancelled.",
+                                    tool_name,
+                                    timeout.as_secs()
+                                ),
+                            }],
+                            details: serde_json::json!({"is_error": true}),
+                        })
+                    }
+                };
             }
         }
         anyhow::bail!("no feature provides tool '{tool_name}'")
+    }
+
+    /// Get the configured timeout for a tool.
+    pub fn tool_timeout(&self, tool_name: &str) -> Duration {
+        self.tool_timeouts
+            .get(tool_name)
+            .copied()
+            .unwrap_or(DEFAULT_TOOL_TIMEOUT)
     }
 
     // ─── Context injection ──────────────────────────────────────────

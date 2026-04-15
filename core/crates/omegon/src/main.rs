@@ -805,13 +805,59 @@ struct EmbeddedStartupEvent {
 }
 
 /// Mutable state for the default (full-featured) daemon session.
-/// This is the pre-existing agent state from `AgentSetup` — it has memory,
-/// lifecycle, delegate, and all other features. Web API prompts and
-/// anonymous vox events route here.
+/// Pre-existing agent state from `AgentSetup` — has memory, lifecycle,
+/// delegate, and all features. Web API prompts and vox events route here.
+///
+/// Wrapped in `Option` so spawned turns can `.take()` ownership for the
+/// duration of `r#loop::run()`, releasing the Mutex while the turn executes.
 struct DefaultSession {
     bus: bus::EventBus,
     context_manager: context::ContextManager,
     conversation: conversation::ConversationState,
+}
+
+/// Type alias for the shared session state. `None` means a turn is in progress.
+type SharedSession = Arc<tokio::sync::Mutex<Option<DefaultSession>>>;
+
+/// Run a daemon turn with the take/replace pattern. Acquires the session
+/// briefly to extract state, runs the turn without holding the lock, then
+/// puts state back. Returns `Err` if the session is busy (turn in progress).
+async fn run_daemon_turn(
+    session: &SharedSession,
+    bridge: &Arc<dyn LlmBridge>,
+    events_tx: &tokio::sync::broadcast::Sender<omegon_traits::AgentEvent>,
+    config: r#loop::LoopConfig,
+    setup_fn: impl FnOnce(&mut DefaultSession),
+) -> anyhow::Result<()> {
+    // Take ownership — Mutex held only for the .take() call.
+    let mut state = {
+        let mut guard = session.lock().await;
+        guard
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("session busy — turn already in progress"))?
+    };
+
+    setup_fn(&mut state);
+
+    let turn_cancel = CancellationToken::new();
+    let result = r#loop::run(
+        bridge.as_ref(),
+        &mut state.bus,
+        &mut state.context_manager,
+        &mut state.conversation,
+        events_tx,
+        turn_cancel,
+        &config,
+    )
+    .await;
+
+    // Always return state, even on error.
+    {
+        let mut guard = session.lock().await;
+        *guard = Some(state);
+    }
+
+    result
 }
 
 /// Pre-setup agent manifest resolution. Runs BEFORE AgentSetup::new() so
@@ -1114,11 +1160,11 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     // Wrap the pre-existing agent state as the default session. This
     // preserves single-session backward compatibility — events without
     // identity metadata route here (web API, anonymous vox messages).
-    let default_session = Arc::new(tokio::sync::Mutex::new(DefaultSession {
+    let default_session: SharedSession = Arc::new(tokio::sync::Mutex::new(Some(DefaultSession {
         bus: agent.bus,
         context_manager: agent.context_manager,
         conversation: agent.conversation,
-    }));
+    })));
 
     // ─── Load trigger configs ─────────────────────────────────────────
     let trigger_configs = triggers::load_trigger_configs(&cwd);
@@ -1220,7 +1266,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                     let cwd = agent_cwd.clone();
                     let secrets = agent_secrets.clone();
                     let semaphore = router.semaphore().clone();
-                    let daemon_workflow = daemon_workflow.clone();
+                    let _daemon_workflow = daemon_workflow.clone();
 
                     task_spawn::spawn_best_effort_result(
                         "daemon-turn-vox",
@@ -1228,10 +1274,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             let _permit = semaphore.acquire().await
                                 .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                            let mut sess = session.lock().await;
-                            sess.conversation.push_user(text);
-
-                            let mut loop_config = r#loop::LoopConfig {
+                            let loop_config = r#loop::LoopConfig {
                                 max_turns: shared_settings
                                     .lock()
                                     .map(|s| s.max_turns)
@@ -1252,30 +1295,10 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 enforce_first_turn_execution_bias: false,
                             };
 
-                            if let Some(ref wf) = daemon_workflow {
-                                let phase = sess.context_manager.phase();
-                                if let Some(pc) = wf.phase_config(phase) {
-                                    workflow::apply_phase_config(
-                                        &mut loop_config,
-                                        pc,
-                                        &shared_settings,
-                                    );
-                                }
-                            }
-
-                            let turn_cancel = CancellationToken::new();
-                            let s = &mut *sess;
-                            if let Err(e) = r#loop::run(
-                                bridge.as_ref(),
-                                &mut s.bus,
-                                &mut s.context_manager,
-                                &mut s.conversation,
-                                &events_tx,
-                                turn_cancel,
-                                &loop_config,
-                            )
-                            .await
-                            {
+                            if let Err(e) = run_daemon_turn(
+                                &session, &bridge, &events_tx, loop_config,
+                                |state| { state.conversation.push_user(text); },
+                            ).await {
                                 tracing::error!(error = %e, "daemon vox event loop error");
                             }
                             Ok(())
@@ -1297,7 +1320,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                         let cwd = agent_cwd.clone();
                         let secrets = agent_secrets.clone();
                         let semaphore = router.semaphore().clone();
-                        let daemon_workflow = daemon_workflow.clone();
+                        let _daemon_workflow = daemon_workflow.clone();
 
                         task_spawn::spawn_best_effort_result(
                             "daemon-turn-prompt",
@@ -1305,10 +1328,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 let _permit = semaphore.acquire().await
                                     .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                                let mut sess = session.lock().await;
-                                sess.conversation.push_user(text);
-
-                                let mut loop_config = r#loop::LoopConfig {
+                                let loop_config = r#loop::LoopConfig {
                                     max_turns: shared_settings
                                         .lock()
                                         .map(|s| s.max_turns)
@@ -1329,31 +1349,10 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                     enforce_first_turn_execution_bias: false,
                                 };
 
-                                // Apply workflow phase config if available
-                                if let Some(ref wf) = daemon_workflow {
-                                    let phase = sess.context_manager.phase();
-                                    if let Some(pc) = wf.phase_config(phase) {
-                                        workflow::apply_phase_config(
-                                            &mut loop_config,
-                                            pc,
-                                            &shared_settings,
-                                        );
-                                    }
-                                }
-
-                                let turn_cancel = CancellationToken::new();
-                                let s = &mut *sess;
-                                if let Err(e) = r#loop::run(
-                                    bridge.as_ref(),
-                                    &mut s.bus,
-                                    &mut s.context_manager,
-                                    &mut s.conversation,
-                                    &events_tx,
-                                    turn_cancel,
-                                    &loop_config,
-                                )
-                                .await
-                                {
+                                if let Err(e) = run_daemon_turn(
+                                    &session, &bridge, &events_tx, loop_config,
+                                    |state| { state.conversation.push_user(text); },
+                                ).await {
                                     tracing::error!(error = %e, "daemon agent loop error");
                                 }
                                 Ok(())
@@ -1398,9 +1397,6 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 let _permit = semaphore.acquire().await
                                     .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                                let mut sess = session.lock().await;
-                                sess.conversation.push_user(prompt);
-
                                 let loop_config = r#loop::LoopConfig {
                                     max_turns: shared_settings
                                         .lock()
@@ -1422,19 +1418,10 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                     enforce_first_turn_execution_bias: false,
                                 };
 
-                                let turn_cancel = CancellationToken::new();
-                                let s = &mut *sess;
-                                if let Err(e) = r#loop::run(
-                                    bridge.as_ref(),
-                                    &mut s.bus,
-                                    &mut s.context_manager,
-                                    &mut s.conversation,
-                                    &events_tx,
-                                    turn_cancel,
-                                    &loop_config,
-                                )
-                                .await
-                                {
+                                if let Err(e) = run_daemon_turn(
+                                    &session, &bridge, &events_tx, loop_config,
+                                    |state| { state.conversation.push_user(prompt); },
+                                ).await {
                                     tracing::error!(error = %e, "daemon slash command loop error");
                                 }
 
@@ -1512,9 +1499,6 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             let _permit = semaphore.acquire().await
                                 .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                            let mut sess = session.lock().await;
-                            sess.conversation.push_user(prompt);
-
                             let loop_config = r#loop::LoopConfig {
                                 max_turns: shared_settings
                                     .lock()
@@ -1536,19 +1520,10 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 enforce_first_turn_execution_bias: false,
                             };
 
-                            let turn_cancel = CancellationToken::new();
-                            let s = &mut *sess;
-                            if let Err(e) = r#loop::run(
-                                bridge.as_ref(),
-                                &mut s.bus,
-                                &mut s.context_manager,
-                                &mut s.conversation,
-                                &events_tx,
-                                turn_cancel,
-                                &loop_config,
-                            )
-                            .await
-                            {
+                            if let Err(e) = run_daemon_turn(
+                                &session, &bridge, &events_tx, loop_config,
+                                |state| { state.conversation.push_user(prompt); },
+                            ).await {
                                 tracing::error!(
                                     trigger = %trigger_name,
                                     error = %e,
@@ -1595,7 +1570,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                 let cwd = agent_cwd.clone();
                 let secrets = agent_secrets.clone();
                 let semaphore = router.semaphore().clone();
-                let daemon_workflow = daemon_workflow.clone();
+                let _daemon_workflow = daemon_workflow.clone();
 
                 task_spawn::spawn_best_effort_result(
                     "daemon-turn-auto-dispatch",
@@ -1603,10 +1578,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                         let _permit = semaphore.acquire().await
                             .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                        let mut sess = session.lock().await;
-                        sess.conversation.push_user(prompt);
-
-                        let mut loop_config = r#loop::LoopConfig {
+                        let loop_config = r#loop::LoopConfig {
                             max_turns: shared_settings
                                 .lock()
                                 .map(|s| s.max_turns)
@@ -1627,33 +1599,10 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             enforce_first_turn_execution_bias: true,
                         };
 
-                        // Apply implementing phase config from workflow template
-                        if let Some(ref wf) = daemon_workflow {
-                            let implementing_phase = omegon_traits::LifecyclePhase::Implementing {
-                                change_id: Some(node_id.clone()),
-                            };
-                            if let Some(pc) = wf.phase_config(&implementing_phase) {
-                                workflow::apply_phase_config(
-                                    &mut loop_config,
-                                    pc,
-                                    &shared_settings,
-                                );
-                            }
-                        }
-
-                        let turn_cancel = CancellationToken::new();
-                        let s = &mut *sess;
-                        if let Err(e) = r#loop::run(
-                            bridge.as_ref(),
-                            &mut s.bus,
-                            &mut s.context_manager,
-                            &mut s.conversation,
-                            &events_tx,
-                            turn_cancel,
-                            &loop_config,
-                        )
-                        .await
-                        {
+                        if let Err(e) = run_daemon_turn(
+                            &session, &bridge, &events_tx, loop_config,
+                            |state| { state.conversation.push_user(prompt); },
+                        ).await {
                             tracing::error!(
                                 node_id = %node_id,
                                 error = %e,
@@ -1672,12 +1621,16 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     tracing::info!("daemon: draining in-flight turns (5s grace period)");
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-    // Save the default session.
+    // Save the default session (if not currently in a turn).
     {
-        let sess = default_session.lock().await;
-        if let Err(e) = session::save_session(&sess.conversation, &agent_cwd, Some(&agent_session_id))
-        {
-            tracing::debug!("Daemon session save failed (non-fatal): {e}");
+        let guard = default_session.lock().await;
+        if let Some(ref sess) = *guard {
+            if let Err(e) = session::save_session(&sess.conversation, &agent_cwd, Some(&agent_session_id))
+            {
+                tracing::debug!("Daemon session save failed (non-fatal): {e}");
+            }
+        } else {
+            tracing::warn!("session still in-flight at shutdown — state will be saved by completing turn");
         }
     }
     bridge.shutdown().await;

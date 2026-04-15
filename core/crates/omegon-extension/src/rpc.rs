@@ -17,7 +17,8 @@ pub enum RpcMessage {
 pub struct RpcRequest {
     pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    /// JSON-RPC 2.0 id — may be a string, number, or null.
+    pub id: Option<Value>,
     pub method: String,
     #[serde(default)]
     pub params: Value,
@@ -36,8 +37,8 @@ pub struct RpcNotification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcResponse {
     pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    /// JSON-RPC 2.0 id — echoed from the request. May be string, number, or null.
+    pub id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,7 +47,7 @@ pub struct RpcResponse {
 
 impl RpcResponse {
     /// Build a success response.
-    pub fn success(id: Option<String>, result: Value) -> Self {
+    pub fn success(id: Option<Value>, result: Value) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id,
@@ -56,7 +57,7 @@ impl RpcResponse {
     }
 
     /// Build an error response.
-    pub fn error(id: Option<String>, code: ErrorCode, message: impl Into<String>) -> Self {
+    pub fn error(id: Option<Value>, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id,
@@ -87,7 +88,7 @@ mod tests {
     fn test_rpc_request_roundtrip() {
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
-            id: Some("1".to_string()),
+            id: Some(Value::String("1".to_string())),
             method: "get_tools".to_string(),
             params: serde_json::json!({}),
         };
@@ -95,15 +96,28 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let parsed: RpcRequest = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.id, Some("1".to_string()));
+        assert_eq!(parsed.id, Some(Value::String("1".to_string())));
         assert_eq!(parsed.method, "get_tools");
     }
 
     #[test]
-    fn test_rpc_response_success() {
-        let resp = RpcResponse::success(Some("1".to_string()), serde_json::json!({"status": "ok"}));
+    fn test_rpc_request_numeric_id() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"method":"get_tools","params":{}}"#;
+        let parsed: RpcMessage = serde_json::from_str(json).unwrap();
+        match parsed {
+            RpcMessage::Request(req) => {
+                assert_eq!(req.id, Some(Value::Number(1.into())));
+                assert_eq!(req.method, "get_tools");
+            }
+            _ => panic!("expected Request"),
+        }
+    }
 
-        assert_eq!(resp.id, Some("1".to_string()));
+    #[test]
+    fn test_rpc_response_success() {
+        let resp = RpcResponse::success(Some(Value::String("1".to_string())), serde_json::json!({"status": "ok"}));
+
+        assert_eq!(resp.id, Some(Value::String("1".to_string())));
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
     }
@@ -111,12 +125,12 @@ mod tests {
     #[test]
     fn test_rpc_response_error() {
         let resp = RpcResponse::error(
-            Some("1".to_string()),
+            Some(Value::String("1".to_string())),
             ErrorCode::MethodNotFound,
             "method not found",
         );
 
-        assert_eq!(resp.id, Some("1".to_string()));
+        assert_eq!(resp.id, Some(Value::String("1".to_string())));
         assert!(resp.result.is_none());
         assert!(resp.error.is_some());
     }

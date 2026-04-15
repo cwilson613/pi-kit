@@ -130,7 +130,7 @@ mod tests {
 
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
-            id: Some("1".to_string()),
+            id: Some(serde_json::Value::String("1".to_string())),
             method: "echo".to_string(),
             params: serde_json::json!({}),
         };
@@ -138,7 +138,7 @@ mod tests {
         let serve = ExtensionServe::new(ext);
         let response = serve.handle_request(&req).await;
 
-        assert_eq!(response.id, Some("1".to_string()));
+        assert_eq!(response.id, Some(serde_json::Value::String("1".to_string())));
         assert!(response.result.is_some());
     }
 
@@ -148,7 +148,7 @@ mod tests {
 
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
-            id: Some("1".to_string()),
+            id: Some(serde_json::Value::String("1".to_string())),
             method: "unknown".to_string(),
             params: serde_json::json!({}),
         };
@@ -156,7 +156,7 @@ mod tests {
         let serve = ExtensionServe::new(ext);
         let response = serve.handle_request(&req).await;
 
-        assert_eq!(response.id, Some("1".to_string()));
+        assert_eq!(response.id, Some(serde_json::Value::String("1".to_string())));
         assert!(response.error.is_some());
     }
 }

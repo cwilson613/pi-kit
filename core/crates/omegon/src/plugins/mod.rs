@@ -265,9 +265,9 @@ async fn discover_project_mcp_servers(
 fn plugin_search_paths(cwd: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // 1. ~/.omegon/plugins/ (user-level)
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".omegon").join("plugins"));
+    // 1. $OMEGON_HOME/plugins/ or ~/.omegon/plugins/ (user-level)
+    if let Ok(home) = crate::paths::omegon_home() {
+        paths.push(home.join("plugins"));
     }
 
     // 2. <cwd>/.omegon/plugins/ (project-level for the targeted workspace)

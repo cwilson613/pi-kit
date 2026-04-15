@@ -157,6 +157,30 @@ pub fn user_config_dir() -> PathBuf {
         .join(".config/omegon")
 }
 
+/// Omegon home directory — the root for user-level state.
+///
+/// Resolution order:
+///   1. `OMEGON_HOME` env var (for multi-instance / container deployments)
+///   2. `~/.omegon/` (default)
+///
+/// Contains: extensions/, plugins/, secrets.json, skills/, profile.json, etc.
+///
+/// For container/sidecar deployments where multiple omegon instances need
+/// isolated state, set `OMEGON_HOME` per instance so each gets its own
+/// extension subprocesses, secrets, and plugin directories.
+pub fn omegon_home() -> anyhow::Result<PathBuf> {
+    if let Ok(home) = std::env::var("OMEGON_HOME") {
+        let path = PathBuf::from(home);
+        if path.is_relative() {
+            anyhow::bail!("OMEGON_HOME must be an absolute path, got: {}", path.display());
+        }
+        return Ok(path);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".omegon"))
+        .ok_or_else(|| anyhow::anyhow!("cannot determine home directory and OMEGON_HOME is not set"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

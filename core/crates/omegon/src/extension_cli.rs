@@ -1,0 +1,584 @@
+//! Extension lifecycle management — install, list, remove, update, enable, disable.
+//!
+//! Extensions are native binaries or OCI containers installed into
+//! `~/.omegon/extensions/<name>/`.  Each extension must have a
+//! `manifest.toml` at the root.
+//!
+//! ## Install
+//!
+//! ```sh
+//! omegon extension install https://github.com/user/my-extension
+//! omegon extension install ./local/path/to/extension
+//! ```
+//!
+//! Git URIs are cloned. Local paths are symlinked (development mode).
+//!
+//! ## List
+//!
+//! ```sh
+//! omegon extension list
+//! ```
+//!
+//! ## Remove
+//!
+//! ```sh
+//! omegon extension remove my-extension
+//! ```
+//!
+//! ## Update
+//!
+//! ```sh
+//! omegon extension update [name]
+//! ```
+//!
+//! ## Enable / Disable
+//!
+//! ```sh
+//! omegon extension enable my-extension
+//! omegon extension disable my-extension
+//! ```
+
+use std::path::{Path, PathBuf};
+
+use crate::extensions::manifest::ExtensionManifest;
+use crate::extensions::state::ExtensionState;
+
+/// Install an extension from a git URI or local path.
+pub fn install(uri: &str) -> anyhow::Result<()> {
+    let extensions_dir = extensions_dir()?;
+    std::fs::create_dir_all(&extensions_dir)?;
+
+    let local_path = Path::new(uri);
+
+    if local_path.exists() && local_path.join("manifest.toml").exists() {
+        install_local(&extensions_dir, local_path)
+    } else if uri.contains("://") || uri.contains("git@") || uri.ends_with(".git") {
+        install_git(&extensions_dir, uri)
+    } else {
+        anyhow::bail!(
+            "'{uri}' is not a valid extension source.\n\
+             Expected: a git URL or a local directory containing manifest.toml"
+        );
+    }
+}
+
+/// Render all installed extensions as terminal-friendly text.
+pub fn list_summary() -> anyhow::Result<String> {
+    let extensions_dir = extensions_dir()?;
+
+    if !extensions_dir.exists() {
+        return Ok(
+            "No extensions installed.\n  Install with: omegon extension install <git-url-or-path>"
+                .into(),
+        );
+    }
+
+    let entries: Vec<_> = std::fs::read_dir(&extensions_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir() || e.path().is_symlink())
+        .collect();
+
+    if entries.is_empty() {
+        return Ok("No extensions installed.".into());
+    }
+
+    let mut lines = vec![
+        format!(
+            "{:<20} {:<10} {:<10} {:<12} DESCRIPTION",
+            "NAME", "VERSION", "RUNTIME", "STATUS"
+        ),
+        "─".repeat(80),
+    ];
+
+    for entry in &entries {
+        let dir = entry.path();
+        let resolved = if dir.is_symlink() {
+            std::fs::read_link(&dir).unwrap_or(dir.clone())
+        } else {
+            dir.clone()
+        };
+
+        let manifest_path = resolved.join("manifest.toml");
+        if !manifest_path.exists() {
+            let name = dir.file_name().unwrap_or_default().to_string_lossy();
+            lines.push(format!(
+                "{:<20} {:<10} {:<10} {:<12} (no manifest.toml)",
+                name, "?", "?", "?"
+            ));
+            continue;
+        }
+
+        match load_extension_summary(&resolved) {
+            Ok(info) => {
+                let symlink_marker = if dir.is_symlink() { " →" } else { "" };
+                lines.push(format!(
+                    "{:<20} {:<10} {:<10} {:<12} {}{}",
+                    info.name, info.version, info.runtime, info.status, info.description, symlink_marker
+                ));
+            }
+            Err(e) => {
+                let name = dir.file_name().unwrap_or_default().to_string_lossy();
+                lines.push(format!(
+                    "{:<20} {:<10} {:<10} {:<12} (error: {e})",
+                    name, "?", "?", "?"
+                ));
+            }
+        }
+    }
+
+    let symlinks = entries.iter().filter(|e| e.path().is_symlink()).count();
+    if symlinks > 0 {
+        lines.push("\n  → = symlinked (development mode)".into());
+    }
+
+    Ok(lines.join("\n"))
+}
+
+/// List all installed extensions.
+pub fn list() -> anyhow::Result<()> {
+    println!("{}", list_summary()?);
+    Ok(())
+}
+
+/// Remove an installed extension by name.
+pub fn remove(name: &str) -> anyhow::Result<()> {
+    validate_name(name)?;
+    let extensions_dir = extensions_dir()?;
+    let ext_path = extensions_dir.join(name);
+
+    if !ext_path.exists() {
+        anyhow::bail!(
+            "Extension '{}' not found in {}",
+            name,
+            extensions_dir.display()
+        );
+    }
+
+    if ext_path.is_symlink() {
+        std::fs::remove_file(&ext_path)?;
+        println!("Removed symlink: {name}");
+    } else {
+        std::fs::remove_dir_all(&ext_path)?;
+        println!("Removed extension: {name}");
+    }
+
+    Ok(())
+}
+
+/// Update an extension (or all extensions) by running `git pull`.
+pub fn update(name: Option<&str>) -> anyhow::Result<()> {
+    let extensions_dir = extensions_dir()?;
+
+    if !extensions_dir.exists() {
+        println!("No extensions installed.");
+        return Ok(());
+    }
+
+    let dirs_to_update: Vec<PathBuf> = if let Some(name) = name {
+        validate_name(name)?;
+        let path = extensions_dir.join(name);
+        if !path.exists() {
+            anyhow::bail!("Extension '{}' not found", name);
+        }
+        vec![path]
+    } else {
+        std::fs::read_dir(&extensions_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && !p.is_symlink())
+            .collect()
+    };
+
+    if dirs_to_update.is_empty() {
+        println!("No updatable extensions (symlinked extensions are managed externally).");
+        return Ok(());
+    }
+
+    for dir in &dirs_to_update {
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        let git_dir = dir.join(".git");
+
+        if !git_dir.exists() {
+            println!("  {name}: skipped (not a git repo)");
+            continue;
+        }
+
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .arg("pull")
+            .output()?;
+
+        if output.status.success() {
+            println!("  {name}: updated");
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("  {name}: failed — {}", stderr.trim());
+        }
+    }
+
+    Ok(())
+}
+
+/// Enable a disabled extension.
+pub fn enable(name: &str) -> anyhow::Result<()> {
+    let ext_dir = extension_dir(name)?;
+    let mut state = ExtensionState::load(&ext_dir)?;
+
+    if state.enabled {
+        println!("Extension '{name}' is already enabled.");
+        return Ok(());
+    }
+
+    state.mark_enabled();
+    state.save(&ext_dir)?;
+    println!("Enabled extension '{name}'.");
+    Ok(())
+}
+
+/// Disable an extension (prevents spawning on next startup).
+pub fn disable(name: &str) -> anyhow::Result<()> {
+    let ext_dir = extension_dir(name)?;
+    let mut state = ExtensionState::load(&ext_dir)?;
+
+    if !state.enabled {
+        println!("Extension '{name}' is already disabled.");
+        return Ok(());
+    }
+
+    state.mark_disabled();
+    state.save(&ext_dir)?;
+    println!("Disabled extension '{name}'.");
+    Ok(())
+}
+
+fn extensions_dir() -> anyhow::Result<PathBuf> {
+    let base = crate::paths::omegon_home()?;
+    Ok(base.join("extensions"))
+}
+
+/// Validate that an extension name is safe for use as a directory component.
+/// Rejects path traversal attempts and any non-filesystem-safe characters.
+fn validate_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("extension name cannot be empty");
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
+        anyhow::bail!(
+            "invalid extension name '{name}': must not contain '/', '\\', '..', or null bytes"
+        );
+    }
+    // Reject absolute paths on Windows (e.g. "C:")
+    if name.contains(':') {
+        anyhow::bail!("invalid extension name '{name}': must not contain ':'");
+    }
+    Ok(())
+}
+
+fn extension_dir(name: &str) -> anyhow::Result<PathBuf> {
+    validate_name(name)?;
+    let dir = extensions_dir()?.join(name);
+    if !dir.exists() {
+        anyhow::bail!("Extension '{name}' not found at {}", dir.display());
+    }
+    Ok(dir)
+}
+
+fn install_local(extensions_dir: &Path, local_path: &Path) -> anyhow::Result<()> {
+    let manifest = ExtensionManifest::from_file(&local_path.join("manifest.toml"))?;
+    let name = &manifest.extension.name;
+
+    // Verify binary exists for native extensions
+    if manifest.is_native() {
+        match manifest.native_binary_path(local_path) {
+            Ok(_) => {}
+            Err(_) => {
+                println!(
+                    "Warning: native binary not found. Build with `cargo build --release` before running."
+                );
+            }
+        }
+    }
+
+    let target = extensions_dir.join(name);
+    if target.exists() || target.is_symlink() {
+        anyhow::bail!(
+            "Extension '{}' already installed at {}. Remove first with: omegon extension remove {}",
+            name,
+            target.display(),
+            name
+        );
+    }
+
+    let canonical = std::fs::canonicalize(local_path)?;
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&canonical, &target)?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&canonical, &target)?;
+
+    println!(
+        "Linked extension '{}' → {}",
+        name,
+        canonical.display()
+    );
+
+    print_secrets_hint(&manifest);
+
+    Ok(())
+}
+
+fn install_git(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
+    let name = infer_extension_name(uri)?;
+    let target = extensions_dir.join(&name);
+
+    if target.exists() {
+        anyhow::bail!(
+            "Extension '{}' already exists at {}",
+            name,
+            target.display()
+        );
+    }
+
+    let status = std::process::Command::new("git")
+        .arg("clone")
+        .arg(uri)
+        .arg(&target)
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("git clone failed for {uri}");
+    }
+
+    let manifest_path = target.join("manifest.toml");
+    if !manifest_path.exists() {
+        std::fs::remove_dir_all(&target).ok();
+        anyhow::bail!("cloned repository does not contain manifest.toml");
+    }
+
+    let manifest = ExtensionManifest::from_file(&manifest_path)?;
+    if manifest.extension.name != name {
+        println!(
+            "Note: inferred name '{}' but manifest declares '{}'.",
+            name, manifest.extension.name
+        );
+    }
+
+    // Check binary exists for native extensions
+    if manifest.is_native() {
+        match manifest.native_binary_path(&target) {
+            Ok(_) => {}
+            Err(_) => {
+                println!(
+                    "Warning: native binary not found. Build with `cargo build --release` in the extension directory."
+                );
+            }
+        }
+    }
+
+    println!("Installed extension '{}' from {uri}", manifest.extension.name);
+    print_secrets_hint(&manifest);
+
+    Ok(())
+}
+
+fn infer_extension_name(uri: &str) -> anyhow::Result<String> {
+    let stripped = uri.trim_end_matches('/').trim_end_matches(".git");
+    let name = stripped
+        .rsplit_once('/')
+        .map(|(_, tail)| tail)
+        .or_else(|| stripped.rsplit_once(':').map(|(_, tail)| tail))
+        .ok_or_else(|| anyhow::anyhow!("could not infer extension name from URI: {uri}"))?;
+
+    if name.is_empty() {
+        anyhow::bail!("could not infer extension name from URI: {uri}");
+    }
+
+    Ok(name.to_string())
+}
+
+fn print_secrets_hint(manifest: &ExtensionManifest) {
+    let all_secrets: Vec<&String> = manifest
+        .secrets
+        .required
+        .iter()
+        .chain(manifest.secrets.optional.iter())
+        .collect();
+
+    if all_secrets.is_empty() {
+        return;
+    }
+
+    println!();
+    if !manifest.secrets.required.is_empty() {
+        println!("Required secrets:");
+        for s in &manifest.secrets.required {
+            println!("  omegon secret set {s} <value>");
+        }
+    }
+    if !manifest.secrets.optional.is_empty() {
+        println!("Optional secrets (for additional connectors):");
+        for s in &manifest.secrets.optional {
+            println!("  omegon secret set {s} <value>");
+        }
+    }
+}
+
+struct ExtensionSummary {
+    name: String,
+    version: String,
+    runtime: String,
+    status: String,
+    description: String,
+}
+
+fn load_extension_summary(dir: &Path) -> anyhow::Result<ExtensionSummary> {
+    let manifest = ExtensionManifest::from_extension_dir(dir)?;
+    let state = ExtensionState::load(&dir.to_path_buf())?;
+
+    let runtime = if manifest.is_native() {
+        "native"
+    } else {
+        "oci"
+    };
+
+    Ok(ExtensionSummary {
+        name: manifest.extension.name,
+        version: manifest.extension.version,
+        runtime: runtime.to_string(),
+        status: state.status_text(),
+        description: manifest.extension.description,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_extension_name_from_https() {
+        let name = infer_extension_name("https://github.com/styrene-lab/vox.git").unwrap();
+        assert_eq!(name, "vox");
+    }
+
+    #[test]
+    fn infer_extension_name_from_ssh() {
+        let name = infer_extension_name("git@github.com:styrene-lab/vox.git").unwrap();
+        assert_eq!(name, "vox");
+    }
+
+    #[test]
+    fn infer_extension_name_from_local() {
+        let name = infer_extension_name("./extensions/vox").unwrap();
+        assert_eq!(name, "vox");
+    }
+
+    #[test]
+    fn install_rejects_invalid_uri() {
+        let err = install("not-a-uri").unwrap_err();
+        assert!(err.to_string().contains("not a valid extension source"));
+    }
+
+    #[test]
+    fn list_summary_handles_missing_dir() {
+        let summary = list_summary().unwrap();
+        // Either reports extensions or says none installed
+        assert!(summary.contains("extension") || summary.contains("DESCRIPTION"));
+    }
+
+    #[test]
+    fn remove_rejects_path_traversal() {
+        let err = remove("../../.ssh").unwrap_err();
+        assert!(err.to_string().contains("must not contain"));
+    }
+
+    #[test]
+    fn remove_rejects_slash_in_name() {
+        let err = remove("foo/bar").unwrap_err();
+        assert!(err.to_string().contains("must not contain"));
+    }
+
+    #[test]
+    fn validate_name_rejects_empty() {
+        let err = validate_name("").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn validate_name_accepts_normal_names() {
+        validate_name("vox").unwrap();
+        validate_name("scribe-rpc").unwrap();
+        validate_name("my_extension.v2").unwrap();
+    }
+
+    #[test]
+    fn enable_disable_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ext = tmp.path().join("test-ext");
+        std::fs::create_dir_all(ext.join(".omegon")).unwrap();
+        std::fs::write(
+            ext.join("manifest.toml"),
+            r#"
+[extension]
+name = "test-ext"
+version = "0.1.0"
+description = "Test"
+
+[runtime]
+type = "native"
+binary = "bin/test"
+"#,
+        )
+        .unwrap();
+
+        // Start enabled (default)
+        let state = ExtensionState::load(&ext).unwrap();
+        assert!(state.enabled);
+
+        // Disable
+        let mut state = ExtensionState::load(&ext).unwrap();
+        state.mark_disabled();
+        state.save(&ext).unwrap();
+
+        let state = ExtensionState::load(&ext).unwrap();
+        assert!(!state.enabled);
+        assert_eq!(state.status_text(), "disabled");
+
+        // Re-enable
+        let mut state = ExtensionState::load(&ext).unwrap();
+        state.mark_enabled();
+        state.save(&ext).unwrap();
+
+        let state = ExtensionState::load(&ext).unwrap();
+        assert!(state.enabled);
+        assert_eq!(state.status_text(), "enabled");
+    }
+
+    #[test]
+    fn install_local_symlinks_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ext = tmp.path().join("test-ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            ext.join("manifest.toml"),
+            r#"
+[extension]
+name = "test-ext"
+version = "0.1.0"
+description = "Test extension"
+
+[runtime]
+type = "native"
+binary = "target/release/test-ext"
+"#,
+        )
+        .unwrap();
+
+        let ext_dir = tempfile::tempdir().unwrap();
+        install_local(ext_dir.path(), &ext).unwrap();
+
+        let link = ext_dir.path().join("test-ext");
+        assert!(link.exists(), "symlink should exist");
+        assert!(link.is_symlink(), "should be a symlink");
+    }
+}

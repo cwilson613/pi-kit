@@ -141,6 +141,13 @@ pub mod codescan {
     pub const CODEBASE_INDEX: &str = "codebase_index";
 }
 
+/// Secret management — owned by `tools::secret_tools::SecretToolsProvider`
+pub mod secrets {
+    pub const SECRET_SET: &str = "secret_set";
+    pub const SECRET_LIST: &str = "secret_list";
+    pub const SECRET_DELETE: &str = "secret_delete";
+}
+
 // ─── Registry query ─────────────────────────────────────────────────────────
 
 /// All statically-declared tool names. Used by `EventBus::finalize()` to
@@ -151,7 +158,7 @@ pub mod codescan {
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.
 /// Number of statically registered tools (for splash screen display).
-pub const TOOL_COUNT: usize = 57;
+pub const TOOL_COUNT: usize = 60;
 
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
@@ -229,8 +236,12 @@ pub fn all_static_names() -> Vec<&'static str> {
         // codescan (2)
         codescan::CODEBASE_SEARCH,
         codescan::CODEBASE_INDEX,
+        // secrets (3)
+        secrets::SECRET_SET,
+        secrets::SECRET_LIST,
+        secrets::SECRET_DELETE,
     ]
-    // Total: 13+1+1+2+3+12+4+2+3+1+3+1+1+4+3+2 = 57
+    // Total: 13+1+1+2+3+12+4+2+3+1+3+1+1+4+3+2+3 = 60
 }
 
 #[cfg(test)]

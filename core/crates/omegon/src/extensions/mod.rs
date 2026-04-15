@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 pub mod manifest;
 pub mod mind;
 pub mod state;
+pub mod vox_bridge;
 pub mod widgets;
 pub use manifest::{ExtensionManifest, RuntimeConfig, WidgetConfig};
 pub use mind::{ExtensionMind, MindStats};
@@ -228,6 +229,77 @@ impl ExtensionFeature {
     pub fn widget_events(&self) -> broadcast::Receiver<WidgetEvent> {
         self.widget_tx.subscribe()
     }
+
+    /// Create a polling handle for calling RPC methods from outside the EventBus.
+    /// Used by the daemon's vox event bridge to poll for inbound messages.
+    pub fn polling_handle(&self) -> ExtensionPollingHandle {
+        ExtensionPollingHandle {
+            handles: self.handles.clone(),
+            request_id: self.request_id.clone(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// Shareable handle for calling RPC methods on an extension subprocess.
+/// Clones the Arc'd handles from ExtensionFeature so daemon background tasks
+/// can poll the extension without going through the EventBus/agent turn.
+#[derive(Clone)]
+pub struct ExtensionPollingHandle {
+    handles: Arc<Mutex<Option<ProcessHandles>>>,
+    request_id: Arc<AtomicU64>,
+    name: String,
+}
+
+impl ExtensionPollingHandle {
+    /// Name of the extension this handle is connected to.
+    pub fn extension_name(&self) -> &str {
+        &self.name
+    }
+
+    /// Send a JSON-RPC request and receive the response.
+    pub async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
+        let mut guard = self.handles.lock().await;
+        let handles = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("extension process not running"))?;
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        handles
+            .stdin
+            .write_all(format!("{}\n", request).as_bytes())
+            .await?;
+        handles.stdin.flush().await?;
+
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = handles.reader.read_line(&mut line).await?;
+            if n == 0 {
+                return Err(anyhow!("extension closed connection"));
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let resp: Value = serde_json::from_str(trimmed)?;
+            if resp.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                return if let Some(result) = resp.get("result") {
+                    Ok(result.clone())
+                } else if let Some(error) = resp.get("error") {
+                    Err(anyhow!("RPC error: {}", error))
+                } else {
+                    Err(anyhow!("invalid RPC response"))
+                };
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -265,6 +337,8 @@ pub struct SpawnedExtension {
     pub feature: Box<dyn Feature>,
     pub widgets: Vec<ExtensionTabWidget>,
     pub widget_rx: broadcast::Receiver<WidgetEvent>,
+    /// Polling handle for extensions that provide `vox_route` (event bridge).
+    pub vox_polling_handle: Option<ExtensionPollingHandle>,
 }
 
 /// Spawn an extension from its manifest directory.
@@ -423,11 +497,22 @@ async fn spawn_native(
             .parent()
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf(),
-        tools,
+        tools.clone(),
         widgets.clone(),
         handles,
         state,
     );
+
+    // Extract polling handle if this extension provides vox_route
+    let vox_polling_handle = if tools.iter().any(|t| t.name == "vox_route") {
+        tracing::info!(
+            name = %manifest.extension.name,
+            "extension provides vox_route — creating polling handle for event bridge"
+        );
+        Some(feature.polling_handle())
+    } else {
+        None
+    };
 
     let mut tab_widgets = vec![];
     for widget in widgets {
@@ -450,6 +535,7 @@ async fn spawn_native(
         feature: Box::new(feature),
         widgets: tab_widgets,
         widget_rx,
+        vox_polling_handle,
     })
 }
 
@@ -485,11 +571,17 @@ async fn spawn_container(
     let (feature, widget_rx) = ExtensionFeature::new(
         manifest.extension.name.clone(),
         PathBuf::new(),
-        tools,
+        tools.clone(),
         widgets.clone(),
         handles,
         state,
     );
+
+    let vox_polling_handle = if tools.iter().any(|t| t.name == "vox_route") {
+        Some(feature.polling_handle())
+    } else {
+        None
+    };
 
     let mut tab_widgets = vec![];
     for widget in widgets {
@@ -512,6 +604,7 @@ async fn spawn_container(
         feature: Box::new(feature),
         widgets: tab_widgets,
         widget_rx,
+        vox_polling_handle,
     })
 }
 

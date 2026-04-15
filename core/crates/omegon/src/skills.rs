@@ -32,7 +32,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
 ];
 
 fn skills_dir() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".omegon").join("skills"))
+    crate::paths::omegon_home().ok().map(|h| h.join("skills"))
 }
 
 /// Render bundled skills and their installation status as terminal-friendly text.

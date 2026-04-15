@@ -207,9 +207,7 @@ pub fn update(name: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn plugins_dir() -> anyhow::Result<PathBuf> {
-    dirs::home_dir()
-        .map(|h| h.join(".omegon").join("plugins"))
-        .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))
+    Ok(crate::paths::omegon_home()?.join("plugins"))
 }
 
 fn install_local(plugins_dir: &Path, local_path: &Path) -> anyhow::Result<()> {

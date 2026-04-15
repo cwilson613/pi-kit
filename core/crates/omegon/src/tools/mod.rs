@@ -20,6 +20,8 @@ pub mod web_search;
 pub mod whoami;
 pub mod write;
 
+pub mod secret_tools;
+
 // Phase 0+ stubs:
 // pub mod understand;  // tree-sitter + scope graph
 // pub mod execute;     // bash with progressive disclosure

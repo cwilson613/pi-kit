@@ -5,8 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+## [0.15.24] - 2026-04-15
+
 ### Added
 
+- **Daemon trigger configs** — `.omegon/triggers/*.toml` defines scheduled and event-driven prompt dispatch. Scheduled triggers support preset schedules (`hourly`, `daily`, `weekdays`, `weekly`) and interval durations (`30s`, `5m`, `1h`). Event triggers match inbound `DaemonEventEnvelope` by source and trigger_kind, rendering prompt templates with `{{payload.field}}` interpolation.
+- **Daemon session router** — per-caller session multiplexing for daemon mode. Inbound messages are keyed by `(source_user, source_channel, source_thread)` and routed to dedicated sessions. `Arc<Semaphore>` bounds concurrent turns (default 8). Idle sessions are parked after a configurable timeout. Events without identity metadata route to a default session, preserving single-session backward compatibility.
+- **Spawned daemon turns** — daemon command loop now spawns turns as tokio tasks via `spawn_best_effort_result` instead of awaiting inline, keeping the dispatch loop responsive during long-running LLM calls. Applies to user prompts, vox events, auto-dispatch turns, and scheduled triggers.
+- **Daemon control plane** — `execute_daemon_control()` routes control requests (model, auth, secrets, skills, plugins) in daemon mode. Non-canonical slash commands dispatch as agent prompts instead of being rejected.
+- **Vox caller identity propagation** — `DaemonEventEnvelope` carries `source_user`, `source_channel`, and `source_thread` identity fields from vox bridge messages. All fields are `Option<String>` with `serde(default)` for backward-compatible deserialization.
+- **Vox extension bridge** — bidirectional bridge between vox (Discord/Slack) and the daemon agent loop. Includes extension CLI and secret CLI for runtime configuration.
+- **Trust-level prompt framing** — operator messages get direct instruction framing; user messages get XML containment with prompt injection defense. Trust classification is transport-specific (Discord roles, Slack usergroups).
+- **Nix flake with composable container toolset profiles** — declarative container builds with selectable tool profiles.
 - **Homebrew RC channel** — `brew tap styrene-lab/tap && brew install styrene-lab/tap/omegon-rc` installs the latest RC build. The `omegon-rc` formula in the tap is updated automatically by CI on every RC release. Switch back to stable with `brew unlink omegon-rc && brew install omegon`.
 - **`just cut-rc` developer command** — cuts an RC from the main workspace without manual setup. Validates that `main` is clean and pushed, clones a fresh release workspace from GitHub (correct origin, no stale state), runs `just rc`, and pulls the resulting commit + tag back into local `main`.
 - **Brew-managed upgrade guard** — `is_homebrew_managed()` detects when the running binary lives in a Homebrew Cellar path and refuses in-place upgrade, redirecting the operator to `brew upgrade omegon` or `brew upgrade styrene-lab/tap/omegon-rc` as appropriate. Prevents Homebrew version tracking corruption.
@@ -17,6 +27,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- **omegon-extension dual-licensed MIT/Apache-2.0** — extension SDK crate is now dual-licensed for crates.io compatibility.
+- **Daemon loop `Cell` → `AtomicBool`** — `loop.rs` stream idle timeout flag converted from `Cell<bool>` to `AtomicBool` (Relaxed ordering) to make the `run()` future `Send`-compatible for spawned turn tasks.
 - **Secrets and vault control normalization** — `/secrets` and `/vault` no longer depend on the old bespoke runtime path. Secret view/set/get/delete and vault status/configuration flows now run through shared control responders, and transport policy is explicit and conservative.
 - **Homebrew formula auto-update** — the `homebrew.yml` CI workflow now correctly pushes stable updates to `styrene-lab/homebrew-tap` (the tap users actually read) and RC updates to `omegon-rc.rb`. Previously it was writing to the wrong file in the wrong repo.
 - **Release assets no longer dropped on immutable release** — `release.yml` now creates the GitHub Release as a draft, uploads all assets (archives, sha256, cosign `.sig`/`.pem` sidecars, SBOM), then publishes. Previously the release was published before upload completed, making it immutable and causing all uploads to fail.
@@ -25,6 +37,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- **omegon-extension accepts numeric JSON-RPC IDs** — extension RPC layer now accepts both string and numeric `id` fields per JSON-RPC 2.0 spec.
+- **Daemon `--model` flag passed to daemon process** — `serve` command now forwards the `--model` flag instead of hardcoding the anthropic provider.
+- **Vox daemon event drain** — serve dispatch loop now drains vox daemon events correctly instead of dropping them.
+- **Path traversal and multi-instance isolation** — hardened secret CLI and multi-instance file paths against directory traversal.
 - **TUI panel rendering artifacts** — panel area is now fully cleared before re-rendering instruments, eliminating stale content bleed-through on resize or content change (#36).
 - **TUI table body trailing pipe** — table rows that omit the trailing `|` character are now parsed and rendered correctly (#37).
 - **Linux Homebrew install honesty** — install and distribution docs now explicitly warn that Homebrew on Linux does not solve host glibc ABI mismatches for Omegon release binaries. Users hitting `GLIBC_2.38` / `GLIBC_2.39` runtime errors are directed toward compatible distro/container baselines.

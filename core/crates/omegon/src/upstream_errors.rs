@@ -432,8 +432,9 @@ impl TransientFailureKind {
 }
 
 fn upstream_failures_log_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".omegon").join("upstream-failures.jsonl")
+    let base = crate::paths::omegon_home()
+        .unwrap_or_else(|_| PathBuf::from(".omegon"));
+    base.join("upstream-failures.jsonl")
 }
 
 pub(crate) fn append_upstream_failure_log(entry: &UpstreamFailureLogEntry) {

@@ -403,6 +403,68 @@ pub async fn execute_control(
     }
 }
 
+/// Lightweight control executor for daemon mode. Handles operations that
+/// don't require TUI-specific state (InteractiveAgentState, InteractiveAgentHost).
+pub async fn execute_daemon_control(
+    request: ControlRequest,
+    shared_settings: &settings::SharedSettings,
+    secrets: &Arc<omegon_secrets::SecretsManager>,
+    cwd: &Path,
+) -> omegon_traits::ControlOutputResponse {
+    let resp = match request {
+        // ── Model & thinking ────────────────────────────────────────
+        ControlRequest::ModelView => model_view_response(shared_settings).await,
+        ControlRequest::ModelList => model_list_response().await,
+        ControlRequest::SetThinking { level } => set_thinking_response(shared_settings, level).await,
+
+        // ── Auth ────────────────────────────────────────────────────
+        ControlRequest::AuthStatus => auth_status_response().await,
+        ControlRequest::AuthLogout { provider } => auth_logout_response(&provider).await,
+
+        // ── Secrets ─────────────────────────────────────────────────
+        ControlRequest::SecretsView => secrets_view_response(secrets.as_ref()).await,
+        ControlRequest::SecretsSet { name, value } => {
+            secrets_set_response(secrets.as_ref(), &name, &value).await
+        }
+        ControlRequest::SecretsGet { name } => secrets_get_response(secrets.as_ref(), &name).await,
+        ControlRequest::SecretsDelete { name } => {
+            secrets_delete_response(secrets.as_ref(), &name).await
+        }
+
+        // ── Vault ───────────────────────────────────────────────────
+        ControlRequest::VaultUnseal => vault_unseal_response().await,
+        ControlRequest::VaultLogin => vault_login_response().await,
+        ControlRequest::VaultConfigure => vault_configure_response().await,
+        ControlRequest::VaultInitPolicy => vault_init_policy_response().await,
+
+        // ── Skills & plugins ────────────────────────────────────────
+        ControlRequest::SkillsView => skills_view_response().await,
+        ControlRequest::SkillsInstall => skills_install_response().await,
+        ControlRequest::PluginView => plugin_view_response().await,
+        ControlRequest::PluginInstall { uri } => plugin_install_response(&uri).await,
+        ControlRequest::PluginRemove { name } => plugin_remove_response(&name).await,
+        ControlRequest::PluginUpdate { name } => plugin_update_response(name.as_deref()).await,
+
+        // ── Sessions ────────────────────────────────────────────────
+        ControlRequest::ListSessions => {
+            let msg = list_sessions_message(cwd);
+            SlashCommandResponse { accepted: true, output: Some(msg) }
+        }
+
+        // ── Operations requiring TUI state ──────────────────────────
+        other => {
+            SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("/{:?} requires interactive mode", other)),
+            }
+        }
+    };
+    omegon_traits::ControlOutputResponse {
+        accepted: resp.accepted,
+        output: resp.output,
+    }
+}
+
 pub fn list_sessions_message(cwd: &Path) -> String {
     let sessions = session::list_sessions(cwd);
     if sessions.is_empty() {

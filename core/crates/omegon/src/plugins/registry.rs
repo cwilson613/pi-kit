@@ -124,7 +124,7 @@ impl PluginRegistry {
     /// Load only a named subset of skills from the canonical locations.
     /// When `allowed` is empty, behaves like `load_skills` and loads all skills.
     pub fn load_skills_subset(&mut self, cwd: &std::path::Path, allowed: &[String]) {
-        let bundled = dirs::home_dir().map(|h| h.join(".omegon").join("skills"));
+        let bundled = crate::paths::omegon_home().ok().map(|h| h.join("skills"));
         let project = cwd.join(".omegon").join("skills");
         let dirs: Vec<std::path::PathBuf> = bundled
             .into_iter()

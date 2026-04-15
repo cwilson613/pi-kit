@@ -30,6 +30,11 @@ pub fn build_base_prompt_with_breakdown(
     let date = utc_date();
     let tool_list = format_tool_list(tools);
     let lex_imperialis = load_lex_imperialis();
+    let vox_context = if tools.iter().any(|t| t.name == "vox_reply") {
+        include_str!("../../../../data/vox-extension-context.md").to_string()
+    } else {
+        String::new()
+    };
     let lifecycle_context = if slim {
         String::new()
     } else {
@@ -65,6 +70,7 @@ pub fn build_base_prompt_with_breakdown(
         ),
         prompt_section("core_directives", "Core Directives", &lex_imperialis),
         prompt_section("project_lifecycle", "Project Lifecycle", &lifecycle_context),
+        prompt_section("vox_extension", "Vox Extension", &vox_context),
         prompt_section(
             "operator_directives",
             "Operator Directives",

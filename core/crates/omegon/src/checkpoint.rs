@@ -47,9 +47,9 @@ pub struct MetricsSnapshot {
 
 /// Resolve the checkpoint JSONL path for a session.
 pub fn checkpoint_path(session_id: &str) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".omegon")
-        .join("checkpoints")
+    let base = crate::paths::omegon_home()
+        .unwrap_or_else(|_| PathBuf::from(".omegon"));
+    base.join("checkpoints")
         .join(format!("{session_id}.jsonl"))
 }
 

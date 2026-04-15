@@ -78,6 +78,9 @@ pub struct AgentSetup {
     pub cleave_event_slot: features::cleave::CleaveEventSlot,
     /// Same concept for delegate/scout worker events.
     pub delegate_event_slot: features::delegate::DelegateEventSlot,
+    /// Polling handles for extensions that provide `vox_route`.
+    /// Used by the daemon to start the vox event bridge.
+    pub vox_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
 }
 
 /// Pre-computed state gathered during setup for TUI initial display.
@@ -150,9 +153,8 @@ impl AgentSetup {
         let is_child = std::env::var("OMEGON_CHILD").is_ok();
 
         // ─── Secrets manager ────────────────────────────────────────────
-        let secrets_dir = dirs::home_dir()
-            .unwrap_or_else(|| cwd.clone())
-            .join(".omegon");
+        let secrets_dir = crate::paths::omegon_home()
+            .unwrap_or_else(|_| cwd.join(".omegon"));
         let secrets = match omegon_secrets::SecretsManager::new(&secrets_dir) {
             Ok(s) => std::sync::Arc::new(s),
             Err(e) => {
@@ -299,6 +301,10 @@ impl AgentSetup {
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "render",
             Box::new(tools::render::RenderProvider::new()),
+        )));
+        bus.register(Box::new(features::adapter::ToolAdapter::new(
+            "secret-tools",
+            Box::new(tools::secret_tools::SecretToolsProvider::new(secrets.clone())),
         )));
 
         // ─── Memory ─────────────────────────────────────────────────────
@@ -544,13 +550,13 @@ impl AgentSetup {
 
         // ─── Operator-installed extensions (RPC + OCI) ────────────────
         // All extensions, including bundled ones (scribe-rpc), are discovered here
-        let (extension_widgets, widget_receivers) =
+        let (extension_widgets, widget_receivers, vox_polling_handles) =
             match discover_and_register_extensions(&mut bus, std::sync::Arc::clone(&secrets)).await
             {
-                Ok((widgets, receivers)) => (widgets, receivers),
+                Ok((widgets, receivers, handles)) => (widgets, receivers, handles),
                 Err(e) => {
                     tracing::warn!("extension discovery failed: {}", e);
-                    (vec![], vec![])
+                    (vec![], vec![], vec![])
                 }
             };
 
@@ -892,6 +898,7 @@ impl AgentSetup {
             },
             cleave_event_slot,
             delegate_event_slot,
+            vox_polling_handles,
         })
     }
 
@@ -1068,7 +1075,7 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
 
     // 1. User-level plugin manifests: ~/.omegon/plugins/*/plugin.toml
     let plugin_dirs: Vec<std::path::PathBuf> = [
-        dirs::home_dir().map(|h| h.join(".omegon/plugins")),
+        crate::paths::omegon_home().ok().map(|h| h.join("plugins")),
         Some(cwd.join(".omegon/plugins")),
     ]
     .into_iter()
@@ -1121,19 +1128,19 @@ async fn discover_and_register_extensions(
 ) -> anyhow::Result<(
     Vec<crate::extensions::ExtensionTabWidget>,
     Vec<tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>>,
+    Vec<crate::extensions::ExtensionPollingHandle>,
 )> {
-    let ext_dir = dirs::home_dir()
-        .map(|h| h.join(".omegon/extensions"))
-        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
+    let ext_dir = crate::paths::omegon_home()?.join("extensions");
 
     if !ext_dir.exists() {
         tracing::debug!("extension directory not found: {}", ext_dir.display());
-        return Ok((vec![], vec![]));
+        return Ok((vec![], vec![], vec![]));
     }
 
     let mut count = 0;
     let mut extension_widgets = vec![];
     let mut widget_receivers = vec![];
+    let mut vox_polling_handles = vec![];
     for entry in std::fs::read_dir(&ext_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -1185,6 +1192,10 @@ async fn discover_and_register_extensions(
                     widgets = widget_count,
                     "discovered and spawned extension"
                 );
+                // Collect vox polling handle if present
+                if let Some(handle) = spawned.vox_polling_handle {
+                    vox_polling_handles.push(handle);
+                }
                 bus.register(spawned.feature);
                 // Collect widgets and receivers for TUI
                 extension_widgets.extend(spawned.widgets);
@@ -1210,5 +1221,5 @@ async fn discover_and_register_extensions(
         tracing::info!(count = count, "extension discovery complete");
     }
 
-    Ok((extension_widgets, widget_receivers))
+    Ok((extension_widgets, widget_receivers, vox_polling_handles))
 }

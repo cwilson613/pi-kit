@@ -908,12 +908,79 @@ async fn run_embedded_command(control_port: u16, strict_port: bool) -> anyhow::R
     // Skip the first immediate tick
     idle_tick.tick().await;
 
+    // Vox event bridge poll — drain inbound messages from extensions
+    let mut vox_poll = tokio::time::interval(tokio::time::Duration::from_millis(250));
+    vox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     tracing::info!("daemon dispatch loop started");
     loop {
         tokio::select! {
             _ = global_cancel.cancelled() => {
                 tracing::info!("daemon shutting down (signal)");
                 break;
+            }
+            _ = vox_poll.tick() => {
+                let events: Vec<omegon_traits::DaemonEventEnvelope> = {
+                    match vox_daemon_events.lock() {
+                        Ok(mut queue) => queue.drain(..).collect(),
+                        Err(_) => continue,
+                    }
+                };
+                for envelope in events {
+                    tracing::info!(
+                        source = %envelope.source,
+                        event_id = %envelope.event_id,
+                        "daemon: processing vox event"
+                    );
+                    let text = envelope
+                        .payload
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    if text.is_empty() {
+                        continue;
+                    }
+
+                    agent.conversation.push_user(text);
+
+                    let loop_config = r#loop::LoopConfig {
+                        max_turns: shared_settings
+                            .lock()
+                            .map(|s| s.max_turns)
+                            .unwrap_or(50),
+                        soft_limit_turns: 35,
+                        max_retries: 0,
+                        retry_delay_ms: 750,
+                        model: shared_settings
+                            .lock()
+                            .map(|s| s.model.clone())
+                            .unwrap_or_else(|_| model.clone()),
+                        cwd: agent.cwd.clone(),
+                        extended_context: false,
+                        settings: Some(shared_settings.clone()),
+                        secrets: Some(agent.secrets.clone()),
+                        force_compact: None,
+                        allow_commit_nudge: false,
+                        enforce_first_turn_execution_bias: false,
+                    };
+
+                    let turn_cancel = CancellationToken::new();
+                    if let Err(e) = r#loop::run(
+                        bridge.as_ref(),
+                        &mut agent.bus,
+                        &mut agent.context_manager,
+                        &mut agent.conversation,
+                        &events_tx,
+                        turn_cancel,
+                        &loop_config,
+                    )
+                    .await
+                    {
+                        tracing::error!(error = %e, "daemon vox event loop error");
+                    }
+                }
             }
             cmd = cmd_rx.recv() => {
                 match cmd {

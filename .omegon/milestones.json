@@ -887,13 +887,20 @@
     ]
   },
   "0.15.26": {
-    "status": "open",
+    "status": "rc",
     "channel": "stable",
     "nodes": [],
     "frozen": false,
     "opened": "2026-04-15T23:02:00Z",
     "released": null,
-    "rc_count": 0,
-    "notes": []
+    "rc_count": 1,
+    "notes": [
+      "feat(control): auspex fleet control surface + integration gap fixes",
+      "fix(ci): skip pkl tests when pkl binary is not available",
+      "fix(release): platform-agnostic sed for macOS and Linux",
+      "fix: reduce agent loop churn — tighten heuristics, eliminate redundant work"
+    ],
+    "rc_version": "0.15.26-rc.2",
+    "last_rc": "2026-04-16T19:49:21Z"
   }
 }

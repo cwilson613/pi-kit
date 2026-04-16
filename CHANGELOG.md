@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+## [0.15.26] - 2026-04-16
+
+### Added
+
+- **Auspex fleet control surface** — remote agent customization over WebSocket and IPC. New commands: `profile_view` (structured settings dump), `profile_export` (portable agent snapshot with settings, persona, and profile data), `set_context_class`, `set_runtime_mode`, `set_max_turns`, `persona_list` (installed personas with active marker), `persona_switch` (guidance-only in 0.15.26; full activation in 0.15.27). All commands are classified for role-based access (Read for views, Edit for mutations) across both WebSocket and IPC transports.
+- **IPC socket in serve mode** — `omegon serve` now creates `.omegon/ipc.sock` via a TuiCommand adapter bridge. IPC dispatch handles SubmitPrompt, ExecuteControl, RunSlashCommand, and Quit. Auspex can use its preferred native transport instead of falling back to WebSocket.
+- **Auth login/logout over WebSocket** — `auth_login` and `auth_logout` commands wired end-to-end through classify, WebSocket handler, and daemon control dispatch. OAuth providers return authorization guidance; API key providers return env-var instructions. Credentials are picked up on the next turn via per-turn bridge resolution.
+- **SIGHUP graceful reload** — `kill -HUP <pid>` reloads profile.json into shared settings and emits a SystemNotification event. Combined with per-turn bridge resolution, this covers configuration refresh without restart.
+- **Container bind address** — `OMEGON_BIND_ADDR=0.0.0.0` makes the control plane reachable via port-forward in container workloads (default remains 127.0.0.1).
+- **Agent catalog manifests** — community, Discord, and Slack agent manifests added to catalog/.
+
+### Changed
+
+- **Per-turn bridge resolution in daemon mode** — `run_daemon_turn` now resolves the LLM bridge fresh each turn from shared settings instead of reusing a stale `Arc<dyn LlmBridge>` from startup. Auth credential changes in auth.json are picked up immediately. Model changes via `set_model` or SIGHUP take effect on the next turn.
+- **Daemon settings mutations persist to profile** — `set_model`, `set_thinking`, `set_context_class`, `set_runtime_mode`, and `set_max_turns` all save to profile.json via `Profile::capture_from()`. Previously only interactive mode persisted settings changes.
+- **HarnessStatusChanged emitted after daemon mutations** — settings changes via the daemon control plane now update the live HarnessStatus and emit the event over WebSocket/IPC, so connected clients see updates without polling.
+- **SetModel, SetContextClass, SetRuntimeMode wired in daemon mode** — previously returned "requires interactive mode"; now delegate to daemon-safe handlers that update shared settings and persist.
+
+### Fixed
+
+- **MessageAbort carries reason** — `AgentEvent::MessageAbort { reason: Option<String> }` replaces the bare variant. All three emission sites (idle timeout, degenerate repetition, LLM error) populate the reason. WebSocket serialization includes the field. IPC projects aborts with a reason as SystemNotification events.
+- **Poisoned mutex handling in daemon control** — settings mutation handlers now return `accepted: false` if the settings lock is poisoned, instead of silently succeeding.
+- **IPC role classification for fleet commands** — all new commands have explicit entries in `classify_ipc_method` matching WebSocket role requirements. Previously they fell through to the Admin-only default.
+
 ## [0.15.25] - 2026-04-15
 
 ### Changed

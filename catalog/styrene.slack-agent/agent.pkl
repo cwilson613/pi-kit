@@ -1,0 +1,33 @@
+amends "AgentManifest.pkl"
+
+agent {
+  id = "styrene.slack-agent"
+  name = "Slack Agent"
+  version = "1.0.0"
+  description = "Omegon agent bridged to Slack via vox. Responds to operator and user messages in configured channels."
+  domain = "chat"
+}
+
+persona {
+  directive = "PERSONA.md"
+  badge = "slack"
+}
+
+extensions {
+  new {
+    name = "vox"
+    version = ">=0.3.0"
+  }
+}
+
+settings {
+  model = "anthropic:claude-sonnet-4-6"
+  thinking_level = "low"
+  context_class = "squad"
+  max_turns = 50
+}
+
+secrets {
+  required { "ANTHROPIC_API_KEY" }
+  optional { "VOX_SLACK_BOT_TOKEN"; "VOX_SLACK_APP_TOKEN"; "GITHUB_TOKEN" }
+}

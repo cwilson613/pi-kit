@@ -2084,11 +2084,12 @@ async fn consume_llm_stream(
     while let Some(event) = match tokio::time::timeout(idle_timeout(), rx.recv()).await {
         Ok(event) => event,
         Err(_) => {
-            let _ = events.send(AgentEvent::MessageAbort);
-            anyhow::bail!(
+            let reason = format!(
                 "LLM stream idle for {}s — connection may be stalled",
                 idle_timeout().as_secs()
             );
+            let _ = events.send(AgentEvent::MessageAbort { reason: Some(reason.clone()) });
+            anyhow::bail!("{reason}");
         }
     } {
         match event {
@@ -2123,13 +2124,14 @@ async fn consume_llm_stream(
                                 total_text_bytes = recent_text_len,
                                 "Degenerate repetition detected — aborting stream"
                             );
-                            let _ = events.send(AgentEvent::MessageAbort);
-                            anyhow::bail!(
+                            let reason = format!(
                                 "Model output degenerate: phrase {:?} repeated {}/{} recent chunks — aborting to prevent runaway",
                                 latest,
                                 matches,
                                 REPETITION_WINDOW_SIZE
                             );
+                            let _ = events.send(AgentEvent::MessageAbort { reason: Some(reason.clone()) });
+                            anyhow::bail!("{reason}");
                         }
                     }
                 }
@@ -2192,7 +2194,7 @@ async fn consume_llm_stream(
                 break;
             }
             LlmEvent::Error { message } => {
-                let _ = events.send(AgentEvent::MessageAbort);
+                let _ = events.send(AgentEvent::MessageAbort { reason: Some(message.clone()) });
                 anyhow::bail!("LLM error: {message}");
             }
         }

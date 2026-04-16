@@ -1277,6 +1277,239 @@ async fn handle_client_command(
             };
             let _ = snapshot_tx.send(message).await;
         }
+        "auth_login" => {
+            let classified = crate::control_actions::classify_web_method("auth_login");
+            if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {
+                let _ = snapshot_tx
+                    .send(serde_json::json!({
+                        "type": "system_message",
+                        "role": "system",
+                        "message": "caller role is insufficient for auth_login",
+                    }))
+                    .await;
+                return;
+            }
+            let provider = cmd["provider"].as_str().unwrap_or("").to_string();
+            if provider.is_empty() {
+                let _ = snapshot_tx
+                    .send(control_result_message(
+                        "auth_login",
+                        omegon_traits::ControlOutputResponse {
+                            accepted: false,
+                            output: Some("missing required field: provider".to_string()),
+                        },
+                    ))
+                    .await;
+                return;
+            }
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let accepted = command_tx
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::AuthLogin { provider },
+                    respond_to: Some(reply_tx),
+                })
+                .await
+                .is_ok();
+            let message = if accepted {
+                match reply_rx.await {
+                    Ok(response) => control_result_message("auth_login", response),
+                    Err(_) => control_result_message(
+                        "auth_login",
+                        omegon_traits::ControlOutputResponse {
+                            accepted: false,
+                            output: Some(
+                                "auth_login executor dropped response before completion"
+                                    .to_string(),
+                            ),
+                        },
+                    ),
+                }
+            } else {
+                control_result_message(
+                    "auth_login",
+                    omegon_traits::ControlOutputResponse {
+                        accepted: false,
+                        output: Some("failed to enqueue auth_login".to_string()),
+                    },
+                )
+            };
+            let _ = snapshot_tx.send(message).await;
+        }
+        "auth_logout" => {
+            let classified = crate::control_actions::classify_web_method("auth_logout");
+            if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {
+                let _ = snapshot_tx
+                    .send(serde_json::json!({
+                        "type": "system_message",
+                        "role": "system",
+                        "message": "caller role is insufficient for auth_logout",
+                    }))
+                    .await;
+                return;
+            }
+            let provider = cmd["provider"].as_str().unwrap_or("").to_string();
+            if provider.is_empty() {
+                let _ = snapshot_tx
+                    .send(control_result_message(
+                        "auth_logout",
+                        omegon_traits::ControlOutputResponse {
+                            accepted: false,
+                            output: Some("missing required field: provider".to_string()),
+                        },
+                    ))
+                    .await;
+                return;
+            }
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let accepted = command_tx
+                .send(WebCommand::ExecuteControl {
+                    request: crate::control_runtime::ControlRequest::AuthLogout { provider },
+                    respond_to: Some(reply_tx),
+                })
+                .await
+                .is_ok();
+            let message = if accepted {
+                match reply_rx.await {
+                    Ok(response) => control_result_message("auth_logout", response),
+                    Err(_) => control_result_message(
+                        "auth_logout",
+                        omegon_traits::ControlOutputResponse {
+                            accepted: false,
+                            output: Some(
+                                "auth_logout executor dropped response before completion"
+                                    .to_string(),
+                            ),
+                        },
+                    ),
+                }
+            } else {
+                control_result_message(
+                    "auth_logout",
+                    omegon_traits::ControlOutputResponse {
+                        accepted: false,
+                        output: Some("failed to enqueue auth_logout".to_string()),
+                    },
+                )
+            };
+            let _ = snapshot_tx.send(message).await;
+        }
+        "set_context_class" | "set_runtime_mode" | "set_max_turns"
+        | "profile_view" | "profile_export" | "persona_list" | "persona_switch" => {
+            let classified = crate::control_actions::classify_web_method(cmd_type);
+            if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {
+                let _ = snapshot_tx
+                    .send(serde_json::json!({
+                        "type": "system_message",
+                        "role": "system",
+                        "message": format!("caller role is insufficient for {cmd_type}"),
+                    }))
+                    .await;
+                return;
+            }
+            let request = match cmd_type {
+                "set_context_class" => {
+                    let Some(class_str) = cmd["class"].as_str() else {
+                        let _ = snapshot_tx
+                            .send(control_result_message(
+                                cmd_type,
+                                omegon_traits::ControlOutputResponse {
+                                    accepted: false,
+                                    output: Some("missing required field: class".to_string()),
+                                },
+                            ))
+                            .await;
+                        return;
+                    };
+                    let Some(class) = crate::settings::ContextClass::parse(class_str) else {
+                        let _ = snapshot_tx
+                            .send(control_result_message(
+                                cmd_type,
+                                omegon_traits::ControlOutputResponse {
+                                    accepted: false,
+                                    output: Some(format!(
+                                        "invalid context class: {class_str}. Use: squad, maniple, clan, legion"
+                                    )),
+                                },
+                            ))
+                            .await;
+                        return;
+                    };
+                    crate::control_runtime::ControlRequest::SetContextClass { class }
+                }
+                "set_runtime_mode" => {
+                    let slim = cmd["slim"].as_bool().unwrap_or(false);
+                    crate::control_runtime::ControlRequest::SetRuntimeMode { slim }
+                }
+                "set_max_turns" => {
+                    let Some(max_turns) = cmd["max_turns"].as_u64() else {
+                        let _ = snapshot_tx
+                            .send(control_result_message(
+                                cmd_type,
+                                omegon_traits::ControlOutputResponse {
+                                    accepted: false,
+                                    output: Some("missing required field: max_turns".to_string()),
+                                },
+                            ))
+                            .await;
+                        return;
+                    };
+                    crate::control_runtime::ControlRequest::SetMaxTurns {
+                        max_turns: max_turns as u32,
+                    }
+                }
+                "profile_view" => crate::control_runtime::ControlRequest::ProfileView,
+                "profile_export" => crate::control_runtime::ControlRequest::ProfileExport,
+                "persona_list" => crate::control_runtime::ControlRequest::PersonaList,
+                "persona_switch" => {
+                    let name = cmd["name"].as_str().unwrap_or("").to_string();
+                    if name.is_empty() {
+                        let _ = snapshot_tx
+                            .send(control_result_message(
+                                cmd_type,
+                                omegon_traits::ControlOutputResponse {
+                                    accepted: false,
+                                    output: Some("missing required field: name".to_string()),
+                                },
+                            ))
+                            .await;
+                        return;
+                    }
+                    crate::control_runtime::ControlRequest::PersonaSwitch { name }
+                }
+                _ => unreachable!(),
+            };
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let accepted = command_tx
+                .send(WebCommand::ExecuteControl {
+                    request,
+                    respond_to: Some(reply_tx),
+                })
+                .await
+                .is_ok();
+            let message = if accepted {
+                match reply_rx.await {
+                    Ok(response) => control_result_message(cmd_type, response),
+                    Err(_) => control_result_message(
+                        cmd_type,
+                        omegon_traits::ControlOutputResponse {
+                            accepted: false,
+                            output: Some(format!(
+                                "{cmd_type} executor dropped response before completion"
+                            )),
+                        },
+                    ),
+                }
+            } else {
+                control_result_message(
+                    cmd_type,
+                    omegon_traits::ControlOutputResponse {
+                        accepted: false,
+                        output: Some(format!("failed to enqueue {cmd_type}")),
+                    },
+                )
+            };
+            let _ = snapshot_tx.send(message).await;
+        }
         "context_status" => {
             let classified = crate::control_actions::classify_web_method("context_status");
             if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {
@@ -1729,8 +1962,9 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "type": "message_end",
             "event_name": "message.completed",
         }),
-        AgentEvent::MessageAbort => json!({
+        AgentEvent::MessageAbort { reason } => json!({
             "type": "message_abort",
+            "reason": reason,
         }),
         AgentEvent::ToolStart { id, name, args } => json!({
             "type": "tool_start",
@@ -2383,7 +2617,7 @@ mod tests {
             AgentEvent::MessageChunk { .. } => {}
             AgentEvent::ThinkingChunk { .. } => {}
             AgentEvent::MessageEnd => {}
-            AgentEvent::MessageAbort => {}
+            AgentEvent::MessageAbort { .. } => {}
             AgentEvent::ToolStart { .. } => {}
             AgentEvent::ToolUpdate { .. } => {}
             AgentEvent::ToolEnd { .. } => {}
@@ -2496,7 +2730,7 @@ mod tests {
             // guard above is the *only* thing the test relies on for
             // coverage. If you add a new AgentEvent variant, you must
             // both extend the guard above AND add an entry here.
-            AgentEvent::MessageAbort,
+            AgentEvent::MessageAbort { reason: Some("test abort".into()) },
             AgentEvent::HarnessStatusChanged {
                 status_json: serde_json::json!({"thinking_level": "low"}),
             },

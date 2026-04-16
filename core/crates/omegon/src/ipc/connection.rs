@@ -381,7 +381,14 @@ impl IpcConnection {
                 | "set_model"
                 | "switch_dispatcher"
                 | "set_thinking"
-                | "list_sessions" => {
+                | "list_sessions"
+                | "set_context_class"
+                | "set_runtime_mode"
+                | "set_max_turns"
+                | "profile_view"
+                | "profile_export"
+                | "persona_list"
+                | "persona_switch" => {
                     let req = serde_json::from_value::<ControlRequest>(payload.clone())
                         .unwrap_or_default();
                     let caller_role = parse_caller_role(req.caller_role.as_deref());
@@ -574,6 +581,46 @@ impl IpcConnection {
                                 crate::control_runtime::ControlRequest::SetThinking { level }
                             })
                         }
+                        "set_context_class" => {
+                            payload
+                                .get("class")
+                                .and_then(|v| v.as_str())
+                                .and_then(crate::settings::ContextClass::parse)
+                                .map(|class| {
+                                    crate::control_runtime::ControlRequest::SetContextClass { class }
+                                })
+                        }
+                        "set_runtime_mode" => {
+                            let slim = payload
+                                .get("slim")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            Some(crate::control_runtime::ControlRequest::SetRuntimeMode { slim })
+                        }
+                        "set_max_turns" => payload
+                            .get("max_turns")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| crate::control_runtime::ControlRequest::SetMaxTurns {
+                                max_turns: n as u32,
+                            }),
+                        "profile_view" => {
+                            Some(crate::control_runtime::ControlRequest::ProfileView)
+                        }
+                        "profile_export" => {
+                            Some(crate::control_runtime::ControlRequest::ProfileExport)
+                        }
+                        "persona_list" => {
+                            Some(crate::control_runtime::ControlRequest::PersonaList)
+                        }
+                        "persona_switch" => payload
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|name| {
+                                crate::control_runtime::ControlRequest::PersonaSwitch {
+                                    name: name.to_string(),
+                                }
+                            }),
                         _ => None,
                     };
                     let accepted = if let Some(request) = request {
@@ -870,7 +917,11 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
         AgentEvent::SessionReset => Some(IpcEventPayload::SessionReset),
         // Internal-only events — not projected to IPC
         AgentEvent::MessageStart { .. } => None,
-        AgentEvent::MessageAbort => None,
+        AgentEvent::MessageAbort { reason } => reason.as_ref().map(|r| {
+            IpcEventPayload::SystemNotification {
+                message: format!("Message aborted: {r}"),
+            }
+        }),
         AgentEvent::ContextUpdated { .. } => None,
         AgentEvent::WebDashboardStarted { .. } => None,
     }

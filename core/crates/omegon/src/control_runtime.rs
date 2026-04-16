@@ -135,6 +135,16 @@ pub enum ControlRequest {
         label: String,
     },
     DelegateStatus,
+    // ── Auspex fleet control ────────────────────────────────────────
+    SetMaxTurns {
+        max_turns: u32,
+    },
+    ProfileView,
+    ProfileExport,
+    PersonaList,
+    PersonaSwitch {
+        name: String,
+    },
 }
 
 pub fn control_request_from_slash(
@@ -400,6 +410,16 @@ pub async fn execute_control(
             cleave_cancel_child_response(ctx.runtime_state, &label).await
         }
         ControlRequest::DelegateStatus => delegate_status_response(ctx.runtime_state).await,
+        // ── Auspex fleet control (same handlers as daemon mode) ─────
+        ControlRequest::SetMaxTurns { max_turns } => {
+            set_max_turns_response(ctx.shared_settings, &ctx.agent.cwd, max_turns).await
+        }
+        ControlRequest::ProfileView => profile_view_response(ctx.shared_settings).await,
+        ControlRequest::ProfileExport => {
+            profile_export_response(ctx.shared_settings, &ctx.agent.cwd, &ctx.agent.dashboard_handles).await
+        }
+        ControlRequest::PersonaList => persona_list_daemon_response(&ctx.agent.dashboard_handles).await,
+        ControlRequest::PersonaSwitch { name } => persona_switch_daemon_response(&name).await,
     }
 }
 
@@ -410,15 +430,37 @@ pub async fn execute_daemon_control(
     shared_settings: &settings::SharedSettings,
     secrets: &Arc<omegon_secrets::SecretsManager>,
     cwd: &Path,
+    handles: &crate::tui::dashboard::DashboardHandles,
+    events_tx: &broadcast::Sender<AgentEvent>,
 ) -> omegon_traits::ControlOutputResponse {
+    let is_settings_mutation = matches!(
+        request,
+        ControlRequest::SetModel { .. }
+            | ControlRequest::SetThinking { .. }
+            | ControlRequest::SetContextClass { .. }
+            | ControlRequest::SetRuntimeMode { .. }
+            | ControlRequest::SetMaxTurns { .. }
+    );
     let resp = match request {
         // ── Model & thinking ────────────────────────────────────────
         ControlRequest::ModelView => model_view_response(shared_settings).await,
         ControlRequest::ModelList => model_list_response().await,
-        ControlRequest::SetThinking { level } => set_thinking_response(shared_settings, level).await,
+        ControlRequest::SetModel { requested_model } => {
+            set_model_daemon_response(shared_settings, cwd, &requested_model).await
+        }
+        ControlRequest::SetThinking { level } => {
+            set_thinking_daemon_response(shared_settings, cwd, level).await
+        }
+        ControlRequest::SetContextClass { class } => {
+            set_context_class_daemon_response(shared_settings, cwd, class).await
+        }
+        ControlRequest::SetRuntimeMode { slim } => {
+            set_runtime_mode_daemon_response(shared_settings, cwd, slim).await
+        }
 
         // ── Auth ────────────────────────────────────────────────────
         ControlRequest::AuthStatus => auth_status_response().await,
+        ControlRequest::AuthLogin { provider } => auth_login_daemon_response(&provider).await,
         ControlRequest::AuthLogout { provider } => auth_logout_response(&provider).await,
 
         // ── Secrets ─────────────────────────────────────────────────
@@ -451,6 +493,19 @@ pub async fn execute_daemon_control(
             SlashCommandResponse { accepted: true, output: Some(msg) }
         }
 
+        // ── Auspex fleet control ────────────────────────────────────
+        ControlRequest::SetMaxTurns { max_turns } => {
+            set_max_turns_response(shared_settings, cwd, max_turns).await
+        }
+        ControlRequest::ProfileView => profile_view_response(shared_settings).await,
+        ControlRequest::ProfileExport => {
+            profile_export_response(shared_settings, cwd, handles).await
+        }
+        ControlRequest::PersonaList => persona_list_daemon_response(handles).await,
+        ControlRequest::PersonaSwitch { name } => {
+            persona_switch_daemon_response(&name).await
+        }
+
         // ── Operations requiring TUI state ──────────────────────────
         other => {
             SlashCommandResponse {
@@ -459,6 +514,22 @@ pub async fn execute_daemon_control(
             }
         }
     };
+    // Emit HarnessStatusChanged for mutations so WebSocket/IPC clients see
+    // updated state without polling.
+    if resp.accepted && is_settings_mutation {
+        if let Some(ref harness_handle) = handles.harness {
+            if let Ok(mut status) = harness_handle.lock() {
+                // Refresh settings-derived fields in the live harness status.
+                if let Ok(s) = shared_settings.lock() {
+                    status.context_class = s.effective_requested_class().label().to_string();
+                    status.thinking_level = s.thinking.as_str().to_string();
+                }
+                if let Ok(json) = serde_json::to_value(&*status) {
+                    let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json: json });
+                }
+            }
+        }
+    }
     omegon_traits::ControlOutputResponse {
         accepted: resp.accepted,
         output: resp.output,
@@ -2518,6 +2589,315 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
     }
 }
 
+
+/// Daemon-mode auth login. OAuth providers return guidance (browser flow
+/// must be initiated by the client). API key providers are not yet
+/// supported via WebSocket — the client should write auth.json directly
+/// or use `omegon auth login` from a terminal.
+pub async fn auth_login_daemon_response(provider: &str) -> SlashCommandResponse {
+    let provider = provider.trim();
+    let provider = if provider.is_empty() {
+        "anthropic"
+    } else {
+        crate::auth::canonical_provider_id(provider)
+    };
+    let Some(provider_info) = crate::auth::provider_by_id(provider) else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(format!(
+                "❌ {}",
+                auth::operator_auth_unknown_provider_message(provider)
+            )),
+        };
+    };
+    match provider_info.auth_method {
+        auth::AuthMethod::OAuth => {
+            SlashCommandResponse {
+                accepted: false,
+                output: Some(format!(
+                    "{} uses OAuth login which requires a browser. \
+                     Run `omegon auth login {}` from a terminal with browser access, \
+                     then the daemon will pick up the new credentials on the next request.",
+                    provider_info.display_name,
+                    provider,
+                )),
+            }
+        }
+        auth::AuthMethod::ApiKey | auth::AuthMethod::Dynamic => {
+            let env_hint = provider_info.env_vars.first().copied().unwrap_or("API_KEY");
+            SlashCommandResponse {
+                accepted: false,
+                output: Some(format!(
+                    "{} uses API key auth. Set {} in the environment or run \
+                     `omegon auth login {}` from a terminal to store the key. \
+                     The daemon will pick up credentials on the next request.",
+                    provider_info.display_name,
+                    env_hint,
+                    provider,
+                )),
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Auspex fleet control — daemon-safe handlers
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub async fn set_thinking_daemon_response(
+    shared_settings: &settings::SharedSettings,
+    cwd: &Path,
+    level: crate::settings::ThinkingLevel,
+) -> SlashCommandResponse {
+    let Ok(mut s) = shared_settings.lock() else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("failed to acquire settings lock".to_string()),
+        };
+    };
+    s.thinking = level;
+    let mut profile = settings::Profile::load(cwd);
+    profile.capture_from(&s);
+    let _ = profile.save(cwd);
+    drop(s);
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(format!("Thinking → {} {}", level.icon(), level.as_str())),
+    }
+}
+
+pub async fn set_model_daemon_response(
+    shared_settings: &settings::SharedSettings,
+    cwd: &Path,
+    requested_model: &str,
+) -> SlashCommandResponse {
+    let effective = providers::resolve_execution_model_spec(requested_model)
+        .await
+        .unwrap_or_else(|| requested_model.to_string());
+    let Ok(mut s) = shared_settings.lock() else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("failed to acquire settings lock".to_string()),
+        };
+    };
+    s.set_model(&effective);
+    s.provider_connected = crate::auth::provider_connected_for_model(&effective);
+    let mut profile = settings::Profile::load(cwd);
+    profile.capture_from(&s);
+    let _ = profile.save(cwd);
+    drop(s);
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(format!("Model → {effective}")),
+    }
+}
+
+pub async fn set_context_class_daemon_response(
+    shared_settings: &settings::SharedSettings,
+    cwd: &Path,
+    class: crate::settings::ContextClass,
+) -> SlashCommandResponse {
+    let Ok(mut s) = shared_settings.lock() else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("failed to acquire settings lock".to_string()),
+        };
+    };
+    s.set_requested_context_class(class);
+    let mut profile = settings::Profile::load(cwd);
+    profile.capture_from(&s);
+    let _ = profile.save(cwd);
+    drop(s);
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(format!("Context policy → {}", class.label())),
+    }
+}
+
+pub async fn set_runtime_mode_daemon_response(
+    shared_settings: &settings::SharedSettings,
+    cwd: &Path,
+    slim: bool,
+) -> SlashCommandResponse {
+    let Ok(mut s) = shared_settings.lock() else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("failed to acquire settings lock".to_string()),
+        };
+    };
+    s.set_slim_mode(slim);
+    let mut profile = settings::Profile::load(cwd);
+    profile.capture_from(&s);
+    let _ = profile.save(cwd);
+    drop(s);
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(format!(
+            "Runtime mode → {}. Takes effect on next turn.",
+            if slim { "slim" } else { "full" }
+        )),
+    }
+}
+
+pub async fn set_max_turns_response(
+    shared_settings: &settings::SharedSettings,
+    cwd: &Path,
+    max_turns: u32,
+) -> SlashCommandResponse {
+    let Ok(mut s) = shared_settings.lock() else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("failed to acquire settings lock".to_string()),
+        };
+    };
+    s.max_turns = max_turns;
+    let mut profile = settings::Profile::load(cwd);
+    profile.capture_from(&s);
+    let _ = profile.save(cwd);
+    drop(s);
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(format!(
+            "Max turns → {}",
+            if max_turns == 0 { "unlimited".to_string() } else { max_turns.to_string() }
+        )),
+    }
+}
+
+pub async fn profile_view_response(
+    shared_settings: &settings::SharedSettings,
+) -> SlashCommandResponse {
+    let output = if let Ok(s) = shared_settings.lock() {
+        serde_json::json!({
+            "model": s.model,
+            "thinking_level": s.thinking.as_str(),
+            "context_class": s.effective_requested_class().label(),
+            "context_window": s.context_window,
+            "max_turns": s.max_turns,
+            "slim_mode": s.slim_mode,
+            "posture": serde_json::to_value(&s.posture).unwrap_or(serde_json::json!(null)),
+            "provider_order": s.provider_order,
+            "provider_connected": s.provider_connected,
+        })
+        .to_string()
+    } else {
+        "failed to read settings".to_string()
+    };
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(output),
+    }
+}
+
+pub async fn profile_export_response(
+    shared_settings: &settings::SharedSettings,
+    cwd: &Path,
+    handles: &crate::tui::dashboard::DashboardHandles,
+) -> SlashCommandResponse {
+    let settings_json = if let Ok(s) = shared_settings.lock() {
+        serde_json::json!({
+            "model": s.model,
+            "thinking_level": s.thinking.as_str(),
+            "context_class": s.effective_requested_class().label(),
+            "max_turns": s.max_turns,
+            "slim_mode": s.slim_mode,
+            "provider_order": s.provider_order,
+        })
+    } else {
+        serde_json::json!(null)
+    };
+
+    let persona_json = if let Some(ref harness) = handles.harness {
+        if let Ok(h) = harness.lock() {
+            if let Some(ref p) = h.active_persona {
+                serde_json::json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "badge": p.badge,
+                    "activated_skills": p.activated_skills,
+                    "disabled_tools": p.disabled_tools,
+                })
+            } else {
+                serde_json::json!(null)
+            }
+        } else {
+            serde_json::json!(null)
+        }
+    } else {
+        serde_json::json!(null)
+    };
+
+    let profile = settings::Profile::load(cwd);
+
+    let export = serde_json::json!({
+        "format": "omegon-profile-export",
+        "version": env!("CARGO_PKG_VERSION"),
+        "settings": settings_json,
+        "persona": persona_json,
+        "profile": serde_json::to_value(&profile).unwrap_or(serde_json::json!(null)),
+    });
+
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(export.to_string()),
+    }
+}
+
+pub async fn persona_list_daemon_response(
+    handles: &crate::tui::dashboard::DashboardHandles,
+) -> SlashCommandResponse {
+    let (personas, tones) = crate::plugins::persona_loader::scan_available();
+
+    let active_id = handles
+        .harness
+        .as_ref()
+        .and_then(|h| h.lock().ok())
+        .and_then(|h| h.active_persona.as_ref().map(|p| p.id.clone()));
+
+    let persona_list: Vec<serde_json::Value> = personas
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "active": active_id.as_deref() == Some(&p.id),
+            })
+        })
+        .collect();
+
+    let tone_list: Vec<serde_json::Value> = tones
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+            })
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "personas": persona_list,
+        "tones": tone_list,
+    });
+
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(output.to_string()),
+    }
+}
+
+pub async fn persona_switch_daemon_response(name: &str) -> SlashCommandResponse {
+    SlashCommandResponse {
+        accepted: false,
+        output: Some(format!(
+            "Remote persona switching requires SharedPersonaRegistry (planned for 0.15.27). \
+             For now, send a prompt with `/persona {name}` to switch via the agent, \
+             or run `omegon` interactively and use `/persona {name}` directly."
+        )),
+    }
+}
 
 pub async fn skills_view_response() -> SlashCommandResponse {
     match crate::skills::list_summary() {

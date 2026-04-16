@@ -626,8 +626,17 @@ async fn serve_eval_dashboard() -> axum::response::Html<&'static str> {
 
 /// Bind to a port with auto-increment fallback. Returns the listener directly
 /// to avoid TOCTOU races.
+/// Resolve the bind IP. Container workloads set OMEGON_BIND_ADDR=0.0.0.0
+/// so the control plane is reachable via port-forward.
+fn bind_ip() -> [u8; 4] {
+    match std::env::var("OMEGON_BIND_ADDR").ok().as_deref() {
+        Some("0.0.0.0") => [0, 0, 0, 0],
+        _ => [127, 0, 0, 1],
+    }
+}
+
 async fn bind_strict(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
-    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let addr: SocketAddr = (bind_ip(), port).into();
     tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to bind strict control port {port}: {e}"))
@@ -636,7 +645,7 @@ async fn bind_strict(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
 async fn bind_with_fallback(preferred: u16) -> anyhow::Result<tokio::net::TcpListener> {
     for offset in 0..10 {
         let port = preferred + offset;
-        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+        let addr: SocketAddr = (bind_ip(), port).into();
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => return Ok(listener),
             Err(_) => continue,

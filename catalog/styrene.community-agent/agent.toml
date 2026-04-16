@@ -1,0 +1,25 @@
+[agent]
+id = "styrene.community-agent"
+name = "Styrene Community Agent"
+version = "1.0.0"
+description = "Styrene project agent for Discord. Familiar with the styrene-lab ecosystem: omegon, vox, styrened, auspex, RNS/LXMF mesh networking, and edge device provisioning."
+domain = "coding"
+
+[persona]
+directive = "PERSONA.md"
+badge = "styrene"
+mind_facts = "mind/facts.jsonl"
+
+[[extensions]]
+name = "vox"
+version = ">=0.3.0"
+
+[settings]
+model = "openai-codex:gpt-5.4"
+thinking_level = "medium"
+context_class = "clan"
+max_turns = 50
+
+[secrets]
+required = []
+optional = ["VOX_DISCORD_BOT_TOKEN", "GITHUB_TOKEN"]

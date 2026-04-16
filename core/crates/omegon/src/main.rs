@@ -852,11 +852,32 @@ type SharedSession = Arc<tokio::sync::Mutex<Option<DefaultSession>>>;
 /// puts state back. Returns `Err` if the session is busy (turn in progress).
 async fn run_daemon_turn(
     session: &SharedSession,
-    bridge: &Arc<dyn LlmBridge>,
+    shared_settings: &settings::SharedSettings,
+    fallback_model: &str,
     events_tx: &tokio::sync::broadcast::Sender<omegon_traits::AgentEvent>,
     config: r#loop::LoopConfig,
     setup_fn: impl FnOnce(&mut DefaultSession),
 ) -> anyhow::Result<()> {
+    // Read the current model from shared_settings so SIGHUP reloads and
+    // /set_model changes are picked up. Falls back to the startup model if
+    // the lock is poisoned.
+    let model = shared_settings
+        .lock()
+        .map(|s| s.model.clone())
+        .unwrap_or_else(|_| fallback_model.to_string());
+
+    // Resolve bridge per-turn so credential changes in auth.json are picked
+    // up without restarting the daemon.
+    let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&model).await {
+        Some(b) => b,
+        None => {
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: format!("No LLM provider available for model {model} — check auth"),
+            });
+            anyhow::bail!("no provider available for model {model}");
+        }
+    };
+
     // Take ownership — Mutex held only for the .take() call.
     let mut state = {
         let mut guard = session.lock().await;
@@ -1092,21 +1113,18 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
         }
     }
 
-    // ─── LLM bridge (init once, reused across prompts) ──────────────────
+    // ─── LLM model (bridge resolved per-turn for credential freshness) ───
     let model = shared_settings
         .lock()
         .map(|s| s.model.clone())
         .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into());
-    let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&model).await {
-        Some(native) => native,
-        None => {
-            tracing::warn!(
-                model = %model,
-                "no LLM provider available for daemon mode — starting control plane with NullBridge"
-            );
-            Box::new(crate::bridge::NullBridge)
-        }
-    };
+    // Validate provider availability at startup (fail-fast).
+    if providers::auto_detect_bridge(&model).await.is_none() {
+        tracing::warn!(
+            model = %model,
+            "no LLM provider available at startup — bridge will be re-resolved per turn"
+        );
+    }
 
     // ─── Event channel (shared with web dashboard) ──────────────────────
     let (events_tx, _) = broadcast::channel::<AgentEvent>(256);
@@ -1150,6 +1168,28 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
         cancel_clone.cancel();
     });
 
+    // ─── IPC server (native Auspex/host control plane) ────────────────
+    let ipc_cancel = tokio_util::sync::CancellationToken::new();
+    let (ipc_cmd_tx, mut ipc_cmd_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(32);
+    {
+        let ipc_cfg = ipc::IpcServerConfig::from_cwd(
+            &cwd,
+            env!("CARGO_PKG_VERSION"),
+            &agent.session_id,
+        );
+        let shared_cancel: tui::SharedCancel =
+            Arc::new(std::sync::Mutex::new(Some(global_cancel.clone())));
+        ipc::start_ipc_server(
+            ipc_cfg,
+            agent.dashboard_handles.clone(),
+            events_tx.clone(),
+            ipc_cmd_tx,
+            shared_settings.clone(),
+            shared_cancel,
+            ipc_cancel.clone(),
+        );
+    }
+
     // ─── Vox event bridge (extension-driven comms) ──────────────────────
     if !agent.vox_polling_handles.is_empty() {
         for handle in agent.vox_polling_handles {
@@ -1181,9 +1221,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     let agent_cwd = agent.cwd.clone();
     let agent_session_id = agent.session_id.clone();
     let agent_secrets = agent.secrets.clone();
-
-    // Share the bridge across spawned turn tasks.
-    let bridge: Arc<dyn LlmBridge> = Arc::from(bridge);
+    let agent_handles = agent.dashboard_handles.clone();
 
     // Wrap the pre-existing agent state as the default session. This
     // preserves single-session backward compatibility — events without
@@ -1221,12 +1259,28 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     let mut vox_poll = tokio::time::interval(tokio::time::Duration::from_millis(250));
     vox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // ─── SIGHUP handler (graceful reload) ──────────────────────────────
+    let mut sighup = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::hangup(),
+    ).expect("failed to register SIGHUP handler");
+
     tracing::info!("daemon dispatch loop started");
     loop {
         tokio::select! {
             _ = global_cancel.cancelled() => {
                 tracing::info!("daemon shutting down (signal)");
                 break;
+            }
+            _ = sighup.recv() => {
+                tracing::info!("SIGHUP received — reloading configuration");
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: "Reloading configuration...".into(),
+                });
+                let profile = settings::Profile::load(&agent_cwd);
+                if let Ok(mut s) = shared_settings.lock() {
+                    profile.apply_to(&mut s);
+                    tracing::info!(model = %s.model, "profile reloaded");
+                }
             }
             _ = vox_poll.tick() => {
                 // Drain up to 32 events per tick to bound memory pressure.
@@ -1287,7 +1341,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                     // TODO: per-caller session creation via router.get_or_create()
                     // once session factory is wired up.
                     let session = default_session.clone();
-                    let bridge = bridge.clone();
+
                     let events_tx = events_tx.clone();
                     let shared_settings = shared_settings.clone();
                     let model = model.clone();
@@ -1324,7 +1378,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             };
 
                             if let Err(e) = run_daemon_turn(
-                                &session, &bridge, &events_tx, loop_config,
+                                &session, &shared_settings, &model, &events_tx, loop_config,
                                 |state| { state.conversation.push_user(text); },
                             ).await {
                                 tracing::error!(error = %e, "daemon vox event loop error");
@@ -1341,7 +1395,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
 
                         // Clone handles for the spawned task.
                         let session = default_session.clone();
-                        let bridge = bridge.clone();
+    
                         let events_tx = events_tx.clone();
                         let shared_settings = shared_settings.clone();
                         let model = model.clone();
@@ -1378,7 +1432,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 };
 
                                 if let Err(e) = run_daemon_turn(
-                                    &session, &bridge, &events_tx, loop_config,
+                                    &session, &shared_settings, &model, &events_tx, loop_config,
                                     |state| { state.conversation.push_user(text); },
                                 ).await {
                                     tracing::error!(error = %e, "daemon agent loop error");
@@ -1394,6 +1448,8 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             &shared_settings,
                             &agent_secrets,
                             &agent_cwd,
+                            &agent_handles,
+                            &events_tx,
                         )
                         .await;
                         if let Some(tx) = respond_to {
@@ -1411,7 +1467,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             format!("/{name} {args}")
                         };
                         let session = default_session.clone();
-                        let bridge = bridge.clone();
+    
                         let events_tx = events_tx.clone();
                         let shared_settings = shared_settings.clone();
                         let model = model.clone();
@@ -1447,7 +1503,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 };
 
                                 if let Err(e) = run_daemon_turn(
-                                    &session, &bridge, &events_tx, loop_config,
+                                    &session, &shared_settings, &model, &events_tx, loop_config,
                                     |state| { state.conversation.push_user(prompt); },
                                 ).await {
                                     tracing::error!(error = %e, "daemon slash command loop error");
@@ -1477,6 +1533,143 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                     None => {
                         tracing::info!("daemon: command channel closed");
                         break;
+                    }
+                }
+            }
+            ipc_cmd = ipc_cmd_rx.recv() => {
+                // ─── IPC commands (TuiCommand → dispatch) ──────────────
+                match ipc_cmd {
+                    Some(tui::TuiCommand::SubmitPrompt(submission)) => {
+                        tracing::info!(prompt_len = submission.text.len(), "daemon: IPC prompt");
+                        let session = default_session.clone();
+                        let events_tx = events_tx.clone();
+                        let shared_settings = shared_settings.clone();
+                        let model = model.clone();
+                        let cwd = agent_cwd.clone();
+                        let secrets = agent_secrets.clone();
+                        let semaphore = router.semaphore().clone();
+
+                        let text = submission.text;
+                        task_spawn::spawn_best_effort_result(
+                            "daemon-turn-ipc",
+                            async move {
+                                let _permit = semaphore.acquire().await
+                                    .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
+
+                                let loop_config = r#loop::LoopConfig {
+                                    max_turns: shared_settings
+                                        .lock()
+                                        .map(|s| s.max_turns)
+                                        .unwrap_or(50),
+                                    soft_limit_turns: 35,
+                                    max_retries: 0,
+                                    retry_delay_ms: 750,
+                                    model: shared_settings
+                                        .lock()
+                                        .map(|s| s.model.clone())
+                                        .unwrap_or_else(|_| model.clone()),
+                                    cwd: cwd.clone(),
+                                    extended_context: false,
+                                    settings: Some(shared_settings.clone()),
+                                    secrets: Some(secrets),
+                                    force_compact: None,
+                                    allow_commit_nudge: true,
+                                    enforce_first_turn_execution_bias: false,
+                                };
+
+                                if let Err(e) = run_daemon_turn(
+                                    &session, &shared_settings, &model, &events_tx, loop_config,
+                                    |state| { state.conversation.push_user(text); },
+                                ).await {
+                                    tracing::error!(error = %e, "daemon IPC agent loop error");
+                                }
+                                Ok(())
+                            },
+                        );
+                    }
+                    Some(tui::TuiCommand::ExecuteControl { request, respond_to }) => {
+                        tracing::info!(request = ?request, "daemon: IPC control request");
+                        let response = control_runtime::execute_daemon_control(
+                            request,
+                            &shared_settings,
+                            &agent_secrets,
+                            &agent_cwd,
+                            &agent_handles,
+                            &events_tx,
+                        )
+                        .await;
+                        if let Some(tx) = respond_to {
+                            let _ = tx.send(response);
+                        }
+                    }
+                    Some(tui::TuiCommand::RunSlashCommand { name, args, respond_to }) => {
+                        tracing::info!(command = %name, "daemon: IPC slash command → prompt");
+                        let prompt = if args.is_empty() {
+                            format!("/{name}")
+                        } else {
+                            format!("/{name} {args}")
+                        };
+                        let session = default_session.clone();
+                        let events_tx = events_tx.clone();
+                        let shared_settings = shared_settings.clone();
+                        let model = model.clone();
+                        let cwd = agent_cwd.clone();
+                        let secrets = agent_secrets.clone();
+                        let semaphore = router.semaphore().clone();
+
+                        task_spawn::spawn_best_effort_result(
+                            "daemon-turn-ipc-slash",
+                            async move {
+                                let _permit = semaphore.acquire().await
+                                    .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
+
+                                let loop_config = r#loop::LoopConfig {
+                                    max_turns: shared_settings
+                                        .lock()
+                                        .map(|s| s.max_turns)
+                                        .unwrap_or(50),
+                                    soft_limit_turns: 35,
+                                    max_retries: 0,
+                                    retry_delay_ms: 750,
+                                    model: shared_settings
+                                        .lock()
+                                        .map(|s| s.model.clone())
+                                        .unwrap_or_else(|_| model.clone()),
+                                    cwd: cwd.clone(),
+                                    extended_context: false,
+                                    settings: Some(shared_settings.clone()),
+                                    secrets: Some(secrets),
+                                    force_compact: None,
+                                    allow_commit_nudge: false,
+                                    enforce_first_turn_execution_bias: false,
+                                };
+
+                                if let Err(e) = run_daemon_turn(
+                                    &session, &shared_settings, &model, &events_tx, loop_config,
+                                    |state| { state.conversation.push_user(prompt); },
+                                ).await {
+                                    tracing::error!(error = %e, "daemon IPC slash command loop error");
+                                }
+
+                                if let Some(tx) = respond_to {
+                                    let _ = tx.send(omegon_traits::SlashCommandResponse {
+                                        accepted: true,
+                                        output: None,
+                                    });
+                                }
+                                Ok(())
+                            },
+                        );
+                    }
+                    Some(tui::TuiCommand::Quit) => {
+                        tracing::info!("daemon: IPC shutdown requested");
+                        break;
+                    }
+                    Some(_) => {
+                        tracing::debug!("daemon: unhandled IPC command variant");
+                    }
+                    None => {
+                        tracing::debug!("daemon: IPC command channel closed");
                     }
                 }
             }
@@ -1511,7 +1704,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                     );
 
                     let session = default_session.clone();
-                    let bridge = bridge.clone();
+
                     let events_tx = events_tx.clone();
                     let shared_settings = shared_settings.clone();
                     let model = model.clone();
@@ -1549,7 +1742,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             };
 
                             if let Err(e) = run_daemon_turn(
-                                &session, &bridge, &events_tx, loop_config,
+                                &session, &shared_settings, &model, &events_tx, loop_config,
                                 |state| { state.conversation.push_user(prompt); },
                             ).await {
                                 tracing::error!(
@@ -1591,7 +1784,6 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
 
                 // Clone handles for the spawned task.
                 let session = default_session.clone();
-                let bridge = bridge.clone();
                 let events_tx = events_tx.clone();
                 let shared_settings = shared_settings.clone();
                 let model = model.clone();
@@ -1628,7 +1820,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                         };
 
                         if let Err(e) = run_daemon_turn(
-                            &session, &bridge, &events_tx, loop_config,
+                            &session, &shared_settings, &model, &events_tx, loop_config,
                             |state| { state.conversation.push_user(prompt); },
                         ).await {
                             tracing::error!(
@@ -1644,7 +1836,9 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
         }
     }
 
-    // ─── Cleanup — graceful drain + save ───────────────────────────────
+    // ─── Cleanup — cancel IPC + graceful drain + save ─────────────────
+    ipc_cancel.cancel();
+
     // Give in-flight turns a grace period to complete before saving state.
     tracing::info!("daemon: draining in-flight turns (5s grace period)");
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -1661,7 +1855,6 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
             tracing::warn!("session still in-flight at shutdown — state will be saved by completing turn");
         }
     }
-    bridge.shutdown().await;
     Ok(())
 }
 

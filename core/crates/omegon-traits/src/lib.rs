@@ -1780,7 +1780,9 @@ pub enum AgentEvent {
         text: String,
     },
     MessageEnd,
-    MessageAbort,
+    MessageAbort {
+        reason: Option<String>,
+    },
     ToolStart {
         id: String,
         name: String,

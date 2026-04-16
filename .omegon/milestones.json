@@ -887,12 +887,12 @@
     ]
   },
   "0.15.26": {
-    "status": "rc",
+    "status": "released",
     "channel": "stable",
     "nodes": [],
     "frozen": true,
     "opened": "2026-04-15T23:02:00Z",
-    "released": "2026-04-16T19:52:44Z",
+    "released": "2026-04-16T21:10:52Z",
     "rc_count": 2,
     "notes": [
       "feat(control): auspex fleet control surface + integration gap fixes",

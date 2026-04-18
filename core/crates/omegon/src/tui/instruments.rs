@@ -1434,11 +1434,23 @@ impl InstrumentPanel {
         // Leave the last row for an aggregate summary line.
         let child_rows = (inner.height as usize).saturating_sub(1);
 
-        for (row, child) in cp.children.iter().enumerate() {
-            if row >= child_rows {
+        // Decide whether to show task sub-rows: only expand running children,
+        // and only if the total fits.
+        const MAX_TASK_ROWS_PER_CHILD: usize = 6;
+        let running_task_rows: usize = cp
+            .children
+            .iter()
+            .filter(|c| c.status == "running" && !c.tasks.is_empty())
+            .map(|c| c.tasks.len().min(MAX_TASK_ROWS_PER_CHILD))
+            .sum();
+        let show_tasks = cp.children.len() + running_task_rows <= child_rows;
+
+        let mut current_row: usize = 0;
+        for child in cp.children.iter() {
+            if current_row >= child_rows {
                 break;
             }
-            let y = inner.y + row as u16;
+            let y = inner.y + current_row as u16;
             clear_row(y, inner.x, inner.right(), buf, panel_bg(t));
 
             // ── Status indicator ──
@@ -1543,6 +1555,22 @@ impl InstrumentPanel {
             let _ = render_str_colored(&elapsed_str, x, y, inner.right(), panel_bg(t), buf, |_| {
                 elapsed_color
             });
+
+            current_row += 1;
+
+            // ── Task sub-rows (only for running children when space permits) ──
+            if show_tasks && child.status == "running" && !child.tasks.is_empty() {
+                let max = MAX_TASK_ROWS_PER_CHILD.min(child_rows.saturating_sub(current_row));
+                let rendered = Self::render_task_rows(
+                    &child.tasks,
+                    inner.y + current_row as u16,
+                    inner,
+                    buf,
+                    t,
+                    max,
+                );
+                current_row += rendered as usize;
+            }
         }
 
         // ── Summary row ──────────────────────────────────────────────────
@@ -1579,6 +1607,59 @@ impl InstrumentPanel {
             let s = secs as u64 % 60;
             format!("{m}:{s:02}m")
         }
+    }
+
+    /// Render task sub-rows (■ done / □ pending) for a child's task list.
+    /// Returns the number of rows rendered.
+    fn render_task_rows(
+        tasks: &[crate::cleave::progress::ChildTaskItem],
+        start_y: u16,
+        inner: Rect,
+        buf: &mut ratatui::buffer::Buffer,
+        t: &dyn Theme,
+        max_rows: usize,
+    ) -> u16 {
+        let mut rendered = 0u16;
+        let w = inner.width as usize;
+        let mut first_pending_seen = false;
+
+        for task in tasks.iter() {
+            if rendered as usize >= max_rows {
+                break;
+            }
+            let y = start_y + rendered;
+            if y >= inner.bottom() {
+                break;
+            }
+            clear_row(y, inner.x, inner.right(), buf, panel_bg(t));
+
+            let (glyph, color) = if task.done {
+                ("  ■ ", Color::Rgb(30, 120, 140)) // dim teal
+            } else if !first_pending_seen {
+                first_pending_seen = true;
+                ("  □ ", Color::Rgb(232, 186, 104)) // amber — active
+            } else {
+                ("  □ ", Color::Rgb(50, 65, 80)) // dim grey
+            };
+
+            let mut x = inner.x;
+            x = render_str_colored(glyph, x, y, inner.right(), panel_bg(t), buf, |_| color);
+
+            // Truncate description to remaining width
+            let desc_w = w.saturating_sub(4);
+            let desc: String = task.description.chars().take(desc_w).collect();
+            let sanitized = strip_terminal_control(&desc);
+            let display = if UnicodeWidthStr::width(sanitized.as_str()) > desc_w {
+                truncate_display_width(&sanitized, desc_w)
+            } else {
+                sanitized
+            };
+            let _ =
+                render_str_colored(&display, x, y, inner.right(), panel_bg(t), buf, |_i| color);
+
+            rendered += 1;
+        }
+        rendered
     }
 
     fn render_delegate_panel(
@@ -1624,11 +1705,23 @@ impl InstrumentPanel {
         let label_w: usize = 11.min(w.saturating_sub(elapsed_w + 4));
         let activity_w: usize = w.saturating_sub(2 + label_w + 1 + elapsed_w);
         let child_rows = (inner.height as usize).saturating_sub(1);
-        for (row, child) in dp.children.iter().enumerate() {
-            if row >= child_rows {
+
+        // Decide whether to show task sub-rows for running children
+        const MAX_TASK_ROWS_PER_DELEGATE: usize = 6;
+        let running_task_rows: usize = dp
+            .children
+            .iter()
+            .filter(|c| c.status == "running" && !c.tasks.is_empty())
+            .map(|c| c.tasks.len().min(MAX_TASK_ROWS_PER_DELEGATE))
+            .sum();
+        let show_tasks = dp.children.len() + running_task_rows <= child_rows;
+
+        let mut current_row: usize = 0;
+        for child in dp.children.iter() {
+            if current_row >= child_rows {
                 break;
             }
-            let y = inner.y + row as u16;
+            let y = inner.y + current_row as u16;
             clear_row(y, inner.x, inner.right(), buf, panel_bg(t));
             let (ind_ch, ind_color) = match child.status.as_str() {
                 "running" => ("▷ ", Color::Rgb(232, 186, 104)),
@@ -1659,11 +1752,22 @@ impl InstrumentPanel {
                 }
                 x += 1;
             }
-            let activity = child
-                .result_summary
-                .clone()
-                .or_else(|| child.last_tool.clone())
-                .unwrap_or_default();
+            // Show live tool activity for running children, result summary for completed
+            let activity = if child.status == "running" {
+                if let Some(ref tool) = child.last_tool {
+                    format!("→ {tool}")
+                } else if let Some(turn) = child.last_turn {
+                    format!("T{turn}")
+                } else {
+                    "…".to_string()
+                }
+            } else {
+                child
+                    .result_summary
+                    .clone()
+                    .or_else(|| child.last_tool.clone())
+                    .unwrap_or_default()
+            };
             let act_color = Color::Rgb(36, 80, 96);
             let sanitized = strip_terminal_control(&activity);
             let act_display = if UnicodeWidthStr::width(sanitized.as_str()) > activity_w {
@@ -1695,6 +1799,23 @@ impl InstrumentPanel {
             let _ = render_str_colored(&elapsed_str, x, y, inner.right(), panel_bg(t), buf, |_| {
                 elapsed_color
             });
+
+            current_row += 1;
+
+            // ── Task sub-rows for running children ──
+            if show_tasks && child.status == "running" && !child.tasks.is_empty() {
+                let max =
+                    MAX_TASK_ROWS_PER_DELEGATE.min(child_rows.saturating_sub(current_row));
+                let rendered = Self::render_task_rows(
+                    &child.tasks,
+                    inner.y + current_row as u16,
+                    inner,
+                    buf,
+                    t,
+                    max,
+                );
+                current_row += rendered as usize;
+            }
         }
         let summary_y = inner.y + child_rows as u16;
         if summary_y < inner.bottom() {
@@ -2070,6 +2191,8 @@ mod tests {
                 pid: None,
                 last_tool: Some("commit".into()),
                 last_turn: Some(8),
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: None,
                 last_activity_at: None,
                 tokens_in: 0,
@@ -2119,6 +2242,8 @@ mod tests {
                     pid: None,
                     last_tool: Some("memory_recall".into()),
                     last_turn: Some(4),
+                    tasks: Vec::new(),
+                    tasks_done: 0,
                     started_at: None,
                     last_activity_at: None,
                     tokens_in: 0,
@@ -2133,6 +2258,8 @@ mod tests {
                     pid: None,
                     last_tool: Some("commit".into()),
                     last_turn: Some(8),
+                    tasks: Vec::new(),
+                    tasks_done: 0,
                     started_at: None,
                     last_activity_at: None,
                     tokens_in: 0,
@@ -2723,6 +2850,8 @@ mod tests {
                 pid: None,
                 last_tool: Some("\u{1b}[32;7;14mcall\u{1b}[0m".into()),
                 last_turn: None,
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: None,
                 last_activity_at: None,
                 tokens_in: 0,

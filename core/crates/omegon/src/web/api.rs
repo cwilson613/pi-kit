@@ -940,6 +940,8 @@ mod tests {
                         pid: None,
                         last_tool: None,
                         last_turn: None,
+                        tasks: Vec::new(),
+                        tasks_done: 0,
                         started_at: None,
                         last_activity_at: None,
                         tokens_in: 0,

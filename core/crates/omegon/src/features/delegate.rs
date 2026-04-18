@@ -45,9 +45,12 @@ pub struct DelegateProgressChild {
     pub label: String,
     pub status: String,
     pub last_tool: Option<String>,
+    pub last_turn: Option<u32>,
     pub started_at: Option<std::time::SystemTime>,
     pub completed_at: Option<std::time::SystemTime>,
     pub result_summary: Option<String>,
+    pub tasks: Vec<crate::cleave::progress::ChildTaskItem>,
+    pub tasks_done: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,6 +80,12 @@ pub struct DelegateTask {
     pub result: Option<String>,
     pub started_at: SystemTime,
     pub completed_at: Option<SystemTime>,
+    /// Live tool activity (updated during streaming).
+    pub last_tool: Option<String>,
+    /// Live turn number (updated during streaming).
+    pub last_turn: Option<u32>,
+    /// Task checklist items extracted from the delegate prompt.
+    pub tasks: Vec<crate::cleave::progress::ChildTaskItem>,
 }
 
 /// Thread-safe store for delegate task results
@@ -143,6 +152,39 @@ impl DelegateResultStore {
 
     /// Check if a task with the same description was already completed
     /// successfully. Returns the task_id if found.
+    /// Update live activity state for a running task (tool, turn, task progress).
+    pub fn update_task_live_state(
+        &self,
+        task_id: &str,
+        last_tool: Option<String>,
+        last_turn: Option<u32>,
+    ) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(task) = tasks.get_mut(task_id) {
+            if let Some(tool) = last_tool {
+                task.last_tool = Some(tool);
+            }
+            if let Some(turn) = last_turn {
+                task.last_turn = Some(turn);
+                // Heuristic: turn N implies tasks 0..N-1 are done
+                let heuristic = (turn as usize).saturating_sub(1).min(task.tasks.len());
+                for t in task.tasks.iter_mut().take(heuristic) {
+                    t.done = true;
+                }
+            }
+        }
+    }
+
+    /// Mark a specific task item as done (1-indexed).
+    pub fn mark_task_done(&self, task_id: &str, task_index: usize) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(task) = tasks.get_mut(task_id) {
+            if task_index > 0 && task_index <= task.tasks.len() {
+                task.tasks[task_index - 1].done = true;
+            }
+        }
+    }
+
     pub fn find_completed_by_description(&self, description: &str) -> Option<String> {
         let tasks = self.tasks.lock().unwrap();
         let desc_lower = description.to_lowercase();
@@ -187,10 +229,13 @@ impl DelegateResultStore {
                     .clone()
                     .unwrap_or_else(|| task.task_id.clone()),
                 status: status.to_string(),
-                last_tool: None,
+                last_tool: task.last_tool.clone(),
+                last_turn: task.last_turn,
                 started_at: Some(task.started_at),
                 completed_at: task.completed_at,
                 result_summary: task.result.as_ref().map(|r| crate::util::truncate(r, 40)),
+                tasks: task.tasks.clone(),
+                tasks_done: task.tasks.iter().filter(|t| t.done).count(),
             });
         }
         progress.children.sort_by(|a, b| a.task_id.cmp(&b.task_id));
@@ -246,6 +291,7 @@ impl DelegateWorkerProfile {
         let mut runtime = ChildAgentRuntimeProfile {
             context_class: Some("squad".to_string()),
             thinking_level: Some(thinking_level.unwrap_or("low").to_string()),
+            slim: true, // Workers are narrow-scope — always use compact schemas + lazy injection
             disabled_tools: vec![
                 "web_search".into(),
                 "design_tree".into(),
@@ -516,6 +562,7 @@ If blocked, say the blocker plainly.\n",
 
     async fn run_delegate_child(
         &self,
+        task_id: &str,
         prompt: &str,
         runtime: &DelegateRuntimeRequest,
         mind: Option<&str>,
@@ -547,23 +594,81 @@ If blocked, say the blocker plainly.\n",
                 mind,
             ),
         };
-        let (child, _pid) = spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?;
-        let output = child
-            .wait_with_output()
+        let (mut child, _pid) =
+            spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?;
+
+        // Stream stderr for live activity tracking
+        use tokio::io::AsyncBufReadExt;
+        let stderr = child.stderr.take().unwrap();
+        let mut reader = tokio::io::BufReader::new(stderr).lines();
+        let mut stderr_tail: Vec<String> = Vec::new();
+        let store = self.result_store.clone();
+        let tid = task_id.to_string();
+
+        loop {
+            match reader.next_line().await {
+                Ok(Some(line)) => {
+                    // Keep last 30 lines for error reporting
+                    if stderr_tail.len() >= 30 {
+                        stderr_tail.remove(0);
+                    }
+                    stderr_tail.push(line.clone());
+
+                    // Parse activity events and update live state
+                    if let Some(event) =
+                        crate::cleave::progress::parse_child_activity(&tid, &line)
+                    {
+                        match &event {
+                            crate::cleave::progress::ProgressEvent::ChildActivity {
+                                turn,
+                                tool,
+                                ..
+                            } => {
+                                store.update_task_live_state(
+                                    &tid,
+                                    tool.clone(),
+                                    *turn,
+                                );
+                            }
+                            crate::cleave::progress::ProgressEvent::ChildTaskDone {
+                                task_index,
+                                ..
+                            } => {
+                                store.mark_task_done(&tid, *task_index);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(None) => break, // EOF
+                Err(_) => break,
+            }
+        }
+
+        let status = child
+            .wait()
             .await
             .context("delegate child process failed to execute")?;
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Read stdout
+        let mut stdout_buf = String::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            use tokio::io::AsyncReadExt;
+            let _ = stdout.read_to_string(&mut stdout_buf).await;
+        }
+
+        if status.success() {
+            let stdout = stdout_buf.trim().to_string();
             if stdout.is_empty() {
                 Ok("Delegate completed with no stdout.".to_string())
             } else {
                 Ok(stdout)
             }
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr_text = stderr_tail.join("\n");
             Err(anyhow::anyhow!(format_delegate_child_failure(
-                output.status.code(),
-                &stderr,
+                status.code(),
+                &stderr_text,
                 &model,
                 runtime,
                 &prompt_path,
@@ -620,6 +725,7 @@ If blocked, say the blocker plainly.\n",
             }
         }
 
+        let tasks = crate::cleave::progress::extract_task_items(&task);
         let task_entry = DelegateTask {
             task_id: task_id.clone(),
             agent_name,
@@ -628,6 +734,9 @@ If blocked, say the blocker plainly.\n",
             result: None,
             started_at: SystemTime::now(),
             completed_at: None,
+            last_tool: None,
+            last_turn: None,
+            tasks,
         };
 
         self.result_store.store_task(task_entry);
@@ -658,7 +767,7 @@ If blocked, say the blocker plainly.\n",
         crate::task_spawn::spawn_best_effort_result("delegate-real-task", async move {
             let runner = DelegateRunner::new(cwd, store.clone());
             match runner
-                .run_delegate_child(&prompt, &runtime, mind.as_deref(), parent_model)
+                .run_delegate_child(&task_id, &prompt, &runtime, mind.as_deref(), parent_model)
                 .await
             {
                 Ok(result) => {
@@ -735,6 +844,10 @@ pub struct DelegateFeature {
     /// the delegate tool is hard-disabled for the rest of the session to
     /// prevent infinite retry loops.
     consecutive_failures: Arc<Mutex<u32>>,
+    /// Provider inventory for surfacing available models in context injection.
+    /// When set, the delegation model catalog is injected into the system prompt
+    /// so the orchestrator can route delegate tasks to appropriate models.
+    provider_inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
 }
 
 impl DelegateFeature {
@@ -756,7 +869,17 @@ impl DelegateFeature {
             event_slot,
             session_model: Arc::new(Mutex::new(initial_model)),
             consecutive_failures: Arc::new(Mutex::new(0)),
+            provider_inventory: None,
         }
+    }
+
+    /// Attach a provider inventory for model catalog context injection.
+    pub fn with_inventory(
+        mut self,
+        inventory: std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>,
+    ) -> Self {
+        self.provider_inventory = Some(inventory);
+        self
     }
 }
 
@@ -830,7 +953,7 @@ impl Feature for DelegateFeature {
             ToolDefinition {
                 name: crate::tool_registry::delegate::DELEGATE.to_string(),
                 label: "Delegate Task".to_string(),
-                description: "Spawn a subagent to handle a specific task".to_string(),
+                description: "Spawn a subagent to handle a specific task. Use `model` to route to a local or cheaper model (e.g., `ollama:qwen3:32b`) for mechanical work like file edits and test runs. Worker profiles: scout (read/search only), patch (small scoped edits), verify (run tests/checks).".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -840,7 +963,7 @@ impl Feature for DelegateFeature {
                         },
                         "agent": { "type": "string" },
                         "scope": { "type": "array", "items": {"type": "string"} },
-                        "model": { "type": "string" },
+                        "model": { "type": "string", "description": "Model to use (e.g., `ollama:qwen3:32b`). Omit to inherit session model. Prefer local models for rote tasks." },
                         "worker_profile": {
                             "type": "string",
                             "enum": ["scout", "patch", "verify"],
@@ -1149,21 +1272,55 @@ impl Feature for DelegateFeature {
     }
 
     fn provide_context(&self, _signals: &ContextSignals<'_>) -> Option<ContextInjection> {
-        if self.available_agents.is_empty() {
+        let mut sections = Vec::new();
+
+        // Model catalog from provider inventory
+        if let Some(ref inventory_lock) = self.provider_inventory {
+            if let Ok(inventory) = inventory_lock.try_read() {
+                // Trigger background re-probe if inventory is stale (>60s)
+                if inventory.probed_at.elapsed().as_secs() > 60 {
+                    let inv = inventory_lock.clone();
+                    crate::task_spawn::spawn_best_effort(
+                        "delegate-inventory-refresh",
+                        async move {
+                            let mut inv = inv.write().await;
+                            inv.probe_ollama().await;
+                        },
+                    );
+                }
+
+                let session_model = self
+                    .session_model
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone());
+                let catalog =
+                    inventory.format_delegation_catalog(session_model.as_deref());
+                if !catalog.is_empty() {
+                    sections.push(catalog);
+                }
+            }
+        }
+
+        // Available agents
+        if !self.available_agents.is_empty() {
+            let agents_list = self
+                .available_agents
+                .iter()
+                .map(|agent| format!("  {} - {}", agent.name, agent.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!("Available agents:\n{}", agents_list));
+        }
+
+        if sections.is_empty() {
             return None;
         }
 
-        let agents_list = self
-            .available_agents
-            .iter()
-            .map(|agent| format!("  {} - {}", agent.name, agent.description))
-            .collect::<Vec<_>>()
-            .join("\n");
-
         Some(ContextInjection {
             source: "delegate".to_string(),
-            content: format!("Available agents:\n{}", agents_list),
-            priority: 5,
+            content: sections.join("\n\n"),
+            priority: 6,
             ttl_turns: 10,
         })
     }
@@ -1577,6 +1734,9 @@ This agent runs in write mode and can modify files.
             result: Some("Fixed in auth.rs".into()),
             started_at: SystemTime::now(),
             completed_at: Some(SystemTime::now()),
+            last_tool: None,
+            last_turn: None,
+            tasks: Vec::new(),
         });
 
         // Exact match (case-insensitive)
@@ -1597,6 +1757,9 @@ This agent runs in write mode and can modify files.
             result: None,
             started_at: SystemTime::now(),
             completed_at: Some(SystemTime::now()),
+            last_tool: None,
+            last_turn: None,
+            tasks: Vec::new(),
         });
         assert!(store.find_completed_by_description("Fix the login bug").is_none());
     }

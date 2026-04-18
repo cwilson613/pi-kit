@@ -5,9 +5,16 @@
 //! - in-process harness tool use: callback sink updating shared state
 //! - future telemetry / RPC: file, socket, or event-bus sinks
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::Arc;
+
+/// A single task item extracted from a child's prompt checklist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildTaskItem {
+    pub description: String,
+    pub done: bool,
+}
 
 /// Progress events emitted during cleave orchestration.
 #[derive(Debug, Clone, Serialize)]
@@ -53,6 +60,14 @@ pub enum ProgressEvent {
         child: String,
         total_tasks: usize,
         scope_files: usize,
+        /// Full task descriptions extracted from the child's prompt.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tasks: Vec<ChildTaskItem>,
+    },
+    /// A child explicitly marked a task as done (1-indexed).
+    ChildTaskDone {
+        child: String,
+        task_index: usize,
     },
     /// Periodic progress estimate for a child.
     /// Reserved for future use — not yet emitted by the orchestrator.
@@ -166,6 +181,18 @@ pub fn parse_child_activity(child: &str, line: &str) -> Option<ProgressEvent> {
     //   "2026-03-18T02:22:24.249368Z  INFO ── Turn 1 ──"
     // We need to find the marker ANYWHERE in the line, not just at the start.
 
+    // Task-done marker: "TASK_DONE: N" (1-indexed)
+    if let Some(pos) = trimmed.find("TASK_DONE: ") {
+        let rest = &trimmed[pos + "TASK_DONE: ".len()..];
+        let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(idx) = num_str.parse::<usize>() {
+            return Some(ProgressEvent::ChildTaskDone {
+                child: child.to_string(),
+                task_index: idx,
+            });
+        }
+    }
+
     // Tool call: find "→ " anywhere in the line
     if let Some(arrow_pos) = trimmed.find("→ ") {
         let rest = &trimmed[arrow_pos + "→ ".len()..];
@@ -251,24 +278,40 @@ fn extract_turn_number(s: &str) -> Option<u32> {
 /// at the "## Result" or "## Contract" sections to avoid counting
 /// template checkboxes.
 pub fn count_task_items(content: &str) -> usize {
-    let mut count = 0;
+    extract_task_items(content).len()
+}
+
+/// Extract task checklist items with descriptions from a task file.
+///
+/// Same stop-section logic as `count_task_items`, but returns the
+/// full item list with descriptions and done flags.
+pub fn extract_task_items(content: &str) -> Vec<ChildTaskItem> {
+    let mut items = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
-        // Stop counting at structural template sections
+        // Stop at structural template sections
         if trimmed.starts_with("## Result")
             || trimmed.starts_with("## Contract")
             || trimmed.starts_with("## Finalization")
         {
             break;
         }
-        if trimmed.starts_with("- [ ]")
-            || trimmed.starts_with("- [x]")
-            || trimmed.starts_with("- [X]")
+        if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
+            items.push(ChildTaskItem {
+                description: rest.to_string(),
+                done: false,
+            });
+        } else if let Some(rest) = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "))
         {
-            count += 1;
+            items.push(ChildTaskItem {
+                description: rest.to_string(),
+                done: true,
+            });
         }
     }
-    count
+    items
 }
 
 /// Strip ANSI escape sequences from a string.
@@ -433,5 +476,50 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""event":"done""#));
         assert!(json.contains(r#""completed":3"#));
+    }
+
+    #[test]
+    fn test_extract_task_items() {
+        let content = "## Tasks\n- [ ] Build the client\n- [ ] Write tests\n- [x] Set up deps\n\n## Result\n- [ ] should not appear\n";
+        let items = extract_task_items(content);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].description, "Build the client");
+        assert!(!items[0].done);
+        assert_eq!(items[1].description, "Write tests");
+        assert!(!items[1].done);
+        assert_eq!(items[2].description, "Set up deps");
+        assert!(items[2].done);
+    }
+
+    #[test]
+    fn test_extract_task_items_stops_at_contract() {
+        let content = "- [ ] First\n## Contract\n- [ ] Hidden\n";
+        let items = extract_task_items(content);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].description, "First");
+    }
+
+    #[test]
+    fn test_parse_task_done() {
+        let event = parse_child_activity("ch1", "TASK_DONE: 2").unwrap();
+        match event {
+            ProgressEvent::ChildTaskDone { child, task_index } => {
+                assert_eq!(child, "ch1");
+                assert_eq!(task_index, 2);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_done_with_tracing_prefix() {
+        let line = "2026-04-18T02:22:27.776691Z  INFO TASK_DONE: 3";
+        let event = parse_child_activity("ch1", line).unwrap();
+        match event {
+            ProgressEvent::ChildTaskDone { task_index, .. } => {
+                assert_eq!(task_index, 3);
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

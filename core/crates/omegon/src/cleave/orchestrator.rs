@@ -320,14 +320,15 @@ pub async fn run_cleave(
 
         // ── Emit task inventories ────────────────────────────────────────
         for info in &to_dispatch {
-            let task_count = progress::count_task_items(&info.prompt);
+            let tasks = progress::extract_task_items(&info.prompt);
             let scope_files = state.children[info.child_idx].scope.len();
             config
                 .progress_sink
                 .emit(&ProgressEvent::ChildTaskInventory {
                     child: info.label.clone(),
-                    total_tasks: task_count,
+                    total_tasks: tasks.len(),
                     scope_files,
+                    tasks,
                 });
         }
 
@@ -790,6 +791,7 @@ fn child_runtime_profile(runtime: &CleaveChildRuntimeProfile) -> ChildAgentRunti
         disabled_extensions: runtime.disabled_extensions.clone(),
         preloaded_files: runtime.preloaded_files.clone(),
         persona: runtime.persona.clone(),
+        slim: runtime.slim,
     }
 }
 

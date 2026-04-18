@@ -326,6 +326,10 @@ pub struct ChildProgress {
     pub last_tool: Option<String>,
     /// Most recent turn number reported by this child.
     pub last_turn: Option<u32>,
+    /// Task checklist items extracted from the child's prompt.
+    pub tasks: Vec<crate::cleave::progress::ChildTaskItem>,
+    /// Number of tasks marked done (explicit or heuristic).
+    pub tasks_done: usize,
     /// Wall-clock instant when status transitioned to "running".
     pub started_at: Option<std::time::Instant>,
     /// Most recent progress/activity timestamp observed from this child.
@@ -389,6 +393,8 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
                     pid: Some(*pid),
                     last_tool: None,
                     last_turn: None,
+                    tasks: Vec::new(),
+                    tasks_done: 0,
                     started_at: Some(now),
                     last_activity_at: Some(now),
                     tokens_in: 0,
@@ -404,11 +410,41 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
             if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
                 if let Some(t) = turn {
                     c.last_turn = Some(*t);
+                    // Heuristic: turn N implies tasks 0..N-1 are done
+                    if !c.tasks.is_empty() {
+                        let heuristic = ((*t as usize).saturating_sub(1)).min(c.tasks.len());
+                        if heuristic > c.tasks_done {
+                            for task in c.tasks.iter_mut().take(heuristic) {
+                                task.done = true;
+                            }
+                            c.tasks_done = heuristic;
+                        }
+                    }
                 }
                 if let Some(t) = tool {
                     c.last_tool = Some(t.clone());
                 }
                 c.last_activity_at = Some(std::time::Instant::now());
+            }
+        }
+        ProgressEvent::ChildTaskInventory {
+            child, tasks, ..
+        } => {
+            if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
+                if !tasks.is_empty() {
+                    c.tasks = tasks.clone();
+                    c.tasks_done = tasks.iter().filter(|t| t.done).count();
+                }
+            }
+        }
+        ProgressEvent::ChildTaskDone {
+            child, task_index,
+        } => {
+            if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
+                if *task_index > 0 && *task_index <= c.tasks.len() {
+                    c.tasks[task_index - 1].done = true;
+                    c.tasks_done = c.tasks.iter().filter(|t| t.done).count();
+                }
             }
         }
         ProgressEvent::ChildTokens {
@@ -451,6 +487,8 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
                     pid: None,
                     last_tool: None,
                     last_turn: None,
+                    tasks: Vec::new(),
+                    tasks_done: 0,
                     started_at: None,
                     last_activity_at: Some(std::time::Instant::now()),
                     tokens_in: 0,
@@ -657,6 +695,8 @@ impl CleaveFeature {
                     },
                     last_tool: None,
                     last_turn: None,
+                    tasks: Vec::new(),
+                    tasks_done: 0,
                     started_at: None,
                     last_activity_at: None,
                     tokens_in: 0,
@@ -795,6 +835,8 @@ impl CleaveFeature {
                     pid: None,
                     last_tool: None,
                     last_turn: None,
+                    tasks: Vec::new(),
+                    tasks_done: 0,
                     started_at: None,
                     last_activity_at: None,
                     tokens_in: 0,
@@ -1428,6 +1470,8 @@ mod tests {
                 pid: None,
                 last_tool: Some("commit".into()),
                 last_turn: Some(8),
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: Some(std::time::Instant::now()),
                 last_activity_at: Some(std::time::Instant::now()),
                 tokens_in: 800,
@@ -1442,6 +1486,8 @@ mod tests {
                 pid: Some(42_u32),
                 last_tool: Some("write".into()),
                 last_turn: Some(3),
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: Some(std::time::Instant::now()),
                 last_activity_at: Some(std::time::Instant::now()),
                 tokens_in: 700,
@@ -1456,6 +1502,8 @@ mod tests {
                 pid: None,
                 last_tool: None,
                 last_turn: None,
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: None,
                 last_activity_at: None,
                 tokens_in: 0,
@@ -1834,6 +1882,8 @@ mod tests {
                 pid: None,
                 last_tool: None,
                 last_turn: None,
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: None,
                 last_activity_at: None,
                 tokens_in: 0,
@@ -1899,6 +1949,8 @@ mod tests {
                 pid: None,
                 last_tool: None,
                 last_turn: None,
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: None,
                 last_activity_at: None,
                 tokens_in: 0,
@@ -1942,6 +1994,8 @@ mod tests {
                 pid: Some(42),
                 last_tool: None,
                 last_turn: None,
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: Some(std::time::Instant::now()),
                 last_activity_at: None,
                 tokens_in: 0,
@@ -1985,6 +2039,8 @@ mod tests {
                 pid: None,
                 last_tool: None,
                 last_turn: None,
+                tasks: Vec::new(),
+                tasks_done: 0,
                 started_at: None,
                 last_activity_at: None,
                 tokens_in: 0,

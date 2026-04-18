@@ -34,6 +34,9 @@ mod embedding;
 pub mod extensions;
 pub mod features;
 mod ipc;
+mod acp;
+mod acp_worker;
+mod first_run;
 mod migrate;
 mod shadow_context;
 mod skills;
@@ -127,7 +130,7 @@ struct Cli {
     #[arg(
         short,
         long,
-        default_value = "anthropic:claude-sonnet-4-6",
+        default_value = "anthropic:claude-sonnet-4-7",
         global = true
     )]
     model: String,
@@ -206,6 +209,31 @@ struct Cli {
     /// Force the full Omegon harness profile even when launched via `om`.
     #[arg(long)]
     full: bool,
+
+    /// Set the behavioral posture. Built-in: explorator/fabricator/architect/devastator.
+    /// Custom postures can be defined in ~/.omegon/postures/<name>.pkl.
+    /// Architect (default): orchestrator mode — plan and delegate to local models.
+    /// Explorator: lean direct-execution mode (implies --slim).
+    /// Fabricator: balanced — small tasks inline, larger ones delegated.
+    /// Devastator: maximum-force deep reasoning.
+    #[arg(long, value_parser = parse_posture)]
+    posture: Option<String>,
+
+    /// Shorthand for --posture architect.
+    #[arg(long, conflicts_with = "posture")]
+    architect: bool,
+
+    /// Shorthand for --posture fabricator.
+    #[arg(long, conflicts_with = "posture")]
+    fabricator: bool,
+
+    /// Shorthand for --posture explorator (implies --slim).
+    #[arg(long, conflicts_with = "posture")]
+    explorator: bool,
+
+    /// Shorthand for --posture devastator.
+    #[arg(long, conflicts_with = "posture")]
+    devastator: bool,
 
     /// Log level: error, warn, info, debug, trace. Overrides RUST_LOG.
     #[arg(long, default_value = "info", global = true)]
@@ -392,6 +420,17 @@ enum Commands {
         latest_rc: bool,
     },
 
+    /// Manage Ollama integration — register, status, diagnostics.
+    /// Usage: omegon ollama <register|unregister|status>
+    Ollama {
+        #[command(subcommand)]
+        action: OllamaAction,
+    },
+
+    /// Run as an ACP (Agent Client Protocol) agent server over stdio.
+    /// Used by editors like Zed, VS Code, and Emacs to embed omegon as a coding agent.
+    Acp,
+
     /// Audit design-tree state for suspicious lifecycle drift.
     #[command(hide = true)]
     Doctor,
@@ -510,6 +549,17 @@ enum SecretAction {
         /// Secret name to delete.
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+enum OllamaAction {
+    /// Register omegon as an Ollama launch integration.
+    /// Creates ~/.ollama/integrations/omegon.json so `ollama launch omegon` works.
+    Register,
+    /// Remove the Ollama launch integration registration.
+    Unregister,
+    /// Show Ollama status: reachability, models, VRAM, registration state.
+    Status,
 }
 
 /// Build a typed `BusRequestSink` that the runtime hands to features
@@ -756,6 +806,11 @@ async fn main() -> anyhow::Result<()> {
                 switch::interactive_picker().await
             }
         }
+        Some(Commands::Acp) => {
+            let local = tokio::task::LocalSet::new();
+            local.run_until(acp::run(&cli.model)).await
+        }
+        Some(Commands::Ollama { ref action }) => run_ollama_command(action).await,
         Some(Commands::Doctor) => run_doctor_command(&cli).await,
         Some(Commands::Skills { ref action }) => match action {
             SkillsAction::List => skills::cmd_list().map_err(Into::into),
@@ -793,6 +848,11 @@ async fn main() -> anyhow::Result<()> {
                     ollama_integration: cli.ollama_integration,
                     ollama_model: cli.ollama_model.clone(),
                     yes: cli.yes,
+                    posture: cli.posture.clone(),
+                    architect: false,
+                    fabricator: false,
+                    explorator: false,
+                    devastator: false,
                 };
                 bench_cli.prompt_file = None;
                 run_agent_command(&bench_cli, Some(usage_json.clone())).await
@@ -1117,7 +1177,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     let model = shared_settings
         .lock()
         .map(|s| s.model.clone())
-        .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into());
+        .unwrap_or_else(|_| "anthropic:claude-sonnet-4-7".into());
     // Validate provider availability at startup (fail-fast).
     if providers::auto_detect_bridge(&model).await.is_none() {
         tracing::warn!(
@@ -1375,6 +1435,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 force_compact: None,
                                 allow_commit_nudge: false,
                                 enforce_first_turn_execution_bias: false,
+                                ollama_manager: None,
                             };
 
                             if let Err(e) = run_daemon_turn(
@@ -1429,6 +1490,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                     force_compact: None,
                                     allow_commit_nudge: true,
                                     enforce_first_turn_execution_bias: false,
+                                ollama_manager: None,
                                 };
 
                                 if let Err(e) = run_daemon_turn(
@@ -1500,6 +1562,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                     force_compact: None,
                                     allow_commit_nudge: false,
                                     enforce_first_turn_execution_bias: false,
+                                ollama_manager: None,
                                 };
 
                                 if let Err(e) = run_daemon_turn(
@@ -1575,6 +1638,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                     force_compact: None,
                                     allow_commit_nudge: true,
                                     enforce_first_turn_execution_bias: false,
+                                ollama_manager: None,
                                 };
 
                                 if let Err(e) = run_daemon_turn(
@@ -1642,6 +1706,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                     force_compact: None,
                                     allow_commit_nudge: false,
                                     enforce_first_turn_execution_bias: false,
+                                ollama_manager: None,
                                 };
 
                                 if let Err(e) = run_daemon_turn(
@@ -1739,6 +1804,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 force_compact: None,
                                 allow_commit_nudge: false,
                                 enforce_first_turn_execution_bias: false,
+                                ollama_manager: None,
                             };
 
                             if let Err(e) = run_daemon_turn(
@@ -1817,6 +1883,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             force_compact: None,
                             allow_commit_nudge: true,
                             enforce_first_turn_execution_bias: true,
+                            ollama_manager: None,
                         };
 
                         if let Err(e) = run_daemon_turn(
@@ -2091,23 +2158,335 @@ async fn run_cleave_command(
     Ok(())
 }
 
+// ─── Ollama subcommand ─────────────────────────────────────────────────────
+
+async fn run_ollama_command(action: &OllamaAction) -> anyhow::Result<()> {
+    match action {
+        OllamaAction::Register => ollama_register().await,
+        OllamaAction::Unregister => ollama_unregister(),
+        OllamaAction::Status => ollama_status().await,
+    }
+}
+
+fn ollama_integrations_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".ollama")
+        .join("integrations")
+}
+
+fn ollama_manifest_path() -> PathBuf {
+    ollama_integrations_dir().join("omegon.json")
+}
+
+fn ollama_symlink_path() -> PathBuf {
+    ollama_integrations_dir().join("omegon")
+}
+
+async fn ollama_register() -> anyhow::Result<()> {
+    let binary = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("omegon"));
+    let binary_str = binary.display().to_string();
+
+    let integrations_dir = ollama_integrations_dir();
+    std::fs::create_dir_all(&integrations_dir)?;
+
+    // Write manifest
+    let manifest = serde_json::json!({
+        "name": "omegon",
+        "display_name": "Omegon Agent",
+        "description": "Terminal AI agent harness for systems engineering",
+        "binary": binary_str,
+        "args": ["--ollama-integration"],
+        "model_flag": "--ollama-model",
+        "version": env!("CARGO_PKG_VERSION")
+    });
+    let manifest_path = ollama_manifest_path();
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+    println!("✓ Wrote manifest: {}", manifest_path.display());
+
+    // Create symlink for PATH-based discovery fallback
+    let symlink_path = ollama_symlink_path();
+    if symlink_path.exists() || symlink_path.is_symlink() {
+        let _ = std::fs::remove_file(&symlink_path);
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&binary, &symlink_path)?;
+        println!("✓ Symlinked: {} → {}", symlink_path.display(), binary_str);
+    }
+
+    println!("\n`ollama launch omegon` is now available.");
+    Ok(())
+}
+
+fn ollama_unregister() -> anyhow::Result<()> {
+    let manifest_path = ollama_manifest_path();
+    let symlink_path = ollama_symlink_path();
+
+    let mut removed = false;
+    if manifest_path.exists() {
+        std::fs::remove_file(&manifest_path)?;
+        println!("✓ Removed manifest: {}", manifest_path.display());
+        removed = true;
+    }
+    if symlink_path.exists() || symlink_path.is_symlink() {
+        std::fs::remove_file(&symlink_path)?;
+        println!("✓ Removed symlink: {}", symlink_path.display());
+        removed = true;
+    }
+
+    if !removed {
+        println!("Nothing to remove — omegon was not registered.");
+    }
+    Ok(())
+}
+
+async fn ollama_status() -> anyhow::Result<()> {
+    let mgr = ollama::OllamaManager::new();
+
+    // Registration
+    let manifest_path = ollama_manifest_path();
+    if manifest_path.exists() {
+        let contents = std::fs::read_to_string(&manifest_path)?;
+        let manifest: serde_json::Value = serde_json::from_str(&contents)?;
+        let registered_binary = manifest["binary"].as_str().unwrap_or("unknown");
+        let binary_exists = Path::new(registered_binary).exists();
+        println!(
+            "Registration:  ✓ registered (binary: {}{})  ",
+            registered_binary,
+            if binary_exists { "" } else { " ⚠ binary not found" }
+        );
+    } else {
+        println!("Registration:  ✗ not registered (run `omegon ollama register`)");
+    }
+
+    // Reachability
+    if mgr.is_reachable().await {
+        println!("Reachability:  ✓ Ollama is running");
+
+        // Models
+        match mgr.list_models().await {
+            Ok(models) => {
+                println!("Models:        {} available", models.len());
+                for m in &models {
+                    let size_gb = m.size as f64 / 1_000_000_000.0;
+                    println!("               - {} ({:.1} GB)", m.name, size_gb);
+                }
+            }
+            Err(e) => println!("Models:        ✗ failed to list ({e})"),
+        }
+
+        // Running
+        match mgr.list_running().await {
+            Ok(running) if !running.is_empty() => {
+                println!("Loaded:        {} in VRAM", running.len());
+                for r in &running {
+                    let vram_gb = r.size_vram as f64 / 1_000_000_000.0;
+                    println!("               - {} ({:.1} GB VRAM)", r.name, vram_gb);
+                }
+            }
+            Ok(_) => println!("Loaded:        none (models will cold-start)"),
+            Err(e) => println!("Loaded:        ✗ failed to query ({e})"),
+        }
+    } else {
+        println!("Reachability:  ✗ Ollama is not running or not reachable");
+    }
+
+    // Hardware
+    let hw = ollama::OllamaManager::hardware_profile();
+    let total_gb = hw.total_memory_bytes as f64 / 1_073_741_824.0;
+    let vram_gb = hw.estimated_vram_bytes as f64 / 1_073_741_824.0;
+    println!(
+        "Hardware:      {:.0} GB total, {:.0} GB estimated VRAM, recommended max: {}",
+        total_gb, vram_gb, hw.recommended_max_params
+    );
+
+    Ok(())
+}
+
 async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
+    // ─── Lifecycle audit ────────────────────────────────────────────
     let cwd = std::fs::canonicalize(&cli.cwd)?;
     let repo_root = setup::find_project_root(&cwd);
     let findings = lifecycle::doctor::audit_repo(&repo_root);
 
+    println!("═══ Lifecycle Audit ═══");
     if findings.is_empty() {
         println!("✓ No suspicious lifecycle drift found.");
-        return Ok(());
+    } else {
+        println!("{} finding(s)\n", findings.len());
+        for f in findings {
+            println!("- {} [{}]", f.node_id, f.kind.as_str());
+            println!("  {}", f.title);
+            println!("  {}", f.detail);
+        }
     }
 
-    println!("Lifecycle doctor: {} finding(s)\n", findings.len());
-    for f in findings {
-        println!("- {} [{}]", f.node_id, f.kind.as_str());
-        println!("  {}", f.title);
-        println!("  {}", f.detail);
+    // ─── Ollama diagnostics ─────────────────────────────────────────
+    println!("\n═══ Ollama Diagnostics ═══");
+    let mgr = ollama::OllamaManager::new();
+
+    // Registration check
+    let manifest_path = ollama_manifest_path();
+    if manifest_path.exists() {
+        let binary_ok = std::fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v["binary"].as_str().map(|s| Path::new(s).exists()))
+            .unwrap_or(false);
+        println!(
+            "Registration:  {}",
+            if binary_ok {
+                "✓ registered, binary valid"
+            } else {
+                "⚠ registered but binary path invalid — re-run `omegon ollama register`"
+            }
+        );
+    } else {
+        println!("Registration:  ✗ not registered (run `omegon ollama register`)");
     }
+
+    // Reachability
+    if mgr.is_reachable().await {
+        println!("Server:        ✓ reachable");
+
+        match mgr.list_models().await {
+            Ok(models) => {
+                println!("Models:        {} available", models.len());
+                // Check for embedding model
+                let has_embed = models.iter().any(|m| m.name.contains("nomic-embed"));
+                if has_embed {
+                    println!("Embeddings:    ✓ nomic-embed-text present");
+                } else {
+                    println!("Embeddings:    ⚠ nomic-embed-text not found — run `ollama pull nomic-embed-text` for hybrid search");
+                }
+            }
+            Err(e) => println!("Models:        ✗ failed to list ({e})"),
+        }
+
+        match mgr.list_running().await {
+            Ok(running) if !running.is_empty() => {
+                println!("Loaded:        {} model(s) warm", running.len());
+            }
+            Ok(_) => {
+                println!("Loaded:        none — first inference will cold-start");
+            }
+            Err(_) => {}
+        }
+    } else {
+        println!("Server:        ✗ not reachable (is Ollama running?)");
+    }
+
+    // Hardware
+    let hw = ollama::OllamaManager::hardware_profile();
+    let vram_gb = hw.estimated_vram_bytes as f64 / 1_073_741_824.0;
+    println!(
+        "Hardware:      {:.0} GB VRAM, recommended max: {} params",
+        vram_gb, hw.recommended_max_params
+    );
+
+    // ─── Toolchain diagnostics ──────────────────────────────────────
+    println!("\n═══ Toolchain ═══");
+    // PKL (required for custom postures/agent configs)
+    match std::process::Command::new("pkl")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            println!("PKL:           ✓ {}", ver.trim());
+        }
+        _ => {
+            println!("PKL:           ✗ not installed (needed for custom .pkl configs)");
+            println!("               brew install pkl  or  https://pkl-lang.org");
+        }
+    }
+    // Git
+    match std::process::Command::new("git").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            println!("Git:           ✓ {}", ver.trim());
+        }
+        _ => println!("Git:           ✗ not found"),
+    }
+    // jj (Jujutsu — preferred VCS layer)
+    match std::process::Command::new("jj").arg("version").output() {
+        Ok(output) if output.status.success() => {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            println!("jj:            ✓ {}", ver.trim());
+            // Check if current project is jj-colocated
+            let cwd = std::fs::canonicalize(&cli.cwd).unwrap_or_default();
+            let project_root = setup::find_project_root(&cwd);
+            if project_root.join(".jj").exists() {
+                println!("               co-located repo detected");
+                // Show current change ID
+                if let Ok(out) = std::process::Command::new("jj")
+                    .args(["log", "--no-graph", "-r", "@", "-T", "change_id.short()"])
+                    .current_dir(&project_root)
+                    .output()
+                {
+                    if out.status.success() {
+                        let id = String::from_utf8_lossy(&out.stdout);
+                        println!("               working copy: {}", id.trim());
+                    }
+                }
+            }
+        }
+        _ => {
+            println!("jj:            - not installed (optional, recommended)");
+            println!("               https://martinvonz.github.io/jj/");
+        }
+    }
+
     Ok(())
+}
+
+fn parse_posture(s: &str) -> Result<String, String> {
+    // Accept any string — resolution happens later when we have cwd context.
+    // Built-in names and custom posture names are both valid here.
+    Ok(s.to_lowercase())
+}
+
+/// Resolve posture from CLI flags. Shorthand flags take priority over --posture.
+fn resolve_cli_posture(cli: &Cli) -> Option<String> {
+    if cli.explorator {
+        Some("explorator".to_string())
+    } else if cli.fabricator {
+        Some("fabricator".to_string())
+    } else if cli.architect {
+        Some("architect".to_string())
+    } else if cli.devastator {
+        Some("devastator".to_string())
+    } else {
+        cli.posture.clone()
+    }
+}
+
+/// Apply a posture name to settings, resolving custom postures from the filesystem.
+fn apply_posture_to_settings(
+    name: &str,
+    settings: &mut settings::Settings,
+    cwd: &std::path::Path,
+) {
+    match settings::resolve_posture_by_name(name, cwd) {
+        Ok(settings::ResolvedPosture::BuiltIn(preset)) => {
+            settings.set_posture(preset);
+            tracing::info!(posture = name, "posture set from CLI flag");
+        }
+        Ok(settings::ResolvedPosture::Custom(custom)) => {
+            custom.apply_to(settings);
+            tracing::info!(
+                posture = name,
+                base = custom.def.posture.base,
+                "custom posture loaded"
+            );
+        }
+        Err(e) => {
+            tracing::warn!("posture resolution failed: {e}");
+            eprintln!("warning: {e}");
+        }
+    }
 }
 
 fn cli_binary_name() -> Option<String> {
@@ -2152,8 +2531,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     // Load project profile → apply to settings (model, thinking, max_turns)
     let profile = settings::Profile::load(&cli.cwd);
     if let Ok(mut s) = shared_settings.lock() {
-        profile.apply_to(&mut s);
-        if cli_prefers_slim_mode(cli) {
+        profile.apply_to_with_posture(&mut s, &cli.cwd);
+        // CLI posture flag overrides profile default
+        if let Some(ref posture_name) = resolve_cli_posture(cli) {
+            apply_posture_to_settings(posture_name, &mut s, &cli.cwd);
+        }
+        if cli_prefers_slim_mode(cli) || std::env::var("OMEGON_CHILD_SLIM").is_ok() {
             s.set_slim_mode(true);
         }
         if let Ok(child_thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL") {
@@ -2196,6 +2579,13 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             // don't spam the log on every launch.
         }
         Err(e) => tracing::warn!(error = %e, "clipboard prune failed"),
+    }
+
+    // ─── First-run setup ─────────────────────────────────────────────────
+    // On first launch (no profile.json), sweep the system for existing tools
+    // and let the operator choose a starting posture before the TUI appears.
+    if first_run::should_run(&cli.cwd) {
+        first_run::run_interactive(&cli.cwd, &shared_settings);
     }
 
     // ─── Shared setup ───────────────────────────────────────────────────
@@ -3914,6 +4304,12 @@ fn build_interactive_loop_config(
         (s.model.clone(), s.max_turns)
     };
 
+    let ollama_manager = if providers::infer_provider_id(&model) == "ollama" {
+        Some(ollama::OllamaManager::new())
+    } else {
+        None
+    };
+
     r#loop::LoopConfig {
         max_turns,
         soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
@@ -3927,6 +4323,7 @@ fn build_interactive_loop_config(
         force_compact: Some(pending_compact.clone()),
         allow_commit_nudge: true,
         enforce_first_turn_execution_bias: false,
+        ollama_manager,
     }
 }
 
@@ -4343,9 +4740,12 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     let shared_settings = settings::shared(&cli.model);
     let profile = settings::Profile::load(&cli.cwd);
     if let Ok(mut s) = shared_settings.lock() {
-        profile.apply_to(&mut s);
+        profile.apply_to_with_posture(&mut s, &cli.cwd);
         s.set_model(&cli.model);
-        if cli_prefers_slim_mode(cli) {
+        if let Some(ref posture_name) = resolve_cli_posture(cli) {
+            apply_posture_to_settings(posture_name, &mut s, &cli.cwd);
+        }
+        if cli_prefers_slim_mode(cli) || std::env::var("OMEGON_CHILD_SLIM").is_ok() {
             s.set_slim_mode(true);
         }
         if cli.max_turns != 50 {
@@ -4404,6 +4804,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         force_compact: None,
         allow_commit_nudge: false,
         enforce_first_turn_execution_bias: true,
+        ollama_manager: None,
     };
 
     // ─── LLM provider (native Rust clients only) ─────────────────────
@@ -4546,6 +4947,12 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                         );
                     } else {
                         tracing::info!("── Turn {turn} complete ──");
+                    }
+                    // Emit explicit task-done marker so the parent can
+                    // track per-task progress without relying solely on
+                    // the turn-based heuristic.
+                    if turn > 0 {
+                        tracing::info!("TASK_DONE: {turn}");
                     }
                 }
                 AgentEvent::AgentEnd => {
@@ -5429,7 +5836,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-sonnet-4-7",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5467,7 +5874,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-sonnet-4-7",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5506,7 +5913,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-sonnet-4-7",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5546,7 +5953,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-sonnet-4-7",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5973,7 +6380,7 @@ mod tests {
             "--cwd",
             dir.path().to_str().unwrap(),
             "--model",
-            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-sonnet-4-7",
             "--prompt",
             "benchmark prompt",
             "--usage-json",
@@ -5993,7 +6400,7 @@ mod tests {
         }
 
         let s = shared_settings.lock().unwrap();
-        assert_eq!(s.model, "anthropic:claude-sonnet-4-6");
+        assert_eq!(s.model, "anthropic:claude-sonnet-4-7");
         assert_eq!(s.thinking, crate::settings::ThinkingLevel::High);
         assert_eq!(s.max_turns, 17);
     }
@@ -6001,13 +6408,13 @@ mod tests {
     #[test]
     fn benchmark_usage_summary_accumulates_run_totals() {
         let mut summary = BenchmarkUsageSummary {
-            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
+            requested_model: Some("anthropic:claude-sonnet-4-7".into()),
             requested_provider: Some("anthropic".into()),
             resolved_provider: Some("anthropic".into()),
             ..BenchmarkUsageSummary::default()
         };
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic:claude-sonnet-4-7".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             321,
@@ -6032,7 +6439,7 @@ mod tests {
             None,
         );
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic:claude-sonnet-4-7".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ToolContinuation,
             111,
@@ -6060,7 +6467,7 @@ mod tests {
         assert_eq!(summary.turn_count, 2);
         assert_eq!(
             summary.requested_model.as_deref(),
-            Some("anthropic:claude-sonnet-4-6")
+            Some("anthropic:claude-sonnet-4-7")
         );
         assert_eq!(summary.requested_provider.as_deref(), Some("anthropic"));
         assert_eq!(summary.resolved_provider.as_deref(), Some("anthropic"));
@@ -6089,7 +6496,7 @@ mod tests {
     fn benchmark_usage_summary_ignores_empty_context_snapshots() {
         let mut summary = BenchmarkUsageSummary::default();
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic:claude-sonnet-4-7".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             100,
@@ -6114,7 +6521,7 @@ mod tests {
             None,
         );
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic:claude-sonnet-4-7".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ToolContinuation,
             200,
@@ -6152,7 +6559,7 @@ mod tests {
     fn benchmark_usage_summary_keeps_latest_context_snapshot() {
         let mut summary = BenchmarkUsageSummary::default();
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic:claude-sonnet-4-7".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             100,
@@ -6177,7 +6584,7 @@ mod tests {
             None,
         );
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-6".into()),
+            Some("anthropic:claude-sonnet-4-7".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ProgressNudge,
             200,
@@ -6222,10 +6629,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bench").join("usage.json");
         let summary = BenchmarkUsageSummary {
-            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
+            requested_model: Some("anthropic:claude-sonnet-4-7".into()),
             requested_provider: Some("anthropic".into()),
             resolved_provider: Some("anthropic".into()),
-            model: Some("anthropic:claude-sonnet-4-6".into()),
+            model: Some("anthropic:claude-sonnet-4-7".into()),
             provider: Some("anthropic".into()),
             dominant_phases: std::collections::BTreeMap::new(),
             drift_kinds: std::collections::BTreeMap::new(),
@@ -6259,7 +6666,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["status"], "completed");
         assert_eq!(written["last_completed_turn"], 3);
-        assert_eq!(written["requested_model"], "anthropic:claude-sonnet-4-6");
+        assert_eq!(written["requested_model"], "anthropic:claude-sonnet-4-7");
         assert_eq!(written["requested_provider"], "anthropic");
         assert_eq!(written["resolved_provider"], "anthropic");
         assert_eq!(written["turn_count"], 3);
@@ -6292,10 +6699,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bench").join("usage.json");
         let summary = BenchmarkUsageSummary {
-            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
+            requested_model: Some("anthropic:claude-sonnet-4-7".into()),
             requested_provider: Some("anthropic".into()),
             resolved_provider: Some("anthropic".into()),
-            model: Some("anthropic:claude-sonnet-4-6".into()),
+            model: Some("anthropic:claude-sonnet-4-7".into()),
             provider: Some("anthropic".into()),
             dominant_phases: std::collections::BTreeMap::new(),
             drift_kinds: std::collections::BTreeMap::new(),

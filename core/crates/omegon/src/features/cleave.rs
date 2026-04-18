@@ -1341,6 +1341,15 @@ fn build_family_vital_signs(progress: &CleaveProgress) -> omegon_traits::FamilyV
             last_turn: c.last_turn,
             tokens_in: c.tokens_in,
             tokens_out: c.tokens_out,
+            tasks: c
+                .tasks
+                .iter()
+                .map(|t| omegon_traits::VitalSignsTaskItem {
+                    description: t.description.clone(),
+                    done: t.done,
+                })
+                .collect(),
+            tasks_done: c.tasks_done,
         })
         .collect();
 
@@ -1578,6 +1587,8 @@ mod tests {
                 last_turn: Some(1),
                 tokens_in: 0,
                 tokens_out: 0,
+                tasks: Vec::new(),
+                tasks_done: 0,
             }],
         };
         feature.emit_decomposition_event(AgentEvent::FamilyVitalSignsUpdated {

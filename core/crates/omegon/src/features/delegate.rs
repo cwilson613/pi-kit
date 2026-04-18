@@ -597,7 +597,9 @@ If blocked, say the blocker plainly.\n",
         let (mut child, _pid) =
             spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?;
 
-        // Stream stderr for live activity tracking
+        // Stream stderr for live activity tracking.
+        // Timeouts: delegate workers are short-lived (4–6 turns), so use
+        // tighter bounds than cleave's 900s/180s defaults.
         use tokio::io::AsyncBufReadExt;
         let stderr = child.stderr.take().unwrap();
         let mut reader = tokio::io::BufReader::new(stderr).lines();
@@ -605,44 +607,75 @@ If blocked, say the blocker plainly.\n",
         let store = self.result_store.clone();
         let tid = task_id.to_string();
 
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    // Keep last 30 lines for error reporting
-                    if stderr_tail.len() >= 30 {
-                        stderr_tail.remove(0);
-                    }
-                    stderr_tail.push(line.clone());
+        let wall_timeout = tokio::time::Duration::from_secs(300); // 5 min
+        let idle_timeout = tokio::time::Duration::from_secs(120); // 2 min
+        let mut last_activity = std::time::Instant::now();
+        let mut last_activity_event = std::time::Instant::now()
+            - std::time::Duration::from_secs(2); // ensure first event fires
 
-                    // Parse activity events and update live state
-                    if let Some(event) =
-                        crate::cleave::progress::parse_child_activity(&tid, &line)
-                    {
-                        match &event {
-                            crate::cleave::progress::ProgressEvent::ChildActivity {
-                                turn,
-                                tool,
-                                ..
-                            } => {
-                                store.update_task_live_state(
-                                    &tid,
-                                    tool.clone(),
-                                    *turn,
-                                );
+        let io_result: Result<(), anyhow::Error> = tokio::select! {
+            _ = tokio::time::sleep(wall_timeout) => {
+                tracing::warn!(task_id, "delegate wall-clock timeout");
+                Err(anyhow::anyhow!("Delegate wall-clock timeout after 300s"))
+            }
+            result = async {
+                loop {
+                    match tokio::time::timeout(idle_timeout, reader.next_line()).await {
+                        Ok(Ok(Some(line))) => {
+                            last_activity = std::time::Instant::now();
+                            // Keep last 30 lines for error reporting
+                            if stderr_tail.len() >= 30 {
+                                stderr_tail.remove(0);
                             }
-                            crate::cleave::progress::ProgressEvent::ChildTaskDone {
-                                task_index,
-                                ..
-                            } => {
-                                store.mark_task_done(&tid, *task_index);
+                            stderr_tail.push(line.clone());
+
+                            // Throttle: parse at most once per second
+                            if last_activity.duration_since(last_activity_event).as_secs() >= 1 {
+                                if let Some(event) =
+                                    crate::cleave::progress::parse_child_activity(&tid, &line)
+                                {
+                                    last_activity_event = std::time::Instant::now();
+                                    match &event {
+                                        crate::cleave::progress::ProgressEvent::ChildActivity {
+                                            turn,
+                                            tool,
+                                            ..
+                                        } => {
+                                            store.update_task_live_state(
+                                                &tid,
+                                                tool.clone(),
+                                                *turn,
+                                            );
+                                        }
+                                        crate::cleave::progress::ProgressEvent::ChildTaskDone {
+                                            task_index,
+                                            ..
+                                        } => {
+                                            store.mark_task_done(&tid, *task_index);
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             }
-                            _ => {}
+                        }
+                        Ok(Ok(None)) => break, // EOF
+                        Ok(Err(e)) => {
+                            tracing::warn!(task_id, "delegate stderr read error: {e}");
+                            break;
+                        }
+                        Err(_) => {
+                            tracing::warn!(task_id, idle_secs = last_activity.elapsed().as_secs(), "delegate idle timeout");
+                            return Err(anyhow::anyhow!("Delegate idle timeout — no output for 120s"));
                         }
                     }
                 }
-                Ok(None) => break, // EOF
-                Err(_) => break,
-            }
+                Ok(())
+            } => { result }
+        };
+
+        // Terminate child if still running (timeout path)
+        if io_result.is_err() {
+            let _ = child.kill().await;
         }
 
         let status = child
@@ -655,6 +688,14 @@ If blocked, say the blocker plainly.\n",
         if let Some(mut stdout) = child.stdout.take() {
             use tokio::io::AsyncReadExt;
             let _ = stdout.read_to_string(&mut stdout_buf).await;
+        }
+
+        // Timeout errors take priority over exit status
+        if let Err(timeout_err) = io_result {
+            let stderr_text = stderr_tail.join("\n");
+            return Err(anyhow::anyhow!(
+                "{timeout_err}\n\n--- last stderr ---\n{stderr_text}"
+            ));
         }
 
         if status.success() {
@@ -931,10 +972,19 @@ impl DelegateFeature {
                         .started_at
                         .and_then(|ts| ts.elapsed().ok())
                         .map(|d| d.as_secs_f64()),
-                    last_tool: child.result_summary.clone(),
-                    last_turn: None,
+                    last_tool: child.last_tool.clone().or_else(|| child.result_summary.clone()),
+                    last_turn: child.last_turn,
                     tokens_in: 0,
                     tokens_out: 0,
+                    tasks: child
+                        .tasks
+                        .iter()
+                        .map(|t| omegon_traits::VitalSignsTaskItem {
+                            description: t.description.clone(),
+                            done: t.done,
+                        })
+                        .collect(),
+                    tasks_done: child.tasks_done,
                 })
                 .collect(),
         };

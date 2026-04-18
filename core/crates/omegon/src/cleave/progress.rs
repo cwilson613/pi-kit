@@ -283,21 +283,32 @@ pub fn count_task_items(content: &str) -> usize {
 
 /// Extract task checklist items with descriptions from a task file.
 ///
-/// Same stop-section logic as `count_task_items`, but returns the
-/// full item list with descriptions and done flags.
+/// Recognizes multiple formats:
+/// - `- [ ] description` / `- [x] description` — markdown checklists
+/// - `1. description` / `2. description` — numbered lists
+/// - `- description` — plain bullet points (only when no checklists found)
+///
+/// Stops at structural sections (`## Result`, `## Contract`, `## Constraints`,
+/// `## Output`, `## Finalization`) to avoid extracting non-task bullets.
 pub fn extract_task_items(content: &str) -> Vec<ChildTaskItem> {
-    let mut items = Vec::new();
+    let mut checklist_items = Vec::new();
+    let mut numbered_items = Vec::new();
+    let mut bullet_items = Vec::new();
+
     for line in content.lines() {
         let trimmed = line.trim();
-        // Stop at structural template sections
+        // Stop at structural template / constraint sections
         if trimmed.starts_with("## Result")
             || trimmed.starts_with("## Contract")
             || trimmed.starts_with("## Finalization")
+            || trimmed.starts_with("## Constraints")
+            || trimmed.starts_with("## Output")
         {
             break;
         }
+        // Markdown checklists (highest priority)
         if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
-            items.push(ChildTaskItem {
+            checklist_items.push(ChildTaskItem {
                 description: rest.to_string(),
                 done: false,
             });
@@ -305,13 +316,48 @@ pub fn extract_task_items(content: &str) -> Vec<ChildTaskItem> {
             .strip_prefix("- [x] ")
             .or_else(|| trimmed.strip_prefix("- [X] "))
         {
-            items.push(ChildTaskItem {
+            checklist_items.push(ChildTaskItem {
                 description: rest.to_string(),
                 done: true,
             });
         }
+        // Numbered lists: "1. description", "2. description", etc.
+        else if let Some(rest) = strip_numbered_prefix(trimmed) {
+            numbered_items.push(ChildTaskItem {
+                description: rest.to_string(),
+                done: false,
+            });
+        }
+        // Plain bullets: "- description" (fallback only)
+        else if let Some(rest) = trimmed.strip_prefix("- ") {
+            // Skip short items or items that look like metadata/constraints
+            if rest.len() > 3 && !rest.starts_with("Stay ") && !rest.starts_with("Do not ") {
+                bullet_items.push(ChildTaskItem {
+                    description: rest.to_string(),
+                    done: false,
+                });
+            }
+        }
     }
-    items
+
+    // Priority: checklists > numbered > plain bullets
+    if !checklist_items.is_empty() {
+        checklist_items
+    } else if !numbered_items.is_empty() {
+        numbered_items
+    } else {
+        bullet_items
+    }
+}
+
+/// Strip a numbered list prefix like "1. ", "2. ", "10. " and return the rest.
+fn strip_numbered_prefix(s: &str) -> Option<&str> {
+    let digit_end = s.find(|c: char| !c.is_ascii_digit())?;
+    if digit_end == 0 {
+        return None;
+    }
+    let rest = &s[digit_end..];
+    rest.strip_prefix(". ")
 }
 
 /// Strip ANSI escape sequences from a string.
@@ -497,6 +543,40 @@ mod tests {
         let items = extract_task_items(content);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].description, "First");
+    }
+
+    #[test]
+    fn test_extract_numbered_list() {
+        let content = "## Task\n1. Add the dependency\n2. Build the module\n3. Write tests\n\n## Constraints\n- Do not broaden scope\n";
+        let items = extract_task_items(content);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].description, "Add the dependency");
+        assert_eq!(items[2].description, "Write tests");
+        assert!(!items[0].done);
+    }
+
+    #[test]
+    fn test_extract_plain_bullets_fallback() {
+        let content = "## Task\n- Add the dependency\n- Build the module\n\n## Constraints\n- Stay within scope\n";
+        let items = extract_task_items(content);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].description, "Add the dependency");
+    }
+
+    #[test]
+    fn test_extract_checklist_takes_priority() {
+        // When both checklists and numbered lists exist, checklists win
+        let content = "1. First step\n- [ ] Real task\n- [ ] Another task\n";
+        let items = extract_task_items(content);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].description, "Real task");
+    }
+
+    #[test]
+    fn test_extract_stops_at_constraints() {
+        let content = "- [ ] Task one\n## Constraints\n- [ ] Should not appear\n";
+        let items = extract_task_items(content);
+        assert_eq!(items.len(), 1);
     }
 
     #[test]

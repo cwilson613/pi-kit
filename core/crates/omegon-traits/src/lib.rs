@@ -1718,6 +1718,19 @@ pub struct ChildVitalSigns {
     /// Cumulative output tokens produced by this child.
     #[serde(default)]
     pub tokens_out: u64,
+    /// Task descriptions extracted from the child's prompt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<VitalSignsTaskItem>,
+    /// Number of tasks marked done.
+    #[serde(default)]
+    pub tasks_done: usize,
+}
+
+/// A task item for the vital signs wire format.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VitalSignsTaskItem {
+    pub description: String,
+    pub done: bool,
 }
 
 /// Multi-turn streak counts from the agent loop's controller.

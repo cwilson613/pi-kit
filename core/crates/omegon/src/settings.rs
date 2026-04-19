@@ -284,13 +284,20 @@ pub struct Settings {
     /// Active model (provider:model-id format).
     pub model: String,
 
-    /// Slim runtime mode — reduce prompt and tool surface for quick interactive work.
-    #[serde(default)]
-    pub slim_mode: bool,
-
     /// Behavioral posture for the current session/runtime.
     #[serde(default)]
     pub posture: BehavioralPosture,
+
+    /// Tools disabled by the active custom posture. Applied by the EventBus
+    /// alongside slim-mode tool filtering. Empty for built-in postures.
+    #[serde(default, skip)]
+    pub posture_disabled_tools: Vec<String>,
+
+    /// Tools enabled by the active custom posture (whitelist mode).
+    /// When non-empty, only these tools are available — everything else is disabled.
+    /// Empty means "no whitelist, use disabled list instead."
+    #[serde(default, skip)]
+    pub posture_enabled_tools: Vec<String>,
 
     /// Thinking level: off, minimal, low, medium, high.
     pub thinking: ThinkingLevel,
@@ -313,10 +320,6 @@ pub struct Settings {
     /// Set by `/context <class>` — does NOT affect the actual model window.
     #[serde(default)]
     pub requested_context_class: Option<ContextClass>,
-
-    /// Extended context mode — legacy Anthropic 200k/1M toggle.
-    /// Deprecated: derived from context_class. Kept for backward compat.
-    pub context_mode: ContextMode,
 
     /// Tool display detail level.
     pub tool_detail: ToolDetail,
@@ -473,12 +476,6 @@ impl ContextClass {
         self.ordinal() as i8 - other.ordinal() as i8
     }
 
-    /// Derive the legacy ContextMode from this class.
-    /// All classes map to Standard now — Extended was a beta flag concept.
-    pub fn context_mode(self) -> ContextMode {
-        ContextMode::Standard
-    }
-
     /// All classes in ascending order.
     pub fn all() -> &'static [Self] {
         &[Self::Squad, Self::Maniple, Self::Clan, Self::Legion]
@@ -495,42 +492,6 @@ impl ContextClass {
     }
 }
 
-// ─── Context Mode (legacy, derived from ContextClass) ───────────────────────
-
-/// Context window mode for providers that support multiple sizes.
-/// **Deprecated**: use `ContextClass` instead. Kept for Anthropic beta header derivation
-/// and backward compatibility with existing profile.json files.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContextMode {
-    /// Standard context window — model-native (200K–1M depending on model).
-    /// Sonnet/Opus 4.6 support 1M natively, no beta flag needed.
-    #[default]
-    Standard,
-    /// Legacy: was "Extended 1M via beta flag". The beta flag is now
-    /// deprecated — it only triggers billing gates. Kept for config compat.
-    Extended,
-}
-
-impl ContextMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            // Both modes use the model's native context window now
-            Self::Standard | Self::Extended => "native",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "standard" | "200k" | "default" | "native" => Some(Self::Standard),
-            "extended" | "1m" | "1M" | "million" => Some(Self::Standard), // silently normalize
-            _ => None,
-        }
-    }
-
-    pub fn icon(&self) -> &'static str {
-        "◆" // always native full context
-    }
-}
 
 fn default_update_channel() -> String {
     "stable".to_string()
@@ -580,7 +541,6 @@ impl Default for Settings {
         let context_window = 200_000;
         Self {
             model: "anthropic:claude-sonnet-4-6".into(),
-            slim_mode: false,
             posture: BehavioralPosture::fixed(PosturePreset::Architect),
             thinking: ThinkingLevel::Medium,
             max_turns: 50,
@@ -588,13 +548,14 @@ impl Default for Settings {
             context_window,
             context_class: ContextClass::from_tokens(context_window),
             requested_context_class: None,
-            context_mode: ContextMode::Standard,
             tool_detail: ToolDetail::Detailed,
             provider_order: Vec::new(),
             update_channel: default_update_channel(),
             provider_connected: true, // optimistic default — set false when NullBridge
             mouse: true,
             clipboard_retention_hours: default_clipboard_retention_hours(),
+            posture_disabled_tools: Vec::new(),
+            posture_enabled_tools: Vec::new(),
         }
     }
 }
@@ -607,16 +568,8 @@ impl Settings {
             model: model.to_string(),
             context_window,
             context_class,
-            context_mode: context_class.context_mode(),
             ..Default::default()
         }
-    }
-
-    /// Recalculate context_window and context_class based on current model.
-    /// Context window is always the model's native capability — no beta flags.
-    pub fn apply_context_mode(&mut self) {
-        self.context_window = infer_context_window(&self.model);
-        self.context_class = ContextClass::from_tokens(self.context_window);
     }
 
     /// Update model and recalculate derived fields.
@@ -624,7 +577,6 @@ impl Settings {
         self.model = model.to_string();
         self.context_window = infer_context_window(model);
         self.context_class = ContextClass::from_tokens(self.context_window);
-        self.context_mode = self.context_class.context_mode();
     }
 
     /// The effective working-set policy class for this turn.
@@ -641,11 +593,7 @@ impl Settings {
 
     /// Resource envelope currently implied by posture.
     pub fn resource_envelope(&self) -> ResourceEnvelope {
-        if self.slim_mode {
-            PosturePreset::Explorator.default_resource_envelope()
-        } else {
-            self.posture.effective.default_resource_envelope()
-        }
+        self.posture.effective.default_resource_envelope()
     }
 
     /// Composed operating profile for the current runtime state.
@@ -661,28 +609,15 @@ impl Settings {
 
     pub fn set_posture(&mut self, preset: PosturePreset) {
         self.posture = BehavioralPosture::fixed(preset);
-        self.slim_mode = matches!(preset, PosturePreset::Explorator);
 
         let envelope = self.resource_envelope();
         self.thinking = envelope.thinking;
         self.requested_context_class = Some(envelope.requested_context_class);
     }
 
-    pub fn set_slim_mode(&mut self, slim: bool) {
-        self.slim_mode = slim;
-        if slim {
-            self.posture = BehavioralPosture::fixed(PosturePreset::Explorator);
-            let envelope = self.resource_envelope();
-            self.thinking = envelope.thinking;
-            if self.requested_context_class.is_none() {
-                self.requested_context_class = Some(envelope.requested_context_class);
-            }
-        } else {
-            self.posture = BehavioralPosture::fixed(PosturePreset::Architect);
-            let envelope = self.resource_envelope();
-            self.thinking = envelope.thinking;
-            self.requested_context_class = Some(envelope.requested_context_class);
-        }
+    /// Whether the runtime is in slim mode (Explorator posture).
+    pub fn is_slim(&self) -> bool {
+        matches!(self.posture.effective, PosturePreset::Explorator)
     }
 
     /// Derive a SelectorPolicy for this turn's context assembly.
@@ -693,7 +628,7 @@ impl Settings {
             .effective_context_cap_tokens
             .map(|cap| self.context_window.min(cap))
             .unwrap_or(self.context_window);
-        let requested_class = if self.slim_mode {
+        let requested_class = if self.is_slim() {
             envelope.requested_context_class
         } else {
             self.requested_context_class
@@ -979,7 +914,7 @@ pub fn shared(model: &str) -> SharedSettings {
 
 /// Profile: settings that persist with the project in .omegon/profile.json.
 /// Read on startup, written on change. Travels with git.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -993,17 +928,6 @@ pub struct Profile {
     /// Provider preference order. First = most preferred.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_order: Vec<String>,
-    /// Providers to skip unless no alternative exists.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub avoid_providers: Vec<String>,
-    /// Pinned context floor — minimum context class the session should maintain.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_floor_pin: Option<String>,
-    /// Durable downgrade overrides — accepted transitions that won't prompt again.
-    /// Format: "Legion→Squad" (from_class→to_class).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub downgrade_overrides: Vec<String>,
-
     // ── Embedding service (hybrid search) ──
     /// Embedding service base URL (Ollama `/api/embed` endpoint).
     /// Overrides `OMEGON_EMBED_URL` env var. Default: `http://localhost:11434`.
@@ -1013,6 +937,12 @@ pub struct Profile {
     /// Overrides `OMEGON_EMBED_MODEL` env var.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embed_model: Option<String>,
+
+    // ── Default posture ──
+    /// Default posture name. Can be a built-in (explorator/fabricator/architect/devastator)
+    /// or a custom posture defined in `.omegon/postures/<name>.pkl`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_posture: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1043,17 +973,7 @@ impl Profile {
             return profile;
         }
 
-        Self {
-            last_used_model: None,
-            thinking_level: None,
-            max_turns: None,
-            provider_order: Vec::new(),
-            avoid_providers: Vec::new(),
-            context_floor_pin: None,
-            downgrade_overrides: Vec::new(),
-            embed_url: None,
-            embed_model: None,
-        }
+        Self::default()
     }
 
     /// Save to the project-level profile at the repository root.
@@ -1097,6 +1017,37 @@ impl Profile {
         }
     }
 
+    /// Apply profile to settings with posture resolution (needs cwd for custom postures).
+    pub fn apply_to_with_posture(
+        &self,
+        settings: &mut Settings,
+        cwd: &std::path::Path,
+    ) {
+        // Apply default posture first (before other overrides)
+        if let Some(ref posture_name) = self.default_posture {
+            match resolve_posture_by_name(posture_name, cwd) {
+                Ok(ResolvedPosture::BuiltIn(preset)) => {
+                    settings.set_posture(preset);
+                    tracing::info!(posture = posture_name, "default posture from profile");
+                }
+                Ok(ResolvedPosture::Custom(custom)) => {
+                    custom.apply_to(settings);
+                    tracing::info!(
+                        posture = posture_name,
+                        base = custom.def.posture.base,
+                        "custom posture from profile"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(posture = posture_name, "failed to resolve default posture: {e}");
+                }
+            }
+        }
+
+        // Then apply remaining profile fields (may override posture-set values)
+        self.apply_to(settings);
+    }
+
     /// Capture current settings into the profile (called on change).
     pub fn capture_from(&mut self, settings: &Settings) {
         self.last_used_model = Some(ProfileModel {
@@ -1110,31 +1061,6 @@ impl Profile {
         }
     }
 
-    /// Check if a downgrade transition has been accepted durably.
-    pub fn is_downgrade_accepted(&self, from: ContextClass, to: ContextClass) -> bool {
-        let key = format!("{}→{}", from.short(), to.short());
-        self.downgrade_overrides.contains(&key)
-    }
-
-    /// Accept a downgrade transition durably.
-    pub fn accept_downgrade(&mut self, from: ContextClass, to: ContextClass) {
-        let key = format!("{}→{}", from.short(), to.short());
-        if !self.downgrade_overrides.contains(&key) {
-            self.downgrade_overrides.push(key);
-        }
-    }
-
-    /// Get the pinned context floor, if set.
-    pub fn pinned_floor(&self) -> Option<ContextClass> {
-        self.context_floor_pin
-            .as_deref()
-            .and_then(ContextClass::parse)
-    }
-
-    /// Pin the context floor.
-    pub fn pin_floor(&mut self, class: ContextClass) {
-        self.context_floor_pin = Some(class.short().to_string());
-    }
 }
 
 fn project_profile_path(cwd: &std::path::Path) -> std::path::PathBuf {
@@ -1147,6 +1073,244 @@ fn global_profile_path() -> Option<std::path::PathBuf> {
     dirs::home_dir()
         .map(|d| d.join(".omegon/profile.json"))
         .or_else(|| dirs::config_dir().map(|d| d.join("omegon/profile.json")))
+}
+
+// ─── Custom posture definitions ─────────────────────────────────────────────
+
+/// A custom posture definition loaded from a `.pkl` file.
+///
+/// Example `~/.omegon/postures/reviewer.pkl`:
+/// ```pkl
+/// posture {
+///   name = "reviewer"
+///   description = "Code review — read everything, suggest, don't edit"
+///   base = "architect"
+///   thinking = "high"
+///   context_class = "clan"
+///   slim = false
+/// }
+///
+/// delegation {
+///   prefer_local = true
+///   default_worker = "scout"
+/// }
+///
+/// tools {
+///   disabled = new Listing<String> { "edit"; "write"; "change" }
+/// }
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostureFile {
+    pub posture: PostureDef,
+    pub delegation: Option<DelegationDef>,
+    pub tools: Option<ToolsDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostureDef {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Base built-in posture to inherit from (explorator/fabricator/architect/devastator).
+    #[serde(default = "default_base")]
+    pub base: String,
+    /// Thinking level override (off/minimal/low/medium/high).
+    pub thinking: Option<String>,
+    /// Context class override (squad/maniple/clan/legion).
+    pub context_class: Option<String>,
+    /// Whether to enable slim mode.
+    pub slim: Option<bool>,
+    /// Max turns override.
+    pub max_turns: Option<u32>,
+}
+
+fn default_base() -> String {
+    "architect".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegationDef {
+    /// Prefer local models for delegation.
+    #[serde(default)]
+    pub prefer_local: bool,
+    /// Default worker profile (scout/patch/verify).
+    pub default_worker: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolsDef {
+    /// Tools to disable in this posture.
+    #[serde(default)]
+    pub disabled: Vec<String>,
+    /// Tools to enable (overrides disabled list).
+    #[serde(default)]
+    pub enabled: Vec<String>,
+}
+
+/// Resolved custom posture ready to apply to settings.
+#[derive(Debug, Clone)]
+pub struct ResolvedCustomPosture {
+    pub def: PostureFile,
+    pub base_preset: PosturePreset,
+}
+
+impl ResolvedCustomPosture {
+    /// Apply this custom posture to settings.
+    pub fn apply_to(&self, settings: &mut Settings) {
+        // Start from base preset
+        settings.set_posture(self.base_preset);
+
+        // Override with custom values
+        if let Some(ref t) = self.def.posture.thinking {
+            if let Some(level) = ThinkingLevel::parse(t) {
+                settings.thinking = level;
+            }
+        }
+        if let Some(ref cc) = self.def.posture.context_class {
+            if let Some(class) = ContextClass::parse(cc) {
+                settings.requested_context_class = Some(class);
+            }
+        }
+        if let Some(true) = self.def.posture.slim {
+            settings.set_posture(PosturePreset::Explorator);
+        }
+        if let Some(turns) = self.def.posture.max_turns {
+            settings.max_turns = turns;
+        }
+        // Apply tool overrides from custom posture
+        if let Some(ref tools) = self.def.tools {
+            settings.posture_disabled_tools = tools.disabled.clone();
+            settings.posture_enabled_tools = tools.enabled.clone();
+        }
+    }
+}
+
+/// Resolve a posture name to either a built-in preset or a custom posture file.
+/// Resolution order: built-in → project `.omegon/postures/` → user `~/.omegon/postures/`.
+pub fn resolve_posture_by_name(
+    name: &str,
+    cwd: &std::path::Path,
+) -> Result<ResolvedPosture, String> {
+    // Built-in presets
+    match name.to_lowercase().as_str() {
+        "explorator" => return Ok(ResolvedPosture::BuiltIn(PosturePreset::Explorator)),
+        "fabricator" => return Ok(ResolvedPosture::BuiltIn(PosturePreset::Fabricator)),
+        "architect" => return Ok(ResolvedPosture::BuiltIn(PosturePreset::Architect)),
+        "devastator" => return Ok(ResolvedPosture::BuiltIn(PosturePreset::Devastator)),
+        _ => {}
+    }
+
+    // Project-level custom postures
+    let project_root = crate::setup::find_project_root(cwd);
+    let project_posture = project_root
+        .join(".omegon/postures")
+        .join(format!("{name}.pkl"));
+    if project_posture.exists() {
+        return load_custom_posture(&project_posture);
+    }
+
+    // User-level custom postures
+    if let Some(home) = dirs::home_dir() {
+        let user_posture = home.join(format!(".omegon/postures/{name}.pkl"));
+        if user_posture.exists() {
+            return load_custom_posture(&user_posture);
+        }
+    }
+
+    Err(format!(
+        "unknown posture '{name}': not a built-in (explorator/fabricator/architect/devastator) \
+         and no custom posture found at .omegon/postures/{name}.pkl or ~/.omegon/postures/{name}.pkl"
+    ))
+}
+
+/// The result of posture resolution.
+#[derive(Debug, Clone)]
+pub enum ResolvedPosture {
+    BuiltIn(PosturePreset),
+    Custom(ResolvedCustomPosture),
+}
+
+fn load_custom_posture(path: &std::path::Path) -> Result<ResolvedPosture, String> {
+    // Check if pkl binary is available before attempting to parse.
+    // rpkl shells out to the pkl binary; if it's not installed, the error
+    // is cryptic ("No such file or directory"). Fail clearly instead.
+    if std::process::Command::new("pkl")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        return Err(format!(
+            "custom posture {} requires the PKL CLI (https://pkl-lang.org/main/current/pkl-cli/index.html). \
+             Install it: brew install pkl (macOS) or download from pkl-lang.org",
+            path.display()
+        ));
+    }
+
+    let posture_file: PostureFile = rpkl::from_config(path)
+        .map_err(|e| format!("failed to load posture {}: {e}", path.display()))?;
+
+    let base_preset = match posture_file.posture.base.to_lowercase().as_str() {
+        "explorator" => PosturePreset::Explorator,
+        "fabricator" => PosturePreset::Fabricator,
+        "architect" => PosturePreset::Architect,
+        "devastator" => PosturePreset::Devastator,
+        other => {
+            return Err(format!(
+                "invalid base posture '{other}' in {}: must be explorator/fabricator/architect/devastator",
+                path.display()
+            ))
+        }
+    };
+
+    Ok(ResolvedPosture::Custom(ResolvedCustomPosture {
+        def: posture_file,
+        base_preset,
+    }))
+}
+
+/// List all available postures (built-in + custom from project and user directories).
+pub fn list_available_postures(cwd: &std::path::Path) -> Vec<(String, String, bool)> {
+    let mut postures: Vec<(String, String, bool)> = vec![
+        ("explorator".into(), "Cheap-first reconnaissance, lean execution".into(), true),
+        ("fabricator".into(), "Balanced implementation".into(), true),
+        ("architect".into(), "Systems-engineering orchestrator (default)".into(), true),
+        ("devastator".into(), "Maximum-force deep reasoning".into(), true),
+    ];
+
+    // Scan custom posture directories
+    for dir in custom_posture_dirs(cwd) {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "pkl") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        // Skip if same name as built-in
+                        if !postures.iter().any(|(n, _, _)| n == stem) {
+                            let desc = rpkl::from_config::<PostureFile>(&path)
+                                .ok()
+                                .map(|f| f.posture.description)
+                                .unwrap_or_default();
+                            postures.push((stem.to_string(), desc, false));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    postures
+}
+
+fn custom_posture_dirs(cwd: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    let project_root = crate::setup::find_project_root(cwd);
+    dirs.push(project_root.join(".omegon/postures"));
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".omegon/postures"));
+    }
+    dirs
 }
 
 #[cfg(test)]
@@ -1283,7 +1447,7 @@ mod tests {
             s.posture,
             BehavioralPosture::fixed(PosturePreset::Fabricator)
         );
-        assert!(!s.slim_mode);
+        assert!(!s.is_slim());
         assert_eq!(s.thinking, ThinkingLevel::Low);
         assert_eq!(s.requested_context_class, Some(ContextClass::Maniple));
 
@@ -1299,8 +1463,8 @@ mod tests {
     #[test]
     fn slim_mode_reduces_defaults() {
         let mut s = Settings::new("anthropic:claude-sonnet-4-6");
-        s.set_slim_mode(true);
-        assert!(s.slim_mode);
+        s.set_posture(PosturePreset::Explorator);
+        assert!(s.is_slim());
         assert_eq!(s.thinking, ThinkingLevel::Minimal);
         assert_eq!(s.requested_context_class, Some(ContextClass::Squad));
         let policy = s.selector_policy();
@@ -1320,8 +1484,8 @@ mod tests {
 
     #[test]
     fn model_short_extracts_name() {
-        let s = Settings::new("anthropic:claude-opus-4-6");
-        assert_eq!(s.model_short(), "claude-opus-4-6");
+        let s = Settings::new("anthropic:claude-opus-4-7");
+        assert_eq!(s.model_short(), "claude-opus-4-7");
         assert_eq!(s.provider(), "anthropic");
     }
 
@@ -1342,8 +1506,8 @@ mod tests {
     fn humanize_model_id_strips_provider_and_latest() {
         // Provider prefix stripped
         assert_eq!(
-            humanize_model_id("anthropic:claude-opus-4-6"),
-            "claude-opus-4-6"
+            humanize_model_id("anthropic:claude-opus-4-7"),
+            "claude-opus-4-7"
         );
         assert_eq!(humanize_model_id("openai:gpt-4o"), "gpt-4o");
         // Ollama :latest stripped
@@ -1358,7 +1522,7 @@ mod tests {
         // HuggingFace org/repo
         assert_eq!(humanize_model_id("huggingface:Qwen/Qwen3-32B"), "Qwen3-32B");
         // Bare model
-        assert_eq!(humanize_model_id("claude-opus-4-6"), "claude-opus-4-6");
+        assert_eq!(humanize_model_id("claude-opus-4-7"), "claude-opus-4-7");
     }
 
     #[test]
@@ -1393,7 +1557,7 @@ mod tests {
     #[test]
     fn context_window_from_route_matrix() {
         // These should resolve via the embedded route matrix
-        assert_eq!(infer_context_window("anthropic:claude-opus-4-6"), 1_000_000);
+        assert_eq!(infer_context_window("anthropic:claude-opus-4-7"), 1_000_000);
         assert_eq!(
             infer_context_window("anthropic:claude-sonnet-4-6"),
             1_000_000
@@ -1456,16 +1620,6 @@ mod tests {
     }
 
     #[test]
-    fn context_class_derives_context_mode() {
-        // All classes now return Standard — Extended was a deprecated beta flag concept.
-        // Context window is the model's native capability, not a mode toggle.
-        assert_eq!(ContextClass::Squad.context_mode(), ContextMode::Standard);
-        assert_eq!(ContextClass::Maniple.context_mode(), ContextMode::Standard);
-        assert_eq!(ContextClass::Clan.context_mode(), ContextMode::Standard);
-        assert_eq!(ContextClass::Legion.context_mode(), ContextMode::Standard);
-    }
-
-    #[test]
     fn context_class_parse_round_trip() {
         for cls in ContextClass::all() {
             let s = cls.short().to_lowercase();
@@ -1475,50 +1629,11 @@ mod tests {
 
     #[test]
     fn settings_new_derives_context_class() {
-        let s = Settings::new("anthropic:claude-opus-4-6");
+        let s = Settings::new("anthropic:claude-opus-4-7");
         assert_eq!(s.context_class, ContextClass::Legion);
 
         let s = Settings::new("openai:gpt-5.4");
         assert_eq!(s.context_class, ContextClass::Maniple);
-    }
-
-    #[test]
-    fn profile_downgrade_overrides() {
-        let mut p = Profile {
-            last_used_model: None,
-            thinking_level: None,
-            max_turns: None,
-            provider_order: Vec::new(),
-            avoid_providers: Vec::new(),
-            context_floor_pin: None,
-            downgrade_overrides: Vec::new(),
-            embed_url: None,
-            embed_model: None,
-        };
-        assert!(!p.is_downgrade_accepted(ContextClass::Legion, ContextClass::Squad));
-        p.accept_downgrade(ContextClass::Legion, ContextClass::Squad);
-        assert!(p.is_downgrade_accepted(ContextClass::Legion, ContextClass::Squad));
-        // Idempotent
-        p.accept_downgrade(ContextClass::Legion, ContextClass::Squad);
-        assert_eq!(p.downgrade_overrides.len(), 1);
-    }
-
-    #[test]
-    fn profile_pin_floor_round_trip() {
-        let mut p = Profile {
-            last_used_model: None,
-            thinking_level: None,
-            max_turns: None,
-            provider_order: Vec::new(),
-            avoid_providers: Vec::new(),
-            context_floor_pin: None,
-            downgrade_overrides: Vec::new(),
-            embed_url: None,
-            embed_model: None,
-        };
-        assert_eq!(p.pinned_floor(), None);
-        p.pin_floor(ContextClass::Clan);
-        assert_eq!(p.pinned_floor(), Some(ContextClass::Clan));
     }
 
     #[test]
@@ -1533,22 +1648,18 @@ mod tests {
         let p = Profile {
             last_used_model: Some(ProfileModel {
                 provider: "anthropic".into(),
-                model_id: "claude-opus-4-6".into(),
+                model_id: "claude-opus-4-7".into(),
             }),
             thinking_level: Some("high".into()),
             max_turns: Some(50),
             provider_order: vec!["anthropic".into(), "openai".into()],
-            avoid_providers: vec![],
-            context_floor_pin: Some("Clan".into()),
-            downgrade_overrides: vec!["Legion→Squad".into()],
             embed_url: None,
             embed_model: None,
+            ..Profile::default()
         };
         let json = serde_json::to_string_pretty(&p).unwrap();
         let parsed: Profile = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.provider_order, vec!["anthropic", "openai"]);
-        assert_eq!(parsed.context_floor_pin, Some("Clan".into()));
-        assert_eq!(parsed.downgrade_overrides, vec!["Legion→Squad"]);
     }
 
     #[test]
@@ -1557,9 +1668,6 @@ mod tests {
         let json = r#"{"lastUsedModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-6"}, "thinkingLevel": "medium"}"#;
         let p: Profile = serde_json::from_str(json).unwrap();
         assert!(p.provider_order.is_empty());
-        assert!(p.avoid_providers.is_empty());
-        assert!(p.context_floor_pin.is_none());
-        assert!(p.downgrade_overrides.is_empty());
     }
 
     #[test]
@@ -1590,16 +1698,82 @@ mod tests {
             thinking_level: Some("low".into()),
             max_turns: Some(50),
             provider_order: Vec::new(),
-            avoid_providers: Vec::new(),
-            context_floor_pin: None,
-            downgrade_overrides: Vec::new(),
             embed_url: None,
             embed_model: None,
+            ..Profile::default()
         };
 
         profile.save(&nested).unwrap();
 
         assert!(tmp.path().join(".omegon/profile.json").exists());
         assert!(!nested.join(".omegon/profile.json").exists());
+    }
+
+    // ─── Regression: posture ↔ slim equivalence ─────────────────────────
+
+    #[test]
+    fn is_slim_true_only_for_explorator() {
+        let mut s = Settings::new("anthropic:claude-sonnet-4-6");
+        assert!(!s.is_slim(), "default posture (Architect) should not be slim");
+
+        s.set_posture(PosturePreset::Explorator);
+        assert!(s.is_slim(), "Explorator posture should be slim");
+
+        s.set_posture(PosturePreset::Fabricator);
+        assert!(!s.is_slim(), "Fabricator should not be slim");
+
+        s.set_posture(PosturePreset::Devastator);
+        assert!(!s.is_slim(), "Devastator should not be slim");
+
+        s.set_posture(PosturePreset::Architect);
+        assert!(!s.is_slim(), "Architect should not be slim");
+    }
+
+    #[test]
+    fn set_posture_applies_correct_resource_envelope() {
+        let mut s = Settings::new("anthropic:claude-sonnet-4-6");
+
+        s.set_posture(PosturePreset::Explorator);
+        assert_eq!(s.thinking, ThinkingLevel::Minimal);
+        assert_eq!(s.requested_context_class, Some(ContextClass::Squad));
+
+        s.set_posture(PosturePreset::Fabricator);
+        assert_eq!(s.thinking, ThinkingLevel::Low);
+        assert_eq!(s.requested_context_class, Some(ContextClass::Maniple));
+
+        s.set_posture(PosturePreset::Architect);
+        assert_eq!(s.thinking, ThinkingLevel::Medium);
+        assert_eq!(s.requested_context_class, Some(ContextClass::Clan));
+
+        s.set_posture(PosturePreset::Devastator);
+        assert_eq!(s.thinking, ThinkingLevel::High);
+        assert_eq!(s.requested_context_class, Some(ContextClass::Legion));
+    }
+
+    #[test]
+    fn resource_envelope_uses_posture_directly() {
+        let mut s = Settings::new("anthropic:claude-sonnet-4-6");
+
+        s.set_posture(PosturePreset::Explorator);
+        let env = s.resource_envelope();
+        assert_eq!(env.thinking, ThinkingLevel::Minimal);
+        assert_eq!(env.requested_context_class, ContextClass::Squad);
+
+        s.set_posture(PosturePreset::Devastator);
+        let env = s.resource_envelope();
+        assert_eq!(env.thinking, ThinkingLevel::High);
+        assert_eq!(env.requested_context_class, ContextClass::Legion);
+    }
+
+    #[test]
+    fn selector_policy_respects_explorator_context_class() {
+        let mut s = Settings::new("anthropic:claude-sonnet-4-6");
+        s.set_posture(PosturePreset::Explorator);
+        let policy = s.selector_policy();
+        assert_eq!(
+            policy.requested_class,
+            ContextClass::Squad,
+            "Explorator should use Squad context class in selector policy"
+        );
     }
 }

@@ -151,6 +151,7 @@ pub fn control_request_from_slash(
     command: &crate::tui::CanonicalSlashCommand,
 ) -> Option<ControlRequest> {
     Some(match command {
+        crate::tui::CanonicalSlashCommand::ModelView => ControlRequest::ModelView,
         crate::tui::CanonicalSlashCommand::ModelList => ControlRequest::ModelList,
         crate::tui::CanonicalSlashCommand::SetModel(requested_model) => ControlRequest::SetModel {
             requested_model: requested_model.clone(),
@@ -224,7 +225,6 @@ pub fn control_request_from_slash(
         crate::tui::CanonicalSlashCommand::NewSession => ControlRequest::NewSession,
         crate::tui::CanonicalSlashCommand::ListSessions => ControlRequest::ListSessions,
         crate::tui::CanonicalSlashCommand::AuthStatus => ControlRequest::AuthStatus,
-        crate::tui::CanonicalSlashCommand::AuthUnlock => ControlRequest::AuthUnlock,
         crate::tui::CanonicalSlashCommand::AuthLogin(provider) => ControlRequest::AuthLogin {
             provider: provider.clone(),
         },
@@ -257,8 +257,6 @@ pub fn control_request_from_slash(
             ControlRequest::SecretsDelete { name: name.clone() }
         }
         crate::tui::CanonicalSlashCommand::VaultStatus => ControlRequest::VaultStatus,
-        crate::tui::CanonicalSlashCommand::VaultUnseal => ControlRequest::VaultUnseal,
-        crate::tui::CanonicalSlashCommand::VaultLogin => ControlRequest::VaultLogin,
         crate::tui::CanonicalSlashCommand::VaultConfigure => ControlRequest::VaultConfigure,
         crate::tui::CanonicalSlashCommand::VaultInitPolicy => ControlRequest::VaultInitPolicy,
         crate::tui::CanonicalSlashCommand::CleaveStatus => ControlRequest::CleaveStatus,
@@ -271,13 +269,70 @@ pub fn control_request_from_slash(
     })
 }
 
+/// Shared handler for stateless control requests that need at most
+/// shared_settings, secrets, cwd, and dashboard handles — no TUI or
+/// runtime state. Called by both `execute_control` and `execute_daemon_control`.
+async fn try_stateless_control(
+    request: &ControlRequest,
+    shared_settings: &settings::SharedSettings,
+    secrets: &Arc<omegon_secrets::SecretsManager>,
+    cwd: &Path,
+    handles: &crate::tui::dashboard::DashboardHandles,
+) -> Option<SlashCommandResponse> {
+    let resp = match request {
+        ControlRequest::ModelView => model_view_response(shared_settings).await,
+        ControlRequest::ModelList => model_list_response().await,
+        ControlRequest::AuthStatus => auth_status_response().await,
+        ControlRequest::AuthUnlock => auth_unlock_response().await,
+        ControlRequest::AuthLogout { provider } => auth_logout_response(provider).await,
+        ControlRequest::SkillsView => skills_view_response().await,
+        ControlRequest::SkillsInstall => skills_install_response().await,
+        ControlRequest::PluginView => plugin_view_response().await,
+        ControlRequest::PluginInstall { uri } => plugin_install_response(uri).await,
+        ControlRequest::PluginRemove { name } => plugin_remove_response(name).await,
+        ControlRequest::PluginUpdate { name } => plugin_update_response(name.as_deref()).await,
+        ControlRequest::SecretsView => secrets_view_response(secrets.as_ref()).await,
+        ControlRequest::SecretsSet { name, value } => {
+            secrets_set_response(secrets.as_ref(), name, value).await
+        }
+        ControlRequest::SecretsGet { name } => secrets_get_response(secrets.as_ref(), name).await,
+        ControlRequest::SecretsDelete { name } => {
+            secrets_delete_response(secrets.as_ref(), name).await
+        }
+        ControlRequest::VaultUnseal => vault_unseal_response().await,
+        ControlRequest::VaultLogin => vault_login_response().await,
+        ControlRequest::VaultConfigure => vault_configure_response().await,
+        ControlRequest::VaultInitPolicy => vault_init_policy_response().await,
+        ControlRequest::SetMaxTurns { max_turns } => {
+            set_max_turns_response(shared_settings, cwd, *max_turns).await
+        }
+        ControlRequest::ProfileView => profile_view_response(shared_settings).await,
+        ControlRequest::ProfileExport => {
+            profile_export_response(shared_settings, cwd, handles).await
+        }
+        ControlRequest::PersonaList => persona_list_response(handles).await,
+        ControlRequest::PersonaSwitch { name } => persona_switch_response(name).await,
+        _ => return None,
+    };
+    Some(resp)
+}
+
 pub async fn execute_control(
     ctx: &mut ControlContext<'_>,
     request: ControlRequest,
 ) -> SlashCommandResponse {
+    // Try stateless handlers first (shared with daemon mode).
+    if let Some(resp) = try_stateless_control(
+        &request,
+        ctx.shared_settings,
+        &ctx.agent.secrets,
+        &ctx.agent.cwd,
+        &ctx.agent.dashboard_handles,
+    ).await {
+        return resp;
+    }
+
     match request {
-        ControlRequest::ModelView => model_view_response(ctx.shared_settings).await,
-        ControlRequest::ModelList => model_list_response().await,
         ControlRequest::SetModel { requested_model } => {
             set_model_response(ctx.agent, ctx.shared_settings, ctx.bridge, &requested_model).await
         }
@@ -370,8 +425,6 @@ pub async fn execute_control(
             new_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
         }
         ControlRequest::ListSessions => list_sessions_response(ctx.agent).await,
-        ControlRequest::AuthStatus => auth_status_response().await,
-        ControlRequest::AuthUnlock => auth_unlock_response().await,
         ControlRequest::AuthLogin { provider } => {
             auth_login_response(
                 ctx.shared_settings,
@@ -383,43 +436,17 @@ pub async fn execute_control(
             )
             .await
         }
-        ControlRequest::AuthLogout { provider } => auth_logout_response(&provider).await,
-        ControlRequest::SkillsView => skills_view_response().await,
-        ControlRequest::SkillsInstall => skills_install_response().await,
-        ControlRequest::PluginView => plugin_view_response().await,
-        ControlRequest::PluginInstall { uri } => plugin_install_response(&uri).await,
-        ControlRequest::PluginRemove { name } => plugin_remove_response(&name).await,
-        ControlRequest::PluginUpdate { name } => plugin_update_response(name.as_deref()).await,
-        ControlRequest::SecretsView => secrets_view_response(ctx.agent.secrets.as_ref()).await,
-        ControlRequest::SecretsSet { name, value } => {
-            secrets_set_response(ctx.agent.secrets.as_ref(), &name, &value).await
-        }
-        ControlRequest::SecretsGet { name } => {
-            secrets_get_response(ctx.agent.secrets.as_ref(), &name).await
-        }
-        ControlRequest::SecretsDelete { name } => {
-            secrets_delete_response(ctx.agent.secrets.as_ref(), &name).await
-        }
         ControlRequest::VaultStatus => vault_status_response(ctx.agent).await,
-        ControlRequest::VaultUnseal => vault_unseal_response().await,
-        ControlRequest::VaultLogin => vault_login_response().await,
-        ControlRequest::VaultConfigure => vault_configure_response().await,
-        ControlRequest::VaultInitPolicy => vault_init_policy_response().await,
         ControlRequest::CleaveStatus => cleave_status_response(ctx.runtime_state).await,
         ControlRequest::CleaveCancelChild { label } => {
             cleave_cancel_child_response(ctx.runtime_state, &label).await
         }
         ControlRequest::DelegateStatus => delegate_status_response(ctx.runtime_state).await,
-        // ── Auspex fleet control (same handlers as daemon mode) ─────
-        ControlRequest::SetMaxTurns { max_turns } => {
-            set_max_turns_response(ctx.shared_settings, &ctx.agent.cwd, max_turns).await
-        }
-        ControlRequest::ProfileView => profile_view_response(ctx.shared_settings).await,
-        ControlRequest::ProfileExport => {
-            profile_export_response(ctx.shared_settings, &ctx.agent.cwd, &ctx.agent.dashboard_handles).await
-        }
-        ControlRequest::PersonaList => persona_list_response(&ctx.agent.dashboard_handles).await,
-        ControlRequest::PersonaSwitch { name } => persona_switch_response(&name).await,
+        // Stateless variants already handled above; catch remaining
+        other => SlashCommandResponse {
+            accepted: false,
+            output: Some(format!("unhandled control request: {:?}", other)),
+        },
     }
 }
 
@@ -441,77 +468,38 @@ pub async fn execute_daemon_control(
             | ControlRequest::SetRuntimeMode { .. }
             | ControlRequest::SetMaxTurns { .. }
     );
-    let resp = match request {
-        // ── Model & thinking ────────────────────────────────────────
-        ControlRequest::ModelView => model_view_response(shared_settings).await,
-        ControlRequest::ModelList => model_list_response().await,
-        ControlRequest::SetModel { requested_model } => {
-            set_model_daemon_response(shared_settings, cwd, &requested_model).await
-        }
-        ControlRequest::SetThinking { level } => {
-            set_thinking_daemon_response(shared_settings, cwd, level).await
-        }
-        ControlRequest::SetContextClass { class } => {
-            set_context_class_daemon_response(shared_settings, cwd, class).await
-        }
-        ControlRequest::SetRuntimeMode { slim } => {
-            set_runtime_mode_daemon_response(shared_settings, cwd, slim).await
-        }
-
-        // ── Auth ────────────────────────────────────────────────────
-        ControlRequest::AuthStatus => auth_status_response().await,
-        ControlRequest::AuthLogin { provider } => auth_login_daemon_response(&provider).await,
-        ControlRequest::AuthLogout { provider } => auth_logout_response(&provider).await,
-
-        // ── Secrets ─────────────────────────────────────────────────
-        ControlRequest::SecretsView => secrets_view_response(secrets.as_ref()).await,
-        ControlRequest::SecretsSet { name, value } => {
-            secrets_set_response(secrets.as_ref(), &name, &value).await
-        }
-        ControlRequest::SecretsGet { name } => secrets_get_response(secrets.as_ref(), &name).await,
-        ControlRequest::SecretsDelete { name } => {
-            secrets_delete_response(secrets.as_ref(), &name).await
-        }
-
-        // ── Vault ───────────────────────────────────────────────────
-        ControlRequest::VaultUnseal => vault_unseal_response().await,
-        ControlRequest::VaultLogin => vault_login_response().await,
-        ControlRequest::VaultConfigure => vault_configure_response().await,
-        ControlRequest::VaultInitPolicy => vault_init_policy_response().await,
-
-        // ── Skills & plugins ────────────────────────────────────────
-        ControlRequest::SkillsView => skills_view_response().await,
-        ControlRequest::SkillsInstall => skills_install_response().await,
-        ControlRequest::PluginView => plugin_view_response().await,
-        ControlRequest::PluginInstall { uri } => plugin_install_response(&uri).await,
-        ControlRequest::PluginRemove { name } => plugin_remove_response(&name).await,
-        ControlRequest::PluginUpdate { name } => plugin_update_response(name.as_deref()).await,
-
-        // ── Sessions ────────────────────────────────────────────────
-        ControlRequest::ListSessions => {
-            let msg = list_sessions_message(cwd);
-            SlashCommandResponse { accepted: true, output: Some(msg) }
-        }
-
-        // ── Auspex fleet control ────────────────────────────────────
-        ControlRequest::SetMaxTurns { max_turns } => {
-            set_max_turns_response(shared_settings, cwd, max_turns).await
-        }
-        ControlRequest::ProfileView => profile_view_response(shared_settings).await,
-        ControlRequest::ProfileExport => {
-            profile_export_response(shared_settings, cwd, handles).await
-        }
-        ControlRequest::PersonaList => persona_list_response(handles).await,
-        ControlRequest::PersonaSwitch { name } => {
-            persona_switch_response(&name).await
-        }
-
-        // ── Operations requiring TUI state ──────────────────────────
-        other => {
-            SlashCommandResponse {
+    // Try stateless handlers first (shared with TUI mode).
+    let resp = if let Some(resp) = try_stateless_control(
+        &request, shared_settings, secrets, cwd, handles,
+    ).await {
+        resp
+    } else {
+        match request {
+            // ── Daemon-specific overrides (different handler than TUI) ──
+            ControlRequest::SetModel { requested_model } => {
+                set_model_daemon_response(shared_settings, cwd, &requested_model).await
+            }
+            ControlRequest::SetThinking { level } => {
+                set_thinking_daemon_response(shared_settings, cwd, level).await
+            }
+            ControlRequest::SetContextClass { class } => {
+                set_context_class_daemon_response(shared_settings, cwd, class).await
+            }
+            ControlRequest::SetRuntimeMode { slim } => {
+                set_runtime_mode_daemon_response(shared_settings, cwd, slim).await
+            }
+            ControlRequest::AuthLogin { provider } => {
+                auth_login_daemon_response(&provider).await
+            }
+            ControlRequest::ListSessions => {
+                let msg = list_sessions_message(cwd);
+                SlashCommandResponse { accepted: true, output: Some(msg) }
+            }
+            // ── Operations requiring TUI state ──────────────────────────
+            other => SlashCommandResponse {
                 accepted: false,
                 output: Some(format!("/{:?} requires interactive mode", other)),
-            }
+            },
         }
     };
     // Emit HarnessStatusChanged for mutations so WebSocket/IPC clients see
@@ -888,10 +876,21 @@ pub async fn set_runtime_mode_response(
     slim: bool,
 ) -> SlashCommandResponse {
     if let Ok(mut s) = shared_settings.lock() {
-        s.set_slim_mode(slim);
+        if slim {
+            s.set_posture(settings::PosturePreset::Explorator);
+        } else {
+            s.set_posture(settings::PosturePreset::Architect);
+        }
     }
     runtime_state.conversation.set_slim_mode(slim);
-    runtime_state.bus.apply_operator_tool_profile(slim);
+    let (posture_disabled, posture_enabled) = shared_settings
+        .lock()
+        .ok()
+        .map(|s| (s.posture_disabled_tools.clone(), s.posture_enabled_tools.clone()))
+        .unwrap_or_default();
+    runtime_state
+        .bus
+        .apply_operator_tool_profile(slim, &posture_disabled, &posture_enabled);
 
     let mut status = crate::status::HarnessStatus::assemble();
     let settings = shared_settings.lock().unwrap().clone();
@@ -2156,17 +2155,47 @@ pub async fn context_status_response(
     } else {
         0
     };
+
+    // Per-category breakdown from prompt telemetry
+    let telemetry = runtime_state.context_manager.last_prompt_telemetry();
+    let tool_count = runtime_state.bus.tool_definitions().len();
+    let base_tokens = crate::util::estimate_chars_to_tokens(telemetry.base_prompt_chars);
+    let hud_tokens = crate::util::estimate_chars_to_tokens(telemetry.session_hud_chars);
+    let intent_tokens = crate::util::estimate_chars_to_tokens(telemetry.intent_chars);
+    let external_tokens = crate::util::estimate_chars_to_tokens(telemetry.external_injection_chars);
+    let tool_guidance_tokens = crate::util::estimate_chars_to_tokens(telemetry.tool_guidance_chars);
+    let file_guidance_tokens = crate::util::estimate_chars_to_tokens(telemetry.file_guidance_chars);
+    let injection_total = external_tokens + tool_guidance_tokens + file_guidance_tokens;
+    let conversation_tokens = est.saturating_sub(
+        base_tokens + hud_tokens + intent_tokens + injection_total,
+    );
+
+    let mut lines = vec![
+        format!("Context: {} / {} tokens ({}%)", est, ctx_window, pct),
+        format!("  System prompt:   {:>6} tokens", base_tokens),
+        format!("  Tool schemas:    {:>6} tokens ({} tools, compact)", 0, tool_count), // schema tokens not in telemetry
+        format!("  Session HUD:     {:>6} tokens", hud_tokens),
+        format!("  Intent:          {:>6} tokens", intent_tokens),
+    ];
+    if external_tokens > 0 {
+        lines.push(format!("  Features:        {:>6} tokens (memory, lifecycle, etc.)", external_tokens));
+    }
+    if tool_guidance_tokens > 0 {
+        lines.push(format!("  Tool guidance:   {:>6} tokens", tool_guidance_tokens));
+    }
+    if file_guidance_tokens > 0 {
+        lines.push(format!("  File guidance:   {:>6} tokens", file_guidance_tokens));
+    }
+    lines.push(format!("  Conversation:    {:>6} tokens", conversation_tokens));
+    lines.push(format!(
+        "Policy: {} | Thinking: {}",
+        settings.effective_requested_class().label(),
+        settings.thinking.as_str()
+    ));
+
     SlashCommandResponse {
         accepted: true,
-        output: Some(format!(
-            "Context: {}/{} tokens ({}%)\nPolicy: {}\nModel: {}\nThinking: {}",
-            est,
-            ctx_window,
-            pct,
-            settings.effective_requested_class().label(),
-            settings.context_class.label(),
-            settings.thinking.as_str()
-        )),
+        output: Some(lines.join("\n")),
     }
 }
 
@@ -2725,7 +2754,11 @@ pub async fn set_runtime_mode_daemon_response(
             output: Some("failed to acquire settings lock".to_string()),
         };
     };
-    s.set_slim_mode(slim);
+    if slim {
+        s.set_posture(settings::PosturePreset::Explorator);
+    } else {
+        s.set_posture(settings::PosturePreset::Architect);
+    }
     let mut profile = settings::Profile::load(cwd);
     profile.capture_from(&s);
     let _ = profile.save(cwd);
@@ -2774,7 +2807,7 @@ pub async fn profile_view_response(
             "context_class": s.effective_requested_class().label(),
             "context_window": s.context_window,
             "max_turns": s.max_turns,
-            "slim_mode": s.slim_mode,
+            "slim_mode": s.is_slim(),
             "posture": serde_json::to_value(&s.posture).unwrap_or(serde_json::json!(null)),
             "provider_order": s.provider_order,
             "provider_connected": s.provider_connected,
@@ -2800,7 +2833,7 @@ pub async fn profile_export_response(
             "thinking_level": s.thinking.as_str(),
             "context_class": s.effective_requested_class().label(),
             "max_turns": s.max_turns,
-            "slim_mode": s.slim_mode,
+            "slim_mode": s.is_slim(),
             "provider_order": s.provider_order,
         })
     } else {

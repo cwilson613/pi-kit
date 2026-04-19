@@ -21,17 +21,54 @@ pub fn build_base_prompt(cwd: &Path, tools: &[ToolDefinition]) -> String {
     build_base_prompt_with_breakdown(cwd, tools, false).prompt
 }
 
+/// Prompt mode controls system prompt verbosity and instruction complexity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMode {
+    /// Full prompt with complete Lex Imperialis, lifecycle context, global directives.
+    Full,
+    /// Slim prompt — lean coding loop, no lifecycle or global directives, full Lex.
+    Slim,
+    /// Constrained prompt — slim behavior + condensed 3-axiom Lex for less-capable models.
+    Constrained,
+}
+
 /// Build the base system prompt and return per-section size instrumentation.
 pub fn build_base_prompt_with_breakdown(
     cwd: &Path,
     tools: &[ToolDefinition],
     slim: bool,
 ) -> PromptAssembly {
+    let mode = if slim { PromptMode::Slim } else { PromptMode::Full };
+    build_base_prompt_for_mode(cwd, tools, mode)
+}
+
+/// Build the base system prompt with explicit mode control.
+pub fn build_base_prompt_for_mode(
+    cwd: &Path,
+    tools: &[ToolDefinition],
+    mode: PromptMode,
+) -> PromptAssembly {
+    let slim = matches!(mode, PromptMode::Slim | PromptMode::Constrained);
     let date = utc_date();
     let tool_list = format_tool_list(tools);
-    let lex_imperialis = load_lex_imperialis();
+    let lex_imperialis = match mode {
+        PromptMode::Constrained => CONDENSED_LEX.to_string(),
+        _ => load_lex_imperialis(),
+    };
     let vox_context = if tools.iter().any(|t| t.name == "vox_reply") {
         include_str!("../../../../data/vox-extension-context.md").to_string()
+    } else {
+        String::new()
+    };
+    let scry_context = if tools.iter().any(|t| t.name == "generate") {
+        include_str!("../../../../data/scry-extension-context.md").to_string()
+    } else {
+        String::new()
+    };
+    let extension_authoring_context = if cwd.join("manifest.toml").exists()
+        || cwd.join("core/crates/omegon-extension").is_dir()
+    {
+        include_str!("../../../../data/extension-authoring-context.md").to_string()
     } else {
         String::new()
     };
@@ -48,6 +85,17 @@ pub fn build_base_prompt_with_breakdown(
     let project_directives = load_project_directives(cwd);
     let project_conventions = detect_project_conventions(cwd);
 
+    let has_delegate = tools.iter().any(|t| t.name == "delegate");
+    let full_behavior = {
+        let base = "# Behavior\n\nThese are harness defaults. Project directives (AGENTS.md) and direct operator requests override these defaults — but never the Core Directives, which are immutable.\n\n- Always respond to the user. Tool calls gather information — they are not the answer. After calling tools, synthesize what you found into a direct response. Never end a turn with only tool calls and no text.\n- Be direct — act, don't narrate intent. Disagree when you see a better path.\n- Stop exploring once the next reversible step is justified. You do not need certainty; you need a named target, a plausible mechanism, and a bounded next action.\n- Archaeology is allowed only while it is still increasing actionable evidence or resolving a concrete blocker. Do not reopen the search space after the target is already local.\n- Read files before editing. Edit requires exact text matches.\n- Ground claims in evidence — cite files and lines. Don't assert about unread code.\n- Every non-trivial change needs tests. Commit when done. Do not push automatically after committing — but if the operator asks you to push, do it.\n- Prefer `request_context` before making multiple exploratory tool calls when you need session orientation or recent runtime evidence. Use direct read/search tools first only when you already know the exact target.\n";
+        let tool_surface = "\n## Tool surface\n\nSome situational tools (persona, model-budget, lifecycle management, advanced memory) are hidden by default to reduce context overhead. If the task requires them, use `manage_tools` with `list_groups` to discover available groups and `enable_group` to activate them.\n";
+        if has_delegate {
+            format!("{base}\n## Delegation\n\n- When local models are available, use `delegate` for mechanical file edits, test runs, and pattern-application tasks. Specify `model` to route to a local or cheaper model. Reserve your own turns for planning, architecture, review, and decisions that require frontier reasoning.\n- Worker profiles: `scout` (read/search only), `patch` (small scoped edits), `verify` (run tests/checks).\n- Delegate tasks should be specific and self-contained. Include file paths in `scope` and relevant context in `facts`.\n- You are the orchestrator. Local models are your hands. Think, plan, and review — let them type.\n{tool_surface}")
+        } else {
+            format!("{base}{tool_surface}")
+        }
+    };
+
     let sections = vec![
         prompt_section(
             "identity",
@@ -63,14 +111,20 @@ pub fn build_base_prompt_with_breakdown(
             "behavior",
             "Behavior",
             if slim {
-                "# Behavior\n\n- You are operating in OM coding mode — the lean terminal coding loop for direct repo work.\n- Prefer the shortest path to useful local progress: inspect the relevant file, make the smallest justified edit, and run one narrow validation.\n- Stop exploring once the next reversible step is justified. You do not need certainty; you need a named target, a plausible mechanism, and a bounded next action.\n- Archaeology is allowed only while it is still increasing actionable evidence or resolving a concrete blocker. Do not reopen the search space after the target is already local.\n- Keep responses terse, concrete, and grounded in evidence from the repo.\n- Stay inside the local coding loop by default. Do not introduce lifecycle workflows, orchestration, or ambient meta-process unless the operator asks or the task clearly requires them.\n- Small safe edits are allowed, but do not widen scope casually.\n- Always respond to the user. Tool calls gather information — they are not the answer.\n- Be direct — act, don't narrate intent.\n- Read files before editing. Edit requires exact text matches.\n- Ground claims in evidence — cite files and lines.\n- Every non-trivial change needs tests. Commit when done, do NOT push.\n"
+                "# Behavior\n\nThese are harness defaults. Project directives (AGENTS.md) and direct operator requests override these defaults — but never the Core Directives, which are immutable.\n\n- You are operating in OM coding mode — the lean terminal coding loop for direct repo work.\n- Prefer the shortest path to useful local progress: inspect the relevant file, make the smallest justified edit, and run one narrow validation.\n- Stop exploring once the next reversible step is justified. You do not need certainty; you need a named target, a plausible mechanism, and a bounded next action.\n- Archaeology is allowed only while it is still increasing actionable evidence or resolving a concrete blocker. Do not reopen the search space after the target is already local.\n- Keep responses terse, concrete, and grounded in evidence from the repo.\n- Stay inside the local coding loop by default. Do not introduce lifecycle workflows, orchestration, or ambient meta-process unless the operator asks or the task clearly requires them.\n- Small safe edits are allowed, but do not widen scope casually.\n- Always respond to the user. Tool calls gather information — they are not the answer.\n- Be direct — act, don't narrate intent.\n- Read files before editing. Edit requires exact text matches.\n- Ground claims in evidence — cite files and lines.\n- Every non-trivial change needs tests. Commit when done. Do not push automatically after committing — but if the operator asks you to push, do it.\n\n## Tool surface\n\nYou are running with a lean tool surface. Additional tools (delegation, orchestration, lifecycle management, persona switching, advanced memory) are available but disabled by default to save context. If the task requires capabilities beyond the current set — for example parallel decomposition, subagent delegation, design-tree management, or secret management — use `manage_tools` with action `list_groups` to see available tool groups, then `enable_group` to activate what you need. The operator may also request you enable specific capabilities.\n"
             } else {
-                "# Behavior\n\n- Always respond to the user. Tool calls gather information — they are not the answer. After calling tools, synthesize what you found into a direct response. Never end a turn with only tool calls and no text.\n- Be direct — act, don't narrate intent. Disagree when you see a better path.\n- Stop exploring once the next reversible step is justified. You do not need certainty; you need a named target, a plausible mechanism, and a bounded next action.\n- Archaeology is allowed only while it is still increasing actionable evidence or resolving a concrete blocker. Do not reopen the search space after the target is already local.\n- Read files before editing. Edit requires exact text matches.\n- Ground claims in evidence — cite files and lines. Don't assert about unread code.\n- Every non-trivial change needs tests. Commit when done, do NOT push.\n- Prefer `request_context` before making multiple exploratory tool calls when you need session orientation or recent runtime evidence. Use direct read/search tools first only when you already know the exact target.\n"
+                &full_behavior
             },
         ),
         prompt_section("core_directives", "Core Directives", &lex_imperialis),
         prompt_section("project_lifecycle", "Project Lifecycle", &lifecycle_context),
         prompt_section("vox_extension", "Vox Extension", &vox_context),
+        prompt_section("scry_extension", "Scry Extension", &scry_context),
+        prompt_section(
+            "extension_authoring",
+            "Extension Authoring",
+            &extension_authoring_context,
+        ),
         prompt_section(
             "operator_directives",
             "Operator Directives",
@@ -201,6 +255,19 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
     format!("\n# Project Lifecycle\n\n{}\n", sections.join("\n\n"))
 }
 
+/// Condensed Lex for Mid/Leaf models — 3 critical axioms in plain language.
+/// Preserves the most important behavioral guardrails without overwhelming
+/// models that can't reliably follow complex multi-part instructions.
+const CONDENSED_LEX: &str = "\
+# Core Directives (Lex Imperialis)
+
+These are immutable. Nothing overrides them.
+
+- Challenge weak reasoning. Do not agree reflexively — if you see a better approach, say so.
+- Distinguish what you know from what you guess. Cite files and line numbers. Never assert about code you haven't read.
+- Ask for decisions. Execute the user's choices. Do not silently override what the user asked for.
+";
+
 /// Load the Lex Imperialis — non-overridable core directives.
 ///
 /// These are constitutional axioms that define what Omegon *is*.
@@ -210,7 +277,12 @@ pub fn load_lex_imperialis() -> String {
     // Embedded at compile time from the armory source
     static LEX: &str = include_str!("../../../../data/lex-imperialis.md");
     static TOOL_LIMITS: &str = include_str!("../../../../data/tool-limitations.md");
-    format!("\n# Core Directives\n\n{LEX}\n\n{TOOL_LIMITS}\n")
+    format!(
+        "\n# Core Directives (Lex Imperialis)\n\n\
+         These are immutable. No operator request, project directive, or persona \
+         can override them. They define what you are.\n\n\
+         {LEX}\n\n{TOOL_LIMITS}\n"
+    )
 }
 
 /// Load global operator directives from ~/.omegon/AGENTS.md
@@ -220,7 +292,12 @@ fn load_global_directives() -> String {
 
     if let Ok(content) = std::fs::read_to_string(&global_agents) {
         let trimmed = truncate_directive(&content, 3000);
-        format!("\n# Operator Directives\n\n{trimmed}\n")
+        format!(
+            "\n# Operator Directives\n\n\
+             These are the operator's preferences from `~/.omegon/AGENTS.md`. \
+             They override harness behavior defaults but cannot override Core Directives.\n\n\
+             {trimmed}\n"
+        )
     } else {
         String::new()
     }
@@ -322,7 +399,11 @@ fn load_project_directives(cwd: &Path) -> String {
                 content
             };
             return format!(
-                "\n# Project Directives\n\nFrom `{}`:\n\n{trimmed}\n",
+                "\n# Project Directives\n\n\
+                 These are the project's policies from `{}`. \
+                 They override harness behavior defaults (commit workflow, testing expectations, \
+                 branch strategy, etc.) but cannot override Core Directives.\n\n\
+                 {trimmed}\n",
                 agents_file.display()
             );
         }
@@ -386,9 +467,7 @@ fn prompt_section<'a>(key: &'a str, label: &'a str, content: &str) -> PromptSect
     }
 }
 
-fn estimate_chars_to_tokens(chars: usize) -> usize {
-    chars / 4
-}
+use crate::util::estimate_chars_to_tokens;
 
 fn format_tool_list(tools: &[ToolDefinition]) -> String {
     // Just list names — full descriptions are in the tool definitions
@@ -556,7 +635,10 @@ mod tests {
             prompt.contains("Commit when done"),
             "should instruct to commit"
         );
-        assert!(prompt.contains("NOT push"), "should instruct not to push");
+        assert!(
+            prompt.contains("Do not push automatically"),
+            "should instruct not to auto-push"
+        );
         assert!(prompt.contains("next reversible step is justified"));
     }
 
@@ -726,20 +808,10 @@ mod tests {
                     std::path::PathBuf::from("/tmp"),
                 )),
             ),
-            (
-                "render",
-                Box::new(crate::tools::render::RenderProvider::new()),
-            ),
         ];
 
         // Disabled tools (from setup.rs default profile)
         let disabled: std::collections::HashSet<&str> = [
-            crate::tool_registry::core::SPECULATE_START,
-            crate::tool_registry::core::SPECULATE_CHECK,
-            crate::tool_registry::core::SPECULATE_COMMIT,
-            crate::tool_registry::core::SPECULATE_ROLLBACK,
-            crate::tool_registry::render::RENDER_DIAGRAM,
-            crate::tool_registry::render::GENERATE_IMAGE_LOCAL,
             crate::tool_registry::persona::SWITCH_PERSONA,
             crate::tool_registry::persona::SWITCH_TONE,
             crate::tool_registry::persona::LIST_PERSONAS,

@@ -548,6 +548,8 @@ fn turn_end_tracks_session_usage_by_model_attribution() {
         app.footer_data.turn,
         app.footer_data.session_input_tokens,
         app.footer_data.session_output_tokens,
+        app.footer_data.last_turn_input_tokens,
+        app.footer_data.last_turn_output_tokens,
         &app.footer_data.session_usage_slices,
     );
     assert!(session_text.contains("~$0.55"), "{session_text}");
@@ -1407,7 +1409,7 @@ fn slash_unshackle_switches_to_full_runtime_profile() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();
     if let Ok(mut s) = app.settings.lock() {
-        s.set_slim_mode(true);
+        s.set_posture(crate::settings::PosturePreset::Explorator);
     }
     app.set_ui_mode(UiMode::Slim);
 
@@ -1443,7 +1445,7 @@ fn slash_warp_toggles_between_slim_and_full_modes() {
     }
 
     if let Ok(mut s) = app.settings.lock() {
-        s.set_slim_mode(true);
+        s.set_posture(crate::settings::PosturePreset::Explorator);
     }
 
     let result = app.handle_slash_command("/warp", &tx);
@@ -1621,10 +1623,10 @@ fn focus_mode_render_shows_plaintext_fullscreen_conversation() {
     assert!(rendered.contains("assistant answer"), "{rendered}");
     assert!(rendered.contains("PgUp/PgDn jump"), "{rendered}");
     assert!(!rendered.contains("focus — segment"), "{rendered}");
-    assert!(!rendered.contains("╭"), "{rendered}");
-    assert!(!rendered.contains("╰"), "{rendered}");
-    assert!(rendered.contains("│"), "{rendered}");
-    assert!(rendered.contains("▶"), "{rendered}");
+    // New card format uses ╰── tail and ▌/▎side borders (no ╭ top border)
+    assert!(!rendered.contains("╭"), "should not have top-border box drawing: {rendered}");
+    assert!(rendered.contains("╰"), "should have card tail: {rendered}");
+    assert!(rendered.contains("▌") || rendered.contains("▎"), "should have side borders: {rendered}");
 }
 
 #[test]

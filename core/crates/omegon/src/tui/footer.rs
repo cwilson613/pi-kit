@@ -12,7 +12,7 @@ use super::model_catalog::ModelCatalog;
 use super::theme::Theme;
 use super::widgets::{self, GaugeConfig};
 
-use crate::settings::{ContextClass, ContextMode};
+use crate::settings::ContextClass;
 use crate::status::HarnessStatus;
 use crate::usage::format_provider_telemetry_compact;
 
@@ -40,7 +40,6 @@ pub struct FooterData {
     pub context_window: usize,
     pub context_class: ContextClass,
     pub actual_context_class: ContextClass,
-    pub context_mode: ContextMode,
     pub total_facts: usize,
     pub injected_facts: usize,
     pub working_memory: usize,
@@ -51,6 +50,10 @@ pub struct FooterData {
     pub session_input_tokens: u64,
     /// Cumulative output tokens for the entire session.
     pub session_output_tokens: u64,
+    /// Input tokens for the most recent turn (for per-turn cost display).
+    pub last_turn_input_tokens: u64,
+    /// Output tokens for the most recent turn.
+    pub last_turn_output_tokens: u64,
     /// Per-turn usage attributed to the model/provider active for that turn.
     pub session_usage_slices: Vec<SessionUsageSlice>,
     pub tool_calls: u32,
@@ -329,6 +332,8 @@ impl FooterData {
                 self.turn,
                 self.session_input_tokens,
                 self.session_output_tokens,
+                self.last_turn_input_tokens,
+                self.last_turn_output_tokens,
                 &self.session_usage_slices,
             );
 
@@ -1053,6 +1058,8 @@ pub(crate) fn format_session_text(
     turn: u32,
     session_input_tokens: u64,
     session_output_tokens: u64,
+    last_turn_input_tokens: u64,
+    _last_turn_output_tokens: u64,
     session_usage_slices: &[SessionUsageSlice],
 ) -> String {
     let mut parts = vec![format!("T{turn}")];
@@ -1062,6 +1069,14 @@ pub(crate) fn format_session_text(
             "¤{}/¤{}",
             widgets::format_tokens_compact(session_input_tokens as usize),
             widgets::format_tokens_compact(session_output_tokens as usize)
+        ));
+    }
+
+    // Per-turn cost indicator
+    if last_turn_input_tokens > 0 {
+        parts.push(format!(
+            "(turn ¤{})",
+            widgets::format_tokens_compact(last_turn_input_tokens as usize),
         ));
     }
 
@@ -1324,6 +1339,7 @@ mod tests {
             1,
             12_000,
             3_000,
+            0, 0,
             &[SessionUsageSlice {
                 model_id: "anthropic:claude-sonnet-4-6".into(),
                 provider: "anthropic".into(),
@@ -1426,6 +1442,7 @@ mod tests {
             2,
             12_000,
             3_000,
+            0, 0,
             &[SessionUsageSlice {
                 model_id: "unknown:custom-model".into(),
                 provider: "unknown".into(),
@@ -1442,6 +1459,7 @@ mod tests {
             2,
             12_000,
             3_000,
+            0, 0,
             &[SessionUsageSlice {
                 model_id: "openai:gpt-5.4".into(),
                 provider: "openai".into(),
@@ -1458,6 +1476,7 @@ mod tests {
             3,
             112_000,
             23_000,
+            0, 0,
             &[
                 SessionUsageSlice {
                     model_id: "openai:gpt-5.4".into(),

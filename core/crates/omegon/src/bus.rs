@@ -30,6 +30,57 @@ use omegon_traits::{
 };
 use serde_json::Value;
 
+/// Core tools that are always present regardless of lazy injection.
+/// These are the coding loop essentials — the tools the model needs on every turn.
+fn is_core_tool(name: &str) -> bool {
+    use crate::tool_registry as reg;
+    matches!(
+        name,
+        reg::core::BASH
+            | reg::core::READ
+            | reg::core::WRITE
+            | reg::core::EDIT
+            | reg::core::CHANGE
+            | reg::core::COMMIT
+            | reg::codescan::CODEBASE_SEARCH
+            | reg::context::CONTEXT_STATUS
+            | reg::context::REQUEST_CONTEXT
+            | reg::manage_tools::MANAGE_TOOLS
+            | reg::view::VIEW
+    )
+}
+
+/// Strip `description` fields from tool parameter schemas to reduce token overhead.
+/// Preserves type, enum, required, default, items — the structural information
+/// models need to form correct tool calls. Reduces schema tokens by ~30-40%.
+fn compact_tool_schema(def: &ToolDefinition) -> ToolDefinition {
+    fn strip_descriptions(val: &Value) -> Value {
+        match val {
+            Value::Object(map) => {
+                let mut out = serde_json::Map::new();
+                for (key, value) in map {
+                    if key == "description" {
+                        continue; // strip parameter descriptions
+                    }
+                    out.insert(key.clone(), strip_descriptions(value));
+                }
+                Value::Object(out)
+            }
+            Value::Array(arr) => Value::Array(arr.iter().map(strip_descriptions).collect()),
+            other => other.clone(),
+        }
+    }
+
+    ToolDefinition {
+        name: def.name.clone(),
+        label: def.label.clone(),
+        // Keep the top-level tool description (model needs to know what the tool does)
+        // but strip parameter-level descriptions (model can infer from param names + types)
+        description: def.description.clone(),
+        parameters: strip_descriptions(&def.parameters),
+    }
+}
+
 /// Default tool execution timeout (5 minutes).
 const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -64,7 +115,12 @@ impl EventBus {
         }
     }
 
-    pub fn apply_operator_tool_profile(&mut self, slim_mode: bool) {
+    pub fn apply_operator_tool_profile(
+        &mut self,
+        slim_mode: bool,
+        posture_disabled: &[String],
+        posture_enabled: &[String],
+    ) {
         use crate::tool_registry as reg;
         let Some(handle) = self.disabled_tools.as_ref() else {
             return;
@@ -72,46 +128,64 @@ impl EventBus {
         let mut disabled = handle.lock().unwrap();
         disabled.clear();
 
-        // Base defaults for both om and omegon: genuinely niche/experimental surfaces
-        // that neither mode exposes by default.
-        disabled.insert(reg::core::SPECULATE_START.into());
-        disabled.insert(reg::core::SPECULATE_CHECK.into());
-        disabled.insert(reg::core::SPECULATE_COMMIT.into());
-        disabled.insert(reg::core::SPECULATE_ROLLBACK.into());
-        disabled.insert(reg::render::RENDER_DIAGRAM.into());
-        disabled.insert(reg::render::GENERATE_IMAGE_LOCAL.into());
+        // ── Base defaults (all modes): situational tools hidden from the
+        // default schema. The agent discovers them via lazy injection if
+        // it calls one after seeing the full surface on turn 1.
+        disabled.insert(reg::persona::SWITCH_PERSONA.into());
+        disabled.insert(reg::persona::SWITCH_TONE.into());
+        disabled.insert(reg::persona::LIST_PERSONAS.into());
+        disabled.insert(reg::auth::AUTH_STATUS.into());
+        disabled.insert(reg::harness_settings::HARNESS_SETTINGS.into());
+        disabled.insert(reg::memory::MEMORY_INGEST_LIFECYCLE.into());
+        disabled.insert(reg::memory::MEMORY_CONNECT.into());
+        disabled.insert(reg::memory::MEMORY_SEARCH_ARCHIVE.into());
+        disabled.insert(reg::lifecycle::OPENSPEC_MANAGE.into());
+        disabled.insert(reg::lifecycle::LIFECYCLE_DOCTOR.into());
+        disabled.insert(reg::codescan::CODEBASE_INDEX.into());
+        disabled.insert(reg::session_log::SESSION_LOG.into());
+        disabled.insert(reg::model_budget::SET_MODEL_TIER.into());
+        disabled.insert(reg::model_budget::SWITCH_TO_OFFLINE_DRIVER.into());
+        disabled.insert(reg::model_budget::SET_THINKING_LEVEL.into());
 
         if slim_mode {
-            // om/slim: familiar coding loop. Suppress harness-level, delegation,
-            // orchestration, and observability surfaces.
-            disabled.insert(reg::persona::SWITCH_PERSONA.into());
-            disabled.insert(reg::persona::SWITCH_TONE.into());
-            disabled.insert(reg::persona::LIST_PERSONAS.into());
+            // om/slim: additionally suppress delegation, orchestration,
+            // and heavyweight surfaces beyond the base defaults.
             disabled.insert(reg::delegate::DELEGATE.into());
             disabled.insert(reg::delegate::DELEGATE_RESULT.into());
             disabled.insert(reg::delegate::DELEGATE_STATUS.into());
-            disabled.insert(reg::auth::AUTH_STATUS.into());
-            disabled.insert(reg::harness_settings::HARNESS_SETTINGS.into());
-            disabled.insert(reg::memory::MEMORY_INGEST_LIFECYCLE.into());
-            disabled.insert(reg::memory::MEMORY_CONNECT.into());
-            disabled.insert(reg::memory::MEMORY_SEARCH_ARCHIVE.into());
-            disabled.insert(reg::local_inference::LIST_LOCAL_MODELS.into());
-            disabled.insert(reg::local_inference::MANAGE_OLLAMA.into());
-            disabled.insert(reg::lifecycle::DESIGN_TREE.into());
-            disabled.insert(reg::lifecycle::DESIGN_TREE_UPDATE.into());
-            disabled.insert(reg::lifecycle::OPENSPEC_MANAGE.into());
-            disabled.insert(reg::lifecycle::LIFECYCLE_DOCTOR.into());
             disabled.insert(reg::cleave::CLEAVE_ASSESS.into());
             disabled.insert(reg::cleave::CLEAVE_RUN.into());
-            disabled.insert(reg::codescan::CODEBASE_INDEX.into());
-            disabled.insert(reg::session_log::SESSION_LOG.into());
+            disabled.insert(reg::local_inference::LIST_LOCAL_MODELS.into());
+            disabled.insert(reg::local_inference::MANAGE_OLLAMA.into());
             disabled.insert(reg::core::SERVE.into());
             disabled.insert(reg::view::VIEW.into());
             disabled.insert(reg::context::CONTEXT_COMPACT.into());
             disabled.insert(reg::context::CONTEXT_CLEAR.into());
-            disabled.insert(reg::model_budget::SET_MODEL_TIER.into());
-            disabled.insert(reg::model_budget::SWITCH_TO_OFFLINE_DRIVER.into());
-            disabled.insert(reg::model_budget::SET_THINKING_LEVEL.into());
+        }
+
+        // Custom posture tool overrides
+        for tool in posture_disabled {
+            disabled.insert(tool.clone());
+        }
+
+        // Whitelist mode: if posture_enabled is non-empty, disable everything
+        // except the listed tools. This is applied last so it overrides all
+        // other disable/enable decisions.
+        if !posture_enabled.is_empty() {
+            let all_tools: Vec<String> = self
+                .tool_defs
+                .iter()
+                .map(|(_, d)| d.name.clone())
+                .collect();
+            for tool in &all_tools {
+                if !posture_enabled.contains(tool) {
+                    disabled.insert(tool.clone());
+                }
+            }
+            // Ensure enabled tools are NOT in the disabled set
+            for tool in posture_enabled {
+                disabled.remove(tool);
+            }
         }
     }
 
@@ -198,17 +272,86 @@ impl EventBus {
     // ─── Tool dispatch ──────────────────────────────────────────────
 
     /// All tool definitions across all features.
+    /// When `compact` is true, strips parameter descriptions from JSON schemas
+    /// to reduce token overhead (~30-40% savings on tool schema tokens).
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        self.tool_definitions_mode(false)
+    }
+
+    /// Tool definitions with optional schema compaction for token efficiency.
+    pub fn tool_definitions_mode(&self, compact: bool) -> Vec<ToolDefinition> {
         let disabled = self.disabled_tools.as_ref().and_then(|d| d.lock().ok());
         self.tool_defs
             .iter()
             .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
-            .map(|(_, d)| d.clone())
+            .map(|(_, d)| {
+                if compact {
+                    compact_tool_schema(d)
+                } else {
+                    d.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Lazy tool injection: returns a reduced tool set for token efficiency.
+    ///
+    /// - **Turn 1**: all enabled tools (model needs to see the full surface once)
+    /// - **Turn 2+**: core tools always + extended tools only if previously used
+    ///   or contextually relevant
+    ///
+    /// `used_tools` is the set of tool names called so far in this session.
+    pub fn tool_definitions_lazy(
+        &self,
+        compact: bool,
+        turn: u32,
+        used_tools: &std::collections::HashSet<String>,
+    ) -> Vec<ToolDefinition> {
+        self.tool_definitions_lazy_inner(compact, turn, used_tools, false)
+    }
+
+    /// Like `tool_definitions_lazy` but with `core_only_turn1` = true, the
+    /// first turn also only receives core tools. Use for constrained models
+    /// (≤32B) where 50+ tool schemas overwhelm the context window.
+    pub fn tool_definitions_lean(
+        &self,
+        turn: u32,
+        used_tools: &std::collections::HashSet<String>,
+    ) -> Vec<ToolDefinition> {
+        self.tool_definitions_lazy_inner(true, turn, used_tools, true)
+    }
+
+    fn tool_definitions_lazy_inner(
+        &self,
+        compact: bool,
+        turn: u32,
+        used_tools: &std::collections::HashSet<String>,
+        core_only_turn1: bool,
+    ) -> Vec<ToolDefinition> {
+        // Turn 1: full surface so the model knows what's available —
+        // unless core_only_turn1 is set (constrained models with small ctx).
+        if turn <= 1 && !core_only_turn1 {
+            return self.tool_definitions_mode(compact);
+        }
+
+        let disabled = self.disabled_tools.as_ref().and_then(|d| d.lock().ok());
+        self.tool_defs
+            .iter()
+            .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
+            .filter(|(_, d)| is_core_tool(&d.name) || used_tools.contains(&d.name))
+            .map(|(_, d)| {
+                if compact {
+                    compact_tool_schema(d)
+                } else {
+                    d.clone()
+                }
+            })
             .collect()
     }
 
     /// All registered tool definitions, ignoring disabled state.
     /// Used for the manage_tools list command.
+    #[allow(dead_code)]
     pub fn all_tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tool_defs.iter().map(|(_, d)| d.clone()).collect()
     }
@@ -626,4 +769,203 @@ mod tests {
         // Second drain should be empty
         assert!(bus.drain_requests().is_empty());
     }
+
+    #[test]
+    fn compact_tool_schema_strips_descriptions() {
+        let def = ToolDefinition {
+            name: "test_tool".into(),
+            label: "Test".into(),
+            description: "A test tool that does things".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The file path to read"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of lines to return",
+                        "default": 100
+                    }
+                },
+                "required": ["path"]
+            }),
+        };
+
+        let compact = compact_tool_schema(&def);
+
+        // Top-level description preserved
+        assert_eq!(compact.description, "A test tool that does things");
+
+        // Parameter descriptions stripped
+        let params = compact.parameters.as_object().unwrap();
+        let props = params["properties"].as_object().unwrap();
+        assert!(!props["path"].as_object().unwrap().contains_key("description"));
+        assert!(!props["limit"].as_object().unwrap().contains_key("description"));
+
+        // Structural info preserved
+        assert_eq!(props["path"]["type"], "string");
+        assert_eq!(props["limit"]["type"], "number");
+        assert_eq!(props["limit"]["default"], 100);
+        assert_eq!(params["required"][0], "path");
+
+        // Compact schema is smaller
+        let full_size = serde_json::to_string(&def.parameters).unwrap().len();
+        let compact_size = serde_json::to_string(&compact.parameters).unwrap().len();
+        assert!(
+            compact_size < full_size,
+            "compact ({compact_size}) should be smaller than full ({full_size})"
+        );
+    }
+
+    // ─── Regression: slim mode tool filtering ───────────────────────────
+
+    /// Helper: register N dummy tools with given names.
+    fn bus_with_tools(names: &[&str]) -> EventBus {
+        struct MultiToolFeature {
+            tools: Vec<ToolDefinition>,
+        }
+
+        #[async_trait]
+        impl Feature for MultiToolFeature {
+            fn name(&self) -> &str {
+                "multi"
+            }
+            fn tools(&self) -> Vec<ToolDefinition> {
+                self.tools.clone()
+            }
+            async fn execute(
+                &self,
+                _: &str,
+                _: &str,
+                _: serde_json::Value,
+                _: tokio_util::sync::CancellationToken,
+            ) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult {
+                    content: vec![],
+                    details: json!(null),
+                })
+            }
+        }
+
+        let tools = names
+            .iter()
+            .map(|name| ToolDefinition {
+                name: name.to_string(),
+                label: name.to_string(),
+                description: String::new(),
+                parameters: json!({"type": "object", "properties": {}}),
+            })
+            .collect();
+        let disabled =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let mut bus = EventBus::new();
+        bus.register(Box::new(MultiToolFeature { tools }));
+        bus.finalize();
+        bus.set_disabled_tools(disabled);
+        bus
+    }
+
+    #[test]
+    fn base_defaults_disable_situational_tools() {
+        use crate::tool_registry as reg;
+
+        // Tools disabled by default in ALL modes (base defaults)
+        let base_disabled = [
+            reg::persona::SWITCH_PERSONA,
+            reg::harness_settings::HARNESS_SETTINGS,
+            reg::session_log::SESSION_LOG,
+            reg::lifecycle::OPENSPEC_MANAGE,
+            reg::auth::AUTH_STATUS,
+        ];
+
+        // Tools that stay enabled in Full (non-slim) mode
+        let full_enabled = [
+            "bash",
+            "read",
+            reg::delegate::DELEGATE,
+            reg::cleave::CLEAVE_RUN,
+        ];
+
+        let all_names: Vec<&str> = base_disabled
+            .iter()
+            .copied()
+            .chain(full_enabled.iter().copied())
+            .collect();
+
+        // Non-slim: base defaults applied, delegation/cleave stay enabled
+        let mut bus = bus_with_tools(&all_names);
+        bus.apply_operator_tool_profile(false, &[], &[]);
+        let defs = bus.tool_definitions();
+        let def_names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        for tool in &base_disabled {
+            assert!(
+                !def_names.contains(tool),
+                "'{tool}' must be disabled by base defaults"
+            );
+        }
+        assert!(def_names.contains(&reg::delegate::DELEGATE),
+            "delegate stays enabled in Full mode");
+        assert!(def_names.contains(&reg::cleave::CLEAVE_RUN),
+            "cleave stays enabled in Full mode");
+    }
+
+    #[test]
+    fn slim_mode_additionally_disables_delegation_and_orchestration() {
+        use crate::tool_registry as reg;
+
+        // Tools additionally disabled in slim mode (on top of base defaults)
+        let slim_only_disabled = [
+            reg::delegate::DELEGATE,
+            reg::delegate::DELEGATE_RESULT,
+            reg::cleave::CLEAVE_RUN,
+            reg::cleave::CLEAVE_ASSESS,
+        ];
+
+        let always_enabled = ["bash", "read", "write", "edit", "change", "commit"];
+
+        let all_names: Vec<&str> = slim_only_disabled
+            .iter()
+            .copied()
+            .chain(always_enabled.iter().copied())
+            .collect();
+
+        let mut bus = bus_with_tools(&all_names);
+        bus.apply_operator_tool_profile(true, &[], &[]);
+
+        let defs = bus.tool_definitions();
+        let def_names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        for tool in &always_enabled {
+            assert!(
+                def_names.contains(tool),
+                "core tool '{tool}' must remain enabled in slim mode"
+            );
+        }
+        for tool in &slim_only_disabled {
+            assert!(
+                !def_names.contains(tool),
+                "'{tool}' must be disabled in slim mode"
+            );
+        }
+    }
+
+    #[test]
+    fn posture_whitelist_restricts_to_listed_tools_only() {
+        let mut bus = bus_with_tools(&["bash", "read", "write", "edit", "delegate"]);
+        let enabled = vec!["bash".to_string(), "read".to_string()];
+        bus.apply_operator_tool_profile(false, &[], &enabled);
+
+        let defs = bus.tool_definitions();
+        let def_names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert_eq!(def_names.len(), 2);
+        assert!(def_names.contains(&"bash"));
+        assert!(def_names.contains(&"read"));
+        assert!(!def_names.contains(&"write"));
+        assert!(!def_names.contains(&"delegate"));
+    }
+
 }

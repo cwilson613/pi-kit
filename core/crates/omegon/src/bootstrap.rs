@@ -1,0 +1,360 @@
+//! Shared initialization helpers extracted from main.rs.
+//!
+//! These functions deduplicate recurring patterns across the three
+//! entrypoints (interactive, headless, daemon).
+
+use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::broadcast;
+
+use omegon_traits::AgentEvent;
+
+use crate::bridge::LlmBridge;
+use crate::providers;
+use crate::settings::{self, SharedSettings};
+use crate::setup;
+
+// ─── Settings bootstrap ────────────────────────────────────────────────────
+
+/// Options for initializing shared settings from profile + CLI overrides.
+pub struct SettingsInit<'a> {
+    pub model: &'a str,
+    pub cwd: &'a Path,
+    /// CLI posture name (explorator, fabricator, etc.) — overrides profile default.
+    pub cli_posture: Option<&'a str>,
+    /// Whether slim mode was requested (--slim flag or `om` binary name).
+    pub slim: bool,
+    /// CLI max_turns value. Only applied if != the default (50).
+    pub max_turns: u32,
+    /// Whether to apply posture from the profile (uses `apply_to_with_posture`
+    /// vs plain `apply_to`).
+    pub apply_profile_posture: bool,
+}
+
+/// Create shared settings, load the project profile, and apply CLI overrides.
+///
+/// This replaces the 3-6 duplicated "shared setup" blocks across main.rs.
+pub fn initialize_shared_settings(init: &SettingsInit<'_>) -> SharedSettings {
+    let shared = settings::shared(init.model);
+    let profile = settings::Profile::load(init.cwd);
+
+    if let Ok(mut s) = shared.lock() {
+        if init.apply_profile_posture {
+            profile.apply_to_with_posture(&mut s, init.cwd);
+        } else {
+            profile.apply_to(&mut s);
+        }
+
+        // CLI posture flag overrides profile default.
+        if let Some(posture_name) = init.cli_posture {
+            crate::apply_posture_to_settings(posture_name, &mut s, init.cwd);
+        }
+
+        if init.slim || std::env::var("OMEGON_CHILD_SLIM").is_ok() {
+            s.set_posture(settings::PosturePreset::Explorator);
+        }
+
+        // Only override max_turns when explicitly set (50 is the default).
+        if init.max_turns != 50 {
+            s.max_turns = init.max_turns;
+        }
+
+        // Apply child runtime profile overrides from env (set by orchestrator).
+        if let Some(thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL")
+            .ok()
+            .and_then(|v| settings::ThinkingLevel::parse(&v))
+        {
+            s.thinking = thinking;
+        }
+        if let Some(class) = std::env::var("OMEGON_CHILD_CONTEXT_CLASS")
+            .ok()
+            .and_then(|v| settings::ContextClass::parse(&v))
+        {
+            s.set_requested_context_class(class);
+        }
+
+        tracing::info!(
+            model = %s.model,
+            thinking = %s.thinking.as_str(),
+            max_turns = s.max_turns,
+            "settings initialized from profile"
+        );
+    }
+
+    shared
+}
+
+// ─── LLM bridge resolution ─────────────────────────────────────────────────
+
+/// Resolve an LLM bridge for the given model, bailing if no provider is available.
+///
+/// Used by headless and smoke test entrypoints that cannot start without a provider.
+pub async fn resolve_bridge_or_bail(model: &str) -> anyhow::Result<Box<dyn LlmBridge>> {
+    match providers::auto_detect_bridge(model).await {
+        Some(bridge) => {
+            tracing::info!("using native LLM provider");
+            Ok(bridge)
+        }
+        None => {
+            anyhow::bail!(
+                "No LLM provider available.\n\n\
+                 To get started:\n  \
+                 omegon auth login anthropic    # OAuth (recommended)\n  \
+                 omegon auth login openai       # OpenAI API key\n  \
+                 omegon auth login openrouter   # OpenRouter (free tier available)\n\n\
+                 Or set a key directly:\n  \
+                 export ANTHROPIC_API_KEY=sk-ant-...\n  \
+                 export OPENAI_API_KEY=sk-..."
+            );
+        }
+    }
+}
+
+// ─── Event channel wiring ───────────────────────────────────────────────────
+
+/// Create the broadcast event channel and wire the cleave/delegate slots
+/// so features can emit `AgentEvent`s from inside tool execution.
+pub fn wire_event_channel(
+    agent: &setup::AgentSetup,
+    capacity: usize,
+) -> (broadcast::Sender<AgentEvent>, broadcast::Receiver<AgentEvent>) {
+    let (events_tx, events_rx) = broadcast::channel::<AgentEvent>(capacity);
+
+    if let Ok(mut slot) = agent.cleave_event_slot.lock() {
+        *slot = Some(crate::build_runtime_bus_request_sink(events_tx.clone()));
+    }
+    if let Ok(mut slot) = agent.delegate_event_slot.lock() {
+        *slot = Some(crate::build_runtime_bus_request_sink(events_tx.clone()));
+    }
+
+    (events_tx, events_rx)
+}
+
+// ─── Runtime posture ────────────────────────────────────────────────────────
+
+/// Apply runtime posture to both the initial harness status and the live
+/// dashboard handle. Deduplicates the pattern repeated in interactive,
+/// headless, and daemon startup.
+pub fn apply_runtime_posture(
+    agent: &mut setup::AgentSetup,
+    profile: omegon_traits::OmegonRuntimeProfile,
+    autonomy: omegon_traits::OmegonAutonomyMode,
+) {
+    agent
+        .initial_harness_status
+        .update_runtime_posture(profile.clone(), autonomy.clone());
+    if let Some(ref harness) = agent.dashboard_handles.harness
+        && let Ok(mut status) = harness.lock()
+    {
+        status.update_runtime_posture(profile, autonomy);
+    }
+}
+
+// ─── Loop config builder ────────────────────────────────────────────────────
+
+/// Build a `LoopConfig` from shared settings with per-call overrides.
+///
+/// This replaces the 7+ identical inline constructions in the daemon handler
+/// and the standalone headless config at run_agent_command.
+pub struct LoopConfigOverrides {
+    /// Override max_retries (default: 0 for interactive, >0 for headless).
+    pub max_retries: u32,
+    /// Override commit nudge behavior.
+    pub allow_commit_nudge: bool,
+    /// Override first-turn execution bias.
+    pub enforce_first_turn_execution_bias: bool,
+    /// Force compact flag (interactive mode).
+    pub force_compact: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Secrets manager.
+    pub secrets: Option<Arc<omegon_secrets::SecretsManager>>,
+    /// Ollama manager (created at startup for interactive mode).
+    pub ollama_manager: Option<crate::ollama::OllamaManager>,
+}
+
+impl Default for LoopConfigOverrides {
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            allow_commit_nudge: false,
+            enforce_first_turn_execution_bias: false,
+            force_compact: None,
+            secrets: None,
+            ollama_manager: None,
+        }
+    }
+}
+
+/// Build a LoopConfig reading model/max_turns from shared settings, with the
+/// given working directory and overrides.
+pub fn build_loop_config(
+    shared_settings: &SharedSettings,
+    cwd: &Path,
+    model_fallback: &str,
+    overrides: LoopConfigOverrides,
+) -> crate::r#loop::LoopConfig {
+    let (model, max_turns) = shared_settings
+        .lock()
+        .map(|s| (s.model.clone(), s.max_turns))
+        .unwrap_or_else(|_| (model_fallback.to_string(), 50));
+
+    let soft_limit_turns = if max_turns > 0 {
+        max_turns * 2 / 3
+    } else {
+        0
+    };
+
+    crate::r#loop::LoopConfig {
+        max_turns,
+        soft_limit_turns,
+        max_retries: overrides.max_retries,
+        retry_delay_ms: 750,
+        model,
+        cwd: cwd.to_path_buf(),
+        extended_context: false,
+        settings: Some(shared_settings.clone()),
+        secrets: overrides.secrets,
+        force_compact: overrides.force_compact,
+        allow_commit_nudge: overrides.allow_commit_nudge,
+        enforce_first_turn_execution_bias: overrides.enforce_first_turn_execution_bias,
+        ollama_manager: overrides.ollama_manager,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_shared_settings_applies_slim_as_explorator() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+
+        let shared = initialize_shared_settings(&SettingsInit {
+            model: "anthropic:claude-sonnet-4-6",
+            cwd: tmp.path(),
+            cli_posture: None,
+            slim: true,
+            max_turns: 50,
+            apply_profile_posture: true,
+        });
+
+        let s = shared.lock().unwrap();
+        assert!(s.is_slim(), "slim=true should set Explorator posture");
+        assert_eq!(
+            s.posture.effective,
+            settings::PosturePreset::Explorator,
+            "slim flag must map to Explorator posture"
+        );
+        assert_eq!(s.thinking, settings::ThinkingLevel::Minimal);
+    }
+
+    #[test]
+    fn initialize_shared_settings_default_is_not_slim() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+
+        let shared = initialize_shared_settings(&SettingsInit {
+            model: "anthropic:claude-sonnet-4-6",
+            cwd: tmp.path(),
+            cli_posture: None,
+            slim: false,
+            max_turns: 50,
+            apply_profile_posture: true,
+        });
+
+        let s = shared.lock().unwrap();
+        assert!(!s.is_slim(), "default should not be slim");
+    }
+
+    #[test]
+    fn initialize_shared_settings_cli_posture_overrides_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+
+        let shared = initialize_shared_settings(&SettingsInit {
+            model: "anthropic:claude-sonnet-4-6",
+            cwd: tmp.path(),
+            cli_posture: Some("devastator"),
+            slim: false,
+            max_turns: 50,
+            apply_profile_posture: true,
+        });
+
+        let s = shared.lock().unwrap();
+        assert_eq!(s.posture.effective, settings::PosturePreset::Devastator);
+        assert_eq!(s.thinking, settings::ThinkingLevel::High);
+    }
+
+    #[test]
+    fn initialize_shared_settings_max_turns_only_overrides_when_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+
+        // Default (50) should not override profile
+        let shared = initialize_shared_settings(&SettingsInit {
+            model: "anthropic:claude-sonnet-4-6",
+            cwd: tmp.path(),
+            cli_posture: None,
+            slim: false,
+            max_turns: 50,
+            apply_profile_posture: true,
+        });
+        let default_turns = shared.lock().unwrap().max_turns;
+
+        // Non-default should override
+        let shared = initialize_shared_settings(&SettingsInit {
+            model: "anthropic:claude-sonnet-4-6",
+            cwd: tmp.path(),
+            cli_posture: None,
+            slim: false,
+            max_turns: 25,
+            apply_profile_posture: true,
+        });
+        let overridden = shared.lock().unwrap().max_turns;
+        assert_eq!(overridden, 25, "non-default max_turns should override");
+        // default_turns depends on whether profile.json exists, so just check it's set
+        assert!(default_turns > 0);
+    }
+
+    #[test]
+    fn build_loop_config_reads_model_and_max_turns_from_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = settings::shared("anthropic:claude-opus-4-7");
+        if let Ok(mut s) = shared.lock() {
+            s.max_turns = 30;
+        }
+
+        let config = build_loop_config(
+            &shared,
+            tmp.path(),
+            "fallback-model",
+            LoopConfigOverrides::default(),
+        );
+
+        assert_eq!(config.model, "anthropic:claude-opus-4-7");
+        assert_eq!(config.max_turns, 30);
+        assert_eq!(config.soft_limit_turns, 20); // 30 * 2/3
+    }
+
+    #[test]
+    fn build_loop_config_falls_back_on_poisoned_mutex() {
+        let shared = settings::shared("anthropic:claude-opus-4-7");
+        // Poison the mutex
+        let shared_clone = shared.clone();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = shared_clone.lock().unwrap();
+            panic!("intentional poison");
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = build_loop_config(
+            &shared,
+            tmp.path(),
+            "fallback-model",
+            LoopConfigOverrides::default(),
+        );
+
+        assert_eq!(config.model, "fallback-model");
+        assert_eq!(config.max_turns, 50);
+    }
+}

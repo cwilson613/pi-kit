@@ -380,6 +380,7 @@ enum SlashResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalSlashCommand {
+    ModelView,
     ModelList,
     SetModel(String),
     SetThinking(crate::settings::ThinkingLevel),
@@ -416,7 +417,6 @@ pub(crate) enum CanonicalSlashCommand {
     NewSession,
     ListSessions,
     AuthStatus,
-    AuthUnlock,
     AuthLogin(String),
     AuthLogout(String),
     SkillsView,
@@ -430,8 +430,6 @@ pub(crate) enum CanonicalSlashCommand {
     SecretsGet(String),
     SecretsDelete(String),
     VaultStatus,
-    VaultUnseal,
-    VaultLogin,
     VaultConfigure,
     VaultInitPolicy,
     CleaveStatus,
@@ -442,6 +440,7 @@ pub(crate) enum CanonicalSlashCommand {
 pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<CanonicalSlashCommand> {
     let args = args.trim();
     match cmd {
+        "model" if args.is_empty() => Some(CanonicalSlashCommand::ModelView),
         "model" if args == "list" => Some(CanonicalSlashCommand::ModelList),
         "model" if !args.is_empty() => Some(CanonicalSlashCommand::SetModel(args.to_string())),
         "think" => {
@@ -548,7 +547,6 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         "sessions" if args.is_empty() => Some(CanonicalSlashCommand::ListSessions),
         "auth" => match args {
             "" | "status" => Some(CanonicalSlashCommand::AuthStatus),
-            "unlock" => Some(CanonicalSlashCommand::AuthUnlock),
             _ => None,
         },
         "login" if !args.is_empty() => Some(CanonicalSlashCommand::AuthLogin(args.to_string())),
@@ -596,8 +594,6 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         }
         "vault" => match args {
             "" | "status" => Some(CanonicalSlashCommand::VaultStatus),
-            "unseal" => Some(CanonicalSlashCommand::VaultUnseal),
-            "login" => Some(CanonicalSlashCommand::VaultLogin),
             "configure" => Some(CanonicalSlashCommand::VaultConfigure),
             "init-policy" => Some(CanonicalSlashCommand::VaultInitPolicy),
             _ => None,
@@ -1100,12 +1096,13 @@ impl App {
             UiMode::Slim => {
                 self.focus_mode = false;
                 self.terminal_copy_mode = true;
-                self.mouse_capture_enabled = false;
+                // Disable mouse capture — must call set_mouse_capture BEFORE
+                // updating the field, otherwise the early-return guard skips
+                // the actual DisableMouseCapture escape sequence.
                 self.set_mouse_capture(false);
             }
             UiMode::Full => {
                 self.terminal_copy_mode = false;
-                self.mouse_capture_enabled = true;
                 self.set_mouse_capture(true);
             }
         }
@@ -2917,7 +2914,6 @@ impl App {
             self.footer_data.model_provider = s.provider().to_string();
             self.footer_data.context_class = s.effective_requested_class();
             self.footer_data.actual_context_class = s.context_class;
-            self.footer_data.context_mode = s.context_mode;
             self.footer_data.context_window = s.context_window;
             self.footer_data.thinking_level = s.thinking.as_str().to_string();
             self.footer_data.posture = s.posture.effective.display_name().to_string();
@@ -3939,7 +3935,7 @@ impl App {
         (
             "vault",
             "Vault status and management",
-            &["status", "unseal", "login", "configure", "init-policy"],
+            &["status", "configure", "init-policy"],
         ),
         (
             "persona",
@@ -3979,6 +3975,11 @@ impl App {
         ),
         ("notes", "show or clear pending notes", &["clear"]),
         ("checkin", "triage what needs attention now", &[]),
+        (
+            "editor",
+            "integrate omegon with an editor/IDE",
+            &["zed", "vscode", "status"],
+        ),
         ("version", "show build version and git sha", &[]),
         ("exit", "quit (or double Ctrl+C)", &[]),
     ];
@@ -4438,12 +4439,8 @@ impl App {
                     let _ = tx.try_send(TuiCommand::AuthStatus { respond_to: None });
                     SlashResult::Handled
                 }
-                Some(CanonicalSlashCommand::AuthUnlock) => {
-                    let _ = tx.try_send(TuiCommand::AuthUnlock { respond_to: None });
-                    SlashResult::Handled
-                }
                 _ => SlashResult::Display(format!(
-                    "Unknown auth command: {args}\n\nUsage:\n  /auth status\n  /auth unlock\n\nUse /login <provider> or /logout <provider> for provider authentication."
+                    "Unknown auth command: {args}\n\nUsage:\n  /auth status\n\nUse /login <provider> or /logout <provider> for provider authentication."
                 )),
             },
 
@@ -4773,7 +4770,7 @@ impl App {
                         SlashResult::Handled
                     } else {
                         SlashResult::Display(format!(
-                            "Unknown vault subcommand: {args}\nOptions: status, unseal, login, configure, init-policy"
+                            "Unknown vault subcommand: {args}\nOptions: status, configure, init-policy"
                         ))
                     }
                 } else {
@@ -4901,7 +4898,7 @@ impl App {
                 SlashResult::Display("Unshackled: omegon mode active.".into())
             }
             "warp" => {
-                let slim_now = self.settings.lock().ok().is_some_and(|s| s.slim_mode);
+                let slim_now = self.settings.lock().ok().is_some_and(|s| s.is_slim());
                 let target_slim = !slim_now;
                 self.set_ui_mode(if target_slim {
                     UiMode::Slim
@@ -4929,6 +4926,8 @@ impl App {
                 env!("OMEGON_BUILD_DATE"),
             )),
             "q" => SlashResult::Quit,
+
+            "editor" => SlashResult::Display(handle_editor_command(args)),
 
             "cleave" => {
                 // Warn, but do not block or silently reroute. Operator agency wins.
@@ -5302,6 +5301,8 @@ impl App {
                 // Accumulate session-long token counts
                 self.footer_data.session_input_tokens += actual_input_tokens;
                 self.footer_data.session_output_tokens += actual_output_tokens;
+                self.footer_data.last_turn_input_tokens = actual_input_tokens;
+                self.footer_data.last_turn_output_tokens = actual_output_tokens;
                 if (actual_input_tokens > 0 || actual_output_tokens > 0)
                     && let Some(model_id) = model
                 {
@@ -5493,15 +5494,13 @@ impl App {
                 let display = enriched.as_deref().or(full_text.as_deref());
                 self.conversation.push_tool_end(&id, is_error, display);
 
-                // Detect image results from view/render tools
+                // Detect image results from view/extension render tools
                 if !is_error
                     && image::is_available()
                     && let Some(ref name) = self.last_tool_name
                     && matches!(
                         name.as_str(),
                         "view"
-                            | "render_diagram"
-                            | "generate_image_local"
                             | "render_excalidraw"
                             | "render_composition_still"
                             | "render_native_diagram"
@@ -6200,6 +6199,190 @@ fn load_tutorial_progress(tutorial_dir: &std::path::Path) -> TutorialProgress {
         .unwrap_or_default()
 }
 
+/// Handle `/editor` subcommands — IDE integration setup and status.
+fn handle_editor_command(args: &str) -> String {
+    let omegon_bin = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "omegon".to_string());
+
+    match args.split_whitespace().next().unwrap_or("") {
+        "zed" => {
+            // Auto-configure Zed's settings.json with omegon as an agent server
+            let config_path = dirs::home_dir()
+                .map(|h| h.join(".config/zed/settings.json"))
+                .unwrap_or_default();
+
+            let omegon_entry = serde_json::json!({
+                "type": "custom",
+                "command": omegon_bin,
+                "args": ["acp"],
+                "env": {}
+            });
+
+            let mut result_lines = Vec::new();
+
+            if config_path.exists() {
+                // Read existing settings, merge our agent_servers entry
+                let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+                let mut settings: serde_json::Value =
+                    serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+
+                let servers = settings
+                    .as_object_mut()
+                    .unwrap()
+                    .entry("agent_servers")
+                    .or_insert_with(|| serde_json::json!({}));
+
+                if let Some(obj) = servers.as_object_mut() {
+                    if obj.contains_key("Omegon") {
+                        result_lines.push("Zed settings already contain Omegon agent.".to_string());
+                    } else {
+                        obj.insert("Omegon".to_string(), omegon_entry);
+                        let json = serde_json::to_string_pretty(&settings).unwrap_or_default();
+                        if std::fs::write(&config_path, &json).is_ok() {
+                            result_lines.push(format!(
+                                "✓ Added Omegon to {}",
+                                config_path.display()
+                            ));
+                        } else {
+                            result_lines.push(format!(
+                                "✗ Failed to write {}",
+                                config_path.display()
+                            ));
+                        }
+                    }
+                }
+            } else {
+                // Create settings.json from scratch
+                let settings = serde_json::json!({
+                    "agent_servers": {
+                        "Omegon": omegon_entry
+                    }
+                });
+                let _ = std::fs::create_dir_all(config_path.parent().unwrap_or(std::path::Path::new(".")));
+                let json = serde_json::to_string_pretty(&settings).unwrap_or_default();
+                if std::fs::write(&config_path, &json).is_ok() {
+                    result_lines.push(format!(
+                        "✓ Created {} with Omegon agent",
+                        config_path.display()
+                    ));
+                } else {
+                    result_lines.push(format!(
+                        "✗ Failed to create {}",
+                        config_path.display()
+                    ));
+                }
+            }
+
+            // Try to launch Zed — check CLI first, then macOS app bundle
+            let launched = if std::process::Command::new("zed")
+                .arg(".")
+                .spawn()
+                .is_ok()
+            {
+                true
+            } else if cfg!(target_os = "macos")
+                && std::process::Command::new("open")
+                    .args(["-a", "Zed", "."])
+                    .spawn()
+                    .is_ok()
+            {
+                true
+            } else {
+                false
+            };
+
+            if launched {
+                result_lines.push("✓ Launching Zed...".to_string());
+                result_lines.push("  Select Omegon from the Agent Panel (+ button).".to_string());
+            } else {
+                result_lines.push("Zed not found on PATH or in /Applications.".to_string());
+                result_lines.push("Install from https://zed.dev or run: brew install --cask zed".to_string());
+            }
+
+            result_lines.push(
+                "\nModes: Code (Fabricator) | Architect | Ask (Explorator) | Agent (Devastator)"
+                    .to_string(),
+            );
+
+            result_lines.join("\n")
+        }
+        "vscode" => {
+            "VS Code Integration\n\n\
+             1. Install the vscode-acp extension:\n\
+                https://github.com/nicolo-ribaudo/vscode-acp\n\n\
+             2. Add to VS Code settings.json:\n\n\
+             {\n  \
+               \"acp.agents\": [\n    \
+                 {\n      \
+                   \"id\": \"omegon\",\n      \
+                   \"name\": \"Omegon\",\n      \
+                   \"command\": \"omegon\",\n      \
+                   \"args\": [\"acp\"]\n    \
+                 }\n  \
+               ]\n\
+             }\n\n\
+             3. Restart VS Code and open the ACP panel."
+                .to_string()
+        }
+        "status" => {
+            let mut lines = vec!["Editor Integration Status\n".to_string()];
+            lines.push(format!("  Binary: {omegon_bin}"));
+            lines.push(format!("  ACP: omegon acp"));
+
+            // Check if Zed is installed (CLI or macOS app bundle)
+            let has_zed_cli = std::process::Command::new("zed")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok();
+            let has_zed_app = cfg!(target_os = "macos")
+                && std::process::Command::new("open")
+                    .args(["-Ra", "Zed"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+            let zed_status = if has_zed_cli {
+                "installed (CLI on PATH)"
+            } else if has_zed_app {
+                "installed (app bundle, CLI not on PATH — run Zed > Install CLI)"
+            } else {
+                "not found"
+            };
+            lines.push(format!("  Zed: {zed_status}"));
+
+            // Check if VS Code is installed
+            let has_code = std::process::Command::new("code")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok();
+            lines.push(format!(
+                "  VS Code: {}",
+                if has_code { "installed" } else { "not found" }
+            ));
+
+            lines.push("\nRun /editor zed or /editor vscode for setup instructions.".to_string());
+            lines.join("\n")
+        }
+        "" => {
+            "Editor Integration\n\n\
+             /editor zed      Setup instructions for Zed\n\
+             /editor vscode   Setup instructions for VS Code\n\
+             /editor status   Check installed editors\n\n\
+             Omegon integrates with editors via the Agent Client Protocol (ACP).\n\
+             The editor spawns `omegon acp` and communicates via JSON-RPC over stdio."
+                .to_string()
+        }
+        other => format!(
+            "Unknown editor: {other}\n\nSupported: zed, vscode\nRun /editor for help."
+        ),
+    }
+}
+
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
     command_tx: mpsc::Sender<TuiCommand>,
@@ -6327,9 +6510,9 @@ pub async fn run_tui(
     // Default to slim/conversation-first startup. Operators can elevate
     // to the full harness via /ui full, /unshackle, or /warp.
     app.set_ui_mode(UiMode::Slim);
-    if !app.settings().slim_mode {
+    if !app.settings().is_slim() {
         if let Ok(mut s) = app.settings.lock() {
-            s.set_slim_mode(true);
+            s.set_posture(crate::settings::PosturePreset::Explorator);
         }
     }
 
@@ -6354,7 +6537,7 @@ pub async fn run_tui(
 
         if let Some(ref ri) = config.resume_info {
             // ── Resumed session: standard welcome + one-line brief ───────
-            let mut brief = if s.slim_mode {
+            let mut brief = if s.is_slim() {
                 format!("Ω OM {version} ({sha}) — {project}")
             } else {
                 format!("Ω Omegon {version} ({sha}) — {project}")
@@ -6366,11 +6549,11 @@ pub async fn run_tui(
             } else {
                 brief.push_str("\n  ⚠ No provider — use /login to connect");
             }
-            if !s.slim_mode && facts > 0 {
+            if !s.is_slim() && facts > 0 {
                 brief.push_str(&format!("  ·  {facts} facts loaded"));
             }
             brief.push('\n');
-            if s.slim_mode {
+            if s.is_slim() {
                 brief.push_str("\n  Lean coding loop: inspect → edit → validate");
                 brief.push_str("\n  /ui full  reveal dashboard + instruments");
                 brief.push_str("\n  /unshackle  switch to omegon mode   /help  commands");
@@ -6393,7 +6576,7 @@ pub async fn run_tui(
             ));
         } else {
             // ── Fresh session: standard welcome ───────────────────────────
-            let mut welcome = if s.slim_mode {
+            let mut welcome = if s.is_slim() {
                 format!("Ω OM {version} ({sha}) — {project}")
             } else {
                 format!("Ω Omegon {version} ({sha}) — {project}")
@@ -6405,11 +6588,11 @@ pub async fn run_tui(
             } else {
                 welcome.push_str("\n  ⚠ No provider — use /login to connect");
             }
-            if !s.slim_mode && facts > 0 {
+            if !s.is_slim() && facts > 0 {
                 welcome.push_str(&format!("  ·  {facts} facts loaded"));
             }
             welcome.push('\n');
-            if s.slim_mode {
+            if s.is_slim() {
                 welcome.push_str("\n  Lean coding loop: inspect → edit → validate");
                 welcome.push_str("\n  /ui full     reveal dashboard + instruments");
                 welcome.push_str("\n  /unshackle   switch to omegon mode   /help commands");
@@ -6424,7 +6607,7 @@ pub async fn run_tui(
             // First-run hint: if no memory facts exist, this is likely a new user.
             if facts == 0 {
                 app.conversation.push_system(
-                    if s.slim_mode {
+                    if s.is_slim() {
                         "💡 Lean mode is active. Start with the file or command you want to inspect. Use /ui full any time to reveal the richer harness surfaces."
                     } else {
                         "💡 First time here? Type /tutorial for a guided tour, or just start typing."

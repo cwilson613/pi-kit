@@ -3,6 +3,12 @@
 use omegon_traits::ContentBlock;
 use unicode_truncate::UnicodeTruncateStr;
 
+/// Rough character-to-token estimate (1 token ≈ 4 chars).
+/// Used by both loop.rs (context composition) and prompt.rs (section budgets).
+pub fn estimate_chars_to_tokens(chars: usize) -> usize {
+    chars / 4
+}
+
 /// Truncate a string to at most `max_width` display columns, appending "…" if truncated.
 /// Uses unicode display width — CJK characters count as 2, combining marks as 0, etc.
 pub fn truncate(s: &str, max_width: usize) -> String {

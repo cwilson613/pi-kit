@@ -187,12 +187,10 @@ impl AgentSetup {
         for name in collect_plugin_secret_requirements(&cwd) {
             preflight.insert(name);
         }
-        // Web search API keys — preflight so hydrate_process_env() populates them
-        // and available_providers() sees them via env::var(). No keychain prompt
-        // if no recipe is configured for a given key.
-        for key in &["BRAVE_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY"] {
-            preflight.insert((*key).to_string());
-        }
+        // Web search API keys are resolved LAZILY — only when the web_search
+        // tool actually fires. Eagerly preflighting them causes 3 macOS Keychain
+        // prompts on every launch for ad-hoc signed dev builds (signature changes
+        // on each rebuild, invalidating "Always Allow" ACLs).
         // NOTE: OMEGON_WEB_AUTH_SECRET is NOT preflighted here.
         // Web browsing auth is only needed on-demand during web search.
         // Resolving it lazily avoids an extra keychain prompt at startup.
@@ -274,7 +272,7 @@ impl AgentSetup {
             }
         };
 
-        // ─── Core tools (bash, read, write, edit, change, speculate, commit) ──
+        // ─── Core tools (bash, read, write, edit, change, commit) ──
         let core_tools = if let Some(ref model) = repo_model {
             tools::CoreTools::with_repo_model(cwd.clone(), model.clone())
         } else {
@@ -288,7 +286,7 @@ impl AgentSetup {
         // ─── Feature tool providers ─────────────────────────────────────
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "web-search",
-            Box::new(tools::web_search::WebSearchProvider::new()),
+            Box::new(tools::web_search::WebSearchProvider::with_secrets(secrets.clone())),
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "local-inference",
@@ -297,10 +295,6 @@ impl AgentSetup {
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "view",
             Box::new(tools::view::ViewProvider::new(cwd.clone())),
-        )));
-        bus.register(Box::new(features::adapter::ToolAdapter::new(
-            "render",
-            Box::new(tools::render::RenderProvider::new()),
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "secret-tools",
@@ -385,7 +379,11 @@ impl AgentSetup {
             context_memory_mind = Some(mind.clone());
 
             // ── Embedding service (optional, for hybrid search) ──
-            let embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = {
+            // Skip the probe in child processes — the async HTTP request blocks
+            // single-threaded runtimes (ACP, delegate children).
+            let embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = if is_child {
+                None
+            } else {
                 let profile = crate::settings::Profile::load(&cwd);
                 let svc = crate::embedding::OllamaEmbeddingService::from_config(
                     profile.embed_url.as_deref(),
@@ -402,7 +400,7 @@ impl AgentSetup {
                     tracing::info!("embedding service not reachable — FTS-only recall");
                     None
                 }
-            };
+            };  // end if is_child else probe
 
             let mut memory_feature = features::memory::MemoryFeature::new(memory_backend, mind);
             if let Some(svc) = embed_service {
@@ -447,7 +445,17 @@ impl AgentSetup {
 
         // ─── Delegate (subagent system) ─────────────────────────────────
         let agents = crate::features::delegate::scan_agents(&cwd);
-        let delegate_feature = features::delegate::DelegateFeature::new(&cwd, agents);
+        let mut delegate_feature = features::delegate::DelegateFeature::new(&cwd, agents);
+
+        // Probe provider inventory so the delegate catalog is available
+        // for context injection (lets the orchestrator see available models).
+        if !is_child {
+            let mut inventory = crate::routing::ProviderInventory::probe();
+            inventory.probe_ollama().await;
+            let inventory = std::sync::Arc::new(tokio::sync::RwLock::new(inventory));
+            delegate_feature = delegate_feature.with_inventory(inventory);
+        }
+
         let delegate_handle = delegate_feature.progress_handle();
         let delegate_event_slot = delegate_feature.event_sender_slot();
         bus.register(Box::new(delegate_feature));
@@ -580,11 +588,15 @@ impl AgentSetup {
 
         // ─── Default tool profile — disable rarely-used tools ───────────
         {
-            let slim_mode = settings
+            let (slim_mode, posture_disabled, posture_enabled) = settings
                 .as_ref()
-                .and_then(|s| s.lock().ok().map(|g| g.slim_mode))
-                .unwrap_or(false);
-            bus.apply_operator_tool_profile(slim_mode);
+                .and_then(|s| {
+                    s.lock().ok().map(|g| {
+                        (g.is_slim(), g.posture_disabled_tools.clone(), g.posture_enabled_tools.clone())
+                    })
+                })
+                .unwrap_or_default();
+            bus.apply_operator_tool_profile(slim_mode, &posture_disabled, &posture_enabled);
             let mut disabled = disabled_handle.lock().unwrap();
             tracing::info!(
                 disabled = disabled.len(),
@@ -650,14 +662,47 @@ impl AgentSetup {
         bus.emit_harness_status(&harness_status);
 
         // ─── System prompt + context ────────────────────────────────────
-        // Build the base prompt from bus tool definitions (not the old tools vec)
-        let tool_defs = bus.tool_definitions();
-        let slim_mode = settings
+        // Build the base prompt from bus tool definitions.
+        // Slim and constrained modes use compact schemas (stripped parameter
+        // descriptions) to reduce token overhead by ~30-40%.
+        let (slim_mode, current_model) = settings
             .as_ref()
-            .and_then(|s| s.lock().ok().map(|g| g.slim_mode))
-            .unwrap_or(false);
+            .and_then(|s| s.lock().ok().map(|g| (g.is_slim(), g.model.clone())))
+            .unwrap_or((false, String::new()));
+        let model_tier = crate::routing::infer_model_tier(&current_model);
+        let prompt_mode = if matches!(
+            model_tier,
+            crate::routing::CapabilityTier::Mid | crate::routing::CapabilityTier::Leaf
+        ) {
+            prompt::PromptMode::Constrained
+        } else if slim_mode {
+            prompt::PromptMode::Slim
+        } else {
+            prompt::PromptMode::Full
+        };
+        let compact_schemas = true; // Always compact — stripped descriptions don't affect model behavior
+        let tool_defs = bus.tool_definitions_mode(compact_schemas);
+        let tool_count = tool_defs.len();
+        let tool_tokens: usize = tool_defs
+            .iter()
+            .map(|t| {
+                let schema = serde_json::to_string(&t.parameters).unwrap_or_default();
+                (t.name.len() + t.description.len() + schema.len()) / 4
+            })
+            .sum();
         let base_prompt =
-            prompt::build_base_prompt_with_breakdown(&cwd, &tool_defs, slim_mode).prompt;
+            prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode).prompt;
+        let prompt_tokens = base_prompt.len() / 4;
+
+        tracing::info!(
+            tool_count,
+            tool_tokens,
+            prompt_tokens,
+            compact = compact_schemas,
+            mode = ?prompt_mode,
+            "token budget: {} tools ~{}tok, system prompt ~{}tok",
+            tool_count, tool_tokens, prompt_tokens,
+        );
 
         // Context providers: the bus collects context from features, but we
         // still need the ContextManager for the injection pipeline (TTL decay,
@@ -718,7 +763,13 @@ impl AgentSetup {
                             tracing::warn!(
                                 path = %path.display(),
                                 error = %e,
-                                "Failed to load session (format may be from an older version) — starting fresh"
+                                "Failed to load session — starting fresh"
+                            );
+                            eprintln!(
+                                "⚠ Could not restore session ({}). Starting fresh.\n  \
+                                 Cause: {e}\n  \
+                                 The saved session may be from an older version.",
+                                path.display()
                             );
                             ConversationState::new()
                         }

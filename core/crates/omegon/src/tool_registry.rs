@@ -23,10 +23,6 @@ pub mod core {
     pub const WRITE: &str = "write";
     pub const EDIT: &str = "edit";
     pub const CHANGE: &str = "change";
-    pub const SPECULATE_START: &str = "speculate_start";
-    pub const SPECULATE_CHECK: &str = "speculate_check";
-    pub const SPECULATE_COMMIT: &str = "speculate_commit";
-    pub const SPECULATE_ROLLBACK: &str = "speculate_rollback";
     pub const COMMIT: &str = "commit";
     pub const WHOAMI: &str = "whoami";
     pub const CHRONOS: &str = "chronos";
@@ -41,12 +37,6 @@ pub mod view {
 /// Web search — owned by `tools::web_search::WebSearchProvider`
 pub mod web_search {
     pub const WEB_SEARCH: &str = "web_search";
-}
-
-/// Render tools — owned by `tools::render::RenderProvider`
-pub mod render {
-    pub const RENDER_DIAGRAM: &str = "render_diagram";
-    pub const GENERATE_IMAGE_LOCAL: &str = "generate_image_local";
 }
 
 /// Local inference — owned by `tools::local_inference::LocalInferenceProvider`
@@ -93,9 +83,9 @@ pub mod delegate {
     pub const DELEGATE_STATUS: &str = "delegate_status";
 }
 
-/// Session log — owned by `features::session_log`
+/// Agent journal — owned by `features::session_log`
 pub mod session_log {
-    pub const SESSION_LOG: &str = "session_log";
+    pub const SESSION_LOG: &str = "agent_journal";
 }
 
 /// Model budget (tier switching) — owned by `features::model_budget`
@@ -158,20 +148,16 @@ pub mod secrets {
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.
 /// Number of statically registered tools (for splash screen display).
-pub const TOOL_COUNT: usize = 60;
+pub const TOOL_COUNT: usize = 54;
 
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
-        // core (13)
+        // core (9)
         core::BASH,
         core::READ,
         core::WRITE,
         core::EDIT,
         core::CHANGE,
-        core::SPECULATE_START,
-        core::SPECULATE_CHECK,
-        core::SPECULATE_COMMIT,
-        core::SPECULATE_ROLLBACK,
         core::COMMIT,
         core::WHOAMI,
         core::CHRONOS,
@@ -180,9 +166,6 @@ pub fn all_static_names() -> Vec<&'static str> {
         view::VIEW,
         // web_search (1)
         web_search::WEB_SEARCH,
-        // render (2)
-        render::RENDER_DIAGRAM,
-        render::GENERATE_IMAGE_LOCAL,
         // local_inference (3)
         local_inference::ASK_LOCAL_MODEL,
         local_inference::LIST_LOCAL_MODELS,
@@ -241,7 +224,7 @@ pub fn all_static_names() -> Vec<&'static str> {
         secrets::SECRET_LIST,
         secrets::SECRET_DELETE,
     ]
-    // Total: 13+1+1+2+3+12+4+2+3+1+3+1+1+4+3+2+3 = 60
+    // Total: 9+1+1+3+12+4+2+3+1+3+1+1+4+3+2+3 = 54
 }
 
 #[cfg(test)]

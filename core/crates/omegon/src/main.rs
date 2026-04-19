@@ -22,6 +22,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod auth;
+mod behavior;
+mod bootstrap;
 mod bridge;
 pub mod bus;
 mod cleave;
@@ -130,7 +132,7 @@ struct Cli {
     #[arg(
         short,
         long,
-        default_value = "anthropic:claude-sonnet-4-7",
+        default_value = "anthropic:claude-sonnet-4-6",
         global = true
     )]
     model: String,
@@ -316,15 +318,6 @@ enum Commands {
         action: AuthAction,
     },
 
-    /// Log in to a provider. Defaults to Anthropic.
-    /// Usage: omegon-agent login [anthropic|openai|openai-codex|openrouter|ollama-cloud]
-    /// DEPRECATED: Use `omegon auth login` instead.
-    #[command(hide = true)]
-    Login {
-        /// Provider to log in to (anthropic, openai, openai-codex, openrouter, or ollama-cloud). Default: anthropic.
-        #[arg(default_value = "anthropic")]
-        provider: String,
-    },
 
     /// Migrate settings from another CLI agent tool.
     /// Usage: omegon-agent migrate [auto|claude-code|pi|codex|cursor|aider|continue|copilot|windsurf]
@@ -498,6 +491,11 @@ enum PluginAction {
 
 #[derive(Subcommand)]
 enum ExtensionAction {
+    /// Scaffold a new extension project with manifest, Cargo.toml, and src/main.rs.
+    Init {
+        /// Extension name (lowercase, alphanumeric + hyphens).
+        name: String,
+    },
     /// Install an extension from a git URL or local path.
     Install {
         /// Git URL or local directory path containing manifest.toml.
@@ -715,6 +713,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Extension { ref action }) => {
             match action {
+                ExtensionAction::Init { name } => extension_cli::init(name)?,
                 ExtensionAction::Install { uri } => extension_cli::install(uri)?,
                 ExtensionAction::List => extension_cli::list()?,
                 ExtensionAction::Remove { name } => extension_cli::remove(name)?,
@@ -762,11 +761,6 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Commands::Auth { ref action }) => run_auth_command(action).await,
-        Some(Commands::Login { ref provider }) => {
-            // Backward compatibility - redirect to new auth login command
-            eprintln!("Warning: 'login' command is deprecated. Use 'omegon auth login' instead.");
-            run_auth_login(provider).await
-        }
         Some(Commands::Cleave {
             ref plan,
             ref directive,
@@ -934,7 +928,10 @@ async fn run_daemon_turn(
             let _ = events_tx.send(AgentEvent::SystemNotification {
                 message: format!("No LLM provider available for model {model} — check auth"),
             });
-            anyhow::bail!("no provider available for model {model}");
+            anyhow::bail!(
+                "No provider available for model {model}.\n\
+                 Run `omegon auth login` to set up authentication."
+            );
         }
     };
 
@@ -1123,11 +1120,14 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     let cwd = std::fs::canonicalize(".")?;
 
     // ─── Shared setup ───────────────────────────────────────────────────
-    let shared_settings = settings::shared(model);
-    let profile = settings::Profile::load(&cwd);
-    if let Ok(mut s) = shared_settings.lock() {
-        profile.apply_to(&mut s);
-    }
+    let shared_settings = bootstrap::initialize_shared_settings(&bootstrap::SettingsInit {
+        model,
+        cwd: &cwd,
+        cli_posture: None,
+        slim: false,
+        max_turns: 50,
+        apply_profile_posture: false,
+    });
 
     // ─── Agent manifest pre-resolution (before AgentSetup) ────────────
     // Settings, persona, triggers, and workflows must be materialized
@@ -1139,18 +1139,11 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     };
 
     let mut agent = setup::AgentSetup::new(&cwd, None, Some(shared_settings.clone())).await?;
-    agent.initial_harness_status.update_runtime_posture(
+    bootstrap::apply_runtime_posture(
+        &mut agent,
         omegon_traits::OmegonRuntimeProfile::LongRunningDaemon,
         omegon_traits::OmegonAutonomyMode::GuardedAutonomous,
     );
-    if let Some(ref harness) = agent.dashboard_handles.harness
-        && let Ok(mut status) = harness.lock()
-    {
-        status.update_runtime_posture(
-            omegon_traits::OmegonRuntimeProfile::LongRunningDaemon,
-            omegon_traits::OmegonAutonomyMode::GuardedAutonomous,
-        );
-    }
 
     // ─── Extension/plugin pre-flight reconciliation ──────────────────────
     if let Some(ref resolved) = agent_manifest_resolved {
@@ -1177,28 +1170,22 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     let model = shared_settings
         .lock()
         .map(|s| s.model.clone())
-        .unwrap_or_else(|_| "anthropic:claude-sonnet-4-7".into());
+        .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into());
     // Validate provider availability at startup (fail-fast).
     if providers::auto_detect_bridge(&model).await.is_none() {
         tracing::warn!(
             model = %model,
             "no LLM provider available at startup — bridge will be re-resolved per turn"
         );
+        eprintln!(
+            "⚠ No LLM provider available for model {model}.\n  \
+             The daemon will start but tasks will fail until a provider is configured.\n  \
+             Run `omegon auth login` to set up authentication."
+        );
     }
 
     // ─── Event channel (shared with web dashboard) ──────────────────────
-    let (events_tx, _) = broadcast::channel::<AgentEvent>(256);
-
-    // Install a typed BusRequestSink into the cleave feature's slot so
-    // it can emit AgentEvents from inside its tool execution path. The
-    // sink routes BusRequest::EmitAgentEvent to the broadcast channel —
-    // the cleave feature itself never touches the broadcast directly.
-    if let Ok(mut slot) = agent.cleave_event_slot.lock() {
-        *slot = Some(build_runtime_bus_request_sink(events_tx.clone()));
-    }
-    if let Ok(mut slot) = agent.delegate_event_slot.lock() {
-        *slot = Some(build_runtime_bus_request_sink(events_tx.clone()));
-    }
+    let (events_tx, _) = bootstrap::wire_event_channel(&agent, 256);
 
     // ─── Web control plane ──────────────────────────────────────────────
     let state = web::WebState::new(agent.dashboard_handles.clone(), events_tx.clone());
@@ -1416,27 +1403,13 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             let _permit = semaphore.acquire().await
                                 .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                            let loop_config = r#loop::LoopConfig {
-                                max_turns: shared_settings
-                                    .lock()
-                                    .map(|s| s.max_turns)
-                                    .unwrap_or(50),
-                                soft_limit_turns: 35,
-                                max_retries: 0,
-                                retry_delay_ms: 750,
-                                model: shared_settings
-                                    .lock()
-                                    .map(|s| s.model.clone())
-                                    .unwrap_or_else(|_| model.clone()),
-                                cwd: cwd.clone(),
-                                extended_context: false,
-                                settings: Some(shared_settings.clone()),
-                                secrets: Some(secrets),
-                                force_compact: None,
-                                allow_commit_nudge: false,
-                                enforce_first_turn_execution_bias: false,
-                                ollama_manager: None,
-                            };
+                            let loop_config = bootstrap::build_loop_config(
+                                &shared_settings, &cwd, &model,
+                                bootstrap::LoopConfigOverrides {
+                                    secrets: Some(secrets),
+                                    ..Default::default()
+                                },
+                            );
 
                             if let Err(e) = run_daemon_turn(
                                 &session, &shared_settings, &model, &events_tx, loop_config,
@@ -1471,27 +1444,14 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 let _permit = semaphore.acquire().await
                                     .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                                let loop_config = r#loop::LoopConfig {
-                                    max_turns: shared_settings
-                                        .lock()
-                                        .map(|s| s.max_turns)
-                                        .unwrap_or(50),
-                                    soft_limit_turns: 35,
-                                    max_retries: 0,
-                                    retry_delay_ms: 750,
-                                    model: shared_settings
-                                        .lock()
-                                        .map(|s| s.model.clone())
-                                        .unwrap_or_else(|_| model.clone()),
-                                    cwd: cwd.clone(),
-                                    extended_context: false,
-                                    settings: Some(shared_settings.clone()),
-                                    secrets: Some(secrets),
-                                    force_compact: None,
-                                    allow_commit_nudge: true,
-                                    enforce_first_turn_execution_bias: false,
-                                ollama_manager: None,
-                                };
+                                let loop_config = bootstrap::build_loop_config(
+                                    &shared_settings, &cwd, &model,
+                                    bootstrap::LoopConfigOverrides {
+                                        secrets: Some(secrets),
+                                        allow_commit_nudge: true,
+                                        ..Default::default()
+                                    },
+                                );
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
@@ -1543,27 +1503,13 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 let _permit = semaphore.acquire().await
                                     .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                                let loop_config = r#loop::LoopConfig {
-                                    max_turns: shared_settings
-                                        .lock()
-                                        .map(|s| s.max_turns)
-                                        .unwrap_or(50),
-                                    soft_limit_turns: 35,
-                                    max_retries: 0,
-                                    retry_delay_ms: 750,
-                                    model: shared_settings
-                                        .lock()
-                                        .map(|s| s.model.clone())
-                                        .unwrap_or_else(|_| model.clone()),
-                                    cwd: cwd.clone(),
-                                    extended_context: false,
-                                    settings: Some(shared_settings.clone()),
-                                    secrets: Some(secrets),
-                                    force_compact: None,
-                                    allow_commit_nudge: false,
-                                    enforce_first_turn_execution_bias: false,
-                                ollama_manager: None,
-                                };
+                                let loop_config = bootstrap::build_loop_config(
+                                    &shared_settings, &cwd, &model,
+                                    bootstrap::LoopConfigOverrides {
+                                        secrets: Some(secrets),
+                                        ..Default::default()
+                                    },
+                                );
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
@@ -1619,27 +1565,14 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 let _permit = semaphore.acquire().await
                                     .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                                let loop_config = r#loop::LoopConfig {
-                                    max_turns: shared_settings
-                                        .lock()
-                                        .map(|s| s.max_turns)
-                                        .unwrap_or(50),
-                                    soft_limit_turns: 35,
-                                    max_retries: 0,
-                                    retry_delay_ms: 750,
-                                    model: shared_settings
-                                        .lock()
-                                        .map(|s| s.model.clone())
-                                        .unwrap_or_else(|_| model.clone()),
-                                    cwd: cwd.clone(),
-                                    extended_context: false,
-                                    settings: Some(shared_settings.clone()),
-                                    secrets: Some(secrets),
-                                    force_compact: None,
-                                    allow_commit_nudge: true,
-                                    enforce_first_turn_execution_bias: false,
-                                ollama_manager: None,
-                                };
+                                let loop_config = bootstrap::build_loop_config(
+                                    &shared_settings, &cwd, &model,
+                                    bootstrap::LoopConfigOverrides {
+                                        secrets: Some(secrets),
+                                        allow_commit_nudge: true,
+                                        ..Default::default()
+                                    },
+                                );
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
@@ -1687,27 +1620,13 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                                 let _permit = semaphore.acquire().await
                                     .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                                let loop_config = r#loop::LoopConfig {
-                                    max_turns: shared_settings
-                                        .lock()
-                                        .map(|s| s.max_turns)
-                                        .unwrap_or(50),
-                                    soft_limit_turns: 35,
-                                    max_retries: 0,
-                                    retry_delay_ms: 750,
-                                    model: shared_settings
-                                        .lock()
-                                        .map(|s| s.model.clone())
-                                        .unwrap_or_else(|_| model.clone()),
-                                    cwd: cwd.clone(),
-                                    extended_context: false,
-                                    settings: Some(shared_settings.clone()),
-                                    secrets: Some(secrets),
-                                    force_compact: None,
-                                    allow_commit_nudge: false,
-                                    enforce_first_turn_execution_bias: false,
-                                ollama_manager: None,
-                                };
+                                let loop_config = bootstrap::build_loop_config(
+                                    &shared_settings, &cwd, &model,
+                                    bootstrap::LoopConfigOverrides {
+                                        secrets: Some(secrets),
+                                        ..Default::default()
+                                    },
+                                );
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
@@ -1785,27 +1704,13 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             let _permit = semaphore.acquire().await
                                 .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                            let loop_config = r#loop::LoopConfig {
-                                max_turns: shared_settings
-                                    .lock()
-                                    .map(|s| s.max_turns)
-                                    .unwrap_or(50),
-                                soft_limit_turns: 35,
-                                max_retries: 0,
-                                retry_delay_ms: 750,
-                                model: shared_settings
-                                    .lock()
-                                    .map(|s| s.model.clone())
-                                    .unwrap_or_else(|_| model.clone()),
-                                cwd: cwd.clone(),
-                                extended_context: false,
-                                settings: Some(shared_settings.clone()),
-                                secrets: Some(secrets),
-                                force_compact: None,
-                                allow_commit_nudge: false,
-                                enforce_first_turn_execution_bias: false,
-                                ollama_manager: None,
-                            };
+                            let loop_config = bootstrap::build_loop_config(
+                                &shared_settings, &cwd, &model,
+                                bootstrap::LoopConfigOverrides {
+                                    secrets: Some(secrets),
+                                    ..Default::default()
+                                },
+                            );
 
                             if let Err(e) = run_daemon_turn(
                                 &session, &shared_settings, &model, &events_tx, loop_config,
@@ -1864,27 +1769,15 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                         let _permit = semaphore.acquire().await
                             .map_err(|_| anyhow::anyhow!("session semaphore closed"))?;
 
-                        let loop_config = r#loop::LoopConfig {
-                            max_turns: shared_settings
-                                .lock()
-                                .map(|s| s.max_turns)
-                                .unwrap_or(50),
-                            soft_limit_turns: 35,
-                            max_retries: 0,
-                            retry_delay_ms: 750,
-                            model: shared_settings
-                                .lock()
-                                .map(|s| s.model.clone())
-                                .unwrap_or_else(|_| model.clone()),
-                            cwd: cwd.clone(),
-                            extended_context: false,
-                            settings: Some(shared_settings.clone()),
-                            secrets: Some(secrets),
-                            force_compact: None,
-                            allow_commit_nudge: true,
-                            enforce_first_turn_execution_bias: true,
-                            ollama_manager: None,
-                        };
+                        let loop_config = bootstrap::build_loop_config(
+                            &shared_settings, &cwd, &model,
+                            bootstrap::LoopConfigOverrides {
+                                secrets: Some(secrets),
+                                allow_commit_nudge: true,
+                                enforce_first_turn_execution_bias: true,
+                                ..Default::default()
+                            },
+                        );
 
                         if let Err(e) = run_daemon_turn(
                             &session, &shared_settings, &model, &events_tx, loop_config,
@@ -2526,34 +2419,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     }
 
     // ─── Shared state (created early so features can reference it) ────
-    let shared_settings = settings::shared(&cli.model);
-
-    // Load project profile → apply to settings (model, thinking, max_turns)
-    let profile = settings::Profile::load(&cli.cwd);
-    if let Ok(mut s) = shared_settings.lock() {
-        profile.apply_to_with_posture(&mut s, &cli.cwd);
-        // CLI posture flag overrides profile default
-        if let Some(ref posture_name) = resolve_cli_posture(cli) {
-            apply_posture_to_settings(posture_name, &mut s, &cli.cwd);
-        }
-        if cli_prefers_slim_mode(cli) || std::env::var("OMEGON_CHILD_SLIM").is_ok() {
-            s.set_slim_mode(true);
-        }
-        if let Ok(child_thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL") {
-            if let Some(level) = crate::settings::ThinkingLevel::parse(&child_thinking) {
-                s.thinking = level;
-            }
-        }
-        // CLI flags override profile
-        if cli.max_turns != 50 {
-            // 50 is the default — only override if explicitly set
-            s.max_turns = cli.max_turns;
-        }
-        tracing::info!(
-            model = %s.model, thinking = %s.thinking.as_str(),
-            max_turns = s.max_turns, "settings initialized from profile"
-        );
-    }
+    let shared_settings = bootstrap::initialize_shared_settings(&bootstrap::SettingsInit {
+        model: &cli.model,
+        cwd: &cli.cwd,
+        cli_posture: resolve_cli_posture(cli).as_deref(),
+        slim: cli_prefers_slim_mode(cli),
+        max_turns: cli.max_turns,
+        apply_profile_posture: true,
+    });
 
     // ─── Clipboard paste retention sweep ────────────────────────────────
     // Walk the system temp dir for `omegon-clipboard-*` files older
@@ -2593,18 +2466,11 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     // means "most recent" and --fresh forces a clean start.
     let resume = interactive_resume_mode(cli);
     let mut agent = setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
-    agent.initial_harness_status.update_runtime_posture(
+    bootstrap::apply_runtime_posture(
+        &mut agent,
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
         omegon_traits::OmegonAutonomyMode::OperatorDriven,
     );
-    if let Some(ref harness) = agent.dashboard_handles.harness
-        && let Ok(mut status) = harness.lock()
-    {
-        status.update_runtime_posture(
-            omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
-            omegon_traits::OmegonAutonomyMode::OperatorDriven,
-        );
-    }
 
     // LLM provider ──────────────────────────────────────────────────────
     // Native Rust clients by default. --bridge flag forces the Node.js subprocess.
@@ -2633,8 +2499,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
         None => {
             tracing::warn!(
-                "no LLM provider available — TUI will start but messages will fail until /login"
+                "no LLM provider available — run /login anthropic or `omegon auth login` to connect"
             );
+            eprintln!("No LLM provider configured. Use /login <provider> in the TUI or run `omegon auth login` first.");
             provider_connected = false;
             Box::new(bridge::NullBridge)
         }
@@ -2647,23 +2514,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         Arc::new(tokio::sync::RwLock::new(bridge));
 
     // ─── Event channel ──────────────────────────────────────────────────
-    let (events_tx, events_rx) = broadcast::channel::<AgentEvent>(256);
+    let (events_tx, events_rx) = bootstrap::wire_event_channel(&agent, 256);
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(16);
 
     // Wire command_tx to ContextProvider for tool dispatch
     if let Ok(mut shared_tx) = agent.command_tx.lock() {
         *shared_tx = Some(command_tx.clone());
-    }
-
-    // Install a typed BusRequestSink into the cleave feature's slot so
-    // it can emit AgentEvents from inside its tool execution path. The
-    // sink routes BusRequest::EmitAgentEvent to the broadcast channel —
-    // the cleave feature itself never touches the broadcast directly.
-    if let Ok(mut slot) = agent.cleave_event_slot.lock() {
-        *slot = Some(build_runtime_bus_request_sink(events_tx.clone()));
-    }
-    if let Ok(mut slot) = agent.delegate_event_slot.lock() {
-        *slot = Some(build_runtime_bus_request_sink(events_tx.clone()));
     }
 
     let pending_compact = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4299,10 +4155,10 @@ fn build_interactive_loop_config(
     shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
     pending_compact: &Arc<std::sync::atomic::AtomicBool>,
 ) -> r#loop::LoopConfig {
-    let (model, max_turns) = {
-        let s = shared_settings.lock().unwrap();
-        (s.model.clone(), s.max_turns)
-    };
+    let model = shared_settings
+        .lock()
+        .map(|s| s.model.clone())
+        .unwrap_or_default();
 
     let ollama_manager = if providers::infer_provider_id(&model) == "ollama" {
         Some(ollama::OllamaManager::new())
@@ -4310,21 +4166,18 @@ fn build_interactive_loop_config(
         None
     };
 
-    r#loop::LoopConfig {
-        max_turns,
-        soft_limit_turns: if max_turns > 0 { max_turns * 2 / 3 } else { 0 },
-        max_retries: 0,
-        retry_delay_ms: 750,
-        model,
-        cwd: runtime.cwd.clone(),
-        extended_context: false,
-        settings: Some(shared_settings.clone()),
-        secrets: Some(runtime.secrets.clone()),
-        force_compact: Some(pending_compact.clone()),
-        allow_commit_nudge: true,
-        enforce_first_turn_execution_bias: false,
-        ollama_manager,
-    }
+    bootstrap::build_loop_config(
+        shared_settings,
+        &runtime.cwd,
+        &model,
+        bootstrap::LoopConfigOverrides {
+            secrets: Some(runtime.secrets.clone()),
+            force_compact: Some(pending_compact.clone()),
+            allow_commit_nudge: true,
+            ollama_manager,
+            ..Default::default()
+        },
+    )
 }
 
 async fn run_interactive_active_turn(
@@ -4557,6 +4410,21 @@ async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
     std::process::exit(exit_code);
 }
 
+/// Per-turn snapshot for detailed efficiency analysis.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+struct PerTurnSnapshot {
+    turn: u32,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+    estimated_tokens: usize,
+    context_composition: omegon_traits::ContextComposition,
+    turn_end_reason: String,
+    dominant_phase: Option<String>,
+    drift_kind: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 struct BenchmarkUsageSummary {
     requested_model: Option<String>,
@@ -4577,6 +4445,8 @@ struct BenchmarkUsageSummary {
     context_window: usize,
     context_composition: omegon_traits::ContextComposition,
     provider_telemetry: Option<omegon_traits::ProviderTelemetrySnapshot>,
+    /// Per-turn token and context snapshots for efficiency analysis.
+    turns: Vec<PerTurnSnapshot>,
 }
 
 impl BenchmarkUsageSummary {
@@ -4616,7 +4486,7 @@ impl BenchmarkUsageSummary {
             .ok()
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| format!("{:?}", turn_end_reason));
-        *self.turn_end_reasons.entry(reason_key).or_insert(0) += 1;
+        *self.turn_end_reasons.entry(reason_key.clone()).or_insert(0) += 1;
         if let Some(phase) = dominant_phase {
             let key = serde_json::to_value(phase)
                 .ok()
@@ -4645,9 +4515,27 @@ impl BenchmarkUsageSummary {
         self.estimated_tokens = self.estimated_tokens.saturating_add(estimated_tokens);
         self.context_window = context_window;
         if has_nonempty_context_snapshot(&context_composition) {
-            self.context_composition = context_composition;
+            self.context_composition = context_composition.clone();
         }
         self.provider_telemetry = provider_telemetry;
+
+        // Capture per-turn snapshot for efficiency analysis
+        self.turns.push(PerTurnSnapshot {
+            turn: self.turn_count,
+            input_tokens: actual_input_tokens,
+            output_tokens: actual_output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            estimated_tokens,
+            context_composition,
+            turn_end_reason: reason_key,
+            dominant_phase: dominant_phase.and_then(|p| {
+                serde_json::to_value(p).ok().and_then(|v| v.as_str().map(str::to_string))
+            }),
+            drift_kind: drift_kind.and_then(|d| {
+                serde_json::to_value(d).ok().and_then(|v| v.as_str().map(str::to_string))
+            }),
+        });
     }
 }
 
@@ -4695,7 +4583,8 @@ fn write_benchmark_usage_json(
             "avg_cache_tokens": BenchmarkUsageSummary::avg_u64(summary.cache_tokens, summary.turn_count),
             "avg_cache_write_tokens": BenchmarkUsageSummary::avg_u64(summary.cache_write_tokens, summary.turn_count),
             "avg_estimated_tokens": BenchmarkUsageSummary::avg_usize(summary.estimated_tokens, summary.turn_count),
-        }
+        },
+        "turns": summary.turns
     });
     std::fs::write(path, serde_json::to_vec_pretty(&payload)?)?;
     Ok(())
@@ -4737,31 +4626,17 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     };
 
     // ─── Shared setup ───────────────────────────────────────────────────
-    let shared_settings = settings::shared(&cli.model);
-    let profile = settings::Profile::load(&cli.cwd);
+    let shared_settings = bootstrap::initialize_shared_settings(&bootstrap::SettingsInit {
+        model: &cli.model,
+        cwd: &cli.cwd,
+        cli_posture: resolve_cli_posture(cli).as_deref(),
+        slim: cli_prefers_slim_mode(cli),
+        max_turns: cli.max_turns,
+        apply_profile_posture: true,
+    });
+    // Headless: force CLI model even if profile tried to override it.
     if let Ok(mut s) = shared_settings.lock() {
-        profile.apply_to_with_posture(&mut s, &cli.cwd);
         s.set_model(&cli.model);
-        if let Some(ref posture_name) = resolve_cli_posture(cli) {
-            apply_posture_to_settings(posture_name, &mut s, &cli.cwd);
-        }
-        if cli_prefers_slim_mode(cli) || std::env::var("OMEGON_CHILD_SLIM").is_ok() {
-            s.set_slim_mode(true);
-        }
-        if cli.max_turns != 50 {
-            s.max_turns = cli.max_turns;
-        }
-        // Apply child runtime profile overrides from env (set by orchestrator).
-        if let Some(thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL").ok()
-            .and_then(|v| settings::ThinkingLevel::parse(&v))
-        {
-            s.thinking = thinking;
-        }
-        if let Some(class) = std::env::var("OMEGON_CHILD_CONTEXT_CLASS").ok()
-            .and_then(|v| settings::ContextClass::parse(&v))
-        {
-            s.set_requested_context_class(class);
-        }
     }
 
     // ─── Persona activation (headless/child) ─────────────────────────
@@ -4772,40 +4647,25 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
 
     let resume = cli.resume.as_ref().map(|r| r.as_deref());
     let mut agent = setup::AgentSetup::new(&cli.cwd, resume, Some(shared_settings.clone())).await?;
-    agent.initial_harness_status.update_runtime_posture(
+    bootstrap::apply_runtime_posture(
+        &mut agent,
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
         omegon_traits::OmegonAutonomyMode::OperatorDriven,
     );
-    if let Some(ref harness) = agent.dashboard_handles.harness
-        && let Ok(mut status) = harness.lock()
-    {
-        status.update_runtime_posture(
-            omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
-            omegon_traits::OmegonAutonomyMode::OperatorDriven,
-        );
-    }
     agent.conversation.push_user(prompt_text.clone());
 
     // ─── Build loop config ──────────────────────────────────────────────
-    let loop_config = r#loop::LoopConfig {
-        max_turns: cli.max_turns,
-        soft_limit_turns: if cli.max_turns > 0 {
-            cli.max_turns * 2 / 3
-        } else {
-            0
+    let loop_config = bootstrap::build_loop_config(
+        &shared_settings,
+        &agent.cwd,
+        &cli.model,
+        bootstrap::LoopConfigOverrides {
+            max_retries: cli.max_retries,
+            secrets: Some(agent.secrets.clone()),
+            enforce_first_turn_execution_bias: true,
+            ..Default::default()
         },
-        max_retries: cli.max_retries,
-        retry_delay_ms: 750,
-        model: cli.model.clone(),
-        cwd: agent.cwd.clone(),
-        extended_context: false, // headless uses standard context
-        settings: Some(shared_settings.clone()),
-        secrets: Some(agent.secrets.clone()),
-        force_compact: None,
-        allow_commit_nudge: false,
-        enforce_first_turn_execution_bias: true,
-        ollama_manager: None,
-    };
+    );
 
     // ─── LLM provider (native Rust clients only) ─────────────────────
     let resolved_provider = providers::resolve_execution_provider(&cli.model).await;
@@ -4838,18 +4698,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     };
 
     // ─── Event channel ──────────────────────────────────────────────────
-    let (events_tx, mut events_rx) = broadcast::channel::<AgentEvent>(256);
-
-    // Install a typed BusRequestSink into the cleave feature's slot so
-    // it can emit AgentEvents from inside its tool execution path. The
-    // sink routes BusRequest::EmitAgentEvent to the broadcast channel —
-    // the cleave feature itself never touches the broadcast directly.
-    if let Ok(mut slot) = agent.cleave_event_slot.lock() {
-        *slot = Some(build_runtime_bus_request_sink(events_tx.clone()));
-    }
-    if let Ok(mut slot) = agent.delegate_event_slot.lock() {
-        *slot = Some(build_runtime_bus_request_sink(events_tx.clone()));
-    }
+    let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
     let benchmark_summary = std::sync::Arc::new(std::sync::Mutex::new(BenchmarkUsageSummary {
         requested_model: Some(requested_model.clone()),
@@ -5836,7 +5685,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-7",
+            "anthropic:claude-sonnet-4-6",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5874,7 +5723,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-7",
+            "anthropic:claude-sonnet-4-6",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5913,7 +5762,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-7",
+            "anthropic:claude-sonnet-4-6",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -5953,7 +5802,7 @@ mod tests {
             .unwrap();
         let (events_tx, _) = broadcast::channel(16);
         let shared_settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::new(
-            "anthropic:claude-sonnet-4-7",
+            "anthropic:claude-sonnet-4-6",
         )));
         let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
             crate::bridge::NullBridge,
@@ -6344,11 +6193,11 @@ mod tests {
             profile.apply_to(&mut s);
             s.set_model(&cli.model);
             if cli.slim {
-                s.set_slim_mode(true);
+                s.set_posture(settings::PosturePreset::Explorator);
             }
         }
         let s = shared_settings.lock().unwrap();
-        assert!(s.slim_mode);
+        assert!(s.is_slim());
         assert_eq!(s.thinking, crate::settings::ThinkingLevel::Minimal);
         assert_eq!(
             s.requested_context_class,
@@ -6380,7 +6229,7 @@ mod tests {
             "--cwd",
             dir.path().to_str().unwrap(),
             "--model",
-            "anthropic:claude-sonnet-4-7",
+            "anthropic:claude-sonnet-4-6",
             "--prompt",
             "benchmark prompt",
             "--usage-json",
@@ -6400,7 +6249,7 @@ mod tests {
         }
 
         let s = shared_settings.lock().unwrap();
-        assert_eq!(s.model, "anthropic:claude-sonnet-4-7");
+        assert_eq!(s.model, "anthropic:claude-sonnet-4-6");
         assert_eq!(s.thinking, crate::settings::ThinkingLevel::High);
         assert_eq!(s.max_turns, 17);
     }
@@ -6408,13 +6257,13 @@ mod tests {
     #[test]
     fn benchmark_usage_summary_accumulates_run_totals() {
         let mut summary = BenchmarkUsageSummary {
-            requested_model: Some("anthropic:claude-sonnet-4-7".into()),
+            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
             requested_provider: Some("anthropic".into()),
             resolved_provider: Some("anthropic".into()),
             ..BenchmarkUsageSummary::default()
         };
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-7".into()),
+            Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             321,
@@ -6439,7 +6288,7 @@ mod tests {
             None,
         );
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-7".into()),
+            Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ToolContinuation,
             111,
@@ -6467,7 +6316,7 @@ mod tests {
         assert_eq!(summary.turn_count, 2);
         assert_eq!(
             summary.requested_model.as_deref(),
-            Some("anthropic:claude-sonnet-4-7")
+            Some("anthropic:claude-sonnet-4-6")
         );
         assert_eq!(summary.requested_provider.as_deref(), Some("anthropic"));
         assert_eq!(summary.resolved_provider.as_deref(), Some("anthropic"));
@@ -6496,7 +6345,7 @@ mod tests {
     fn benchmark_usage_summary_ignores_empty_context_snapshots() {
         let mut summary = BenchmarkUsageSummary::default();
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-7".into()),
+            Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             100,
@@ -6521,7 +6370,7 @@ mod tests {
             None,
         );
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-7".into()),
+            Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ToolContinuation,
             200,
@@ -6559,7 +6408,7 @@ mod tests {
     fn benchmark_usage_summary_keeps_latest_context_snapshot() {
         let mut summary = BenchmarkUsageSummary::default();
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-7".into()),
+            Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::AssistantCompleted,
             100,
@@ -6584,7 +6433,7 @@ mod tests {
             None,
         );
         summary.observe_turn(
-            Some("anthropic:claude-sonnet-4-7".into()),
+            Some("anthropic:claude-sonnet-4-6".into()),
             Some("anthropic".into()),
             omegon_traits::TurnEndReason::ProgressNudge,
             200,
@@ -6629,10 +6478,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bench").join("usage.json");
         let summary = BenchmarkUsageSummary {
-            requested_model: Some("anthropic:claude-sonnet-4-7".into()),
+            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
             requested_provider: Some("anthropic".into()),
             resolved_provider: Some("anthropic".into()),
-            model: Some("anthropic:claude-sonnet-4-7".into()),
+            model: Some("anthropic:claude-sonnet-4-6".into()),
             provider: Some("anthropic".into()),
             dominant_phases: std::collections::BTreeMap::new(),
             drift_kinds: std::collections::BTreeMap::new(),
@@ -6659,6 +6508,7 @@ mod tests {
                 ..Default::default()
             },
             provider_telemetry: None,
+            turns: Vec::new(),
         };
 
         write_benchmark_usage_json(&path, &summary, "completed").unwrap();
@@ -6666,7 +6516,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["status"], "completed");
         assert_eq!(written["last_completed_turn"], 3);
-        assert_eq!(written["requested_model"], "anthropic:claude-sonnet-4-7");
+        assert_eq!(written["requested_model"], "anthropic:claude-sonnet-4-6");
         assert_eq!(written["requested_provider"], "anthropic");
         assert_eq!(written["resolved_provider"], "anthropic");
         assert_eq!(written["turn_count"], 3);
@@ -6699,10 +6549,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bench").join("usage.json");
         let summary = BenchmarkUsageSummary {
-            requested_model: Some("anthropic:claude-sonnet-4-7".into()),
+            requested_model: Some("anthropic:claude-sonnet-4-6".into()),
             requested_provider: Some("anthropic".into()),
             resolved_provider: Some("anthropic".into()),
-            model: Some("anthropic:claude-sonnet-4-7".into()),
+            model: Some("anthropic:claude-sonnet-4-6".into()),
             provider: Some("anthropic".into()),
             dominant_phases: std::collections::BTreeMap::new(),
             drift_kinds: std::collections::BTreeMap::new(),
@@ -6717,6 +6567,7 @@ mod tests {
             context_window: 200_000,
             context_composition: omegon_traits::ContextComposition::default(),
             provider_telemetry: None,
+            turns: Vec::new(),
         };
 
         write_benchmark_usage_json(&path, &summary, "in_progress").unwrap();

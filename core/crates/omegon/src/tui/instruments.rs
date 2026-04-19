@@ -249,12 +249,8 @@ pub(crate) fn tool_short_name(name: &str) -> String {
         "write" | "Write" => ("◆", "write"), // filled = mutating
         "edit" | "Edit" => ("✎", "edit"),    // U+270E (NOT U+270F which is emoji)
         "view" => ("◈", "view"),
-        // ── Git / speculate ──
+        // ── Git ──
         "commit" => ("⊕", "commit"),         // add to history
-        "speculate_start" => ("⎇", "spec∘"), // alternative key = branch — was ⊘
-        "speculate_check" => ("⎇", "spec?"),
-        "speculate_commit" => ("⎇", "spec✓"),
-        "speculate_rollback" => ("⎇", "spec✗"),
         // ── Memory ── (▪/▫ are in the emoji set; using ▣/▢ instead)
         "memory_store" => ("▣", "mem+"),
         "memory_recall" => ("▢", "recall"),
@@ -282,8 +278,6 @@ pub(crate) fn tool_short_name(name: &str) -> String {
         "web_search" => ("⌖", "search"), // position indicator — was ⊕ (collided with commit)
         "codebase_search" => ("⌕", "cbase"),
         "codebase_index" => ("⌕", "cidx"),
-        "render_diagram" => ("⬡", "diag"),
-        "generate_image_local" => ("⬡", "img"),
         // ── Local inference ──
         "ask_local_model" => ("⊛", "local"),
         "list_local_models" => ("⊛", "l.list"),
@@ -2467,12 +2461,8 @@ mod tests {
             "write",
             "edit",
             "view",
-            // git/speculate
+            // git
             "commit",
-            "speculate_start",
-            "speculate_check",
-            "speculate_commit",
-            "speculate_rollback",
             // memory
             "memory_store",
             "memory_recall",
@@ -2500,8 +2490,6 @@ mod tests {
             "web_search",
             "codebase_search",
             "codebase_index",
-            "render_diagram",
-            "generate_image_local",
             // local inference
             "ask_local_model",
             "list_local_models",

@@ -313,9 +313,6 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
             Some(crate::tui::CanonicalSlashCommand::AuthStatus) => {
                 (CanonicalAction::AuthStatus, ControlRole::Read, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::AuthUnlock) => {
-                (CanonicalAction::AuthUnlock, ControlRole::Admin, false)
-            }
             _ => (CanonicalAction::Unknown, ControlRole::Admin, false),
         },
         "login" => (CanonicalAction::AuthLogin, ControlRole::Admin, false),

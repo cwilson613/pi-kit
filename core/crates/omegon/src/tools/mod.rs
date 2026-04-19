@@ -1,19 +1,18 @@
 //! Core tools — the agent's primary capabilities.
 //!
 //! Phase 0: primitive tools (bash, read, write, edit).
-//! Phase 0+: higher-level tools (understand, change, execute, remember, speculate)
+//! Phase 0+: higher-level tools (understand, change, execute, remember)
 //!           that compose the primitives.
 
 pub mod bash;
 pub mod change;
+pub mod native_cmd;
 pub mod chronos;
 pub mod codebase_search;
 pub mod edit;
 pub mod local_inference;
 pub mod read;
-pub mod render;
 pub mod serve;
-pub mod speculate;
 pub mod validate;
 pub mod view;
 pub mod web_search;
@@ -257,54 +256,6 @@ impl ToolProvider for CoreTools {
                 }),
             },
             ToolDefinition {
-                name: reg::SPECULATE_START.into(),
-                label: "speculate".into(),
-                description: "Create a git checkpoint for exploratory changes. Make changes freely, \
-                    then use speculate_commit to keep them or speculate_rollback to undo everything."
-                    .into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "label": {
-                            "type": "string",
-                            "description": "Name for this speculation (e.g. 'try-approach-a')"
-                        }
-                    },
-                    "required": ["label"]
-                }),
-            },
-            ToolDefinition {
-                name: reg::SPECULATE_CHECK.into(),
-                label: "speculate".into(),
-                description: "Check the current speculation state — shows modified files and \
-                    runs validation against them."
-                    .into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            },
-            ToolDefinition {
-                name: reg::SPECULATE_COMMIT.into(),
-                label: "speculate".into(),
-                description: "Keep all changes made during speculation and discard the checkpoint."
-                    .into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            },
-            ToolDefinition {
-                name: reg::SPECULATE_ROLLBACK.into(),
-                label: "speculate".into(),
-                description: "Revert all changes made during speculation back to the checkpoint."
-                    .into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            },
-            ToolDefinition {
                 name: reg::COMMIT.into(),
                 label: reg::COMMIT.into(),
                 description: "Commit changes to git. Stages the specified files (or all \
@@ -416,13 +367,13 @@ impl ToolProvider for CoreTools {
                     "required": ["action"]
                 }),
             },
-            // NOTE: view, web_search, render_diagram, generate_image_local,
-            // ask_local_model, list_local_models, manage_ollama, context_status,
-            // context_compact, context_clear are provided by their dedicated
-            // ToolProvider implementations (ViewProvider, WebSearchProvider,
-            // RenderProvider, LocalInferenceProvider, ContextProvider) registered
-            // separately in setup.rs. Do NOT add them here — duplicates cause
-            // Anthropic API 400 "Tool names must be unique" errors.
+            // NOTE: view, web_search, ask_local_model, list_local_models,
+            // manage_ollama, context_status, context_compact, context_clear are
+            // provided by their dedicated ToolProvider implementations
+            // (ViewProvider, WebSearchProvider, LocalInferenceProvider,
+            // ContextProvider) registered separately in setup.rs. Do NOT add
+            // them here — duplicates cause Anthropic API 400 "Tool names must
+            // be unique" errors.
         ]
     }
 
@@ -440,24 +391,7 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
                 let timeout = args["timeout"].as_u64();
 
-                // Warn (but don't block) git mutation commands — the agent should
-                // use the structured `commit` tool instead. Hard-blocking would
-                // break legitimate uses (git stash in speculate, git branch for
-                // exploration). The warning nudges the agent toward the right tool.
-                if self.repo_model.is_some() {
-                    let cmd_lower = command.to_lowercase();
-                    if cmd_lower.contains("git commit")
-                        || cmd_lower.contains("git add ")
-                        || (cmd_lower.contains("git stash")
-                            && !cmd_lower.contains("git stash list"))
-                    {
-                        tracing::warn!(
-                            command = command,
-                            "git mutation via bash — prefer the structured `commit` tool \
-                             for commits (handles submodules, lifecycle batching, working set)"
-                        );
-                    }
-                }
+                warn_git_mutation_via_bash(self.repo_model.is_some(), command);
 
                 bash::execute(command, &self.cwd, timeout, cancel).await
             }
@@ -568,12 +502,11 @@ impl ToolProvider for CoreTools {
                     }
 
                     let summary = format!("Committed (jj): {committed_id}\n{message}");
-                    let branch = std::process::Command::new("git")
-                        .args(["branch", "--show-current"])
-                        .current_dir(&self.cwd)
-                        .output()
+                    let branch = git2::Repository::discover(&self.cwd)
                         .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .and_then(|r| {
+                            r.head().ok().and_then(|h| h.shorthand().map(|s| s.to_string()))
+                        })
                         .unwrap_or_default();
                     return Ok(ToolResult {
                         content: vec![omegon_traits::ContentBlock::Text { text: summary }],
@@ -672,15 +605,6 @@ impl ToolProvider for CoreTools {
                     }),
                 })
             }
-            reg::SPECULATE_START => {
-                let label = args["label"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing 'label' argument"))?;
-                speculate::start(label, &self.cwd).await
-            }
-            reg::SPECULATE_CHECK => speculate::check(&self.cwd).await,
-            reg::SPECULATE_COMMIT => speculate::commit(&self.cwd).await,
-            reg::SPECULATE_ROLLBACK => speculate::rollback(&self.cwd).await,
             reg::WHOAMI => whoami::execute().await,
             reg::CHRONOS => {
                 let sub = args["subcommand"].as_str().unwrap_or("week");
@@ -701,7 +625,7 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'action' argument"))?;
                 serve::execute(action, &args, &self.cwd).await
             }
-            // view, web_search, render_*, local_inference tools are handled
+            // view, web_search, local_inference tools are handled
             // by their dedicated providers registered in setup.rs.
             _ => anyhow::bail!("Unknown core tool: {tool_name}"),
         }
@@ -724,27 +648,31 @@ impl ToolProvider for CoreTools {
                 .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
             let timeout = args["timeout"].as_u64();
 
-            // Same git-mutation warning as the non-streaming path. Kept inline
-            // (rather than factored out) to make the divergence between the
-            // two dispatch paths obvious — if you change one, change both.
-            if self.repo_model.is_some() {
-                let cmd_lower = command.to_lowercase();
-                if cmd_lower.contains("git commit")
-                    || cmd_lower.contains("git add ")
-                    || (cmd_lower.contains("git stash") && !cmd_lower.contains("git stash list"))
-                {
-                    tracing::warn!(
-                        command = command,
-                        "git mutation via bash — prefer the structured `commit` tool \
-                         for commits (handles submodules, lifecycle batching, working set)"
-                    );
-                }
-            }
+            warn_git_mutation_via_bash(self.repo_model.is_some(), command);
 
             return bash::execute_streaming(command, &self.cwd, timeout, cancel, sink).await;
         }
 
         self.execute(tool_name, call_id, args, cancel).await
+    }
+}
+
+/// Warn (but don't block) git mutation commands run via bash.
+/// The agent should use the structured `commit` tool instead.
+fn warn_git_mutation_via_bash(has_repo_model: bool, command: &str) {
+    if !has_repo_model {
+        return;
+    }
+    let cmd_lower = command.to_lowercase();
+    if cmd_lower.contains("git commit")
+        || cmd_lower.contains("git add ")
+        || (cmd_lower.contains("git stash") && !cmd_lower.contains("git stash list"))
+    {
+        tracing::warn!(
+            command = command,
+            "git mutation via bash — prefer the structured `commit` tool \
+             for commits (handles submodules, lifecycle batching, working set)"
+        );
     }
 }
 
@@ -803,33 +731,27 @@ mod tests {
         assert!(tool_names.contains("edit"));
         assert!(tool_names.contains("change"));
 
-        // Git/speculation tools
+        // Git tools
         assert!(tool_names.contains("commit"));
-        assert!(tool_names.contains("speculate_start"));
-        assert!(tool_names.contains("speculate_check"));
-        assert!(tool_names.contains("speculate_commit"));
-        assert!(tool_names.contains("speculate_rollback"));
 
         // Utility tools
         assert!(tool_names.contains("whoami"));
         assert!(tool_names.contains("chronos"));
 
-        // view, web_search, render_*, local_inference tools are provided
+        // view, web_search, local_inference tools are provided
         // by dedicated providers, NOT by CoreTools (to avoid duplicates).
         assert!(!tool_names.contains("view"));
         assert!(!tool_names.contains("web_search"));
-        assert!(!tool_names.contains("render_diagram"));
-        assert!(!tool_names.contains("generate_image_local"));
         assert!(!tool_names.contains("ask_local_model"));
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // Should have 13 core tools (bash, read, write, edit, change,
-        // speculate_start/check/commit/rollback, commit, whoami, chronos, serve)
+        // Should have 9 core tools (bash, read, write, edit, change,
+        // commit, whoami, chronos, serve)
         assert_eq!(
             tool_names.len(),
-            13,
-            "Expected 13 core tools, got {}",
+            9,
+            "Expected 9 core tools, got {}",
             tool_names.len()
         );
     }
@@ -847,8 +769,6 @@ mod tests {
         let provider_tools = [
             "view",
             "web_search",
-            "render_diagram",
-            "generate_image_local",
             "ask_local_model",
             "list_local_models",
             "manage_ollama",

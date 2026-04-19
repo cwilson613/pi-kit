@@ -14,8 +14,7 @@ use crate::upstream_errors::{
     classify_upstream_error_for_provider, is_context_overflow, is_malformed_history,
 };
 use omegon_traits::{
-    AgentEvent, ContentBlock, ContextComposition, DriftKind, OodaPhase, ProgressNudgeReason,
-    TurnEndReason,
+    AgentEvent, ContentBlock, ContextComposition, DriftKind, ProgressNudgeReason, TurnEndReason,
 };
 
 use futures_util::stream::{self, StreamExt};
@@ -58,6 +57,9 @@ pub struct LoopConfig {
     /// Whether the loop should push back on first-turn orientation churn in
     /// execution-biased headless runs (benchmarks, smoke tasks).
     pub enforce_first_turn_execution_bias: bool,
+    /// Shared OllamaManager for warmup and model queries. Created once at
+    /// startup to avoid re-creating reqwest::Client on every turn.
+    pub ollama_manager: Option<crate::ollama::OllamaManager>,
 }
 
 impl Default for LoopConfig {
@@ -75,82 +77,12 @@ impl Default for LoopConfig {
             force_compact: None,
             allow_commit_nudge: true,
             enforce_first_turn_execution_bias: false,
+            ollama_manager: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AutoDelegatePlan {
-    worker_profile: &'static str,
-    background: bool,
-}
-
-fn classify_auto_delegate_plan(
-    config: &LoopConfig,
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-    dominant_phase: Option<OodaPhase>,
-    drift_kind: Option<DriftKind>,
-) -> Option<AutoDelegatePlan> {
-    if !is_slim_execution_bias(config) || tool_calls.is_empty() {
-        return None;
-    }
-    if tool_calls.iter().any(|call| call.name == "delegate") {
-        return None;
-    }
-    if !conversation.intent.files_modified.is_empty() {
-        return None;
-    }
-    if tool_calls.iter().any(|call| call.name == "commit") {
-        return None;
-    }
-    if matches!(drift_kind, Some(DriftKind::OrientationChurn))
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(&call.name))
-    {
-        return Some(AutoDelegatePlan {
-            worker_profile: "scout",
-            background: true,
-        });
-    }
-    if is_narrow_patch_candidate(tool_calls) {
-        return Some(AutoDelegatePlan {
-            worker_profile: "patch",
-            background: false,
-        });
-    }
-    if matches!(dominant_phase, Some(OodaPhase::Act)) && tool_calls.iter().all(is_validation_tool) {
-        return Some(AutoDelegatePlan {
-            worker_profile: "verify",
-            background: false,
-        });
-    }
-    None
-}
-
-fn auto_delegate_tool_call(conversation: &ConversationState, plan: AutoDelegatePlan) -> ToolCall {
-    let last_prompt = conversation.last_user_prompt();
-    let task = if !last_prompt.trim().is_empty() {
-        last_prompt.trim().to_string()
-    } else {
-        conversation.intent.current_task.clone().unwrap_or_else(|| {
-            "Inspect the current bounded task and return concise findings.".to_string()
-        })
-    };
-    ToolCall {
-        id: format!(
-            "auto-delegate-{}",
-            conversation.turn_count().saturating_add(1)
-        ),
-        name: "delegate".to_string(),
-        arguments: serde_json::json!({
-            "task": task,
-            "background": plan.background,
-            "worker_profile": plan.worker_profile,
-        }),
-    }
-}
+use crate::behavior::{self, BehavioralTier, ControllerState};
 
 fn default_context_composition(context_window: usize) -> ContextComposition {
     ContextComposition {
@@ -159,9 +91,7 @@ fn default_context_composition(context_window: usize) -> ContextComposition {
     }
 }
 
-fn estimate_chars_to_tokens(chars: usize) -> usize {
-    chars / 4
-}
+use crate::util::estimate_chars_to_tokens;
 
 fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize {
     tools
@@ -173,687 +103,34 @@ fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize
         .sum()
 }
 
-fn is_orientation_tool(name: &str) -> bool {
-    matches!(name, "memory_recall" | "context_status" | "request_context")
-}
+// Behavioral classifiers, streak tracking, continuation pressure, and
+// auto-delegation logic live in `behavior.rs`. Re-export convenience
+// aliases used by the main loop body.
+use behavior::classify_auto_delegate_plan;
+use behavior::auto_delegate_tool_call;
+use behavior::classify_drift_kind;
+use behavior::classify_progress_signal;
+use behavior::classify_turn_phase;
+use behavior::continuation_pressure_tier;
+use behavior::continuation_pressure_message;
+use behavior::detect_evidence_sufficiency;
+use behavior::behavioral_tier;
+use behavior::is_first_turn_orientation_churn;
+use behavior::is_mutation_tool_name;
+use behavior::is_repo_inspection_tool;
+use behavior::progress_nudge_reason_for_drift;
+use behavior::should_inject_execution_pressure;
+
+use behavior::evidence_sufficiency_message;
+use behavior::om_local_first_message;
+use behavior::is_slim_execution_bias;
+use behavior::has_local_target_hypothesis;
+
+
+// ─── Remaining classifier bodies removed — see behavior.rs ──────────────
+
+// Anchor: is_narrow_patch_candidate was here. Now using behavior::*.
 
-fn is_repo_inspection_tool(name: &str) -> bool {
-    matches!(name, "read" | "codebase_search" | "view")
-}
-
-fn is_broad_orientation_tool(name: &str) -> bool {
-    matches!(name, "memory_recall" | "context_status" | "request_context")
-}
-
-fn is_broad_repo_inspection_tool(name: &str) -> bool {
-    matches!(name, "codebase_search" | "view")
-}
-
-fn is_targeted_repo_inspection_tool(name: &str) -> bool {
-    name == "read"
-}
-
-fn is_mutation_tool_name(name: &str) -> bool {
-    matches!(name, "write" | "edit" | "change")
-}
-
-fn mutation_targets_within_limit(tool_calls: &[ToolCall], max_files: usize) -> bool {
-    let mut paths = std::collections::BTreeSet::new();
-    for call in tool_calls {
-        if !is_mutation_tool_name(&call.name) {
-            continue;
-        }
-        let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
-            return false;
-        };
-        paths.insert(path.to_string());
-        if paths.len() > max_files {
-            return false;
-        }
-    }
-    !paths.is_empty()
-}
-
-fn is_narrow_patch_candidate(tool_calls: &[ToolCall]) -> bool {
-    if !tool_calls
-        .iter()
-        .any(|call| is_mutation_tool_name(&call.name))
-    {
-        return false;
-    }
-    if !mutation_targets_within_limit(tool_calls, 2) {
-        return false;
-    }
-    tool_calls.iter().all(|call| {
-        is_mutation_tool_name(&call.name) || call.name == "read" || is_validation_tool(call)
-    })
-}
-
-fn is_validation_tool(call: &ToolCall) -> bool {
-    if call.name != "bash" {
-        return false;
-    }
-    let Some(command) = call.arguments.get("command").and_then(|v| v.as_str()) else {
-        return false;
-    };
-    let lower = command.to_ascii_lowercase();
-    [
-        "cargo test",
-        "cargo check",
-        "cargo clippy",
-        "cargo fmt",
-        "pytest",
-        "npm test",
-        "npm run test",
-        "npm run check",
-        "npm run typecheck",
-        "tsc --noemit",
-        "ruff check",
-        "ruff format --check",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
-fn classify_turn_phase(tool_calls: &[ToolCall], results: &[ToolResultEntry]) -> Option<OodaPhase> {
-    if tool_calls.is_empty() {
-        return None;
-    }
-
-    if tool_calls.iter().any(|call| call.name == "commit") {
-        return Some(OodaPhase::Act);
-    }
-
-    let successful_mutation = tool_calls.iter().any(|call| {
-        is_mutation_tool_name(&call.name)
-            && results
-                .iter()
-                .find(|result| result.call_id == call.id)
-                .is_some_and(|result| !result.is_error)
-    });
-    if successful_mutation {
-        return Some(OodaPhase::Act);
-    }
-
-    if tool_calls
-        .iter()
-        .all(|call| is_orientation_tool(&call.name))
-    {
-        return Some(OodaPhase::Observe);
-    }
-
-    if tool_calls
-        .iter()
-        .all(|call| is_repo_inspection_tool(&call.name))
-    {
-        return Some(OodaPhase::Observe);
-    }
-
-    if tool_calls.iter().all(is_validation_tool) {
-        return Some(OodaPhase::Act);
-    }
-
-    if tool_calls
-        .iter()
-        .any(|call| is_mutation_tool_name(&call.name) || is_validation_tool(call))
-    {
-        return Some(OodaPhase::Act);
-    }
-
-    Some(OodaPhase::Orient)
-}
-
-fn classify_drift_kind(
-    turn: u32,
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-) -> Option<DriftKind> {
-    let broad_orientation_calls = tool_calls
-        .iter()
-        .filter(|call| is_broad_orientation_tool(&call.name))
-        .count();
-    let broad_repo_inspection_calls = tool_calls
-        .iter()
-        .filter(|call| is_broad_repo_inspection_tool(&call.name))
-        .count();
-    let targeted_repo_inspection_calls = tool_calls
-        .iter()
-        .filter(|call| is_targeted_repo_inspection_tool(&call.name))
-        .count();
-
-    if conversation.intent.files_modified.is_empty()
-        && !conversation.intent.files_read.is_empty()
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(&call.name))
-        && turn >= 2
-        && broad_repo_inspection_calls > 0
-        && targeted_repo_inspection_calls <= 1
-    {
-        return Some(DriftKind::OrientationChurn);
-    }
-
-    if conversation.intent.files_modified.is_empty()
-        && conversation.intent.files_read.is_empty()
-        && turn >= 1
-        && broad_orientation_calls == tool_calls.len()
-    {
-        return Some(DriftKind::OrientationChurn);
-    }
-
-    let failing_mutations: Vec<&ToolCall> = tool_calls
-        .iter()
-        .filter(|call| {
-            is_mutation_tool_name(&call.name)
-                && results
-                    .iter()
-                    .find(|result| result.call_id == call.id)
-                    .is_some_and(|result| result.is_error)
-        })
-        .collect();
-    let repeated_mutation_failures = failing_mutations.len() >= 2
-        && failing_mutations.iter().enumerate().any(|(idx, call)| {
-            let path = call.arguments.get("path").and_then(|v| v.as_str());
-            failing_mutations
-                .iter()
-                .enumerate()
-                .filter(|(other_idx, other)| *other_idx != idx && other.name == call.name)
-                .any(|(_, other)| {
-                    let other_path = other.arguments.get("path").and_then(|v| v.as_str());
-                    match (path, other_path) {
-                        (Some(path), Some(other_path)) => path == other_path,
-                        (None, None) => true,
-                        _ => false,
-                    }
-                })
-        });
-    if repeated_mutation_failures {
-        return Some(DriftKind::RepeatedActionFailure);
-    }
-
-    let validation_calls = tool_calls
-        .iter()
-        .filter(|call| is_validation_tool(call))
-        .count();
-    let targeted_validation = matches!(
-        classify_validation_scope(tool_calls, results),
-        ProgressSignal::TargetedValidation
-    );
-    if validation_calls >= 2
-        && conversation.intent.files_modified.is_empty()
-        && !targeted_validation
-    {
-        return Some(DriftKind::ValidationThrash);
-    }
-
-    if !conversation.intent.files_modified.is_empty()
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(&call.name))
-        && broad_repo_inspection_calls > 0
-    {
-        return Some(DriftKind::ClosureStall);
-    }
-
-    None
-}
-
-fn progress_nudge_reason_for_drift(drift: DriftKind) -> ProgressNudgeReason {
-    match drift {
-        DriftKind::OrientationChurn => ProgressNudgeReason::AntiOrientation,
-        DriftKind::RepeatedActionFailure => ProgressNudgeReason::ActionRecovery,
-        DriftKind::ValidationThrash => ProgressNudgeReason::ValidationPressure,
-        DriftKind::ClosureStall => ProgressNudgeReason::ClosurePressure,
-    }
-}
-
-fn is_first_turn_orientation_churn(
-    turn: u32,
-    config: &LoopConfig,
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-) -> bool {
-    config.enforce_first_turn_execution_bias
-        && turn == 1
-        && !tool_calls.is_empty()
-        && tool_calls
-            .iter()
-            .all(|call| is_orientation_tool(&call.name))
-        && conversation.intent.files_read.is_empty()
-        && conversation.intent.files_modified.is_empty()
-}
-
-fn should_inject_execution_pressure(
-    turn: u32,
-    _config: &LoopConfig,
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-) -> bool {
-    if tool_calls.is_empty()
-        || !conversation.intent.files_modified.is_empty()
-        || conversation.intent.files_read.is_empty()
-        || !tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(&call.name))
-    {
-        return false;
-    }
-
-    let has_broad_repo_inspection = tool_calls
-        .iter()
-        .any(|call| is_broad_repo_inspection_tool(&call.name));
-
-    // Broad inspection (codebase_search, etc.) → pressure at turn 2.
-    // Targeted-only reads → give one extra turn to focus, pressure at turn 3.
-    (turn >= 2 && has_broad_repo_inspection) || (turn >= 3 && !has_broad_repo_inspection)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProgressSignal {
-    None,
-    Mutation,
-    TargetedValidation,
-    BroadValidation,
-    ConstraintDiscovery,
-    Commit,
-    Completion,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EvidenceSufficiency {
-    None,
-    Targeted,
-    Actionable,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ControllerState {
-    consecutive_tool_continuations: u32,
-    orientation_churn_streak: u32,
-    repeated_action_failure_streak: u32,
-    validation_thrash_streak: u32,
-    closure_stall_streak: u32,
-    constraint_discovery_streak: u32,
-    targeted_evidence_streak: u32,
-    evidence_sufficient_streak: u32,
-}
-
-impl ControllerState {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Snapshot the streak counters as the public `ControllerStreaks`
-    /// shape that's carried on `AgentEvent::TurnEnd`. The internal
-    /// `consecutive_tool_continuations` field is intentionally not
-    /// exported — it's a continuation-pressure heuristic, not a
-    /// drift-streak signal that operators care about.
-    fn streaks(&self) -> omegon_traits::ControllerStreaks {
-        omegon_traits::ControllerStreaks {
-            orientation_churn: self.orientation_churn_streak,
-            repeated_action_failure: self.repeated_action_failure_streak,
-            validation_thrash: self.validation_thrash_streak,
-            closure_stall: self.closure_stall_streak,
-            constraint_discovery: self.constraint_discovery_streak,
-            evidence_sufficient: self.evidence_sufficient_streak,
-        }
-    }
-
-    fn observe_turn(
-        &mut self,
-        turn_end_reason: TurnEndReason,
-        drift_kind: Option<DriftKind>,
-        progress_signal: ProgressSignal,
-        evidence_sufficiency: EvidenceSufficiency,
-    ) {
-        match progress_signal {
-            ProgressSignal::Mutation | ProgressSignal::Commit | ProgressSignal::Completion => {
-                self.reset();
-                return;
-            }
-            ProgressSignal::TargetedValidation | ProgressSignal::ConstraintDiscovery => {
-                self.consecutive_tool_continuations /= 2;
-                self.orientation_churn_streak /= 2;
-                self.repeated_action_failure_streak = 0;
-                self.validation_thrash_streak = 0;
-                self.closure_stall_streak /= 2;
-            }
-            ProgressSignal::BroadValidation | ProgressSignal::None => {}
-        }
-
-        if matches!(turn_end_reason, TurnEndReason::ToolContinuation) {
-            self.consecutive_tool_continuations =
-                self.consecutive_tool_continuations.saturating_add(1);
-        } else {
-            self.consecutive_tool_continuations = 0;
-        }
-
-        // Drift streaks: increment on match, *decay* (halve) on mismatch
-        // instead of hard-resetting.  This prevents the model from gaming the
-        // detector by alternating between drift kinds (e.g. OrientationChurn
-        // one turn, ClosureStall the next) to keep every streak at 1.
-        self.orientation_churn_streak = if matches!(drift_kind, Some(DriftKind::OrientationChurn)) {
-            self.orientation_churn_streak.saturating_add(1)
-        } else {
-            self.orientation_churn_streak / 2
-        };
-        self.repeated_action_failure_streak =
-            if matches!(drift_kind, Some(DriftKind::RepeatedActionFailure)) {
-                self.repeated_action_failure_streak.saturating_add(1)
-            } else {
-                self.repeated_action_failure_streak / 2
-            };
-        self.validation_thrash_streak = if matches!(drift_kind, Some(DriftKind::ValidationThrash)) {
-            self.validation_thrash_streak.saturating_add(1)
-        } else {
-            self.validation_thrash_streak / 2
-        };
-        self.closure_stall_streak = if matches!(drift_kind, Some(DriftKind::ClosureStall)) {
-            self.closure_stall_streak.saturating_add(1)
-        } else {
-            self.closure_stall_streak / 2
-        };
-        // Use halving-decay (not hard reset) for all streaks to prevent the
-        // model from gaming the detector by interleaving one off-pattern turn
-        // between two on-pattern turns — same approach as the drift streaks.
-        self.constraint_discovery_streak =
-            if matches!(progress_signal, ProgressSignal::ConstraintDiscovery) {
-                self.constraint_discovery_streak.saturating_add(1)
-            } else {
-                self.constraint_discovery_streak / 2
-            };
-        self.targeted_evidence_streak =
-            if matches!(
-                evidence_sufficiency,
-                EvidenceSufficiency::Targeted | EvidenceSufficiency::Actionable
-            ) {
-                self.targeted_evidence_streak.saturating_add(1)
-            } else {
-                self.targeted_evidence_streak / 2
-            };
-        self.evidence_sufficient_streak =
-            if matches!(evidence_sufficiency, EvidenceSufficiency::Actionable) {
-                self.evidence_sufficient_streak.saturating_add(1)
-            } else {
-                self.evidence_sufficient_streak / 2
-            };
-    }
-}
-
-fn has_successful_tool_call<F>(
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-    predicate: F,
-) -> bool
-where
-    F: Fn(&ToolCall) -> bool,
-{
-    tool_calls.iter().any(|call| {
-        predicate(call)
-            && results
-                .iter()
-                .find(|result| result.call_id == call.id)
-                .is_some_and(|result| !result.is_error)
-    })
-}
-
-fn has_progress_boundary(tool_calls: &[ToolCall], results: &[ToolResultEntry]) -> bool {
-    has_successful_tool_call(tool_calls, results, |call| {
-        is_mutation_tool_name(&call.name)
-    }) || has_successful_tool_call(tool_calls, results, is_validation_tool)
-        || has_successful_tool_call(tool_calls, results, |call| call.name == "commit")
-}
-
-fn classify_validation_scope(
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-) -> ProgressSignal {
-    let successful_validation_calls: Vec<&ToolCall> = tool_calls
-        .iter()
-        .filter(|call| {
-            is_validation_tool(call)
-                && results
-                    .iter()
-                    .find(|result| result.call_id == call.id)
-                    .is_some_and(|result| !result.is_error)
-        })
-        .collect();
-
-    if successful_validation_calls.is_empty() {
-        return ProgressSignal::None;
-    }
-
-    let is_targeted = successful_validation_calls.iter().any(|call| {
-        call.arguments
-            .get("command")
-            .and_then(|v| v.as_str())
-            .is_some_and(|command| {
-                let lower = command.to_ascii_lowercase();
-                lower.contains(" -k ")
-                    || lower.contains(" --test ")
-                    || lower.contains("::")
-                    || lower.contains(" shadow_context")
-                    || lower.contains(" tests/")
-            })
-    });
-
-    if is_targeted {
-        ProgressSignal::TargetedValidation
-    } else {
-        ProgressSignal::BroadValidation
-    }
-}
-
-fn detect_constraint_discovery(
-    constraints_before: usize,
-    constraints_after: usize,
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-) -> bool {
-    if constraints_after <= constraints_before {
-        return false;
-    }
-
-    tool_calls.iter().any(|call| {
-        is_repo_inspection_tool(&call.name)
-            || is_validation_tool(call)
-            || (is_mutation_tool_name(&call.name)
-                && results
-                    .iter()
-                    .find(|result| result.call_id == call.id)
-                    .is_some_and(|result| result.is_error))
-    })
-}
-
-fn classify_progress_signal(
-    constraints_before: usize,
-    constraints_after: usize,
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-) -> ProgressSignal {
-    if has_successful_tool_call(tool_calls, results, |call| call.name == "commit") {
-        return ProgressSignal::Commit;
-    }
-    if has_successful_tool_call(tool_calls, results, |call| {
-        is_mutation_tool_name(&call.name)
-    }) {
-        return ProgressSignal::Mutation;
-    }
-
-    let validation_signal = classify_validation_scope(tool_calls, results);
-    if !matches!(validation_signal, ProgressSignal::None) {
-        return validation_signal;
-    }
-
-    if detect_constraint_discovery(constraints_before, constraints_after, tool_calls, results) {
-        return ProgressSignal::ConstraintDiscovery;
-    }
-
-    ProgressSignal::None
-}
-
-fn detect_evidence_sufficiency(
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-) -> EvidenceSufficiency {
-    if conversation.intent.files_read.is_empty() {
-        return EvidenceSufficiency::None;
-    }
-
-    // Post-mutation: if the model has already edited files, the edits prove
-    // it has enough context to act.  Return Actionable so the evidence-
-    // sufficient streak stays alive and continuation-pressure can kick in
-    // on subsequent read-only turns instead of resetting.
-    if !conversation.intent.files_modified.is_empty() {
-        return EvidenceSufficiency::Actionable;
-    }
-
-    let targeted_validation = matches!(
-        classify_validation_scope(tool_calls, results),
-        ProgressSignal::TargetedValidation
-    );
-    let failed_mutation_on_known_target = tool_calls.iter().any(|call| {
-        is_mutation_tool_name(&call.name)
-            && call
-                .arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .is_some_and(|path| {
-                    conversation
-                        .intent
-                        .files_read
-                        .iter()
-                        .any(|read| read == std::path::Path::new(path))
-                        && results
-                            .iter()
-                            .find(|result| result.call_id == call.id)
-                            .is_some_and(|result| result.is_error)
-                })
-    });
-    let inspection_backed_by_validation_failure = tool_calls.iter().any(|call| {
-        is_repo_inspection_tool(&call.name)
-            && results.iter().any(|result| result.is_error)
-            && tool_calls.iter().any(is_validation_tool)
-    });
-
-    let targeted_reads: Vec<&str> = tool_calls
-        .iter()
-        .filter(|call| is_targeted_repo_inspection_tool(&call.name))
-        .filter_map(|call| call.arguments.get("path").and_then(|v| v.as_str()))
-        .collect();
-    let narrow_target_cluster = !targeted_reads.is_empty()
-        && tool_calls.iter().all(|call| is_repo_inspection_tool(&call.name))
-        && !tool_calls
-            .iter()
-            .any(|call| is_broad_repo_inspection_tool(&call.name));
-    let targeted_paths_known = narrow_target_cluster
-        && targeted_reads.iter().all(|path| {
-            conversation
-                .intent
-                .files_read
-                .iter()
-                .any(|read| read == std::path::Path::new(path))
-        });
-    let local_target_count = conversation.intent.files_read.len();
-
-    if targeted_validation
-        || failed_mutation_on_known_target
-        || inspection_backed_by_validation_failure
-        || (targeted_paths_known && local_target_count <= 2)
-    {
-        EvidenceSufficiency::Actionable
-    } else if targeted_paths_known || local_target_count <= 2 {
-        EvidenceSufficiency::Targeted
-    } else {
-        EvidenceSufficiency::None
-    }
-}
-
-fn is_slim_execution_bias(config: &LoopConfig) -> bool {
-    config
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.lock().ok().map(|s| s.slim_mode))
-        .unwrap_or(false)
-}
-
-fn has_local_target_hypothesis(conversation: &ConversationState) -> bool {
-    !conversation.intent.files_read.is_empty() && conversation.intent.files_modified.is_empty()
-}
-
-fn continuation_pressure_tier(
-    config: &LoopConfig,
-    controller: &ControllerState,
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-    dominant_phase: Option<OodaPhase>,
-) -> Option<u8> {
-    if tool_calls.is_empty()
-        || !matches!(dominant_phase, Some(OodaPhase::Observe | OodaPhase::Orient))
-    {
-        return None;
-    }
-
-    let evidence_sufficient = controller.evidence_sufficient_streak > 0;
-    let om_local_first_lock = is_slim_execution_bias(config)
-        && evidence_sufficient
-        && has_local_target_hypothesis(conversation);
-    let (tier1, tier2, tier3) = if om_local_first_lock {
-        (2, 3, 4)
-    } else if evidence_sufficient {
-        (3, 4, 5)
-    } else if is_slim_execution_bias(config) {
-        (5, 7, 9)
-    } else {
-        (6, 8, 10)
-    };
-
-    let continuation = controller.consecutive_tool_continuations;
-    let orient = controller.orientation_churn_streak;
-    let closure = controller.closure_stall_streak;
-    let validation = controller.validation_thrash_streak;
-    let failures = controller.repeated_action_failure_streak;
-    let discoveries = controller.constraint_discovery_streak;
-
-    if om_local_first_lock && (continuation >= tier1 || orient >= tier1 || closure >= tier1) {
-        return Some(3);
-    }
-    if evidence_sufficient && (continuation >= tier2 || orient >= tier1 || closure >= tier1) {
-        return Some(3);
-    }
-
-    if discoveries >= 2 {
-        return Some(2);
-    }
-
-    if continuation >= tier3 || orient >= tier2 || closure >= tier2 || validation >= tier2 {
-        Some(3)
-    } else if continuation >= tier2 || orient >= tier1 || failures >= 2 {
-        Some(2)
-    } else if continuation >= tier1 {
-        Some(1)
-    } else {
-        None
-    }
-}
-
-fn continuation_pressure_message(tier: u8) -> String {
-    match tier {
-        1 => "[System: You are accumulating tool-continuation turns without a progress boundary. Stop broad inspection. Next turn: either make the smallest concrete code change justified by current evidence, or run one narrow validation tied to the exact file/symbol already inspected.]".to_string(),
-        2 => "[System: Orientation churn is persisting. Next turn must choose exactly one: (1) mutate one named file, (2) run one targeted validation tied to one named file/symbol, or (3) state one blocker tied to one named file/symbol. Do not call broad search or read tools again before doing one of those.]".to_string(),
-        _ => "[System: Controller escalation: you are burning turns without converging. On the next turn, do exactly one of these and nothing else first: (1) edit/write/change one named file, (2) run one validating command for one named file/symbol, or (3) declare the concrete blocker. Do not call memory_recall, context_status, request_context, codebase_search, read, or view before taking that action.]".to_string(),
-    }
-}
-
-fn evidence_sufficiency_message() -> String {
-    "[System: Actionability threshold reached. The next reversible step is justified. On the next turn, do exactly one of these first: (1) make the smallest justified edit to the named target, (2) run one targeted validation for that named target, or (3) declare the exact blocker. Do not call broad inspection/search tools again unless the last action creates a new contradiction.]".to_string()
-}
-
-fn om_local_first_message() -> String {
-    "[System: OM coding mode reached actionability. The next reversible step is justified, so stop reopening the search space. Keep the loop tight. Next turn must do exactly one of: (1) apply the smallest reversible patch to the current target, (2) run one narrow validation that proves or disproves the current hypothesis, or (3) state the concrete blocker. Do not start another broad analysis pass first.]".to_string()
-}
 
 pub(crate) fn compute_context_composition(
     system_prompt: &str,
@@ -960,6 +237,8 @@ pub async fn run(
     let mut stuck_detector = StuckDetector::new();
     let session_start = Instant::now();
     let mut controller = ControllerState::default();
+    let mut dead_mouse_nudges: u8 = 0;
+    let mut session_used_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut turn: u32 = 0;
 
     loop {
@@ -971,7 +250,21 @@ pub async fn run(
         conversation.intent.stats.turns = turn;
         // Refresh tool_defs each turn — manage_tools may have enabled/disabled tools
         // mid-session and we must reflect that in the schema sent to the LLM.
-        let tool_defs = bus.tool_definitions();
+        // Slim/constrained modes use compact schemas and lazy injection to reduce
+        // token overhead: core tools always present, extended tools only if used.
+        let is_constrained = matches!(
+            behavioral_tier(config),
+            BehavioralTier::Constrained
+        );
+        let tool_defs = if is_constrained {
+            // Constrained models (≤32B, Ollama, etc.) get core-only tools
+            // even on turn 1 — 50+ schemas overwhelm small context windows.
+            bus.tool_definitions_lean(turn, &session_used_tools)
+        } else {
+            // All modes use compact schemas + lazy injection: full surface on
+            // turn 1 for discovery, core + used tools on turn 2+.
+            bus.tool_definitions_lazy(true, turn, &session_used_tools)
+        };
         let context_window = config
             .settings
             .as_ref()
@@ -1033,7 +326,22 @@ pub async fn run(
             break;
         }
 
-        if config.soft_limit_turns > 0 && turn == config.soft_limit_turns {
+        // Constrained models get an earlier soft limit (max/2 instead of max*2/3)
+        // to give them more room to wrap up before the hard ceiling.
+        // Skip soft limit entirely for very short runs (≤5 turns) where the
+        // advisory would fire before the model has done meaningful work.
+        let effective_soft_limit = if config.soft_limit_turns > 0 && config.max_turns > 5 {
+            match behavioral_tier(config) {
+                BehavioralTier::Constrained => {
+                    let half = config.max_turns / 2;
+                    config.soft_limit_turns.min(half.max(2))
+                }
+                BehavioralTier::Standard => config.soft_limit_turns,
+            }
+        } else {
+            0
+        };
+        if effective_soft_limit > 0 && turn == effective_soft_limit {
             tracing::info!("Soft turn limit — injecting advisory");
             conversation.push_user(format!(
                 "[System: You've been running for {} turns. If you're stuck, \
@@ -1182,7 +490,7 @@ pub async fn run(
                 let bare = model_spec
                     .trim_start_matches("ollama:")
                     .trim_start_matches("local:");
-                maybe_warmup_ollama(bare, events).await;
+                maybe_warmup_ollama(bare, events, config.ollama_manager.as_ref()).await;
             }
         }
 
@@ -1368,6 +676,57 @@ pub async fn run(
                 });
                 continue; // give it one more turn to commit
             }
+
+            // ─── Dead-mouse detection ──────────────────────────────
+            // Model responded with text-only (no tool calls) but hasn't
+            // made any file changes. It's reporting back instead of acting.
+            // Nudge up to 2 times, then give up.
+            //
+            // Only fires for Constrained (Mid/Leaf) models. Frontier models
+            // don't exhibit this pattern — a text-only response after tool
+            // use is almost always intentional (summarizing, answering Q&A).
+            //
+            // Guards against false positives:
+            // - Skip frontier models entirely
+            // - Skip turn 1: a text-only first response is normal
+            // - Skip if model never used tools: conversational exchange, not a task
+            // - First text-only response gets a free pass (model may be
+            //   summarizing tool output from the previous turn). Only nudge
+            //   on the SECOND consecutive text-only response.
+            let in_task_mode = conversation.intent.stats.tool_calls > 0;
+            if behavioral_tier(config) == BehavioralTier::Constrained
+                && !has_mutations(conversation)
+                && turn > 1
+                && in_task_mode
+                && turn < config.max_turns
+                && dead_mouse_nudges < 3
+            {
+                dead_mouse_nudges += 1;
+                // First text-only response is a free pass (legitimate summary).
+                // Only start nudging on the second consecutive one.
+                if dead_mouse_nudges < 2 {
+                    continue;
+                }
+                let msg = if dead_mouse_nudges == 2 {
+                    match behavioral_tier(config) {
+                        BehavioralTier::Constrained => "[System: Do not summarize. Use tools now.]",
+                        BehavioralTier::Standard => "[System: You described what to do but did not use tools. Take action now — read files, edit code, or run commands.]",
+                    }
+                } else {
+                    match behavioral_tier(config) {
+                        BehavioralTier::Constrained => "[System: Use tools or this session will end.]",
+                        BehavioralTier::Standard => "[System: Final warning: use tools to make the change, or the session will end without completing the task.]",
+                    }
+                };
+                tracing::info!(nudge = dead_mouse_nudges, "Dead-mouse detection — model responded without acting");
+                conversation.push_user(msg.to_string());
+                continue;
+            }
+
+            // Reset dead-mouse counter when model does use tools
+            // (handled below when tool_calls is non-empty, but also
+            // covers the break-out path here).
+
             let system_prompt =
                 context.build_system_prompt(conversation.last_user_prompt(), conversation);
             let llm_messages = conversation.build_llm_view();
@@ -1417,8 +776,12 @@ pub async fn run(
             break;
         }
 
+        // Reset dead-mouse counter — model is using tools this turn.
+        dead_mouse_nudges = 0;
+
         // ─── Emit ToolStart bus events before dispatch ──────────────
         for call in tool_calls {
+            session_used_tools.insert(call.name.clone());
             bus.emit(&omegon_traits::BusEvent::ToolStart {
                 id: call.id.clone(),
                 name: call.name.clone(),
@@ -1480,46 +843,50 @@ pub async fn run(
             progress_signal,
             evidence_sufficiency,
         );
+        let behavior = behavioral_tier(config);
         let continuation_tier = continuation_pressure_tier(
             config,
             &controller,
             conversation,
             dispatch_calls,
             dominant_phase,
+            behavior,
         );
 
         if is_first_turn_orientation_churn(turn, config, conversation, dispatch_calls) {
             tracing::info!(
                 "First-turn orientation churn detected — injecting execution-bias nudge"
             );
-            conversation.push_user(
-                "[System: This run is execution-biased. Stop spending turns on orientation tools unless they are strictly required to unblock execution. On the next turn, take a concrete repo-inspection or implementation step: read the most relevant file, search the codebase for the target symbol/path, or make the smallest justified change.]"
-                    .to_string(),
-            );
+            let msg = match behavior {
+                BehavioralTier::Constrained => "[System: Read the target file or make an edit. Do not use orientation tools.]",
+                BehavioralTier::Standard => "[System: This run is execution-biased. Stop spending turns on orientation tools unless they are strictly required to unblock execution. On the next turn, take a concrete repo-inspection or implementation step: read the most relevant file, search the codebase for the target symbol/path, or make the smallest justified change.]",
+            };
+            conversation.push_user(msg.to_string());
         } else if is_slim_execution_bias(config)
             && controller.evidence_sufficient_streak > 0
             && has_local_target_hypothesis(conversation)
             && continuation_tier.is_some()
         {
             tracing::info!("OM local-first lock engaged — injecting patch-or-prove nudge");
-            conversation.push_user(om_local_first_message());
+            conversation.push_user(om_local_first_message(behavior));
         } else if controller.evidence_sufficient_streak > 0 && continuation_tier.is_some() {
             tracing::info!("Actionability threshold reached — injecting forced-convergence nudge");
-            conversation.push_user(evidence_sufficiency_message());
-        } else if should_inject_execution_pressure(turn, config, conversation, dispatch_calls) {
+            conversation.push_user(evidence_sufficiency_message(behavior));
+        } else if should_inject_execution_pressure(turn, config, conversation, dispatch_calls, behavior) {
             tracing::info!(
                 "Execution stall detected after repo inspection — injecting execution-pressure nudge"
             );
-            conversation.push_user(
-                "[System: You now have enough local evidence. Do not use broad inspection/search tools again until you do one of these two things: (1) make one concrete code edit, or (2) name one specific blocking ambiguity tied to a file or symbol. Stop narrating. Pick the smallest justified patch now, apply it, then run the narrowest relevant validation.]"
-                    .to_string(),
-            );
+            let msg = match behavior {
+                BehavioralTier::Constrained => "[System: You have enough context. Make an edit now.]",
+                BehavioralTier::Standard => "[System: You have enough evidence. Make one edit or name one blocker. Do NOT delegate — act directly.]",
+            };
+            conversation.push_user(msg.to_string());
         } else if let Some(tier) = continuation_tier {
             tracing::info!(
                 tier,
                 "Sustained tool-continuation churn detected — injecting continuation-pressure nudge"
             );
-            conversation.push_user(continuation_pressure_message(tier));
+            conversation.push_user(continuation_pressure_message(tier, behavior));
         }
 
         // ─── Emit tool events to bus features ───────────────────────
@@ -1818,8 +1185,19 @@ pub(crate) async fn compact_via_llm(
 /// If the model is cold (not in `/api/ps`), issues a minimal blocking
 /// generate request so the model is fully loaded before `stream_with_retry`
 /// attempts to open an SSE stream. Emits toast notifications during the wait.
-async fn maybe_warmup_ollama(model_name: &str, events: &broadcast::Sender<AgentEvent>) {
-    let mgr = OllamaManager::new();
+async fn maybe_warmup_ollama(
+    model_name: &str,
+    events: &broadcast::Sender<AgentEvent>,
+    manager: Option<&OllamaManager>,
+) {
+    let owned;
+    let mgr = match manager {
+        Some(m) => m,
+        None => {
+            owned = OllamaManager::new();
+            &owned
+        }
+    };
     if !mgr.is_reachable().await {
         tracing::debug!("Ollama not reachable — skipping warmup");
         return;
@@ -2850,7 +2228,8 @@ fn hash_value(v: &Value) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omegon_traits::ToolProvider;
+    use crate::behavior::{AutoDelegatePlan, EvidenceSufficiency, ProgressSignal};
+    use omegon_traits::{OodaPhase, ToolProvider};
 
     #[test]
     fn stuck_detector_repeated_calls() {
@@ -3308,6 +2687,7 @@ mod tests {
             force_compact: None,
             allow_commit_nudge: true,
             enforce_first_turn_execution_bias: false,
+            ollama_manager: None,
         };
         // soft_limit_turns=0 → loop should compute 2/3 of max_turns (40)
         assert_eq!(config.soft_limit_turns, 0, "0 = auto-calculate in run()");
@@ -3474,7 +2854,7 @@ mod tests {
             1,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
         ));
     }
 
@@ -3498,7 +2878,7 @@ mod tests {
             1,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
         ));
     }
 
@@ -3515,7 +2895,7 @@ mod tests {
             1,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
         ));
     }
 
@@ -3546,7 +2926,8 @@ mod tests {
             4,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -3577,7 +2958,8 @@ mod tests {
             4,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -3602,14 +2984,16 @@ mod tests {
             1,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
         // Turn 2: targeted-only reads get one extra turn grace period (fires at 3+)
         assert!(!should_inject_execution_pressure(
             2,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -3634,7 +3018,8 @@ mod tests {
             5,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -3702,6 +3087,7 @@ mod tests {
                 &conversation,
                 &tool_calls,
                 Some(OodaPhase::Observe),
+                BehavioralTier::Standard,
             ),
             Some(1)
         );
@@ -3926,6 +3312,7 @@ mod tests {
                 &conversation,
                 &tool_calls,
                 Some(OodaPhase::Observe),
+                BehavioralTier::Standard,
             )
             .is_some(),
             "post-mutation read churn should still trigger continuation pressure"
@@ -3960,6 +3347,7 @@ mod tests {
                 &conversation,
                 &tool_calls,
                 Some(OodaPhase::Act),
+                BehavioralTier::Standard,
             ),
             None
         );
@@ -3975,7 +3363,7 @@ mod tests {
         if let Some(settings) = &config.settings
             && let Ok(mut s) = settings.lock()
         {
-            s.set_slim_mode(true);
+            s.set_posture(crate::settings::PosturePreset::Explorator);
         }
         let mut conversation = ConversationState::new();
         conversation
@@ -3999,6 +3387,7 @@ mod tests {
                 &conversation,
                 &tool_calls,
                 Some(OodaPhase::Orient),
+                BehavioralTier::Standard,
             ),
             Some(2)
         );
@@ -4056,18 +3445,16 @@ mod tests {
 
     #[test]
     fn evidence_sufficiency_message_explicitly_forces_action() {
-        let text = evidence_sufficiency_message();
+        let text = evidence_sufficiency_message(BehavioralTier::Standard);
         assert!(text.contains("Actionability threshold reached"));
-        assert!(text.contains("next reversible step is justified"));
-        assert!(text.contains("Do not call broad inspection/search tools again"));
+        assert!(text.contains("Do NOT delegate"));
     }
 
     #[test]
     fn om_local_first_message_forces_patch_or_validate_or_blocker() {
-        let text = om_local_first_message();
-        assert!(text.contains("OM coding mode reached actionability"));
-        assert!(text.contains("smallest reversible patch"));
-        assert!(text.contains("state the concrete blocker"));
+        let text = om_local_first_message(BehavioralTier::Standard);
+        assert!(text.contains("OM coding mode"));
+        assert!(text.contains("Do NOT delegate"));
         assert!(!text.contains("full Omegon is required"));
     }
 
@@ -4081,7 +3468,7 @@ mod tests {
         if let Some(settings) = &config.settings
             && let Ok(mut s) = settings.lock()
         {
-            s.set_slim_mode(true);
+            s.set_posture(crate::settings::PosturePreset::Explorator);
         }
         let mut conversation = ConversationState::new();
         conversation
@@ -4105,6 +3492,7 @@ mod tests {
                 &conversation,
                 &tool_calls,
                 Some(OodaPhase::Orient),
+                BehavioralTier::Standard,
             ),
             None
         );
@@ -4143,7 +3531,8 @@ mod tests {
             4,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -4171,7 +3560,8 @@ mod tests {
             4,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -4284,14 +3674,16 @@ mod tests {
             2,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
         // Turn 3: fires
         assert!(should_inject_execution_pressure(
             3,
             &config,
             &conversation,
-            &tool_calls
+            &tool_calls,
+            BehavioralTier::Standard,
         ));
     }
 
@@ -4300,7 +3692,7 @@ mod tests {
         let config = LoopConfig {
             settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
                 let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
-                s.set_slim_mode(true);
+                s.set_posture(crate::settings::PosturePreset::Explorator);
                 s
             }))),
             ..LoopConfig::default()
@@ -4334,7 +3726,7 @@ mod tests {
         let config = LoopConfig {
             settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
                 let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
-                s.set_slim_mode(true);
+                s.set_posture(crate::settings::PosturePreset::Explorator);
                 s
             }))),
             ..LoopConfig::default()
@@ -4361,7 +3753,7 @@ mod tests {
         let config = LoopConfig {
             settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
                 let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
-                s.set_slim_mode(true);
+                s.set_posture(crate::settings::PosturePreset::Explorator);
                 s
             }))),
             ..LoopConfig::default()
@@ -4427,7 +3819,7 @@ mod tests {
         let config = LoopConfig {
             settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
                 let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
-                s.set_slim_mode(true);
+                s.set_posture(crate::settings::PosturePreset::Explorator);
                 s
             }))),
             ..LoopConfig::default()

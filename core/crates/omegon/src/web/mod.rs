@@ -639,7 +639,11 @@ async fn bind_strict(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
     let addr: SocketAddr = (bind_ip(), port).into();
     tokio::net::TcpListener::bind(addr)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to bind strict control port {port}: {e}"))
+        .map_err(|e| anyhow::anyhow!(
+            "Failed to bind control port {port}: {e}\n  \
+             Hint: another process may be using this port. Check with: lsof -i :{port}\n  \
+             Use --strict-port=false to auto-fallback to the next available port."
+        ))
 }
 
 async fn bind_with_fallback(preferred: u16) -> anyhow::Result<tokio::net::TcpListener> {
@@ -763,7 +767,7 @@ mod tests {
         let err = bind_strict(port).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("Failed to bind strict control port")
+                .contains("Failed to bind control port")
         );
     }
 

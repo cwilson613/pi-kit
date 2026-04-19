@@ -2354,7 +2354,15 @@ fn anthropic_manual_budget_tokens(reasoning: Option<&str>) -> Option<u32> {
 
 fn anthropic_supports_adaptive_thinking(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.contains("claude-sonnet-4-6") || model.contains("claude-opus-4-6")
+    // Sonnet 4.6+ and Opus 4.6+ support adaptive thinking
+    model.contains("claude-sonnet-4-6")
+        || model.contains("claude-sonnet-4-7")
+        || model.contains("claude-sonnet-4-8")
+        || model.contains("claude-sonnet-4-9")
+        || model.contains("claude-opus-4-6")
+        || model.contains("claude-opus-4-7")
+        || model.contains("claude-opus-4-8")
+        || model.contains("claude-opus-4-9")
 }
 
 fn anthropic_should_use_adaptive_thinking(model: &str, reasoning: &str) -> bool {

@@ -410,6 +410,21 @@ pub fn auth_json_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".config").join("omegon").join("auth.json"))
 }
 
+/// Quick check: does auth.json exist with at least one token?
+/// Used by first_run.rs to detect whether the operator has any provider configured.
+pub fn any_oauth_token_exists() -> bool {
+    let Some(path) = auth_json_path() else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(auth) = serde_json::from_str::<Value>(&content) else {
+        return false;
+    };
+    auth.as_object().is_some_and(|obj| !obj.is_empty())
+}
+
 /// Read credentials for a provider from auth.json.
 pub fn read_credentials(provider: &str) -> Option<OAuthCredentials> {
     let path = auth_json_path()?;

@@ -43,6 +43,162 @@ use std::path::{Path, PathBuf};
 use crate::extensions::manifest::ExtensionManifest;
 use crate::extensions::state::ExtensionState;
 
+/// Scaffold a new extension project.
+pub fn init(name: &str) -> anyhow::Result<()> {
+    // Validate name
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        anyhow::bail!(
+            "Extension name must be lowercase alphanumeric + hyphens (got '{name}')"
+        );
+    }
+
+    let dir = Path::new(name);
+    if dir.exists() {
+        anyhow::bail!("Directory '{name}' already exists");
+    }
+
+    std::fs::create_dir_all(dir.join("src"))?;
+
+    // manifest.toml
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            r#"[extension]
+name = "{name}"
+version = "0.1.0"
+description = "TODO: describe your extension"
+sdk_version = "0.15"
+
+[runtime]
+type = "native"
+binary = "target/release/{name}"
+
+[startup]
+ping_method = "get_tools"
+timeout_ms = 5000
+
+# [secrets]
+# required = []
+# optional = []
+
+# [widgets.my-widget]
+# label = "My Widget"
+# kind = "stateful"
+# renderer = "table"
+"#
+        ),
+    )?;
+
+    // Cargo.toml
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omegon-extension = {{ git = "https://github.com/styrene-labs/omegon", path = "core/crates/omegon-extension" }}
+serde_json = "1"
+tokio = {{ version = "1", features = ["rt", "io-util"] }}
+async-trait = "0.1"
+"#
+        ),
+    )?;
+
+    // src/main.rs
+    let struct_name = name
+        .split('-')
+        .map(|s| {
+            let mut c = s.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<String>();
+
+    std::fs::write(
+        dir.join("src").join("main.rs"),
+        format!(
+            r#"use omegon_extension::{{Extension, serve}};
+use serde_json::{{json, Value}};
+use async_trait::async_trait;
+
+#[derive(Default)]
+struct {struct_name};
+
+#[async_trait]
+impl Extension for {struct_name} {{
+    fn name(&self) -> &str {{
+        "{name}"
+    }}
+
+    fn version(&self) -> &str {{
+        env!("CARGO_PKG_VERSION")
+    }}
+
+    async fn handle_rpc(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> omegon_extension::Result<Value> {{
+        match method {{
+            "get_tools" => Ok(json!([
+                {{
+                    "name": "hello",
+                    "label": "Hello",
+                    "description": "A greeting tool — replace this with your own",
+                    "parameters": {{
+                        "type": "object",
+                        "properties": {{
+                            "name": {{"type": "string", "description": "Who to greet"}}
+                        }},
+                        "required": ["name"]
+                    }}
+                }}
+            ])),
+            "execute_hello" => {{
+                let who = params.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("World");
+                Ok(json!({{
+                    "content": [{{
+                        "type": "text",
+                        "text": format!("Hello, {{}}!", who)
+                    }}]
+                }}))
+            }}
+            _ => Err(omegon_extension::Error::method_not_found(method)),
+        }}
+    }}
+}}
+
+#[tokio::main]
+async fn main() {{
+    serve({struct_name}::default()).await.unwrap();
+}}
+"#
+        ),
+    )?;
+
+    println!("Created extension '{name}' in ./{name}/");
+    println!();
+    println!("  Next steps:");
+    println!("    cd {name}");
+    println!("    cargo build --release");
+    println!("    omegon extension install .");
+    println!();
+    println!("  Then restart omegon — your extension will be loaded automatically.");
+
+    Ok(())
+}
+
 /// Install an extension from a git URI or local path.
 pub fn install(uri: &str) -> anyhow::Result<()> {
     let extensions_dir = extensions_dir()?;
@@ -210,6 +366,33 @@ pub fn update(name: Option<&str>) -> anyhow::Result<()> {
             .output()?;
 
         if output.status.success() {
+            let pull_out = String::from_utf8_lossy(&output.stdout);
+            let already_up_to_date = pull_out.contains("Already up to date");
+
+            // Rebuild native Cargo extensions if git pull brought changes
+            if !already_up_to_date && dir.join("Cargo.toml").exists() {
+                let manifest_path = dir.join("manifest.toml");
+                let is_native = manifest_path
+                    .exists()
+                    .then(|| ExtensionManifest::from_file(&manifest_path).ok())
+                    .flatten()
+                    .is_some_and(|m| m.is_native());
+
+                if is_native {
+                    print!("  {name}: rebuilding... ");
+                    let build = std::process::Command::new("cargo")
+                        .arg("build")
+                        .arg("--release")
+                        .current_dir(dir)
+                        .status();
+                    match build {
+                        Ok(s) if s.success() => println!("updated + rebuilt"),
+                        _ => println!("updated but rebuild failed — run cargo build --release manually"),
+                    }
+                    continue;
+                }
+            }
+
             println!("  {name}: updated");
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -347,7 +530,10 @@ fn install_git(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
         .status()?;
 
     if !status.success() {
-        anyhow::bail!("git clone failed for {uri}");
+        anyhow::bail!(
+            "git clone failed for {uri}\n  \
+             Check: URL is correct, you have network access, and git credentials are configured."
+        );
     }
 
     let manifest_path = target.join("manifest.toml");
@@ -364,13 +550,41 @@ fn install_git(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
         );
     }
 
-    // Check binary exists for native extensions
-    if manifest.is_native() {
+    // Build native extensions that have a Cargo.toml
+    if manifest.is_native() && target.join("Cargo.toml").exists() {
+        println!("Building extension '{}'...", manifest.extension.name);
+        let build = std::process::Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .current_dir(&target)
+            .status();
+
+        match build {
+            Ok(s) if s.success() => {
+                println!("Build succeeded.");
+            }
+            Ok(s) => {
+                std::fs::remove_dir_all(&target).ok();
+                anyhow::bail!(
+                    "cargo build --release failed (exit {}) for extension '{}'",
+                    s.code().unwrap_or(-1),
+                    manifest.extension.name
+                );
+            }
+            Err(e) => {
+                std::fs::remove_dir_all(&target).ok();
+                anyhow::bail!(
+                    "failed to run cargo build for extension '{}': {e}",
+                    manifest.extension.name
+                );
+            }
+        }
+    } else if manifest.is_native() {
         match manifest.native_binary_path(&target) {
             Ok(_) => {}
             Err(_) => {
                 println!(
-                    "Warning: native binary not found. Build with `cargo build --release` in the extension directory."
+                    "Warning: native binary not found. Build manually in the extension directory."
                 );
             }
         }

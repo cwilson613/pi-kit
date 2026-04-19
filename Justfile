@@ -9,6 +9,13 @@ sedi := "perl -pi -e"
 default:
     @just --list --unsorted
 
+# ─── Bootstrap ───────────────────────────────────────────────
+
+# Set up the development environment from scratch (Rust toolchain, build, link).
+# Safe to re-run. Use `just bootstrap --check` to verify prerequisites only.
+bootstrap *args:
+    ./scripts/bootstrap.sh {{args}}
+
 # ─── Rust (core/) ────────────────────────────────────────────
 
 # Run all Rust tests
@@ -30,6 +37,114 @@ check:
 # Full check: type check + clippy
 lint:
     cd core && cargo check && cargo clippy -- -D warnings
+
+# ─── Benchmarks ─────────────────────────────────────────────
+
+# Run a quick token-efficiency benchmark. Writes per-turn snapshots to .tmp/bench/.
+# Usage: just bench "read Cargo.toml and summarize the dependencies"
+bench prompt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .tmp/bench
+    ts=$(date +%Y%m%d-%H%M%S)
+    out=".tmp/bench/run-${ts}.json"
+    cd core && cargo run --release -- bench run-task \
+        --prompt "{{prompt}}" \
+        --usage-json "../${out}" 2>&1 | tail -20
+    echo ""
+    echo "── Results: ${out} ──"
+    python3 scripts/bench_summary.py "${out}" 2>/dev/null || echo "(install python3 for summary)"
+
+# Compare two benchmark usage JSON files side by side.
+# Usage: just bench-diff .tmp/bench/baseline.json .tmp/bench/current.json
+bench-diff baseline current:
+    python3 scripts/bench_diff.py {{baseline}} {{current}}
+
+# ─── Benchmark Matrix ────────────────────────────────────────
+
+# Capture a baseline: build release, run the canonical benchmark on all harnesses.
+# Usage: just bench-baseline
+bench-baseline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "── Building release binary ──"
+    cd core && cargo build --release && cd ..
+    echo "── Capturing baseline ──"
+    mkdir -p ai/benchmarks/runs/baseline
+    python3 scripts/benchmark_matrix.py \
+        ai/benchmarks/tasks/example-shadow-context.yaml \
+        --root . \
+        --out-dir ai/benchmarks/runs/baseline
+    echo ""
+    echo "Baseline saved to ai/benchmarks/runs/baseline/"
+    ls -la ai/benchmarks/runs/baseline/*.json 2>/dev/null || echo "(no results — check harness output above)"
+
+# Run the canonical benchmark and compare against baseline.
+# Usage: just bench-compare
+bench-compare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d ai/benchmarks/runs/baseline ] || [ -z "$(ls ai/benchmarks/runs/baseline/*.json 2>/dev/null)" ]; then
+        echo "No baseline found. Run 'just bench-baseline' first."
+        exit 1
+    fi
+    echo "── Building release binary ──"
+    cd core && cargo build --release && cd ..
+    echo "── Running current ──"
+    mkdir -p ai/benchmarks/runs/current
+    python3 scripts/benchmark_matrix.py \
+        ai/benchmarks/tasks/example-shadow-context.yaml \
+        --root . \
+        --out-dir ai/benchmarks/runs/current
+    echo ""
+    echo "── Comparison Report ──"
+    python3 scripts/benchmark_harness.py \
+        --report ai/benchmarks/runs/current/ \
+        --baseline ai/benchmarks/runs/baseline/
+
+# Run the full benchmark suite across all tasks and harnesses.
+# Usage: just bench-full
+bench-full:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "── Building release binary ──"
+    cd core && cargo build --release && cd ..
+    ts=$(date +%Y%m%d-%H%M%S)
+    out="ai/benchmarks/runs/full-${ts}"
+    mkdir -p "$out"
+    echo "── Running full matrix ──"
+    for task in ai/benchmarks/tasks/*.yaml; do
+        name=$(basename "$task" .yaml)
+        # Skip templates
+        case "$name" in template-*) continue;; esac
+        echo "  ▸ $name"
+        python3 scripts/benchmark_matrix.py "$task" \
+            --root . \
+            --out-dir "$out" || echo "  ⚠ $name failed"
+    done
+    echo ""
+    echo "── Report ──"
+    python3 scripts/benchmark_harness.py --report "$out/"
+    echo ""
+    echo "Results: $out/"
+
+# Run a single task on a specific harness.
+# Usage: just bench-task example-shadow-context omegon
+bench-task task harness:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd core && cargo build --release && cd ..
+    ts=$(date +%Y%m%d-%H%M%S)
+    out="ai/benchmarks/runs/single-${ts}"
+    mkdir -p "$out"
+    python3 scripts/benchmark_harness.py \
+        "ai/benchmarks/tasks/{{task}}.yaml" \
+        --root . \
+        --harness {{harness}} \
+        --out-dir "$out"
+    echo ""
+    echo "Result: $out/"
+    ls -la "$out/"*.json 2>/dev/null
 
 # Build release binary
 build:

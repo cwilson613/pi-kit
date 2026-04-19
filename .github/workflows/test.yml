@@ -34,6 +34,48 @@ jobs:
             --control-port 7856 \
             --strict-port
 
+      - name: Install Python dependencies for benchmark validation
+        run: pip install pyyaml
+
+      - name: Validate benchmark task definitions
+        run: |
+          python3 -c "
+          import yaml, sys, os
+          tasks = [f for f in os.listdir('ai/benchmarks/tasks') if f.endswith('.yaml')]
+          if not tasks:
+              print('No benchmark tasks found'); sys.exit(1)
+          errors = []
+          for task_file in sorted(tasks):
+              path = os.path.join('ai/benchmarks/tasks', task_file)
+              with open(path) as f:
+                  task = yaml.safe_load(f)
+              if not task.get('id'):
+                  errors.append(f'{task_file}: missing id')
+              if not task.get('acceptance'):
+                  errors.append(f'{task_file}: missing acceptance')
+              if not task.get('budget'):
+                  errors.append(f'{task_file}: missing budget')
+              print(f'  {task_file}: ok ({task.get(\"id\", \"?\")})')
+          if errors:
+              for e in errors: print(f'ERROR: {e}', file=sys.stderr)
+              sys.exit(1)
+          print(f'{len(tasks)} benchmark tasks validated')
+          "
+
+      - name: Validate benchmark harness loads
+        run: |
+          python3 -c "
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location('harness', 'scripts/benchmark_harness.py')
+          mod = importlib.util.module_from_spec(spec)
+          try:
+              spec.loader.exec_module(mod)
+              print('benchmark_harness.py: loads without error')
+          except Exception as e:
+              print(f'ERROR: {e}', file=sys.stderr)
+              sys.exit(1)
+          "
+
   site:
     name: Site build
     runs-on: ubuntu-latest

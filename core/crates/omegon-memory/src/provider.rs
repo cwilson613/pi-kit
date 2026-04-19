@@ -640,7 +640,7 @@ impl<B: MemoryBackend + 'static, R: ContextRenderer + 'static> ContextProvider
                             source: "memory".into(),
                             content: rendered.markdown,
                             priority: 200, // high — memory is important context
-                            ttl_turns: 1,  // re-injected every turn
+                            ttl_turns: 3,  // persist for 3 turns; re-rendered on mutation
                         })
                     })
                 })

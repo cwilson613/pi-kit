@@ -327,12 +327,12 @@ impl ContextManager {
             }
 
             self.active_injections.push(ActiveInjection {
-                remaining_turns: 10,
+                remaining_turns: 20,
                 injection: ContextInjection {
                     source: source_key,
                     content: format!("[{guidance}]"),
                     priority: 80, // Between file-type (50) and HUD (200)
-                    ttl_turns: 10,
+                    ttl_turns: 20,
                 },
             });
         }
@@ -378,12 +378,12 @@ impl ContextManager {
 
             if let Some(text) = guidance {
                 self.active_injections.push(ActiveInjection {
-                    remaining_turns: 8, // Persist for 8 turns
+                    remaining_turns: 16, // Persist for 16 turns — static hints don't change
                     injection: ContextInjection {
                         source: source_key,
                         content: format!("[Language context: {text}]"),
                         priority: 50, // Lower than HUD/intent
-                        ttl_turns: 8,
+                        ttl_turns: 16,
                     },
                 });
             }

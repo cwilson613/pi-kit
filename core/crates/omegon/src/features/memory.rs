@@ -44,6 +44,13 @@ pub struct MemoryFeature {
     pending_status_refresh: AtomicBool,
     /// Optional embedding service for hybrid search + auto-embed on store.
     embed_service: Option<Arc<dyn EmbeddingService>>,
+    /// Hash of the last rendered memory context. When content hasn't changed,
+    /// `provide_context` returns None to skip re-injection — the existing
+    /// injection persists via its TTL instead of being re-rendered.
+    last_context_hash: Mutex<u64>,
+    /// Set to true by memory mutation tools so the next provide_context()
+    /// re-renders even if the hash would match (facts changed underneath).
+    context_dirty: AtomicBool,
 }
 
 impl MemoryFeature {
@@ -56,6 +63,8 @@ impl MemoryFeature {
             working_memory: Mutex::new(Vec::new()),
             pending_status_refresh: AtomicBool::new(false),
             embed_service: None,
+            last_context_hash: Mutex::new(0),
+            context_dirty: AtomicBool::new(true), // force initial render
         }
     }
 
@@ -399,6 +408,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     StoreAction::Deduplicated => "Duplicate — fact already exists".to_string(),
                 };
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text: msg }],
                     details: serde_json::json!({ "id": result.fact.id, "action": format!("{:?}", result.action) }),
@@ -565,6 +575,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: format!("Archived {count} fact(s)."),
@@ -600,6 +611,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 }
 
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: format!("Superseded {} → new fact {}", fact_id, new_fact.id),
@@ -619,6 +631,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: format!(
@@ -641,6 +654,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 let count = ids.len();
                 self.working_memory.lock().unwrap().extend(ids);
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: format!("Pinned {count} fact(s) to working memory."),
@@ -651,6 +665,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
             crate::tool_registry::memory::MEMORY_RELEASE => {
                 self.working_memory.lock().unwrap().clear();
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: "Working memory cleared.".into(),
@@ -770,6 +785,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     }
                 };
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
+                self.context_dirty.store(true, Ordering::Relaxed);
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text: msg }],
                     details: serde_json::json!({ "action": format!("{:?}", result.action), "id": result.fact.id }),
@@ -885,16 +901,30 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
 
                         let rendered =
-                            renderer.render_context(&facts, &episodes, &wm_facts, 12_000);
+                            renderer.render_context(&facts, &episodes, &wm_facts, 8_000);
                         if rendered.markdown.is_empty() {
                             return None;
                         }
+
+                        // Hash the rendered content to detect changes
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        rendered.markdown.hash(&mut hasher);
+                        let content_hash = hasher.finish();
+
+                        // Skip re-injection if content is unchanged and no mutation occurred
+                        let dirty = self.context_dirty.swap(false, std::sync::atomic::Ordering::Relaxed);
+                        let mut last_hash = self.last_context_hash.lock().unwrap();
+                        if !dirty && *last_hash == content_hash && content_hash != 0 {
+                            return None; // existing injection persists via TTL
+                        }
+                        *last_hash = content_hash;
 
                         Some(ContextInjection {
                             source: "memory".into(),
                             content: rendered.markdown,
                             priority: 200, // high — memory is important context
-                            ttl_turns: 1,  // re-injected every turn
+                            ttl_turns: 3,  // persist for 3 turns, then refresh
                         })
                     })
                 })

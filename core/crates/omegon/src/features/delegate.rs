@@ -319,7 +319,7 @@ impl DelegateWorkerProfile {
                 "set_model_tier".into(),
                 "switch_to_offline_driver".into(),
                 "set_thinking_level".into(),
-                "session_log".into(),
+                "agent_journal".into(),
                 "auth_status".into(),
             ],
             preloaded_files: scope.map(|s| s.to_vec()).unwrap_or_default(),

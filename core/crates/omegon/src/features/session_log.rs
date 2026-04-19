@@ -762,7 +762,7 @@ impl Feature for SessionLog {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: crate::tool_registry::session_log::SESSION_LOG.into(),
-            label: "session_log".into(),
+            label: "agent_journal".into(),
             description: "Read recent agent-journal narrative so the harness can inspect prior work without operator slash commands.".into(),
             parameters: json!({
                 "type": "object",

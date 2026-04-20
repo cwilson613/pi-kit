@@ -111,12 +111,12 @@ fn check_all() -> Vec<AuthResult> {
 }
 
 fn has_cmd(name: &str) -> bool {
-    Command::new("which")
-        .arg(name)
+    Command::new(name)
+        .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|s| s.success())
+        .is_ok()
 }
 
 fn run_cmd(cmd: &str, args: &[&str]) -> (bool, String, String) {

@@ -251,52 +251,192 @@ impl LocalInferenceProvider {
         }
     }
 
-    fn ollama_start(&self) -> String {
-        // Try to start Ollama via `ollama serve` in background
+    async fn ollama_start(&self) -> String {
+        // Check if already running
+        if self.client.get(base_url()).send().await.is_ok() {
+            return "Ollama is already running.".into();
+        }
+
+        // On macOS, try the desktop app first
+        #[cfg(target_os = "macos")]
+        {
+            if Command::new("open").arg("-a").arg("Ollama").spawn().is_ok() {
+                // Poll for the server to come up
+                for _ in 0..10 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if self.client.get(base_url()).send().await.is_ok() {
+                        return "Ollama started (macOS app).".into();
+                    }
+                }
+            }
+        }
+
+        // Fallback: start via `ollama serve`
         match Command::new("ollama").arg("serve").spawn() {
-            Ok(_) => "Ollama server starting...".into(),
+            Ok(_child) => {
+                // Poll for the server to become reachable
+                for i in 0..10 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if self.client.get(base_url()).send().await.is_ok() {
+                        return "Ollama server started and reachable.".into();
+                    }
+                    if i == 4 {
+                        tracing::debug!("Ollama server still starting after 5s...");
+                    }
+                }
+                "Ollama server spawned but not reachable after 10s. Check `ollama serve` logs.".into()
+            }
             Err(e) => format!("Failed to start Ollama: {e}. Is it installed?"),
         }
     }
 
-    fn ollama_stop(&self) -> String {
-        // Kill Ollama process
-        match Command::new("pkill").arg("-f").arg("ollama").output() {
-            Ok(_) => "Ollama stopped.".into(),
+    fn ollama_stop(&self, is_ollama_integration: bool) -> String {
+        if is_ollama_integration {
+            return "Refusing to stop Ollama — omegon was launched by Ollama.".into();
+        }
+
+        // On macOS, gracefully quit the desktop app
+        #[cfg(target_os = "macos")]
+        {
+            let quit_result = Command::new("osascript")
+                .arg("-e")
+                .arg("tell application \"Ollama\" to quit")
+                .output();
+            if let Ok(output) = quit_result {
+                if output.status.success() {
+                    return "Ollama stopped (macOS app).".into();
+                }
+            }
+        }
+
+        // Fall back to exact process name match (not -f substring match)
+        match Command::new("pkill").arg("-x").arg("ollama").output() {
+            Ok(output) if output.status.success() => "Ollama stopped.".into(),
+            Ok(_) => "No Ollama process found.".into(),
             Err(e) => format!("Failed to stop Ollama: {e}"),
         }
     }
 
-    async fn ollama_pull(&self, model: &str) -> String {
+    async fn ollama_pull(&self, model: &str, sink: Option<&ToolProgressSink>) -> String {
         let url = format!("{}/api/pull", base_url());
-        match self
-            .client
+
+        // Use a long-timeout client for pulls (models can be 20+ GB)
+        let pull_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(1800))
+            .build()
+            .unwrap_or_default();
+
+        let resp = match pull_client
             .post(&url)
-            .json(&json!({"name": model, "stream": false}))
+            .json(&json!({"name": model, "stream": true}))
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() => format!("Pulled model: {model}"),
-            Ok(resp) => format!("Pull failed ({})", resp.status()),
-            Err(e) => format!("Pull failed: {e}"),
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => return format!("Pull failed ({})", r.status()),
+            Err(e) => return format!("Pull failed: {e}"),
+        };
+
+        // Parse streaming JSON lines for progress
+        let started = Instant::now();
+        let mut last_status = String::new();
+        let mut byte_stream = resp.bytes_stream();
+
+        while let Some(chunk) = byte_stream.next().await {
+            let Ok(bytes) = chunk else { continue };
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(obj) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                let status = obj["status"].as_str().unwrap_or("");
+                let total = obj["total"].as_u64().unwrap_or(0);
+                let completed = obj["completed"].as_u64().unwrap_or(0);
+
+                last_status = status.to_string();
+
+                if let Some(sink) = sink {
+                    if sink.is_active() && total > 0 {
+                        sink.send(PartialToolResult {
+                            tail: format!("{status}: {completed}/{total}"),
+                            progress: ToolProgress {
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                                heartbeat: false,
+                                phase: Some(format!("pulling {model}")),
+                                units: Some(ProgressUnits {
+                                    current: completed,
+                                    total: Some(total),
+                                    unit: "bytes".to_string(),
+                                }),
+                                tally: None,
+                            },
+                            details: json!({"model": model, "status": status}),
+                        });
+                    }
+                }
+            }
+        }
+
+        if last_status == "success" {
+            format!("Pulled model: {model}")
+        } else {
+            format!("Pull finished with status: {last_status}")
+        }
+    }
+
+    async fn ollama_delete(&self, model: &str) -> String {
+        let url = format!("{}/api/delete", base_url());
+        match self
+            .client
+            .delete(&url)
+            .json(&json!({"name": model}))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => format!("Deleted model: {model}"),
+            Ok(resp) => format!("Delete failed ({})", resp.status()),
+            Err(e) => format!("Delete failed: {e}"),
         }
     }
 
     async fn auto_select_model(&self) -> Option<String> {
         let models = self.list_models().await.ok()?;
-        // Prefer larger models, known good ones
-        let preferred = [
-            "devstral-small",
-            "qwen3:30b",
-            "qwen3:14b",
-            "qwen3:8b",
-            "llama3",
-        ];
+        if models.is_empty() {
+            return None;
+        }
+
+        let hw = crate::ollama::OllamaManager::hardware_profile();
+        let max_params = hw.recommended_max_params;
+
+        // Preferred models ordered by quality, grouped by size class.
+        // The hardware profile determines the maximum size class to consider.
+        let preferred: &[&str] = match max_params {
+            "100B+" => &[
+                "qwen3:72b", "llama3:70b", "devstral-small",
+                "qwen3:32b", "qwen3:30b", "qwen3:14b", "qwen3:8b",
+            ],
+            "70B" => &[
+                "qwen3:72b", "llama3:70b", "devstral-small",
+                "qwen3:32b", "qwen3:30b", "qwen3:14b", "qwen3:8b",
+            ],
+            "32B" => &[
+                "devstral-small", "qwen3:32b", "qwen3:30b",
+                "qwen3:14b", "qwen3:8b",
+            ],
+            "14B" => &["qwen3:14b", "qwen3:8b", "llama3:8b"],
+            _ => &["qwen3:8b", "llama3:8b", "phi3:mini"],
+        };
+
         for pref in preferred {
             if let Some(m) = models.iter().find(|m| m.id.contains(pref)) {
                 return Some(m.id.clone());
             }
         }
+
+        // Fall back to any available model
         models.first().map(|m| m.id.clone())
     }
 }
@@ -371,12 +511,12 @@ impl ToolProvider for LocalInferenceProvider {
             ToolDefinition {
                 name: crate::tool_registry::local_inference::MANAGE_OLLAMA.into(),
                 label: "Manage Ollama".into(),
-                description: "Manage the Ollama local inference server: start, stop, check status, or pull models.".into(),
+                description: "Manage the Ollama local inference server: start, stop, check status, pull or delete models.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["start", "stop", "status", "pull"], "description": "Action to perform" },
-                        "model": { "type": "string", "description": "Model name for 'pull' action" }
+                        "action": { "type": "string", "enum": ["start", "stop", "status", "pull", "delete"], "description": "Action to perform" },
+                        "model": { "type": "string", "description": "Model name for 'pull' or 'delete' action" }
                     },
                     "required": ["action"]
                 }),
@@ -455,18 +595,30 @@ impl ToolProvider for LocalInferenceProvider {
                     .get("action")
                     .and_then(|v| v.as_str())
                     .unwrap_or("status");
+                let is_ollama_integration = std::env::args().any(|a| a == "--ollama-integration");
                 let text = match action {
                     "status" => self.ollama_status().await,
-                    "start" => self.ollama_start(),
-                    "stop" => self.ollama_stop(),
+                    "start" => self.ollama_start().await,
+                    "stop" => self.ollama_stop(is_ollama_integration),
                     "pull" => {
                         let model = args
                             .get("model")
                             .and_then(|v| v.as_str())
                             .unwrap_or("qwen3:8b");
-                        self.ollama_pull(model).await
+                        self.ollama_pull(model, None).await
                     }
-                    _ => format!("Unknown action: {action}. Use: start, stop, status, pull"),
+                    "delete" => {
+                        let model = args
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if model.is_empty() {
+                            "Model name required for delete action.".into()
+                        } else {
+                            self.ollama_delete(model).await
+                        }
+                    }
+                    _ => format!("Unknown action: {action}. Use: start, stop, status, pull, delete"),
                 };
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text }],
@@ -489,6 +641,22 @@ impl ToolProvider for LocalInferenceProvider {
         cancel: CancellationToken,
         sink: ToolProgressSink,
     ) -> anyhow::Result<ToolResult> {
+        // Route manage_ollama pull through the streaming path for progress.
+        if tool_name == "manage_ollama" && sink.is_active() {
+            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            if action == "pull" {
+                let model = args
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("qwen3:8b");
+                let text = self.ollama_pull(model, Some(&sink)).await;
+                return Ok(ToolResult {
+                    content: vec![ContentBlock::Text { text }],
+                    details: json!({"action": "pull", "model": model}),
+                });
+            }
+        }
+
         // Only ask_local_model benefits from streaming. Skip the
         // streaming dispatch entirely if no sink is attached so the
         // non-streaming path stays the default for consumers that

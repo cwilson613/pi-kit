@@ -62,10 +62,12 @@ fn classify(path: &Path) -> FileKind {
 }
 
 fn has_cmd(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .output()
-        .is_ok_and(|o| o.status.success())
+    Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
 }
 
 fn file_header(path: &Path) -> String {

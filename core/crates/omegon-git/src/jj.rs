@@ -65,6 +65,41 @@ mod jj_lib_queries {
         Ok((workspace, repo))
     }
 
+    /// Get changed files in the working copy via jj-lib.
+    ///
+    /// Compares the working copy commit's tree against its parent's tree
+    /// to find modified/added/deleted paths — no subprocess needed.
+    pub async fn diff_summary_lib(repo_path: &Path) -> Result<Vec<String>> {
+        if !is_jj_repo(repo_path) {
+            return Ok(vec![]);
+        }
+
+        let (workspace, repo) = load_repo(repo_path).await?;
+        let wc_id = match repo.view().get_wc_commit_id(workspace.workspace_name()) {
+            Some(id) => id.clone(),
+            None => return Ok(vec![]),
+        };
+
+        let wc_commit = repo.store().get_commit(&wc_id)?;
+        let parents = wc_commit.parents().await?;
+        let parent = match parents.first() {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+
+        let parent_tree = parent.tree();
+        let wc_tree = wc_commit.tree();
+        let mut paths = Vec::new();
+
+        // Diff parent tree → working copy tree (async stream)
+        let mut diff = parent_tree.diff_stream(&wc_tree, &jj_lib::matchers::EverythingMatcher);
+        while let Some(entry) = futures_util::StreamExt::next(&mut diff).await {
+            paths.push(entry.path.as_internal_file_string().to_string());
+        }
+
+        Ok(paths)
+    }
+
     /// Get the change ID of the current working copy via jj-lib.
     pub async fn working_copy_change_id(repo_path: &Path) -> Result<Option<String>> {
         if !is_jj_repo(repo_path) {
@@ -117,7 +152,10 @@ pub fn bookmark_set(repo_path: &Path, name: &str, revision: &str) -> Result<()> 
     run_jj(repo_path, &["bookmark", "set", name, "-r", revision])
 }
 
-/// Get changed files in the working copy.
+/// Get changed files in the working copy (sync, CLI-based).
+///
+/// For async callers with jj-lib feature enabled, prefer `diff_summary_lib()`
+/// which queries the tree diff in-process without subprocess overhead.
 pub fn diff_summary(repo_path: &Path) -> Result<Vec<String>> {
     if !is_jj_repo(repo_path) {
         return Ok(vec![]);
@@ -173,6 +211,10 @@ pub fn sync_to_git_main(repo_path: &Path) -> Result<()> {
         })
         .unwrap_or_default();
 
+    // Git CLI operations for jj sync coordination. These intentionally use
+    // the git CLI (not libgit2) because they must match the ref layout that
+    // `jj git export` produces. Coupling to libgit2 here risks diverging
+    // from jj's expectations as the project evolves.
     let main_sha = std::process::Command::new("git")
         .args(["rev-parse", "refs/heads/main"])
         .current_dir(repo_path)
@@ -279,7 +321,12 @@ fn run_jj(repo_path: &Path, args: &[&str]) -> Result<()> {
         .args(args)
         .current_dir(repo_path)
         .output()
-        .with_context(|| format!("jj {} failed to execute", args.join(" ")))?;
+        .with_context(|| {
+            format!(
+                "jj {} failed to execute — is jj installed? (https://martinvonz.github.io/jj/)",
+                args.join(" ")
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

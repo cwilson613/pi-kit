@@ -279,3 +279,49 @@ fn github_install_vox() {
     assert!(rm.status.success());
     assert!(!home.path().join("extensions/vox").exists());
 }
+
+#[test]
+fn github_install_scry() {
+    if !github_tests_enabled() {
+        eprintln!("skipping: set OMEGON_RUN_EXTENSION_INSTALL_TESTS=1 to run");
+        return;
+    }
+
+    let bin = resolve_omegon_binary().expect("omegon binary");
+    let home = tempfile::tempdir().expect("tempdir");
+
+    let out = omegon(
+        &bin,
+        &home,
+        &["extension", "install", "https://github.com/styrene-lab/scry.git"],
+    )
+    .expect("install");
+    assert!(
+        out.status.success(),
+        "scry install failed: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out),
+    );
+
+    // Verify in list
+    let list = omegon(&bin, &home, &["extension", "list"]).expect("list");
+    assert!(stdout(&list).contains("scry"));
+
+    // Verify manifest
+    let manifest = home.path().join("extensions/scry/manifest.toml");
+    assert!(manifest.exists(), "scry manifest.toml not found");
+    let content = std::fs::read_to_string(&manifest).expect("read");
+    assert!(content.contains("[extension]"));
+
+    // Verify binary was built (native extension with Cargo.toml)
+    let binary = home.path().join("extensions/scry/target/release/scry");
+    assert!(
+        binary.exists(),
+        "scry binary should be built automatically after git install"
+    );
+
+    // Clean up
+    let rm = omegon(&bin, &home, &["extension", "remove", "scry"]).expect("remove");
+    assert!(rm.status.success());
+    assert!(!home.path().join("extensions/scry").exists());
+}

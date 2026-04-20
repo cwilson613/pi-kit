@@ -565,6 +565,12 @@ impl SecretsManager {
         store_in_keyring(name, value)?;
         // Create recipe pointing to keyring
         self.set_recipe(name, &format!("keyring:{name}"))?;
+        // Inject the value directly — refresh_redaction_set() skips keyring:
+        // recipes to avoid prompts, but here we already have the raw value.
+        self.redaction_set
+            .write()
+            .unwrap()
+            .insert(name.to_string(), SecretString::from(value));
         self.hydrate_process_env();
         Ok(())
     }

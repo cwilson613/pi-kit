@@ -43,5 +43,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["compat"] }
 indexmap = { version = "2", features = ["serde"] }

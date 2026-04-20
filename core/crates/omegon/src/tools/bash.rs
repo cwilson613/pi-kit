@@ -82,6 +82,30 @@ pub async fn execute_streaming(
         }
     }
 
+    // ─── Native command dispatch ───────────────────────────────────
+    // Intercept common single-command invocations (cat, head, ls, etc.)
+    // and execute in-process without forking bash. Falls through for
+    // pipes, redirects, variable expansion, and unknown commands.
+    if let Some(native) = super::native_cmd::try_dispatch(command, cwd) {
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let truncated = truncate_tail(&native.stdout);
+        let mut text = truncated.content;
+        if native.exit_code != 0 {
+            text.push_str(&format!("\n\nCommand exited with code {}", native.exit_code));
+        }
+        return Ok(ToolResult {
+            content: vec![ContentBlock::Text { text }],
+            details: serde_json::json!({
+                "exitCode": native.exit_code,
+                "durationMs": duration_ms,
+                "truncated": truncated.was_truncated,
+                "totalLines": truncated.total_lines,
+                "totalBytes": truncated.total_bytes,
+                "native": true,
+            }),
+        });
+    }
+
     let mut cmd = Command::new("bash");
     cmd.args(["-c", command])
         .current_dir(cwd)

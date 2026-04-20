@@ -13,27 +13,140 @@ use tokio_util::sync::CancellationToken;
 /// Web search tool provider.
 pub struct WebSearchProvider {
     client: reqwest::Client,
+    secrets: Option<std::sync::Arc<omegon_secrets::SecretsManager>>,
 }
 
 impl WebSearchProvider {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::new(),
+            secrets: None,
         }
+    }
+
+    pub fn with_secrets(secrets: std::sync::Arc<omegon_secrets::SecretsManager>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            secrets: Some(secrets),
+        }
+    }
+
+    /// Lazily resolve a search API key: check env first, then fall back to
+    /// the secrets manager (keyring/recipe). On first hit, the resolved value
+    /// is exported to the process env so subsequent calls are instant.
+    fn resolve_key(&self, env_name: &str) -> Option<String> {
+        if let Ok(v) = env::var(env_name) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+        let secrets = self.secrets.as_ref()?;
+        let value = secrets.resolve(env_name)?;
+        // Cache in process env so we only hit the keyring once per session.
+        unsafe { env::set_var(env_name, &value) };
+        Some(value)
     }
 
     fn available_providers(&self) -> Vec<&'static str> {
         let mut providers = Vec::new();
-        if env::var("BRAVE_API_KEY").is_ok() {
+        if self.resolve_key("BRAVE_API_KEY").is_some() {
             providers.push("brave");
         }
-        if env::var("TAVILY_API_KEY").is_ok() {
+        if self.resolve_key("TAVILY_API_KEY").is_some() {
             providers.push("tavily");
         }
-        if env::var("SERPER_API_KEY").is_ok() {
+        if self.resolve_key("SERPER_API_KEY").is_some() {
             providers.push("serper");
         }
+        // DuckDuckGo is always available — no API key needed
+        providers.push("ddg");
         providers
+    }
+
+    /// DuckDuckGo HTML search — zero-config, no API key.
+    /// Scrapes the lite HTML endpoint and extracts result links + snippets.
+    async fn search_ddg(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/")?;
+        url.query_pairs_mut().append_pair("q", query);
+        let resp = self
+            .client
+            .get(url)
+            .header("User-Agent", "Mozilla/5.0 (compatible; omegon/0.15)")
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+
+        let mut results = Vec::new();
+        // DuckDuckGo HTML results follow a consistent pattern:
+        //   <a class="result__a" href="...">Title</a>
+        //   <a class="result__snippet">Snippet text</a>
+        // We parse with simple string scanning — no HTML parser dep needed.
+        for chunk in resp.split("class=\"result__a\"").skip(1) {
+            if results.len() >= max_results {
+                break;
+            }
+            // Extract href
+            let raw_url = chunk
+                .split("href=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .unwrap_or("");
+            if raw_url.is_empty() {
+                continue;
+            }
+            // Decode DDG redirect URL (//duckduckgo.com/l/?uddg=<encoded>&...)
+            let url = if raw_url.contains("uddg=") {
+                raw_url
+                    .split("uddg=")
+                    .nth(1)
+                    .and_then(|s| s.split('&').next())
+                    .map(|s| {
+                        percent_encoding::percent_decode_str(s)
+                            .decode_utf8_lossy()
+                            .into_owned()
+                    })
+                    .unwrap_or_default()
+            } else if raw_url.starts_with("//") || raw_url.contains("duckduckgo.com") {
+                continue; // internal DDG link without redirect target
+            } else {
+                raw_url.to_string()
+            };
+            if url.is_empty() {
+                continue;
+            }
+            // Extract title (text between > and </a>)
+            let title = chunk
+                .split('>')
+                .nth(1)
+                .and_then(|s| s.split("</a>").next())
+                .map(|s| strip_html_tags(s))
+                .unwrap_or_default();
+            // Extract snippet from result__snippet class
+            let snippet = chunk
+                .split("class=\"result__snippet\"")
+                .nth(1)
+                .and_then(|s| s.split('>').nth(1))
+                .and_then(|s| s.split("</").next())
+                .map(|s| strip_html_tags(s))
+                .unwrap_or_default();
+
+            if !title.is_empty() {
+                results.push(SearchResult {
+                    title,
+                    url,
+                    snippet,
+                    content: None,
+                    provider: "ddg".into(),
+                });
+            }
+        }
+        Ok(results)
     }
 
     async fn search_brave(
@@ -179,6 +292,7 @@ impl WebSearchProvider {
             "brave" => self.search_brave(query, max_results, topic).await,
             "tavily" => self.search_tavily(query, max_results, topic).await,
             "serper" => self.search_serper(query, max_results, topic).await,
+            "ddg" => self.search_ddg(query, max_results).await,
             _ => anyhow::bail!("Unknown provider: {provider}"),
         }
     }
@@ -235,6 +349,29 @@ struct SerperResult {
     description: Option<String>,
 }
 
+// ─── HTML helpers ──────────────────────────────────────────────────────────
+
+/// Strip HTML tags and decode common entities. Good enough for search snippets.
+fn strip_html_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+}
+
 // ─── Dedup + Format ─────────────────────────────────────────────────────────
 
 fn deduplicate(results: &mut Vec<SearchResult>) {
@@ -275,12 +412,12 @@ impl ToolProvider for WebSearchProvider {
         vec![ToolDefinition {
             name: crate::tool_registry::web_search::WEB_SEARCH.into(),
             label: "Web Search".into(),
-            description: "Search the web using multiple providers (brave, tavily, serper). Modes: quick (single provider), deep (more results), compare (all providers, deduplicated).".into(),
+            description: "Search the web. Works out of the box via DuckDuckGo; API keys (brave, tavily, serper) optional for deeper results.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
-                    "provider": { "type": "string", "enum": ["brave", "tavily", "serper"], "description": "Specific provider. Omit to auto-select." },
+                    "provider": { "type": "string", "enum": ["brave", "tavily", "serper", "ddg"], "description": "Specific provider. Omit to auto-select." },
                     "mode": { "type": "string", "enum": ["quick", "deep", "compare"], "description": "Search mode. Default: quick" },
                     "max_results": { "type": "number", "description": "Max results per provider. Default: 5", "minimum": 1, "maximum": 20 },
                     "topic": { "type": "string", "enum": ["general", "news"], "description": "Search topic. Default: general" }
@@ -323,14 +460,7 @@ impl ToolProvider for WebSearchProvider {
 
         {
             let available = self.available_providers();
-            if available.is_empty() {
-                return Ok(ToolResult {
-                    content: vec![ContentBlock::Text {
-                        text: "No search providers configured. Set BRAVE_API_KEY, TAVILY_API_KEY, or SERPER_API_KEY.".into(),
-                    }],
-                    details: json!({"error": true}),
-                });
-            }
+            // DDG is always available, so this list is never empty
 
             let mut results = Vec::new();
             let mut providers_used = Vec::new();
@@ -367,11 +497,12 @@ impl ToolProvider for WebSearchProvider {
                         });
                     }
                 } else {
-                    // Auto-select: prefer tavily, then serper, then brave
+                    // Auto-select: prefer API providers for quality, DDG as fallback
                     available
                         .iter()
                         .find(|&&p| p == "tavily")
                         .or_else(|| available.iter().find(|&&p| p == "serper"))
+                        .or_else(|| available.iter().find(|&&p| p == "brave"))
                         .unwrap_or(&available[0])
                         .to_string()
                 };

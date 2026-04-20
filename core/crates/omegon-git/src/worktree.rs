@@ -133,37 +133,34 @@ pub fn remove_smart(repo_path: &Path, name: &str, workspace_path: &Path) -> Resu
 }
 
 // ── git worktree operations (fallback) ──────────────────────────────────
+//
+// All operations use libgit2 natively — no git CLI subprocess.
 
 /// Create a git worktree with a new branch from HEAD.
 pub fn create(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<WorktreeInfo> {
-    let _ = std::process::Command::new("git")
-        .args(["branch", "-D", branch])
-        .current_dir(repo_path)
-        .output();
+    let repo = Repository::open(repo_path)?;
 
+    // Delete stale branch if it exists (equivalent to `git branch -D branch`)
+    if let Ok(mut branch_ref) = repo.find_branch(branch, git2::BranchType::Local) {
+        let _ = branch_ref.delete();
+    }
+
+    // Clean up stale worktree directory
     if worktree_path.exists() {
         let _ = std::fs::remove_dir_all(worktree_path);
     }
 
-    let output = std::process::Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            &worktree_path.to_string_lossy(),
-            "HEAD",
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("git worktree add failed")?;
+    // Create the worktree with a new branch from HEAD.
+    // git2's worktree() creates both the branch and the worktree atomically.
+    let head = repo.head().context("failed to read HEAD")?;
+    let head_ref = head
+        .resolve()
+        .context("failed to resolve HEAD")?;
+    let mut opts = git2::WorktreeAddOptions::new();
+    opts.reference(Some(&head_ref));
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("already exists") {
-            anyhow::bail!("git worktree add failed: {}", stderr.trim());
-        }
-    }
+    repo.worktree(branch, worktree_path, Some(&opts))
+        .with_context(|| format!("failed to create worktree at {}", worktree_path.display()))?;
 
     Ok(WorktreeInfo {
         path: worktree_path.to_path_buf(),
@@ -174,20 +171,26 @@ pub fn create(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<Wo
 
 /// Remove a git worktree.
 pub fn remove(repo_path: &Path, worktree_path: &Path) -> Result<()> {
-    let output = std::process::Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            &worktree_path.to_string_lossy(),
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("git worktree remove failed")?;
+    let repo = Repository::open(repo_path)?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!("worktree remove: {}", stderr.trim());
+    // Find the worktree by matching its path against registered worktrees
+    let worktree_names = repo.worktrees().context("failed to list worktrees")?;
+    for name in worktree_names.iter().flatten() {
+        if let Ok(wt) = repo.find_worktree(name) {
+            if wt.path() == worktree_path || worktree_path.starts_with(wt.path()) {
+                // Prune the worktree reference (with force flags)
+                let mut opts = git2::WorktreePruneOptions::new();
+                opts.valid(true);
+                opts.working_tree(true);
+                let _ = wt.prune(Some(&mut opts));
+                break;
+            }
+        }
+    }
+
+    // Remove the working directory
+    if worktree_path.exists() {
+        let _ = std::fs::remove_dir_all(worktree_path);
     }
     Ok(())
 }
@@ -213,10 +216,19 @@ pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<()> {
 
 /// Prune stale git worktree references.
 pub fn prune(repo_path: &Path) -> Result<()> {
-    let _ = std::process::Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(repo_path)
-        .output();
+    let repo = Repository::open(repo_path)?;
+    let Ok(worktree_names) = repo.worktrees() else {
+        return Ok(());
+    };
+    for name in worktree_names.iter().flatten() {
+        if let Ok(wt) = repo.find_worktree(name) {
+            let mut opts = git2::WorktreePruneOptions::new();
+            // Only prune if the worktree is no longer valid (directory gone, etc.)
+            if wt.is_prunable(Some(&mut opts)).unwrap_or(false) {
+                let _ = wt.prune(Some(&mut opts));
+            }
+        }
+    }
     Ok(())
 }
 

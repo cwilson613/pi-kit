@@ -10,10 +10,11 @@ description = "Git operations for Omegon — RepoModel, commit, merge, worktree,
 default = []
 ## Enable jj-lib for library-level queries (adds ~500 deps).
 ## Without this, the jj module uses CLI only.
-jj-lib = ["dep:jj-lib"]
+jj-lib = ["dep:jj-lib", "dep:futures-util"]
 
 [dependencies]
 jj-lib = { version = "0.39", optional = true }
+futures-util = { version = "0.3", optional = true }
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

@@ -120,6 +120,125 @@ impl ProviderInventory {
     pub fn providers_with_credentials(&self) -> impl Iterator<Item = &ProviderEntry> {
         self.entries.iter().filter(|e| e.has_credentials)
     }
+
+    /// Populate `ollama_models` from a live OllamaManager.
+    /// Should be called after `probe()` when Ollama is expected to be available.
+    pub async fn probe_ollama(&mut self) {
+        let mgr = crate::ollama::OllamaManager::new();
+        if !mgr.is_reachable().await {
+            return;
+        }
+
+        let models = mgr.list_models().await.unwrap_or_default();
+        let running = mgr.list_running().await.unwrap_or_default();
+
+        self.ollama_models = models
+            .into_iter()
+            .map(|m| {
+                let running_info = running.iter().find(|r| {
+                    r.name == m.name
+                        || r.name.starts_with(&format!("{}:", m.name))
+                        || m.name.starts_with(&r.name)
+                });
+                OllamaModelInfo {
+                    name: m.name,
+                    size_bytes: m.size,
+                    is_running: running_info.is_some(),
+                    vram_bytes: running_info.map(|r| r.size_vram).unwrap_or(0),
+                }
+            })
+            .collect();
+
+        // Mark the Ollama provider entry as credentialed + reachable
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.provider_id == "ollama") {
+            entry.has_credentials = true;
+            entry.is_reachable = true;
+            entry.models = self
+                .ollama_models
+                .iter()
+                .map(|m| m.name.clone())
+                .collect();
+        }
+    }
+
+    /// Pick the best Ollama model from the probed inventory.
+    /// Prefers running models, then largest model that fits hardware.
+    pub fn best_ollama_model(&self) -> Option<String> {
+        if self.ollama_models.is_empty() {
+            return None;
+        }
+
+        // Prefer a model that's already loaded in VRAM
+        if let Some(running) = self.ollama_models.iter().find(|m| m.is_running) {
+            return Some(running.name.clone());
+        }
+
+        // Fall back to largest available model
+        self.ollama_models
+            .iter()
+            .max_by_key(|m| m.size_bytes)
+            .map(|m| m.name.clone())
+    }
+
+    /// Format a concise delegation catalog for system prompt injection.
+    /// Lists available providers and models so the orchestrator can route
+    /// delegate tasks to the right model.
+    pub fn format_delegation_catalog(&self, session_model: Option<&str>) -> String {
+        let mut lines = Vec::new();
+        lines.push("## Delegation Model Catalog".to_string());
+        lines.push(String::new());
+        lines.push(
+            "Use `delegate` with `model` to route tasks to the appropriate model.".to_string(),
+        );
+        lines.push(String::new());
+
+        // Local Ollama models (free, always preferred for rote work)
+        if !self.ollama_models.is_empty() {
+            lines.push("**Local (free, use for rote tasks):**".to_string());
+            for m in &self.ollama_models {
+                let size_gb = m.size_bytes as f64 / 1_000_000_000.0;
+                let status = if m.is_running { " [loaded]" } else { "" };
+                lines.push(format!(
+                    "- `ollama:{}` — {:.0}GB{}",
+                    m.name, size_gb, status
+                ));
+            }
+            lines.push(String::new());
+        }
+
+        // Cloud providers with credentials
+        let cloud: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| e.has_credentials && e.provider_id != "ollama")
+            .collect();
+        if !cloud.is_empty() {
+            lines.push("**Cloud (credentialed):**".to_string());
+            for e in &cloud {
+                let default_model = default_model_for_provider(&e.provider_id, e.capability_tier);
+                let is_current = session_model
+                    .is_some_and(|s| s.starts_with(&format!("{}:", e.provider_id)));
+                let marker = if is_current { " ← current" } else { "" };
+                let cost = match e.cost_tier {
+                    CostTier::Free => "free",
+                    CostTier::Cheap => "cheap",
+                    CostTier::Standard => "standard",
+                    CostTier::Premium => "premium",
+                };
+                lines.push(format!(
+                    "- `{}:{}` — {}, {}{}",
+                    e.provider_id, default_model, e.capability_tier, cost, marker
+                ));
+            }
+            lines.push(String::new());
+        }
+
+        lines.push(
+            "Prefer local models for file edits, test runs, and mechanical changes.".to_string(),
+        );
+
+        lines.join("\n")
+    }
 }
 
 /// Classify whether a provider ID is an inference provider (vs search/git/etc).
@@ -214,7 +333,13 @@ pub fn route(req: &CapabilityRequest, inventory: &ProviderInventory) -> Vec<Prov
                 score += 3.0;
             }
 
-            let model_id = default_model_for_provider(&e.provider_id, req.tier);
+            let model_id = if e.provider_id == "ollama" {
+                inventory
+                    .best_ollama_model()
+                    .unwrap_or_else(|| default_model_for_provider(&e.provider_id, req.tier))
+            } else {
+                default_model_for_provider(&e.provider_id, req.tier)
+            };
 
             ProviderCandidate {
                 provider_id: e.provider_id.clone(),
@@ -235,8 +360,8 @@ pub fn route(req: &CapabilityRequest, inventory: &ProviderInventory) -> Vec<Prov
 /// Default model for a provider at a given tier.
 fn default_model_for_provider(provider_id: &str, tier: CapabilityTier) -> String {
     match (provider_id, tier) {
-        ("anthropic", CapabilityTier::Max) => "claude-opus-4-6".to_string(),
-        ("anthropic", CapabilityTier::Frontier) => "claude-sonnet-4-6".to_string(),
+        ("anthropic", CapabilityTier::Max) => "claude-opus-4-7".to_string(),
+        ("anthropic", CapabilityTier::Frontier) => "claude-sonnet-4-7".to_string(),
         ("anthropic", _) => "claude-haiku-4-5-20251001".to_string(),
         ("openai", CapabilityTier::Max) => "o3".to_string(),
         ("openai", CapabilityTier::Frontier) => "gpt-5.4".to_string(),
@@ -248,8 +373,8 @@ fn default_model_for_provider(provider_id: &str, tier: CapabilityTier) -> String
         ("xai", _) => "grok-3-mini-fast".to_string(),
         ("mistral", _) => "devstral-small-2505".to_string(),
         ("cerebras", _) => "llama-3.3-70b".to_string(),
-        ("openrouter", CapabilityTier::Max) => "anthropic/claude-opus-4-6".to_string(),
-        ("openrouter", CapabilityTier::Frontier) => "anthropic/claude-sonnet-4-6".to_string(),
+        ("openrouter", CapabilityTier::Max) => "anthropic/claude-opus-4-7".to_string(),
+        ("openrouter", CapabilityTier::Frontier) => "anthropic/claude-sonnet-4-7".to_string(),
         ("openrouter", _) => "anthropic/claude-haiku-4-5-20251001".to_string(),
         ("huggingface", _) => "Qwen/Qwen3-32B".to_string(),
         ("ollama", _) => "qwen3:32b".to_string(),
@@ -274,9 +399,38 @@ pub fn infer_model_tier(model_str: &str) -> CapabilityTier {
         ("openai", _) => CapabilityTier::Frontier,
         ("openai-codex", m) if m.contains("mini") => CapabilityTier::Mid,
         ("openai-codex", _) => CapabilityTier::Max,
-        ("ollama", _) | ("local", _) => CapabilityTier::Mid,
+        ("ollama", m) | ("local", m) => infer_local_model_tier(m),
+        ("groq", m) if m.contains("70b") || m.contains("90b") => CapabilityTier::Frontier,
+        ("groq", _) => CapabilityTier::Mid,
+        ("cerebras", m) if m.contains("70b") => CapabilityTier::Frontier,
+        ("cerebras", _) => CapabilityTier::Mid,
         _ => CapabilityTier::Frontier, // unknown providers assumed capable
     }
+}
+
+/// Infer capability tier for local/ollama models based on parameter count in the name.
+/// Models with 70B+ parameters are Frontier-capable; 14B-32B are Mid; smaller are Leaf.
+fn infer_local_model_tier(model_name: &str) -> CapabilityTier {
+    // Extract numeric parameter count from model name patterns like "70b", "72b", "32b"
+    let lower = model_name.to_lowercase();
+    // Look for patterns like "70b", "72b", "120b", "405b"
+    for part in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if let Some(num_str) = part.strip_suffix('b') {
+            if let Ok(params) = num_str.parse::<u32>() {
+                return match params {
+                    70.. => CapabilityTier::Frontier,
+                    14..=69 => CapabilityTier::Mid,
+                    _ => CapabilityTier::Leaf,
+                };
+            }
+        }
+    }
+    // Also check for "scout" pattern (llama4:scout = large model)
+    if lower.contains("scout") || lower.contains("maverick") {
+        return CapabilityTier::Frontier;
+    }
+    // Default: Mid for unknown local models (conservative but not punishing)
+    CapabilityTier::Mid
 }
 
 // ── Bridge factory ──────────────────────────────────────────────────

@@ -2977,10 +2977,13 @@ mod tests {
             std::time::UNIX_EPOCH + std::time::Duration::from_secs(13 * 3600 + 5 * 60),
         ))
         .expect("timestamp should format");
-        assert_eq!(formatted.len(), 5);
+        // Format is HH:MM:SS (8 chars)
+        assert_eq!(formatted.len(), 8, "expected HH:MM:SS format, got: {formatted}");
         assert_eq!(&formatted[2..3], ":");
+        assert_eq!(&formatted[5..6], ":");
         assert!(formatted.chars().take(2).all(|c| c.is_ascii_digit()));
-        assert!(formatted.chars().skip(3).all(|c| c.is_ascii_digit()));
+        assert!(formatted.chars().skip(3).take(2).all(|c| c.is_ascii_digit()));
+        assert!(formatted.chars().skip(6).all(|c| c.is_ascii_digit()));
     }
 
     #[test]

@@ -3563,6 +3563,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         "openai-codex" | "chatgpt" | "codex" => {
                                             auth::login_openai_with_callbacks(progress, prompt).await
                                         }
+                                        "google-antigravity" | "antigravity" => {
+                                            auth::login_antigravity_with_callbacks(progress, prompt).await
+                                        }
+                                        "google" | "gemini" => Err(anyhow::anyhow!(auth::operator_api_key_login_guidance(
+                                            "google",
+                                            "GOOGLE_API_KEY",
+                                            "Google AI Studio"
+                                        ))),
                                         "openai" => Err(anyhow::anyhow!(auth::operator_api_key_login_guidance(
                                             "openai",
                                             "OPENAI_API_KEY",
@@ -5179,6 +5187,15 @@ async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
     let result = match provider {
         "anthropic" => auth::login_anthropic().await,
         "openai-codex" => auth::login_openai().await,
+        "google-antigravity" => auth::login_antigravity().await,
+        "google" => {
+            login_api_key(
+                "google",
+                "GOOGLE_API_KEY",
+                "https://aistudio.google.com/apikey",
+            )
+            .await
+        }
         "openai" => {
             login_api_key(
                 "openai",
@@ -5205,7 +5222,7 @@ async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
         }
         _ => {
             eprintln!(
-                "Unknown provider: {provider}. Use: anthropic, openai, openai-codex, openrouter, ollama-cloud"
+                "Unknown provider: {provider}. Use: anthropic, openai, openai-codex, google, google-antigravity, openrouter, ollama-cloud"
             );
             std::process::exit(1);
         }

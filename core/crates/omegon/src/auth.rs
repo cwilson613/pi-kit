@@ -3,6 +3,7 @@
 //! Supported providers:
 //!   - Anthropic (Claude Pro/Max): PKCE flow to claude.ai, callback on :53692
 //!   - OpenAI Codex (ChatGPT Plus/Pro): PKCE flow to auth.openai.com, callback on :1455
+//!   - Google Antigravity: Google OAuth2 flow to accounts.google.com, callback on :51121
 //!
 //! Token refresh happens automatically when the stored token is expired.
 
@@ -127,6 +128,14 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         description: "API key — Gemini models via generativelanguage.googleapis.com",
     },
     ProviderCredential {
+        id: "google-antigravity",
+        auth_key: "google-antigravity",
+        display_name: "Google Antigravity",
+        env_vars: &["ANTIGRAVITY_OAUTH_TOKEN"],
+        auth_method: AuthMethod::OAuth,
+        description: "OAuth — Gemini models via Google Antigravity IDE subscription",
+    },
+    ProviderCredential {
         id: "ollama",
         auth_key: "ollama",
         display_name: "Ollama (Local)",
@@ -208,6 +217,9 @@ pub fn canonical_provider_id(id: &str) -> &str {
         "xai" => "xai",
         "mistral" => "mistral",
         "cerebras" => "cerebras",
+        "google" => "google",
+        "gemini" => "google",
+        "antigravity" | "google-antigravity" => "google-antigravity",
         "brave" => "brave",
         "tavily" => "tavily",
         "serper" => "serper",
@@ -660,13 +672,16 @@ pub async fn resolve_with_refresh(provider: &str) -> Option<(String, bool)> {
 }
 
 fn oauth_refresh_failure_is_fatal(provider: &str) -> bool {
-    matches!(provider, "openai-codex")
+    matches!(provider, "openai-codex" | "google-antigravity")
 }
 
 /// Refresh an OAuth token.
 pub async fn refresh_token(provider: &str, refresh: &str) -> anyhow::Result<OAuthCredentials> {
     if provider == "openai-codex" {
         return refresh_openai_token(refresh).await;
+    }
+    if provider == "google-antigravity" {
+        return refresh_antigravity_token(refresh).await;
     }
     let url = match provider {
         "anthropic" => TOKEN_URL,
@@ -1106,6 +1121,157 @@ pub async fn refresh_openai_token(refresh: &str) -> anyhow::Result<OAuthCredenti
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!("OpenAI token refresh failed ({status}): {body}");
+    }
+
+    let data: Value = resp.json().await?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    let expires_in = data["expires_in"].as_u64().unwrap_or(3600);
+
+    Ok(OAuthCredentials {
+        cred_type: "oauth".into(),
+        access: data["access_token"].as_str().unwrap_or("").into(),
+        refresh: data["refresh_token"].as_str().unwrap_or(refresh).into(),
+        expires: now_ms + expires_in * 1000,
+    })
+}
+
+// ─── Google Antigravity (IDE subscription) ─────────────────────────────────
+
+const ANTIGRAVITY_CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+const ANTIGRAVITY_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const ANTIGRAVITY_CALLBACK_PORT: u16 = 51121;
+const ANTIGRAVITY_REDIRECT_URI: &str = "http://localhost:51121/oauth-callback";
+const ANTIGRAVITY_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid";
+
+pub async fn login_antigravity() -> anyhow::Result<OAuthCredentials> {
+    login_antigravity_with_callbacks(default_progress(), default_prompt()).await
+}
+
+pub async fn login_antigravity_with_progress(
+    progress: LoginProgress,
+) -> anyhow::Result<OAuthCredentials> {
+    login_antigravity_with_callbacks(progress, default_prompt()).await
+}
+
+pub async fn login_antigravity_with_callbacks(
+    progress: LoginProgress,
+    prompt: LoginPrompt,
+) -> anyhow::Result<OAuthCredentials> {
+    let (verifier, challenge) = generate_pkce();
+
+    let mut state_bytes = [0u8; 16];
+    getrandom::fill(&mut state_bytes).expect("getrandom failed");
+    let state = hex::encode(&state_bytes);
+
+    let auth_url = format!(
+        "{ANTIGRAVITY_AUTH_URL}?response_type=code&client_id={ANTIGRAVITY_CLIENT_ID}\
+         &redirect_uri={}&scope={}&code_challenge={challenge}\
+         &code_challenge_method=S256&state={state}\
+         &access_type=offline&prompt=consent",
+        urlencoding_encode(ANTIGRAVITY_REDIRECT_URI),
+        urlencoding_encode(ANTIGRAVITY_SCOPE),
+    );
+
+    let (code, recv_state) = if is_headless() {
+        tracing::info!("headless environment detected, using paste-back OAuth flow (Antigravity)");
+        progress("Headless mode — open this URL in your browser:");
+        progress(&auth_url);
+        progress(&format!(
+            "\nThen paste the full callback URL:\n     \
+             http://localhost:{ANTIGRAVITY_CALLBACK_PORT}/oauth-callback?code=...\n     \
+             (the browser will show a connection error — that's expected)"
+        ));
+        let raw = prompt("Paste callback URL: ".to_string()).await?;
+        parse_callback_at_path(&raw, "/oauth-callback")?
+    } else {
+        progress("Opening browser for Google Antigravity authentication…");
+        let _ = open::that(&auth_url);
+        progress(&format!(
+            "Waiting for callback on localhost:{ANTIGRAVITY_CALLBACK_PORT}…"
+        ));
+        let listener =
+            tokio::net::TcpListener::bind(format!("127.0.0.1:{ANTIGRAVITY_CALLBACK_PORT}")).await?;
+        tracing::info!(
+            port = ANTIGRAVITY_CALLBACK_PORT,
+            "listening for Antigravity OAuth callback"
+        );
+        let (mut stream, _) = listener.accept().await?;
+        let mut buf = [0u8; 4096];
+        let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await?;
+        let request = String::from_utf8_lossy(&buf[..n]);
+
+        let result = parse_callback_at_path(&request, "/oauth-callback")?;
+
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+                        <html><body><p>Authentication successful. Return to your terminal.</p></body></html>";
+        tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await?;
+
+        result
+    };
+
+    if recv_state != state {
+        anyhow::bail!("OAuth state mismatch — browser may have been closed or network interrupted. Please try again.");
+    }
+
+    progress("Exchanging authorization code for tokens…");
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(ANTIGRAVITY_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "grant_type=authorization_code&client_id={ANTIGRAVITY_CLIENT_ID}\
+             &code={code}&code_verifier={verifier}\
+             &redirect_uri={}",
+            urlencoding_encode(ANTIGRAVITY_REDIRECT_URI),
+        ))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Google token exchange failed ({status}): {body}");
+    }
+
+    let data: Value = resp.json().await?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    let expires_in = data["expires_in"].as_u64().unwrap_or(3600);
+
+    let creds = OAuthCredentials {
+        cred_type: "oauth".into(),
+        access: data["access_token"].as_str().unwrap_or("").into(),
+        refresh: data["refresh_token"].as_str().unwrap_or("").into(),
+        expires: now_ms + expires_in * 1000,
+    };
+
+    write_credentials("google-antigravity", &creds)?;
+    progress("✓ Google Antigravity authentication successful. Credentials saved.");
+
+    Ok(creds)
+}
+
+/// Refresh a Google Antigravity OAuth token.
+pub async fn refresh_antigravity_token(refresh: &str) -> anyhow::Result<OAuthCredentials> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(ANTIGRAVITY_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "grant_type=refresh_token&refresh_token={refresh}&client_id={ANTIGRAVITY_CLIENT_ID}"
+        ))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Google Antigravity token refresh failed ({status}): {body}");
     }
 
     let data: Value = resp.json().await?;

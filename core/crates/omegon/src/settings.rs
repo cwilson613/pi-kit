@@ -825,6 +825,7 @@ const PROVIDER_PREFIXES: &[&str] = &[
     "mistral",
     "cerebras",
     "google",
+    "google-antigravity",
     "huggingface",
     "openrouter",
     "ollama",

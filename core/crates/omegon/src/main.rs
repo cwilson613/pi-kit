@@ -1167,10 +1167,23 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     }
 
     // ─── LLM model (bridge resolved per-turn for credential freshness) ───
-    let model = shared_settings
+    let mut model = shared_settings
         .lock()
         .map(|s| s.model.clone())
         .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into());
+    // If the configured model's provider isn't available, try auto-detection.
+    if providers::auto_detect_bridge(&model).await.is_none() {
+        if let Some(safe) = providers::automation_safe_model() {
+            tracing::info!(
+                configured = %model, resolved = %safe,
+                "configured model unavailable — switching to detected provider"
+            );
+            model = safe.clone();
+            if let Ok(mut s) = shared_settings.lock() {
+                s.set_model(&safe);
+            }
+        }
+    }
     // Validate provider availability at startup (fail-fast).
     if providers::auto_detect_bridge(&model).await.is_none() {
         tracing::warn!(
@@ -2491,24 +2504,38 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     }
 
     let mut provider_connected = true;
-    let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&resolved_cli_model).await
+    // Try the resolved model first; if unavailable, auto-detect any working provider.
+    let (effective_model, bridge): (String, Box<dyn LlmBridge>) = match providers::auto_detect_bridge(&resolved_cli_model).await
     {
         Some(native) => {
             tracing::info!("using native LLM provider");
-            native
+            (resolved_cli_model.clone(), native)
         }
-        None => {
+        None => match providers::automation_safe_model() {
+            Some(safe) if providers::auto_detect_bridge(&safe).await.is_some() => {
+                tracing::info!(
+                    configured = %resolved_cli_model, resolved = %safe,
+                    "configured model unavailable — switching to detected provider"
+                );
+                if let Ok(mut s) = shared_settings.lock() {
+                    s.set_model(&safe);
+                }
+                let bridge = providers::auto_detect_bridge(&safe).await.unwrap();
+                (safe, bridge)
+            }
+            _ => {
             tracing::warn!(
                 "no LLM provider available — run /login anthropic or `omegon auth login` to connect"
             );
             eprintln!("No LLM provider configured. Use /login <provider> in the TUI or run `omegon auth login` first.");
             provider_connected = false;
-            Box::new(bridge::NullBridge)
+            (resolved_cli_model.clone(), Box::new(bridge::NullBridge) as Box<dyn LlmBridge>)
+        }
         }
     };
     // Update settings with provider status before TUI reads it
     if let Ok(mut s) = shared_settings.lock() {
-        s.provider_connected = provider_connected || auth::provider_connected_for_model(&resolved_cli_model);
+        s.provider_connected = provider_connected || auth::provider_connected_for_model(&effective_model);
     }
     let bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>> =
         Arc::new(tokio::sync::RwLock::new(bridge));

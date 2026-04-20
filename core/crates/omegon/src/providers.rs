@@ -66,11 +66,19 @@ pub fn anthropic_credential_mode() -> AnthropicCredentialMode {
 /// Ollama availability is probed once per process lifetime (50ms TCP connect) and
 /// cached — safe to call from the TUI event loop and async orchestrator paths.
 pub fn automation_safe_model() -> Option<String> {
-    // 1. OpenAI direct API key
+    // 1. Anthropic (OAuth or API key)
+    if resolve_api_key_sync("anthropic").is_some() {
+        return Some("anthropic:claude-sonnet-4-6".to_string());
+    }
+    // 2. OpenAI Codex (OAuth)
+    if resolve_api_key_sync("openai-codex").is_some() {
+        return Some("openai-codex:codex-mini-latest".to_string());
+    }
+    // 3. OpenAI direct API key
     if resolve_api_key_sync("openai").is_some_and(|(_, oauth)| !oauth) {
         return Some("openai:gpt-4o".to_string());
     }
-    // 2. OpenRouter
+    // 4. OpenRouter
     if resolve_api_key_sync("openrouter").is_some() {
         return Some("openrouter:openai/gpt-4o".to_string());
     }

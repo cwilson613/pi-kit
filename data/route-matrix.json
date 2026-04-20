@@ -151,6 +151,13 @@
     },
     {
       "provider": "google",
+      "modelIdPattern": "gemini-3*",
+      "contextCeiling": 1000000,
+      "tier": "gloriana",
+      "breakpointZones": []
+    },
+    {
+      "provider": "google",
       "modelIdPattern": "gemini-2.5-pro*",
       "contextCeiling": 1000000,
       "tier": "gloriana",

@@ -377,7 +377,7 @@ fn default_model_for_provider(provider_id: &str, tier: CapabilityTier) -> String
         ("xai", _) => "grok-3-mini-fast".to_string(),
         ("mistral", _) => "devstral-small-2505".to_string(),
         ("cerebras", _) => "llama-3.3-70b".to_string(),
-        ("google" | "google-antigravity", CapabilityTier::Max) => "gemini-2.5-pro".to_string(),
+        ("google" | "google-antigravity", CapabilityTier::Max) => "gemini-3.1-pro-preview".to_string(),
         ("google" | "google-antigravity", CapabilityTier::Frontier) => "gemini-2.5-flash".to_string(),
         ("google" | "google-antigravity", _) => "gemini-2.0-flash-lite".to_string(),
         ("openrouter", CapabilityTier::Max) => "anthropic/claude-opus-4-7".to_string(),
@@ -411,7 +411,8 @@ pub fn infer_model_tier(model_str: &str) -> CapabilityTier {
         ("groq", _) => CapabilityTier::Mid,
         ("cerebras", m) if m.contains("70b") => CapabilityTier::Frontier,
         ("cerebras", _) => CapabilityTier::Mid,
-        ("google" | "google-antigravity", m) if m.contains("pro") => CapabilityTier::Max,
+        ("google" | "google-antigravity", m) if m.contains("3.1") || m.contains("3-pro") || m.contains("3.0-pro") => CapabilityTier::Max,
+        ("google" | "google-antigravity", m) if m.contains("pro") => CapabilityTier::Frontier,
         ("google" | "google-antigravity", m) if m.contains("flash") => CapabilityTier::Frontier,
         ("google" | "google-antigravity", _) => CapabilityTier::Frontier,
         _ => CapabilityTier::Frontier, // unknown providers assumed capable

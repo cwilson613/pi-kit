@@ -356,6 +356,40 @@ impl ModelCatalog {
                 "Anthropic".to_string(),
                 vec![
                     ModelInfo {
+                        id: "anthropic:claude-opus-4-7".to_string(),
+                        name: "Claude Opus 4.7".to_string(),
+                        provider: "Anthropic".to_string(),
+                        context_input: 1000000,
+                        context_output: 131072,
+                        cost_tier: CostTier::Premium,
+                        pricing: Some(TokenPricing::new(15.0, 75.0)),
+                        capabilities: vec![
+                            Capability::Reasoning,
+                            Capability::Coding,
+                            Capability::Vision,
+                        ],
+                        description: "Claude Opus 4.7 — latest frontier reasoning, coding, and vision"
+                            .to_string(),
+                        available: true,
+                    },
+                    ModelInfo {
+                        id: "anthropic:claude-sonnet-4-7".to_string(),
+                        name: "Claude Sonnet 4.7".to_string(),
+                        provider: "Anthropic".to_string(),
+                        context_input: 1000000,
+                        context_output: 65536,
+                        cost_tier: CostTier::StandardAPI,
+                        pricing: Some(TokenPricing::new(3.0, 15.0)),
+                        capabilities: vec![
+                            Capability::Reasoning,
+                            Capability::Coding,
+                            Capability::Vision,
+                        ],
+                        description: "Claude Sonnet 4.7 — latest balanced performance and cost"
+                            .to_string(),
+                        available: true,
+                    },
+                    ModelInfo {
                         id: "anthropic:claude-opus-4-6".to_string(),
                         name: "Claude Opus 4.6".to_string(),
                         provider: "Anthropic".to_string(),

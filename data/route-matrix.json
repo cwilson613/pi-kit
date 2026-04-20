@@ -148,6 +148,34 @@
       "contextCeiling": 262144,
       "tier": "retribution",
       "breakpointZones": []
+    },
+    {
+      "provider": "google",
+      "modelIdPattern": "gemini-2.5-pro*",
+      "contextCeiling": 1000000,
+      "tier": "gloriana",
+      "breakpointZones": []
+    },
+    {
+      "provider": "google",
+      "modelIdPattern": "gemini-2.5-flash*",
+      "contextCeiling": 1000000,
+      "tier": "victory",
+      "breakpointZones": []
+    },
+    {
+      "provider": "google",
+      "modelIdPattern": "gemini-2.0-flash*",
+      "contextCeiling": 1000000,
+      "tier": "victory",
+      "breakpointZones": []
+    },
+    {
+      "provider": "google",
+      "modelIdPattern": "gemini-1.5*",
+      "contextCeiling": 1000000,
+      "tier": "retribution",
+      "breakpointZones": []
     }
   ]
 }

@@ -74,7 +74,11 @@ pub fn automation_safe_model() -> Option<String> {
     if resolve_api_key_sync("openai-codex").is_some() {
         return Some("openai-codex:codex-mini-latest".to_string());
     }
-    // 3. OpenAI direct API key
+    // 3. Google Gemini
+    if resolve_api_key_sync("google").is_some() {
+        return Some("google:gemini-2.5-flash".to_string());
+    }
+    // 4. OpenAI direct API key
     if resolve_api_key_sync("openai").is_some_and(|(_, oauth)| !oauth) {
         return Some("openai:gpt-4o".to_string());
     }
@@ -233,6 +237,7 @@ fn is_known_provider_id(provider_id: &str) -> bool {
             | "xai"
             | "mistral"
             | "cerebras"
+            | "google"
             | "huggingface"
             | "ollama"
             | "ollama-cloud"
@@ -268,6 +273,9 @@ pub fn infer_provider_id(model_spec: &str) -> String {
     }
     if lower.starts_with("codex") {
         return "openai-codex".to_string();
+    }
+    if lower.starts_with("gemini") {
+        return "google".to_string();
     }
     if lower.contains('/') {
         return "openrouter".to_string();
@@ -355,6 +363,7 @@ fn fallback_order_for_model(model_spec: &str) -> Vec<&'static str> {
         "xai" => vec!["xai"],
         "mistral" => vec!["mistral"],
         "cerebras" => vec!["cerebras"],
+        "google" => vec!["google"],
         "huggingface" => vec!["huggingface"],
         "ollama" => vec!["ollama"],
         "ollama-cloud" => vec!["ollama-cloud"],
@@ -442,7 +451,7 @@ pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
         "openai" => OpenAIClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
         "openrouter" => OpenRouterClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
         // OpenAI-compatible providers — all use the Chat Completions protocol
-        "groq" | "xai" | "mistral" | "cerebras" | "huggingface" | "ollama" => {
+        "groq" | "xai" | "mistral" | "cerebras" | "google" | "huggingface" | "ollama" => {
             OpenAICompatClient::from_env(provider_id).map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
         "ollama-cloud" => OllamaCloudClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
@@ -2275,6 +2284,7 @@ fn compat_base_url(provider_id: &str) -> Option<&'static str> {
         "xai" => Some("https://api.x.ai"),
         "mistral" => Some("https://api.mistral.ai"),
         "cerebras" => Some("https://api.cerebras.ai"),
+        "google" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         "huggingface" => Some("https://router.huggingface.co"),
         "ollama" => Some("http://localhost:11434"),
         _ => None,
@@ -2384,6 +2394,7 @@ fn compat_default_model(provider_id: &str) -> Option<&'static str> {
         "xai" => Some("grok-3-mini-fast"),
         "mistral" => Some("devstral-small-2505"),
         "cerebras" => Some("llama-3.3-70b"),
+        "google" => Some("gemini-2.5-flash"),
         "huggingface" => Some("Qwen/Qwen3-32B"),
         "ollama" => Some("qwen3:32b"),
         "ollama-cloud" => Some("gpt-oss:120b-cloud"),

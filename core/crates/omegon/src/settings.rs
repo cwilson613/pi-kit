@@ -824,6 +824,7 @@ const PROVIDER_PREFIXES: &[&str] = &[
     "xai",
     "mistral",
     "cerebras",
+    "google",
     "huggingface",
     "openrouter",
     "ollama",

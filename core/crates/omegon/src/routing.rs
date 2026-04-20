@@ -253,6 +253,7 @@ fn is_inference_provider(id: &str) -> bool {
             | "xai"
             | "mistral"
             | "cerebras"
+            | "google"
             | "huggingface"
             | "ollama"
     )
@@ -265,6 +266,7 @@ fn provider_tier(id: &str) -> (CapabilityTier, CostTier) {
         "openai" => (CapabilityTier::Max, CostTier::Premium),
         "openai-codex" => (CapabilityTier::Frontier, CostTier::Free),
         "openrouter" => (CapabilityTier::Frontier, CostTier::Standard),
+        "google" => (CapabilityTier::Frontier, CostTier::Standard),
         "groq" => (CapabilityTier::Mid, CostTier::Cheap),
         "xai" => (CapabilityTier::Frontier, CostTier::Standard),
         "mistral" => (CapabilityTier::Frontier, CostTier::Standard),
@@ -373,6 +375,9 @@ fn default_model_for_provider(provider_id: &str, tier: CapabilityTier) -> String
         ("xai", _) => "grok-3-mini-fast".to_string(),
         ("mistral", _) => "devstral-small-2505".to_string(),
         ("cerebras", _) => "llama-3.3-70b".to_string(),
+        ("google", CapabilityTier::Max) => "gemini-2.5-pro".to_string(),
+        ("google", CapabilityTier::Frontier) => "gemini-2.5-flash".to_string(),
+        ("google", _) => "gemini-2.0-flash-lite".to_string(),
         ("openrouter", CapabilityTier::Max) => "anthropic/claude-opus-4-7".to_string(),
         ("openrouter", CapabilityTier::Frontier) => "anthropic/claude-sonnet-4-7".to_string(),
         ("openrouter", _) => "anthropic/claude-haiku-4-5-20251001".to_string(),
@@ -404,6 +409,9 @@ pub fn infer_model_tier(model_str: &str) -> CapabilityTier {
         ("groq", _) => CapabilityTier::Mid,
         ("cerebras", m) if m.contains("70b") => CapabilityTier::Frontier,
         ("cerebras", _) => CapabilityTier::Mid,
+        ("google", m) if m.contains("pro") => CapabilityTier::Max,
+        ("google", m) if m.contains("flash") => CapabilityTier::Frontier,
+        ("google", _) => CapabilityTier::Frontier,
         _ => CapabilityTier::Frontier, // unknown providers assumed capable
     }
 }

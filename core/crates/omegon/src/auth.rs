@@ -119,6 +119,14 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         description: "API key — hardware-accelerated inference",
     },
     ProviderCredential {
+        id: "google",
+        auth_key: "google",
+        display_name: "Google Gemini",
+        env_vars: &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        auth_method: AuthMethod::ApiKey,
+        description: "API key — Gemini models via generativelanguage.googleapis.com",
+    },
+    ProviderCredential {
         id: "ollama",
         auth_key: "ollama",
         display_name: "Ollama (Local)",

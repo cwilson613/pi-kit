@@ -18,6 +18,10 @@ version = ">=0.3.0"
 name = "scribe"
 version = ">=0.1.0"
 
+[[extensions]]
+name = "scry"
+version = ">=0.1.0"
+
 [settings]
 model = "anthropic:claude-sonnet-4-6"
 thinking_level = "low"

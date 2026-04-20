@@ -15,6 +15,9 @@ pub struct ChildAgentRuntimeProfile {
     pub disabled_extensions: Vec<String>,
     pub preloaded_files: Vec<String>,
     pub persona: Option<String>,
+    /// Force slim mode on the child (compact schemas, lazy tool injection,
+    /// reduced prompt surface). Delegate workers always set this.
+    pub slim: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +129,9 @@ pub fn spawn_headless_child_agent(
     }
     if let Some(ref persona) = config.runtime.persona {
         child.env("OMEGON_CHILD_PERSONA", persona);
+    }
+    if config.runtime.slim {
+        child.env("OMEGON_CHILD_SLIM", "1");
     }
     let child = child
         .spawn()

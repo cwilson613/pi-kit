@@ -143,16 +143,9 @@ impl Indexer {
 }
 
 fn git_head(repo_path: &Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-    if out.status.success() {
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        None
-    }
+    let repo = git2::Repository::discover(repo_path).ok()?;
+    let head = repo.head().ok()?;
+    head.target().map(|oid| oid.to_string())
 }
 
 fn sha256(data: &[u8]) -> String {

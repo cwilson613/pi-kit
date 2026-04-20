@@ -32,6 +32,9 @@ tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-go = "0.25"
 
+# Git HEAD detection (native, no git CLI dependency)
+git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
+
 # Regex fallback (used when tree-sitter parse fails)
 regex = "1"
 

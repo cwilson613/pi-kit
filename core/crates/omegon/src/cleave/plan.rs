@@ -40,6 +40,10 @@ pub struct CleaveChildRuntimeProfile {
     /// Persona to activate at child startup (resolved by name or ID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona: Option<String>,
+    /// Force slim mode on the child (compact schemas, lazy tool injection).
+    /// Defaults to false; parent can set true for token-constrained children.
+    #[serde(default)]
+    pub slim: bool,
 }
 
 /// A single child in the plan.

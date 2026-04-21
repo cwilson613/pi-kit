@@ -96,15 +96,27 @@ pub async fn resolve_bridge_or_bail(model: &str) -> anyhow::Result<Box<dyn LlmBr
             Ok(bridge)
         }
         None => {
+            // Try auto-detecting any available provider before giving up.
+            if let Some(safe_model) = providers::automation_safe_model() {
+                if let Some(bridge) = providers::auto_detect_bridge(&safe_model).await {
+                    tracing::info!(
+                        requested = model, resolved = %safe_model,
+                        "requested model unavailable — falling back to detected provider"
+                    );
+                    return Ok(bridge);
+                }
+            }
             anyhow::bail!(
                 "No LLM provider available.\n\n\
                  To get started:\n  \
-                 omegon auth login anthropic    # OAuth (recommended)\n  \
-                 omegon auth login openai       # OpenAI API key\n  \
-                 omegon auth login openrouter   # OpenRouter (free tier available)\n\n\
+                 omegon auth login anthropic       # OAuth (recommended)\n  \
+                 omegon auth login antigravity     # Google Antigravity OAuth\n  \
+                 omegon auth login openai-codex    # OpenAI Codex OAuth\n  \
+                 omegon auth login google          # Google API key\n  \
+                 omegon auth login openrouter      # OpenRouter (free tier)\n\n\
                  Or set a key directly:\n  \
                  export ANTHROPIC_API_KEY=sk-ant-...\n  \
-                 export OPENAI_API_KEY=sk-..."
+                 export GOOGLE_API_KEY=AIza..."
             );
         }
     }

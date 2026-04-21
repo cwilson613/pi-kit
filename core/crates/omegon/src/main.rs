@@ -4431,14 +4431,7 @@ async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
     eprintln!("omegon {} — smoke test mode", env!("CARGO_PKG_VERSION"));
 
     // ─── LLM provider (native Rust clients only) ─────────────────────
-    let bridge: Box<dyn bridge::LlmBridge> = match providers::auto_detect_bridge(&cli.model).await {
-        Some(native) => native,
-        None => {
-            anyhow::bail!(
-                "No LLM provider available. Set ANTHROPIC_API_KEY or another provider credential."
-            );
-        }
-    };
+    let bridge = bootstrap::resolve_bridge_or_bail(&cli.model).await?;
     let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(bridge));
 
     let exit_code = smoke::run(bridge).await;
@@ -4720,17 +4713,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
             resolved_provider.as_deref().unwrap_or("none")
         );
     }
-    let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&cli.model).await {
-        Some(native) => {
-            tracing::info!("using native LLM provider");
-            native
-        }
-        None => {
-            anyhow::bail!(
-                "No LLM provider available. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or another provider credential."
-            );
-        }
-    };
+    let bridge = bootstrap::resolve_bridge_or_bail(&cli.model).await?;
 
     // ─── Event channel ──────────────────────────────────────────────────
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);

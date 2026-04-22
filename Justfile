@@ -438,10 +438,10 @@ rc:
         exit 1
     fi
 
-    # Refuse to run with uncommitted changes (core/ and milestones)
-    DIRTY=$(git status --porcelain -- core/ .omegon/milestones.json)
+    # Refuse to run with uncommitted changes
+    DIRTY=$(git status --porcelain -- core/ Cargo.toml Cargo.lock .omegon/milestones.json)
     if [ -n "$DIRTY" ]; then
-        echo "✗ Uncommitted changes in core/ or milestones. Commit or stash first."
+        echo "✗ Uncommitted changes. Commit or stash first."
         echo "$DIRTY"
         exit 1
     fi

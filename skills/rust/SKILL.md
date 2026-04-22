@@ -1,7 +1,10 @@
----
-name: rust
-description: Rust development guidance. Covers project setup, testing, clippy, rustfmt, and CI/CD patterns. Use when creating, modifying, or debugging Rust code.
----
++++
+id = "da892729-5848-47e1-a44e-4e1effd42128"
+name = "rust"
+description = "Conventions for Rust development and Cargo workflows"
+tags = ["lang"]
+aliases = ["rs"]
++++
 
 # Rust Development Skill
 

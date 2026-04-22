@@ -657,6 +657,98 @@ impl ModelCatalog {
             ); // end Mistral
         } // end if has_key("mistral")
 
+        // Google Gemini (API key)
+        if has_key("google") {
+            providers.insert(
+                "Google Gemini".to_string(),
+                vec![
+                    ModelInfo {
+                        id: "google:gemini-3.1-pro-preview".to_string(),
+                        name: "Gemini 3.1 Pro".to_string(),
+                        provider: "Google Gemini".to_string(),
+                        context_input: 1_000_000,
+                        context_output: 65536,
+                        cost_tier: CostTier::Premium,
+                        pricing: Some(TokenPricing::new(2.5, 15.0)),
+                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Vision],
+                        description: "Gemini 3.1 Pro — Google's latest frontier reasoning model, 1M context".to_string(),
+                        available: true,
+                    },
+                    ModelInfo {
+                        id: "google:gemini-2.5-flash".to_string(),
+                        name: "Gemini 2.5 Flash".to_string(),
+                        provider: "Google Gemini".to_string(),
+                        context_input: 1_000_000,
+                        context_output: 65536,
+                        cost_tier: CostTier::CheapAPI,
+                        pricing: Some(TokenPricing::new(0.15, 0.60)),
+                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Fast],
+                        description: "Gemini 2.5 Flash — fast reasoning with thinking, 1M context".to_string(),
+                        available: true,
+                    },
+                    ModelInfo {
+                        id: "google:gemini-2.0-flash-lite".to_string(),
+                        name: "Gemini 2.0 Flash Lite".to_string(),
+                        provider: "Google Gemini".to_string(),
+                        context_input: 1_000_000,
+                        context_output: 8192,
+                        cost_tier: CostTier::CheapAPI,
+                        pricing: Some(TokenPricing::new(0.075, 0.30)),
+                        capabilities: vec![Capability::Fast, Capability::Instruction],
+                        description: "Gemini 2.0 Flash Lite — fastest, cheapest Gemini".to_string(),
+                        available: true,
+                    },
+                ],
+            ); // end Google Gemini
+        } // end if has_key("google")
+
+        // Google Antigravity (Gemini CLI OAuth — IDE subscription)
+        // Disabled: requires GCP project provisioning not yet automated.
+        // Show models as unavailable with guidance to use API key instead.
+        if has_key("google-antigravity") && !has_key("google") {
+            providers.insert(
+                "Google Antigravity (use GOOGLE_API_KEY instead)".to_string(),
+                vec![
+                    ModelInfo {
+                        id: "google-antigravity:gemini-3.1-pro-preview".to_string(),
+                        name: "Gemini 3.1 Pro".to_string(),
+                        provider: "Google Antigravity".to_string(),
+                        context_input: 1_000_000,
+                        context_output: 65536,
+                        cost_tier: CostTier::Free,
+                        pricing: Some(TokenPricing::new(0.0, 0.0)),
+                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Vision],
+                        description: "Gemini 3.1 Pro via Antigravity subscription — included with IDE plan".to_string(),
+                        available: false,
+                    },
+                    ModelInfo {
+                        id: "google-antigravity:gemini-2.5-flash".to_string(),
+                        name: "Gemini 2.5 Flash".to_string(),
+                        provider: "Google Antigravity".to_string(),
+                        context_input: 1_000_000,
+                        context_output: 65536,
+                        cost_tier: CostTier::Free,
+                        pricing: Some(TokenPricing::new(0.0, 0.0)),
+                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Fast],
+                        description: "Gemini 2.5 Flash via Antigravity subscription — fast reasoning, included".to_string(),
+                        available: false,
+                    },
+                    ModelInfo {
+                        id: "google-antigravity:gemini-2.0-flash-lite".to_string(),
+                        name: "Gemini 2.0 Flash Lite".to_string(),
+                        provider: "Google Antigravity".to_string(),
+                        context_input: 1_000_000,
+                        context_output: 8192,
+                        cost_tier: CostTier::Free,
+                        pricing: Some(TokenPricing::new(0.0, 0.0)),
+                        capabilities: vec![Capability::Fast, Capability::Instruction],
+                        description: "Gemini 2.0 Flash Lite via Antigravity — fastest, included".to_string(),
+                        available: false,
+                    },
+                ],
+            ); // end Google Antigravity
+        } // end if has_key("google-antigravity")
+
         // OpenAI Codex (ChatGPT OAuth — /codex/responses endpoint)
         if has_key("openai-codex") {
             providers.insert("ChatGPT / Codex".to_string(), vec![

@@ -301,9 +301,15 @@ impl AgentSetup {
             Box::new(tools::secret_tools::SecretToolsProvider::new(secrets.clone())),
         )));
 
+        // ─── Codex integration (optional) ──────────────────────────────
+        let project_root = find_project_root(&cwd);
+        let codex_integration = crate::codex_config::load(&project_root);
+        let codex_vault_path = codex_integration.as_ref().map(|c| {
+            crate::codex_config::resolve_vault_path(&project_root, c)
+        });
+
         // ─── Memory ─────────────────────────────────────────────────────
         let mind = "default".to_string();
-        let project_root = find_project_root(&cwd);
         let memory_dir = {
             // Canonical: ai/memory/, fallback: .omegon/memory/
             let ai = project_root.join("ai").join("memory");
@@ -406,6 +412,10 @@ impl AgentSetup {
             if let Some(svc) = embed_service {
                 memory_feature = memory_feature.with_embed_service(svc);
             }
+            if let Some(ref vp) = codex_vault_path {
+                memory_feature = memory_feature.with_codex_vault(vp.clone());
+                tracing::info!(vault = %vp.display(), "Codex vault sync enabled for memory");
+            }
             bus.register(Box::new(memory_feature));
         } else {
             let warning = format!(
@@ -420,7 +430,13 @@ impl AgentSetup {
         // Use project root (git repo root), not cwd — docs/ and openspec/
         // live at the repo root, which may differ from cwd when running
         // from a subdirectory like core/.
-        let lifecycle_feature = features::lifecycle::LifecycleFeature::new(&project_root);
+        let mut lifecycle_feature = features::lifecycle::LifecycleFeature::new(&project_root);
+        if let Some(ref vp) = codex_vault_path {
+            if codex_integration.as_ref().is_some_and(|c| c.design_tree.enabled) {
+                lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
+                tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
+            }
+        }
         let lifecycle_snapshot = LifecycleSnapshot::from_lifecycle_feature(&lifecycle_feature);
         let lifecycle_handle = lifecycle_feature.shared_provider();
         bus.register(Box::new(lifecycle_feature));

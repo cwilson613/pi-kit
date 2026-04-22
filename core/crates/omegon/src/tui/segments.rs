@@ -1022,13 +1022,16 @@ fn render_assistant_text(
         Span::styled("omegon", Style::default().fg(t.border_dim()).bg(bg)),
     ]));
 
-    // Meta tag line: model / provider / tier — dim secondary header
-    let meta_tag = build_meta_tag(meta);
-    if !meta_tag.is_empty() {
-        lines.push(Line::from(Span::styled(
-            meta_tag,
-            Style::default().fg(t.border_dim()).bg(bg),
-        )));
+    // Meta tag line: model / provider / tier — dim secondary header.
+    // Hidden in slim mode to reduce visual noise.
+    if !matches!(mode, SegmentRenderMode::Slim) {
+        let meta_tag = build_meta_tag(meta);
+        if !meta_tag.is_empty() {
+            lines.push(Line::from(Span::styled(
+                meta_tag,
+                Style::default().fg(t.border_dim()).bg(bg),
+            )));
+        }
     }
 
     // Reasoning block — stream full reasoning live, collapse after completion.
@@ -2145,7 +2148,7 @@ fn compute_table_widths(lines: &[&str], available_width: usize) -> Vec<Option<Ve
             }
             let cells: Vec<&str> = trimmed.split('|').filter(|s| !s.is_empty()).collect();
             for (idx, cell) in cells.iter().enumerate() {
-                let w = super::widgets::visible_width(cell.trim()).max(1);
+                let w = markdown_display_width(cell.trim()).max(1);
                 if idx >= col_widths.len() {
                     col_widths.push(w);
                 } else if w > col_widths[idx] {
@@ -2249,11 +2252,23 @@ fn render_table_line<'a>(
             ));
         } else {
             spans.push(Span::styled(" ", Style::default().bg(row_bg)));
-            let padded = super::widgets::pad_right(&cell_text, width);
-            let mut cell_spans = super::widgets::highlight_inline(&padded, t);
+            let mut cell_spans = super::widgets::highlight_inline(&cell_text, t);
+            let rendered_width: usize = cell_spans
+                .iter()
+                .map(|s| super::widgets::visible_width(&s.content))
+                .sum();
             for mut s in cell_spans.drain(..) {
                 s.style = s.style.bg(row_bg);
                 spans.push(s);
+            }
+            // Pad to target width based on rendered display width (after
+            // markdown syntax stripping), not raw string width.
+            let pad = width.saturating_sub(rendered_width);
+            if pad > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(pad),
+                    Style::default().bg(row_bg),
+                ));
             }
             spans.push(Span::styled(" ", Style::default().bg(row_bg)));
         }
@@ -2270,7 +2285,53 @@ fn truncate_table_cell(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    super::widgets::truncate_str(text, width, "…")
+    // Truncate based on display width after markdown stripping so that
+    // the truncation point aligns with the column budget.
+    let display_w = markdown_display_width(text);
+    if display_w <= width {
+        return text.to_string();
+    }
+    // Strip markdown first, then truncate the plain text.
+    let stripped = strip_inline_markdown(text);
+    super::widgets::truncate_str(&stripped, width, "…")
+}
+
+/// Approximate display width of text after inline markdown rendering.
+/// Strips `**`, `*`, and `` ` `` markers that `highlight_inline` would
+/// consume, then measures the remaining visible width.
+fn markdown_display_width(text: &str) -> usize {
+    super::widgets::visible_width(&strip_inline_markdown(text))
+}
+
+/// Strip inline markdown syntax for width measurement.
+/// Handles: `**bold**`, `*italic*`, `` `code` ``
+fn strip_inline_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            // Skip opening backtick, copy content, skip closing backtick
+            i += 1;
+            while i < chars.len() && chars[i] != '`' {
+                out.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1; // skip closing `
+            }
+        } else if chars[i] == '*' {
+            // Skip `**` or `*`
+            i += 1;
+            if i < chars.len() && chars[i] == '*' {
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn render_system(text: &str, area: Rect, buf: &mut Buffer, t: &dyn Theme, mode: SegmentRenderMode) {
@@ -4250,9 +4311,11 @@ mod tests {
         // The first three columns should reflect the body row's actual
         // content (longer than the header's), not the header's
         // labels — that's the cross-row max we're computing.
+        // Column widths are now measured after markdown stripping, so
+        // `backtick-wrapped` content is measured without the backticks.
         assert!(
-            h[0] >= "`core/crates/omegon/src/tui/segments.rs`".chars().count(),
-            "File column should accommodate the body's long file path: {h:?}"
+            h[0] >= "core/crates/omegon/src/tui/segments.rs".chars().count(),
+            "File column should accommodate the body's long file path (stripped): {h:?}"
         );
         assert!(h[1] >= "1234-1456".chars().count());
         assert!(h[2] >= "9.13".chars().count());
@@ -4501,5 +4564,60 @@ mod tests {
         };
         let tag = build_meta_tag(&meta);
         assert!(!tag.contains("think"), "should omit think:off: {tag}");
+    }
+
+    #[test]
+    fn strip_inline_markdown_removes_bold() {
+        assert_eq!(strip_inline_markdown("**bold**"), "bold");
+        assert_eq!(strip_inline_markdown("a **b** c"), "a b c");
+    }
+
+    #[test]
+    fn strip_inline_markdown_removes_italic() {
+        assert_eq!(strip_inline_markdown("*italic*"), "italic");
+        assert_eq!(strip_inline_markdown("a *b* c"), "a b c");
+    }
+
+    #[test]
+    fn strip_inline_markdown_removes_code() {
+        assert_eq!(strip_inline_markdown("`code`"), "code");
+        assert_eq!(strip_inline_markdown("a `b` c"), "a b c");
+    }
+
+    #[test]
+    fn strip_inline_markdown_mixed() {
+        assert_eq!(
+            strip_inline_markdown("**bold** and `code` and *italic*"),
+            "bold and code and italic"
+        );
+    }
+
+    #[test]
+    fn strip_inline_markdown_plain_text_unchanged() {
+        assert_eq!(strip_inline_markdown("hello world"), "hello world");
+    }
+
+    #[test]
+    fn markdown_display_width_accounts_for_stripping() {
+        // "**bold**" is 8 chars raw but "bold" is 4 display chars
+        assert_eq!(markdown_display_width("**bold**"), 4);
+        assert_eq!(markdown_display_width("`code`"), 4);
+        assert_eq!(markdown_display_width("plain"), 5);
+    }
+
+    #[test]
+    fn compute_table_widths_uses_markdown_display_width() {
+        // Table where header has plain text but body has markdown
+        let lines = vec![
+            "| Name | Description |",
+            "| --- | --- |",
+            "| foo | **bold text** |",
+        ];
+        let widths = compute_table_widths(&lines, 80);
+        // "**bold text**" strips to "bold text" (9 chars), which is wider
+        // than "Description" (11 chars). The column should be sized to 11.
+        let w = widths[0].as_ref().unwrap();
+        assert_eq!(w[0], 4, "Name column: max(Name=4, foo=3) = 4");
+        assert_eq!(w[1], 11, "Description column: max(Description=11, bold text=9) = 11");
     }
 }

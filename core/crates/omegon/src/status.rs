@@ -125,6 +125,8 @@ pub struct McpServerStatus {
     pub name: String,
     pub transport_mode: McpTransportMode,
     pub tool_count: usize,
+    pub resource_count: usize,
+    pub prompt_count: usize,
     pub connected: bool,
     pub error: Option<String>,
 }
@@ -489,6 +491,8 @@ impl HarnessStatus {
                         name,
                         transport_mode: McpTransportMode::LocalProcess, // best guess
                         tool_count: count,
+                        resource_count: 0,
+                        prompt_count: 0,
                         connected: true,
                         error: None,
                     }
@@ -836,6 +840,8 @@ mod tests {
             name: "filesystem".into(),
             transport_mode: McpTransportMode::LocalProcess,
             tool_count: 5,
+            resource_count: 0,
+            prompt_count: 0,
             connected: true,
             error: None,
         });
@@ -854,6 +860,8 @@ mod tests {
             name: "ok".into(),
             transport_mode: McpTransportMode::LocalProcess,
             tool_count: 3,
+            resource_count: 0,
+            prompt_count: 0,
             connected: true,
             error: None,
         });
@@ -861,6 +869,8 @@ mod tests {
             name: "broken".into(),
             transport_mode: McpTransportMode::OciContainer,
             tool_count: 0,
+            resource_count: 0,
+            prompt_count: 0,
             connected: false,
             error: Some("connection refused".into()),
         });

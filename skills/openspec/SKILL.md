@@ -1,7 +1,10 @@
----
-name: openspec
-description: OpenSpec lifecycle for spec-driven development. Use when proposing changes, writing Given/When/Then specs, generating tasks, verifying implementations, or archiving completed changes. Commands /opsx:propose, /opsx:spec, /opsx:ff, /opsx:status, /opsx:verify, /opsx:archive.
----
++++
+id = "0c4d39b9-816f-4fe1-a8eb-a8337b6523c8"
+name = "openspec"
+description = "Spec-driven development lifecycle for non-trivial changes"
+tags = []
+aliases = ["opsx"]
++++
 
 # OpenSpec — Spec-Driven Development Lifecycle
 

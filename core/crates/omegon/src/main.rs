@@ -29,7 +29,9 @@ pub mod bus;
 mod cleave;
 mod cleave_smoke;
 mod clipboard;
+mod codex_config;
 mod context;
+pub mod tool_schema;
 mod control_actions;
 mod control_runtime;
 mod embedding;
@@ -411,6 +413,52 @@ enum Commands {
         /// Switch to the latest release candidate
         #[arg(long)]
         latest_rc: bool,
+    },
+
+    /// Run a bounded headless task — process a prompt, emit structured output, exit.
+    /// Designed for k8s Jobs/CronJobs, CI pipelines, and scripted automation.
+    ///
+    /// Accepts a task spec file (TOML) as positional argument, or inline flags.
+    /// Task spec fields can be overridden by flags.
+    ///
+    /// Exit codes: 0=completed, 1=error, 2=upstream exhausted, 3=timeout
+    ///
+    /// Examples:
+    ///   omegon run task.toml
+    ///   omegon run --prompt "Review open PRs" --max-turns 10
+    ///   omegon run task.toml --model anthropic:claude-opus-4-6
+    Run {
+        /// Task spec file (TOML). Declares prompt, bounds, agent settings, output.
+        /// All fields can be overridden by flags.
+        task_spec: Option<PathBuf>,
+
+        /// Task prompt (inline). Overrides task spec.
+        #[arg(long)]
+        prompt: Option<String>,
+
+        /// Task prompt from file. Overrides task spec.
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
+
+        /// Write structured JSON result to this path (default: stdout). Overrides task spec.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Maximum agent turns. Overrides task spec.
+        #[arg(long)]
+        max_turns: Option<u32>,
+
+        /// Wall-clock timeout in seconds. Overrides task spec.
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Total token budget (input + output). Overrides task spec.
+        #[arg(long)]
+        token_budget: Option<u64>,
+
+        /// Agent manifest (Pkl file or bundle directory).
+        #[arg(long)]
+        manifest: Option<String>,
     },
 
     /// Manage Ollama integration — register, status, diagnostics.
@@ -803,6 +851,69 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Acp) => {
             let local = tokio::task::LocalSet::new();
             local.run_until(acp::run(&cli.model)).await
+        }
+        Some(Commands::Run {
+            ref task_spec,
+            ref prompt,
+            ref prompt_file,
+            ref output,
+            max_turns,
+            timeout,
+            token_budget,
+            ref manifest,
+        }) => {
+            // Load task spec from file, then overlay CLI flags
+            let spec = task_spec
+                .as_ref()
+                .map(|path| load_task_spec(path))
+                .transpose()?;
+
+            let effective_prompt = prompt.as_deref().or_else(|| {
+                spec.as_ref().and_then(|s| s.task.prompt.as_deref())
+            });
+            let effective_prompt_file = prompt_file.as_deref().or_else(|| {
+                spec.as_ref()
+                    .and_then(|s| s.task.prompt_file.as_deref())
+                    .map(Path::new)
+            });
+            let effective_output = output.as_deref().or_else(|| {
+                spec.as_ref()
+                    .and_then(|s| s.output.as_ref())
+                    .and_then(|o| o.path.as_deref())
+                    .map(Path::new)
+            });
+            let effective_max_turns = max_turns
+                .or_else(|| spec.as_ref().and_then(|s| s.bounds.as_ref()).map(|b| b.max_turns))
+                .unwrap_or(30);
+            let effective_timeout = timeout
+                .or_else(|| spec.as_ref().and_then(|s| s.bounds.as_ref()).map(|b| b.timeout_secs))
+                .unwrap_or(600);
+            let effective_token_budget = token_budget
+                .or_else(|| spec.as_ref().and_then(|s| s.bounds.as_ref()).and_then(|b| b.token_budget));
+            let effective_cwd = spec.as_ref()
+                .and_then(|s| s.task.cwd.as_deref())
+                .map(Path::new)
+                .unwrap_or(&cli.cwd);
+
+            // Apply agent settings from spec — model override
+            let effective_model = spec.as_ref()
+                .and_then(|s| s.agent.as_ref())
+                .and_then(|a| a.model.clone())
+                .unwrap_or_else(|| cli.model.clone());
+
+            run_bounded_task(
+                effective_prompt,
+                effective_prompt_file,
+                effective_output,
+                effective_max_turns,
+                effective_timeout,
+                effective_token_budget,
+                manifest.as_deref(),
+                effective_cwd,
+                &effective_model,
+                &cli,
+            )
+            .await
         }
         Some(Commands::Ollama { ref action }) => run_ollama_command(action).await,
         Some(Commands::Doctor) => run_doctor_command(&cli).await,
@@ -2676,11 +2787,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     > = std::sync::Arc::new(tokio::sync::Mutex::new(None));
     let extension_widgets = std::mem::take(&mut agent.extension_widgets);
     let widget_receivers = std::mem::take(&mut agent.widget_receivers);
+    // Show splash only on first launch; skip on subsequent runs unless
+    // the operator explicitly replays via /splash.
+    let is_first_run = first_run::should_run(&cli.cwd);
     let tui_config = tui::TuiConfig {
         cwd: agent.cwd.to_string_lossy().to_string(),
         is_oauth,
         initial,
-        no_splash: cli.no_splash,
+        no_splash: cli.no_splash || !is_first_run,
         bus_commands,
         dashboard_handles: agent.dashboard_handles.clone(),
         initial_prompt,
@@ -5217,6 +5331,279 @@ async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+// ─── Bounded Task Runner (omegon run) ──────────────────────────────────────
+
+/// Task specification — loaded from a TOML file for `omegon run`.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TaskSpec {
+    task: TaskSpecTask,
+    #[serde(default)]
+    bounds: Option<TaskSpecBounds>,
+    #[serde(default)]
+    agent: Option<TaskSpecAgent>,
+    #[serde(default)]
+    output: Option<TaskSpecOutput>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TaskSpecTask {
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    prompt_file: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TaskSpecBounds {
+    #[serde(default = "default_max_turns")]
+    max_turns: u32,
+    #[serde(default = "default_timeout")]
+    timeout_secs: u64,
+    #[serde(default)]
+    token_budget: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TaskSpecAgent {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    posture: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    persona: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TaskSpecOutput {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+fn default_max_turns() -> u32 { 30 }
+fn default_timeout() -> u64 { 600 }
+
+fn load_task_spec(path: &Path) -> anyhow::Result<TaskSpec> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read task spec {}: {e}", path.display()))?;
+    let spec: TaskSpec = toml::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("invalid task spec {}: {e}", path.display()))?;
+    Ok(spec)
+}
+
+/// Structured output from a bounded task run.
+#[derive(Debug, Clone, serde::Serialize)]
+struct RunResult {
+    status: String, // "completed", "error", "exhausted", "timeout"
+    turns: u32,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    files_read: Vec<String>,
+    files_modified: Vec<String>,
+    duration_secs: f64,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_bounded_task(
+    prompt: Option<&str>,
+    prompt_file: Option<&Path>,
+    output_path: Option<&Path>,
+    max_turns: u32,
+    timeout_secs: u64,
+    token_budget: Option<u64>,
+    _manifest: Option<&str>, // reserved for Phase 2
+    cwd: &Path,
+    model: &str,
+    cli: &Cli,
+) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
+
+    // Resolve prompt
+    let prompt_text = match (prompt, prompt_file) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(path)) => {
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd.join(path)
+            };
+            std::fs::read_to_string(&resolved)
+                .map_err(|e| anyhow::anyhow!("Failed to read prompt file {}: {e}", resolved.display()))?
+        }
+        (None, None) => {
+            eprintln!("omegon run: --prompt or --prompt-file required");
+            std::process::exit(1);
+        }
+    };
+
+    // Setup
+    let shared_settings = bootstrap::initialize_shared_settings(&bootstrap::SettingsInit {
+        model,
+        cwd,
+        cli_posture: resolve_cli_posture(cli).as_deref(),
+        slim: true,
+        max_turns,
+        apply_profile_posture: false, // run mode uses explicit config, not profile
+    });
+    if let Ok(mut s) = shared_settings.lock() {
+        s.set_model(model);
+    }
+
+    let mut agent = setup::AgentSetup::new(cwd, None, Some(shared_settings.clone())).await?;
+    bootstrap::apply_runtime_posture(
+        &mut agent,
+        omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+        omegon_traits::OmegonAutonomyMode::OperatorDriven,
+    );
+    agent.conversation.push_user(prompt_text);
+
+    let loop_config = bootstrap::build_loop_config(
+        &shared_settings,
+        &agent.cwd,
+        model,
+        bootstrap::LoopConfigOverrides {
+            max_retries: cli.max_retries,
+            secrets: Some(agent.secrets.clone()),
+            enforce_first_turn_execution_bias: true,
+            ..Default::default()
+        },
+    );
+
+    let bridge = bootstrap::resolve_bridge_or_bail(model).await?;
+    let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
+
+    // Token tracking
+    let total_in = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let total_out = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let turn_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let total_in_t = total_in.clone();
+    let total_out_t = total_out.clone();
+    let turn_count_t = turn_count.clone();
+
+    // Event consumer — track tokens and turns, log to stderr
+    let event_task = tokio::spawn(async move {
+        while let Ok(event) = events_rx.recv().await {
+            match event {
+                AgentEvent::TurnStart { turn } => {
+                    turn_count_t.store(turn, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!("── Turn {turn} ──");
+                }
+                AgentEvent::ToolStart { name, .. } => {
+                    tracing::info!("→ {name}");
+                }
+                AgentEvent::TurnEnd {
+                    actual_input_tokens,
+                    actual_output_tokens,
+                    ..
+                } => {
+                    total_in_t.fetch_add(actual_input_tokens, std::sync::atomic::Ordering::Relaxed);
+                    total_out_t.fetch_add(actual_output_tokens, std::sync::atomic::Ordering::Relaxed);
+                }
+                AgentEvent::AgentEnd => break,
+                _ => {}
+            }
+        }
+    });
+
+    // Run with wall-clock timeout
+    let cancel = CancellationToken::new();
+    let cancel_timeout = cancel.clone();
+    let timeout_handle = tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(timeout_secs)).await;
+        tracing::warn!("Wall-clock timeout ({timeout_secs}s) — cancelling");
+        cancel_timeout.cancel();
+    });
+
+    let loop_result = r#loop::run(
+        bridge.as_ref(),
+        &mut agent.bus,
+        &mut agent.context_manager,
+        &mut agent.conversation,
+        &events_tx,
+        cancel.clone(),
+        &loop_config,
+    )
+    .await;
+
+    timeout_handle.abort();
+    bridge.shutdown().await;
+    drop(events_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), event_task).await;
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let turns = turn_count.load(std::sync::atomic::Ordering::Relaxed);
+    let in_tokens = total_in.load(std::sync::atomic::Ordering::Relaxed);
+    let out_tokens = total_out.load(std::sync::atomic::Ordering::Relaxed);
+
+    // Check token budget
+    if let Some(budget) = token_budget {
+        if in_tokens + out_tokens > budget {
+            tracing::warn!(
+                "Token budget exceeded: {}+{} = {} > {budget}",
+                in_tokens, out_tokens, in_tokens + out_tokens
+            );
+        }
+    }
+
+    let summary = agent
+        .conversation
+        .last_assistant_text()
+        .unwrap_or_default()
+        .to_string();
+
+    let (status, error, exit_code) = match &loop_result {
+        Ok(()) => {
+            if cancel.is_cancelled() {
+                ("timeout".to_string(), Some("wall-clock timeout".to_string()), 3)
+            } else {
+                ("completed".to_string(), None, 0)
+            }
+        }
+        Err(e) => {
+            if r#loop::is_upstream_exhausted(e) {
+                ("exhausted".to_string(), Some(e.to_string()), 2)
+            } else {
+                ("error".to_string(), Some(e.to_string()), 1)
+            }
+        }
+    };
+
+    let result = RunResult {
+        status,
+        turns,
+        total_input_tokens: in_tokens,
+        total_output_tokens: out_tokens,
+        files_read: agent.conversation.intent.files_read.iter().map(|p| p.display().to_string()).collect(),
+        files_modified: agent.conversation.intent.files_modified.iter().map(|p| p.display().to_string()).collect(),
+        duration_secs: elapsed,
+        summary,
+        error,
+    };
+
+    let json = serde_json::to_string_pretty(&result)?;
+
+    match output_path {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, &json)?;
+            tracing::info!(path = %path.display(), "result written");
+        }
+        None => {
+            println!("{json}");
+        }
+    }
+
+    std::process::exit(exit_code);
 }
 
 #[cfg(test)]

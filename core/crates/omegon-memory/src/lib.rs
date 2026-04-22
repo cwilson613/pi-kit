@@ -28,6 +28,7 @@ pub mod renderer;
 pub mod sqlite;
 pub mod types;
 pub mod util;
+pub mod vault_sync;
 pub mod vectors;
 
 #[cfg(test)]

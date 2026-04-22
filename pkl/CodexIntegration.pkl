@@ -1,0 +1,73 @@
+/// Codex–Omegon integration schema.
+///
+/// Defines the contract between Omegon and a Codex vault for:
+/// - Memory materialization (facts ↔ vault markdown)
+/// - Design tree export (design nodes → vault documents)
+/// - Agent daemon configuration (shared model/posture settings)
+///
+/// This schema is evaluated by both Omegon (at session start) and Codex
+/// (at vault open) to ensure the integration surface stays consistent.
+///
+/// On-disk location: `.codex/omegon-integration.toml` in the vault root,
+/// or `.omegon/codex.toml` in the project root (Omegon looks for either).
+module CodexIntegration
+
+/// Vault binding — tells Omegon where the Codex vault lives.
+class VaultBinding {
+  /// Path to the Codex vault root (absolute or relative to project root).
+  path: String(length > 0)
+
+  /// Vault name (must match `.codex/config.toml` vault_name).
+  name: String?
+}
+
+/// Memory sync configuration.
+class MemorySync {
+  /// Enable automatic materialization of facts to vault on session end.
+  materialize_on_session_end: Boolean = true
+
+  /// Enable import of Codex-authored facts on session start.
+  import_on_session_start: Boolean = true
+
+  /// Enable reinforcement of facts referenced by vault notes.
+  reinforce_references: Boolean = true
+
+  /// Maximum episodes to materialize.
+  max_episodes: Int(this > 0) = 20
+}
+
+/// Design tree sync configuration.
+class DesignTreeSync {
+  /// Enable export of design nodes to vault.
+  enabled: Boolean = true
+
+  /// Subdirectory within vault for design node documents.
+  vault_subdir: String = "design"
+}
+
+/// Shared agent settings — applied when Codex launches Omegon via sidebar.
+/// These override Omegon's profile.json for vault-scoped sessions.
+class AgentSettings {
+  /// Model (e.g., "anthropic:claude-sonnet-4-6").
+  model: String?
+
+  /// Thinking level.
+  thinking_level: ("off"|"minimal"|"low"|"medium"|"high")?
+
+  /// Behavioral posture.
+  posture: ("explorator"|"fabricator"|"architect"|"devastator")?
+
+  /// Maximum turns.
+  max_turns: Int(this > 0)?
+
+  /// Persona name.
+  persona: String?
+}
+
+vault: VaultBinding
+
+memory: MemorySync?
+
+design_tree: DesignTreeSync?
+
+agent: AgentSettings?

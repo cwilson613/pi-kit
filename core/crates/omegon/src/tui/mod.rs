@@ -1159,7 +1159,7 @@ impl App {
             self.terminal_copy_mode = false;
             self.set_mouse_capture(false);
             self.show_toast(
-                "Focus mode active — timeline navigation enabled for terminal-native reading and selection",
+                "Focus mode — arrows navigate, c copies segment, Esc exits",
                 ratatui_toaster::ToastType::Info,
             );
         } else {
@@ -2929,7 +2929,7 @@ impl App {
                 .to_string();
             self.footer_data.authorization = s.operating_profile().authorization.summary();
             self.footer_data.provider_connected = s.provider_connected;
-            self.footer_data.is_oauth = crate::providers::resolve_api_key_sync(s.provider())
+            self.footer_data.is_oauth = crate::providers::resolve_api_key_sync(&s.provider())
                 .is_some_and(|(_, is_oauth)| is_oauth);
         }
         {
@@ -3799,6 +3799,63 @@ impl App {
         self.copy_selected_conversation_segment_with_mode(SegmentExportMode::Raw);
     }
 
+    fn copy_full_session(&mut self) {
+        let segments = self.conversation.segments();
+        let mut parts: Vec<String> = Vec::new();
+        for segment in segments {
+            if matches!(segment.content, SegmentContent::TurnSeparator) {
+                continue;
+            }
+            let role = match segment.role() {
+                segments::SegmentRole::Operator => "## Operator",
+                segments::SegmentRole::Assistant => "## Assistant",
+                segments::SegmentRole::Tool => "## Tool",
+                segments::SegmentRole::System => "## System",
+                segments::SegmentRole::Lifecycle => "## Event",
+                segments::SegmentRole::Media => "## Media",
+                segments::SegmentRole::Separator => continue,
+            };
+            let text = segment.export_text(SegmentExportMode::Raw);
+            if !text.trim().is_empty() {
+                parts.push(format!("{role}\n\n{text}"));
+            }
+        }
+        let full = parts.join("\n\n---\n\n");
+        if full.is_empty() {
+            self.show_toast("No conversation to copy", ratatui_toaster::ToastType::Warning);
+            return;
+        }
+        let byte_size = full.len();
+        let size_label = if byte_size > 1_048_576 {
+            format!("{:.1}MB", byte_size as f64 / 1_048_576.0)
+        } else if byte_size > 1024 {
+            format!("{}KB", byte_size / 1024)
+        } else {
+            format!("{}B", byte_size)
+        };
+
+        if byte_size > 5_000_000 {
+            self.show_toast(
+                &format!("Session too large for clipboard ({size_label}). Use /export to save to file."),
+                ratatui_toaster::ToastType::Warning,
+            );
+            return;
+        }
+
+        if self.copy_text_to_clipboard(&full) {
+            let segment_count = parts.len();
+            self.show_toast(
+                &format!("Copied full session ({segment_count} segments, {size_label})"),
+                ratatui_toaster::ToastType::Success,
+            );
+        } else {
+            self.show_toast(
+                "Clipboard unavailable",
+                ratatui_toaster::ToastType::Warning,
+            );
+        }
+    }
+
     fn show_toast(&mut self, message: &str, toast_type: ratatui_toaster::ToastType) {
         let (icon, color) = match toast_type {
             ratatui_toaster::ToastType::Error => ("✖", self.theme.error()),
@@ -3820,7 +3877,7 @@ impl App {
     /// Command registry: (name, description, subcommands).
     const COMMANDS: &'static [(&'static str, &'static str, &'static [&'static str])] = &[
         ("help", "show available commands", &[]),
-        ("copy", "copy selected segment", &["raw", "plain"]),
+        ("copy", "copy selected segment or session", &["raw", "plain", "session"]),
         (
             "mouse",
             "toggle pane mouse interaction mode",
@@ -4709,7 +4766,11 @@ impl App {
                     self.copy_selected_conversation_segment_with_mode(SegmentExportMode::Plaintext);
                     SlashResult::Handled
                 }
-                _ => SlashResult::Display("Usage: /copy [raw|plain]".into()),
+                "session" | "all" => {
+                    self.copy_full_session();
+                    SlashResult::Handled
+                }
+                _ => SlashResult::Display("Usage: /copy [raw|plain|session]".into()),
             },
 
             "tree" => {
@@ -5224,10 +5285,6 @@ impl App {
         if self.history_idx.is_some() {
             self.history_down();
         }
-    }
-
-    fn should_use_arrow_history_recall(&self) -> bool {
-        !self.agent_active
     }
 
     /// Render tab bar showing all tabs, with active tab highlighted.
@@ -6557,7 +6614,8 @@ pub async fn run_tui(
                 brief.push_str("\n  Lean coding loop: inspect → edit → validate");
                 brief.push_str("\n  /ui full  reveal dashboard + instruments");
                 brief.push_str("\n  /unshackle  switch to omegon mode   /help  commands");
-                brief.push_str("\n  /model      switch provider          Ctrl+R search history");
+                brief.push_str("\n  /model      switch provider          Ctrl+R  search history");
+                brief.push_str("\n  Ctrl+Up     recall previous prompt   /focus  reading mode");
             } else {
                 brief.push_str("\n  /model  switch provider    /think  reasoning level");
                 brief.push_str("\n  /shackle  lean OM mode     /help   all commands");
@@ -6596,7 +6654,8 @@ pub async fn run_tui(
                 welcome.push_str("\n  Lean coding loop: inspect → edit → validate");
                 welcome.push_str("\n  /ui full     reveal dashboard + instruments");
                 welcome.push_str("\n  /unshackle   switch to omegon mode   /help commands");
-                welcome.push_str("\n  Ctrl+R       search history          Ctrl+C cancel/quit");
+                welcome.push_str("\n  Ctrl+Up      recall previous prompt  Ctrl+C cancel/quit");
+                welcome.push_str("\n  Ctrl+R       search history          /focus reading mode");
             } else {
                 welcome.push_str("\n  /model    switch provider    /think    reasoning level");
                 welcome.push_str("\n  /shackle  lean OM mode       /context  context class");
@@ -6865,41 +6924,33 @@ pub async fn run_tui(
                             app.dashboard.sidebar_active = false;
                         }
                     }
-                    MouseEventKind::ScrollUp if app.mouse_capture_enabled => {
-                        let over_dashboard = app.dashboard_area.is_some_and(|area| {
-                            mouse.column >= area.x
-                                && mouse.column < area.x + area.width
-                                && mouse.row >= area.y
-                                && mouse.row < area.y + area.height
-                        });
-                        let over_conversation = app.conversation_area.is_some_and(|area| {
-                            mouse.column >= area.x
-                                && mouse.column < area.x + area.width
-                                && mouse.row >= area.y
-                                && mouse.row < area.y + area.height
-                        });
+                    MouseEventKind::ScrollUp => {
+                        // Scroll always works — doesn't interfere with
+                        // terminal text selection (the reason capture gets disabled).
+                        let over_dashboard = app.mouse_capture_enabled
+                            && app.dashboard_area.is_some_and(|area| {
+                                mouse.column >= area.x
+                                    && mouse.column < area.x + area.width
+                                    && mouse.row >= area.y
+                                    && mouse.row < area.y + area.height
+                            });
                         if over_dashboard {
                             app.dashboard.scroll_up(3);
-                        } else if over_conversation {
+                        } else {
                             app.conversation.scroll_up(3);
                         }
                     }
-                    MouseEventKind::ScrollDown if app.mouse_capture_enabled => {
-                        let over_dashboard = app.dashboard_area.is_some_and(|area| {
-                            mouse.column >= area.x
-                                && mouse.column < area.x + area.width
-                                && mouse.row >= area.y
-                                && mouse.row < area.y + area.height
-                        });
-                        let over_conversation = app.conversation_area.is_some_and(|area| {
-                            mouse.column >= area.x
-                                && mouse.column < area.x + area.width
-                                && mouse.row >= area.y
-                                && mouse.row < area.y + area.height
-                        });
+                    MouseEventKind::ScrollDown => {
+                        let over_dashboard = app.mouse_capture_enabled
+                            && app.dashboard_area.is_some_and(|area| {
+                                mouse.column >= area.x
+                                    && mouse.column < area.x + area.width
+                                    && mouse.row >= area.y
+                                    && mouse.row < area.y + area.height
+                            });
                         if over_dashboard {
                             app.dashboard.scroll_down(3);
-                        } else if over_conversation {
+                        } else {
                             app.conversation.scroll_down(3);
                         }
                     }
@@ -7211,11 +7262,15 @@ pub async fn run_tui(
                                 let idx = (digit - 1) as usize;
                                 if idx < actions.len() {
                                     let action = actions[idx].clone();
-                                    // Log the action selection
+                                    // Log the action selection. The response
+                                    // path to the extension is not yet wired —
+                                    // when an extension needs bidirectional action
+                                    // handling, add a TuiCommand::WidgetAction
+                                    // variant that routes through the bus to the
+                                    // owning ExtensionFeature's rpc_call.
                                     app.conversation
                                         .push_system(&format!("✓ {}: {}", widget_id, action));
                                     app.active_action_prompt = None;
-                                    // TODO: Send action back to extension via IPC
                                     continue;
                                 }
                             }
@@ -7434,6 +7489,13 @@ pub async fn run_tui(
                             }
                         }
 
+                        // `c` in focus mode copies the focused segment to clipboard.
+                        (KeyCode::Char('c'), mods)
+                            if app.focus_mode && !mods.contains(KeyModifiers::CONTROL) =>
+                        {
+                            app.copy_selected_conversation_segment();
+                        }
+
                         // Submit / @-picker confirm
                         (KeyCode::Enter, _) => {
                             if let Some(ref picker) = app.at_picker {
@@ -7510,8 +7572,8 @@ pub async fn run_tui(
                                 picker.move_up();
                             } else if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
                                 app.editor.move_up();
-                            } else if app.should_use_arrow_history_recall() {
-                                app.history_recall_up();
+                            } else {
+                                app.conversation.scroll_up(3);
                             }
                         }
                         (KeyCode::Down, _) => {
@@ -7521,8 +7583,8 @@ pub async fn run_tui(
                                 && app.editor.cursor_row() < app.editor.line_count() - 1
                             {
                                 app.editor.move_down();
-                            } else if app.should_use_arrow_history_recall() {
-                                app.history_recall_down();
+                            } else {
+                                app.conversation.scroll_down(3);
                             }
                         }
                         _ => {}

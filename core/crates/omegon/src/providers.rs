@@ -18,7 +18,7 @@ use crate::bridge::{LlmBridge, LlmEvent, LlmMessage, StreamOptions};
 /// Claude Code CLI version for OAuth user-agent header.
 /// Must match what Anthropic expects for subscription recognition.
 /// Update when upstream Claude Code advances.
-const CLAUDE_CODE_UA: &str = "claude-cli/2.1.75";
+const CLAUDE_CODE_UA: &str = "claude-cli/2.1.116";
 use omegon_traits::ToolDefinition;
 
 // ─── API Key Resolution ─────────────────────────────────────────────────────
@@ -456,8 +456,22 @@ pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
         }
         "openai" => OpenAIClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
         "openrouter" => OpenRouterClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
+        // Google Antigravity — Gemini CLI OAuth via Cloud Code Assist internal API.
+        // Requires a GCP project with Cloud AI Companion API enabled. Google Workspace
+        // accounts on the "standard-tier" must link a project; the free tier that
+        // auto-provisions is blocked for Workspace/DASHER accounts.
+        // Until project provisioning is implemented, surface a clear error.
+        "google-antigravity" => {
+            tracing::warn!(
+                "Google Antigravity (Gemini CLI OAuth) requires a GCP project with \
+                 Cloud AI Companion API enabled. This is not yet automated. \
+                 Use the `google` provider with GOOGLE_API_KEY instead: \
+                 export GOOGLE_API_KEY=<key from aistudio.google.com/apikey>"
+            );
+            None
+        }
         // OpenAI-compatible providers — all use the Chat Completions protocol
-        "groq" | "xai" | "mistral" | "cerebras" | "google" | "google-antigravity"
+        "groq" | "xai" | "mistral" | "cerebras" | "google"
         | "huggingface" | "ollama" => {
             OpenAICompatClient::from_env(provider_id).map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
@@ -690,25 +704,14 @@ fn strip_parameter_descriptions(value: &Value) -> Value {
 
 fn openai_function_parameters(value: &Value) -> Value {
     let stripped = strip_parameter_descriptions(value);
-    let mut obj = match stripped {
-        Value::Object(map) => map,
-        _ => return json!({"type": "object", "properties": {}, "required": []}),
-    };
+    let mut normalized = crate::tool_schema::normalize(&stripped, crate::tool_schema::SchemaDialect::OpenAI);
 
-    obj.remove("allOf");
-    obj.remove("anyOf");
-    obj.remove("oneOf");
-    obj.remove("not");
-    obj.remove("enum");
+    // OpenAI also doesn't handle top-level enum on function parameters
+    if let Value::Object(ref mut map) = normalized {
+        map.remove("enum");
+    }
 
-    obj.entry("type".to_string())
-        .or_insert_with(|| Value::String("object".into()));
-    obj.entry("properties".to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    obj.entry("required".to_string())
-        .or_insert_with(|| Value::Array(vec![]));
-
-    Value::Object(obj)
+    normalized
 }
 
 /// Map tool names to Claude Code PascalCase canonical names for OAuth.
@@ -2292,7 +2295,13 @@ fn compat_base_url(provider_id: &str) -> Option<&'static str> {
         "mistral" => Some("https://api.mistral.ai"),
         "cerebras" => Some("https://api.cerebras.ai"),
         "google" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
-        "google-antigravity" => Some("https://cloudcode-pa.googleapis.com/v1beta/openai"),
+        // Antigravity OAuth tokens require the Cloud Code Assist internal API
+        // (cloudcode-pa.googleapis.com/v1internal), not the public OpenAI-compatible
+        // endpoint. The v1internal protocol is non-standard and needs a dedicated
+        // client implementation. For now, route through the public endpoint which
+        // works with API keys but not OAuth tokens — the provider will surface a
+        // clear auth error prompting the operator to use an API key instead.
+        "google-antigravity" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         "huggingface" => Some("https://router.huggingface.co"),
         "ollama" => Some("http://localhost:11434"),
         _ => None,
@@ -2396,6 +2405,18 @@ fn anthropic_should_use_adaptive_thinking(model: &str, reasoning: &str) -> bool 
 }
 
 /// Default model for each compat provider (used when no model is specified).
+/// Get the default model spec for a provider (e.g., "google-antigravity:gemini-2.5-flash").
+/// Used after login to switch to the provider's default model.
+pub fn default_model_for_provider(provider_id: &str) -> Option<String> {
+    let model = match provider_id {
+        "anthropic" => "claude-sonnet-4-6",
+        "openai" => "gpt-5.4",
+        "openai-codex" => "gpt-5.4",
+        _ => compat_default_model(provider_id)?,
+    };
+    Some(format!("{provider_id}:{model}"))
+}
+
 fn compat_default_model(provider_id: &str) -> Option<&'static str> {
     match provider_id {
         "groq" => Some("llama-3.3-70b-versatile"),
@@ -2757,6 +2778,353 @@ impl LlmBridge for OllamaCloudClient {
                 provider_telemetry,
             })
             .await;
+
+        Ok(rx)
+    }
+}
+
+// ─── Google Antigravity (Cloud Code Assist) Client ────────────────────────────
+
+/// Client for Google's Cloud Code Assist internal API (cloudcode-pa.googleapis.com).
+/// This is the endpoint behind the Gemini CLI OAuth flow. It uses a proprietary
+/// request envelope wrapping the standard Gemini generateContent format.
+pub struct AntigravityClient {
+    client: reqwest::Client,
+    access_token: String,
+}
+
+impl AntigravityClient {
+    pub fn new(access_token: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            access_token,
+        }
+    }
+
+    pub fn from_env() -> Option<Self> {
+        let (token, _) = resolve_api_key_sync("google-antigravity")?;
+        Some(Self::new(token))
+    }
+
+    pub async fn from_env_async() -> Option<Self> {
+        let (token, _) = crate::auth::resolve_with_refresh("google-antigravity").await?;
+        Some(Self::new(token))
+    }
+
+    /// Build the Gemini contents array from Omegon's LlmMessage format.
+    fn build_contents(messages: &[LlmMessage]) -> Vec<Value> {
+        let mut contents = Vec::new();
+        for msg in messages {
+            match msg {
+                LlmMessage::User { content, .. } => {
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [{ "text": content }]
+                    }));
+                }
+                LlmMessage::Assistant { text, tool_calls, .. } => {
+                    let mut parts: Vec<Value> = Vec::new();
+                    for t in text {
+                        if !t.is_empty() {
+                            parts.push(json!({ "text": t }));
+                        }
+                    }
+                    for tc in tool_calls {
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": tc.name,
+                                "args": tc.arguments,
+                            }
+                        }));
+                    }
+                    if !parts.is_empty() {
+                        contents.push(json!({ "role": "model", "parts": parts }));
+                    }
+                }
+                LlmMessage::ToolResult { call_id: _, tool_name, content, .. } => {
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": tool_name,
+                                "response": { "result": content },
+                            }
+                        }]
+                    }));
+                }
+            }
+        }
+        contents
+    }
+
+    /// Build Gemini tool declarations from Omegon ToolDefinitions.
+    /// Normalizes schemas via the shared tool_schema module to strip
+    /// keywords Gemini doesn't support.
+    fn build_tools(tools: &[ToolDefinition]) -> Option<Vec<Value>> {
+        if tools.is_empty() {
+            return None;
+        }
+        let dialect = crate::tool_schema::SchemaDialect::Gemini;
+        let decls: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                let params = crate::tool_schema::normalize(&t.parameters, dialect);
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": params,
+                })
+            })
+            .collect();
+        Some(vec![json!({ "functionDeclarations": decls })])
+    }
+}
+
+#[async_trait]
+impl LlmBridge for AntigravityClient {
+    async fn stream(
+        &self,
+        system_prompt: &str,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        options: &StreamOptions,
+    ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
+        let (tx, rx) = mpsc::channel(256);
+
+        // Re-resolve token each call (handles refresh)
+        let access_token = match crate::auth::resolve_with_refresh("google-antigravity").await {
+            Some((token, _)) => token,
+            None => self.access_token.clone(),
+        };
+
+        let model = options
+            .model
+            .as_deref()
+            .map(model_id_from_spec)
+            .unwrap_or("gemini-2.5-flash");
+
+        // Build the Cloud Code Assist envelope
+        let mut request_body = json!({
+            "contents": Self::build_contents(messages),
+            "generationConfig": {
+                "temperature": 1.0,
+                "maxOutputTokens": 65536,
+            },
+        });
+
+        if !system_prompt.is_empty() {
+            request_body["systemInstruction"] = json!({
+                "role": "user",
+                "parts": [{ "text": system_prompt }]
+            });
+        }
+
+        if let Some(tools_val) = Self::build_tools(tools) {
+            request_body["tools"] = json!(tools_val);
+        }
+
+        // Generate a unique prompt ID
+        let prompt_id = format!("{:016x}{:016x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            std::process::id() as u128,
+        );
+
+        // Wrap in the Cloud Code Assist envelope
+        let envelope = json!({
+            "project": null,
+            "model": format!("models/{model}"),
+            "user_prompt_id": prompt_id,
+            "request": request_body,
+        });
+
+        let url = "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse";
+
+        let mut response = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Content-Type", "application/json")
+            .json(&envelope)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let err_body = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Antigravity API error ({status}): {err_body}"
+            );
+        }
+
+        // Stream SSE events
+        tokio::spawn(async move {
+            let mut text_started = false;
+            let mut full_text = String::new();
+            let mut tool_calls: Vec<crate::bridge::WireToolCall> = Vec::new();
+            let mut input_tokens = 0u64;
+            let mut output_tokens = 0u64;
+
+            let mut buffer = String::new();
+            let stream_timeout = tokio::time::Duration::from_secs(90);
+
+            loop {
+                let chunk = match tokio::time::timeout(stream_timeout, response.chunk()).await {
+                    Ok(Ok(Some(c))) => c,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(e)) => {
+                        let _ = tx.send(LlmEvent::Error {
+                            message: format!("stream error: {e}"),
+                        }).await;
+                        break;
+                    }
+                    Err(_) => {
+                        let _ = tx.send(LlmEvent::Error {
+                            message: "Antigravity stream timed out (90s idle)".to_string(),
+                        }).await;
+                        break;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                // Parse SSE lines
+                while let Some(line_end) = buffer.find('\n') {
+                    let line = buffer[..line_end].trim_end().to_string();
+                    buffer = buffer[line_end + 1..].to_string();
+
+                    if line.is_empty() || line.starts_with(':') {
+                        continue;
+                    }
+
+                    let data = if let Some(d) = line.strip_prefix("data: ") {
+                        d
+                    } else {
+                        continue;
+                    };
+
+                    // Parse the response envelope
+                    let event: Value = match serde_json::from_str(data) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // Unwrap Cloud Code Assist envelope — response may be
+                    // wrapped in { "response": {...} } or be a direct Gemini response
+                    let gemini = if let Some(inner) = event.get("response") {
+                        inner
+                    } else {
+                        &event
+                    };
+
+                    // Extract usage
+                    if let Some(usage) = gemini.get("usageMetadata") {
+                        input_tokens = usage
+                            .get("promptTokenCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(input_tokens);
+                        output_tokens = usage
+                            .get("candidatesTokenCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(output_tokens);
+                    }
+
+                    // Extract candidates
+                    let candidates = gemini
+                        .get("candidates")
+                        .and_then(|c| c.as_array());
+
+                    if let Some(candidates) = candidates {
+                        for candidate in candidates {
+                            let parts = candidate
+                                .get("content")
+                                .and_then(|c| c.get("parts"))
+                                .and_then(|p| p.as_array());
+
+                            if let Some(parts) = parts {
+                                for part in parts {
+                                    // Text content
+                                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                        if !text_started {
+                                            let _ = tx.send(LlmEvent::TextStart).await;
+                                            text_started = true;
+                                        }
+                                        full_text.push_str(text);
+                                        let _ = tx
+                                            .send(LlmEvent::TextDelta {
+                                                delta: text.to_string(),
+                                            })
+                                            .await;
+                                    }
+
+                                    // Function calls
+                                    if let Some(fc) = part.get("functionCall") {
+                                        let name = fc
+                                            .get("name")
+                                            .and_then(|n| n.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let args = fc
+                                            .get("args")
+                                            .cloned()
+                                            .unwrap_or(json!({}));
+
+                                        if text_started {
+                                            let _ = tx.send(LlmEvent::TextEnd).await;
+                                            text_started = false;
+                                        }
+
+                                        let tc = crate::bridge::WireToolCall {
+                                            id: format!("tc_{}", tool_calls.len()),
+                                            name: name.clone(),
+                                            arguments: args.clone(),
+                                        };
+                                        let _ = tx.send(LlmEvent::ToolCallStart).await;
+                                        let _ = tx
+                                            .send(LlmEvent::ToolCallDelta {
+                                                delta: serde_json::to_string(&args)
+                                                    .unwrap_or_default(),
+                                            })
+                                            .await;
+                                        let _ = tx
+                                            .send(LlmEvent::ToolCallEnd {
+                                                tool_call: tc.clone(),
+                                            })
+                                            .await;
+                                        tool_calls.push(tc);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if text_started {
+                let _ = tx.send(LlmEvent::TextEnd).await;
+            }
+
+            // Build the done message
+            let message = json!({
+                "type": "assistant",
+                "text": [full_text],
+                "thinking": [],
+                "tool_calls": tool_calls,
+            });
+
+            let _ = tx
+                .send(LlmEvent::Done {
+                    message,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    provider_telemetry: None,
+                })
+                .await;
+        });
 
         Ok(rx)
     }

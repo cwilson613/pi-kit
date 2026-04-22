@@ -1,7 +1,10 @@
----
-name: security
-description: Security checklist for code review and implementation. Covers input escaping, injection prevention, path traversal, process safety, dependency integrity, and secrets management. Load when working on user-facing code, template rendering, or process spawning.
----
++++
+id = "00bd7cab-e4dc-4c0b-a67b-421fac52f8ae"
+name = "security"
+description = "Defensive coding practices for implementation and review"
+tags = []
+aliases = ["sec"]
++++
 
 # Security Skill
 

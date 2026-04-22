@@ -1,0 +1,115 @@
+/// Omegon extension manifest schema.
+///
+/// Extension manifests declare native, OCI, and MCP-capable extensions
+/// that plug into the Omegon agent runtime. Each extension lives in
+/// `~/.omegon/extensions/{name}/manifest.toml`.
+///
+/// Example:
+/// ```
+/// amends "ExtensionManifest.pkl"
+///
+/// extension {
+///   name = "scribe"
+///   version = "0.2.0"
+///   description = "Engagement tracking and partnership data"
+/// }
+/// runtime {
+///   type = "native"
+///   binary = "target/release/scribe-rpc"
+/// }
+/// startup {
+///   ping_method = "get_tools"
+///   timeout_ms = 10000
+/// }
+/// ```
+module ExtensionManifest
+
+/// Extension identity.
+class ExtensionMeta {
+  name: String(length > 0)
+  version: String(matches(Regex(#"\d+\.\d+.*"#)))
+  description: String = ""
+}
+
+/// Runtime type — how the extension binary is executed.
+///
+/// - `native`: spawned as a child process, JSON-RPC over stdin/stdout.
+///   `binary` is relative to the manifest directory.
+/// - `oci`: run as a container image, stdin/stdout piped.
+class RuntimeConfig {
+  /// Runtime type discriminator.
+  type: "native"|"oci"
+  /// Path to binary (native only).
+  binary: String?
+  /// OCI image reference (oci only).
+  image: String?
+}
+
+/// Startup health-check configuration.
+class StartupConfig {
+  /// RPC method to call on startup as a health check.
+  /// Default: "get_tools" — also used to discover the tool surface.
+  ping_method: String? = "get_tools"
+
+  /// Timeout for the health-check RPC in milliseconds.
+  timeout_ms: Int(this > 0) = 5000
+}
+
+/// Secret declarations.
+class SecretsConfig {
+  /// Secrets that must be resolved before the extension is spawned.
+  required: Listing<String>
+  /// Optional secrets the extension degrades gracefully without.
+  optional: Listing<String>
+}
+
+/// MCP configuration — declares that this extension can be accessed remotely.
+///
+/// When present, the extension binary must support an MCP server mode
+/// (typically a `serve` subcommand). The extension loader checks for a
+/// matching remote endpoint in project config before falling back to
+/// local spawn.
+///
+/// Transport hierarchy (most to least capable):
+/// 1. Native (stdin/stdout JSON-RPC) — full features
+/// 2. Styrene (mesh transport) — full features + encrypted identity (future)
+/// 3. MCP over HTTP — tools only, development/interop fallback
+/// 4. MCP over stdio — tools only, for non-Omegon MCP clients
+class McpConfig {
+  /// Preferred MCP transport when running remotely.
+  transport: ("stdio"|"http") = "stdio"
+
+  /// Default port for the MCP HTTP server when self-hosting.
+  default_port: Int(this > 0 && this < 65536)?
+
+  /// Subcommand that starts the MCP server.
+  /// The binary is invoked as `<binary> <serve_subcommand> [--port <default_port>]`.
+  serve_subcommand: String = "serve"
+}
+
+/// Widget declaration — UI surface exposed by the extension.
+class WidgetConfig {
+  /// Human-readable label for the tab or modal.
+  label: String(length > 0)
+  /// Widget kind: "stateful" (tab) or "ephemeral" (modal).
+  kind: ("stateful"|"ephemeral")
+  /// Renderer hint: "timeline", "tree", "table", "graph", etc.
+  renderer: String(length > 0)
+  /// Optional description.
+  description: String = ""
+}
+
+extension: ExtensionMeta
+
+runtime: RuntimeConfig
+
+startup: StartupConfig?
+
+secrets: SecretsConfig?
+
+/// MCP capability declaration (optional).
+/// If present, this extension supports remote access via MCP.
+mcp: McpConfig?
+
+/// Widget declarations, keyed by widget ID.
+widgets: Mapping<String, WidgetConfig>?

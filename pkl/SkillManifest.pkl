@@ -1,0 +1,32 @@
+/// Omegon skill manifest schema.
+///
+/// Skills are markdown documents with TOML frontmatter that provide
+/// domain-specific conventions, patterns, and guidance to the agent.
+/// The frontmatter declares identity and metadata; the markdown body
+/// is the skill content injected into the agent's context.
+///
+/// Example:
+/// ```
+/// amends "SkillManifest.pkl"
+///
+/// id = "da892729-5848-47e1-a44e-4e1effd42128"
+/// name = "rust"
+/// description = "Conventions for Rust development"
+/// tags { "lang"; "rust" }
+/// ```
+module SkillManifest
+
+/// Stable UUID for this skill (survives renames).
+id: String(matches(Regex(#"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#)))
+
+/// Short identifier used in `/skills list` and file paths.
+name: String(length > 0)
+
+/// One-line description shown in skill listings and search.
+description: String(length > 0)
+
+/// Searchable tags for categorization.
+tags: Listing<String>
+
+/// Alternate names this skill can be referenced by.
+aliases: Listing<String>

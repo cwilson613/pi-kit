@@ -1,7 +1,10 @@
----
-name: typescript
-description: TypeScript development conventions. Covers strict typing, async patterns, error handling, Node.js API usage, and testing with node:test.
----
++++
+id = "a1b47811-00c1-4c95-a6b9-81655798c6d6"
+name = "typescript"
+description = "Conventions for TypeScript code and tooling"
+tags = ["lang"]
+aliases = ["ts"]
++++
 
 # TypeScript Development Skill
 

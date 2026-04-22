@@ -1,7 +1,10 @@
----
-name: git
-description: Git conventions — conventional commits, semantic versioning, branch naming, tagging, changelogs, and release workflow. Use when committing, branching, tagging, or managing releases.
----
++++
+id = "ac01d491-f2d9-459c-829c-f2d64353c22a"
+name = "git"
+description = "Conventions for git operations, commit messages, versioning, branching, and changelogs"
+tags = []
+aliases = []
++++
 
 # Git Skill
 

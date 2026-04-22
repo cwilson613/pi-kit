@@ -660,21 +660,9 @@ impl Settings {
         humanize_model_id(&self.model)
     }
 
-    pub fn provider(&self) -> &str {
-        match crate::providers::infer_provider_id(&self.model).as_str() {
-            "anthropic" => "anthropic",
-            "openai" => "openai",
-            "openai-codex" => "openai-codex",
-            "openrouter" => "openrouter",
-            "groq" => "groq",
-            "xai" => "xai",
-            "mistral" => "mistral",
-            "cerebras" => "cerebras",
-            "huggingface" => "huggingface",
-            "ollama" => "ollama",
-            "ollama-cloud" => "ollama-cloud",
-            _ => "anthropic",
-        }
+    pub fn provider(&self) -> String {
+        let id = crate::providers::infer_provider_id(&self.model);
+        id
     }
 }
 

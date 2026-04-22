@@ -1,0 +1,79 @@
+/// Omegon task specification schema.
+///
+/// A task spec declares a bounded headless agent task: the prompt,
+/// resource bounds, agent settings, and output configuration. Used by
+/// `omegon run` for k8s Jobs/CronJobs, CI pipelines, and automation.
+///
+/// Example:
+/// ```toml
+/// [task]
+/// prompt = "Review open PRs and summarize blockers"
+///
+/// [bounds]
+/// max_turns = 30
+/// timeout_secs = 600
+///
+/// [agent]
+/// model = "anthropic:claude-sonnet-4-6"
+/// posture = "fabricator"
+///
+/// [output]
+/// path = "/output/result.json"
+/// ```
+///
+/// Usage: `omegon run task.toml`
+module TaskSpec
+
+/// The task to execute.
+class TaskConfig {
+  /// Inline prompt text.
+  prompt: String?
+
+  /// Path to a prompt file (relative to cwd or absolute).
+  prompt_file: String?
+
+  /// Working directory (default: current directory).
+  cwd: String?
+}
+
+/// Resource bounds — prevent runaway execution.
+class BoundsConfig {
+  /// Maximum agent turns.
+  max_turns: Int(this > 0) = 30
+
+  /// Wall-clock timeout in seconds. Exit code 3 on expiry.
+  timeout_secs: Int(this > 0) = 600
+
+  /// Total token budget (input + output). Agent stops when exceeded.
+  token_budget: Int(this > 0)?
+}
+
+/// Agent settings — override the manifest or profile for this task.
+class AgentConfig {
+  /// Model (e.g., "anthropic:claude-sonnet-4-6").
+  model: String?
+
+  /// Behavioral posture.
+  posture: ("explorator"|"fabricator"|"architect"|"devastator")?
+
+  /// Thinking level.
+  thinking: ("off"|"minimal"|"low"|"medium"|"high")?
+
+  /// Persona name.
+  persona: String?
+}
+
+/// Output configuration.
+class OutputConfig {
+  /// Write structured JSON result to this path.
+  /// If omitted, result is written to stdout.
+  path: String?
+}
+
+task: TaskConfig
+
+bounds: BoundsConfig?
+
+agent: AgentConfig?
+
+output: OutputConfig?

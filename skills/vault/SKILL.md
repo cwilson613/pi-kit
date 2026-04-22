@@ -1,7 +1,10 @@
----
-name: vault
-description: Obsidian-compatible markdown conventions for human-readable knowledge bases. Use when generating documentation, design docs, specs, or any interlinked markdown that humans will browse. Teaches wikilink syntax, frontmatter conventions, and vault-friendly file organization.
----
++++
+id = "8d7961f6-4742-416f-89eb-bef9f6cc12f6"
+name = "vault"
+description = "Interlinked markdown conventions for wikis and knowledge bases"
+tags = []
+aliases = []
++++
 
 # Vault Skill — Interlinked Markdown Conventions
 

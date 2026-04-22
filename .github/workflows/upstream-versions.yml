@@ -1,0 +1,96 @@
+name: Upstream Version Sync
+
+on:
+  schedule:
+    - cron: '30 7 * * *'  # Daily at 07:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check upstream versions
+        id: check
+        continue-on-error: true
+        run: python3 scripts/check_upstream_versions.py > .tmp/version-check.json
+
+      - name: Apply updates
+        if: steps.check.outcome == 'failure'
+        id: apply
+        run: |
+          updates=$(cat .tmp/version-check.json)
+          count=$(echo "$updates" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['updates']))")
+          if [ "$count" = "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$updates" | python3 -c "
+          import json, sys
+          from pathlib import Path
+          data = json.load(sys.stdin)
+          for u in data['updates']:
+              p = Path(u['file'])
+              content = p.read_text()
+              content = content.replace(u['pattern'], u['replacement'])
+              p.write_text(content)
+              print(f\"Updated {u['file']}: {u['pattern']} -> {u['replacement']}\", file=sys.stderr)
+          "
+
+          # Build summary for PR body
+          echo "$updates" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          lines = []
+          for u in data['updates']:
+              lines.append(f\"- **{u['name']}**: \`{u['current']}\` -> \`{u['latest']}\`\")
+          print('\n'.join(lines))
+          " > .tmp/pr-body-updates.txt
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR
+        if: steps.apply.outcome == 'success' && steps.apply.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="auto/upstream-version-sync"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add -A
+          git commit -m "chore: sync upstream CLI versions
+
+          $(cat .tmp/pr-body-updates.txt)
+
+          Automated by upstream-versions.yml"
+
+          git push -f origin "$branch"
+
+          # Close existing PR if any
+          existing=$(gh pr list --head "$branch" --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh pr close "$existing" --delete-branch 2>/dev/null || true
+          fi
+
+          updates_body=$(cat .tmp/pr-body-updates.txt)
+          gh pr create \
+            --title "chore: sync upstream CLI versions" \
+            --body "## Updates
+
+          ${updates_body}
+
+          ---
+          Automated nightly check. Review and merge to keep OAuth UA strings and provider compatibility current." \
+            --label "automated"

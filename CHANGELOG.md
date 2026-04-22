@@ -1,9 +1,40 @@
++++
+id = "75315b06-0947-44f3-ba98-90348120509d"
+tags = []
+aliases = []
+imported_reference = false
+
+[publication]
+enabled = false
+visibility = "private"
++++
+
 # Changelog
 
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+### Added
+
+- **MCP Resources and Prompts support** — `resources/list`, `resources/read`, `prompts/list`, `prompts/get` discovery and invocation. Resources and prompts from MCP servers are discovered at connect time, surfaced as agent tools (`mcp_read_resource`, `mcp_get_prompt`), and injected into context. `McpServerStatus` now carries `resource_count` and `prompt_count`.
+- **Codex vault export for design tree** — `lifecycle::codex_export` module serializes design nodes as TOML-frontmatter markdown compatible with Codex vaults. `export_design_tree_to_vault()` batch-writes all nodes to `{vault}/design/*.md`. Path traversal protection and TOML escaping for control characters included.
+- **Per-segment clipboard copy** — `c` key in focus mode copies the focused segment to clipboard. `/copy session` dumps the full conversation (markdown-formatted with role headers) to clipboard with size cap at 5MB.
+- **Upstream version sync CI** — nightly `upstream-versions.yml` workflow checks npm for Claude Code CLI version drift and auto-opens PRs when the `CLAUDE_CODE_UA` string goes stale.
+
+### Changed
+
+- **Default UI is slim with no splash on returning users** — splash screen only shows on first launch (no `~/.omegon/profile.json`). Segment metadata tag line (model/provider/tier/thinking) hidden in slim mode, visible in `/ui full`.
+- **Mouse scroll works without capture** — trackpad/wheel scroll always scrolls the conversation, even in slim mode with mouse capture disabled.
+- **Arrow keys scroll conversation** — bare Up/Down arrows now scroll the conversation instead of recalling history. History recall moved to Ctrl+Up/Down. Welcome messages updated with new keybind hints.
+- **System prompt: act, don't narrate** — behavior directive updated to instruct the agent to emit tool calls immediately rather than responding with text saying it will act on the next turn.
+
+### Fixed
+
+- **OAuth user-agent version** — `CLAUDE_CODE_UA` updated to match current Claude Code version. Stale UA string was causing Anthropic API to reject OAuth-authenticated requests.
+- **Table column alignment** — inline markdown highlighting (`**bold**`, `` `code` ``) no longer breaks table column width calculation. Padding now computed on post-highlight display width via `markdown_display_width()`.
+- **Extension MethodNotFound handling** — extensions that advertise tools but don't implement `execute_tool` RPC now return a user-friendly error instead of raw JSON-RPC error.
 
 ## [0.15.26] - 2026-04-16
 

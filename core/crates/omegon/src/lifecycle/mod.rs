@@ -8,6 +8,7 @@
 //! Phase 1b: full mutation tools when Rust becomes the interactive parent.
 
 pub mod capture;
+pub mod codex_export;
 pub mod context;
 pub mod design;
 pub mod doctor;

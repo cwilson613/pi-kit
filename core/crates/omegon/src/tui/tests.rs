@@ -1240,19 +1240,18 @@ fn ctrl_up_walks_back_multiple_entries_after_recall_starts() {
 }
 
 #[test]
-fn bare_up_recalls_history_from_empty_editor_by_default() {
+fn bare_up_does_not_recall_history_from_empty_editor() {
     let mut app = test_app();
     app.history = vec!["first".into(), "second".into(), "third".into()];
     app.terminal_copy_mode = false;
 
+    // Arrow-up on a single-line empty editor is a no-op (no history recall).
     if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
         app.editor.move_up();
-    } else if app.should_use_arrow_history_recall() {
-        app.history_recall_up();
     }
 
-    assert_eq!(app.editor.render_text(), "third");
-    assert_eq!(app.history_idx, Some(2));
+    assert_eq!(app.editor.render_text(), "");
+    assert_eq!(app.history_idx, None);
 }
 
 #[test]
@@ -1279,21 +1278,22 @@ fn ctrl_down_clears_editor_after_latest_entry() {
 }
 
 #[test]
-fn bare_down_advances_history_by_default() {
+fn bare_down_does_not_advance_history() {
     let mut app = test_app();
     app.history = vec!["first".into(), "second".into()];
     app.terminal_copy_mode = false;
 
     app.history_recall_up();
+    assert_eq!(app.editor.render_text(), "second");
 
+    // Arrow-down on a single-line editor is a no-op (no history recall).
     if app.editor.line_count() > 1 && app.editor.cursor_row() < app.editor.line_count() - 1 {
         app.editor.move_down();
-    } else if app.should_use_arrow_history_recall() {
-        app.history_recall_down();
     }
 
-    assert_eq!(app.editor.render_text(), "");
-    assert_eq!(app.history_idx, None);
+    // Editor still shows the recalled text — arrow-down didn't clear it.
+    assert_eq!(app.editor.render_text(), "second");
+    assert_eq!(app.history_idx, Some(1));
 }
 
 #[test]
@@ -4149,4 +4149,38 @@ fn tool_end_aggregates_all_text_blocks() {
         detail.contains("| src/app.rs | 10-20 |"),
         "missing later text block: {detail}"
     );
+}
+
+#[test]
+fn copy_full_session_runs_without_panic() {
+    let mut app = test_app();
+
+    // Populate conversation with a user prompt, assistant text, and a tool card.
+    app.conversation.push_user("Hello, world!");
+    app.conversation.append_streaming("Sure, let me help.");
+    app.conversation
+        .push_tool_start("t1", "bash", Some("echo hi"), Some("echo hi"));
+    app.conversation.push_tool_end("t1", false, Some("hi"));
+
+    // copy_full_session may fail to reach the clipboard in CI, but it must not
+    // panic and should not leave the app in a bad state.
+    app.copy_full_session();
+
+    // Verify the conversation is still intact after the copy.
+    assert!(
+        app.conversation.segments().len() >= 3,
+        "expected at least 3 segments (user + assistant + tool), got {}",
+        app.conversation.segments().len()
+    );
+}
+
+#[test]
+fn copy_full_session_on_empty_conversation_shows_warning() {
+    let mut app = test_app();
+
+    // No segments — should not panic.
+    app.copy_full_session();
+
+    // Conversation still empty.
+    assert!(app.conversation.segments().is_empty());
 }

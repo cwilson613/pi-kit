@@ -1,7 +1,10 @@
----
-name: oci
-description: OCI container and artifact best practices. Covers Containerfile authoring, multi-arch builds, registry authentication, image tagging, security scanning, and artifact management. Use when building, pushing, or managing container images and OCI artifacts.
----
++++
+id = "6239e4f8-682b-4247-911e-ddfa18e6df8f"
+name = "oci"
+description = "Conventions for container images, OCI artifacts, and registry operations"
+tags = []
+aliases = []
++++
 
 # OCI Skill
 

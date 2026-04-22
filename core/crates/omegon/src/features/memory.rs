@@ -51,6 +51,10 @@ pub struct MemoryFeature {
     /// Set to true by memory mutation tools so the next provide_context()
     /// re-renders even if the hash would match (facts changed underneath).
     context_dirty: AtomicBool,
+    /// Optional Codex vault path for materialization on session end.
+    /// When set, `SessionEnd` materializes facts and episodes to the vault
+    /// and reinforces facts referenced by vault documents.
+    codex_vault_path: Option<std::path::PathBuf>,
 }
 
 impl MemoryFeature {
@@ -65,7 +69,14 @@ impl MemoryFeature {
             embed_service: None,
             last_context_hash: Mutex::new(0),
             context_dirty: AtomicBool::new(true), // force initial render
+            codex_vault_path: None,
         }
+    }
+
+    /// Set the Codex vault path for automatic materialization on session end.
+    pub fn with_codex_vault(mut self, path: std::path::PathBuf) -> Self {
+        self.codex_vault_path = Some(path);
+        self
     }
 
     /// Attach an embedding service for hybrid search and auto-embed on store.
@@ -826,6 +837,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
             } if *turns > 0 => {
                 let backend = self.backend.clone();
                 let mind = self.mind.clone();
+                let vault_path = self.codex_vault_path.clone();
                 let (t, tc, dur) = (*turns, *tool_calls, *duration_secs);
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     std::thread::scope(|scope| {
@@ -846,7 +858,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                                     );
                                     if let Err(e) = backend
                                         .store_episode(StoreEpisode {
-                                            mind,
+                                            mind: mind.clone(),
                                             title,
                                             narrative,
                                             date: Some(now.format("%Y-%m-%d").to_string()),
@@ -859,6 +871,65 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                                         .await
                                     {
                                         tracing::warn!("Session episode storage failed: {e}");
+                                    }
+
+                                    // Materialize to Codex vault if configured
+                                    if let Some(ref vp) = vault_path {
+                                        // Import Codex-authored facts first
+                                        match omegon_memory::vault_sync::import_from_vault(
+                                            backend.as_ref(), vp, &mind,
+                                        ).await {
+                                            Ok(r) if r.facts_imported > 0 => {
+                                                tracing::info!(
+                                                    imported = r.facts_imported,
+                                                    "imported facts from Codex vault"
+                                                );
+                                            }
+                                            Err(e) => tracing::warn!("vault import failed: {e}"),
+                                            _ => {}
+                                        }
+
+                                        // Reinforce facts referenced by vault notes
+                                        match omegon_memory::vault_sync::reinforce_referenced_facts(
+                                            backend.as_ref(), vp,
+                                        ).await {
+                                            Ok(r) => {
+                                                if r.facts_reinforced > 0 {
+                                                    tracing::info!(
+                                                        reinforced = r.facts_reinforced,
+                                                        dangling = r.references_dangling,
+                                                        superseded = r.references_superseded.len(),
+                                                        "reinforced facts referenced by vault notes"
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => tracing::warn!("vault reinforcement failed: {e}"),
+                                        }
+
+                                        // Materialize facts to vault
+                                        match omegon_memory::vault_sync::materialize_to_vault(
+                                            backend.as_ref(), vp, &mind,
+                                        ).await {
+                                            Ok(r) => {
+                                                tracing::info!(
+                                                    sections = r.sections_written,
+                                                    facts = r.facts_written,
+                                                    "materialized memory to Codex vault"
+                                                );
+                                            }
+                                            Err(e) => tracing::warn!("vault materialization failed: {e}"),
+                                        }
+
+                                        // Materialize episodes
+                                        match omegon_memory::vault_sync::materialize_episodes_to_vault(
+                                            backend.as_ref(), vp, &mind, 20,
+                                        ).await {
+                                            Ok(n) if n > 0 => {
+                                                tracing::info!(episodes = n, "materialized episodes to Codex vault");
+                                            }
+                                            Err(e) => tracing::warn!("episode materialization failed: {e}"),
+                                            _ => {}
+                                        }
                                     }
                                 })
                             })

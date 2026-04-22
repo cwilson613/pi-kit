@@ -199,6 +199,8 @@ mod tests {
             name: "filesystem".into(),
             transport_mode: McpTransportMode::LocalProcess,
             tool_count: 5,
+            resource_count: 0,
+            prompt_count: 0,
             connected: true,
             error: None,
         });
@@ -206,6 +208,8 @@ mod tests {
             name: "postgres".into(),
             transport_mode: McpTransportMode::OciContainer,
             tool_count: 0,
+            resource_count: 0,
+            prompt_count: 0,
             connected: false,
             error: Some("image not found".into()),
         });

@@ -1,0 +1,58 @@
+/// Omegon MCP server configuration schema.
+///
+/// Declares MCP servers for tool/resource/prompt discovery.
+/// Stored at `.omegon/mcp.toml` (project-level) or in plugin manifests.
+///
+/// Example:
+/// ```
+/// amends "McpConfig.pkl"
+///
+/// servers {
+///   ["filesystem"] {
+///     command = "npx"
+///     args { "-y"; "@modelcontextprotocol/server-filesystem"; "/home" }
+///   }
+///   ["postgres"] {
+///     image = "ghcr.io/mcp/server-postgres:latest"
+///     env { ["DATABASE_URL"] = "{DATABASE_URL}" }
+///     mount_cwd = true
+///   }
+/// }
+/// ```
+module McpConfig
+
+/// A single MCP server declaration.
+class McpServer {
+  /// HTTP URL for remote MCP (HTTPS required, except localhost).
+  url: String?
+
+  /// Command to spawn for local process transport.
+  command: String?
+
+  /// Arguments to the command.
+  args: Listing<String>
+
+  /// Environment variables (supports `{VAR}` templates resolved from secrets).
+  env: Mapping<String, String>
+
+  /// OCI image reference — spawns in a container.
+  image: String?
+
+  /// Mount operator's working directory into the container.
+  mount_cwd: Boolean = false
+
+  /// Allow container network access.
+  network: Boolean = true
+
+  /// Docker MCP Toolkit gateway server name.
+  docker_mcp: String?
+
+  /// Styrene mesh destination hash for remote MCP.
+  styrene_dest: String?
+
+  /// Tool call timeout in seconds.
+  timeout_secs: Int(this > 0) = 30
+}
+
+/// Named MCP server declarations.
+servers: Mapping<String, McpServer>

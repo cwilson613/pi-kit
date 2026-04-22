@@ -2551,9 +2551,13 @@ pub async fn auth_login_response(
             let _ = events_tx_clone.send(AgentEvent::SystemNotification { message: conflict });
         }
         if result.is_ok() {
-            let effective_model = providers::resolve_execution_model_spec(&model_for_redetect)
-                .await
+            // Use the provider that was just logged into, not the pre-login
+            // model setting (which may reference a different provider entirely).
+            let login_provider_model = providers::default_model_for_provider(&provider_clone)
                 .unwrap_or(model_for_redetect.clone());
+            let effective_model = providers::resolve_execution_model_spec(&login_provider_model)
+                .await
+                .unwrap_or(login_provider_model);
             if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await {
                 let mut guard = bridge_clone.write().await;
                 *guard = new_bridge;

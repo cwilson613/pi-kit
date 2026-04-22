@@ -27,7 +27,9 @@ pub mod mind;
 pub mod state;
 pub mod vox_bridge;
 pub mod widgets;
-pub use manifest::{ExtensionManifest, RuntimeConfig, WidgetConfig};
+pub use manifest::{
+    ConnectionMode, ExtensionManifest, McpConfig, McpTransport, RuntimeConfig, WidgetConfig,
+};
 pub use mind::{ExtensionMind, MindStats};
 pub use state::{ExtensionState, StabilityMetrics};
 pub use widgets::{ExtensionTabWidget, WidgetDeclaration, WidgetEvent};
@@ -319,16 +321,34 @@ impl Feature for ExtensionFeature {
         args: Value,
         _cancel: CancellationToken,
     ) -> Result<ToolResult> {
-        let output = self
+        match self
             .rpc_call("execute_tool", json!({ "name": tool_name, "args": args }))
-            .await?;
-
-        Ok(ToolResult {
-            content: vec![ContentBlock::Text {
-                text: output.to_string(),
-            }],
-            details: json!({}),
-        })
+            .await
+        {
+            Ok(output) => Ok(ToolResult {
+                content: vec![ContentBlock::Text {
+                    text: output.to_string(),
+                }],
+                details: json!({}),
+            }),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("MethodNotFound") {
+                    Ok(ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!(
+                                "Extension '{}' does not support tool execution. \
+                                 The tool '{}' was advertised but cannot be called.",
+                                self.name, tool_name
+                            ),
+                        }],
+                        details: json!({"is_error": true}),
+                    })
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

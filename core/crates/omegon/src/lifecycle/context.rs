@@ -75,6 +75,11 @@ impl LifecycleContextProvider {
         &self.nodes
     }
 
+    /// Get the sections cache (populated lazily via get_sections calls).
+    pub fn sections_cache(&self) -> &HashMap<String, DocumentSections> {
+        &self.sections_cache
+    }
+
     /// Get all active changes.
     /// Degraded nodes — currently a stub, full tracking deferred.
     pub fn degraded_nodes(&self) -> &[DegradedNode] {

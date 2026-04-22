@@ -1139,7 +1139,15 @@ pub async fn refresh_openai_token(refresh: &str) -> anyhow::Result<OAuthCredenti
 
 // ─── Google Antigravity (IDE subscription) ─────────────────────────────────
 
-const ANTIGRAVITY_CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+// ─── Google Antigravity (Gemini CLI) OAuth ─────────────────────────────────
+//
+// Uses the same public OAuth credentials as Gemini CLI (google-gemini/gemini-cli).
+// Google documents that for installed/desktop applications, "the client secret
+// is not treated as a secret" — it's embedded in the distributed binary.
+// See: https://developers.google.com/identity/protocols/oauth2/native-app
+const ANTIGRAVITY_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const ANTIGRAVITY_CLIENT_SECRET: &str = "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";
 const ANTIGRAVITY_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const ANTIGRAVITY_CALLBACK_PORT: u16 = 51121;
@@ -1224,6 +1232,7 @@ pub async fn login_antigravity_with_callbacks(
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(format!(
             "grant_type=authorization_code&client_id={ANTIGRAVITY_CLIENT_ID}\
+             &client_secret={ANTIGRAVITY_CLIENT_SECRET}\
              &code={code}&code_verifier={verifier}\
              &redirect_uri={}",
             urlencoding_encode(ANTIGRAVITY_REDIRECT_URI),
@@ -1263,7 +1272,8 @@ pub async fn refresh_antigravity_token(refresh: &str) -> anyhow::Result<OAuthCre
         .post(ANTIGRAVITY_TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(format!(
-            "grant_type=refresh_token&refresh_token={refresh}&client_id={ANTIGRAVITY_CLIENT_ID}"
+            "grant_type=refresh_token&refresh_token={refresh}\
+             &client_id={ANTIGRAVITY_CLIENT_ID}&client_secret={ANTIGRAVITY_CLIENT_SECRET}"
         ))
         .send()
         .await?;

@@ -41,6 +41,8 @@ pub struct LifecycleFeature {
     /// Memory facts queued from execute() to be returned from on_event(TurnEnd).
     /// execute() takes &self so can't return BusRequests directly — this bridges the gap.
     pending_memory: Mutex<Vec<BusRequest>>,
+    /// Optional Codex vault path — exports design tree on session end.
+    codex_vault_path: Option<PathBuf>,
 }
 
 impl LifecycleFeature {
@@ -82,7 +84,14 @@ impl LifecycleFeature {
             turn_counter: 0,
             opsx: Mutex::new(opsx),
             pending_memory: Mutex::new(vec![]),
+            codex_vault_path: None,
         }
+    }
+
+    /// Set the Codex vault path for automatic design tree export on session end.
+    pub fn with_codex_vault(mut self, path: PathBuf) -> Self {
+        self.codex_vault_path = Some(path);
+        self
     }
 
     /// Lock the provider for dashboard state extraction.
@@ -1213,6 +1222,35 @@ impl Feature for LifecycleFeature {
                     .lock()
                     .map(|mut q| std::mem::take(&mut *q))
                     .unwrap_or_default()
+            }
+            BusEvent::SessionEnd { turns, .. } if *turns > 0 => {
+                // Export design tree to Codex vault if configured
+                if let Some(ref vault_path) = self.codex_vault_path {
+                    let provider = self.provider.lock().unwrap();
+                    let nodes = provider.all_nodes();
+                    let sections_cache = provider.sections_cache();
+                    let node_list: Vec<&DesignNode> = nodes.values().collect();
+                    if !node_list.is_empty() {
+                        let owned_nodes: Vec<DesignNode> = node_list.into_iter().cloned().collect();
+                        match crate::lifecycle::codex_export::export_design_tree_to_vault(
+                            vault_path,
+                            &owned_nodes,
+                            &sections_cache,
+                        ) {
+                            Ok(count) => {
+                                tracing::info!(
+                                    nodes = count,
+                                    vault = %vault_path.display(),
+                                    "exported design tree to Codex vault"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("design tree export to vault failed: {e}");
+                            }
+                        }
+                    }
+                }
+                vec![]
             }
             _ => vec![],
         }

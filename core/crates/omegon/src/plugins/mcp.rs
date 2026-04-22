@@ -1,5 +1,5 @@
 //! MCP plugin Feature — connects to MCP servers via stdio child-process transport,
-//! discovers their tools, and exposes them as Omegon tools.
+//! discovers their tools, resources, and prompts, and exposes them to Omegon.
 //!
 //! MCP servers are declared in plugin.toml or project config:
 //! ```toml
@@ -115,6 +115,43 @@ struct McpTool {
     server_name: String,
 }
 
+/// A discovered resource from an MCP server.
+#[derive(Debug, Clone)]
+struct McpResource {
+    uri: String,
+    name: String,
+    description: Option<String>,
+    mime_type: Option<String>,
+    server_name: String,
+}
+
+/// A discovered resource template from an MCP server.
+#[derive(Debug, Clone)]
+struct McpResourceTemplate {
+    uri_template: String,
+    name: String,
+    description: Option<String>,
+    mime_type: Option<String>,
+    server_name: String,
+}
+
+/// A discovered prompt from an MCP server.
+#[derive(Debug, Clone)]
+struct McpPrompt {
+    name: String,
+    description: Option<String>,
+    arguments: Vec<McpPromptArgument>,
+    server_name: String,
+}
+
+/// Argument metadata for a discovered prompt.
+#[derive(Debug, Clone)]
+struct McpPromptArgument {
+    name: String,
+    description: Option<String>,
+    required: bool,
+}
+
 /// Per-call progress entry — the sink we should forward
 /// `notifications/progress` messages to, plus the wall-clock instant
 /// when the tool call started so we can compute `elapsed_ms` for
@@ -208,6 +245,9 @@ type McpConnection = RunningService<RoleClient, OmegonMcpClient>;
 pub struct McpFeature {
     feature_name: String,
     tools: Vec<McpTool>,
+    resources: Vec<McpResource>,
+    resource_templates: Vec<McpResourceTemplate>,
+    prompts: Vec<McpPrompt>,
     clients: Arc<Mutex<HashMap<String, McpConnection>>>,
     /// Per-server call timeout in seconds, keyed by server name.
     timeouts: HashMap<String, u64>,
@@ -219,13 +259,16 @@ pub struct McpFeature {
 }
 
 impl McpFeature {
-    /// Connect to MCP servers and discover their tools.
+    /// Connect to MCP servers and discover their tools, resources, and prompts.
     pub async fn connect(
         plugin_name: &str,
         servers: &HashMap<String, McpServerConfig>,
         secrets: Option<&omegon_secrets::SecretsManager>,
     ) -> anyhow::Result<Self> {
         let mut all_tools = Vec::new();
+        let mut all_resources = Vec::new();
+        let mut all_resource_templates = Vec::new();
+        let mut all_prompts = Vec::new();
         let mut clients = HashMap::new();
         let progress = Arc::new(ProgressRegistry::default());
 
@@ -241,6 +284,101 @@ impl McpFeature {
                     );
                     all_tools.extend(server_tools);
                     timeouts.insert(server_name.clone(), config.timeout_secs);
+
+                    // Discover resources (non-fatal — many servers don't expose any)
+                    match client.list_all_resources().await {
+                        Ok(resources) => {
+                            if !resources.is_empty() {
+                                tracing::info!(
+                                    plugin = plugin_name,
+                                    server = server_name,
+                                    count = resources.len(),
+                                    "MCP resources discovered"
+                                );
+                            }
+                            all_resources.extend(resources.into_iter().map(|r| McpResource {
+                                uri: r.uri.clone(),
+                                name: r.name.clone(),
+                                description: r.description.clone(),
+                                mime_type: r.mime_type.clone(),
+                                server_name: server_name.clone(),
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                server = server_name,
+                                error = %e,
+                                "MCP server does not support resources"
+                            );
+                        }
+                    }
+
+                    // Discover resource templates (non-fatal)
+                    match client.list_all_resource_templates().await {
+                        Ok(templates) => {
+                            if !templates.is_empty() {
+                                tracing::info!(
+                                    plugin = plugin_name,
+                                    server = server_name,
+                                    count = templates.len(),
+                                    "MCP resource templates discovered"
+                                );
+                            }
+                            all_resource_templates.extend(templates.into_iter().map(|t| {
+                                McpResourceTemplate {
+                                    uri_template: t.uri_template.clone(),
+                                    name: t.name.clone(),
+                                    description: t.description.clone(),
+                                    mime_type: t.mime_type.clone(),
+                                    server_name: server_name.clone(),
+                                }
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                server = server_name,
+                                error = %e,
+                                "MCP server does not support resource templates"
+                            );
+                        }
+                    }
+
+                    // Discover prompts (non-fatal)
+                    match client.list_all_prompts().await {
+                        Ok(prompts) => {
+                            if !prompts.is_empty() {
+                                tracing::info!(
+                                    plugin = plugin_name,
+                                    server = server_name,
+                                    count = prompts.len(),
+                                    "MCP prompts discovered"
+                                );
+                            }
+                            all_prompts.extend(prompts.into_iter().map(|p| McpPrompt {
+                                name: format!("{}::{}", server_name, p.name),
+                                description: p.description.map(|d| d.to_string()),
+                                arguments: p
+                                    .arguments
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|a| McpPromptArgument {
+                                        name: a.name,
+                                        description: a.description.map(|d| d.to_string()),
+                                        required: a.required.unwrap_or(false),
+                                    })
+                                    .collect(),
+                                server_name: server_name.clone(),
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                server = server_name,
+                                error = %e,
+                                "MCP server does not support prompts"
+                            );
+                        }
+                    }
+
                     clients.insert(server_name.clone(), client);
                 }
                 Err(e) => {
@@ -257,6 +395,9 @@ impl McpFeature {
         Ok(Self {
             feature_name: plugin_name.to_string(),
             tools: all_tools,
+            resources: all_resources,
+            resource_templates: all_resource_templates,
+            prompts: all_prompts,
             clients: Arc::new(Mutex::new(clients)),
             timeouts,
             progress,
@@ -441,6 +582,138 @@ impl McpFeature {
             ("", prefixed)
         }
     }
+
+    /// Number of discovered resources across all connected servers.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
+    /// Number of discovered resource templates across all connected servers.
+    pub fn resource_template_count(&self) -> usize {
+        self.resource_templates.len()
+    }
+
+    /// Number of discovered prompts across all connected servers.
+    pub fn prompt_count(&self) -> usize {
+        self.prompts.len()
+    }
+
+    /// Execute `resources/read` against the named MCP server.
+    async fn execute_read_resource(&self, args: &Value) -> anyhow::Result<ToolResult> {
+        let server_name = args
+            .get("server")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing required argument: server"))?;
+        let uri = args
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing required argument: uri"))?;
+
+        let timeout_secs = self.timeouts.get(server_name).copied().unwrap_or(30);
+        let clients = self.clients.lock().await;
+        let client = clients
+            .get(server_name)
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
+
+        let params = ReadResourceRequestParams::new(uri);
+        let result =
+            tokio_timeout(Duration::from_secs(timeout_secs), client.read_resource(params))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "MCP resource read timed out after {}s (server: '{}')",
+                        timeout_secs,
+                        server_name
+                    )
+                })??;
+
+        let content: Vec<ContentBlock> = result
+            .contents
+            .into_iter()
+            .map(|rc| match rc {
+                ResourceContents::TextResourceContents { text, uri, .. } => ContentBlock::Text {
+                    text: format!("[{}]\n{}", uri, text),
+                },
+                ResourceContents::BlobResourceContents { blob, uri, .. } => ContentBlock::Text {
+                    text: format!("[{}] (binary, {} bytes base64)", uri, blob.len()),
+                },
+            })
+            .collect();
+
+        Ok(ToolResult {
+            content,
+            details: Value::Null,
+        })
+    }
+
+    /// Execute `prompts/get` against the named MCP server.
+    async fn execute_get_prompt(&self, args: &Value) -> anyhow::Result<ToolResult> {
+        let server_name = args
+            .get("server")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing required argument: server"))?;
+        let prompt_name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing required argument: name"))?;
+        let prompt_args: Option<serde_json::Map<String, Value>> = args
+            .get("arguments")
+            .and_then(|v| v.as_object().cloned());
+
+        let timeout_secs = self.timeouts.get(server_name).copied().unwrap_or(30);
+        let clients = self.clients.lock().await;
+        let client = clients
+            .get(server_name)
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
+
+        let mut params = GetPromptRequestParams::new(prompt_name);
+        params.arguments = prompt_args;
+        let result = tokio_timeout(Duration::from_secs(timeout_secs), client.get_prompt(params))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "MCP prompt get timed out after {}s (server: '{}')",
+                    timeout_secs,
+                    server_name
+                )
+            })??;
+
+        let mut text_parts = Vec::new();
+        if let Some(ref desc) = result.description {
+            text_parts.push(format!("Prompt: {}\n", desc));
+        }
+        for msg in &result.messages {
+            let role = match msg.role {
+                PromptMessageRole::User => "user",
+                PromptMessageRole::Assistant => "assistant",
+            };
+            let body = match &msg.content {
+                PromptMessageContent::Text { text } => text.clone(),
+                PromptMessageContent::Image { .. } => "[image content]".to_string(),
+                PromptMessageContent::Resource { resource } => {
+                    match &resource.raw.resource {
+                        ResourceContents::TextResourceContents { text, uri, .. } => {
+                            format!("[resource: {}]\n{}", uri, text)
+                        }
+                        ResourceContents::BlobResourceContents { uri, .. } => {
+                            format!("[resource: {}] (binary)", uri)
+                        }
+                    }
+                }
+                PromptMessageContent::ResourceLink { link } => {
+                    format!("[resource link: {}]", link.uri)
+                }
+            };
+            text_parts.push(format!("[{}]: {}", role, body));
+        }
+
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text {
+                text: text_parts.join("\n\n"),
+            }],
+            details: Value::Null,
+        })
+    }
 }
 
 #[async_trait]
@@ -450,7 +723,8 @@ impl Feature for McpFeature {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        self.tools
+        let mut defs: Vec<ToolDefinition> = self
+            .tools
             .iter()
             .map(|t| ToolDefinition {
                 name: t.name.clone(),
@@ -458,7 +732,134 @@ impl Feature for McpFeature {
                 description: t.description.clone(),
                 parameters: t.parameters.clone(),
             })
-            .collect()
+            .collect();
+
+        // Expose mcp_read_resource tool if any server has resources
+        if !self.resources.is_empty() || !self.resource_templates.is_empty() {
+            defs.push(ToolDefinition {
+                name: format!("{}::mcp_read_resource", self.feature_name),
+                label: format!("mcp:{}", self.feature_name),
+                description: "Read a resource from an MCP server by URI. Use the resource list in context to find available URIs.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": {
+                            "type": "string",
+                            "description": "MCP server name that owns the resource"
+                        },
+                        "uri": {
+                            "type": "string",
+                            "description": "Resource URI to read"
+                        }
+                    },
+                    "required": ["server", "uri"]
+                }),
+            });
+        }
+
+        // Expose mcp_get_prompt tool if any server has prompts
+        if !self.prompts.is_empty() {
+            defs.push(ToolDefinition {
+                name: format!("{}::mcp_get_prompt", self.feature_name),
+                label: format!("mcp:{}", self.feature_name),
+                description: "Retrieve a prompt template from an MCP server. Returns the expanded prompt messages.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": {
+                            "type": "string",
+                            "description": "MCP server name that owns the prompt"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Prompt name"
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "Key-value arguments to pass to the prompt template",
+                            "additionalProperties": { "type": "string" }
+                        }
+                    },
+                    "required": ["server", "name"]
+                }),
+            });
+        }
+
+        defs
+    }
+
+    fn provide_context(&self, _signals: &ContextSignals<'_>) -> Option<ContextInjection> {
+        if self.resources.is_empty()
+            && self.resource_templates.is_empty()
+            && self.prompts.is_empty()
+        {
+            return None;
+        }
+
+        // Cap listings to avoid bloating the system prompt. The agent can
+        // always discover more via the tools themselves.
+        const MAX_LISTED: usize = 10;
+
+        let mut lines = Vec::new();
+
+        if !self.resources.is_empty() {
+            let total = self.resources.len();
+            let show = total.min(MAX_LISTED);
+            lines.push(format!("MCP Resources ({total} available):"));
+            for r in self.resources.iter().take(show) {
+                lines.push(format!(
+                    "  - {} (server: {}, uri: {})",
+                    r.name, r.server_name, r.uri
+                ));
+            }
+            if total > show {
+                lines.push(format!("  ... and {} more", total - show));
+            }
+        }
+
+        if !self.resource_templates.is_empty() {
+            let total = self.resource_templates.len();
+            let show = total.min(MAX_LISTED);
+            lines.push(format!("MCP Resource Templates ({total} available):"));
+            for t in self.resource_templates.iter().take(show) {
+                lines.push(format!(
+                    "  - {} (server: {}, template: {})",
+                    t.name, t.server_name, t.uri_template
+                ));
+            }
+            if total > show {
+                lines.push(format!("  ... and {} more", total - show));
+            }
+        }
+
+        if !self.prompts.is_empty() {
+            let total = self.prompts.len();
+            let show = total.min(MAX_LISTED);
+            lines.push(format!("MCP Prompts ({total} available):"));
+            for p in self.prompts.iter().take(show) {
+                let args_str = if p.arguments.is_empty() {
+                    String::new()
+                } else {
+                    let names: Vec<&str> = p.arguments.iter().map(|a| a.name.as_str()).collect();
+                    format!(" args: [{}]", names.join(", "))
+                };
+                lines.push(format!("  - {}{}", p.name, args_str));
+            }
+            if total > show {
+                lines.push(format!("  ... and {} more", total - show));
+            }
+        }
+
+        lines.push("Use mcp_read_resource to fetch resource content, mcp_get_prompt to expand prompts.".to_string());
+
+        Some(ContextInjection {
+            source: format!("mcp:{}", self.feature_name),
+            content: lines.join("\n"),
+            priority: 30,
+            // Static content — resources/prompts don't change mid-session.
+            // Inject once and let TTL keep it alive without re-rendering.
+            ttl_turns: 50,
+        })
     }
 
     async fn execute(
@@ -468,9 +869,6 @@ impl Feature for McpFeature {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        // The non-sink path just forwards to execute_with_sink with a
-        // no-op sink. The sink-aware path handles both — there's no
-        // duplication of the call/timeout/conversion logic.
         self.execute_with_sink(tool_name, call_id, args, cancel, ToolProgressSink::noop())
             .await
     }
@@ -484,6 +882,15 @@ impl Feature for McpFeature {
         sink: ToolProgressSink,
     ) -> anyhow::Result<ToolResult> {
         let (server_name, mcp_name) = Self::split_tool_name(tool_name);
+
+        // Route to resource/prompt handlers
+        if mcp_name == "mcp_read_resource" {
+            return self.execute_read_resource(&args).await;
+        }
+        if mcp_name == "mcp_get_prompt" {
+            return self.execute_get_prompt(&args).await;
+        }
+
         let server_name = server_name.to_string();
         let mcp_name = mcp_name.to_string();
 
@@ -1173,5 +1580,182 @@ mod tests {
     fn validate_url_invalid_format_rejected() {
         assert!(McpFeature::validate_url("not-a-url").is_err());
         assert!(McpFeature::validate_url("https://").is_err());
+    }
+
+    // ── Helper to build McpFeature with pre-populated resources/prompts ──
+
+    fn make_test_feature(
+        resources: Vec<McpResource>,
+        resource_templates: Vec<McpResourceTemplate>,
+        prompts: Vec<McpPrompt>,
+    ) -> McpFeature {
+        McpFeature {
+            feature_name: "test-plugin".to_string(),
+            tools: Vec::new(),
+            resources,
+            resource_templates,
+            prompts,
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            timeouts: HashMap::new(),
+            progress: Arc::new(ProgressRegistry::default()),
+        }
+    }
+
+    #[test]
+    fn resource_count_and_template_count_defaults() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        assert_eq!(feat.resource_count(), 0);
+        assert_eq!(feat.resource_template_count(), 0);
+    }
+
+    #[test]
+    fn prompt_count_defaults() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        assert_eq!(feat.prompt_count(), 0);
+    }
+
+    #[test]
+    fn provide_context_empty_when_no_resources_or_prompts() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        let phase = LifecyclePhase::Idle;
+        let signals = ContextSignals {
+            user_prompt: "",
+            recent_tools: &[],
+            recent_files: &[],
+            lifecycle_phase: &phase,
+            turn_number: 0,
+            context_budget_tokens: 4096,
+        };
+        assert!(feat.provide_context(&signals).is_none());
+    }
+
+    #[test]
+    fn provide_context_includes_resources() {
+        let feat = make_test_feature(
+            vec![McpResource {
+                uri: "file:///tmp/notes.txt".to_string(),
+                name: "notes".to_string(),
+                description: Some("My notes".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                server_name: "fs".to_string(),
+            }],
+            vec![],
+            vec![],
+        );
+        let phase = LifecyclePhase::Idle;
+        let signals = ContextSignals {
+            user_prompt: "",
+            recent_tools: &[],
+            recent_files: &[],
+            lifecycle_phase: &phase,
+            turn_number: 0,
+            context_budget_tokens: 4096,
+        };
+        let ctx = feat.provide_context(&signals).expect("should return Some");
+        assert!(ctx.content.contains("MCP Resources"), "missing header");
+        assert!(ctx.content.contains("notes"), "missing resource name");
+        assert!(ctx.content.contains("file:///tmp/notes.txt"), "missing uri");
+        assert!(ctx.content.contains("fs"), "missing server name");
+    }
+
+    #[test]
+    fn provide_context_includes_prompts() {
+        let feat = make_test_feature(
+            vec![],
+            vec![],
+            vec![McpPrompt {
+                name: "fs::summarize".to_string(),
+                description: Some("Summarize a file".to_string()),
+                arguments: vec![McpPromptArgument {
+                    name: "path".to_string(),
+                    description: Some("File path".to_string()),
+                    required: true,
+                }],
+                server_name: "fs".to_string(),
+            }],
+        );
+        let phase = LifecyclePhase::Idle;
+        let signals = ContextSignals {
+            user_prompt: "",
+            recent_tools: &[],
+            recent_files: &[],
+            lifecycle_phase: &phase,
+            turn_number: 0,
+            context_budget_tokens: 4096,
+        };
+        let ctx = feat.provide_context(&signals).expect("should return Some");
+        assert!(ctx.content.contains("MCP Prompts"), "missing header");
+        assert!(ctx.content.contains("fs::summarize"), "missing prompt name");
+        assert!(ctx.content.contains("path"), "missing argument name");
+    }
+
+    #[tokio::test]
+    async fn execute_read_resource_missing_server_arg() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        let args = serde_json::json!({"uri": "file:///tmp/x"});
+        let err = feat.execute_read_resource(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("missing required argument: server"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_read_resource_missing_uri_arg() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        let args = serde_json::json!({"server": "fs"});
+        let err = feat.execute_read_resource(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("missing required argument: uri"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_get_prompt_missing_server_arg() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        let args = serde_json::json!({"name": "summarize"});
+        let err = feat.execute_get_prompt(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("missing required argument: server"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_get_prompt_missing_name_arg() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        let args = serde_json::json!({"server": "fs"});
+        let err = feat.execute_get_prompt(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("missing required argument: name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn tools_includes_mcp_read_resource_when_resources_present() {
+        let feat = make_test_feature(
+            vec![McpResource {
+                uri: "file:///data".to_string(),
+                name: "data".to_string(),
+                description: None,
+                mime_type: None,
+                server_name: "fs".to_string(),
+            }],
+            vec![],
+            vec![],
+        );
+        let defs = feat.tools();
+        let has_read_resource = defs.iter().any(|d| d.name.contains("mcp_read_resource"));
+        assert!(has_read_resource, "expected mcp_read_resource tool in: {defs:?}");
+    }
+
+    #[test]
+    fn tools_excludes_mcp_read_resource_when_no_resources() {
+        let feat = make_test_feature(vec![], vec![], vec![]);
+        let defs = feat.tools();
+        let has_read_resource = defs.iter().any(|d| d.name.contains("mcp_read_resource"));
+        assert!(!has_read_resource, "mcp_read_resource should not be present when no resources exist");
     }
 }

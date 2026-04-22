@@ -1,0 +1,27 @@
+/// Omegon profile schema.
+///
+/// The profile is the persistent user configuration that survives across
+/// sessions. Stored as JSON at `~/.omegon/profile.json` (global) or
+/// `.omegon/profile.json` (project-level).
+///
+/// This schema validates the structure; rpkl evaluates it at load time
+/// without changing the on-disk JSON format.
+module Profile
+
+/// Model reference — provider:modelId pair.
+class ModelRef {
+  provider: String(length > 0)
+  modelId: String(length > 0)
+}
+
+/// Last used model selection.
+lastUsedModel: ModelRef?
+
+/// Thinking level for reasoning-capable models.
+thinkingLevel: ("off"|"minimal"|"low"|"medium"|"high")?
+
+/// Maximum agent turns per invocation.
+maxTurns: Int(this > 0)?
+
+/// Default behavioral posture.
+defaultPosture: ("explorator"|"fabricator"|"architect"|"devastator")?

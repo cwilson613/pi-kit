@@ -1,7 +1,10 @@
----
-name: style
-description: Unified visual style guide. Defines the Alpharius color system, typography, spacing, and semantic palette shared across pi TUI theme, Excalidraw diagrams, D2 diagrams, and generated images. Use when creating any visual output to ensure consistency.
----
++++
+id = "12ce3bdc-36e5-4e22-a35c-b18d2475f5ae"
+name = "style"
+description = "Canonical design system tokens for visual output, themes, and diagrams"
+tags = []
+aliases = []
++++
 
 # Style Guide
 

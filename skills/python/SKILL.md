@@ -1,7 +1,10 @@
----
-name: python
-description: Python development guidance. Covers project setup (pyproject.toml, src/ layout), testing (pytest), linting (ruff), type checking (mypy), packaging, venv management, and CI/CD patterns. Use when creating, modifying, or debugging Python code.
----
++++
+id = "80827d91-15d1-4b0e-a5a7-bea7458c493e"
+name = "python"
+description = "Conventions, tooling, and patterns for Python development"
+tags = ["lang"]
+aliases = ["py"]
++++
 
 # Python Development Skill
 

@@ -140,13 +140,33 @@ pub fn cmd_install() -> anyhow::Result<()> {
 
 /// Extract the `description` field from YAML frontmatter.
 fn extract_description(content: &str) -> Option<&str> {
-    let body = content.strip_prefix("---\n")?;
-    let end = body.find("\n---")?;
+    // Support both YAML (---) and TOML (+++) frontmatter delimiters.
+    let (body, delimiter) = if let Some(b) = content.strip_prefix("---\n") {
+        (b, "\n---")
+    } else if let Some(b) = content.strip_prefix("+++\n") {
+        (b, "\n+++")
+    } else {
+        return None;
+    };
+    let end = body.find(delimiter)?;
     let frontmatter = &body[..end];
 
     for line in frontmatter.lines() {
+        // YAML: `description: Some text`
         if let Some(rest) = line.strip_prefix("description:") {
             return Some(rest.trim());
+        }
+        // TOML: `description = "Some text"`
+        if let Some(rest) = line.strip_prefix("description") {
+            let rest = rest.trim();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let rest = rest.trim();
+                if rest.starts_with('"') && rest.len() > 1 {
+                    if let Some(end) = rest[1..].find('"') {
+                        return Some(&rest[1..1 + end]);
+                    }
+                }
+            }
         }
     }
     None
@@ -190,6 +210,12 @@ mod tests {
     fn extract_description_returns_none_without_frontmatter() {
         let content = "# No frontmatter here";
         assert_eq!(extract_description(content), None);
+    }
+
+    #[test]
+    fn extract_description_parses_toml_frontmatter() {
+        let content = "+++\nid = \"abc\"\nname = \"test\"\ndescription = \"A TOML skill\"\n+++\n\n# Test";
+        assert_eq!(extract_description(content), Some("A TOML skill"));
     }
 
     #[test]

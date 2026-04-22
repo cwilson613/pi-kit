@@ -1418,6 +1418,8 @@ mod tests {
                 name: "filesystem".into(),
                 transport_mode: crate::status::McpTransportMode::LocalProcess,
                 tool_count: 8,
+                resource_count: 0,
+                prompt_count: 0,
                 connected: true,
                 error: None,
             }],

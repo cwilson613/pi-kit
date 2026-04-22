@@ -17,10 +17,12 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 
 ## Architecture
 
-- **Workspace root**: Cargo workspace at `core/` with crates: `omegon` (main binary), `omegon-memory`, `omegon-extension`, `omegon-traits`, `omegon-git`, `omegon-secrets`, `omegon-codescan`, `opsx-core`
-- **Build**: `cd core && cargo build --release -p omegon` — fat LTO, ~2.5min
-- **Install**: `just link` — symlinks binary to `~/.local/bin/omegon` + `om`, installs bundled skills
-- **Test**: `cargo test -p omegon` from `core/` — 1800+ tests, must all pass before committing
+- **Workspace root**: Cargo workspace at repo root. Crates at `core/crates/`: `omegon` (main binary), `omegon-memory`, `omegon-extension`, `omegon-traits`, `omegon-git`, `omegon-secrets`, `omegon-codescan`, `opsx-core`
+- **Build + install**: `just build && just link` — builds release binary, symlinks to `~/.local/bin/omegon` + `om`, installs bundled skills
+- **Test**: `just test-rust` — 1800+ tests, must all pass before committing
+- **Lint**: `just lint` — type check + clippy
+- **Single crate**: `just test-crate omegon-memory`
+- **Filter**: `just test-filter "vault_sync"`
 - **Config schemas**: `pkl/` directory — 9 Pkl schemas validating all config surfaces
 - **Skills**: `skills/*/SKILL.md` — TOML frontmatter with `name` and `description` required
 

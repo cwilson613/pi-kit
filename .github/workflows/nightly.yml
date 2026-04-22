@@ -32,7 +32,7 @@ jobs:
         id: nightly
         run: |
           set -euo pipefail
-          CURRENT=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           BASE=$(echo "$CURRENT" | sed -E 's/-(rc\.[0-9]+|nightly\.[0-9]+)$//')
           DATE=$(date -u +%Y%m%d)
           VERSION="${BASE}-nightly.${DATE}"
@@ -57,9 +57,9 @@ jobs:
           set -euo pipefail
           CURRENT='${{ steps.nightly.outputs.current }}'
           VERSION='${{ steps.nightly.outputs.version }}'
-          sed -i "s/^version = \"${CURRENT}\"/version = \"${VERSION}\"/" core/Cargo.toml
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${VERSION}\"/" Cargo.toml
           ./scripts/milestone-update.sh nightly "$VERSION"
-          cd core
+          # (workspace at root)
           cargo check -p omegon
 
       - name: Create nightly release commit and tag
@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           VERSION='${{ steps.nightly.outputs.version }}'
           TAG='${{ steps.nightly.outputs.tag }}'
-          git add core/Cargo.toml core/Cargo.lock .omegon/milestones.json
+          git add Cargo.toml Cargo.lock .omegon/milestones.json
           git commit -m "chore(release): ${VERSION}"
           git tag "$TAG"
           git push origin "refs/tags/${TAG}"

@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/omegon", "crates/omegon-extension",
-    "crates/omegon-git",
-    "crates/omegon-memory",
-    "crates/omegon-secrets",
-    "crates/omegon-traits",
-    "crates/opsx-core",
+    "core/crates/omegon", "core/crates/omegon-extension",
+    "core/crates/omegon-git",
+    "core/crates/omegon-memory",
+    "core/crates/omegon-secrets",
+    "core/crates/omegon-traits",
+    "core/crates/opsx-core",
 ]
 
 [profile.release]

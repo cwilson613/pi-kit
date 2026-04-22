@@ -16,27 +16,27 @@ default:
 bootstrap *args:
     ./scripts/bootstrap.sh {{args}}
 
-# ─── Rust (core/) ────────────────────────────────────────────
+# ─── Rust ────────────────────────────────────────────
 
 # Run all Rust tests
 test-rust:
-    cd core && timeout 300 cargo test || (echo "⚠ Tests exceeded 5 minute timeout" && exit 1)
+    timeout 300 cargo test || (echo "⚠ Tests exceeded 5 minute timeout" && exit 1)
 
 # Run tests for a specific crate
 test-crate crate:
-    cd core && cargo test -p {{crate}}
+    cargo test -p {{crate}}
 
 # Run tests matching a pattern
 test-filter pattern:
-    cd core && cargo test -p omegon '{{pattern}}'
+    cargo test -p omegon '{{pattern}}'
 
 # Type check without building (fast feedback)
 check:
-    cd core && cargo check
+    cargo check
 
 # Full check: type check + clippy
 lint:
-    cd core && cargo check && cargo clippy -- -D warnings
+    cargo check && cargo clippy -- -D warnings
 
 # ─── Benchmarks ─────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ bench prompt:
     mkdir -p .tmp/bench
     ts=$(date +%Y%m%d-%H%M%S)
     out=".tmp/bench/run-${ts}.json"
-    cd core && cargo run --release -- bench run-task \
+    cargo run --release -- bench run-task \
         --prompt "{{prompt}}" \
         --usage-json "../${out}" 2>&1 | tail -20
     echo ""
@@ -68,7 +68,7 @@ bench-baseline:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "── Building release binary ──"
-    cd core && cargo build --release && cd ..
+    cargo build --release && cd ..
     echo "── Capturing baseline ──"
     mkdir -p ai/benchmarks/runs/baseline
     python3 scripts/benchmark_matrix.py \
@@ -89,7 +89,7 @@ bench-compare:
         exit 1
     fi
     echo "── Building release binary ──"
-    cd core && cargo build --release && cd ..
+    cargo build --release && cd ..
     echo "── Running current ──"
     mkdir -p ai/benchmarks/runs/current
     python3 scripts/benchmark_matrix.py \
@@ -108,7 +108,7 @@ bench-full:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "── Building release binary ──"
-    cd core && cargo build --release && cd ..
+    cargo build --release && cd ..
     ts=$(date +%Y%m%d-%H%M%S)
     out="ai/benchmarks/runs/full-${ts}"
     mkdir -p "$out"
@@ -133,7 +133,7 @@ bench-full:
 bench-task task harness:
     #!/usr/bin/env bash
     set -euo pipefail
-    cd core && cargo build --release && cd ..
+    cargo build --release && cd ..
     ts=$(date +%Y%m%d-%H%M%S)
     out="ai/benchmarks/runs/single-${ts}"
     mkdir -p "$out"
@@ -148,7 +148,7 @@ bench-task task harness:
 
 # Build release binary
 build:
-    cd core && cargo build --release
+    cargo build --release
 
 # Link the newest built binary onto $PATH so it can be run as `omegon` system-wide.
 # Prefers release over dev-release (just rc builds release; just update builds dev-release).
@@ -163,8 +163,8 @@ link:
         echo "  Check out main (or set OMEGON_ALLOW_DETACHED_LINK=1 for an intentional tagged/worktree build)."
         exit 1
     fi
-    REL="$(pwd)/core/target/release/omegon"
-    DEV="$(pwd)/core/target/dev-release/omegon"
+    REL="$(pwd)/target/release/omegon"
+    DEV="$(pwd)/target/dev-release/omegon"
     # Pick whichever exists and is newer
     if [ -f "$REL" ] && [ -f "$DEV" ]; then
         if [ "$REL" -nt "$DEV" ]; then BINARY="$REL"; else BINARY="$DEV"; fi
@@ -225,7 +225,7 @@ install-skills:
     set -euo pipefail
     # Prefer the release binary; fall back to rsync from source if binary not yet built.
     BINARY=""
-    for candidate in "$(pwd)/core/target/release/omegon" "$(pwd)/core/target/dev-release/omegon" "$(command -v omegon 2>/dev/null || true)"; do
+    for candidate in "$(pwd)/target/release/omegon" "$(pwd)/target/dev-release/omegon" "$(command -v omegon 2>/dev/null || true)"; do
         if [ -f "$candidate" ] && [ -x "$candidate" ]; then
             BINARY="$candidate"
             break
@@ -250,11 +250,11 @@ install-skills:
 # Pull latest and build (handles Cargo.lock conflicts from version bumps)
 # Uses dev-release profile: optimized but fast link (~90% perf, ~10% link time)
 update:
-    git checkout -- core/Cargo.lock 2>/dev/null || true
+    git checkout -- Cargo.lock 2>/dev/null || true
     git checkout -- .omegon/history 2>/dev/null || true
     git pull --rebase
-    cd core && cargo build --profile dev-release -p omegon
-    @echo "Updated to $(cd core && ./target/dev-release/omegon --version 2>/dev/null || echo 'build failed')"
+    cargo build --profile dev-release -p omegon
+    @echo "Updated to $(./target/dev-release/omegon --version 2>/dev/null || echo 'build failed')"
 
 # Build and link a specific tagged RC/stable release into a durable local worktree.
 # This is the supported way to pin the installed CLI to a release tag.
@@ -282,7 +282,7 @@ link-tag tag:
 
     VERSION="${TAG#v}"
     WT="$(pwd)/.omegon/release-worktrees/$TAG"
-    BINARY="$WT/core/target/release/omegon"
+    BINARY="$WT/target/release/omegon"
 
     mkdir -p "$(pwd)/.omegon/release-worktrees"
 
@@ -294,7 +294,7 @@ link-tag tag:
         echo "  reusing existing worktree at $WT"
     fi
 
-    MANIFEST_VERSION=$(grep '^version = ' "$WT/core/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+    MANIFEST_VERSION=$(grep '^version = ' "$WT/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
     if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
         echo "✗ Tag/version mismatch:"
         echo "  tag:      $TAG"
@@ -332,11 +332,11 @@ link-tag tag:
 
 # Full release build (fat LTO, single codegen unit — slow link, smallest binary)
 build-release:
-    cd core && cargo build --release -p omegon
+    cargo build --release -p omegon
 
 # Run the built binary directly (no recompile)
 run *args:
-    core/target/dev-release/omegon {{args}}
+    target/dev-release/omegon {{args}}
 
 # ─── Release ─────────────────────────────────────────────────
 
@@ -382,7 +382,7 @@ cut-rc:
     git clone https://github.com/styrene-lab/omegon.git "$WSDIR" --quiet
 
     # 5. Write workspace.json so preflight accepts the role
-    CURRENT=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     MILESTONE=$(echo "$CURRENT" | sed 's/-rc\.[0-9]*//' | sed 's/-nightly\.[0-9]*//')
     mkdir -p "$WSDIR/.omegon/runtime"
     CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -395,7 +395,7 @@ cut-rc:
     # 7. Pull the new commit + tag back into local main
     echo "Pulling RC commit back into local main..."
     git pull origin main --quiet
-    NEW_VERSION=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    NEW_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo ""
     echo "✓ $NEW_VERSION — local main is up to date"
 
@@ -447,7 +447,7 @@ rc:
     fi
 
     # Read current version and compute target RC version, but do not mutate yet.
-    CURRENT=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo "Current version: $CURRENT"
 
     if echo "$CURRENT" | grep -q '\-rc\.'; then
@@ -499,7 +499,7 @@ rc:
         REPORT=$(mktemp)
         NODES_FILE=$(mktemp)
         printf '%s\n' "$MILESTONE_NODES" > "$NODES_FILE"
-        cd core && cargo run --quiet -p omegon -- doctor > "$REPORT"
+        cargo run --quiet -p omegon -- doctor > "$REPORT"
         cd ..
         BLOCKING_NODE=""
         while IFS= read -r node; do
@@ -521,31 +521,31 @@ rc:
 
     echo "Note: full release validation is now split out of 'just rc'. Run 'just rc-validate' before cutting if you need local test confirmation."
     echo "Rust warning gate..."
-    cd core && RUSTFLAGS="-D warnings" cargo check -p omegon -q
+    RUSTFLAGS="-D warnings" cargo check -p omegon -q
     cd ..
 
     # From here on, rollback mutated files if anything fails before commit.
     MUTATED=0
     rollback() {
         if [ "$MUTATED" = "1" ]; then
-            git checkout -- core/Cargo.toml core/Cargo.lock .omegon/milestones.json 2>/dev/null || true
+            git checkout -- Cargo.toml Cargo.lock .omegon/milestones.json 2>/dev/null || true
         fi
     }
     trap rollback ERR INT TERM
 
     # Mutate version and milestone state only after validation passes.
-    {{sedi}} "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" core/Cargo.toml
+    {{sedi}} "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
     ./scripts/milestone-update.sh rc "$NEW_VERSION"
 
     # Refresh the lockfile before commit/tag so release steps do not dirty the
     # tree after the RC is already cut.
     echo "Refreshing lockfile..."
-    cd core && cargo check -p omegon -q
+    cargo check -p omegon -q
     cd ..
     MUTATED=1
 
     # Commit and tag BEFORE final build so the binary has the right sha
-    git add core/Cargo.toml core/Cargo.lock .omegon/milestones.json
+    git add Cargo.toml Cargo.lock .omegon/milestones.json
     git commit -m "chore(release): ${NEW_VERSION}"
     git tag "v${NEW_VERSION}"
     MUTATED=0
@@ -553,11 +553,11 @@ rc:
 
     # Fast local validation build. CI produces the canonical distributable release artifacts.
     echo "Building local validation binary..."
-    cd core && cargo build --profile dev-release -p omegon 2>&1 | tail -3
+    cargo build --profile dev-release -p omegon 2>&1 | tail -3
     cd ..
 
     # Code sign the local validation binary when possible.
-    BINARY="core/target/dev-release/omegon"
+    BINARY="target/dev-release/omegon"
     if [ -n "${SMARTCARD_PIN:-}" ]; then
         SCAN=$("$HOME/.cargo/bin/rcodesign" smartcard-scan 2>/dev/null || true)
         if echo "$SCAN" | grep -q "Developer ID Application"; then
@@ -609,29 +609,29 @@ release:
     just preflight
 
     echo "Rust warning gate..."
-    cd core && RUSTFLAGS="-D warnings" cargo check -p omegon -q
+    RUSTFLAGS="-D warnings" cargo check -p omegon -q
     cd ..
 
-    CURRENT=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     NEW_VERSION=$(echo "$CURRENT" | sed 's/-rc\.[0-9]*//')
     echo "Releasing: $CURRENT → $NEW_VERSION"
 
-    {{sedi}} "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" core/Cargo.toml
+    {{sedi}} "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
     # Mark milestone as released
     ./scripts/milestone-update.sh release "$NEW_VERSION"
 
     # Refresh the lockfile before commit/tag so stable release steps do not
     # rewrite tracked files after the release commit already exists.
-    cd core && cargo check -p omegon -q
+    cargo check -p omegon -q
     cd ..
 
-    git add core/Cargo.toml core/Cargo.lock .omegon/milestones.json
+    git add Cargo.toml Cargo.lock .omegon/milestones.json
     git commit -m "chore(release): ${NEW_VERSION}"
     git tag "v${NEW_VERSION}"
 
     echo "Building..."
-    cd core && cargo build --release -p omegon 2>&1 | tail -3
+    cargo build --release -p omegon 2>&1 | tail -3
     cd ..
 
     echo ""
@@ -645,13 +645,13 @@ release:
     NEXT_RC="${NEXT_PATCH}-rc.1"
     echo ""
     echo "Opening next cycle: $NEXT_RC"
-    {{sedi}} "s/^version = \"${NEW_VERSION}\"/version = \"${NEXT_RC}\"/" core/Cargo.toml
+    {{sedi}} "s/^version = \"${NEW_VERSION}\"/version = \"${NEXT_RC}\"/" Cargo.toml
 
     # Open next milestone
     ./scripts/milestone-update.sh open "$NEXT_PATCH"
 
-    cd core && cargo check -p omegon -q 2>&1 | tail -1; cd ..
-    git add core/Cargo.toml core/Cargo.lock .omegon/milestones.json
+    cargo check -p omegon -q 2>&1 | tail -1; cd ..
+    git add Cargo.toml Cargo.lock .omegon/milestones.json
     git commit -m "chore(release): ${NEXT_RC}"
     echo "✓ Bumped to ${NEXT_RC} — branch is now open for the next cycle."
     echo ""
@@ -665,7 +665,7 @@ release:
 sign:
     #!/usr/bin/env bash
     set -euo pipefail
-    BINARY="core/target/release/omegon"
+    BINARY="target/release/omegon"
     if [ ! -f "$BINARY" ]; then
         echo "✗ No binary at $BINARY — run 'just rc' first."
         exit 1
@@ -805,7 +805,7 @@ publish:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    BINARY="core/target/release/omegon"
+    BINARY="target/release/omegon"
 
     # Read version from the built binary — not Cargo.toml.
     # Cargo.toml may already be bumped to the next RC cycle (e.g. 0.15.6-rc.1)
@@ -962,29 +962,29 @@ brew-tap:
 
 # Build for Linux x86_64 (via zig cross-linker — no containers, no QEMU)
 build-linux-amd64:
-    cd core && cargo zigbuild --release --target x86_64-unknown-linux-gnu -p omegon
-    @ls -lh core/target/x86_64-unknown-linux-gnu/release/omegon
-    @file core/target/x86_64-unknown-linux-gnu/release/omegon
+    cargo zigbuild --release --target x86_64-unknown-linux-gnu -p omegon
+    @ls -lh target/x86_64-unknown-linux-gnu/release/omegon
+    @file target/x86_64-unknown-linux-gnu/release/omegon
 
 # Build for Linux aarch64 (via zig cross-linker)
 build-linux-arm64:
-    cd core && cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
-    @ls -lh core/target/aarch64-unknown-linux-gnu/release/omegon
-    @file core/target/aarch64-unknown-linux-gnu/release/omegon
+    cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
+    @ls -lh target/aarch64-unknown-linux-gnu/release/omegon
+    @file target/aarch64-unknown-linux-gnu/release/omegon
 
 # Build all release targets (macOS native + Linux via zig)
 build-all: build build-linux-amd64 build-linux-arm64
     @echo ""
     @echo "Built:"
-    @ls -lh core/target/release/omegon
-    @ls -lh core/target/x86_64-unknown-linux-gnu/release/omegon
-    @ls -lh core/target/aarch64-unknown-linux-gnu/release/omegon
+    @ls -lh target/release/omegon
+    @ls -lh target/x86_64-unknown-linux-gnu/release/omegon
+    @ls -lh target/aarch64-unknown-linux-gnu/release/omegon
 
 # Package release archives for all targets
 package:
     #!/usr/bin/env bash
     set -euo pipefail
-    VERSION=$(grep '^version = ' core/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     DIST="dist/v${VERSION}"
     mkdir -p "$DIST"
 
@@ -1001,18 +1001,18 @@ package:
     > "${DIST}/checksums.sha256"  # truncate
 
     # macOS arm64 (native build)
-    if [ -f core/target/release/omegon ]; then
-        package_target "aarch64-apple-darwin" "core/target/release/omegon"
+    if [ -f target/release/omegon ]; then
+        package_target "aarch64-apple-darwin" "target/release/omegon"
     fi
 
     # Linux x86_64
-    if [ -f core/target/x86_64-unknown-linux-gnu/release/omegon ]; then
-        package_target "x86_64-unknown-linux-gnu" "core/target/x86_64-unknown-linux-gnu/release/omegon"
+    if [ -f target/x86_64-unknown-linux-gnu/release/omegon ]; then
+        package_target "x86_64-unknown-linux-gnu" "target/x86_64-unknown-linux-gnu/release/omegon"
     fi
 
     # Linux aarch64
-    if [ -f core/target/aarch64-unknown-linux-gnu/release/omegon ]; then
-        package_target "aarch64-unknown-linux-gnu" "core/target/aarch64-unknown-linux-gnu/release/omegon"
+    if [ -f target/aarch64-unknown-linux-gnu/release/omegon ]; then
+        package_target "aarch64-unknown-linux-gnu" "target/aarch64-unknown-linux-gnu/release/omegon"
     fi
 
     echo ""
@@ -1080,7 +1080,7 @@ finalize-nightly tag='':
 
     echo "Building macOS release binary..."
     (cd "$WORKTREE/core" && cargo build --release -p omegon)
-    BINARY="$WORKTREE/core/target/release/omegon"
+    BINARY="$WORKTREE/target/release/omegon"
 
     echo "Signing with Apple Developer ID (YubiKey)..."
     if [ -n "${SMARTCARD_PIN:-}" ]; then
@@ -1184,7 +1184,7 @@ test-count:
     #!/usr/bin/env bash
     set -e
     echo "=== Rust ==="
-    cd core && cargo test 2>&1 | grep "test result" | awk '{s+=$4; f+=$6} END {printf "  %d passed, %d failed\n", s, f}'
+    cargo test 2>&1 | grep "test result" | awk '{s+=$4; f+=$6} END {printf "  %d passed, %d failed\n", s, f}'
     echo "=== TypeScript ==="
     cd ../omegon-pi && npx tsx --test tests/*.test.ts extensions/**/*.test.ts 2>&1 | grep "^ℹ tests" | awk '{printf "  %s tests\n", $3}'
     echo "=== Armory ==="
@@ -1194,29 +1194,29 @@ test-count:
 
 # Regenerate the schema contract file after schema changes
 schema-regen:
-    cd core && cargo test -p omegon-memory schema_contract_generate -- --ignored
+    cargo test -p omegon-memory schema_contract_generate -- --ignored
 
 # Verify schema contract is current
 schema-check:
-    cd core && cargo test -p omegon-memory schema_contract_is_current
+    cargo test -p omegon-memory schema_contract_is_current
 
 # ─── Secrets ────────────────────────────────────────────────
 
 # Run secrets crate tests
 test-secrets:
-    cd core && cargo test -p omegon-secrets
+    cargo test -p omegon-secrets
 
 # ─── MCP ────────────────────────────────────────────────────
 
 # Run MCP transport tests
 test-mcp:
-    cd core && cargo test -p omegon plugins::mcp
+    cargo test -p omegon plugins::mcp
 
 # ─── Plugins ────────────────────────────────────────────────
 
 # Run all plugin tests (armory + mcp + registry)
 test-plugins:
-    cd core && cargo test -p omegon plugins
+    cargo test -p omegon plugins
 
 # ─── Design tree ────────────────────────────────────────────
 
@@ -1239,7 +1239,7 @@ tree-count:
 
 # Generate CycloneDX SBOM from Cargo.lock
 sbom:
-    cd core && cargo cyclonedx --format json --output-cdx
+    cargo cyclonedx --format json --output-cdx
     @echo "SBOM written to core/bom.json"
 
 # Verify a downloaded binary's cosign signature
@@ -1263,7 +1263,7 @@ smoke:
     # 1. Binary works — check the release binary directly, NOT cargo run.
     # cargo run recompiles against the current Cargo.toml version (which is
     # already bumped to the next RC), producing the wrong version string.
-    RELEASE_BIN="$(pwd)/core/target/release/omegon"
+    RELEASE_BIN="$(pwd)/target/release/omegon"
     if [ ! -f "$RELEASE_BIN" ]; then
         echo "  ✗ No release binary at $RELEASE_BIN — run 'just rc' or 'just release' first"
         FAIL=1
@@ -1275,7 +1275,7 @@ smoke:
     [[ "$VERSION" == *"omegon"* ]] || { echo "  ✗ Binary doesn't produce version"; FAIL=1; }
 
     # 2. Test count doesn't drop below known floor
-    TEST_COUNT=$(cd core && cargo test -p omegon 2>&1 | grep 'test result: ok' | awk '{print $4}')
+    TEST_COUNT=$(cargo test -p omegon 2>&1 | grep 'test result: ok' | awk '{print $4}')
     echo "  Tests: $TEST_COUNT"
     if [ "$TEST_COUNT" -lt 850 ]; then
         echo "  ✗ Test count ($TEST_COUNT) below safety floor (850)"

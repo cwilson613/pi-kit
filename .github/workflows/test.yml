@@ -17,18 +17,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build omegon binary
-        run: cd core && cargo build -p omegon
+        run: cargo build -p omegon
 
       - name: Run cargo tests
-        run: cd core && cargo test -p omegon
+        run: cargo test -p omegon
 
       - name: Extension install integration tests
-        run: cd core && cargo test -p omegon --test extension_install_blackbox -- --test-threads=1
+        run: cargo test -p omegon --test extension_install_blackbox -- --test-threads=1
 
       - name: Smoke reference daemon launcher
         run: |
           python3 scripts/launch_omegon_daemon.py \
-            --binary core/target/debug/omegon \
+            --binary target/debug/omegon \
             --cwd "$PWD" \
             --model anthropic:claude-sonnet-4-6 \
             --control-port 7856 \

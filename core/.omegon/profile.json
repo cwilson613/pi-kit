@@ -3,6 +3,6 @@
     "provider": "anthropic",
     "modelId": "claude-sonnet-4-6"
   },
-  "thinkingLevel": "low",
+  "thinkingLevel": "medium",
   "maxTurns": 50
 }

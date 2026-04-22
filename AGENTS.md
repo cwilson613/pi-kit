@@ -1,22 +1,72 @@
++++
+id = "407c3c50-9350-4476-8084-fdd8f3f639da"
+tags = []
+aliases = []
+imported_reference = false
+
+[publication]
+enabled = false
+visibility = "private"
++++
+
 # Omegon Project Directives
 
-> Global directives (attribution, completion standards, memory sync, branch hygiene) are deployed automatically to `~/.config/omegon/AGENTS.md` by the defaults extension on first session start. They apply to all projects. To customize, edit that file — but remove the `<!-- managed by Omegon -->` marker or your changes will be overwritten on update.
+## What this is
 
-## Contributing
+Omegon is a Rust-native agent loop and lifecycle engine. You are working on the tool itself — the codebase you're editing is the same tool that's running you. Be precise.
 
-This repo follows trunk-based development on `main`. The full policy is in `CONTRIBUTING.md` — read it with the `read` tool if you need branch naming conventions, the memory sync architecture details, or scaling guidance.
+## Architecture
 
-Key points for working on Omegon itself:
+- **Workspace root**: Cargo workspace at `core/` with crates: `omegon` (main binary), `omegon-memory`, `omegon-extension`, `omegon-traits`, `omegon-git`, `omegon-secrets`, `omegon-codescan`, `opsx-core`
+- **Build**: `cd core && cargo build --release -p omegon` — fat LTO, ~2.5min
+- **Install**: `just link` — symlinks binary to `~/.local/bin/omegon` + `om`, installs bundled skills
+- **Test**: `cargo test -p omegon` from `core/` — 1800+ tests, must all pass before committing
+- **Config schemas**: `pkl/` directory — 9 Pkl schemas validating all config surfaces
+- **Skills**: `skills/*/SKILL.md` — TOML frontmatter with `name` and `description` required
 
-- **Direct commits to `main`** for single-file fixes, typos, config tweaks
-- **Feature branches** (`feature/<name>`, `refactor/<name>`) for multi-file or multi-session work
-- **Conventional commits** required — see `skills/git/SKILL.md` for the spec
-- The `.gitattributes` in this repo declares `merge=union` for `ai/memory/facts.jsonl`
-- The `ai/.gitignore` excludes `memory/*.db` files — only `facts.jsonl` is tracked
-- **Type checking**: `npx tsc --noEmit` must pass before committing TypeScript changes. Run `npm run typecheck` or `npm run check` (typecheck + tests).
-- **Release flow**: `just rc` → `just link` → `just sign` → `just publish`. See `CONTRIBUTING.md` § Release Process for the full lifecycle. Milestones are tracked automatically in `.omegon/milestones.json`.
-- **Release preflight is mandatory** before `just rc` / `just release`:
-  - confirm `git branch --show-current` is `main` (never cut releases from detached HEAD)
-  - confirm the working tree is clean
-  - confirm release-facing surfaces are reconciled when touched (`CHANGELOG.md`, site/docs install/version examples, milestones)
-  - confirm any active OpenSpec change is either archived or explicitly accepted as non-blocking for the release
+## Key conventions
+
+- **Conventional commits** — `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`. See `skills/git/SKILL.md`.
+- **Direct commits to `main`** for focused changes. Feature branches for multi-session work.
+- **Read before editing** — `Edit` requires exact text matches. Always read the file first.
+- **Run tests after changes** — `cargo test -p omegon` from `core/`. Don't commit with failures.
+- **Build and install after changes** — `just link` from the repo root to install over itself.
+- **CHANGELOG.md** — update the `[Unreleased]` section when landing features or fixes.
+
+## Provider system
+
+- Providers are in `providers.rs`. Each has a client struct implementing `LlmBridge`.
+- Tool schemas are normalized per-provider via `tool_schema.rs` (Full/OpenAI/Gemini dialects).
+- OAuth credentials: Anthropic and OpenAI client IDs are public (shipped by their CLIs). Google Gemini CLI credentials are public per Google's installed-app policy.
+- The `CLAUDE_CODE_UA` version string must stay current — nightly CI checks via `scripts/check_upstream_versions.py`.
+
+## TUI
+
+- `tui/mod.rs` is the main event loop (~8000 lines). Segments, widgets, footer, instruments are separate modules.
+- Default mode is `Slim` — dashboard, instruments, and segment metadata hidden. `/ui full` reveals them.
+- Table rendering uses `markdown_display_width` for column measurement (strips bold/code markers before padding).
+
+## Codex integration
+
+- Auto-detected when `.codex/config.toml` exists at project root. Config: `.codex/omegon-integration.toml` or `.omegon/codex.toml`.
+- Memory facts materialize to `{vault}/ai/memory/` on session end. Design nodes export to `{vault}/design/`.
+- Facts referenced by vault notes get reinforced (decay timer reset) on sync.
+
+## MCP
+
+- MCP servers configured via `.omegon/mcp.toml` or plugin manifests. Resources and prompts discovered at connect time.
+- Context injection capped at 10 items per category with TTL=50.
+
+## k8s / containers
+
+- `omegon run task.toml` — bounded headless tasks with structured JSON output. Exit codes: 0=done, 1=error, 2=exhausted, 3=timeout.
+- `omegon serve` — long-lived daemon with WebSocket/IPC control plane, health probes at `/api/healthz` and `/api/readyz`.
+- Workload matrix: `docs/design/k8s-workload-matrix.md` — tracks implementation status.
+
+## Things to be careful with
+
+- **Never fabricate URLs, client IDs, or API endpoints.** Research real values from provider documentation or source code. The Antigravity provider had fabricated credentials that wasted significant time.
+- **`Settings::provider()` returns `String`** (not `&str`). It uses `infer_provider_id` — no hardcoded catch-all.
+- **Skill frontmatter is TOML** (`+++` delimiters), not YAML. `extract_description` handles both.
+- **Extension `execute_tool` RPC** — extensions must implement this handler or the call returns a graceful error.
+- **Memory/lifecycle features** have optional `codex_vault_path` — set via `with_codex_vault()` in `setup.rs`.

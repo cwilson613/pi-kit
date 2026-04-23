@@ -25,7 +25,7 @@
         rustToolchain = pkgs.rust-bin.stable.latest.default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        workspaceVersion = "0.15.26";
+        workspaceVersion = "0.16.0-rc.1";
 
         commitSha =
           if self ? shortRev then self.shortRev

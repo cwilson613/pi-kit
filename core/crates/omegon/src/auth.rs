@@ -745,25 +745,21 @@ fn generate_pkce() -> (String, String) {
 
 // ─── Headless detection ────────────────────────────────────────────────────
 
-/// Create a dual-stack TCP listener that accepts both IPv4 and IPv6 connections.
-/// This is required because Firefox on NixOS resolves `localhost` to `::1` only
-/// and hangs without falling back to `127.0.0.1`.
-fn bind_dual_stack(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
-    use socket2::{Domain, Protocol, Socket, Type};
-
-    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
-
-    // Allow dual-stack: accept IPv4-mapped addresses on this IPv6 socket.
-    // This makes [::]:port accept connections to both ::1 and 127.0.0.1.
-    socket.set_only_v6(false)?;
-    socket.set_reuse_address(true)?;
-    socket.set_nonblocking(true)?;
-
-    let addr: std::net::SocketAddr = format!("[::]:{port}").parse()?;
-    socket.bind(&addr.into())?;
-    socket.listen(1)?;
-
-    let std_listener: std::net::TcpListener = socket.into();
+/// Create an OAuth callback TCP listener.
+///
+/// Binds `127.0.0.1` (IPv4). The redirect_uri in all OAuth flows uses
+/// `http://localhost:<port>/callback` — browsers resolve `localhost`
+/// to 127.0.0.1 or ::1 depending on the system. We use a std TcpListener
+/// in blocking mode, converted to tokio, to avoid any async accept issues.
+///
+/// On systems where localhost resolves to ::1 only (NixOS), the operator
+/// may need to ensure /etc/hosts maps localhost to 127.0.0.1 as well,
+/// or use `OMEGON_HEADLESS=1` for the paste-back flow.
+fn bind_callback_listener(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
+    // Try 127.0.0.1 first (works everywhere), then [::1] as fallback
+    let std_listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+        .or_else(|_| std::net::TcpListener::bind(format!("[::1]:{port}")))?;
+    std_listener.set_nonblocking(true)?;
     Ok(tokio::net::TcpListener::from_std(std_listener)?)
 }
 
@@ -877,7 +873,7 @@ pub async fn login_anthropic_with_callbacks(
         // Firefox on NixOS resolves localhost to ::1 and hangs without
         // fallback to 127.0.0.1. A dual-stack [::] socket with
         // IPV6_V6ONLY=false accepts connections on both protocols.
-        let listener = bind_dual_stack(CALLBACK_PORT)?;
+        let listener = bind_callback_listener(CALLBACK_PORT)?;
         tracing::debug!(port = CALLBACK_PORT, "OAuth callback server listening (dual-stack)");
 
         progress("Opening browser for Anthropic login…");
@@ -1022,7 +1018,7 @@ pub async fn login_openai_with_callbacks(
     } else {
         // ── Normal browser flow ────────────────────────────────────────
         let listener =
-            bind_dual_stack(OPENAI_CALLBACK_PORT)?;
+            bind_callback_listener(OPENAI_CALLBACK_PORT)?;
         tracing::debug!(
             port = OPENAI_CALLBACK_PORT,
             "OpenAI OAuth callback server listening"
@@ -1227,7 +1223,7 @@ pub async fn login_antigravity_with_callbacks(
             "Waiting for callback on localhost:{ANTIGRAVITY_CALLBACK_PORT}…"
         ));
         let listener =
-            bind_dual_stack(ANTIGRAVITY_CALLBACK_PORT)?;
+            bind_callback_listener(ANTIGRAVITY_CALLBACK_PORT)?;
         tracing::info!(
             port = ANTIGRAVITY_CALLBACK_PORT,
             "listening for Antigravity OAuth callback"

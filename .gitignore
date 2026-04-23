@@ -48,3 +48,5 @@ dist/
 *.snap.new
 .omegon/agent-journal.md
 .omegon/profile.json
+.tmp/
+target/

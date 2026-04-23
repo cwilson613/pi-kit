@@ -40,7 +40,10 @@
             || builtins.match ".*\\.md$" path != null
             || builtins.match ".*\\.toml$" path != null
             || builtins.match ".*\\.json$" path != null
-            || builtins.match ".*\\.pkl$" path != null;
+            || builtins.match ".*\\.pkl$" path != null
+            || builtins.match ".*\\.html$" path != null
+            || builtins.match ".*\\.js$" path != null
+            || builtins.match ".*\\.tar\\.gz$" path != null;
         };
 
         commonArgs = {

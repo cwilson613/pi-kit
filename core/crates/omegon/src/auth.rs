@@ -851,14 +851,16 @@ pub async fn login_anthropic_with_callbacks(
         parse_callback_url(&pasted)?
     } else {
         // ── Normal browser flow ────────────────────────────────────────
-        // Bind IPv6 [::] which accepts both IPv4 and IPv6 on dual-stack systems.
-        // NixOS resolves `localhost` to ::1 only — 127.0.0.1 won't receive the callback.
-        // Fall back to 0.0.0.0 if IPv6 bind fails (rare, non-dual-stack systems).
-        let listener = match tokio::net::TcpListener::bind(format!("[::]:{CALLBACK_PORT}")).await {
-            Ok(l) => l,
-            Err(_) => tokio::net::TcpListener::bind(format!("0.0.0.0:{CALLBACK_PORT}")).await?,
-        };
-        tracing::debug!(port = CALLBACK_PORT, "OAuth callback server listening");
+        // Bind both IPv4 and IPv6 explicitly. Firefox on NixOS tries ::1
+        // first for localhost and hangs if it gets connection refused —
+        // it doesn't fall back to 127.0.0.1.
+        let v4 = tokio::net::TcpListener::bind(format!("127.0.0.1:{CALLBACK_PORT}")).await?;
+        let v6 = tokio::net::TcpListener::bind(format!("[::1]:{CALLBACK_PORT}")).await.ok();
+        tracing::debug!(
+            port = CALLBACK_PORT,
+            ipv6 = v6.is_some(),
+            "OAuth callback server listening"
+        );
 
         progress("Opening browser for Anthropic login…");
         let browser_ok = open::that(&auth_url).is_ok();
@@ -866,9 +868,19 @@ pub async fn login_anthropic_with_callbacks(
             progress(&format!("Could not open browser. Visit:\n  {auth_url}"));
         }
 
+        // Accept from whichever listener gets the connection first
         let (mut stream, _addr) = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            listener.accept(),
+            async {
+                if let Some(v6_listener) = v6 {
+                    tokio::select! {
+                        result = v4.accept() => result,
+                        result = v6_listener.accept() => result,
+                    }
+                } else {
+                    v4.accept().await
+                }
+            },
         )
         .await
         .map_err(|_| {

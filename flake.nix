@@ -48,15 +48,15 @@
           pname = "omegon";
           strictDeps = true;
           buildInputs = with pkgs; [
-            openssl
+            openssl.dev
             sqlite
-            pkg-config
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.darwin.apple_sdk.frameworks.Security
             pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
           ];
           nativeBuildInputs = with pkgs; [
             pkg-config
+            perl       # required by openssl-sys build script
             cmake      # for libgit2-sys
           ];
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";

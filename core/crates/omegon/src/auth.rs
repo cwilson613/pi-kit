@@ -745,6 +745,28 @@ fn generate_pkce() -> (String, String) {
 
 // ─── Headless detection ────────────────────────────────────────────────────
 
+/// Create a dual-stack TCP listener that accepts both IPv4 and IPv6 connections.
+/// This is required because Firefox on NixOS resolves `localhost` to `::1` only
+/// and hangs without falling back to `127.0.0.1`.
+fn bind_dual_stack(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+
+    // Allow dual-stack: accept IPv4-mapped addresses on this IPv6 socket.
+    // This makes [::]:port accept connections to both ::1 and 127.0.0.1.
+    socket.set_only_v6(false)?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+
+    let addr: std::net::SocketAddr = format!("[::]:{port}").parse()?;
+    socket.bind(&addr.into())?;
+    socket.listen(1)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    Ok(tokio::net::TcpListener::from_std(std_listener)?)
+}
+
 /// Detect headless environments where a browser cannot be opened locally.
 /// Returns true for SSH sessions and Linux systems without a display server.
 pub fn is_headless() -> bool {
@@ -851,16 +873,12 @@ pub async fn login_anthropic_with_callbacks(
         parse_callback_url(&pasted)?
     } else {
         // ── Normal browser flow ────────────────────────────────────────
-        // Bind both IPv4 and IPv6 explicitly. Firefox on NixOS tries ::1
-        // first for localhost and hangs if it gets connection refused —
-        // it doesn't fall back to 127.0.0.1.
-        let v4 = tokio::net::TcpListener::bind(format!("127.0.0.1:{CALLBACK_PORT}")).await?;
-        let v6 = tokio::net::TcpListener::bind(format!("[::1]:{CALLBACK_PORT}")).await.ok();
-        tracing::debug!(
-            port = CALLBACK_PORT,
-            ipv6 = v6.is_some(),
-            "OAuth callback server listening"
-        );
+        // Create a dual-stack IPv6 socket that accepts both IPv4 and IPv6.
+        // Firefox on NixOS resolves localhost to ::1 and hangs without
+        // fallback to 127.0.0.1. A dual-stack [::] socket with
+        // IPV6_V6ONLY=false accepts connections on both protocols.
+        let listener = bind_dual_stack(CALLBACK_PORT)?;
+        tracing::debug!(port = CALLBACK_PORT, "OAuth callback server listening (dual-stack)");
 
         progress("Opening browser for Anthropic login…");
         let browser_ok = open::that(&auth_url).is_ok();
@@ -868,19 +886,9 @@ pub async fn login_anthropic_with_callbacks(
             progress(&format!("Could not open browser. Visit:\n  {auth_url}"));
         }
 
-        // Accept from whichever listener gets the connection first
         let (mut stream, _addr) = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            async {
-                if let Some(v6_listener) = v6 {
-                    tokio::select! {
-                        result = v4.accept() => result,
-                        result = v6_listener.accept() => result,
-                    }
-                } else {
-                    v4.accept().await
-                }
-            },
+            listener.accept(),
         )
         .await
         .map_err(|_| {
@@ -1014,10 +1022,7 @@ pub async fn login_openai_with_callbacks(
     } else {
         // ── Normal browser flow ────────────────────────────────────────
         let listener =
-            match tokio::net::TcpListener::bind(format!("[::]:{OPENAI_CALLBACK_PORT}")).await {
-                Ok(l) => l,
-                Err(_) => tokio::net::TcpListener::bind(format!("0.0.0.0:{OPENAI_CALLBACK_PORT}")).await?,
-            };
+            bind_dual_stack(OPENAI_CALLBACK_PORT)?;
         tracing::debug!(
             port = OPENAI_CALLBACK_PORT,
             "OpenAI OAuth callback server listening"
@@ -1222,10 +1227,7 @@ pub async fn login_antigravity_with_callbacks(
             "Waiting for callback on localhost:{ANTIGRAVITY_CALLBACK_PORT}…"
         ));
         let listener =
-            match tokio::net::TcpListener::bind(format!("[::]:{ANTIGRAVITY_CALLBACK_PORT}")).await {
-                Ok(l) => l,
-                Err(_) => tokio::net::TcpListener::bind(format!("0.0.0.0:{ANTIGRAVITY_CALLBACK_PORT}")).await?,
-            };
+            bind_dual_stack(ANTIGRAVITY_CALLBACK_PORT)?;
         tracing::info!(
             port = ANTIGRAVITY_CALLBACK_PORT,
             "listening for Antigravity OAuth callback"

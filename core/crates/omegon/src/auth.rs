@@ -877,10 +877,15 @@ pub async fn login_anthropic_with_callbacks(
         tracing::debug!(port = CALLBACK_PORT, "OAuth callback server listening (dual-stack)");
 
         progress("Opening browser for Anthropic login…");
-        let browser_ok = open::that(&auth_url).is_ok();
-        if !browser_ok {
-            progress(&format!("Could not open browser. Visit:\n  {auth_url}"));
-        }
+        // Spawn browser open in a background thread — xdg-open on some Linux
+        // desktops (NixOS/Cosmic) blocks until the browser exits, which would
+        // prevent us from reaching accept() for the callback.
+        let auth_url_for_browser = auth_url.clone();
+        std::thread::spawn(move || {
+            let _ = open::that(&auth_url_for_browser);
+        });
+        // Give the browser a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let (mut stream, _addr) = tokio::time::timeout(
             std::time::Duration::from_secs(300),
@@ -1025,10 +1030,11 @@ pub async fn login_openai_with_callbacks(
         );
 
         progress("Opening browser for OpenAI login…");
-        let browser_ok = open::that(&auth_url).is_ok();
-        if !browser_ok {
-            progress(&format!("Could not open browser. Visit:\n  {auth_url}"));
-        }
+        let auth_url_for_browser = auth_url.clone();
+        std::thread::spawn(move || {
+            let _ = open::that(&auth_url_for_browser);
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let (mut stream, _addr) = tokio::time::timeout(
             std::time::Duration::from_secs(300),
@@ -1218,7 +1224,10 @@ pub async fn login_antigravity_with_callbacks(
         parse_callback_at_path(&raw, "/oauth-callback")?
     } else {
         progress("Opening browser for Google Antigravity authentication…");
-        let _ = open::that(&auth_url);
+        let auth_url_for_browser = auth_url.clone();
+        std::thread::spawn(move || {
+            let _ = open::that(&auth_url_for_browser);
+        });
         progress(&format!(
             "Waiting for callback on localhost:{ANTIGRAVITY_CALLBACK_PORT}…"
         ));

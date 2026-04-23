@@ -260,14 +260,15 @@
 
   <div class="install-section">
     <div class="install-label">Install</div>
-    <div class="install-cmd" onclick="copyInstall(this)">
+    <div class="install-cmd" onclick="copyInstall(this, 'curl -fsSL https://omegon.styrene.dev/install.sh | sh')">
       <code>curl -fsSL https://omegon.styrene.dev/install.sh | sh</code>
       <span class="copied">copied</span>
       <button class="copy-btn" title="Copy to clipboard">⎘</button>
     </div>
-    <div class="install-note">
-      Or pin a version: <code>VERSION=v<span id="latest-ver">…</span> curl -fsSL … | sh</code><br>
-      Or install to home: <code>INSTALL_DIR=~/.local/bin curl -fsSL … | sh</code>
+    <div class="install-note" style="margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 16px;">
+      <span onclick="copyInstall(this, 'brew install styrene-lab/tap/omegon')" style="cursor:pointer">Homebrew: <code>brew install styrene-lab/tap/omegon</code></span>
+      <span onclick="copyInstall(this, 'nix profile install github:styrene-lab/omegon')" style="cursor:pointer">Nix: <code>nix profile install github:styrene-lab/omegon</code></span>
+      <span>Docker: <code>docker run ghcr.io/styrene-labs/omegon</code></span>
     </div>
   </div>
 
@@ -275,32 +276,42 @@
     <div class="feature">
       <div class="feature-icon">▪</div>
       <h3>Single Binary</h3>
-      <p>12MB native binary. No Node.js, no npm, no Python. Just download and run.</p>
+      <p>Native Rust binary. No Node.js, no npm, no Python. Install and run in seconds. macOS, Linux, containers.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">◉</div>
-      <h3><a href="/docs/three-axis-model">Three-Axis Routing</a></h3>
-      <p>Capability tier × thinking level × context class. Provider-aware model selection with downgrade safeguards.</p>
-    </div>
-    <div class="feature">
-      <div class="feature-icon">◈</div>
-      <h3><a href="/docs/design-tree">Design Tree</a></h3>
-      <p>185-node knowledge graph. Track design decisions, dependencies, and implementation status.</p>
+      <h3>Multi-Provider</h3>
+      <p>Anthropic, OpenAI, Google Gemini, Ollama, OpenRouter, Groq, xAI, Mistral. OAuth login or API key. Switch mid-session.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">⟳</div>
-      <h3><a href="/docs/cleave">Parallel Execution</a></h3>
-      <p>Cleave tasks into parallel git worktree children. Automatic merge and conflict detection.</p>
-    </div>
-    <div class="feature">
-      <div class="feature-icon">◐</div>
-      <h3>Live Dashboard</h3>
-      <p>Terminal panel + web dashboard. Force-directed design tree graph. Real-time WebSocket protocol.</p>
+      <h3><a href="/docs/cleave">Parallel Agents</a></h3>
+      <p>Cleave tasks into parallel workers in git worktrees. Delegate to local models. Automatic merge and conflict detection.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">◎</div>
       <h3><a href="/docs/memory">Project Memory</a></h3>
-      <p>Persistent facts across sessions. Semantic recall. Architecture, decisions, constraints tracked automatically.</p>
+      <p>Persistent facts with decay. Semantic + full-text recall. Syncs bidirectionally with Codex vaults.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">◈</div>
+      <h3>MCP & Extensions</h3>
+      <p>Connect MCP servers for tools, resources, and prompts. Native extension system with RPC, widgets, and vox bridges.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">⚙</div>
+      <h3>k8s & Automation</h3>
+      <p><code>omegon run task.toml</code> for bounded Jobs. <code>omegon serve</code> for Deployments with health probes and WebSocket control.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">◐</div>
+      <h3>Design Lifecycle</h3>
+      <p>9-phase FSM for design decisions. OpenSpec for spec-driven development. Exports to Codex knowledge graphs.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">⌘</div>
+      <h3>Terminal TUI</h3>
+      <p>Slim mode for fast coding. Full mode with dashboard, instruments, and telemetry. Syntax highlighting. Focus mode for reading.</p>
     </div>
   </div>
 
@@ -309,23 +320,23 @@
   </div>
 
   <div class="platforms">
-    <h2>Platforms</h2>
+    <h2>Platforms & Distribution</h2>
     <div class="platform-grid">
       <div class="platform">
         <span class="platform-name">macOS</span>
-        <span class="platform-arch">arm64 (Apple Silicon)</span>
-      </div>
-      <div class="platform">
-        <span class="platform-name">macOS</span>
-        <span class="platform-arch">x86_64 (Intel)</span>
+        <span class="platform-arch">arm64 · x86_64 · Homebrew · signed + notarized</span>
       </div>
       <div class="platform">
         <span class="platform-name">Linux</span>
-        <span class="platform-arch">x86_64</span>
+        <span class="platform-arch">x86_64 · aarch64 · NixOS · AppImage</span>
       </div>
       <div class="platform">
-        <span class="platform-name">Linux</span>
-        <span class="platform-arch">arm64 / aarch64</span>
+        <span class="platform-name">Containers</span>
+        <span class="platform-arch">OCI images · k8s Jobs · Deployments · DaemonSets</span>
+      </div>
+      <div class="platform">
+        <span class="platform-name">Editors</span>
+        <span class="platform-arch">VS Code · Zed · Emacs · JetBrains (via ACP)</span>
       </div>
     </div>
   </div>
@@ -344,12 +355,11 @@
 </footer>
 
 <script>
-function copyInstall(el) {
-  const text = 'curl -fsSL https://omegon.styrene.dev/install.sh | sh';
+function copyInstall(el, text) {
+  if (!text) text = 'curl -fsSL https://omegon.styrene.dev/install.sh | sh';
   navigator.clipboard.writeText(text).then(() => {
-    const badge = el.querySelector('.copied');
-    badge.classList.add('show');
-    setTimeout(() => badge.classList.remove('show'), 1500);
+    const badge = el.querySelector('.copied') || el.closest('.install-section')?.querySelector('.copied');
+    if (badge) { badge.classList.add('show'); setTimeout(() => badge.classList.remove('show'), 1500); }
   }).catch(() => {});
 }
 // Fetch latest version from GitHub API and update the pinned version example

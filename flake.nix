@@ -29,20 +29,22 @@
         pkgs = import nixpkgs { inherit system; };
         craneLib = crane.mkLib pkgs;
 
-        workspaceVersion = "0.15.24";
+        workspaceVersion = "0.15.26";
 
         commitSha =
           if self ? shortRev then self.shortRev
           else if self ? dirtyShortRev then self.dirtyShortRev
           else "unknown";
 
-        # Crane source filtering for the core workspace
+        # Crane source filtering — workspace root with crates under core/
         src = pkgs.lib.cleanSourceWith {
-          src = craneLib.path ./core;
+          src = craneLib.path ./.;
           filter = path: type:
             (craneLib.filterCargoSources path type)
             || builtins.match ".*\\.md$" path != null
-            || builtins.match ".*\\.toml$" path != null;
+            || builtins.match ".*\\.toml$" path != null
+            || builtins.match ".*\\.json$" path != null
+            || builtins.match ".*\\.pkl$" path != null;
         };
 
         commonArgs = {

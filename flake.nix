@@ -70,6 +70,10 @@
         omegon = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           cargoExtraArgs = "-p omegon";
+          # Tests run in CI, not during nix build — the sandbox lacks
+          # network access, home directories, and git repos that many
+          # tests require.
+          doCheck = false;
         });
 
         # Toolset profiles for container images

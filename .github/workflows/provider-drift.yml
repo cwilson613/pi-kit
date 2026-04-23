@@ -42,7 +42,7 @@ jobs:
           set -o pipefail
           mkdir -p .tmp/provider-drift
           # (workspace at root)
-          cargo test -p omegon --test live_upstream_smoke -- --nocapture 2>&1 | tee ../.tmp/provider-drift/live-upstream-smoke.log
+          cargo test -p omegon --test live_upstream_smoke -- --nocapture 2>&1 | tee .tmp/provider-drift/live-upstream-smoke.log
 
       - name: Summarize provider drift results
         id: summary

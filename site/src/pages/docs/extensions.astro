@@ -1,0 +1,89 @@
+---
+import Docs from "../../layouts/Docs.astro";
+---
+<Docs title="Extensions" description="Extend Omegon with community and first-party extensions.">
+  <h1>Extensions</h1>
+  <p>
+    Extensions add tools, widgets, and integrations to Omegon without modifying
+    the core binary. They run as isolated processes, communicate via JSON-RPC 2.0
+    over stdio, and crash-safe by design &mdash; an extension failure never takes
+    down Omegon.
+  </p>
+
+  <h2>Install an extension</h2>
+  <pre><code>omegon extension install &lt;git-url-or-local-path&gt;</code></pre>
+  <p>
+    Git URLs are cloned and built automatically (requires a Rust toolchain).
+    Local paths are symlinked for development.
+  </p>
+
+  <h2>Available Extensions</h2>
+
+  <h3>Vox &mdash; Communication Connector</h3>
+  <p>
+    Unified interface for email, Signal, Slack, Discord, and more. Inbound
+    messages arrive as agent prompts; replies route back to the originating
+    channel.
+  </p>
+  <pre><code>omegon extension install https://github.com/styrene-lab/vox.git</code></pre>
+  <table>
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>vox_reply</code></td><td>Reply to an inbound message</td></tr>
+      <tr><td><code>vox_send</code></td><td>Send a new outbound message</td></tr>
+      <tr><td><code>vox_channels</code></td><td>List channels and connection status</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Connectors: Discord, Slack, Signal, Email (IMAP/SMTP), LXMF (experimental).
+    <br/>
+    <a href="https://github.com/styrene-lab/vox">GitHub &rarr;</a>
+  </p>
+
+  <h3>Scry &mdash; Local Image Generation</h3>
+  <p>
+    Text-to-image, image-to-image, and upscaling using local diffusion models
+    (FLUX, SDXL, SD1.5). All inference runs on-device via ComfyUI &mdash; no
+    external API calls.
+  </p>
+  <pre><code>omegon extension install https://github.com/styrene-lab/scry.git</code></pre>
+  <table>
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>generate</code></td><td>Text-to-image generation</td></tr>
+      <tr><td><code>refine</code></td><td>Image-to-image transformation</td></tr>
+      <tr><td><code>upscale</code></td><td>Super-resolution (2x/4x)</td></tr>
+      <tr><td><code>list_models</code></td><td>Discover locally available models</td></tr>
+      <tr><td><code>search_models</code></td><td>Search HuggingFace Hub / CivitAI</td></tr>
+      <tr><td><code>download_model</code></td><td>Download a model</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Widgets: Gallery, Preview, Models.
+    <br/>
+    <a href="https://github.com/styrene-lab/scry">GitHub &rarr;</a>
+  </p>
+
+  <h2>Managing extensions</h2>
+  <pre><code># List installed extensions
+omegon extension list
+
+# Update all extensions
+omegon extension update
+
+# Remove an extension
+omegon extension remove vox</code></pre>
+
+  <h2>Building your own</h2>
+  <p>
+    Extensions are Rust binaries built against the <code>omegon-extension</code>
+    SDK crate. Scaffold a new one with:
+  </p>
+  <pre><code>omegon extension new my-extension</code></pre>
+  <p>
+    See the <a href="https://github.com/styrene-lab/omegon/blob/main/EXTENSION_SDK.md">Extension SDK guide</a>
+    for the full walkthrough, or
+    <a href="https://github.com/styrene-lab/omegon/blob/main/EXTENSIONS.md">EXTENSIONS.md</a>
+    for architecture details.
+  </p>
+</Docs>

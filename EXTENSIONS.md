@@ -288,6 +288,30 @@ impl Extension for TimelineExt {
 
 See [scribe-rpc](https://github.com/styrene-lab/scribe-rpc) for the full implementation.
 
+## Published Extensions
+
+First-party extensions available for immediate install:
+
+### Vox — Communication Connector
+
+Unified interface for email, Signal, Slack, Discord, and more. Inbound messages arrive as agent prompts; replies route back to the originating channel.
+
+```sh
+omegon extension install https://github.com/styrene-lab/vox.git
+```
+
+Tools: `vox_reply`, `vox_send`, `vox_channels` — [GitHub](https://github.com/styrene-lab/vox)
+
+### Scry — Local Image Generation
+
+Text-to-image, image-to-image, and upscaling using local diffusion models (FLUX, SDXL, SD1.5). All inference runs on-device via ComfyUI.
+
+```sh
+omegon extension install https://github.com/styrene-lab/scry.git
+```
+
+Tools: `generate`, `refine`, `upscale`, `list_models`, `search_models`, `download_model` — [GitHub](https://github.com/styrene-lab/scry)
+
 ## Manifest Reference
 
 Required sections in `manifest.toml`:
@@ -386,6 +410,8 @@ All SDK changes must maintain backward compatibility or clearly document breakin
 - **SDK Quick Start**: [EXTENSION_SDK.md](./EXTENSION_SDK.md)
 - **Advanced Patterns**: [EXTENSION_INTEGRATION.md](./EXTENSION_INTEGRATION.md)
 - **Example Implementation**: [scribe-rpc](https://github.com/styrene-lab/scribe-rpc)
+- **Vox Extension**: [styrene-lab/vox](https://github.com/styrene-lab/vox) — communication connector
+- **Scry Extension**: [styrene-lab/scry](https://github.com/styrene-lab/scry) — local image generation
 - **API Documentation**: `cargo doc -p omegon-extension --open`
 - **Issues & Discussions**: [GitHub Issues](https://github.com/styrene-lab/omegon/issues)
 

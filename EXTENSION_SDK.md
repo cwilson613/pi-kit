@@ -523,9 +523,13 @@ At install time, Omegon checks:
 
 ## Examples
 
-### Python Analysis Extension
+### Published Extensions
 
-See `https://github.com/styrene-lab/scribe-rpc` for a complete example using the Omegon Extension SDK.
+These first-party extensions serve as real-world references:
+
+- **[Vox](https://github.com/styrene-lab/vox)** — Communication connector (Discord, Slack, Signal, email). Demonstrates vox bridge polling, secrets management, and multi-connector architecture.
+- **[Scry](https://github.com/styrene-lab/scry)** — Local image generation (FLUX, SDXL, SD1.5). Demonstrates widget declarations (Gallery, Preview, Models) and ComfyUI integration.
+- **[scribe-rpc](https://github.com/styrene-lab/scribe-rpc)** — Minimal example using the Extension SDK.
 
 ## Support
 

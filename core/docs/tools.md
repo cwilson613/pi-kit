@@ -66,3 +66,47 @@ Shortcut aliases: `opus`, `sonnet`, `haiku`, `gloriana`, `victory`, `retribution
 | Tool | Description |
 |------|-------------|
 | `manage_tools` | List, enable, or disable tools for context window management. |
+
+## MCP Resources & Prompts
+
+When MCP servers expose resources or prompts, Omegon discovers them at connect time and makes them available as tools.
+
+### `mcp_read_resource`
+
+Read a resource from an MCP server by URI.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `server` | string | yes | MCP server name |
+| `uri` | string | yes | Resource URI |
+
+### `mcp_get_prompt`
+
+Retrieve and expand a prompt template from an MCP server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `server` | string | yes | MCP server name |
+| `name` | string | yes | Prompt name |
+| `arguments` | object | no | Key-value arguments for template expansion |
+
+### MCP Configuration
+
+MCP servers are configured in `.omegon/mcp.toml`:
+
+```toml
+[servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home"]
+
+[servers.postgres]
+image = "ghcr.io/mcp/server-postgres:latest"
+env = { DATABASE_URL = "{DATABASE_URL}" }
+mount_cwd = true
+
+[servers.remote]
+url = "https://api.example.com/mcp"
+timeout_secs = 45
+```
+
+Resource and prompt listings are injected into agent context (capped at 10 items per category).

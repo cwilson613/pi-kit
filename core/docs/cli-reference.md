@@ -124,18 +124,81 @@ path = "/output/result.json"
 | 2 | Upstream provider exhausted |
 | 3 | Wall-clock timeout |
 
-## Slash commands (interactive)
+### Slash Commands (Interactive)
 
+#### Session & Navigation
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/exit` or `/quit` | Exit omegon |
+| `/new` | Start a new session |
+| `/sessions` | List saved sessions |
+| `/stats` | Show token and turn statistics |
+| `/status` | Show harness status |
+
+#### Model & Provider
 | Command | Description |
 |---------|-------------|
 | `/model [name]` | View or switch model |
-| `/think [level]` | Set reasoning: off, low, medium, high |
-| `/context` | Toggle 200k ↔ 1M context |
-| `/sessions` | List saved sessions |
-| `/compact` | Trigger context compaction |
-| `/clear` | Clear display |
-| `/detail` | Toggle compact/detailed tool cards |
-| `/migrate [source]` | Import settings from other tools |
-| `/web` | Launch web dashboard |
-| `/help` | Show all commands |
-| `/quit` | Exit |
+| `/think [level]` | Set thinking level (off/minimal/low/medium/high) |
+| `/login [provider]` | Authenticate with a provider |
+| `/logout [provider]` | Remove provider credentials |
+| `/auth status` | Show authentication status |
+
+#### UI & Display
+| Command | Description |
+|---------|-------------|
+| `/ui full` | Show dashboard + instruments + footer |
+| `/ui slim` | Conversation-only mode (default) |
+| `/ui show\|hide\|toggle <surface>` | Control dashboard/instruments/footer |
+| `/focus` | Enter focus mode (timeline navigation) |
+| `/mouse on\|off` | Enable/disable mouse capture |
+| `/splash` | Replay splash animation |
+
+#### Context & Memory
+| Command | Description |
+|---------|-------------|
+| `/context [status\|compact\|clear]` | Manage context window |
+| `/memory` | Memory management |
+| `/copy [raw\|plain\|session]` | Copy segment or full session to clipboard |
+
+#### Lifecycle & Design
+| Command | Description |
+|---------|-------------|
+| `/tree [list\|...]` | Design tree operations |
+| `/note <text>` | Add investigation note |
+| `/notes [clear]` | Show or clear notes |
+| `/checkin` | Triage workflow |
+| `/milestone` | Milestone tracking |
+
+#### Workspace & Tools
+| Command | Description |
+|---------|-------------|
+| `/workspace` | Workspace info and management |
+| `/skills [list\|install]` | Manage bundled skills |
+| `/plugin [list\|install\|remove]` | Manage plugins |
+| `/secrets [list\|set\|get\|delete]` | Manage secrets |
+| `/update` | Check for updates |
+
+#### Agent Operations
+| Command | Description |
+|---------|-------------|
+| `/delegate` | Delegate tasks to worker agents |
+| `/cleave` | Parallel task decomposition |
+| `/persona [name]` | Switch persona |
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| Up/Down | Scroll conversation |
+| Ctrl+Up/Down | Recall previous prompts |
+| Shift+Up/Down | Scroll conversation (3 lines) |
+| PageUp/PageDown | Scroll conversation (20 lines) |
+| Ctrl+R | Reverse history search |
+| Ctrl+C | Cancel current turn / quit |
+| Ctrl+Y | Copy selected segment to clipboard |
+| Mouse wheel | Scroll conversation (works without mouse capture) |
+| `/focus` | Enter focus mode (single segment view) |
+| `c` (focus mode) | Copy focused segment to clipboard |
+| Esc (focus mode) | Exit focus mode |

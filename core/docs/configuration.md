@@ -75,6 +75,70 @@ Omegon auto-detects project type from config files and adjusts guidance:
 | `go.mod` | Go — go test, go vet |
 | `package.json` | Node.js — npm test |
 
+## Codex Integration
+
+Omegon integrates with [Codex](https://codex.styrene.io) vaults for knowledge management, design tree visualization, and bidirectional memory sync.
+
+### Auto-Detection
+
+If a `.codex/config.toml` exists at the project root, Omegon automatically enables vault integration with default settings.
+
+### Explicit Configuration
+
+Create `.codex/omegon-integration.toml` or `.omegon/codex.toml`:
+
+```toml
+enabled = true  # master switch
+
+[vault]
+path = "."  # vault root relative to project root
+
+[memory]
+materialize_on_session_end = true   # write facts to vault as markdown
+import_on_session_start = true      # import Codex-authored facts
+reinforce_references = true          # anchor facts referenced by notes
+max_episodes = 20
+
+[design_tree]
+enabled = true
+vault_subdir = "design"
+
+[agent]
+model = "anthropic:claude-sonnet-4-6"
+posture = "fabricator"
+```
+
+### Memory Sync
+
+On session end, Omegon:
+1. Imports facts authored in Codex (`kind = "memory_fact"`)
+2. Reinforces facts referenced by vault notes (`related_facts` in frontmatter)
+3. Materializes all memory sections to `{vault}/ai/memory/{section}.md`
+4. Writes session episodes to `{vault}/ai/memory/episodes/{date}.md`
+
+Facts referenced by vault documents get their decay timer reset — they won't fade as long as the note exists.
+
+### Design Tree Export
+
+Design nodes are exported to `{vault}/design/{node-id}.md` with TOML frontmatter compatible with Codex's entity system. Codex displays them in the knowledge graph with status icons and dependency edges.
+
+## Configuration Schemas (Pkl)
+
+All configuration surfaces are validated by [Pkl](https://pkl-lang.org/) schemas in the `pkl/` directory:
+
+| Schema | Validates | File |
+|--------|-----------|------|
+| `AgentManifest.pkl` | Catalog agent bundles | `catalog/*/agent.pkl` |
+| `PluginManifest.pkl` | Plugin manifests | `plugin.toml` |
+| `TriggerConfig.pkl` | Daemon triggers | `.omegon/triggers/*.toml` |
+| `RouteMatrix.pkl` | Model routing matrix | `data/route-matrix.json` |
+| `SkillManifest.pkl` | Skill frontmatter | `skills/*/SKILL.md` |
+| `Profile.pkl` | User profile | `profile.json` |
+| `CodexIntegration.pkl` | Codex vault config | `.codex/omegon-integration.toml` |
+| `McpConfig.pkl` | MCP server declarations | `.omegon/mcp.toml` |
+| `ExtensionManifest.pkl` | Extension manifests | `manifest.toml` |
+| `TaskSpec.pkl` | Bounded task specs | `task.toml` for `omegon run` |
+
 ## Plugins
 
 Omegon supports TOML-manifest plugins that register HTTP-backed tools and context providers.
@@ -96,3 +160,55 @@ type = "object"
 properties.query = { type = "string", description = "Query to process" }
 required = ["query"]
 ```
+
+## Kubernetes Workloads
+
+Omegon runs as any k8s workload type. The agent manifest (ConfigMap) declares identity; the k8s resource type declares lifecycle.
+
+| Resource | Command | Use Case |
+|----------|---------|----------|
+| Job | `omegon run task.toml` | One-shot bounded tasks |
+| CronJob | `omegon run task.toml` | Recurring bounded tasks |
+| Deployment | `omegon serve` | Long-lived agent with vox/triggers |
+| StatefulSet | `omegon serve` | Agent with persistent workspace |
+| DaemonSet | `omegon serve` | Per-node agent |
+
+### Health Probes
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /api/healthz
+    port: 7842
+  initialDelaySeconds: 5
+
+readinessProbe:
+  httpGet:
+    path: /api/readyz
+    port: 7842
+  initialDelaySeconds: 10
+```
+
+### Example Job
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+spec:
+  template:
+    spec:
+      containers:
+      - name: omegon
+        image: ghcr.io/styrene-labs/omegon:0.16.0
+        command: ["omegon", "run"]
+        args: ["--prompt", "Review open PRs", "--output", "/output/result.json"]
+        env:
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-credentials
+              key: anthropic-api-key
+      restartPolicy: Never
+```
+
+See `docs/design/k8s-workload-matrix.md` for the full implementation status matrix.

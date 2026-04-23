@@ -8,7 +8,7 @@ Extensions run as isolated processes communicating via JSON-RPC over stdin/stdou
 
 ```toml
 [dependencies]
-omegon-extension = "0.15"
+omegon-extension = "0.16"
 ```
 
 ```rust

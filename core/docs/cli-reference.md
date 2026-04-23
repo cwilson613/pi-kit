@@ -79,6 +79,51 @@ omegon cleave \
 | `--idle-timeout <SECS>` | `180` | Per-child idle timeout |
 | `--max-turns <N>` | `50` | Max turns per child |
 
+### `omegon run`
+
+Bounded headless task execution. Designed for k8s Jobs/CronJobs, CI pipelines, and scripted automation.
+
+```
+omegon run task.toml
+omegon run --prompt "Review open PRs" --max-turns 10
+omegon run task.toml --model anthropic:claude-opus-4-6
+```
+
+**Task spec format** (`task.toml`):
+```toml
+[task]
+prompt = "Review open PRs and summarize blockers"
+
+[bounds]
+max_turns = 30
+timeout_secs = 600
+
+[agent]
+model = "anthropic:claude-sonnet-4-6"
+
+[output]
+path = "/output/result.json"
+```
+
+**Options:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--prompt` | Inline task prompt | — |
+| `--prompt-file` | Task prompt from file | — |
+| `--output` | JSON result output path (default: stdout) | stdout |
+| `--max-turns` | Maximum agent turns | 30 |
+| `--timeout` | Wall-clock timeout (seconds) | 600 |
+| `--token-budget` | Total token budget (input + output) | — |
+| `--manifest` | Agent manifest (Pkl) | — |
+
+**Exit codes:**
+| Code | Meaning |
+|------|---------|
+| 0 | Completed successfully |
+| 1 | Error |
+| 2 | Upstream provider exhausted |
+| 3 | Wall-clock timeout |
+
 ## Slash commands (interactive)
 
 | Command | Description |

@@ -18,8 +18,8 @@ Download a release from [GitHub Releases](https://github.com/styrene-lab/omegon/
 
 ```bash
 git clone https://github.com/styrene-lab/omegon.git
-cd omegon-core
-cargo build --release
+cd omegon
+cargo build --release -p omegon
 cp target/release/omegon ~/.local/bin/
 ```
 

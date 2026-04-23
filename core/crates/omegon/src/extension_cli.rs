@@ -71,7 +71,7 @@ pub fn init(name: &str) -> anyhow::Result<()> {
 name = "{name}"
 version = "0.1.0"
 description = "TODO: describe your extension"
-sdk_version = "0.15"
+sdk_version = "0.16"
 
 [runtime]
 type = "native"

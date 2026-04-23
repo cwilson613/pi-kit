@@ -2,8 +2,12 @@
   description = "Omegon — AI coding agent daemon and TUI";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     crane.url = "github:ipetkov/crane";
     nix2container = {
       url = "github:nlewo/nix2container";
@@ -11,11 +15,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane, nix2container }:
+  outputs = { self, nixpkgs, flake-utils, crane, nix2container, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
-        craneLib = crane.mkLib pkgs;
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+        rustToolchain = pkgs.rust-bin.stable.latest.default;
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         workspaceVersion = "0.15.26";
 

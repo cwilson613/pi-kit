@@ -14,7 +14,7 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
-## [0.16.0-rc.1] - 2026-04-23
+## [0.16.0] - 2026-04-23
 
 ### Added
 

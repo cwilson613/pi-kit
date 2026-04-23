@@ -1,22 +1,10 @@
 {
   description = "Omegon — AI coding agent daemon and TUI";
 
-  nixConfig = {
-    extra-substituters      = [ "https://styrene.cachix.org" ];
-    extra-trusted-public-keys = [
-      "styrene.cachix.org-1:oyGX4VS45l/HvLNQvBHJ+PjIQ23mUI+XTzL8aOCvXUg="
-    ];
-  };
-
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
-
-    crane = {
-      url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
+    crane.url = "github:ipetkov/crane";
     nix2container = {
       url = "github:nlewo/nix2container";
       inputs.nixpkgs.follows = "nixpkgs";

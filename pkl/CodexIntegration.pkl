@@ -64,6 +64,10 @@ class AgentSettings {
   persona: String?
 }
 
+/// Master switch — set to false to disable all Codex integration
+/// even when a vault is detected.
+enabled: Boolean = true
+
 vault: VaultBinding
 
 memory: MemorySync?

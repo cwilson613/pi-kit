@@ -851,7 +851,9 @@ pub async fn login_anthropic_with_callbacks(
         parse_callback_url(&pasted)?
     } else {
         // ── Normal browser flow ────────────────────────────────────────
-        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{CALLBACK_PORT}")).await?;
+        // Bind 0.0.0.0 to accept both IPv4 and IPv6 localhost connections.
+        // Some Linux distros (NixOS) resolve `localhost` to ::1 only.
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{CALLBACK_PORT}")).await?;
         tracing::debug!(port = CALLBACK_PORT, "OAuth callback server listening");
 
         progress("Opening browser for Anthropic login…");
@@ -996,7 +998,7 @@ pub async fn login_openai_with_callbacks(
     } else {
         // ── Normal browser flow ────────────────────────────────────────
         let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{OPENAI_CALLBACK_PORT}")).await?;
+            tokio::net::TcpListener::bind(format!("0.0.0.0:{OPENAI_CALLBACK_PORT}")).await?;
         tracing::debug!(
             port = OPENAI_CALLBACK_PORT,
             "OpenAI OAuth callback server listening"
@@ -1201,7 +1203,7 @@ pub async fn login_antigravity_with_callbacks(
             "Waiting for callback on localhost:{ANTIGRAVITY_CALLBACK_PORT}…"
         ));
         let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{ANTIGRAVITY_CALLBACK_PORT}")).await?;
+            tokio::net::TcpListener::bind(format!("0.0.0.0:{ANTIGRAVITY_CALLBACK_PORT}")).await?;
         tracing::info!(
             port = ANTIGRAVITY_CALLBACK_PORT,
             "listening for Antigravity OAuth callback"

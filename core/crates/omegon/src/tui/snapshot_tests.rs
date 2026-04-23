@@ -56,12 +56,33 @@ fn regex_replace_version(s: &str) -> String {
         let after_v = &rest[pos + 2..];
         if let Some(end) = version_transition_end(after_v) {
             result.push_str(&rest[..pos]);
-            result.push_str(" v<current> → v<next>");
-            rest = &rest[pos + 2 + end..];
+            let replaced = " v<current> → v<next>";
+            let original_len = 2 + end; // " v" + version
+            let trailing = count_trailing_spaces(&rest[pos + original_len..]);
+            result.push_str(replaced);
+            // Re-pad so the column width stays constant after replacement.
+            if trailing > 0 {
+                let total_field = original_len + trailing;
+                let pad = total_field.saturating_sub(replaced.len());
+                for _ in 0..pad {
+                    result.push(' ');
+                }
+            }
+            rest = &rest[pos + original_len + trailing..];
         } else if let Some(end) = version_digits_len(after_v) {
             result.push_str(&rest[..pos]);
-            result.push_str(" v<current>");
-            rest = &rest[pos + 2 + end..];
+            let replaced = " v<current>";
+            let original_len = 2 + end; // " v" + version
+            let trailing = count_trailing_spaces(&rest[pos + original_len..]);
+            result.push_str(replaced);
+            if trailing > 0 {
+                let total_field = original_len + trailing;
+                let pad = total_field.saturating_sub(replaced.len());
+                for _ in 0..pad {
+                    result.push(' ');
+                }
+            }
+            rest = &rest[pos + original_len + trailing..];
         } else {
             result.push_str(&rest[..pos + 2]);
             rest = &rest[pos + 2..];
@@ -69,6 +90,10 @@ fn regex_replace_version(s: &str) -> String {
     }
     result.push_str(rest);
     result
+}
+
+fn count_trailing_spaces(s: &str) -> usize {
+    s.bytes().take_while(|&b| b == b' ').count()
 }
 
 /// Returns the byte length of a version transition starting just after the leading "v",

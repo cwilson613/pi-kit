@@ -68,6 +68,7 @@ jobs:
           import importlib.util, sys
           spec = importlib.util.spec_from_file_location('harness', 'scripts/benchmark_harness.py')
           mod = importlib.util.module_from_spec(spec)
+          sys.modules['harness'] = mod
           try:
               spec.loader.exec_module(mod)
               print('benchmark_harness.py: loads without error')

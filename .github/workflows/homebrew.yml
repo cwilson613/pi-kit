@@ -3,11 +3,19 @@ name: Update Homebrew formula
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to update formula for (e.g. v0.16.1)'
+        required: true
+        type: string
 
 jobs:
   update-stable-formula:
     # Only update on stable releases (no -rc. or -nightly.)
-    if: "!contains(github.ref_name, '-rc.') && !contains(github.ref_name, '-nightly.')"
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (!contains(github.ref_name, '-rc.') && !contains(github.ref_name, '-nightly.'))
     runs-on: ubuntu-latest
 
     steps:
@@ -26,9 +34,10 @@ jobs:
       - name: Get release info
         id: release
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          TAG="${{ inputs.tag_name || github.ref_name }}"
+          VERSION=${TAG#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Download release manifest
         run: |
@@ -58,8 +67,8 @@ jobs:
           git push origin main
 
   update-rc-formula:
-    # Only update on RC releases
-    if: "contains(github.ref_name, '-rc.')"
+    # Only update on RC releases (never from workflow_dispatch — that's for stable)
+    if: "github.event_name != 'workflow_dispatch' && contains(github.ref_name, '-rc.')"
     runs-on: ubuntu-latest
 
     steps:
@@ -78,9 +87,10 @@ jobs:
       - name: Get release info
         id: release
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          TAG="${{ github.ref_name }}"
+          VERSION=${TAG#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Download release manifest
         run: |

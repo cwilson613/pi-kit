@@ -28,6 +28,8 @@ env:
   APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
 jobs:
+  # ── Primary builds (macOS + Linux x86_64) ──────────────────────
+  # These finish in ~10 minutes and unblock the release.
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -36,10 +38,6 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            zigbuild: true
-          - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
             zigbuild: true
@@ -149,6 +147,59 @@ jobs:
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
 
+  # ── Extended build (Linux ARM — slow cross-compile) ────────────
+  # Runs in parallel but does not block release publication.
+  build-extended:
+    name: Build aarch64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install Zig (required by cargo-zigbuild)
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild
+
+      - name: Build release binary
+        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
+
+      - name: Strip binary
+        run: |
+          BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip "$BINARY"
+          elif command -v strip >/dev/null 2>&1; then
+            strip "$BINARY" 2>/dev/null || true
+          fi
+
+      - name: Create archive
+        run: |
+          VERSION=${RELEASE_TAG#v}
+          ARCHIVE="omegon-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+          BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
+          tar czf "$ARCHIVE" -C "$(dirname $BINARY)" omegon
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Generate SHA256 checksum
+        run: sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-aarch64-unknown-linux-gnu
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+
   live-upstream-smoke:
     name: Live upstream smoke (non-blocking)
     runs-on: ubuntu-latest
@@ -241,6 +292,7 @@ jobs:
               /work/omegon --version
             '
 
+  # ── Release (publishes as soon as primary builds pass) ─────────
   release:
     name: Create release
     needs: [build, linux-abi-validation]
@@ -253,10 +305,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all build artifacts
+      - name: Download primary build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: build-*
           merge-multiple: true
 
       - name: Aggregate checksums
@@ -393,6 +446,95 @@ jobs:
           gh release edit "${{ env.RELEASE_TAG }}" \
             --repo "${{ github.repository }}" \
             --draft=false
+
+  # ── Attach extended artifacts after slow build completes ───────
+  attach-extended:
+    name: Attach Linux ARM artifacts
+    needs: [release, build-extended]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download extended build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-aarch64-unknown-linux-gnu
+          path: extended
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign extended artifact
+        run: |
+          cd extended
+          for archive in omegon-*.tar.gz; do
+            echo "Signing $archive..."
+            cosign sign-blob --yes "$archive" \
+              --output-signature "${archive}.sig" \
+              --output-certificate "${archive}.pem"
+          done
+
+      - name: Upload extended artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: |
+          gh release upload "${{ env.RELEASE_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --clobber \
+            extended/omegon-*.tar.gz \
+            extended/omegon-*.tar.gz.sha256 \
+            extended/omegon-*.tar.gz.sig \
+            extended/omegon-*.tar.gz.pem
+
+      - name: Regenerate checksums and manifest with all platforms
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p all-artifacts
+
+          # Download all platform checksums from the release
+          for target in x86_64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin aarch64-unknown-linux-gnu; do
+            VERSION="${RELEASE_TAG#v}"
+            gh release download "${{ env.RELEASE_TAG }}" \
+              --repo "${{ github.repository }}" \
+              --pattern "omegon-${VERSION}-${target}.tar.gz.sha256" \
+              --dir all-artifacts || true
+          done
+
+          # Aggregate into single checksums file
+          cat all-artifacts/*.sha256 > all-artifacts/checksums.sha256
+          echo "Updated checksums:"
+          cat all-artifacts/checksums.sha256
+
+          # Regenerate manifest with all platforms
+          python3 scripts/release_manifest.py generate \
+            --tag "${RELEASE_TAG}" \
+            --checksums all-artifacts/checksums.sha256 \
+            --output all-artifacts/release-manifest.json \
+            --repo "${{ github.repository }}" \
+            --commit "${{ github.sha }}"
+
+          # Upload updated checksums and manifest (clobber existing)
+          gh release upload "${{ env.RELEASE_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --clobber \
+            all-artifacts/checksums.sha256 \
+            all-artifacts/release-manifest.json
+
+      - name: Trigger Homebrew formula update
+        if: ${{ !contains(env.RELEASE_TAG, '-rc.') && !contains(env.RELEASE_TAG, '-nightly.') }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: |
+          gh workflow run homebrew.yml \
+            --repo "${{ github.repository }}" \
+            -f tag_name="${{ env.RELEASE_TAG }}"
 
   oci-images:
     name: OCI images (${{ matrix.image }})

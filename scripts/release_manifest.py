@@ -61,7 +61,7 @@ def parse_checksums(checksums_path: Path) -> dict[str, dict[str, str]]:
         }
     missing = [target for target in TARGETS if target not in assets]
     if missing:
-        raise ValueError(f"Missing checksum entries for targets: {', '.join(missing)}")
+        print(f"Note: checksums not yet available for: {', '.join(missing)}", file=sys.stderr)
     return assets
 
 
@@ -79,6 +79,8 @@ def build_manifest(
 
     manifest_assets = []
     for target in TARGETS:
+        if target not in assets:
+            continue
         asset = assets[target]
         filename = asset["filename"]
         manifest_assets.append(

@@ -135,12 +135,12 @@
     ]
   },
   "0.16.0": {
-    "status": "open",
+    "status": "released",
     "channel": "stable",
     "nodes": [],
-    "frozen": false,
+    "frozen": true,
     "opened": "2026-03-25T00:00:00Z",
-    "released": null,
+    "released": "2026-04-24T12:27:25Z",
     "rc_count": 0,
     "notes": []
   },
@@ -906,5 +906,15 @@
     ],
     "rc_version": "0.15.26-rc.3",
     "last_rc": "2026-04-16T21:05:33Z"
+  },
+  "0.16.1": {
+    "status": "open",
+    "channel": "stable",
+    "nodes": [],
+    "frozen": false,
+    "opened": "2026-04-24T13:06:25Z",
+    "released": null,
+    "rc_count": 0,
+    "notes": []
   }
 }

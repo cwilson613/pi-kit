@@ -15,7 +15,7 @@ pub(crate) fn is_orientation_tool(name: &str) -> bool {
 }
 
 pub(crate) fn is_repo_inspection_tool(name: &str) -> bool {
-    matches!(name, "read" | "codebase_search" | "view")
+    matches!(name, "read" | "codebase_search" | "codebase_index" | "view")
 }
 
 pub(crate) fn is_broad_orientation_tool(name: &str) -> bool {
@@ -102,7 +102,12 @@ pub(crate) fn classify_turn_phase(
         return None;
     }
 
-    if tool_calls.iter().any(|call| call.name == "commit") {
+    if tool_calls.iter().any(|call| {
+        matches!(
+            call.name.as_str(),
+            "commit" | "delegate" | "cleave_run" | "cleave_assess"
+        )
+    }) {
         return Some(OodaPhase::Act);
     }
 
@@ -549,6 +554,7 @@ pub(crate) fn classify_progress_signal(
     }
     if has_successful_tool_call(tool_calls, results, |call| {
         is_mutation_tool_name(&call.name)
+            || matches!(call.name.as_str(), "delegate" | "cleave_run")
     }) {
         return ProgressSignal::Mutation;
     }

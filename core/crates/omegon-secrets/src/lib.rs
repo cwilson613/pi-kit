@@ -575,6 +575,30 @@ impl SecretsManager {
         Ok(())
     }
 
+    /// Evict one or more secrets from the session cache, redaction set, and
+    /// process environment. Does NOT touch recipes or keyring — this is a
+    /// runtime-only purge used by `/logout` so stale provider credentials
+    /// cannot resurface via `hydrate_process_env()`.
+    pub fn evict_secrets(&self, names: &[&str]) {
+        {
+            let mut cache = self.session_cache.write().unwrap();
+            let mut redaction = self.redaction_set.write().unwrap();
+            let mut meta = self.session_meta.write().unwrap();
+            for name in names {
+                cache.remove(*name);
+                redaction.remove(*name);
+                meta.remove(*name);
+                // SAFETY: logout is an explicit operator action; clearing the env
+                // here prevents hydrate_process_env() from re-injecting stale values.
+                unsafe { std::env::remove_var(name) };
+            }
+        }
+        // Rebuild the Aho-Corasick automaton without the evicted secrets.
+        // All three write locks are released first to minimise contention.
+        self.rebuild_redactor();
+        tracing::info!(evicted = ?names, "evicted secrets from session cache");
+    }
+
     /// Delete a secret recipe (and try to remove from keyring if applicable).
     pub fn delete_recipe(&self, name: &str) -> anyhow::Result<()> {
         // Try to remove from keyring
@@ -679,5 +703,49 @@ mod tests {
         unsafe { std::env::set_var("BRAVE_API_KEY", "present") };
         mgr.delete_recipe("BRAVE_API_KEY").unwrap();
         assert!(std::env::var("BRAVE_API_KEY").is_err());
+    }
+
+    #[test]
+    fn evict_secrets_removes_cached_value_and_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test process controls these env vars and does not iterate env concurrently.
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::set_var("OMEGON_TEST_ANTH_KEY", "stale-api-key");
+        }
+        let mgr = SecretsManager::new(dir.path()).unwrap();
+        mgr.set_recipe("ANTHROPIC_API_KEY", "env:OMEGON_TEST_ANTH_KEY")
+            .unwrap();
+        mgr.preflight_session_cache(["ANTHROPIC_API_KEY"]);
+        // Verify the secret was hydrated into the process env.
+        assert_eq!(
+            std::env::var("ANTHROPIC_API_KEY").ok().as_deref(),
+            Some("stale-api-key")
+        );
+        // Evict — simulates what /logout does.
+        mgr.evict_secrets(&["ANTHROPIC_API_KEY"]);
+        // Env var must be gone.
+        assert!(
+            std::env::var("ANTHROPIC_API_KEY").is_err(),
+            "env var should be cleared after evict"
+        );
+        // Session cache must be empty for this name.
+        assert!(
+            mgr.session_env()
+                .iter()
+                .all(|(name, _)| name != "ANTHROPIC_API_KEY"),
+            "session cache should not contain evicted secret"
+        );
+        // hydrate_process_env must NOT re-inject the stale value.
+        mgr.hydrate_process_env();
+        assert!(
+            std::env::var("ANTHROPIC_API_KEY").is_err(),
+            "hydrate_process_env must not resurrect evicted secret"
+        );
+        // SAFETY: cleanup.
+        unsafe {
+            std::env::remove_var("OMEGON_TEST_ANTH_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
     }
 }

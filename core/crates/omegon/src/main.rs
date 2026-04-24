@@ -3373,6 +3373,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             tui::TuiCommand::AuthLogout { provider, respond_to } => {
                 let response = control_runtime::auth_logout_response(&provider).await;
                 if response.accepted {
+                    // Evict provider credentials from the secrets session cache
+                    // so hydrate_process_env() cannot re-inject stale values.
+                    let env_vars = crate::auth::provider_env_vars(&provider);
+                    let evict_names: Vec<&str> = env_vars.to_vec();
+                    agent.secrets.evict_secrets(&evict_names);
+
                     if let Ok(mut s) = shared_settings.lock() {
                         let active_provider = s
                             .model

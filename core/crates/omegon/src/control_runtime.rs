@@ -284,7 +284,14 @@ async fn try_stateless_control(
         ControlRequest::ModelList => model_list_response().await,
         ControlRequest::AuthStatus => auth_status_response().await,
         ControlRequest::AuthUnlock => auth_unlock_response().await,
-        ControlRequest::AuthLogout { provider } => auth_logout_response(provider).await,
+        ControlRequest::AuthLogout { provider } => {
+            let resp = auth_logout_response(provider).await;
+            if resp.accepted {
+                let env_vars = crate::auth::provider_env_vars(provider);
+                secrets.evict_secrets(&env_vars.to_vec());
+            }
+            resp
+        }
         ControlRequest::SkillsView => skills_view_response().await,
         ControlRequest::SkillsInstall => skills_install_response().await,
         ControlRequest::PluginView => plugin_view_response().await,

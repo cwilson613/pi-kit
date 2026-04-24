@@ -14,6 +14,14 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.16.1] - 2026-04-24
+
+### Fixed
+
+- **`/logout` leaves stale credentials in secrets cache** — `/logout` cleared `auth.json` and process env vars but left stale values in the SecretsManager session cache. Any subsequent `hydrate_process_env()` call (triggered by recipe changes) would re-inject the stale API key, which `resolve_with_refresh()` checks before the fresh OAuth token in `auth.json`. Added `SecretsManager::evict_secrets()` to purge provider credentials from the session cache, redaction set, and process environment on logout.
+- **Delegate commands fail with "recycled system warning"** — `delegate`, `cleave_run`, and `cleave_assess` tool calls were classified as Orient phase in the OODA behavioral loop, causing the continuation-pressure system to fire false warnings during legitimate delegation. The model would then parrot the injected system warning as the delegate task payload. These tools are now correctly classified as Act phase with proper progress signals.
+- **`codebase_index` misclassified in OODA loop** — `codebase_index` fell through to Orient instead of Observe in the behavioral classifier, inflating orientation churn streaks during indexing.
+
 ## [0.16.0] - 2026-04-23
 
 ### Added

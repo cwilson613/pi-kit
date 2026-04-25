@@ -14,6 +14,28 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - Unreleased
+
+### Added
+
+- **Mutation system** — runtime observation of agent recovery patterns, token burn tracking, and impact evaluation bridge to the eval system. Ships in observation-only mode (`generate_artifacts = false`); skill and diagnostic generation is opt-in after signal validation. Includes `/mutation` slash command with `stats`, `review`, and `config` subcommands. Design spec at `docs/design/mutation-eval-bridge.md`.
+- **`ProgressSignal` enum in omegon-traits** — `Mutation`, `TargetedValidation`, `BroadValidation`, `ConstraintDiscovery`, `Commit`, `Completion`. Available to all features via `BusEvent::TurnEnd`.
+- **Behavioral signals on `BusEvent::TurnEnd`** — `dominant_phase` (OODA classification), `drift_kind` (multi-turn degradation), `progress_signal`. Previously only on `AgentEvent::TurnEnd` (for TUI/IPC); now accessible to all bus features.
+- **Slim-mode status line** — persistent 1-row telemetry bar between conversation and editor: context%, turn, model, session tokens, cwd, git branch, files r/w, OODA phase, drift warnings, persona. Fields shed right-to-left as terminal narrows. Never wraps.
+- **Mutation status in HarnessStatus** — `mutation_artifacts_enabled`, `mutation_learned_skills`, `mutation_diagnostics` for TUI dashboard visibility.
+- **Impact evaluation framework** — configurable via `~/.omegon/mutation/impact.toml` with signal weights, learning rate, confidence bounds, session cadence, escalation thresholds. All parameters documented with rationale in design spec.
+- **Diagnostic-to-scenario escalation** — when recovery patterns recur above threshold, generates candidate eval scenario TOML at `~/.omegon/eval-candidates/` for human review.
+- **ScoreCardDiff mutation-awareness** — reports learned skill changes and burn-history summary between eval runs for impact attribution.
+
+### Changed
+
+- **`opsx-core` renamed to `omegon-opsx`** — namespace alignment with all other workspace crates.
+- **`omegon-secrets` and `omegon-memory` decoupled for standalone use** — both compile without omegon-traits via `--no-default-features`. The `agent` feature (default) provides harness integration. CI gates standalone compilation.
+- **`BusEvent::ToolEnd.result.details`** — now carries compact args summary (`path`, `command`) instead of `Null`. Enables recovery pattern detection without full args.
+- **`redact_in_place(&mut String)`** — composable redaction primitive on both `Redactor` and `SecretsManager`. Works with any container type without requiring omegon-traits.
+- **`vault_sync` subdirectory configurable** — `materialize_to_vault_with_subdir()` variants let standalone consumers use their own layout instead of hardcoded `ai/memory/`.
+- **CLAUDE_CODE_UA** updated to 2.1.119.
+
 ## [0.16.1] - 2026-04-24
 
 ### Fixed

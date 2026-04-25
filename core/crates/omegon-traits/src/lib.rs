@@ -1254,6 +1254,12 @@ pub enum BusEvent {
         actual_output_tokens: u64,
         cache_read_tokens: u64,
         provider_telemetry: Option<ProviderTelemetrySnapshot>,
+        /// Controller-classified dominant OODA phase for the turn.
+        dominant_phase: Option<OodaPhase>,
+        /// Controller-detected drift kind over the recent turn window.
+        drift_kind: Option<DriftKind>,
+        /// Progress signal classification for the turn.
+        progress_signal: ProgressSignal,
     },
 
     // ── Message streaming ───────────────────────────────────────────
@@ -1612,6 +1618,19 @@ pub enum DriftKind {
     RepeatedActionFailure,
     ValidationThrash,
     ClosureStall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressSignal {
+    #[default]
+    None,
+    Mutation,
+    TargetedValidation,
+    BroadValidation,
+    ConstraintDiscovery,
+    Commit,
+    Completion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

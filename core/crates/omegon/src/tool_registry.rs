@@ -138,6 +138,14 @@ pub mod secrets {
     pub const SECRET_DELETE: &str = "secret_delete";
 }
 
+/// Mutation (evolutionary skill/diagnostic creation) — owned by `features::mutation`
+pub mod mutation {
+    pub const MUTATION_REVIEW: &str = "mutation_review";
+    pub const MUTATION_ACCEPT: &str = "mutation_accept";
+    pub const MUTATION_REJECT: &str = "mutation_reject";
+    pub const MUTATION_STATS: &str = "mutation_stats";
+}
+
 // ─── Registry query ─────────────────────────────────────────────────────────
 
 /// All statically-declared tool names. Used by `EventBus::finalize()` to
@@ -148,7 +156,7 @@ pub mod secrets {
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.
 /// Number of statically registered tools (for splash screen display).
-pub const TOOL_COUNT: usize = 54;
+pub const TOOL_COUNT: usize = 58;
 
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
@@ -223,8 +231,13 @@ pub fn all_static_names() -> Vec<&'static str> {
         secrets::SECRET_SET,
         secrets::SECRET_LIST,
         secrets::SECRET_DELETE,
+        // mutation (4)
+        mutation::MUTATION_REVIEW,
+        mutation::MUTATION_ACCEPT,
+        mutation::MUTATION_REJECT,
+        mutation::MUTATION_STATS,
     ]
-    // Total: 9+1+1+3+12+4+2+3+1+3+1+1+4+3+2+3 = 54
+    // Total: 9+1+1+3+12+4+2+3+1+3+1+1+4+3+2+3+4 = 58
 }
 
 #[cfg(test)]

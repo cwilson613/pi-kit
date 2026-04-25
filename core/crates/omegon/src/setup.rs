@@ -479,6 +479,11 @@ impl AgentSetup {
         // ─── Session log (context injection) ────────────────────────────
         bus.register(Box::new(features::session_log::SessionLog::new(&cwd)));
 
+        // ─── Mutation (evolutionary skill/diagnostic creation) ───────────
+        bus.register(Box::new(features::mutation::MutationFeature::new(
+            crate::paths::omegon_home()?,
+        )));
+
         // ─── Usage advisory (/usage from captured provider telemetry) ───
         bus.register(Box::new(features::usage::UsageFeature::new()));
 

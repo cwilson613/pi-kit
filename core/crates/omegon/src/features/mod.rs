@@ -31,6 +31,7 @@ pub mod lifecycle;
 pub mod manage_tools;
 pub mod memory;
 pub mod model_budget;
+pub mod mutation;
 pub mod persona;
 pub mod session_log;
 pub mod terminal_title;

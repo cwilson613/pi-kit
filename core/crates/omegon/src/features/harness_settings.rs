@@ -407,6 +407,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
         feature.on_event(&BusEvent::TurnEnd {
             turn: 2,
@@ -419,6 +422,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
         feature.on_event(&BusEvent::ToolEnd {
             id: "x".into(),

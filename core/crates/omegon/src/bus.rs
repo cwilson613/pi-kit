@@ -606,6 +606,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
 
         // Both features should have received both events

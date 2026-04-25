@@ -33,6 +33,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -116,11 +117,27 @@ jobs:
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "$APPLE_API_KEY_P8_B64" | base64 --decode > "$KEY_PATH"
           ditto -c -k --keepParent "$BINARY" "$NOTARY_ZIP"
-          xcrun notarytool submit "$NOTARY_ZIP" \
-            --key "$KEY_PATH" \
-            --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER" \
-            --wait
+          # Retry notarization up to 3 times — Apple's service frequently times out
+          for attempt in 1 2 3; do
+            echo "Notarization attempt $attempt/3..."
+            if xcrun notarytool submit "$NOTARY_ZIP" \
+              --key "$KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" \
+              --timeout 10m \
+              --wait; then
+              echo "Notarization succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::warning::Notarization failed after 3 attempts — binary is signed but not notarized"
+              # Don't fail the build — signed but un-notarized binaries still work,
+              # users just see a Gatekeeper warning on first launch.
+              exit 0
+            fi
+            echo "Attempt $attempt failed, retrying in 30s..."
+            sleep 30
+          done
 
       - name: Create archive
         run: |
@@ -152,6 +169,7 @@ jobs:
   build-extended:
     name: Build aarch64-unknown-linux-gnu
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -203,6 +221,7 @@ jobs:
   live-upstream-smoke:
     name: Live upstream smoke (non-blocking)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     continue-on-error: true
     env:
       CARGO_TERM_COLOR: always
@@ -297,6 +316,7 @@ jobs:
     name: Create release
     needs: [build, linux-abi-validation]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
       id-token: write
@@ -412,46 +432,40 @@ jobs:
             artifacts/checksums.sha256 \
             artifacts/release-manifest.json
 
-      - name: Create stable/rc GitHub Release
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.RELEASE_TAG }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-          prerelease: ${{ contains(env.RELEASE_TAG, '-rc.') }}
-          draft: true
-          files: |
-            artifacts/omegon-*.tar.gz
-            artifacts/omegon-*.tar.gz.sha256
-            artifacts/omegon-*.tar.gz.sig
-            artifacts/omegon-*.tar.gz.pem
-            artifacts/checksums.sha256
-            artifacts/release-manifest.json
-            artifacts/omegon-sbom.cdx.json
-            artifacts/omegon-sbom.cdx.json.sig
-            artifacts/omegon-sbom.cdx.json.pem
-            artifacts/THIRD_PARTY_NOTICES.md
-            artifacts/THIRD_PARTY_NOTICES.md.sig
-            artifacts/THIRD_PARTY_NOTICES.md.pem
-        id: create_release
-
-      - name: Publish stable/rc GitHub Release
+      - name: Create and publish stable/rc GitHub Release
         if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
         run: |
-          gh release edit "${{ env.RELEASE_TAG }}" \
+          set -euo pipefail
+          PRERELEASE_FLAG=""
+          if echo "${{ env.RELEASE_TAG }}" | grep -q "\-rc\."; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${{ env.RELEASE_TAG }}" \
             --repo "${{ github.repository }}" \
-            --draft=false
+            --title "${{ env.RELEASE_TAG }}" \
+            --generate-notes \
+            $PRERELEASE_FLAG \
+            artifacts/omegon-*.tar.gz \
+            artifacts/omegon-*.tar.gz.sha256 \
+            artifacts/omegon-*.tar.gz.sig \
+            artifacts/omegon-*.tar.gz.pem \
+            artifacts/checksums.sha256 \
+            artifacts/release-manifest.json \
+            artifacts/omegon-sbom.cdx.json \
+            artifacts/omegon-sbom.cdx.json.sig \
+            artifacts/omegon-sbom.cdx.json.pem \
+            artifacts/THIRD_PARTY_NOTICES.md \
+            artifacts/THIRD_PARTY_NOTICES.md.sig \
+            artifacts/THIRD_PARTY_NOTICES.md.pem
 
   # ── Attach extended artifacts after slow build completes ───────
   attach-extended:
     name: Attach Linux ARM artifacts
     needs: [release, build-extended]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write

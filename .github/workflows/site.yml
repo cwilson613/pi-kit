@@ -64,19 +64,21 @@ jobs:
 
       - name: Deploy stable Pages project
         run: |
-          npx wrangler@latest pages project create omegon-styrene-io --production-branch main 2>&1 || true
-          npx wrangler@latest pages deploy site-dist-stable --project-name omegon-styrene-io --commit-dirty=true
+          python3 scripts/deploy_cloudflare_pages.py site-dist-stable omegon-styrene-io
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_COMMIT_HASH: ${{ github.sha }}
+          CF_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
 
       - name: Deploy preview Pages project
         run: |
-          npx wrangler@latest pages project create omegon-styrene-dev --production-branch main 2>&1 || true
-          npx wrangler@latest pages deploy site-dist-preview --project-name omegon-styrene-dev --commit-dirty=true
+          python3 scripts/deploy_cloudflare_pages.py site-dist-preview omegon-styrene-dev
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_COMMIT_HASH: ${{ github.sha }}
+          CF_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
 
       - name: Add stable custom domain
         if: github.ref == 'refs/heads/main'

@@ -1,4 +1,4 @@
-//! opsx-core — OpenSpec lifecycle FSM.
+//! omegon-opsx — OpenSpec lifecycle FSM.
 //!
 //! Enforced state transitions for design nodes, OpenSpec changes,
 //! and release milestones. JSON file state store for git-native

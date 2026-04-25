@@ -1,5 +1,5 @@
 [package]
-name = "opsx-core"
+name = "omegon-opsx"
 version = "0.1.0"
 edition = "2021"
 description = "OpenSpec lifecycle FSM — enforced state transitions for design nodes, changes, and milestones"

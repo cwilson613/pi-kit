@@ -4,7 +4,7 @@
 //!   - `ai/docs/`      — design tree markdown documents
 //!   - `ai/openspec/`  — OpenSpec change lifecycle
 //!   - `ai/memory/`    — facts.db, facts.jsonl
-//!   - `ai/lifecycle/` — opsx-core state.json
+//!   - `ai/lifecycle/` — omegon-opsx state.json
 //!   - `ai/milestones.json`
 //!
 //! The `.omegon/` dotfile is for tool configuration only:
@@ -92,7 +92,7 @@ pub fn memory_dir_write(repo_root: &Path) -> PathBuf {
     ai
 }
 
-/// Resolve the lifecycle state directory (opsx-core).
+/// Resolve the lifecycle state directory (omegon-opsx).
 /// Primary: `ai/lifecycle/`, fallback: `.omegon/lifecycle/`
 pub fn lifecycle_dir(repo_root: &Path) -> PathBuf {
     let primary = repo_root.join("ai/lifecycle");

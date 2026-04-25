@@ -17,7 +17,7 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 
 ## Architecture
 
-- **Workspace root**: Cargo workspace at repo root. Crates at `core/crates/`: `omegon` (main binary), `omegon-memory`, `omegon-extension`, `omegon-traits`, `omegon-git`, `omegon-secrets`, `omegon-codescan`, `opsx-core`
+- **Workspace root**: Cargo workspace at repo root. Crates at `core/crates/`: `omegon` (main binary), `omegon-memory`, `omegon-extension`, `omegon-traits`, `omegon-git`, `omegon-secrets`, `omegon-codescan`, `omegon-opsx`
 - **Build + install**: `just build && just link` — builds release binary, symlinks to `~/.local/bin/omegon` + `om`, installs bundled skills
 - **Test**: `just test-rust` — 1800+ tests, must all pass before committing
 - **Lint**: `just lint` — type check + clippy

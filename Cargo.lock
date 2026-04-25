@@ -4401,10 +4401,10 @@ dependencies = [
  "omegon-extension",
  "omegon-git",
  "omegon-memory",
+ "omegon-opsx",
  "omegon-secrets",
  "omegon-traits",
  "open",
- "opsx-core",
  "percent-encoding",
  "ratatui",
  "ratatui-image",
@@ -4514,6 +4514,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "omegon-opsx"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -4700,17 +4711,6 @@ dependencies = [
  "openssl-src",
  "pkg-config",
  "vcpkg",
-]
-
-[[package]]
-name = "opsx-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]

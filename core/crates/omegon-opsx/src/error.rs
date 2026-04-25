@@ -1,4 +1,4 @@
-//! Error types for opsx-core.
+//! Error types for omegon-opsx.
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpsxError {

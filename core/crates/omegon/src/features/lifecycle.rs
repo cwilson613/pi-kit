@@ -21,7 +21,7 @@ use omegon_traits::{
 use crate::lifecycle::context::LifecycleContextProvider;
 use crate::lifecycle::{design, doctor, spec, types::*};
 
-use opsx_core::{JsonFileStore, Lifecycle as OpsxLifecycle, NodeState as OpsxNodeState};
+use omegon_opsx::{JsonFileStore, Lifecycle as OpsxLifecycle, NodeState as OpsxNodeState};
 
 /// The lifecycle Feature — wraps the LifecycleContextProvider and adds
 /// tools + commands for design-tree and openspec operations.
@@ -34,7 +34,7 @@ pub struct LifecycleFeature {
     repo_path: PathBuf,
     /// Counter for refresh throttling — only refresh every N turns.
     turn_counter: u32,
-    /// opsx-core lifecycle engine — validates state transitions before
+    /// omegon-opsx lifecycle engine — validates state transitions before
     /// markdown is written. The FSM is the authority for what transitions
     /// are legal; markdown is the content store.
     opsx: Mutex<OpsxLifecycle<JsonFileStore>>,
@@ -75,7 +75,7 @@ impl LifecycleFeature {
         let provider = LifecycleContextProvider::new(repo_path);
         let store = JsonFileStore::new(repo_path);
         let opsx = OpsxLifecycle::load(store).unwrap_or_else(|e| {
-            tracing::warn!("opsx-core load failed, starting fresh: {e}");
+            tracing::warn!("omegon-opsx load failed, starting fresh: {e}");
             OpsxLifecycle::load(JsonFileStore::new(repo_path)).unwrap()
         });
         Self {
@@ -104,7 +104,7 @@ impl LifecycleFeature {
         Arc::clone(&self.provider)
     }
 
-    /// Bootstrap a markdown design node into opsx-core.
+    /// Bootstrap a markdown design node into omegon-opsx.
     /// Creates the node and syncs state + open questions from the markdown source.
     fn bootstrap_node_to_opsx(&self, opsx: &mut OpsxLifecycle<JsonFileStore>, node: &DesignNode) {
         let current_opsx =
@@ -386,11 +386,11 @@ impl LifecycleFeature {
                     .unwrap_or_default();
                 let overview = args["overview"].as_str().unwrap_or("");
 
-                // Register in opsx-core FSM (parent validation is advisory here
-                // since markdown parent references aren't enforced by opsx-core yet)
+                // Register in omegon-opsx FSM (parent validation is advisory here
+                // since markdown parent references aren't enforced by omegon-opsx yet)
                 {
                     let mut opsx = self.opsx.lock().unwrap();
-                    // Don't require parent to exist in opsx-core — lazy sync
+                    // Don't require parent to exist in omegon-opsx — lazy sync
                     let _ = opsx.create_node(id, title, None);
                     // If a non-seed status was requested, transition to it
                     if let Some(status_str) = status {
@@ -460,12 +460,12 @@ impl LifecycleFeature {
                     }
                 }
 
-                // Validate transition via opsx-core FSM
+                // Validate transition via omegon-opsx FSM
                 let opsx_target = OpsxNodeState::parse(status_str)
                     .ok_or_else(|| anyhow::anyhow!("Invalid status for FSM: {status_str}"))?;
 
                 let mut opsx = self.opsx.lock().unwrap();
-                // Ensure the node exists in opsx-core (lazy sync from markdown)
+                // Ensure the node exists in omegon-opsx (lazy sync from markdown)
                 if opsx.get_node(id).is_none() {
                     let node = get_node_clone(id)?;
                     self.bootstrap_node_to_opsx(&mut opsx, &node);
@@ -707,7 +707,7 @@ impl LifecycleFeature {
                     );
                 }
 
-                // Validate transition via opsx-core FSM — this enforces milestone freeze
+                // Validate transition via omegon-opsx FSM — this enforces milestone freeze
                 {
                     let mut opsx = self.opsx.lock().unwrap();
                     if opsx.get_node(id).is_none() {

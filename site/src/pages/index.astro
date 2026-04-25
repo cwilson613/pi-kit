@@ -9,9 +9,11 @@ import {
   previewSiteUrl,
 } from "../lib/siteVariant";
 
-const changelog = readFileSync(resolve("../CHANGELOG.md"), "utf-8");
-const versionMatch = changelog.match(/## \[([0-9]+\.[0-9]+\.[0-9]+)\]/);
-const currentVersion = versionMatch ? `v${versionMatch[1]}` : "latest";
+const cargoToml = readFileSync(resolve("../Cargo.toml"), "utf-8");
+const cargoVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? "0.0.0";
+// Use the actual Cargo.toml version (which includes -rc.N suffix) for the
+// release link. This ensures the link points to a tag that actually exists.
+const currentVersion = `v${cargoVersion}`;
 
 const valueCards = [
   {

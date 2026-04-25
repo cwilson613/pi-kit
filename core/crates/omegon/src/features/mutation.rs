@@ -2554,4 +2554,202 @@ mod tests {
         assert!(updated.contains("confidence = 0.85"));
         assert!(updated.contains("name = \"test\""));
     }
+
+    // ── Integration tests ───────────────────────────────────────────
+
+    #[test]
+    fn on_session_end_below_min_turns_produces_nothing() {
+        let mut feature = MutationFeature::new(PathBuf::from("/tmp/test-omegon-session"));
+        feature.trajectory.session_id = "s1".into();
+        // 3 turns, below default min_turns_for_analysis (8)
+        feature.trajectory.turns = vec![
+            make_turn(1, vec![], ProgressSignal::None, None),
+            make_turn(2, vec![], ProgressSignal::None, None),
+            make_turn(3, vec![], ProgressSignal::Mutation, None),
+        ];
+        let requests = feature.on_session_end(3);
+        assert!(requests.is_empty(), "should not analyze short sessions");
+    }
+
+    #[test]
+    fn on_session_end_logs_burn_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut feature = MutationFeature::new(dir.path().to_path_buf());
+        feature.trajectory.session_id = "s1".into();
+        feature.trajectory.total_input_tokens = 5000;
+        feature.trajectory.total_output_tokens = 2000;
+        feature.trajectory.burn_input_tokens = 1500;
+        feature.trajectory.burn_output_tokens = 500;
+        // 10 turns to pass min threshold
+        feature.trajectory.turns = (1..=10)
+            .map(|i| make_turn(i, vec![], ProgressSignal::Mutation, None))
+            .collect();
+
+        let _requests = feature.on_session_end(10);
+
+        let burn_path = dir.path().join("mutation/burn-history.jsonl");
+        assert!(burn_path.exists(), "burn history should be written");
+        let content = std::fs::read_to_string(&burn_path).unwrap();
+        assert!(content.contains("\"session_id\":\"s1\""));
+        assert!(content.contains("\"turns\":10"));
+    }
+
+    #[test]
+    fn on_session_end_no_artifacts_when_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut feature = MutationFeature::new(dir.path().to_path_buf());
+        feature.trajectory.session_id = "s1".into();
+        // generate_artifacts is false by default
+        assert!(!feature.impact_config.behavior.generate_artifacts);
+
+        // Build a trajectory with a clear recovery pattern
+        feature.trajectory.turns = vec![
+            make_turn(
+                1,
+                vec![make_trace("edit", Some("src/lib.rs"), true)],
+                ProgressSignal::None,
+                Some(DriftKind::RepeatedActionFailure),
+            ),
+            make_turn(
+                2,
+                vec![make_trace("read", Some("src/lib.rs"), false)],
+                ProgressSignal::None,
+                None,
+            ),
+            make_turn(
+                3,
+                vec![{
+                    let mut t = make_trace("edit", Some("src/lib.rs"), false);
+                    t.args_summary.as_object_mut().unwrap()
+                        .insert("command".into(), Value::String("expanded".into()));
+                    t
+                }],
+                ProgressSignal::Mutation,
+                None,
+            ),
+        ];
+        // Pad to 10 turns
+        for i in 4..=10 {
+            feature.trajectory.turns.push(
+                make_turn(i, vec![], ProgressSignal::None, None),
+            );
+        }
+
+        let requests = feature.on_session_end(10);
+
+        // Burn history is logged regardless
+        let burn_path = dir.path().join("mutation/burn-history.jsonl");
+        assert!(burn_path.exists());
+
+        // But no skill or diagnostic files created
+        let skills_dir = dir.path().join("skills/learned");
+        let diag_dir = dir.path().join("diagnostics");
+        assert!(!skills_dir.exists() || std::fs::read_dir(&skills_dir).unwrap().count() == 0);
+        assert!(!diag_dir.exists() || std::fs::read_dir(&diag_dir).unwrap().count() == 0);
+
+        // No AutoStoreFact requests
+        assert!(
+            !requests.iter().any(|r| matches!(r, BusRequest::AutoStoreFact { .. })),
+            "should not create artifacts when generate_artifacts is disabled"
+        );
+    }
+
+    #[test]
+    fn trajectory_accumulation_via_events() {
+        let mut feature = MutationFeature::new(PathBuf::from("/tmp/test-omegon-accum"));
+
+        // Simulate the event sequence the bus would deliver
+        feature.on_event(&BusEvent::SessionStart {
+            cwd: PathBuf::from("/tmp"),
+            session_id: "test-accum".into(),
+        });
+
+        feature.on_event(&BusEvent::ToolStart {
+            id: "c1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "src/main.rs"}),
+        });
+        feature.on_event(&BusEvent::ToolEnd {
+            id: "c1".into(),
+            name: "read".into(),
+            result: ToolResult {
+                content: vec![ContentBlock::Text { text: "file content".into() }],
+                details: Value::Null,
+            },
+            is_error: false,
+        });
+        feature.on_event(&BusEvent::TurnEnd {
+            turn: 1,
+            model: Some("anthropic:claude-sonnet-4-6".into()),
+            provider: Some("anthropic".into()),
+            estimated_tokens: 5000,
+            context_window: 200_000,
+            context_composition: omegon_traits::ContextComposition::default(),
+            actual_input_tokens: 1200,
+            actual_output_tokens: 300,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+            dominant_phase: Some(OodaPhase::Observe),
+            drift_kind: None,
+            progress_signal: ProgressSignal::None,
+        });
+
+        assert_eq!(feature.trajectory.session_id, "test-accum");
+        assert_eq!(feature.trajectory.turns.len(), 1);
+        assert_eq!(feature.trajectory.turns[0].tools.len(), 1);
+        assert_eq!(feature.trajectory.turns[0].tools[0].name, "read");
+        assert!(!feature.trajectory.turns[0].tools[0].is_error);
+        assert_eq!(feature.trajectory.total_input_tokens, 1200);
+        assert_eq!(feature.trajectory.total_output_tokens, 300);
+        assert_eq!(feature.trajectory.last_model, "anthropic:claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn slash_command_stats_returns_display() {
+        let mut feature = MutationFeature::new(PathBuf::from("/tmp/test-omegon-cmd"));
+        let result = feature.handle_command("mutation", "stats");
+        assert!(matches!(result, omegon_traits::CommandResult::Display(_)));
+        if let omegon_traits::CommandResult::Display(text) = result {
+            assert!(text.contains("Current Session"));
+            assert!(text.contains("Configuration"));
+        }
+    }
+
+    #[test]
+    fn slash_command_config_shows_parameters() {
+        let mut feature = MutationFeature::new(PathBuf::from("/tmp/test-omegon-cfg"));
+        let result = feature.handle_command("mutation", "config");
+        assert!(matches!(result, omegon_traits::CommandResult::Display(_)));
+        if let omegon_traits::CommandResult::Display(text) = result {
+            assert!(text.contains("Signal Weights"));
+            assert!(text.contains("Learning"));
+            assert!(text.contains("Artifact generation"));
+            assert!(text.contains("impact.toml"));
+        }
+    }
+
+    #[test]
+    fn slash_command_unknown_subcommand() {
+        let mut feature = MutationFeature::new(PathBuf::from("/tmp/test-omegon-unk"));
+        let result = feature.handle_command("mutation", "bogus");
+        if let omegon_traits::CommandResult::Display(text) = result {
+            assert!(text.contains("Unknown subcommand"));
+        }
+    }
+
+    #[test]
+    fn slash_command_wrong_name_not_handled() {
+        let mut feature = MutationFeature::new(PathBuf::from("/tmp/test-omegon-wrong"));
+        let result = feature.handle_command("usage", "");
+        assert!(matches!(result, omegon_traits::CommandResult::NotHandled));
+    }
+
+    #[test]
+    fn escalation_score_does_not_fire_below_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let feature = MutationFeature::new(dir.path().to_path_buf());
+        // No diagnostics dir = no escalation
+        let escalated = feature.check_diagnostic_escalation();
+        assert!(escalated.is_empty());
+    }
 }

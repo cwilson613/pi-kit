@@ -45,5 +45,8 @@ pub use inmemory::InMemoryBackend;
 pub use provider::MemoryProvider;
 pub use renderer::MarkdownRenderer;
 pub use sqlite::SqliteBackend;
+/// Re-exports all types from the `types` module for convenience.
+/// If you encounter name collisions with other crates (e.g. `Section`,
+/// `Fact`, `Edge`), use qualified paths: `omegon_memory::types::Section`.
 pub use types::*;
 pub use vectors::{blob_to_vector, cosine_similarity, rrf_merge, vector_to_blob};

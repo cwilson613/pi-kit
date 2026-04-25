@@ -150,16 +150,29 @@ fn extract_toml_value<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
 
 // ─── Materialize facts ─────────────────────────────────────────────────────
 
-/// Write all active facts from the backend to the Codex vault as markdown files.
+/// Write all active facts from the backend to the vault as markdown files.
 ///
-/// Creates one file per section at `{vault_path}/ai/memory/{slug}.md` plus
-/// an index file at `{vault_path}/ai/memory/_index.md`.
+/// Creates one file per section at `{vault_path}/{subdir}/{slug}.md` plus
+/// an index file at `{vault_path}/{subdir}/_index.md`.
+///
+/// The default subdirectory is `ai/memory` (omegon convention). Pass a
+/// custom value to integrate with a different vault layout.
 pub async fn materialize_to_vault(
     backend: &dyn MemoryBackend,
     vault_path: &Path,
     mind: &str,
 ) -> Result<MaterializeReport> {
-    let memory_dir = vault_path.join("ai").join("memory");
+    materialize_to_vault_with_subdir(backend, vault_path, mind, "ai/memory").await
+}
+
+/// Like [`materialize_to_vault`] but with a configurable subdirectory.
+pub async fn materialize_to_vault_with_subdir(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+    subdir: &str,
+) -> Result<MaterializeReport> {
+    let memory_dir = vault_path.join(subdir);
     tokio::fs::create_dir_all(&memory_dir)
         .await
         .context("creating vault memory directory")?;
@@ -265,7 +278,8 @@ pub async fn materialize_to_vault(
 
 /// Write recent episodes as daily-note-style markdown files.
 ///
-/// Files are written to `{vault_path}/ai/memory/episodes/{date}.md`.
+/// Files are written to `{vault_path}/{subdir}/episodes/{date}.md`
+/// where subdir defaults to `ai/memory`.
 /// Returns the number of episodes written.
 pub async fn materialize_episodes_to_vault(
     backend: &dyn MemoryBackend,
@@ -273,7 +287,18 @@ pub async fn materialize_episodes_to_vault(
     mind: &str,
     limit: usize,
 ) -> Result<usize> {
-    let episodes_dir = vault_path.join("ai").join("memory").join("episodes");
+    materialize_episodes_to_vault_with_subdir(backend, vault_path, mind, limit, "ai/memory").await
+}
+
+/// Like [`materialize_episodes_to_vault`] but with a configurable subdirectory.
+pub async fn materialize_episodes_to_vault_with_subdir(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+    limit: usize,
+    subdir: &str,
+) -> Result<usize> {
+    let episodes_dir = vault_path.join(subdir).join("episodes");
     tokio::fs::create_dir_all(&episodes_dir)
         .await
         .context("creating episodes directory")?;

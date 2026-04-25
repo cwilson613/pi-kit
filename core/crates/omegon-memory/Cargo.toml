@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Features:
+#   agent (default) — Adds MemoryProvider, which implements omegon's
+#     ToolProvider + ContextProvider traits for agent loop integration.
+#     Pulls in omegon-traits and tokio-util.
+#   (no features) — Standalone fact store: MemoryBackend trait, SQLite
+#     backend, FTS5 search, vector search, decay math, vault sync.
+#     No omegon dependency. Usable by any Rust application.
 [features]
 default = ["agent"]
 agent = ["dep:omegon-traits", "dep:tokio-util"]

@@ -6,6 +6,14 @@ license.workspace = true
 repository.workspace = true
 description = "Secret resolution, output redaction, and tool guards for Omegon"
 
+# Features:
+#   agent (default) — Adds redact_content() for omegon ContentBlock
+#     vectors and redact_content_blocks() on the Redactor. Pulls in
+#     omegon-traits.
+#   (no features) — Standalone secret management: keyring, env var
+#     recipes, Aho-Corasick redaction, path guards, OAuth flows.
+#     Use redact_in_place(&mut String) for composable redaction
+#     without omegon types. No omegon dependency.
 [features]
 default = ["agent"]
 agent = ["dep:omegon-traits"]

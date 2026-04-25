@@ -1,8 +1,0 @@
-enabled = true
-last_enabled_at = "2026-04-19T20:00:33.339414+00:00"
-last_disabled_at = "2026-04-19T20:00:33.323373+00:00"
-
-[stability]
-crashes_this_session = 0
-health_check_failures = 0
-auto_disabled = false

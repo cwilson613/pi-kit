@@ -3,35 +3,135 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// RPC-level error codes. Matched against [`rpc::ErrorCode`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+/// RPC-level error codes. JSON-RPC 2.0 numeric codes with human-readable labels.
+///
+/// Standard JSON-RPC 2.0 codes use the -32xxx range. Omegon-specific codes
+/// use -32000 through -32099 (server error range).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
 pub enum ErrorCode {
-    /// Method name not recognized.
-    MethodNotFound,
-    /// Invalid parameters for method.
-    InvalidParams,
-    /// Extension encountered an internal error (non-fatal).
-    InternalError,
-    /// Manifest validation failed (fatal — caught at install time).
-    ManifestError,
-    /// Version incompatibility (fatal — caught at install time).
-    VersionMismatch,
-    /// Timeout waiting for response.
-    Timeout,
-    /// RPC parse error (malformed JSON).
-    ParseError,
-    /// Extension was asked to do something outside its capability.
-    NotImplemented,
+    // JSON-RPC 2.0 standard codes
+    ParseError = -32700,
+    InvalidRequest = -32600,
+    MethodNotFound = -32601,
+    InvalidParams = -32602,
+    InternalError = -32603,
+
+    // Omegon extension codes (-32000..-32099)
+    Timeout = -32000,
+    NotImplemented = -32001,
+    ManifestError = -32002,
+    VersionMismatch = -32003,
+    Cancelled = -32004,
+    ResourceNotFound = -32005,
+    SamplingDenied = -32006,
+}
+
+impl ErrorCode {
+    /// Numeric JSON-RPC error code.
+    pub fn numeric(self) -> i32 {
+        self as i32
+    }
+
+    /// Human-readable label (e.g. "MethodNotFound").
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ParseError => "ParseError",
+            Self::InvalidRequest => "InvalidRequest",
+            Self::MethodNotFound => "MethodNotFound",
+            Self::InvalidParams => "InvalidParams",
+            Self::InternalError => "InternalError",
+            Self::Timeout => "Timeout",
+            Self::NotImplemented => "NotImplemented",
+            Self::ManifestError => "ManifestError",
+            Self::VersionMismatch => "VersionMismatch",
+            Self::Cancelled => "Cancelled",
+            Self::ResourceNotFound => "ResourceNotFound",
+            Self::SamplingDenied => "SamplingDenied",
+        }
+    }
+
+    /// Attempt to parse from a numeric code.
+    pub fn from_numeric(code: i32) -> Option<Self> {
+        match code {
+            -32700 => Some(Self::ParseError),
+            -32600 => Some(Self::InvalidRequest),
+            -32601 => Some(Self::MethodNotFound),
+            -32602 => Some(Self::InvalidParams),
+            -32603 => Some(Self::InternalError),
+            -32000 => Some(Self::Timeout),
+            -32001 => Some(Self::NotImplemented),
+            -32002 => Some(Self::ManifestError),
+            -32003 => Some(Self::VersionMismatch),
+            -32004 => Some(Self::Cancelled),
+            -32005 => Some(Self::ResourceNotFound),
+            -32006 => Some(Self::SamplingDenied),
+            _ => None,
+        }
+    }
+
+    /// Attempt to parse from a v1 string label (backward compat).
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "ParseError" => Some(Self::ParseError),
+            "InvalidRequest" => Some(Self::InvalidRequest),
+            "MethodNotFound" => Some(Self::MethodNotFound),
+            "InvalidParams" => Some(Self::InvalidParams),
+            "InternalError" => Some(Self::InternalError),
+            "Timeout" => Some(Self::Timeout),
+            "NotImplemented" => Some(Self::NotImplemented),
+            "ManifestError" => Some(Self::ManifestError),
+            "VersionMismatch" => Some(Self::VersionMismatch),
+            "Cancelled" => Some(Self::Cancelled),
+            "ResourceNotFound" => Some(Self::ResourceNotFound),
+            "SamplingDenied" => Some(Self::SamplingDenied),
+            _ => None,
+        }
+    }
+
+    /// Whether this error is discovered during installation/validation.
+    pub fn is_install_time(self) -> bool {
+        matches!(self, Self::ManifestError | Self::VersionMismatch)
+    }
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| format!("{:?}", self));
-        write!(f, "{}", s)
+        write!(f, "{}", self.label())
+    }
+}
+
+impl std::error::Error for ErrorCode {}
+
+// Serialize as the string label for backward compat in v1 mode.
+// The RpcError struct handles the numeric/label split for v2.
+impl Serialize for ErrorCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.label())
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        // Accept either a string label or numeric code.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(s) => Self::from_label(s).ok_or_else(|| {
+                serde::de::Error::custom(format!("unknown error code label: {s}"))
+            }),
+            serde_json::Value::Number(n) => {
+                let code = n
+                    .as_i64()
+                    .ok_or_else(|| serde::de::Error::custom("error code must be an integer"))?
+                    as i32;
+                Self::from_numeric(code).ok_or_else(|| {
+                    serde::de::Error::custom(format!("unknown numeric error code: {code}"))
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "error code must be a string or integer",
+            )),
+        }
     }
 }
 
@@ -40,8 +140,6 @@ impl From<ErrorCode> for String {
         code.to_string()
     }
 }
-
-impl std::error::Error for ErrorCode {}
 
 /// Extension result type. Always propagates the error code for RPC responses.
 #[derive(Debug)]
@@ -57,7 +155,7 @@ impl Error {
         Self {
             code,
             message: message.into(),
-            is_install_time: false,
+            is_install_time: code.is_install_time(),
         }
     }
 
@@ -116,6 +214,21 @@ impl Error {
             ErrorCode::NotImplemented,
             format!("feature '{}' not implemented", feature),
         )
+    }
+
+    pub fn cancelled() -> Self {
+        Self::new(ErrorCode::Cancelled, "request was cancelled")
+    }
+
+    pub fn resource_not_found(uri: &str) -> Self {
+        Self::new(
+            ErrorCode::ResourceNotFound,
+            format!("resource not found: {}", uri),
+        )
+    }
+
+    pub fn sampling_denied(reason: impl Into<String>) -> Self {
+        Self::new(ErrorCode::SamplingDenied, reason)
     }
 }
 

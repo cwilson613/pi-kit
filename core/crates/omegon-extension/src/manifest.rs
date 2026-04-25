@@ -153,7 +153,7 @@ impl ExtensionManifest {
             .extension
             .name
             .chars()
-            .all(|c| c.is_alphanumeric() || c == '-')
+            .all(|c| (c.is_ascii_lowercase() || c.is_ascii_digit()) || c == '-')
         {
             return Err(ManifestError::fatal(
                 "extension.name must contain only lowercase alphanumeric and hyphens",

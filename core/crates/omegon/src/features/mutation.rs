@@ -1667,12 +1667,137 @@ This pattern applies when working with `{tool}` on files matching the recovery c
             details: Value::Null,
         }
     }
+    fn format_config(&self) -> String {
+        let cfg = &self.impact_config;
+        let config_path = self.omegon_home.join("mutation/impact.toml");
+        let config_source = if config_path.exists() {
+            format!("{}", config_path.display())
+        } else {
+            "defaults (no impact.toml found)".into()
+        };
+
+        let w = &cfg.weights;
+        format!(
+            "## Mutation Configuration\n\n\
+             **Source:** {config_source}\n\n\
+             ### Behavior\n\
+             - Artifact generation: {artifact_gen}\n\
+             - Min turns for analysis: {min_turns}\n\n\
+             ### Signal Weights\n\
+             - Component score delta: {w_comp}\n\
+             - Burn ratio delta: {w_burn}\n\
+             - Recovery recurrence: {w_recur}\n\
+             - Turn efficiency: {w_turns}\n\
+             - Token efficiency: {w_tokens}\n\
+             - Usage frequency: {w_usage}\n\
+             - Age decay: {w_age}\n\
+             - Usage-burn interaction: {w_interact}\n\n\
+             ### Learning\n\
+             - Learning rate: {lr}\n\
+             - Neutral point: {np}\n\n\
+             ### Confidence\n\
+             - Floor: {c_floor} / Ceiling: {c_ceil}\n\
+             - Auto-archive threshold: {c_arch}\n\n\
+             ### Windows\n\
+             - Eval attribution: {t_eval} days\n\
+             - Burn comparison: {n_burn} sessions\n\
+             - Recurrence lookback: {n_recur} sessions\n\
+             - Age half-life: {t_half} days\n\
+             - Min eval runs: {n_eval}\n\
+             - Session cadence: {n_cad} sessions\n\n\
+             ### Escalation\n\
+             - Diagnostic threshold: {esc_thresh}\n\
+             - Severity normalizer: {esc_norm} tokens\n\n\
+             ### Telemetry\n\
+             - Share impact data: {share}\n\n\
+             To customize, create or edit `{config_path}`.",
+            config_source = config_source,
+            artifact_gen = if cfg.behavior.generate_artifacts { "**enabled**" } else { "disabled (observation only)" },
+            min_turns = cfg.behavior.min_turns_for_analysis,
+            w_comp = w.component_score_delta,
+            w_burn = w.burn_ratio_delta,
+            w_recur = w.recovery_recurrence,
+            w_turns = w.turn_efficiency,
+            w_tokens = w.token_efficiency,
+            w_usage = w.usage_frequency,
+            w_age = w.age_decay,
+            w_interact = w.usage_burn_interaction,
+            lr = cfg.learning.learning_rate,
+            np = cfg.learning.neutral_point,
+            c_floor = cfg.confidence.floor,
+            c_ceil = cfg.confidence.ceiling,
+            c_arch = cfg.confidence.auto_archive_threshold,
+            t_eval = cfg.windows.eval_attribution_days,
+            n_burn = cfg.windows.burn_comparison_sessions,
+            n_recur = cfg.windows.recurrence_lookback_sessions,
+            t_half = cfg.windows.age_half_life_days,
+            n_eval = cfg.windows.min_eval_runs_for_attribution,
+            n_cad = cfg.windows.session_cadence,
+            esc_thresh = cfg.escalation.diagnostic_recurrence_threshold,
+            esc_norm = cfg.escalation.severity_normalizer,
+            share = cfg.telemetry.share_impact_data,
+            config_path = config_path.display(),
+        )
+    }
 }
 
 #[async_trait]
 impl Feature for MutationFeature {
     fn name(&self) -> &str {
         "mutation"
+    }
+
+    fn commands(&self) -> Vec<omegon_traits::CommandDefinition> {
+        vec![omegon_traits::CommandDefinition {
+            name: "mutation".into(),
+            description: "Mutation system — burn metrics, learned skills, diagnostics".into(),
+            subcommands: vec![
+                "stats".into(),
+                "review".into(),
+                "config".into(),
+            ],
+        }]
+    }
+
+    fn handle_command(&mut self, name: &str, args: &str) -> omegon_traits::CommandResult {
+        if name != "mutation" {
+            return omegon_traits::CommandResult::NotHandled;
+        }
+        let sub = args.trim();
+        match sub {
+            "stats" | "" => {
+                let result = self.execute_stats();
+                let text = result
+                    .content
+                    .into_iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                omegon_traits::CommandResult::Display(text)
+            }
+            "review" => {
+                let result = self.execute_review();
+                let text = result
+                    .content
+                    .into_iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                omegon_traits::CommandResult::Display(text)
+            }
+            "config" => {
+                omegon_traits::CommandResult::Display(self.format_config())
+            }
+            _ => omegon_traits::CommandResult::Display(
+                "Unknown subcommand. Available: stats, review, config".into(),
+            ),
+        }
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {

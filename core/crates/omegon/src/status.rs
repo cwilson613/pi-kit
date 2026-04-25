@@ -65,6 +65,11 @@ pub struct HarnessStatus {
     pub cleave_available: bool,
     pub memory_warning: Option<String>,
 
+    // ── Mutation system ─────────────────────────────────────
+    pub mutation_artifacts_enabled: bool,
+    pub mutation_learned_skills: usize,
+    pub mutation_diagnostics: usize,
+
     // ── Active delegates ─────────────────────────────────────
     /// Currently running delegate processes (cleave children).
     pub active_delegates: Vec<DelegateSummary>,
@@ -471,6 +476,27 @@ impl HarnessStatus {
             && tool_defs
                 .iter()
                 .any(|t| t.name == crate::tool_registry::cleave::CLEAVE_RUN);
+
+        // Populate mutation status from filesystem.
+        if let Ok(home) = crate::paths::omegon_home() {
+            let config_path = home.join("mutation/impact.toml");
+            if config_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    self.mutation_artifacts_enabled = content.contains("generate_artifacts = true");
+                }
+            }
+            let skills_dir = home.join("skills/learned");
+            self.mutation_learned_skills = std::fs::read_dir(&skills_dir)
+                .ok()
+                .map(|e| e.flatten().filter(|d| d.path().join("SKILL.md").exists()).count())
+                .unwrap_or(0);
+            let diag_dir = home.join("diagnostics");
+            self.mutation_diagnostics = std::fs::read_dir(&diag_dir)
+                .ok()
+                .map(|e| e.flatten().filter(|d| d.path().extension().is_some_and(|ext| ext == "md")).count())
+                .unwrap_or(0);
+        }
+
         let mcp_tools: Vec<_> = tool_defs
             .iter()
             .filter(|t| t.label.starts_with("mcp:"))
@@ -771,6 +797,9 @@ impl Default for HarnessStatus {
             memory_available: false,
             cleave_available: false,
             memory_warning: None,
+            mutation_artifacts_enabled: false,
+            mutation_learned_skills: 0,
+            mutation_diagnostics: 0,
             active_delegates: vec![],
         }
     }

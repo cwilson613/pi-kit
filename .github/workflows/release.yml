@@ -472,7 +472,9 @@ jobs:
   oci-images:
     name: OCI images (${{ matrix.image }})
     needs: release
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
+    # Only build OCI images for stable releases — RCs and nightlies don't
+    # need container images, and 7 Nix builds burn ~70 runner-minutes.
+    if: ${{ !contains(inputs.tag_name || github.ref_name, '-nightly.') && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     permissions:
       packages: write

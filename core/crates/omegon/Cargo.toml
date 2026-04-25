@@ -19,9 +19,9 @@ agent-client-protocol = "0.10"
 ignore = "0.4"
 grep-regex = "0.1"
 grep-matcher = "0.1"
-omegon-memory = { path = "../omegon-memory" }
+omegon-memory = { path = "../omegon-memory", features = ["agent"] }
 omegon-codescan = { path = "../omegon-codescan" }
-omegon-secrets = { path = "../omegon-secrets" }
+omegon-secrets = { path = "../omegon-secrets", features = ["agent"] }
 omegon-opsx = { path = "../omegon-opsx" }
 tokio = { workspace = true }
 serde = { workspace = true }

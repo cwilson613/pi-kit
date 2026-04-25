@@ -505,8 +505,15 @@ impl SecretsManager {
         redactor.redact_content_blocks(content);
     }
 
-    /// Redact secrets from a slice of mutable strings.
-    /// Standalone alternative — no omegon-traits dependency required.
+    /// Redact secrets in a single string in place. This is the composable
+    /// primitive — works with any container. Call it per-string from your
+    /// own iteration logic.
+    pub fn redact_in_place(&self, text: &mut String) {
+        let redactor = self.redactor.read().unwrap();
+        redactor.redact_in_place(text);
+    }
+
+    /// Redact secrets across a slice of strings in place.
     pub fn redact_strings(&self, texts: &mut [String]) {
         let redactor = self.redactor.read().unwrap();
         redactor.redact_strings(texts);

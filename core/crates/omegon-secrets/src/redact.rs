@@ -54,7 +54,7 @@ impl Redactor {
         }
     }
 
-    /// Redact all known secret values from a string in a single pass.
+    /// Redact all known secret values from a string, returning a new string.
     pub fn redact(&self, input: &str) -> String {
         match &self.automaton {
             Some(ac) => ac.replace_all(input, &self.replacements),
@@ -62,30 +62,28 @@ impl Redactor {
         }
     }
 
-    /// Redact secrets from a slice of mutable strings.
-    /// Generic alternative to `redact_content_blocks` — works without
-    /// omegon-traits dependency.
+    /// Redact secrets in place. This is the composable primitive — works
+    /// with any container by letting the caller provide `&mut String`
+    /// references from whatever data structure they have.
+    pub fn redact_in_place(&self, text: &mut String) {
+        if let Some(ac) = &self.automaton {
+            *text = ac.replace_all(text, &self.replacements);
+        }
+    }
+
+    /// Redact secrets across a slice of strings in place.
     pub fn redact_strings(&self, texts: &mut [String]) {
         if self.automaton.is_none() {
             return;
         }
         for text in texts.iter_mut() {
-            *text = self.redact(text);
+            self.redact_in_place(text);
         }
-    }
-
-    /// Redact secrets by calling a visitor function on each mutable string
-    /// found in a collection. The caller decides how to extract strings
-    /// from their data structure.
-    pub fn redact_each(&self, mut visitor: impl FnMut(&Self)) {
-        if self.automaton.is_none() {
-            return;
-        }
-        visitor(self);
     }
 
     /// Redact secrets from omegon-traits ContentBlock vectors.
-    /// Only available with the `agent` feature.
+    /// Only available with the `agent` feature. For standalone use,
+    /// iterate your container and call `redact_in_place` per string.
     #[cfg(feature = "agent")]
     pub fn redact_content_blocks(&self, content: &mut Vec<omegon_traits::ContentBlock>) {
         if self.automaton.is_none() {
@@ -93,7 +91,7 @@ impl Redactor {
         }
         for block in content.iter_mut() {
             if let omegon_traits::ContentBlock::Text { text } = block {
-                *text = self.redact(text);
+                self.redact_in_place(text);
             }
         }
     }

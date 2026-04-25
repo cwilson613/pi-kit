@@ -50,7 +50,8 @@ jobs:
 
       - name: Build preview staging site
         run: |
-          cp core/install.sh site/public/install.sh
+          # Preview site defaults to rc channel instead of stable
+          sed 's/CHANNEL="${CHANNEL:-stable}"/CHANNEL="${CHANNEL:-rc}"/' core/install.sh > site/public/install.sh
           cd site
           PUBLIC_SITE_VARIANT=preview \
           PUBLIC_SITE_URL=https://omegon.styrene.dev \

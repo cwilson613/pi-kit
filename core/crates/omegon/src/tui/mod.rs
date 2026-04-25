@@ -24,6 +24,7 @@ pub mod segments;
 pub mod selector;
 pub mod spinner;
 pub mod splash;
+pub mod statusline;
 pub mod theme;
 pub mod tutorial;
 pub mod widget_renderer;
@@ -289,6 +290,8 @@ pub struct App {
     replay_splash: bool,
     /// Plugin registry — manages active persona, tone, and memory layers.
     plugin_registry: Option<crate::plugins::registry::PluginRegistry>,
+    /// Slim-mode status line — persistent telemetry bar.
+    status_line: statusline::StatusLine,
     /// Visual effects manager (tachyonfx).
     effects: effects::Effects,
     /// Command definitions from bus features.
@@ -1037,6 +1040,7 @@ impl App {
             plugin_registry: Some(crate::plugins::registry::PluginRegistry::new(
                 crate::prompt::load_lex_imperialis(),
             )),
+            status_line: statusline::StatusLine::default(),
             effects: effects::Effects::new(),
             bus_commands: Vec::new(),
             dashboard_handles: dashboard::DashboardHandles::default(),
@@ -2809,12 +2813,16 @@ impl App {
             1
         };
 
+        let status_height =
+            if matches!(self.ui_mode, UiMode::Slim) && !self.focus_mode { 1u16 } else { 0 };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(3),                // [0] conversation
-                Constraint::Length(editor_height), // [1] editor (dynamic)
-                Constraint::Length(footer_height), // [2] footer console (dynamic)
+                Constraint::Min(3),                  // [0] conversation
+                Constraint::Length(status_height),    // [1] status line (slim only)
+                Constraint::Length(editor_height),    // [2] editor (dynamic)
+                Constraint::Length(footer_height),    // [3] footer console (dynamic)
             ])
             .split(main_area);
 
@@ -2869,7 +2877,13 @@ impl App {
         }
 
         self.conversation_area = Some(chunks[0]);
-        self.editor_area = Some(chunks[1]);
+        self.editor_area = Some(chunks[2]);
+
+        // ── Status line (slim mode only) ────────────────────────
+        if status_height > 0 {
+            self.status_line.sync_from_footer(&self.footer_data);
+            self.status_line.render(chunks[1], frame, self.theme.as_ref());
+        }
 
         // Overlay images on top of placeholders (second pass — needs Frame for StatefulImage)
         {
@@ -3032,7 +3046,7 @@ impl App {
         // ── Unified footer console: engine | inference | tools ──────
         // Store instrument areas for cleanup pass to skip.
         let inst_area = if !self.focus_mode && self.ui_surfaces.footer {
-            let footer_area = chunks[2];
+            let footer_area = chunks[3];
             if self.ui_surfaces.instruments {
                 let footer_cols = Layout::horizontal([
                     Constraint::Percentage(32),
@@ -3108,7 +3122,7 @@ impl App {
                 .style(Style::default().fg(t.accent_muted()).bg(t.surface_bg()))
                 .block(editor_block)
                 .wrap(ratatui::widgets::Wrap { trim: false });
-            frame.render_widget(editor_widget, chunks[1]);
+            frame.render_widget(editor_widget, chunks[2]);
         } else if let editor::EditorMode::ReverseSearch {
             ref query,
             ref match_idx,
@@ -3129,7 +3143,7 @@ impl App {
                 .style(Style::default().fg(t.fg()).bg(t.surface_bg()))
                 .block(editor_block)
                 .wrap(ratatui::widgets::Wrap { trim: false });
-            frame.render_widget(editor_widget, chunks[1]);
+            frame.render_widget(editor_widget, chunks[2]);
         } else {
             let hint_text = if self.agent_active {
                 String::new()
@@ -3172,7 +3186,7 @@ impl App {
                         .right_aligned(),
                 );
 
-            let editor_rect = chunks[1];
+            let editor_rect = chunks[2];
             // Pre-split using char-boundary wrapping (same algorithm as
             // cursor_screen_position) so the terminal cursor always lands on
             // the correct visual cell.  Paragraph::wrap uses word boundaries
@@ -3224,7 +3238,7 @@ impl App {
             };
             if !matches.is_empty() {
                 let palette_height = matches.len().min(8) as u16 + 2; // +2 for borders
-                let editor_area = chunks[1];
+                let editor_area = chunks[2];
                 let palette_area = Rect {
                     x: editor_area.x,
                     y: editor_area.y.saturating_sub(palette_height),
@@ -3269,11 +3283,11 @@ impl App {
 
         // ── Post-render effects (tachyonfx) — each zone processed separately ──
         self.effects
-            .process(frame.buffer_mut(), chunks[0], chunks[2], chunks[1]);
+            .process(frame.buffer_mut(), chunks[0], chunks[3], chunks[2]);
 
         // ── Tutorial overlay — rendered on top of everything except toasts ──
         if let Some(ref overlay) = self.tutorial_overlay {
-            let footer_h = if self.focus_mode { 0 } else { chunks[2].height };
+            let footer_h = if self.focus_mode { 0 } else { chunks[3].height };
             overlay.render(main_area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
         }
 
@@ -5352,9 +5366,18 @@ impl App {
                 actual_output_tokens,
                 cache_read_tokens,
                 provider_telemetry,
+                dominant_phase,
+                drift_kind,
+                files_read_count,
+                files_modified_count,
                 ..
             } => {
                 self.turn = turn;
+                // Update status line with behavioral signals
+                self.status_line.phase = dominant_phase;
+                self.status_line.drift = drift_kind;
+                self.status_line.files_read = files_read_count;
+                self.status_line.files_modified = files_modified_count;
                 // Accumulate session-long token counts
                 self.footer_data.session_input_tokens += actual_input_tokens;
                 self.footer_data.session_output_tokens += actual_output_tokens;

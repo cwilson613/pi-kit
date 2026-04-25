@@ -916,5 +916,27 @@
     "released": "2026-04-24T13:07:48Z",
     "rc_count": 0,
     "notes": []
+  },
+  "0.17.0": {
+    "status": "rc",
+    "channel": "stable",
+    "nodes": [],
+    "frozen": false,
+    "opened": "2026-04-25T16:33:48Z",
+    "last_rc": "2026-04-25T16:33:48Z",
+    "rc_version": "0.17.0-rc.1",
+    "rc_count": 1,
+    "released": null,
+    "notes": [
+      "fix: gitignore mock-extension state.toml to prevent test-induced tree dirt",
+      "feat: add slim-mode status line with responsive field shedding",
+      "refactor: add redact_in_place as composable primitive for cross-crate use",
+      "fix: explicitly enable agent feature on omegon-memory and omegon-secrets",
+      "refactor: decouple omegon-secrets and omegon-memory for standalone use",
+      "refactor: rename opsx-core to omegon-opsx",
+      "feat: add /mutation command and harness status integration",
+      "feat: add MutationFeature — evolutionary skill and diagnostic creation",
+      "fix(ci): decouple Linux ARM build from release publication"
+    ]
   }
 }

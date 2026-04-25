@@ -122,6 +122,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
         assert!(requests.is_empty(), "turn 1 should not trigger compaction");
     }
@@ -141,6 +144,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
         assert_eq!(requests.len(), 1);
         assert!(matches!(requests[0], BusRequest::RequestCompaction));
@@ -162,6 +168,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
         assert_eq!(r1.len(), 1, "first compaction should fire");
 
@@ -180,6 +189,9 @@ mod tests {
             actual_output_tokens: 0,
             cache_read_tokens: 0,
             provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
         assert!(
             r2.is_empty(),

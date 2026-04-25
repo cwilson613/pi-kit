@@ -35,6 +35,22 @@ pub struct ScoreCardDiff {
     pub component_deltas: std::collections::HashMap<String, f64>,
     pub scenario_diffs: Vec<ScenarioDiff>,
     pub matrix_changes: Vec<String>,
+    /// Learned skills added or removed between runs (mutation-awareness).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutation_skill_changes: Vec<String>,
+    /// Summary of burn-history between the two eval runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_burn_summary: Option<MutationBurnSummary>,
+}
+
+/// Burn-history summary between two eval runs, for mutation attribution.
+#[derive(Debug, Clone, Serialize)]
+pub struct MutationBurnSummary {
+    pub sessions_between: usize,
+    pub avg_burn_ratio: f64,
+    pub total_recoveries: usize,
+    pub skills_created: usize,
+    pub diagnostics_created: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -292,6 +308,23 @@ fn diff_cards(id_a: &str, id_b: &str, a: &ScoreCard, b: &ScoreCard) -> ScoreCard
         ));
     }
 
+    // Detect learned skill changes from the skills component of the matrix.
+    let mut mutation_skill_changes = Vec::new();
+    let skills_a: std::collections::HashSet<&str> =
+        a.components.skills.iter().map(|s| s.as_str()).collect();
+    let skills_b: std::collections::HashSet<&str> =
+        b.components.skills.iter().map(|s| s.as_str()).collect();
+    for added in skills_b.difference(&skills_a) {
+        mutation_skill_changes.push(format!("+ {added}"));
+    }
+    for removed in skills_a.difference(&skills_b) {
+        mutation_skill_changes.push(format!("- {removed}"));
+    }
+    mutation_skill_changes.sort();
+
+    // Read burn-history between the two timestamps for attribution context.
+    let mutation_burn_summary = read_burn_summary_between(&a.timestamp, &b.timestamp);
+
     ScoreCardDiff {
         card_a: id_a.to_string(),
         card_b: id_b.to_string(),
@@ -301,6 +334,8 @@ fn diff_cards(id_a: &str, id_b: &str, a: &ScoreCard, b: &ScoreCard) -> ScoreCard
         component_deltas,
         scenario_diffs,
         matrix_changes,
+        mutation_skill_changes,
+        mutation_burn_summary,
     }
 }
 
@@ -368,6 +403,61 @@ fn compute_trend(runs: &[&ScoreCardEntry]) -> Trend {
     } else {
         Trend::Stable
     }
+}
+
+/// Read burn-history entries between two ISO timestamps and summarize.
+/// Returns None if burn-history file doesn't exist or has no entries in range.
+fn read_burn_summary_between(ts_a: &str, ts_b: &str) -> Option<MutationBurnSummary> {
+    let burn_path = crate::paths::omegon_home()
+        .ok()?
+        .join("mutation/burn-history.jsonl");
+    if !burn_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&burn_path).ok()?;
+
+    let mut sessions = 0usize;
+    let mut total_burn_ratio = 0.0f64;
+    let mut total_recoveries = 0usize;
+    let mut total_skills = 0usize;
+    let mut total_diagnostics = 0usize;
+
+    for line in content.lines() {
+        // Quick timestamp check without full deserialization.
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(ts) = entry.get("timestamp").and_then(|v| v.as_str()) {
+                if ts > ts_a && ts <= ts_b {
+                    sessions += 1;
+                    total_burn_ratio +=
+                        entry.get("burn_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    total_recoveries += entry
+                        .get("recoveries")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    total_skills += entry
+                        .get("skills_created")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    total_diagnostics += entry
+                        .get("diagnostics_created")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                }
+            }
+        }
+    }
+
+    if sessions == 0 {
+        return None;
+    }
+
+    Some(MutationBurnSummary {
+        sessions_between: sessions,
+        avg_burn_ratio: total_burn_ratio / sessions as f64,
+        total_recoveries,
+        skills_created: total_skills,
+        diagnostics_created: total_diagnostics,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

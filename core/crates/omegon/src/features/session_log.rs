@@ -876,6 +876,7 @@ impl Feature for SessionLog {
                 actual_output_tokens,
                 cache_read_tokens,
                 provider_telemetry,
+                ..
             } => {
                 self.turn_summaries.push(TurnSummary {
                     turn: *turn,
@@ -1069,6 +1070,9 @@ mod tests {
                 unified_5h_utilization_pct: Some(42.0),
                 ..Default::default()
             }),
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
         });
 
         feature.on_event(&BusEvent::SessionEnd {

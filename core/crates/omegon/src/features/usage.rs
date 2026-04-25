@@ -136,6 +136,9 @@ mod tests {
             actual_input_tokens: 0,
             actual_output_tokens: 0,
             cache_read_tokens: 0,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
             provider_telemetry: Some(ProviderTelemetrySnapshot {
                 provider: "anthropic".into(),
                 source: "response_headers".into(),
@@ -176,6 +179,9 @@ mod tests {
             actual_input_tokens: 0,
             actual_output_tokens: 0,
             cache_read_tokens: 0,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
             provider_telemetry: Some(ProviderTelemetrySnapshot {
                 provider: "openai-codex".into(),
                 source: "response_headers".into(),

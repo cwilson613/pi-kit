@@ -299,6 +299,9 @@ pub async fn run(
                 actual_output_tokens: 0,
                 cache_read_tokens: 0,
                 provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
             });
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
@@ -568,6 +571,9 @@ pub async fn run(
                     actual_output_tokens: 0,
                     cache_read_tokens: 0,
                     provider_telemetry: None,
+                    dominant_phase: None,
+                    drift_kind: None,
+                    progress_signal: omegon_traits::ProgressSignal::None,
                 });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
@@ -650,6 +656,9 @@ pub async fn run(
                     actual_output_tokens: act_out,
                     cache_read_tokens: act_cr,
                     provider_telemetry: provider_telemetry.clone(),
+                    dominant_phase: None,
+                    drift_kind: Some(DriftKind::ClosureStall),
+                    progress_signal: omegon_traits::ProgressSignal::None,
                 });
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
@@ -749,6 +758,9 @@ pub async fn run(
                 actual_output_tokens: act_out,
                 cache_read_tokens: act_cr,
                 provider_telemetry: provider_telemetry.clone(),
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
             });
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
@@ -896,7 +908,16 @@ pub async fn run(
                 name: call.name.clone(),
                 result: omegon_traits::ToolResult {
                     content: result.content.clone(),
-                    details: serde_json::Value::Null,
+                    details: {
+                        let mut summary = serde_json::Map::new();
+                        if let Some(p) = call.arguments.get("path") {
+                            summary.insert("path".into(), p.clone());
+                        }
+                        if let Some(c) = call.arguments.get("command") {
+                            summary.insert("command".into(), c.clone());
+                        }
+                        serde_json::Value::Object(summary)
+                    },
                 },
                 is_error: result.is_error,
             });
@@ -943,6 +964,9 @@ pub async fn run(
             actual_output_tokens: act_out,
             cache_read_tokens: act_cr,
             provider_telemetry: provider_telemetry.clone(),
+            dominant_phase,
+            drift_kind,
+            progress_signal,
         });
 
         // ─── Handle bus requests from features ──────────────────────

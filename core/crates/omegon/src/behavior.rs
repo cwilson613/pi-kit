@@ -7,6 +7,7 @@
 
 use crate::conversation::{ConversationState, ToolCall, ToolResultEntry};
 use omegon_traits::{DriftKind, OodaPhase, ProgressNudgeReason};
+pub(crate) use omegon_traits::ProgressSignal;
 
 // ─── Tool classification predicates ────────────────────────────────────────
 
@@ -304,16 +305,7 @@ pub(crate) fn should_inject_execution_pressure(
 
 // ─── Progress signals & evidence ───────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProgressSignal {
-    None,
-    Mutation,
-    TargetedValidation,
-    BroadValidation,
-    ConstraintDiscovery,
-    Commit,
-    Completion,
-}
+// ProgressSignal is now defined in omegon-traits and imported above.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvidenceSufficiency {

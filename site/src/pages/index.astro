@@ -11,9 +11,13 @@ import {
 
 const cargoToml = readFileSync(resolve("../Cargo.toml"), "utf-8");
 const cargoVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? "0.0.0";
-// Use the actual Cargo.toml version (which includes -rc.N suffix) for the
-// release link. This ensures the link points to a tag that actually exists.
-const currentVersion = `v${cargoVersion}`;
+const changelog = readFileSync(resolve("../CHANGELOG.md"), "utf-8");
+// Find the first changelog entry with a date (= actually released, not "Unreleased").
+const releasedMatch = changelog.match(/## \[([0-9]+\.[0-9]+\.[0-9]+)\]\s*-\s*\d{4}/);
+const lastStableVersion = releasedMatch ? `v${releasedMatch[1]}` : "latest";
+// Preview (.dev) → Cargo.toml version (e.g. v0.17.0-rc.1) — the current RC.
+// Stable (.io) → last released changelog entry (e.g. v0.16.1) — what `CHANNEL=stable` installs.
+const currentVersion = isPreviewSite ? `v${cargoVersion}` : lastStableVersion;
 
 const valueCards = [
   {

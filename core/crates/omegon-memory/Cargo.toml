@@ -5,8 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["agent"]
+agent = ["dep:omegon-traits", "dep:tokio-util"]
+
 [dependencies]
-omegon-traits = { path = "../omegon-traits" }
+omegon-traits = { path = "../omegon-traits", optional = true }
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
@@ -14,7 +18,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 tracing.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, optional = true }
 sha2 = "0.10"
 hex = "0.4"
 

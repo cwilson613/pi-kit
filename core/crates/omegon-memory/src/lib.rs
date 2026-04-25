@@ -23,6 +23,7 @@ pub mod decay;
 pub mod embedding;
 pub mod hash;
 pub mod inmemory;
+#[cfg(feature = "agent")]
 pub mod provider;
 pub mod renderer;
 pub mod sqlite;
@@ -40,6 +41,7 @@ pub use decay::{DecayProfile, compute_confidence};
 pub use embedding::{EmbedError, EmbeddingService};
 pub use hash::{content_hash, normalize_for_hash};
 pub use inmemory::InMemoryBackend;
+#[cfg(feature = "agent")]
 pub use provider::MemoryProvider;
 pub use renderer::MarkdownRenderer;
 pub use sqlite::SqliteBackend;

@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 description = "Secret resolution, output redaction, and tool guards for Omegon"
 
+[features]
+default = ["agent"]
+agent = ["dep:omegon-traits"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -13,7 +17,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
-omegon-traits = { path = "../omegon-traits" }
+omegon-traits = { path = "../omegon-traits", optional = true }
 keyring = { version = "3", features = ["apple-native", "linux-native"] }
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = "1"

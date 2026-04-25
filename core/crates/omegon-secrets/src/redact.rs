@@ -62,7 +62,31 @@ impl Redactor {
         }
     }
 
-    /// Redact secrets from content blocks (text blocks only).
+    /// Redact secrets from a slice of mutable strings.
+    /// Generic alternative to `redact_content_blocks` — works without
+    /// omegon-traits dependency.
+    pub fn redact_strings(&self, texts: &mut [String]) {
+        if self.automaton.is_none() {
+            return;
+        }
+        for text in texts.iter_mut() {
+            *text = self.redact(text);
+        }
+    }
+
+    /// Redact secrets by calling a visitor function on each mutable string
+    /// found in a collection. The caller decides how to extract strings
+    /// from their data structure.
+    pub fn redact_each(&self, mut visitor: impl FnMut(&Self)) {
+        if self.automaton.is_none() {
+            return;
+        }
+        visitor(self);
+    }
+
+    /// Redact secrets from omegon-traits ContentBlock vectors.
+    /// Only available with the `agent` feature.
+    #[cfg(feature = "agent")]
     pub fn redact_content_blocks(&self, content: &mut Vec<omegon_traits::ContentBlock>) {
         if self.automaton.is_none() {
             return;
@@ -80,16 +104,6 @@ impl Redactor {
 pub(crate) fn redact_string(input: &str, secrets: &HashMap<String, SecretString>) -> String {
     let redactor = Redactor::build(secrets);
     redactor.redact(input)
-}
-
-/// Redact content blocks. Used internally and in tests.
-#[cfg(test)]
-pub(crate) fn redact_content_blocks(
-    content: &mut Vec<omegon_traits::ContentBlock>,
-    secrets: &HashMap<String, SecretString>,
-) {
-    let redactor = Redactor::build(secrets);
-    redactor.redact_content_blocks(content);
 }
 
 #[cfg(test)]
@@ -164,5 +178,21 @@ mod tests {
             redactor.redact("another super-secret-value-here mention"),
             "another [REDACTED:KEY] mention"
         );
+    }
+
+    #[test]
+    fn redact_strings_works() {
+        let mut secrets = HashMap::new();
+        secrets.insert("KEY".into(), secret("super-secret-value-here"));
+        let redactor = Redactor::build(&secrets);
+        let mut texts = vec![
+            "got super-secret-value-here".to_string(),
+            "clean text".to_string(),
+            "another super-secret-value-here one".to_string(),
+        ];
+        redactor.redact_strings(&mut texts);
+        assert_eq!(texts[0], "got [REDACTED:KEY]");
+        assert_eq!(texts[1], "clean text");
+        assert_eq!(texts[2], "another [REDACTED:KEY] one");
     }
 }

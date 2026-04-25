@@ -498,9 +498,18 @@ impl SecretsManager {
     }
 
     /// Redact secrets from tool result content blocks.
+    /// Only available with the `agent` feature (requires omegon-traits).
+    #[cfg(feature = "agent")]
     pub fn redact_content(&self, content: &mut Vec<omegon_traits::ContentBlock>) {
         let redactor = self.redactor.read().unwrap();
         redactor.redact_content_blocks(content);
+    }
+
+    /// Redact secrets from a slice of mutable strings.
+    /// Standalone alternative — no omegon-traits dependency required.
+    pub fn redact_strings(&self, texts: &mut [String]) {
+        let redactor = self.redactor.read().unwrap();
+        redactor.redact_strings(texts);
     }
 
     /// Check if a tool call should be guarded (sensitive path access).

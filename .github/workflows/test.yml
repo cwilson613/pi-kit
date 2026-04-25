@@ -46,4 +46,12 @@ jobs:
         run: python3 scripts/validate_benchmarks.py
 
       - name: Validate benchmark harness loads
-        run: python3 -c "import importlib.util, sys; spec = importlib.util.spec_from_file_location('h', 'scripts/benchmark_harness.py'); m = importlib.util.module_from_spec(spec); sys.modules['h'] = m; spec.loader.exec_module(m); print('benchmark_harness.py: ok')"
+        run: |
+          python3 -c "
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location('h', 'scripts/benchmark_harness.py')
+          m = importlib.util.module_from_spec(spec)
+          sys.modules['h'] = m
+          spec.loader.exec_module(m)
+          print('benchmark_harness.py: ok')
+          "

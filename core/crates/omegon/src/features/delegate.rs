@@ -954,6 +954,10 @@ pub struct DelegateFeature {
     /// When set, the delegation model catalog is injected into the system prompt
     /// so the orchestrator can route delegate tasks to appropriate models.
     provider_inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
+    /// User prompts captured from ContextBuild events, in order.
+    /// Used to detect when the model grabs a stale early message
+    /// (e.g., "testing", "hello") as a delegate task.
+    user_prompts: Vec<String>,
 }
 
 impl DelegateFeature {
@@ -976,7 +980,38 @@ impl DelegateFeature {
             session_model: Arc::new(Mutex::new(initial_model)),
             consecutive_failures: Arc::new(Mutex::new(0)),
             provider_inventory: None,
+            user_prompts: Vec::new(),
         }
+    }
+
+    /// Return the most recent substantive user prompt (>10 chars, not the
+    /// first throwaway message if it was short). Used to substitute when
+    /// the model grabs a stale early message as a delegate task.
+    fn latest_substantive_prompt(&self) -> Option<&str> {
+        self.user_prompts
+            .iter()
+            .rev()
+            .find(|p| p.len() > 10)
+            .map(|s| s.as_str())
+    }
+
+    /// Check if a task string matches any early user prompt that was likely
+    /// a throwaway test message (first 2 prompts, or any prompt ≤10 chars).
+    fn is_stale_user_echo(&self, task: &str) -> bool {
+        let lower = task.trim().to_ascii_lowercase();
+        if lower.is_empty() {
+            return false;
+        }
+        for (i, prompt) in self.user_prompts.iter().enumerate() {
+            let prompt_lower = prompt.trim().to_ascii_lowercase();
+            if prompt_lower == lower {
+                // Exact match to a user prompt — stale if it's early or short
+                if i < 2 || prompt.len() <= 10 {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Attach a provider inventory for model catalog context injection.
@@ -1074,7 +1109,7 @@ impl Feature for DelegateFeature {
                     "properties": {
                         "task": {
                             "type": "string",
-                            "description": "A specific, actionable instruction for the delegate. Must describe WHAT to do, WHERE (files/paths), and the expected OUTCOME. Never pass user acknowledgments ('sure', 'go ahead', 'proceed') — formulate the concrete task yourself from conversation context."
+                            "description": "A specific, actionable instruction for the delegate. Must describe WHAT to do, WHERE (files/paths), and the expected OUTCOME. NEVER echo the user's messages as the task — especially not early test messages like 'testing' or 'hello'. Formulate the concrete task yourself from the current conversation context and your most recent analysis."
                         },
                         "agent": { "type": "string" },
                         "scope": { "type": "array", "items": {"type": "string"} },
@@ -1194,11 +1229,30 @@ impl Feature for DelegateFeature {
                     ));
                 }
 
-                // If the task looks conversational, try to substitute with a
-                // prior task description. If there's no prior task, let it
-                // through anyway — the delegate child receives full conversation
-                // context and can figure out what to do.
-                let task = if is_conversational_non_task(&task) {
+                // Detect when the model parrots a stale user message (e.g., the
+                // user's initial "testing" or "hello") as the delegate task.
+                // Substitute with the most recent substantive user instruction.
+                let task = if self.is_stale_user_echo(&task) {
+                    if let Some(recent) = self.latest_substantive_prompt() {
+                        tracing::info!(
+                            original = %task,
+                            substituted = %recent,
+                            "Substituted stale user echo with latest substantive prompt"
+                        );
+                        recent.to_string()
+                    } else if let Some(prior) = self.result_store.last_task_description() {
+                        tracing::info!(
+                            original = %task,
+                            substituted = %prior,
+                            "Substituted stale user echo with last delegate task"
+                        );
+                        prior
+                    } else {
+                        task // no better option — let it through
+                    }
+                } else if is_conversational_non_task(&task) {
+                    // Short conversational phrase with no actionable content.
+                    // Try to substitute; if nothing available, pass through.
                     if let Some(prior) = self.result_store.last_task_description() {
                         tracing::info!(
                             original = %task,
@@ -1206,11 +1260,14 @@ impl Feature for DelegateFeature {
                             "Substituted conversational delegate task with last task description"
                         );
                         prior
-                    } else {
+                    } else if let Some(recent) = self.latest_substantive_prompt() {
                         tracing::info!(
-                            task = %task,
-                            "Conversational delegate task with no prior — passing through"
+                            original = %task,
+                            substituted = %recent,
+                            "Substituted conversational delegate task with latest user prompt"
                         );
+                        recent.to_string()
+                    } else {
                         task
                     }
                 } else {
@@ -1465,6 +1522,12 @@ impl Feature for DelegateFeature {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
+            BusEvent::ContextBuild { user_prompt, .. } => {
+                if !user_prompt.trim().is_empty() {
+                    self.user_prompts.push(user_prompt.clone());
+                }
+                return vec![];
+            }
             BusEvent::TurnEnd { model, .. } => {
                 // Capture the parent session's model so delegate children
                 // inherit it instead of falling back to hardcoded defaults.

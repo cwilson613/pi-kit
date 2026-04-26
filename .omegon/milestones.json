@@ -938,5 +938,12 @@
       "feat: add MutationFeature — evolutionary skill and diagnostic creation",
       "fix(ci): decouple Linux ARM build from release publication"
     ]
+  },
+  "nightly": {
+    "status": "nightly",
+    "channel": "nightly",
+    "version": "0.17.0-nightly.20260426",
+    "last_build": "2026-04-26T08:39:23Z",
+    "build_count": 1
   }
 }

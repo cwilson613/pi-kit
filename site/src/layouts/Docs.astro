@@ -78,7 +78,16 @@ const currentPath = Astro.url.pathname;
 </head>
 <body>
   <nav class="topnav">
-    <a href="/" class="topnav-logo">Omegon</a>
+    <div class="topnav-left">
+      <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle navigation">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <line x1="3" y1="5" x2="17" y2="5" />
+          <line x1="3" y1="10" x2="17" y2="10" />
+          <line x1="3" y1="15" x2="17" y2="15" />
+        </svg>
+      </button>
+      <a href="/" class="topnav-logo">Omegon</a>
+    </div>
     <div class="topnav-links">
       <a href="/docs/">Docs</a>
       <a href="/changelog">Changelog</a>
@@ -86,8 +95,9 @@ const currentPath = Astro.url.pathname;
     </div>
   </nav>
 
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
   <div class="docs-layout">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       {sections.map((section) => (
         <div class="sidebar-section">
           <div class="sidebar-heading">{section.title}</div>
@@ -226,8 +236,72 @@ const currentPath = Astro.url.pathname;
   }
   .docs-footer a { color: var(--muted); }
 
+  .topnav-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .sidebar-toggle {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 4px;
+    line-height: 0;
+  }
+  .sidebar-toggle:hover { color: var(--fg); }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 90;
+  }
+
   @media (max-width: 768px) {
-    .sidebar { display: none; }
+    .sidebar-toggle { display: block; }
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 95;
+      height: 100vh;
+      width: 260px;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease;
+      background: var(--bg);
+      border-right: 1px solid var(--border-dim);
+      padding-top: 16px;
+    }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-backdrop.open { display: block; }
     .docs-content { padding: 20px 16px; }
   }
 </style>
+
+<script>
+  const toggle = document.getElementById('sidebar-toggle');
+  const sidebar = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+
+  function openSidebar() {
+    sidebar?.classList.add('open');
+    backdrop?.classList.add('open');
+  }
+  function closeSidebar() {
+    sidebar?.classList.remove('open');
+    backdrop?.classList.remove('open');
+  }
+
+  toggle?.addEventListener('click', () => {
+    sidebar?.classList.contains('open') ? closeSidebar() : openSidebar();
+  });
+  backdrop?.addEventListener('click', closeSidebar);
+
+  // Close on nav link click (mobile)
+  sidebar?.querySelectorAll('.sidebar-link').forEach(link => {
+    link.addEventListener('click', closeSidebar);
+  });
+</script>

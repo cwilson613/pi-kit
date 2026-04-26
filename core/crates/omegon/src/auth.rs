@@ -454,6 +454,31 @@ pub fn read_credentials(provider: &str) -> Option<OAuthCredentials> {
     serde_json::from_value(entry.clone()).ok()
 }
 
+/// Attempt to read Anthropic OAuth credentials from Claude Code's ~/.claude.json.
+/// This allows omegon to seamlessly adopt existing Claude Code sessions without
+/// requiring a separate login. Only applies to the "anthropic" provider.
+pub fn read_claude_code_credentials(provider: &str) -> Option<OAuthCredentials> {
+    if provider != "anthropic" {
+        return None;
+    }
+    let claude_json = dirs::home_dir()?.join(".claude.json");
+    let content = std::fs::read_to_string(&claude_json).ok()?;
+    let data: Value = serde_json::from_str(&content).ok()?;
+    let oauth = data.get("oauthAccount")?;
+    let access = oauth.get("accessToken")?.as_str()?;
+    let refresh = oauth.get("refreshToken")?.as_str()?;
+    let expires = oauth.get("expiresAt")?.as_i64()?;
+    if access.is_empty() {
+        return None;
+    }
+    Some(OAuthCredentials {
+        cred_type: "oauth".into(),
+        access: access.into(),
+        refresh: refresh.into(),
+        expires: expires as u64,
+    })
+}
+
 /// Read extra fields stored alongside credentials in auth.json.
 /// Used for accountId on openai-codex entries.
 pub fn read_credential_extra(provider: &str, field: &str) -> Option<String> {
@@ -642,7 +667,18 @@ pub async fn resolve_with_refresh(provider: &str) -> Option<(String, bool)> {
 
     // 2. auth.json — with refresh if expired (canonical key mapping)
     let auth_key = auth_json_key(provider);
-    let mut creds = read_credentials(auth_key)?;
+    let mut creds = match read_credentials(auth_key) {
+        Some(c) => c,
+        None => {
+            // 3. Fallback: adopt Claude Code credentials from ~/.claude.json
+            if let Some(c) = read_claude_code_credentials(auth_key) {
+                tracing::info!(provider, "Adopted credentials from Claude Code (~/.claude.json)");
+                c
+            } else {
+                return None;
+            }
+        }
+    };
     if creds.cred_type != "oauth" {
         return Some((creds.access, false));
     }

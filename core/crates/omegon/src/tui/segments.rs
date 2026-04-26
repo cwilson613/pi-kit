@@ -626,7 +626,7 @@ impl Segment {
         // not just logical newline counts. If we underestimate here, the temp
         // buffer clips content and the cached height becomes permanently wrong.
         let estimate = match &self.content {
-            UserPrompt { text } => wrapped_rows(text, width.saturating_sub(4)) + 4,
+            UserPrompt { text } => wrapped_rows(text, width.saturating_sub(4)) + 2,
             AssistantText { text, thinking, .. } => {
                 let meta_line = if self.meta.model_id.is_some() || self.meta.provider.is_some() {
                     1u16
@@ -728,7 +728,7 @@ impl Segment {
                     + result_separator_rows
                     + 4
             }
-            SystemNotification { text } => wrapped_rows(text, width.saturating_sub(4)) + 3,
+            SystemNotification { text } => wrapped_rows(text, width.saturating_sub(4)) + 2,
             _ => 4,
         };
 

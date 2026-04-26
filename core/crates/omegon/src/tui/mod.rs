@@ -7667,7 +7667,8 @@ pub async fn run_tui(
                             } else if app.editor.line_count() > 1 && app.editor.cursor_row() > 0 {
                                 app.editor.move_up();
                             } else {
-                                app.conversation.scroll_up(3);
+                                // Single-line editor: Up navigates history (like shell/Claude Code)
+                                app.history_recall_up();
                             }
                         }
                         (KeyCode::Down, _) => {
@@ -7678,7 +7679,8 @@ pub async fn run_tui(
                             {
                                 app.editor.move_down();
                             } else {
-                                app.conversation.scroll_down(3);
+                                // Single-line editor: Down navigates history forward
+                                app.history_down();
                             }
                         }
                         _ => {}

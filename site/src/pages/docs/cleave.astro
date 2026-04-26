@@ -99,6 +99,53 @@ import Docs from "../../layouts/Docs.astro";
     <li><strong>Churn detection</strong> — if the reviewer flags the same issues after a fix iteration, it bails rather than looping. Configurable thresholds: <code>review_max_critical_fixes</code> (default 2), <code>review_max_warning_fixes</code> (default 1), <code>review_churn_threshold</code> (default 0.5)</li>
   </ul>
 
+  <h2>Delegate (Single-Task Dispatch)</h2>
+  <p>
+    Not every task needs parallel decomposition. The <code>delegate</code> tool spawns a single
+    subagent for a bounded task — a scout to search the codebase, a patch worker for a scoped
+    edit, or a verifier to run tests.
+  </p>
+
+  <h3>Worker Profiles</h3>
+  <table>
+    <thead><tr><th>Profile</th><th>Capabilities</th><th>Use Case</th></tr></thead>
+    <tbody>
+      <tr><td><code>scout</code></td><td>Read, search, glob — no writes</td><td>Research, orientation, codebase exploration</td></tr>
+      <tr><td><code>patch</code></td><td>Read + scoped edits</td><td>Small, bounded file changes</td></tr>
+      <tr><td><code>verify</code></td><td>Read + bash (test/check commands)</td><td>Run tests, type-check, validate a change</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Task Quality Enforcement</h3>
+  <p>
+    The delegate tool enforces that task descriptions are actionable instructions, not
+    conversational acknowledgments. Two layers:
+  </p>
+  <ul>
+    <li>
+      <strong>Harness auto-delegation</strong> — when the harness detects a turn pattern
+      suitable for delegation (orientation churn, narrow patch, validation-only), it pulls the
+      task from the conversation's <em>intent tracker</em>, not from the user's raw input.
+      This prevents user confirmations like "sure, go ahead" from being passed as tasks.
+    </li>
+    <li>
+      <strong>Tool-level guard</strong> — when the model itself calls <code>delegate</code>,
+      the task parameter is checked for structural actionability: text under 100 characters
+      with no file paths, code identifiers, or actionable verbs is rejected with an error
+      telling the model to formulate a specific task. This catches both recycled system
+      messages and parroted user acknowledgments.
+    </li>
+  </ul>
+
+  <h3>TUI Continuation</h3>
+  <p>
+    When the agent's response ends with a confirmation request ("Shall I proceed?",
+    "Would you like me to..."), the editor placeholder changes to
+    <em>"Press Enter to continue"</em>. Pressing Enter with an empty input sends a
+    continuation signal using the tracked task context. This eliminates the need to type
+    "continue" or "yes" across all providers and models.
+  </p>
+
   <h2>Failure Handling</h2>
   <p>
     If a child fails:

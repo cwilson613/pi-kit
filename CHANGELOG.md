@@ -16,6 +16,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [0.17.0] - Unreleased
 
+### Fixed
+
+- **Delegate task quality enforcement** — `auto_delegate_tool_call` no longer uses the raw user prompt as the delegate task. Always pulls from `conversation.intent.current_task`. User confirmations like "sure, go ahead" or "excellent, let's proceed" no longer produce non-actionable delegates that time out and block retries. The tool-level guard uses structural heuristics (file paths, code identifiers, actionable verbs, word count) instead of a static phrase list.
+- **TUI continuation affordance** — when the agent asks for confirmation ("Shall I proceed?"), the editor placeholder shows "Press Enter to continue". Empty Enter sends a continuation signal from tracked intent context. Works cross-provider and cross-model.
+- **GPT-5.5 reasoning effort** — `"minimal"` mapped to `"low"` for OpenAI. GPT-5.5 accepts `none/low/medium/high/xhigh`; `"minimal"` caused 400 errors.
+- **GPT-5.5 missing from Codex provider** — model was registered for `openai` but not `openai-codex`. ChatGPT/Codex OAuth users now see GPT-5.5 in the model selector.
+- **Claude Code credential adoption** — `~/.claude.json` OAuth tokens are used as a live fallback when omegon has no stored Anthropic credentials. No migration step, no re-login required.
+- **Install script channel flag** — `CHANNEL=rc` before `curl` in a pipe only scoped to `curl`, not `sh`. Added `--channel` and `--version` CLI arguments: `| sh -s -- --channel=rc`. All docs and site snippets updated.
+- **System notification spacing** — consecutive system notifications merge into a single bordered card instead of each getting its own card with 3 rows of overhead.
+- **Mobile docs navigation** — added hamburger menu toggle for the docs sidebar on screens under 768px. Previously the sidebar was `display: none` with no alternative.
+
 ### Added
 
 - **Mutation system** — runtime observation of agent recovery patterns, token burn tracking, and impact evaluation bridge to the eval system. Ships in observation-only mode (`generate_artifacts = false`); skill and diagnostic generation is opt-in after signal validation. Includes `/mutation` slash command with `stats`, `review`, and `config` subcommands. Design spec at `docs/design/mutation-eval-bridge.md`.

@@ -1510,6 +1510,10 @@ impl LlmBridge for OpenAIClient {
         for (k, v) in &options.extra_body {
             body[k] = v.clone();
         }
+        // Apply reasoning_effort for models that support it (o-series, gpt-5+)
+        if let Some(effort) = openai_reasoning_effort(options.reasoning.as_deref()) {
+            body["reasoning_effort"] = json!(effort);
+        }
 
         let response = self
             .client
@@ -2408,33 +2412,16 @@ fn anthropic_should_use_adaptive_thinking(model: &str, reasoning: &str) -> bool 
 /// Get the default model spec for a provider (e.g., "google-antigravity:gemini-2.5-flash").
 /// Used after login to switch to the provider's default model.
 pub fn default_model_for_provider(provider_id: &str) -> Option<String> {
-    let model = match provider_id {
-        "anthropic" => "claude-sonnet-4-6",
-        "openai" => "gpt-5.4",
-        "openai-codex" => "gpt-5.4",
-        _ => compat_default_model(provider_id)?,
-    };
+    let reg = crate::model_registry::ModelRegistry::global();
+    let model = reg.default_model(provider_id)?;
     Some(format!("{provider_id}:{model}"))
-}
-
-fn compat_default_model(provider_id: &str) -> Option<&'static str> {
-    match provider_id {
-        "groq" => Some("llama-3.3-70b-versatile"),
-        "xai" => Some("grok-3-mini-fast"),
-        "mistral" => Some("devstral-small-2505"),
-        "cerebras" => Some("llama-3.3-70b"),
-        "google" => Some("gemini-2.5-flash"),
-        "google-antigravity" => Some("gemini-2.5-flash"),
-        "huggingface" => Some("Qwen/Qwen3-32B"),
-        "ollama" => Some("qwen3:32b"),
-        "ollama-cloud" => Some("gpt-oss:120b-cloud"),
-        _ => None,
-    }
 }
 
 impl OpenAICompatClient {
     pub fn new(api_key: String, base_url: String, provider_id: String) -> Self {
-        let default_model = compat_default_model(&provider_id).map(String::from);
+        let default_model = crate::model_registry::ModelRegistry::global()
+            .default_model(&provider_id)
+            .map(String::from);
         Self {
             inner: OpenAIClient {
                 client: reqwest::Client::new(),
@@ -2681,7 +2668,8 @@ impl LlmBridge for OllamaCloudClient {
             .map(|m| model_id_from_spec(m).to_string())
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| {
-                compat_default_model("ollama-cloud")
+                crate::model_registry::ModelRegistry::global()
+                    .default_model("ollama-cloud")
                     .unwrap_or("gpt-oss:120b-cloud")
                     .to_string()
             });
@@ -2689,7 +2677,7 @@ impl LlmBridge for OllamaCloudClient {
         let mut body = json!({
             "model": model,
             "messages": Self::build_wire_messages(system_prompt, messages),
-            "stream": false,
+            "stream": true,
         });
         if let Some(think) = ollama_think_value(&model, options.reasoning.as_deref()) {
             body["think"] = think;
@@ -2716,71 +2704,163 @@ impl LlmBridge for OllamaCloudClient {
         }
 
         let provider_telemetry = parse_rate_limit_snapshot("ollama-cloud", response.headers());
-        let payload: Value = response.json().await?;
-        let message = payload.get("message").cloned().unwrap_or_else(|| json!({}));
-        let content = message
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let thinking = message
-            .get("thinking")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let tool_calls = Self::parse_tool_calls(&message);
 
-        let _ = tx.send(LlmEvent::Start).await;
-        if !thinking.is_empty() {
-            let _ = tx.send(LlmEvent::ThinkingStart).await;
-            let _ = tx
-                .send(LlmEvent::ThinkingDelta {
-                    delta: thinking.clone(),
-                })
-                .await;
-            let _ = tx.send(LlmEvent::ThinkingEnd).await;
-        }
-        let _ = tx.send(LlmEvent::TextStart).await;
-        if !content.is_empty() {
-            let _ = tx
-                .send(LlmEvent::TextDelta {
-                    delta: content.clone(),
-                })
-                .await;
-        }
-        let _ = tx.send(LlmEvent::TextEnd).await;
-        for tool_call in &tool_calls {
-            let _ = tx.send(LlmEvent::ToolCallStart).await;
-            let _ = tx
-                .send(LlmEvent::ToolCallEnd {
-                    tool_call: tool_call.clone(),
-                })
-                .await;
-        }
-        let _ = tx
-            .send(LlmEvent::Done {
-                message: json!({
-                    "text": content,
-                    "thinking": thinking,
-                    "tool_calls": tool_calls,
-                    "raw": payload,
-                }),
-                input_tokens: payload
-                    .get("prompt_eval_count")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                output_tokens: payload
-                    .get("eval_count")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                provider_telemetry,
-            })
-            .await;
+        spawn_provider_stream_task("ollama-cloud", tx.clone(), async move {
+            parse_ollama_ndjson_stream(response, provider_telemetry, &tx).await
+        });
 
         Ok(rx)
     }
+}
+
+/// Parse Ollama native NDJSON streaming format from `/api/chat`.
+///
+/// Each line is a JSON object:
+/// - Thinking:  `{"message":{"thinking":"token","content":""},"done":false}`
+/// - Content:   `{"message":{"content":"token"},"done":false}`
+/// - Final:     `{"done":true,"prompt_eval_count":N,"eval_count":N,...}`
+///
+/// Tool calls arrive in the final message's `message.tool_calls` array.
+async fn parse_ollama_ndjson_stream(
+    response: reqwest::Response,
+    provider_telemetry: Option<omegon_traits::ProviderTelemetrySnapshot>,
+    tx: &mpsc::Sender<LlmEvent>,
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncBufReadExt;
+    use tokio_stream::StreamExt;
+
+    let _ = tx.send(LlmEvent::Start).await;
+
+    let mut in_thinking = false;
+    let mut in_text = false;
+    let mut full_content = String::new();
+    let mut full_thinking = String::new();
+    let mut input_tokens = 0u64;
+    let mut output_tokens = 0u64;
+    let mut final_message = json!({});
+
+    let byte_stream = response.bytes_stream();
+    let reader = tokio_util::io::StreamReader::new(
+        byte_stream.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+    );
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+
+        let chunk: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let done = chunk.get("done").and_then(Value::as_bool).unwrap_or(false);
+
+        if done {
+            // Final summary chunk — extract token counts
+            input_tokens = chunk
+                .get("prompt_eval_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            output_tokens = chunk
+                .get("eval_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            // Some models include the final message content in the done chunk
+            if let Some(msg) = chunk.get("message") {
+                final_message = msg.clone();
+            }
+            break;
+        }
+
+        let message = match chunk.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Thinking delta
+        let thinking_delta = message
+            .get("thinking")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !thinking_delta.is_empty() {
+            if !in_thinking {
+                let _ = tx.send(LlmEvent::ThinkingStart).await;
+                in_thinking = true;
+            }
+            full_thinking.push_str(thinking_delta);
+            let _ = tx
+                .send(LlmEvent::ThinkingDelta {
+                    delta: thinking_delta.to_string(),
+                })
+                .await;
+        }
+
+        // Content delta
+        let content_delta = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !content_delta.is_empty() {
+            // Transition from thinking to text
+            if in_thinking {
+                let _ = tx.send(LlmEvent::ThinkingEnd).await;
+                in_thinking = false;
+            }
+            if !in_text {
+                let _ = tx.send(LlmEvent::TextStart).await;
+                in_text = true;
+            }
+            full_content.push_str(content_delta);
+            let _ = tx
+                .send(LlmEvent::TextDelta {
+                    delta: content_delta.to_string(),
+                })
+                .await;
+        }
+    }
+
+    // Close any open phases
+    if in_thinking {
+        let _ = tx.send(LlmEvent::ThinkingEnd).await;
+    }
+    if in_text {
+        let _ = tx.send(LlmEvent::TextEnd).await;
+    } else {
+        // Ensure at least one text start/end pair
+        let _ = tx.send(LlmEvent::TextStart).await;
+        let _ = tx.send(LlmEvent::TextEnd).await;
+    }
+
+    // Tool calls from the final message
+    let tool_calls = OllamaCloudClient::parse_tool_calls(&final_message);
+    for tool_call in &tool_calls {
+        let _ = tx.send(LlmEvent::ToolCallStart).await;
+        let _ = tx
+            .send(LlmEvent::ToolCallEnd {
+                tool_call: tool_call.clone(),
+            })
+            .await;
+    }
+
+    let _ = tx
+        .send(LlmEvent::Done {
+            message: json!({
+                "text": full_content,
+                "thinking": full_thinking,
+                "tool_calls": tool_calls,
+            }),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            provider_telemetry,
+        })
+        .await;
+
+    Ok(())
 }
 
 // ─── Google Antigravity (Cloud Code Assist) Client ────────────────────────────
@@ -3952,7 +4032,7 @@ mod tests {
             "ollama-cloud",
         ] {
             assert!(
-                super::compat_default_model(id).is_some(),
+                crate::model_registry::ModelRegistry::global().default_model(id).is_some(),
                 "missing default model for {id}"
             );
         }

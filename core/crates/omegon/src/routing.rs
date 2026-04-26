@@ -363,30 +363,23 @@ pub fn route(req: &CapabilityRequest, inventory: &ProviderInventory) -> Vec<Prov
 
 /// Default model for a provider at a given tier.
 fn default_model_for_provider(provider_id: &str, tier: CapabilityTier) -> String {
-    match (provider_id, tier) {
-        ("anthropic", CapabilityTier::Max) => "claude-opus-4-7".to_string(),
-        ("anthropic", CapabilityTier::Frontier) => "claude-sonnet-4-7".to_string(),
-        ("anthropic", _) => "claude-haiku-4-5-20251001".to_string(),
-        ("openai", CapabilityTier::Max) => "o3".to_string(),
-        ("openai", CapabilityTier::Frontier) => "gpt-5.4".to_string(),
-        ("openai", CapabilityTier::Mid) => "o4-mini".to_string(),
-        ("openai", _) => "gpt-4.1".to_string(),
-        ("openai-codex", CapabilityTier::Mid | CapabilityTier::Leaf) => "gpt-5.4-mini".to_string(),
-        ("openai-codex", _) => "gpt-5.4".to_string(),
-        ("groq", _) => "llama-3.3-70b-versatile".to_string(),
-        ("xai", _) => "grok-3-mini-fast".to_string(),
-        ("mistral", _) => "devstral-small-2505".to_string(),
-        ("cerebras", _) => "llama-3.3-70b".to_string(),
-        ("google" | "google-antigravity", CapabilityTier::Max) => "gemini-3.1-pro-preview".to_string(),
-        ("google" | "google-antigravity", CapabilityTier::Frontier) => "gemini-2.5-flash".to_string(),
-        ("google" | "google-antigravity", _) => "gemini-2.0-flash-lite".to_string(),
-        ("openrouter", CapabilityTier::Max) => "anthropic/claude-opus-4-7".to_string(),
-        ("openrouter", CapabilityTier::Frontier) => "anthropic/claude-sonnet-4-7".to_string(),
-        ("openrouter", _) => "anthropic/claude-haiku-4-5-20251001".to_string(),
-        ("huggingface", _) => "Qwen/Qwen3-32B".to_string(),
-        ("ollama", _) => "qwen3:32b".to_string(),
-        _ => "auto".to_string(),
+    let reg = crate::model_registry::ModelRegistry::global();
+    // Map CapabilityTier to registry tier names, cascading down
+    let tier_names = match tier {
+        CapabilityTier::Max => &["gloriana", "victory", "retribution"][..],
+        CapabilityTier::Frontier => &["victory", "gloriana", "retribution"][..],
+        CapabilityTier::Mid => &["retribution", "victory"][..],
+        CapabilityTier::Leaf => &["retribution"][..],
+    };
+    for t in tier_names {
+        if let Some(model) = reg.tier_model(t, provider_id) {
+            return model.to_string();
+        }
     }
+    // Fall back to provider default
+    reg.default_model(provider_id)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "auto".to_string())
 }
 
 /// Infer the capability tier of a fully-qualified model string ("provider:model").
@@ -395,27 +388,35 @@ fn default_model_for_provider(provider_id: &str, tier: CapabilityTier) -> String
 /// routing a leaf-scoped task to a more expensive model than the one that launched the run.
 pub fn infer_model_tier(model_str: &str) -> CapabilityTier {
     let (provider, model) = model_str.split_once(':').unwrap_or(("", model_str));
-    match (provider, model) {
-        ("anthropic", m) if m.contains("opus") => CapabilityTier::Max,
-        ("anthropic", m) if m.contains("sonnet") => CapabilityTier::Frontier,
-        ("anthropic", _) => CapabilityTier::Leaf, // haiku and unknowns
-        ("openai", "o3") => CapabilityTier::Max,
-        ("openai", "gpt-5.4") => CapabilityTier::Frontier,
-        ("openai", "o4-mini") | ("openai", "gpt-4.1") => CapabilityTier::Mid,
-        ("openai", m) if m.contains("nano") || m.contains("mini") => CapabilityTier::Leaf,
-        ("openai", _) => CapabilityTier::Frontier,
-        ("openai-codex", m) if m.contains("mini") => CapabilityTier::Mid,
-        ("openai-codex", _) => CapabilityTier::Max,
-        ("ollama", m) | ("local", m) => infer_local_model_tier(m),
-        ("groq", m) if m.contains("70b") || m.contains("90b") => CapabilityTier::Frontier,
-        ("groq", _) => CapabilityTier::Mid,
-        ("cerebras", m) if m.contains("70b") => CapabilityTier::Frontier,
-        ("cerebras", _) => CapabilityTier::Mid,
-        ("google" | "google-antigravity", m) if m.contains("3.1") || m.contains("3-pro") || m.contains("3.0-pro") => CapabilityTier::Max,
-        ("google" | "google-antigravity", m) if m.contains("pro") => CapabilityTier::Frontier,
-        ("google" | "google-antigravity", m) if m.contains("flash") => CapabilityTier::Frontier,
-        ("google" | "google-antigravity", _) => CapabilityTier::Frontier,
-        _ => CapabilityTier::Frontier, // unknown providers assumed capable
+
+    // Local/ollama models use parameter-count heuristic
+    if matches!(provider, "ollama" | "local") {
+        return infer_local_model_tier(model);
+    }
+
+    // Try registry route patterns first
+    let reg = crate::model_registry::ModelRegistry::global();
+    if let Some(tier_str) = reg.infer_tier(provider, model) {
+        return match tier_str {
+            "gloriana" => CapabilityTier::Max,
+            "victory" => CapabilityTier::Frontier,
+            "retribution" => CapabilityTier::Mid,
+            _ => CapabilityTier::Frontier,
+        };
+    }
+
+    // Provider-level heuristics for models not in the registry
+    match provider {
+        "anthropic" if model.contains("opus") => CapabilityTier::Max,
+        "anthropic" if model.contains("sonnet") => CapabilityTier::Frontier,
+        "anthropic" => CapabilityTier::Leaf,
+        "openai-codex" if model.contains("mini") => CapabilityTier::Mid,
+        "openai-codex" => CapabilityTier::Max,
+        "groq" if model.contains("70b") || model.contains("90b") => CapabilityTier::Frontier,
+        "groq" => CapabilityTier::Mid,
+        "cerebras" if model.contains("70b") => CapabilityTier::Frontier,
+        "cerebras" => CapabilityTier::Mid,
+        _ => CapabilityTier::Frontier,
     }
 }
 

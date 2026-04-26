@@ -703,31 +703,12 @@ pub async fn switch_dispatcher_response(
         .map(|s| s.model.clone())
         .unwrap_or_default();
     let current_provider = crate::providers::infer_provider_id(&current_model);
+    let reg = crate::model_registry::ModelRegistry::global();
     let tier_model = match normalized_profile.as_str() {
-        "retribution" => {
-            if current_provider == "openai-codex" {
-                "gpt-5.4-mini".to_string()
-            } else if current_provider == "openai" {
-                "gpt-5-mini".to_string()
-            } else {
-                "claude-haiku-4-5-20251001".to_string()
-            }
-        }
-        "victory" => {
-            if current_provider == "openai-codex" {
-                "gpt-5.4".to_string()
-            } else if current_provider == "openai" {
-                "gpt-5".to_string()
-            } else {
-                "claude-sonnet-4-6".to_string()
-            }
-        }
-        "gloriana" => {
-            if current_provider == "openai" {
-                "gpt-5.4".to_string()
-            } else {
-                "claude-opus-4-6".to_string()
-            }
+        tier @ ("retribution" | "victory" | "gloriana") => {
+            reg.tier_model(tier, &current_provider)
+                .unwrap_or(&current_model)
+                .to_string()
         }
         _ => current_model.clone(),
     };

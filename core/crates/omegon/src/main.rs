@@ -62,6 +62,7 @@ mod extension_cli;
 mod paths;
 mod plugin_cli;
 mod secret_cli;
+mod model_registry;
 mod plugins;
 mod prompt;
 mod providers;

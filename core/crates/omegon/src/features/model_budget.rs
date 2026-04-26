@@ -63,55 +63,24 @@ impl ModelTier {
         }
     }
 
-    /// Model ID prefix for this tier — used for prefix-matching against
-    /// the current model to detect which tier is active, and for resolving
-    /// a tier to a concrete model ID.
-    fn prefix(&self, provider: &str) -> &'static str {
-        match (self, provider) {
-            (Self::Gloriana, "anthropic") => "claude-opus",
-            (Self::Victory, "anthropic") => "claude-sonnet",
-            (Self::Retribution, "anthropic") => "claude-haiku",
-            (Self::Gloriana, "openai") => "gpt-5.4",
-            (Self::Victory, "openai") => "gpt-5",
-            (Self::Retribution, "openai") => "gpt-5-mini",
-            (Self::Gloriana, "openai-codex") => "gpt-5",
-            (Self::Victory, "openai-codex") => "gpt-5",
-            (Self::Retribution, "openai-codex") => "codex-mini",
-            (Self::Local, _) => "local",
-            (Self::Gloriana, _) => "claude-opus",
-            (Self::Victory, _) => "claude-sonnet",
-            (Self::Retribution, _) => "claude-haiku",
+    /// Resolve tier to a concrete model ID from the model registry.
+    /// If the registry has no entry for this tier+provider, falls back
+    /// to the provider default.
+    fn resolve_model(&self, provider: &str, _current_model: &str) -> String {
+        if matches!(self, Self::Local) {
+            return "local".to_string();
         }
-    }
-
-    /// Resolve tier to a concrete model ID.
-    /// If the current model already matches this tier's prefix, keep it
-    /// (preserves the exact version). Otherwise use the short alias.
-    ///
-    /// The short alias format (e.g., `claude-sonnet-4-6`) is a stable
-    /// pointer that Anthropic/OpenAI resolve to the latest version. This
-    /// avoids hardcoding dated model IDs that rot when new versions ship.
-    fn resolve_model(&self, provider: &str, current_model: &str) -> String {
-        let prefix = self.prefix(provider);
-        // If the current model already matches the target tier's prefix, keep it
-        if current_model.starts_with(prefix) {
-            return current_model.to_string();
-        }
-        // Use short alias — these are stable pointers, not dated versions
-        match (self, provider) {
-            (Self::Gloriana, "anthropic") => "claude-opus-4-6",
-            (Self::Victory, "anthropic") => "claude-sonnet-4-6",
-            (Self::Retribution, "anthropic") => "claude-haiku-4-5-20251001",
-            (Self::Gloriana, "openai") => "gpt-5.4",
-            (Self::Victory, "openai") => "gpt-5",
-            (Self::Retribution, "openai") => "gpt-5-mini",
-            (Self::Gloriana, "openai-codex") => "gpt-5.4",
-            (Self::Victory, "openai-codex") => "gpt-5.4",
-            (Self::Retribution, "openai-codex") => "gpt-5.4-mini",
-            (Self::Local, _) => "local",
-            _ => "claude-sonnet-4-6",
-        }
-        .to_string()
+        let tier_name = match self {
+            Self::Gloriana => "gloriana",
+            Self::Victory => "victory",
+            Self::Retribution => "retribution",
+            Self::Local => unreachable!(),
+        };
+        let reg = crate::model_registry::ModelRegistry::global();
+        reg.tier_model(tier_name, provider)
+            .or_else(|| reg.default_model(provider))
+            .unwrap_or("claude-sonnet-4-6")
+            .to_string()
     }
 }
 
@@ -377,7 +346,7 @@ mod tests {
 
     #[test]
     fn tier_resolve_openai() {
-        assert_eq!(ModelTier::Gloriana.resolve_model("openai", ""), "gpt-5.4");
+        assert_eq!(ModelTier::Gloriana.resolve_model("openai", ""), "gpt-5.5");
         assert!(
             ModelTier::Victory
                 .resolve_model("openai", "")

@@ -753,51 +753,9 @@ impl ThinkingLevel {
 
 // ─── Route matrix (compile-time embedded) ───────────────────────────────────
 
-/// Reviewed route matrix — embedded from the same JSON the TS side loads.
-/// Updated by the Argo refresh pipeline, checked in, compiled into the binary.
-const ROUTE_MATRIX_JSON: &str = include_str!("../../../../data/route-matrix.json");
-
-/// Parsed route entry from the embedded matrix.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RouteEntry {
-    provider: String,
-    model_id_pattern: String,
-    context_ceiling: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct RouteMatrix {
-    routes: Vec<RouteEntry>,
-}
-
-/// Lazy-parsed route matrix.
-fn route_matrix() -> &'static [RouteEntry] {
-    use std::sync::OnceLock;
-    static MATRIX: OnceLock<Vec<RouteEntry>> = OnceLock::new();
-    MATRIX.get_or_init(|| {
-        serde_json::from_str::<RouteMatrix>(ROUTE_MATRIX_JSON)
-            .map(|m| m.routes)
-            .unwrap_or_default()
-    })
-}
-
-/// Match a model ID against the route matrix using glob-style patterns.
+/// Match a model ID against the model registry route patterns.
 fn lookup_context_ceiling(provider: &str, model_id: &str) -> Option<usize> {
-    route_matrix()
-        .iter()
-        .filter(|entry| entry.provider == provider)
-        .filter_map(|entry| {
-            let pattern = &entry.model_id_pattern;
-            let matches = if let Some(prefix) = pattern.strip_suffix('*') {
-                model_id.starts_with(prefix)
-            } else {
-                model_id == pattern
-            };
-            matches.then_some((pattern.trim_end_matches('*').len(), entry.context_ceiling))
-        })
-        .max_by_key(|(specificity, _)| *specificity)
-        .map(|(_, ceiling)| ceiling)
+    crate::model_registry::ModelRegistry::global().context_ceiling(provider, model_id)
 }
 
 /// Infer context window from model identifier.

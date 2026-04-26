@@ -138,49 +138,13 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     pub fn pricing_for_model(model_id: &str) -> Option<TokenPricing> {
-        match model_id {
-            // Ollama / local
-            id if id.starts_with("ollama:") => Some(TokenPricing::new(0.0, 0.0)),
-            // Ollama Cloud
-            "ollama-cloud:gpt-oss:120b-cloud" => Some(TokenPricing::new(0.0, 0.0)),
-            "ollama-cloud:qwen3-coder:480b-cloud" => Some(TokenPricing::new(0.0, 0.0)),
-
-            // OpenRouter
-            "openrouter:qwen/qwen-qwq-32b" => Some(TokenPricing::new(0.20, 0.20)),
-            "openrouter:qwen/qwen-2.5-72b-instruct" => Some(TokenPricing::new(0.35, 0.40)),
-            "openrouter:minimax/minimax-m2.7" => Some(TokenPricing::new(0.28, 1.10)),
-            "openrouter:deepseek/deepseek-chat" => Some(TokenPricing::new(0.27, 1.10)),
-            "openrouter:meta-llama/llama-2-70b-chat" => Some(TokenPricing::new(0.90, 0.90)),
-
-            // Anthropic
-            "anthropic:claude-opus-4-6" => Some(TokenPricing::new(15.0, 75.0)),
-            "anthropic:claude-sonnet-4-6" => Some(TokenPricing::new(3.0, 15.0)),
-            "anthropic:claude-haiku-4-5-20251001" => Some(TokenPricing::new(0.8, 4.0)),
-
-            // OpenAI API
-            "openai:gpt-5.4" => Some(TokenPricing::new(2.5, 15.0)),
-            "openai:gpt-5" => Some(TokenPricing::new(2.5, 15.0)),
-            "openai:gpt-5-mini" => Some(TokenPricing::new(0.750, 4.500)),
-            "openai:gpt-4.1" => Some(TokenPricing::new(2.0, 8.0)),
-            "openai:o4-mini" => Some(TokenPricing::new(1.1, 4.4)),
-
-            // Groq / free
-            "groq:llama-3.3-70b-versatile" => Some(TokenPricing::new(0.0, 0.0)),
-
-            // xAI
-            "xai:grok-4-0709" => Some(TokenPricing::new(3.0, 15.0)),
-            "xai:grok-3" => Some(TokenPricing::new(2.0, 10.0)),
-
-            // Mistral
-            "mistral:mistral-large-latest" => Some(TokenPricing::new(2.0, 6.0)),
-            "mistral:mistral-small-latest" => Some(TokenPricing::new(0.2, 0.6)),
-
-            // ChatGPT / Codex OAuth
-            "openai-codex:gpt-5.4" => Some(TokenPricing::new(2.5, 15.0)),
-            "openai-codex:gpt-5.4-mini" => Some(TokenPricing::new(0.750, 4.500)),
-
-            _ => None,
+        // Local models are always free
+        if model_id.starts_with("ollama:") {
+            return Some(TokenPricing::new(0.0, 0.0));
         }
+        // Look up in the centralized model registry
+        let reg = crate::model_registry::ModelRegistry::global();
+        reg.pricing(model_id).map(|p| TokenPricing::new(p.input, p.output))
     }
 
     pub fn find_by_id(&self, model_id: &str) -> Option<&ModelInfo> {
@@ -269,520 +233,129 @@ impl ModelCatalog {
             crate::providers::resolve_api_key_sync(provider).is_some()
         }
 
-        // ─── Cloud Providers (auth-gated) ─────────────────────────────
+        // ─── Cloud Providers (from model registry, auth-gated) ────────
+        let reg = crate::model_registry::ModelRegistry::global();
+        let provider_display: &[(&str, &str)] = &[
+            ("anthropic", "Anthropic"),
+            ("openai", "OpenAI"),
+            ("openai-codex", "OpenAI Codex"),
+            ("ollama-cloud", "Ollama Cloud"),
+            ("groq", "Groq"),
+            ("xai", "xAI"),
+            ("mistral", "Mistral"),
+            ("google", "Google Gemini"),
+            ("openrouter", "OpenRouter"),
+        ];
 
-        // OpenRouter
-        if has_key("openrouter") {
-            providers.insert(
-                "OpenRouter".to_string(),
-                vec![
-                    // Qwen models
+        for &(provider_id, display_name) in provider_display {
+            if !has_key(provider_id) {
+                continue;
+            }
+            let models: Vec<ModelInfo> = reg
+                .models_for_provider(provider_id)
+                .into_iter()
+                .map(|m| {
+                    let cost_tier = match m.cost_tier.as_str() {
+                        "premium" => CostTier::Premium,
+                        "standard" => CostTier::StandardAPI,
+                        "cheap" => CostTier::CheapAPI,
+                        "free" => CostTier::Free,
+                        "local" => CostTier::Local,
+                        _ => CostTier::StandardAPI,
+                    };
+                    let capabilities = m
+                        .capabilities
+                        .iter()
+                        .filter_map(|c| match c.as_str() {
+                            "reasoning" => Some(Capability::Reasoning),
+                            "coding" => Some(Capability::Coding),
+                            "vision" => Some(Capability::Vision),
+                            "fast" => Some(Capability::Fast),
+                            "instruction" => Some(Capability::Instruction),
+                            "multilingual" => Some(Capability::Multilingual),
+                            _ => None,
+                        })
+                        .collect();
+                    let pricing = m
+                        .pricing
+                        .map(|p| TokenPricing::new(p.input, p.output));
                     ModelInfo {
-                        id: "openrouter:qwen/qwen-qwq-32b".to_string(),
-                        name: "Qwen QwQ 32B".to_string(),
-                        provider: "OpenRouter".to_string(),
-                        context_input: 32768,
-                        context_output: 8192,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.20, 0.20)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding],
-                        description:
-                            "Qwen's reasoning model — fast, cheap, excellent for problem-solving"
-                                .to_string(),
+                        id: format!("{}:{}", provider_id, m.id),
+                        name: m.name.clone(),
+                        provider: display_name.to_string(),
+                        context_input: m.context_input,
+                        context_output: m.context_output,
+                        cost_tier,
+                        pricing,
+                        capabilities,
+                        description: m.description.clone(),
                         available: true,
-                    },
-                    ModelInfo {
-                        id: "openrouter:qwen/qwen-2.5-72b-instruct".to_string(),
-                        name: "Qwen 2.5 72B".to_string(),
-                        provider: "OpenRouter".to_string(),
-                        context_input: 131072,
-                        context_output: 8192,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.35, 0.40)),
-                        capabilities: vec![
-                            Capability::Instruction,
-                            Capability::Coding,
-                            Capability::Multilingual,
-                        ],
-                        description: "Qwen's latest instruct model — long context, multilingual"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "openrouter:minimax/minimax-m2.7".to_string(),
-                        name: "MiniMax M 2.7".to_string(),
-                        provider: "OpenRouter".to_string(),
-                        context_input: 8192,
-                        context_output: 4096,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.28, 1.10)),
-                        capabilities: vec![Capability::Instruction, Capability::Coding],
-                        description: "MiniMax M 2.7 — fast, low-cost inference".to_string(),
-                        available: true,
-                    },
-                    // DeepSeek
-                    ModelInfo {
-                        id: "openrouter:deepseek/deepseek-chat".to_string(),
-                        name: "DeepSeek Chat".to_string(),
-                        provider: "OpenRouter".to_string(),
-                        context_input: 128000,
-                        context_output: 8192,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.27, 1.10)),
-                        capabilities: vec![Capability::Instruction, Capability::Coding],
-                        description: "DeepSeek Chat — long context, very affordable".to_string(),
-                        available: true,
-                    },
-                    // Llama via OpenRouter
-                    ModelInfo {
-                        id: "openrouter:meta-llama/llama-2-70b-chat".to_string(),
-                        name: "Llama 2 70B Chat".to_string(),
-                        provider: "OpenRouter".to_string(),
-                        context_input: 4096,
-                        context_output: 2048,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.90, 0.90)),
-                        capabilities: vec![Capability::Instruction],
-                        description: "Meta's Llama 2 via OpenRouter — solid baseline".to_string(),
-                        available: true,
-                    },
-                ],
-            ); // end OpenRouter
-        } // end if has_key("openrouter")
+                    }
+                })
+                .collect();
+            if !models.is_empty() {
+                providers.insert(display_name.to_string(), models);
+            }
+        }
 
-        // Anthropic
-        if has_key("anthropic") {
-            providers.insert(
-                "Anthropic".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "anthropic:claude-opus-4-7".to_string(),
-                        name: "Claude Opus 4.7".to_string(),
-                        provider: "Anthropic".to_string(),
-                        context_input: 1000000,
-                        context_output: 131072,
-                        cost_tier: CostTier::Premium,
-                        pricing: Some(TokenPricing::new(15.0, 75.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Coding,
-                            Capability::Vision,
-                        ],
-                        description: "Claude Opus 4.7 — latest frontier reasoning, coding, and vision"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "anthropic:claude-sonnet-4-7".to_string(),
-                        name: "Claude Sonnet 4.7".to_string(),
-                        provider: "Anthropic".to_string(),
-                        context_input: 1000000,
-                        context_output: 65536,
-                        cost_tier: CostTier::StandardAPI,
-                        pricing: Some(TokenPricing::new(3.0, 15.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Coding,
-                            Capability::Vision,
-                        ],
-                        description: "Claude Sonnet 4.7 — latest balanced performance and cost"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "anthropic:claude-opus-4-6".to_string(),
-                        name: "Claude Opus 4.6".to_string(),
-                        provider: "Anthropic".to_string(),
-                        context_input: 1000000,
-                        context_output: 131072,
-                        cost_tier: CostTier::Premium,
-                        pricing: Some(TokenPricing::new(15.0, 75.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Coding,
-                            Capability::Vision,
-                        ],
-                        description: "Claude Opus 4.6 — frontier reasoning, coding, and vision"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "anthropic:claude-sonnet-4-6".to_string(),
-                        name: "Claude Sonnet 4.6".to_string(),
-                        provider: "Anthropic".to_string(),
-                        context_input: 1000000,
-                        context_output: 65536,
-                        cost_tier: CostTier::StandardAPI,
-                        pricing: Some(TokenPricing::new(3.0, 15.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Coding,
-                            Capability::Vision,
-                        ],
-                        description: "Claude Sonnet 4.6 — balanced performance and cost"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "anthropic:claude-haiku-4-5-20251001".to_string(),
-                        name: "Claude Haiku 4.5".to_string(),
-                        provider: "Anthropic".to_string(),
-                        context_input: 200000,
-                        context_output: 65536,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.8, 4.0)),
-                        capabilities: vec![Capability::Fast, Capability::Instruction],
-                        description: "Claude Haiku 4.5 — fastest, cheapest Claude".to_string(),
-                        available: true,
-                    },
-                ],
-            ); // end Anthropic
-        } // end if has_key("anthropic")
-
-        // OpenAI
-        if has_key("openai") {
-            providers.insert(
-                "OpenAI".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "openai:gpt-5.4".to_string(),
-                        name: "GPT-5.4".to_string(),
-                        provider: "OpenAI".to_string(),
-                        context_input: 1000000,
-                        context_output: 32768,
-                        cost_tier: CostTier::Premium,
-                        pricing: Some(TokenPricing::new(2.5, 15.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Vision,
-                            Capability::Coding,
-                        ],
-                        description:
-                            "GPT-5.4 — OpenAI's latest frontier model, 1M context, tool search"
-                                .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "openai:gpt-5".to_string(),
-                        name: "GPT-5".to_string(),
-                        provider: "OpenAI".to_string(),
-                        context_input: 1000000,
-                        context_output: 32768,
-                        cost_tier: CostTier::Premium,
-                        pricing: Some(TokenPricing::new(2.5, 15.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Vision,
-                            Capability::Coding,
-                        ],
-                        description: "GPT-5 — flagship reasoning, replaces GPT-4o / o3 / o4-mini"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "openai:gpt-5-mini".to_string(),
-                        name: "GPT-5 Mini".to_string(),
-                        provider: "OpenAI".to_string(),
-                        context_input: 1000000,
-                        context_output: 32768,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.750, 4.500)),
-                        capabilities: vec![
-                            Capability::Fast,
-                            Capability::Instruction,
-                            Capability::Coding,
-                        ],
-                        description: "GPT-5 Mini — fast, cost-effective, 1M context".to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "openai:gpt-4.1".to_string(),
-                        name: "GPT-4.1".to_string(),
-                        provider: "OpenAI".to_string(),
-                        context_input: 1000000,
-                        context_output: 32768,
-                        cost_tier: CostTier::StandardAPI,
-                        pricing: Some(TokenPricing::new(2.0, 8.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Vision,
-                            Capability::Coding,
-                        ],
-                        description: "GPT-4.1 — 1M context (legacy, superseded by GPT-5)"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "openai:o4-mini".to_string(),
-                        name: "o4-mini".to_string(),
-                        provider: "OpenAI".to_string(),
-                        context_input: 200000,
-                        context_output: 16384,
-                        cost_tier: CostTier::StandardAPI,
-                        pricing: Some(TokenPricing::new(1.1, 4.4)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding],
-                        description:
-                            "o4-mini — efficient o-series reasoning (succeeded by GPT-5 mini)"
-                                .to_string(),
-                        available: true,
-                    },
-                ],
-            ); // end OpenAI
-        } // end if has_key("openai")
-
-        // Ollama Cloud
-        if has_key("ollama-cloud") {
-            providers.insert(
-                "Ollama Cloud".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "ollama-cloud:gpt-oss:120b-cloud".to_string(),
-                        name: "GPT OSS 120B Cloud".to_string(),
-                        provider: "Ollama Cloud".to_string(),
-                        context_input: 256000,
-                        context_output: 32768,
-                        cost_tier: CostTier::Free,
-                        pricing: Some(TokenPricing::new(0.0, 0.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding],
-                        description: "Hosted Ollama model via ollama.com/api".to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "ollama-cloud:qwen3-coder:480b-cloud".to_string(),
-                        name: "Qwen3 Coder 480B Cloud".to_string(),
-                        provider: "Ollama Cloud".to_string(),
-                        context_input: 256000,
-                        context_output: 32768,
-                        cost_tier: CostTier::Free,
-                        pricing: Some(TokenPricing::new(0.0, 0.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding],
-                        description: "Hosted Qwen coder model via Ollama Cloud".to_string(),
-                        available: true,
-                    },
-                ],
-            );
-        } // end if has_key("ollama-cloud")
-
-        // Groq
-        if has_key("groq") {
-            providers.insert(
-                "Groq".to_string(),
-                vec![ModelInfo {
-                    id: "groq:llama-3.3-70b-versatile".to_string(),
-                    name: "Llama 3.3 70B".to_string(),
-                    provider: "Groq".to_string(),
-                    context_input: 131072,
-                    context_output: 8192,
+        // Google Antigravity (show as unavailable if no API key)
+        if has_key("google-antigravity") && !has_key("google") {
+            let models: Vec<ModelInfo> = reg
+                .models_for_provider("google")
+                .into_iter()
+                .map(|m| ModelInfo {
+                    id: format!("google-antigravity:{}", m.id),
+                    name: m.name.clone(),
+                    provider: "Google Antigravity".to_string(),
+                    context_input: m.context_input,
+                    context_output: m.context_output,
                     cost_tier: CostTier::Free,
                     pricing: Some(TokenPricing::new(0.0, 0.0)),
-                    capabilities: vec![
-                        Capability::Fast,
-                        Capability::Instruction,
-                        Capability::Coding,
-                    ],
-                    description: "Llama 3.3 70B on Groq — fast inference, free tier".to_string(),
-                    available: true,
-                }],
-            ); // end Groq
-        } // end if has_key("groq")
-
-        // xAI (Grok)
-        if has_key("xai") {
-            providers.insert(
-                "xAI".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "xai:grok-4-0709".to_string(),
-                        name: "Grok 4".to_string(),
-                        provider: "xAI".to_string(),
-                        context_input: 256000,
-                        context_output: 32768,
-                        cost_tier: CostTier::Premium,
-                        pricing: Some(TokenPricing::new(3.0, 15.0)),
-                        capabilities: vec![
-                            Capability::Reasoning,
-                            Capability::Coding,
-                            Capability::Vision,
-                        ],
-                        description: "Grok 4 — xAI flagship reasoning and coding model".to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "xai:grok-3".to_string(),
-                        name: "Grok 3".to_string(),
-                        provider: "xAI".to_string(),
-                        context_input: 131072,
-                        context_output: 16384,
-                        cost_tier: CostTier::StandardAPI,
-                        pricing: Some(TokenPricing::new(2.0, 10.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Fast],
-                        description: "Grok 3 — fast reasoning, 131k context".to_string(),
-                        available: true,
-                    },
-                ],
-            ); // end xAI
-        } // end if has_key("xai")
-
-        // Mistral
-        if has_key("mistral") {
-            providers.insert(
-                "Mistral".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "mistral:mistral-large-latest".to_string(),
-                        name: "Mistral Large 3".to_string(),
-                        provider: "Mistral".to_string(),
-                        context_input: 128000,
-                        context_output: 16384,
-                        cost_tier: CostTier::StandardAPI,
-                        pricing: Some(TokenPricing::new(2.0, 6.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding],
-                        description: "Mistral Large 3 — 128k context, open-weight MoE flagship"
-                            .to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "mistral:mistral-small-latest".to_string(),
-                        name: "Mistral Small".to_string(),
-                        provider: "Mistral".to_string(),
-                        context_input: 32000,
-                        context_output: 8192,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.2, 0.6)),
-                        capabilities: vec![Capability::Fast, Capability::Instruction],
-                        description: "Mistral Small — lightweight, cost-effective".to_string(),
-                        available: true,
-                    },
-                ],
-            ); // end Mistral
-        } // end if has_key("mistral")
-
-        // Google Gemini (API key)
-        if has_key("google") {
-            providers.insert(
-                "Google Gemini".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "google:gemini-3.1-pro-preview".to_string(),
-                        name: "Gemini 3.1 Pro".to_string(),
-                        provider: "Google Gemini".to_string(),
-                        context_input: 1_000_000,
-                        context_output: 65536,
-                        cost_tier: CostTier::Premium,
-                        pricing: Some(TokenPricing::new(2.5, 15.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Vision],
-                        description: "Gemini 3.1 Pro — Google's latest frontier reasoning model, 1M context".to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "google:gemini-2.5-flash".to_string(),
-                        name: "Gemini 2.5 Flash".to_string(),
-                        provider: "Google Gemini".to_string(),
-                        context_input: 1_000_000,
-                        context_output: 65536,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.15, 0.60)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Fast],
-                        description: "Gemini 2.5 Flash — fast reasoning with thinking, 1M context".to_string(),
-                        available: true,
-                    },
-                    ModelInfo {
-                        id: "google:gemini-2.0-flash-lite".to_string(),
-                        name: "Gemini 2.0 Flash Lite".to_string(),
-                        provider: "Google Gemini".to_string(),
-                        context_input: 1_000_000,
-                        context_output: 8192,
-                        cost_tier: CostTier::CheapAPI,
-                        pricing: Some(TokenPricing::new(0.075, 0.30)),
-                        capabilities: vec![Capability::Fast, Capability::Instruction],
-                        description: "Gemini 2.0 Flash Lite — fastest, cheapest Gemini".to_string(),
-                        available: true,
-                    },
-                ],
-            ); // end Google Gemini
-        } // end if has_key("google")
-
-        // Google Antigravity (Gemini CLI OAuth — IDE subscription)
-        // Disabled: requires GCP project provisioning not yet automated.
-        // Show models as unavailable with guidance to use API key instead.
-        if has_key("google-antigravity") && !has_key("google") {
-            providers.insert(
-                "Google Antigravity (use GOOGLE_API_KEY instead)".to_string(),
-                vec![
-                    ModelInfo {
-                        id: "google-antigravity:gemini-3.1-pro-preview".to_string(),
-                        name: "Gemini 3.1 Pro".to_string(),
-                        provider: "Google Antigravity".to_string(),
-                        context_input: 1_000_000,
-                        context_output: 65536,
-                        cost_tier: CostTier::Free,
-                        pricing: Some(TokenPricing::new(0.0, 0.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Vision],
-                        description: "Gemini 3.1 Pro via Antigravity subscription — included with IDE plan".to_string(),
-                        available: false,
-                    },
-                    ModelInfo {
-                        id: "google-antigravity:gemini-2.5-flash".to_string(),
-                        name: "Gemini 2.5 Flash".to_string(),
-                        provider: "Google Antigravity".to_string(),
-                        context_input: 1_000_000,
-                        context_output: 65536,
-                        cost_tier: CostTier::Free,
-                        pricing: Some(TokenPricing::new(0.0, 0.0)),
-                        capabilities: vec![Capability::Reasoning, Capability::Coding, Capability::Fast],
-                        description: "Gemini 2.5 Flash via Antigravity subscription — fast reasoning, included".to_string(),
-                        available: false,
-                    },
-                    ModelInfo {
-                        id: "google-antigravity:gemini-2.0-flash-lite".to_string(),
-                        name: "Gemini 2.0 Flash Lite".to_string(),
-                        provider: "Google Antigravity".to_string(),
-                        context_input: 1_000_000,
-                        context_output: 8192,
-                        cost_tier: CostTier::Free,
-                        pricing: Some(TokenPricing::new(0.0, 0.0)),
-                        capabilities: vec![Capability::Fast, Capability::Instruction],
-                        description: "Gemini 2.0 Flash Lite via Antigravity — fastest, included".to_string(),
-                        available: false,
-                    },
-                ],
-            ); // end Google Antigravity
-        } // end if has_key("google-antigravity")
-
-        // OpenAI Codex (ChatGPT OAuth — /codex/responses endpoint)
-        if has_key("openai-codex") {
-            providers.insert("ChatGPT / Codex".to_string(), vec![
-            ModelInfo {
-                id: "openai-codex:gpt-5.4".to_string(),
-                name: "GPT-5.4".to_string(),
-                provider: "ChatGPT / Codex".to_string(),
-                context_input: 1_000_000,
-                context_output: 32_768,
-                cost_tier: CostTier::Premium,
-                pricing: Some(TokenPricing::new(2.5, 15.0)),
-                capabilities: vec![Capability::Reasoning, Capability::Vision, Capability::Coding],
-                description: "GPT-5.4 via ChatGPT/Codex OAuth — experimental consumer route, 1M context".to_string(),
-                available: true,
-            },
-            ModelInfo {
-                id: "openai-codex:gpt-5.4-mini".to_string(),
-                name: "GPT-5.4 mini".to_string(),
-                provider: "ChatGPT / Codex".to_string(),
-                context_input: 1_000_000,
-                context_output: 32_768,
-                cost_tier: CostTier::CheapAPI,
-                pricing: Some(TokenPricing::new(0.750, 4.500)),
-                capabilities: vec![Capability::Coding, Capability::Fast],
-                description: "GPT-5.4 mini via ChatGPT/Codex OAuth — experimental consumer route".to_string(),
-                available: true,
-            },
-        ]); // end ChatGPT / Codex
-        } // end if has_key("openai-codex")
+                    capabilities: m
+                        .capabilities
+                        .iter()
+                        .filter_map(|c| match c.as_str() {
+                            "reasoning" => Some(Capability::Reasoning),
+                            "coding" => Some(Capability::Coding),
+                            "vision" => Some(Capability::Vision),
+                            "fast" => Some(Capability::Fast),
+                            "instruction" => Some(Capability::Instruction),
+                            "multilingual" => Some(Capability::Multilingual),
+                            _ => None,
+                        })
+                        .collect(),
+                    description: format!("{} via Antigravity subscription", m.name),
+                    available: false,
+                })
+                .collect();
+            if !models.is_empty() {
+                providers.insert(
+                    "Google Antigravity (use GOOGLE_API_KEY instead)".to_string(),
+                    models,
+                );
+            }
+        }
 
         ModelCatalog { providers }
     }
 
-    /// Alias for `cloud_only()` — kept for tests and non-interactive code paths.
+    // ── Legacy hardcoded blocks removed — all model data now comes from
+    // data/model-registry.json via crate::model_registry::ModelRegistry.
+    // To add a model, edit the JSON file. Zero Rust changes required. ──
+
+    #[allow(dead_code)]
+    fn _removed_hardcoded_blocks() {
+        // This marker exists so git blame shows when the migration happened.
+        // The following providers were migrated:
+        // OpenRouter, Anthropic, OpenAI, Ollama Cloud, Groq, xAI, Mistral,
+        // Google Gemini, Google Antigravity, OpenAI Codex
+        unreachable!();
+    }
+
+    // NOTE: ~500 lines of hardcoded ModelInfo structs were here.
+    // They have been replaced by the registry-driven loop above.
+
+    /// Alias for `cloud_only()`.
     pub fn new() -> Self {
         Self::cloud_only()
     }

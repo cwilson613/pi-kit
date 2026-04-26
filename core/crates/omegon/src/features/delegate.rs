@@ -1190,11 +1190,10 @@ impl Feature for DelegateFeature {
                     ));
                 }
 
-                // When the model passes a conversational non-task ("sure",
-                // "let's resume", etc.) as the delegate task, substitute the
-                // most recent task description from a prior delegate instead
-                // of rejecting. The model wants to continue previous work but
-                // failed to articulate it in the tool call.
+                // If the task looks conversational, try to substitute with a
+                // prior task description. If there's no prior task, let it
+                // through anyway — the delegate child receives full conversation
+                // context and can figure out what to do.
                 let task = if is_conversational_non_task(&task) {
                     if let Some(prior) = self.result_store.last_task_description() {
                         tracing::info!(
@@ -1204,12 +1203,11 @@ impl Feature for DelegateFeature {
                         );
                         prior
                     } else {
-                        return Err(anyhow::anyhow!(
-                            "Cannot delegate: '{}' is not an actionable task description \
-                             and there is no prior task to resume. Formulate a specific \
-                             task — what to do, which files, what outcome.",
-                            task
-                        ));
+                        tracing::info!(
+                            task = %task,
+                            "Conversational delegate task with no prior — passing through"
+                        );
+                        task
                     }
                 } else {
                     task

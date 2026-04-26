@@ -964,14 +964,21 @@ fn tool_title_line(
     let pad = left_budget.saturating_sub(used_width);
 
     Line::from(vec![
-        Span::styled(status_prefix, Style::default().fg(status_color)),
+        Span::styled(
+            status_prefix,
+            Style::default().fg(status_color).add_modifier(Modifier::DIM),
+        ),
         Span::styled(
             format!("{title_name} "),
             Style::default()
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("─".repeat(pad), Style::default().fg(status_color)),
+        Span::styled(
+            "─".repeat(pad),
+            Style::default()
+                .fg(dim_color(status_color, 0.35)),
+        ),
     ])
 }
 

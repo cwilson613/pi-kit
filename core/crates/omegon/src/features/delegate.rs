@@ -199,6 +199,18 @@ impl DelegateResultStore {
         })
     }
 
+    /// Return the task description from the most recently created delegate,
+    /// regardless of completion status. Used to substitute conversational
+    /// non-tasks like "let's resume" with the actual prior work description.
+    pub fn last_task_description(&self) -> Option<String> {
+        let tasks = self.tasks.lock().unwrap();
+        tasks
+            .values()
+            .filter(|t| !is_conversational_non_task(&t.task_description))
+            .last()
+            .map(|t| t.task_description.clone())
+    }
+
     pub fn progress_snapshot(&self) -> DelegateProgress {
         let tasks = self.list_all_tasks();
         let mut progress = DelegateProgress::default();
@@ -1178,18 +1190,30 @@ impl Feature for DelegateFeature {
                     ));
                 }
 
-                // Reject conversational acknowledgments passed as task descriptions.
-                // The LLM sometimes takes user confirmation ("Sure", "Go ahead",
-                // "Excellent, let's proceed") and uses it verbatim as the delegate
-                // task, which is not actionable.
-                if is_conversational_non_task(&task) {
-                    return Err(anyhow::anyhow!(
-                        "Cannot delegate: '{}' is a conversational acknowledgment, \
-                         not a task description. Formulate a specific, actionable task \
-                         for the delegate — what to do, which files, what outcome.",
-                        task
-                    ));
-                }
+                // When the model passes a conversational non-task ("sure",
+                // "let's resume", etc.) as the delegate task, substitute the
+                // most recent task description from a prior delegate instead
+                // of rejecting. The model wants to continue previous work but
+                // failed to articulate it in the tool call.
+                let task = if is_conversational_non_task(&task) {
+                    if let Some(prior) = self.result_store.last_task_description() {
+                        tracing::info!(
+                            original = %task,
+                            substituted = %prior,
+                            "Substituted conversational delegate task with last task description"
+                        );
+                        prior
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Cannot delegate: '{}' is not an actionable task description \
+                             and there is no prior task to resume. Formulate a specific \
+                             task — what to do, which files, what outcome.",
+                            task
+                        ));
+                    }
+                } else {
+                    task
+                };
 
                 // Validate agent if specified
                 if let Some(ref agent_name) = agent

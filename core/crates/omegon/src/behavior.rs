@@ -795,7 +795,11 @@ pub(crate) fn auto_delegate_tool_call(
     plan: AutoDelegatePlan,
 ) -> ToolCall {
     let last_prompt = conversation.last_user_prompt();
-    let task = if !last_prompt.trim().is_empty() {
+    // Use the user's prompt ONLY if it's a real task description, not a
+    // conversational acknowledgment like "sure" or "let's proceed".
+    let task = if !last_prompt.trim().is_empty()
+        && !crate::features::delegate::is_conversational_non_task(last_prompt.trim())
+    {
         last_prompt.trim().to_string()
     } else {
         conversation.intent.current_task.clone().unwrap_or_else(|| {

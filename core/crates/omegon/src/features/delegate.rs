@@ -375,7 +375,7 @@ enum DelegateChildFailureKind {
 /// Detect conversational acknowledgments that are not actionable task descriptions.
 /// These are phrases users say to confirm a plan ("Sure", "Go ahead", "Let's do it")
 /// that the LLM sometimes passes verbatim as delegate tasks.
-fn is_conversational_non_task(task: &str) -> bool {
+pub fn is_conversational_non_task(task: &str) -> bool {
     let t = task.trim();
     // Short conversational phrases (under 80 chars, no verbs suggesting real work)
     if t.len() > 80 {
@@ -1042,7 +1042,7 @@ impl Feature for DelegateFeature {
                     "properties": {
                         "task": {
                             "type": "string",
-                            "description": "Task description for the delegate"
+                            "description": "A specific, actionable instruction for the delegate. Must describe WHAT to do, WHERE (files/paths), and the expected OUTCOME. Never pass user acknowledgments ('sure', 'go ahead', 'proceed') — formulate the concrete task yourself from conversation context."
                         },
                         "agent": { "type": "string" },
                         "scope": { "type": "array", "items": {"type": "string"} },

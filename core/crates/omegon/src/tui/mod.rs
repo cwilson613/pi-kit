@@ -328,6 +328,9 @@ pub struct App {
     update_rx: Option<crate::update::UpdateReceiver>,
     /// Update checker sender — allows re-checking when channel changes.
     update_tx: Option<crate::update::UpdateSender>,
+    /// When true, the agent's last response looked like it's awaiting
+    /// confirmation. An empty Enter will send a continuation prompt.
+    awaiting_continuation: bool,
     /// Headless login prompt — when set, the next Enter submits to the login
     /// flow instead of the agent. Populated by the LoginPrompt callback.
     login_prompt_tx:
@@ -1059,6 +1062,7 @@ impl App {
             tutorial_overlay: None,
             update_rx: None,
             update_tx: None,
+            awaiting_continuation: false,
             login_prompt_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             keyboard_enhancement: false,
             mouse_capture_enabled: false,
@@ -1120,6 +1124,55 @@ impl App {
             other => return Err(format!("Unknown UI surface: {other}")),
         }
         Ok(())
+    }
+
+    /// Check if the agent's last text output looks like it's asking for
+    /// confirmation/continuation (e.g., "Shall I proceed?", "Would you like
+    /// me to...?"). Updates placeholder text and `awaiting_continuation`.
+    fn detect_continuation_request(&mut self) {
+        let last_text = self
+            .conversation
+            .segments()
+            .iter()
+            .rev()
+            .find_map(|seg| {
+                if let segments::SegmentContent::AssistantText { text, .. } = &seg.content {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("");
+
+        // Check the last ~200 chars for confirmation-seeking patterns
+        let tail: &str = if last_text.len() > 200 {
+            &last_text[last_text.len() - 200..]
+        } else {
+            last_text
+        };
+        let lower = tail.to_ascii_lowercase();
+        let seeking = lower.contains("shall i")
+            || lower.contains("should i")
+            || lower.contains("would you like")
+            || lower.contains("do you want me to")
+            || lower.contains("ready to proceed")
+            || lower.contains("want me to proceed")
+            || lower.contains("want me to continue")
+            || lower.contains("go ahead?")
+            || lower.contains("let me know")
+            || lower.ends_with('?')
+                && (lower.contains("proceed") || lower.contains("continue") || lower.contains("implement"));
+
+        self.awaiting_continuation = seeking;
+        if seeking {
+            self.editor
+                .textarea
+                .set_placeholder_text("Press Enter to continue, or type a new instruction");
+        } else {
+            self.editor
+                .textarea
+                .set_placeholder_text("Ask anything, or type / for commands");
+        }
     }
 
     fn ui_status_text(&self) -> String {
@@ -2488,8 +2541,23 @@ impl App {
     async fn submit_editor_buffer(&mut self, command_tx: &mpsc::Sender<TuiCommand>) {
         let (raw_text, attachments) = self.editor.take_submission();
         if raw_text.is_empty() && attachments.is_empty() {
+            if self.awaiting_continuation && !self.agent_active {
+                // Empty Enter while agent is awaiting confirmation — send continuation.
+                self.awaiting_continuation = false;
+                self.editor
+                    .textarea
+                    .set_placeholder_text("Ask anything, or type / for commands");
+                self.submit_prefixed_prompt(
+                    "Continue with the plan as described.".to_string(),
+                    vec![],
+                    command_tx,
+                )
+                .await;
+            }
             return;
         }
+        // User typed something — clear continuation state.
+        self.awaiting_continuation = false;
 
         if let Ok(mut guard) = self.login_prompt_tx.try_lock()
             && let Some(tx) = guard.take()
@@ -5443,6 +5511,9 @@ impl App {
                     );
                 }
                 self.effects.ping_footer(self.theme.as_ref());
+                // Detect if the agent is asking for confirmation and offer
+                // a one-key continuation affordance in the editor.
+                self.detect_continuation_request();
             }
             AgentEvent::MessageChunk { text } => {
                 let was_streaming = self.conversation.is_streaming();

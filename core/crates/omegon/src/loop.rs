@@ -420,6 +420,10 @@ pub async fn run(
         // ─── Collect context from bus features ──────────────────────
         {
             let user_prompt = conversation.last_user_prompt();
+            bus.emit(&omegon_traits::BusEvent::ContextBuild {
+                user_prompt: user_prompt.to_string(),
+                turn,
+            });
             let (tools_vec, files_vec, budget) = context.signals_data();
             let signals = omegon_traits::ContextSignals {
                 user_prompt,

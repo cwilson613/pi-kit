@@ -10,6 +10,7 @@ import { snippet } from "../../lib/snippets";
     over stdio, and crash-safe by design &mdash; an extension failure never takes
     down Omegon.
   </p>
+  <!-- DIAGRAM:extension-isolation | Block diagram: Omegon core ← stdio JSON-RPC 2.0 → [Extension process]. Show process boundary, crash isolation, secret delivery via RPC handshake (not env vars), and optional TCP widget channel -->
 
   <h2>Install an extension</h2>
   <pre><code>{snippet("cli.extension_install")}</code></pre>

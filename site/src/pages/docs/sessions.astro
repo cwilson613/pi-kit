@@ -30,6 +30,7 @@ import { snippet } from "../../lib/snippets";
     <li>Active persona and tone</li>
     <li>Turn count, tool call count, session duration</li>
   </ul>
+  <!-- DIAGRAM:session-lifecycle | Timeline: session start → turns accumulate → auto-save on exit → [time passes] → omegon --resume → full context restored (history, model state, working memory, persona). Show what persists vs what resets -->
 
   <h2>Disable Auto-Save</h2>
   <pre><code>{snippet("cli.no_session")}</code></pre>

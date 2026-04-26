@@ -5,6 +5,7 @@ import Docs from "../../../layouts/Docs.astro";
   <h1>Routing Policy</h1>
   <p>Omegon's routing layer selects concrete provider/model combinations for each inference request based on three constraints: capability tier, thinking level, and context class.</p>
 
+  <!-- DIAGRAM:routing-flowchart | Flowchart: request arrives with (tier, thinking, context) → filter authenticated providers → match tier → check context floor → apply cooldown → score candidates → select. Show filter-out at each stage -->
   <h2>Selection Flow</h2>
   <ol>
     <li><strong>Filter to authenticated providers</strong> — only models with configured API keys or active OAuth sessions are considered</li>

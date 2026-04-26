@@ -5,6 +5,7 @@ import { snippet } from "../../lib/snippets";
 <Docs title="Security & Supply Chain" description="Signing, SBOM, supply chain integrity, and credential management.">
   <h1>Security &amp; Supply Chain</h1>
 
+  <!-- DIAGRAM:security-layers | Concentric rings: inner = source code → CI release build (cosign keyless) → local validation binary (YubiKey/Apple Developer ID) → GitHub Attestations (provenance). Label verification command for each layer -->
   <h2>Release Signing</h2>
   <p>Every release is signed at multiple levels, but not all signatures cover the same artifact boundary:</p>
   <table>

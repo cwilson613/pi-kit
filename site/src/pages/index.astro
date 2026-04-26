@@ -11,31 +11,37 @@ const rcUrl = releases.latestRc?.url ?? null;
 const valueCards = [
   {
     title: "Headless autonomous agent",
+    href: "/docs/commands",
     body: "Run as a long-lived daemon with <code>omegon&nbsp;serve</code>, or fire bounded tasks with <code>omegon&nbsp;run</code> for CI and k8s Jobs. Scheduled triggers, GitHub webhooks, and event-driven dispatch — no terminal required.",
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>`,
   },
   {
     title: "Parallel worktree orchestration",
+    href: "/docs/cleave",
     body: "<strong>Cleave</strong> decomposes work into dependency-ordered waves of <strong>isolated git worktrees</strong>, each with its own agent process. Handles merge-back, conflict detection, and provider fallback on failure.",
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="4" r="2"/><circle cx="6" cy="20" r="2"/><circle cx="18" cy="20" r="2"/><path d="M12 6v4m0 0l-6 8m6-8l6 8"/></svg>`,
   },
   {
     title: "Persistent memory & lifecycle",
+    href: "/docs/memory",
     body: "<strong>SQLite-backed</strong> project memory with confidence scoring, decay, and semantic recall. Design trees and specifications <strong>survive across sessions</strong> — the agent remembers what it learned and where the project stands.",
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>`,
   },
   {
     title: "Multiple providers, zero lock-in",
+    href: "/docs/providers",
     body: "Native Rust clients for <strong>Anthropic</strong>, <strong>OpenAI</strong>, <strong>Google</strong>, <strong>OpenRouter</strong>, and <strong>Ollama</strong> — plus others. No subprocess shims, no Node.js. Model tier, thinking level, and context class are independent controls.",
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="6" height="6" rx="1"/><rect x="16" y="9" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M12 8v8M8 12h8"/></svg>`,
   },
   {
     title: "Extensions & MCP",
+    href: "/docs/extensions",
     body: "Process-isolated extensions via JSON-RPC. <strong>Vox</strong> bridges Discord into the agent loop, with Slack, Signal, and email connectors in progress. <strong>Scry</strong> runs local image generation. Any <strong>MCP server</strong> works out of the box.",
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>`,
   },
   {
     title: "Personas with memory",
+    href: "/docs/plugins",
     body: "Not prompt templates — <strong>living cognitive profiles</strong> with their own memory namespace. A persona accumulates knowledge across sessions and recalls it when reactivated. Tones adjust voice without changing capabilities.",
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
   },
@@ -108,11 +114,11 @@ const valueCards = [
 
     <section class="cards">
       {valueCards.map((card) => (
-        <article class="card">
+        <a href={card.href} class="card">
           <div class="card-icon" set:html={card.icon} />
-          <h3>{card.title}</h3>
+          <h3>{card.title}<span class="card-arrow">&rarr;</span></h3>
           <p set:html={card.body} />
-        </article>
+        </a>
       ))}
     </section>
   </main>
@@ -376,10 +382,20 @@ const valueCards = [
     margin-bottom: 0;
   }
   .card {
+    display: block;
     background: rgba(6, 10, 20, 0.94);
     border: 1px solid rgba(42, 180, 200, 0.12);
     border-top: 2px solid rgba(42, 180, 200, 0.3);
     padding: 22px 20px 20px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .card:hover {
+    border-color: rgba(42, 180, 200, 0.3);
+    border-top-color: var(--accent);
+    background: rgba(10, 16, 32, 0.94);
+    text-decoration: none;
   }
   .card-icon {
     width: 28px;
@@ -396,6 +412,20 @@ const valueCards = [
     margin: 0 0 6px;
     font-size: 0.95rem;
     letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .card-arrow {
+    font-size: 0.85em;
+    color: var(--accent-muted);
+    opacity: 0;
+    transition: opacity 0.15s, transform 0.15s;
+    transform: translateX(-2px);
+  }
+  .card:hover .card-arrow {
+    opacity: 1;
+    transform: translateX(0);
   }
   .card p {
     margin: 0;

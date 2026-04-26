@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import stats from "../../data/stats.json";
 ---
 <Docs title="FAQ" description="Frequently asked questions — honest answers.">
   <h1>FAQ</h1>
@@ -73,8 +74,8 @@ import Docs from "../../layouts/Docs.astro";
   <h3>Why Rust?</h3>
   <p>
     Because we got tired of debugging <code>node_modules</code> resolution failures,
-    TypeScript compile times, and 400MB runtime directories. A 19MB binary that starts
-    in 50ms and uses 30MB of RAM is a better experience than anything that requires
+    TypeScript compile times, and 400MB runtime directories. A ~{stats.downloadMB}MB download that starts
+    instantly and uses minimal RAM is a better experience than anything that requires
     <code>npm install</code>.
   </p>
 

@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import stats from "../../data/stats.json";
 ---
 <Docs title="Migration Guide" description="Coming from Claude Code, Codex, Cursor, or Aider? Here's what transfers and what changes.">
   <h1>Migration Guide</h1>
@@ -18,11 +19,11 @@ import Docs from "../../layouts/Docs.astro";
     <thead><tr><th>Claude Code</th><th>Omegon</th></tr></thead>
     <tbody>
       <tr><td>CLAUDE.md</td><td>Project memory — persistent facts with semantic search, knowledge graph, episodic recall. Not a flat file.</td></tr>
-      <tr><td>Model picker</td><td><code>/model</code> — 11 providers with tier-based routing and automatic failover</td></tr>
+      <tr><td>Model picker</td><td><code>/model</code> — {stats.providerCount} providers with tier-based routing and automatic failover</td></tr>
       <tr><td>Extended thinking toggle</td><td><code>/think off|low|medium|high</code> — five levels, agent self-adjusts per task</td></tr>
       <tr><td>Custom slash commands (.md)</td><td>12 skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
       <tr><td>Conversation history</td><td>Sessions — auto-save, <code>--resume</code>, full replay with segment metadata</td></tr>
-      <tr><td>Anthropic only</td><td>11 inference providers — Anthropic, OpenAI API, OpenAI/Codex, OpenRouter, Groq, xAI, Mistral, Cerebras, Hugging Face, Ollama (Local), Ollama Cloud</td></tr>
+      <tr><td>Anthropic only</td><td>{stats.providerCount} inference providers — Anthropic, OpenAI API, OpenAI/Codex, OpenRouter, Groq, xAI, Mistral, Cerebras, Hugging Face, Ollama (Local), Ollama Cloud</td></tr>
       <tr><td>—</td><td>Design tree — a structured knowledge graph of architecture decisions, open questions, dependencies, and implementation status. Nodes have typed lifecycles (seed, exploring, decided, blocked, deferred) and bridge directly into the spec and implementation system. Not a TODO list — a design exploration space.</td></tr>
       <tr><td>Subagents (shared working directory)</td><td>Cleave — each child runs in its own git worktree on its own branch. File scope enforcement, dependency-ordered dispatch waves, per-file conflict detection (never bulk-resolved), and adversarial review. See <a href="/docs/cleave">Cleave vs Subagents</a>.</td></tr>
       <tr><td>—</td><td>OpenSpec — spec-driven development lifecycle (propose, specify, execute, verify, archive)</td></tr>
@@ -98,7 +99,7 @@ import Docs from "../../layouts/Docs.astro";
     <thead><tr><th>Codex CLI</th><th>Omegon</th></tr></thead>
     <tbody>
       <tr><td>AGENTS.md</td><td>Project memory + AGENTS.md support (both formats recognized)</td></tr>
-      <tr><td>OpenAI models only</td><td>11 inference providers — including Ollama (Local) for fully offline operation and Ollama Cloud as a separate hosted path</td></tr>
+      <tr><td>OpenAI models only</td><td>{stats.providerCount} inference providers — including Ollama (Local) for fully offline operation and Ollama Cloud as a separate hosted path</td></tr>
       <tr><td>Cloud-dependent orchestration</td><td>Fully local orchestration — cloud is only used for inference, and even that is optional with Ollama</td></tr>
       <tr><td>Sandbox execution</td><td>OCI-based isolation available via the OCI skill — Containerfile authoring, multi-arch builds, registry auth, and security scanning are first-class. Plus secrets management through system keychain and HashiCorp Vault, so credentials never touch environment variables or disk in plaintext.</td></tr>
       <tr><td>Single-turn execution</td><td>Multi-turn sessions with auto-save and resume. The agent maintains context across turns and sessions.</td></tr>
@@ -139,7 +140,7 @@ import Docs from "../../layouts/Docs.astro";
     <li>Parallel task execution via git worktrees with automatic merge and conflict detection</li>
     <li>Design tree for tracking architecture decisions across the life of a project</li>
     <li>Spec-driven development lifecycle with verification</li>
-    <li>11 inference providers with automatic routing and failover</li>
+    <li>{stats.providerCount} inference providers with automatic routing and failover</li>
     <li>No IDE dependency — works over SSH, in tmux, in CI, on any machine with a terminal</li>
     <li>Secrets management and OCI tooling for production-grade security posture</li>
   </ul>

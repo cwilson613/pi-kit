@@ -415,7 +415,10 @@ pub fn is_conversational_non_task(task: &str) -> bool {
         return false;
     }
 
-    // Actionable verbs anywhere in the text (catches "let's fix", "I'll create", etc.)
+    // Actionable verbs — must appear as whole words, not substrings.
+    // "testing" should not match "test"; "building" should not match "build".
+    // We check that the verb is preceded by a word boundary (start of string,
+    // space, or punctuation) and followed by a space or end of string.
     const VERBS: &[&str] = &[
         "add", "fix", "update", "remove", "create", "change", "implement", "refactor",
         "move", "rename", "delete", "write", "test", "run", "check", "verify", "search",
@@ -423,8 +426,9 @@ pub fn is_conversational_non_task(task: &str) -> bool {
         "analyze", "repair", "set up", "configure", "migrate", "convert", "extract",
         "document", "review", "merge", "revert", "inspect", "assess", "plan",
     ];
+    let lower_words: Vec<&str> = lower.split_whitespace().collect();
     for verb in VERBS {
-        if lower.contains(verb) {
+        if lower_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *verb) {
             return false;
         }
     }

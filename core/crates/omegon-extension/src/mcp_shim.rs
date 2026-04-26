@@ -46,7 +46,6 @@ pub async fn serve_mcp<E: Extension>(ext: E) -> crate::Result<()> {
     let mut writer = tokio::io::BufWriter::new(stdout);
 
     let mut line = String::new();
-    let mut initialized = false;
 
     loop {
         line.clear();
@@ -74,11 +73,8 @@ pub async fn serve_mcp<E: Extension>(ext: E) -> crate::Result<()> {
         let params = msg.get("params").cloned().unwrap_or(json!({}));
         let has_id = msg.get("id").is_some();
 
-        // Handle notifications (no id) — just the initialized notification.
+        // Handle notifications (no id).
         if !has_id {
-            if method == "notifications/initialized" {
-                initialized = true;
-            }
             // MCP notifications don't get responses.
             continue;
         }

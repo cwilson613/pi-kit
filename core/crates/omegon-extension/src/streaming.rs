@@ -135,6 +135,7 @@ impl ProgressReporter {
     }
 
     /// Mark this request as cancelled (called by the message router).
+    #[expect(dead_code, reason = "wired when cancellation routing is implemented")]
     pub(crate) fn mark_cancelled(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
     }
@@ -145,6 +146,7 @@ impl ProgressReporter {
     }
 
     /// Get a handle to the cancellation flag (for the router to set).
+    #[expect(dead_code, reason = "wired when cancellation routing is implemented")]
     pub(crate) fn cancelled_flag(&self) -> Arc<AtomicBool> {
         self.cancelled.clone()
     }

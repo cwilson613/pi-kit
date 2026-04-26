@@ -376,47 +376,49 @@ enum DelegateChildFailureKind {
 /// rather than instructional. Uses structural signals instead of a static phrase
 /// list so it catches "yeah sure boss, getatit" not just "sure, go ahead".
 ///
-/// Heuristic: short text (<100 chars) with no actionable structural markers
-/// (file paths, code identifiers, technical verbs) is probably not a task.
+/// Heuristic: very short text with no actionable content is conversational,
+/// not a task. Errs heavily toward allowing — false negatives (letting a bad
+/// task through) are cheap, false positives (blocking a real task) are not.
 pub fn is_conversational_non_task(task: &str) -> bool {
     let t = task.trim();
     if t.is_empty() {
         return true;
     }
-    // Long text is likely a real task description
-    if t.len() > 100 {
+    let words: Vec<&str> = t.split_whitespace().collect();
+    // Anything over 5 words is almost certainly intentional
+    if words.len() > 5 {
         return false;
     }
     let lower = t.to_ascii_lowercase();
+    let lower = lower.trim_end_matches(['.', '!', ',', '?']);
 
-    // Structural markers that indicate a real task
-    let has_path = t.contains('/') || t.contains('\\') || t.contains(".rs")
-        || t.contains(".py") || t.contains(".ts") || t.contains(".js")
-        || t.contains(".toml") || t.contains(".json") || t.contains(".yaml")
-        || t.contains(".yml") || t.contains(".md");
-    let has_code_ident = t.contains("::") || t.contains("()") || t.contains("fn ")
+    // Structural markers anywhere in the text
+    let has_path = t.contains('/') || t.contains('\\')
+        || [".rs", ".py", ".ts", ".js", ".toml", ".json", ".yaml", ".yml", ".md"]
+            .iter()
+            .any(|ext| t.contains(ext));
+    let has_code = t.contains("::") || t.contains("()") || t.contains("fn ")
         || t.contains("def ") || t.contains("class ") || t.contains("struct ");
-    let has_actionable_verb = lower.starts_with("add ") || lower.starts_with("fix ")
-        || lower.starts_with("update ") || lower.starts_with("remove ")
-        || lower.starts_with("create ") || lower.starts_with("change ")
-        || lower.starts_with("implement ") || lower.starts_with("refactor ")
-        || lower.starts_with("move ") || lower.starts_with("rename ")
-        || lower.starts_with("delete ") || lower.starts_with("write ")
-        || lower.starts_with("test ") || lower.starts_with("run ")
-        || lower.starts_with("check ") || lower.starts_with("verify ")
-        || lower.starts_with("search ") || lower.starts_with("find ")
-        || lower.starts_with("read ") || lower.starts_with("edit ")
-        || lower.starts_with("install ") || lower.starts_with("build ")
-        || lower.starts_with("deploy ") || lower.starts_with("debug ")
-        || lower.starts_with("investigate ") || lower.starts_with("analyze ");
-
-    // If it has any structural marker, it's probably a real task
-    if has_path || has_code_ident || has_actionable_verb {
+    if has_path || has_code {
         return false;
     }
 
-    // Short text with no structural markers — conversational
-    t.split_whitespace().count() <= 12
+    // Actionable verbs anywhere in the text (catches "let's fix", "I'll create", etc.)
+    const VERBS: &[&str] = &[
+        "add", "fix", "update", "remove", "create", "change", "implement", "refactor",
+        "move", "rename", "delete", "write", "test", "run", "check", "verify", "search",
+        "find", "read", "edit", "install", "build", "deploy", "debug", "investigate",
+        "analyze", "repair", "set up", "configure", "migrate", "convert", "extract",
+        "document", "review", "merge", "revert", "inspect", "assess", "plan",
+    ];
+    for verb in VERBS {
+        if lower.contains(verb) {
+            return false;
+        }
+    }
+
+    // ≤5 words, no structural markers, no actionable verbs → conversational
+    true
 }
 
 fn classify_delegate_child_failure(stderr: &str, model: &str) -> DelegateChildFailureKind {

@@ -6,19 +6,19 @@ quick_install:
   desc: "Quick install — downloads latest signed binary"
 
 install_custom_dir:
-  cmd: "INSTALL_DIR=~/.local/bin curl -fsSL https://omegon.styrene.io/install.sh | sh"
+  cmd: "curl -fsSL https://omegon.styrene.io/install.sh | INSTALL_DIR=~/.local/bin sh"
   desc: "Install to a custom directory"
 
 install_rc:
-  cmd: "CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh"
+  cmd: "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --channel=rc"
   desc: "Install latest RC"
 
 install_nightly:
-  cmd: "CHANNEL=nightly curl -fsSL https://omegon.styrene.io/install.sh | sh"
+  cmd: "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --channel=nightly"
   desc: "Install latest nightly"
 
 install_version:
-  cmd: "VERSION=0.16.1 curl -fsSL https://omegon.styrene.io/install.sh | sh"
+  cmd: "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --version=v0.16.1"
   desc: "Install a specific version (stable, RC, or nightly)"
 
 install_ci:

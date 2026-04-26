@@ -46,7 +46,7 @@ curl -fsSL https://omegon.styrene.io/install.sh | sh
 Preview channel one-shot:
 
 ```sh
-CHANNEL=rc curl -fsSL https://omegon.styrene.dev/install.sh | sh
+curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --channel=rc
 ```
 
 Or with Homebrew:

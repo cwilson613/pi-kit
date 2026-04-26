@@ -171,9 +171,9 @@ const valueCards = [
         if (channel === 'stable') {
           cmd.textContent = `curl -fsSL ${installUrl} | sh`;
         } else if (channel === 'rc') {
-          cmd.textContent = `CHANNEL=rc curl -fsSL ${installUrl} | sh`;
+          cmd.textContent = `curl -fsSL ${installUrl} | sh -s -- --channel=rc`;
         } else if (channel === 'nightly') {
-          cmd.textContent = `CHANNEL=nightly curl -fsSL ${installUrl} | sh`;
+          cmd.textContent = `curl -fsSL ${installUrl} | sh -s -- --channel=nightly`;
         }
 
         if (tag && url) {

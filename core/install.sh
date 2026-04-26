@@ -35,11 +35,15 @@ RECEIPT_DIR="${HOME}/.config/omegon"
 for arg in "$@"; do
   case "$arg" in
     --no-confirm) NO_CONFIRM=true ;;
+    --channel=*) CHANNEL="${arg#--channel=}" ;;
+    --version=*) VERSION="${arg#--version=}" ;;
     --help|-h)
       echo "Usage: curl -fsSL https://omegon.styrene.dev/install.sh | sh"
       echo ""
       echo "Options (pass after 'sh -s --'):"
-      echo "  --no-confirm    Skip interactive confirmation"
+      echo "  --no-confirm        Skip interactive confirmation"
+      echo "  --channel=CHANNEL   Release channel: stable | rc | nightly (default: stable)"
+      echo "  --version=VERSION   Pin a specific version tag (default: latest for channel)"
       echo ""
       echo "Environment:"
       echo "  INSTALL_DIR     Installation directory (default: /usr/local/bin)"

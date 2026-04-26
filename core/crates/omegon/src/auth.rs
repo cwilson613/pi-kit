@@ -459,8 +459,9 @@ pub fn read_credentials(provider: &str) -> Option<OAuthCredentials> {
 /// when they already have a working session in another tool.
 ///
 /// Supported:
-///   - anthropic: Claude Code (~/.claude.json) OAuth tokens
-///   - github:    GitHub Copilot (~/.config/github-copilot/hosts.json) OAuth tokens
+///   - anthropic:          Claude Code (~/.claude.json) OAuth tokens
+///   - github:             GitHub Copilot (~/.config/github-copilot/hosts.json) OAuth tokens
+///   - google-antigravity: Gemini CLI (~/.gemini/oauth_creds.json) OAuth tokens
 pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
     let home = dirs::home_dir()?;
     match provider {
@@ -487,7 +488,6 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
             )
             .ok()?;
             let obj = hosts.as_object()?;
-            // Pick the github.com entry (most common)
             let entry = obj
                 .get("github.com")
                 .or_else(|| obj.values().next())?;
@@ -496,8 +496,46 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                 cred_type: "oauth".into(),
                 access: token.into(),
                 refresh: String::new(),
-                expires: u64::MAX, // Copilot tokens don't carry expiry
+                expires: u64::MAX,
             })
+        }
+        "google-antigravity" => {
+            // Gemini CLI uses the same OAuth client as our Antigravity flow.
+            // Tokens are stored at ~/.gemini/oauth_creds.json or
+            // ~/.config/gemini-cli/oauth_creds.json.
+            let paths = [
+                home.join(".gemini/oauth_creds.json"),
+                home.join(".config/gemini-cli/oauth_creds.json"),
+            ];
+            for path in &paths {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if let Ok(data) = serde_json::from_str::<Value>(&content) {
+                        let access = data
+                            .get("access_token")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())?;
+                        let refresh = data
+                            .get("refresh_token")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let expires = data
+                            .get("expiry")
+                            .and_then(|v| v.as_i64())
+                            .or_else(|| {
+                                data.get("token_expiry")
+                                    .and_then(|v| v.as_i64())
+                            })
+                            .unwrap_or(0) as u64;
+                        return Some(OAuthCredentials {
+                            cred_type: "oauth".into(),
+                            access: access.into(),
+                            refresh: refresh.into(),
+                            expires,
+                        });
+                    }
+                }
+            }
+            None
         }
         _ => None,
     }

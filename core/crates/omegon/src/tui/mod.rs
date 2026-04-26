@@ -5491,6 +5491,8 @@ impl App {
                     } else if pct < 75.0 {
                         self.effects.set_context_danger(false);
                     }
+                    // Context pressure gradient on conversation zone
+                    self.effects.set_context_pressure(pct);
                 }
                 self.footer_data.provider_telemetry = provider_telemetry;
 
@@ -5645,6 +5647,13 @@ impl App {
                 let display = enriched.as_deref().or(full_text.as_deref());
                 self.conversation.push_tool_end(&id, is_error, display);
 
+                // Visual feedback: error flash or completion pulse
+                if is_error {
+                    self.effects.flash_error();
+                } else {
+                    self.effects.pulse_new_card();
+                }
+
                 // Detect image results from view/extension render tools
                 if !is_error
                     && image::is_available()
@@ -5709,6 +5718,7 @@ impl App {
                 self.conversation.finalize_message();
                 self.effects.stop_spinner_glow();
                 self.effects.stop_border_pulse();
+                self.effects.sweep_turn_complete();
                 // Advance tutorial overlay if an AutoPrompt step just completed
                 if let Some(ref mut overlay) = self.tutorial_overlay {
                     overlay.on_agent_turn_complete();

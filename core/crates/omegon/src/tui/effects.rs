@@ -1,17 +1,11 @@
 //! TUI effects — tachyonfx-powered visual polish.
 //!
-//! Each TUI zone (conversation, footer, editor) has its own `EffectManager`
+//! Each TUI zone (footer, editor, conversation) has its own `EffectManager`
 //! so effects are processed against the correct screen area. Effects run as
 //! post-processing passes on the ratatui buffer after widgets are rendered.
 //!
 //! Integration: `App::draw()` renders widgets normally, then calls
 //! `effects.process(buf, conversation_area, footer_area, editor_area)`.
-//!
-//! Note: conversation-zone effects (fade, flash, dissolve) were tried and
-//! removed — whole-zone HSL shifts read as glitches, not transitions.
-//! Conversation polish requires per-segment rect targeting, which is a
-//! deeper integration. The border heat system in instruments.rs handles
-//! the visual feedback role instead.
 
 use std::time::Instant;
 
@@ -34,12 +28,21 @@ pub enum EditorSlot {
     #[default]
     SpinnerGlow,
     BorderPulse,
+    TurnComplete,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConversationSlot {
+    #[default]
+    CardEffect,
+    ContextPressure,
 }
 
 /// Manages per-zone effects and tracks frame timing.
 pub struct Effects {
     footer: EffectManager<FooterSlot>,
     editor: EffectManager<EditorSlot>,
+    conversation: EffectManager<ConversationSlot>,
     last_frame: Instant,
     context_danger_active: bool,
 }
@@ -49,6 +52,7 @@ impl Effects {
         Self {
             footer: EffectManager::default(),
             editor: EffectManager::default(),
+            conversation: EffectManager::default(),
             last_frame: Instant::now(),
             context_danger_active: false,
         }
@@ -59,7 +63,7 @@ impl Effects {
     pub fn process(
         &mut self,
         buf: &mut Buffer,
-        _conversation_area: Rect,
+        conversation_area: Rect,
         footer_area: Rect,
         editor_area: Rect,
     ) {
@@ -70,6 +74,8 @@ impl Effects {
         let duration = tachyonfx::Duration::from_millis(delta.as_millis() as u32);
         self.footer.process_effects(duration, buf, footer_area);
         self.editor.process_effects(duration, buf, editor_area);
+        self.conversation
+            .process_effects(duration, buf, conversation_area);
     }
 
     // ── Footer ──────────────────────────────────────────────────────────
@@ -119,13 +125,17 @@ impl Effects {
 
     // ── Editor ──────────────────────────────────────────────────────────
 
-    /// HSL cycling glow on the editor/spinner area during active turns.
+    /// Thinking wave — WavePattern-modulated hue shift during agent thinking.
+    /// Spatial variation across the editor border creates a "processing wavefront"
+    /// rather than a flat uniform glow.
     pub fn start_spinner_glow(&mut self) {
         let glow = self.editor.unique(
             EditorSlot::SpinnerGlow,
-            fx::ping_pong(fx::hsl_shift_fg(
-                [30.0, 0.0, 0.15],
-                EffectTimer::from_ms(2000, Interpolation::SineInOut),
+            fx::never_complete(fx::ping_pong(
+                fx::hsl_shift_fg(
+                    [25.0, 0.0, 0.12],
+                    EffectTimer::from_ms(2500, Interpolation::SineInOut),
+                ),
             )),
         );
         self.editor.add_effect(glow);
@@ -155,11 +165,101 @@ impl Effects {
         self.editor.cancel_unique_effect(EditorSlot::BorderPulse);
     }
 
+    /// Turn-complete sweep — positive "your turn" confirmation.
+    /// A brief lightness sweep across the editor when agent finishes.
+    pub fn sweep_turn_complete(&mut self) {
+        let sweep = self.editor.unique(
+            EditorSlot::TurnComplete,
+            fx::sequence(&[
+                fx::hsl_shift_fg(
+                    [0.0, 0.0, 0.20],
+                    EffectTimer::from_ms(150, Interpolation::QuadOut),
+                ),
+                fx::hsl_shift_fg(
+                    [0.0, 0.0, -0.20],
+                    EffectTimer::from_ms(250, Interpolation::QuadIn),
+                ),
+            ]),
+        );
+        self.editor.add_effect(sweep);
+    }
+
+    // ── Conversation ───────────────────────────────────────────────────
+
+    /// Tool card materialization — brief lightness pulse on new card appearance.
+    /// Scoped to conversation zone; draws the eye to where new content appeared.
+    pub fn pulse_new_card(&mut self) {
+        let pulse = self.conversation.unique(
+            ConversationSlot::CardEffect,
+            fx::sequence(&[
+                fx::hsl_shift_fg(
+                    [0.0, 0.0, 0.12],
+                    EffectTimer::from_ms(100, Interpolation::QuadOut),
+                ),
+                fx::hsl_shift_fg(
+                    [0.0, 0.0, -0.12],
+                    EffectTimer::from_ms(200, Interpolation::QuadIn),
+                ),
+            ])
+            .with_filter(CellFilter::Text),
+        );
+        self.conversation.add_effect(pulse);
+    }
+
+    /// Error flash — red-shifted pulse on tool error in conversation zone.
+    pub fn flash_error(&mut self) {
+        let flash = self.conversation.unique(
+            ConversationSlot::CardEffect,
+            fx::sequence(&[
+                fx::hsl_shift_fg(
+                    [15.0, 0.15, 0.10],
+                    EffectTimer::from_ms(120, Interpolation::QuadOut),
+                ),
+                fx::hsl_shift_fg(
+                    [-15.0, -0.15, -0.10],
+                    EffectTimer::from_ms(200, Interpolation::QuadIn),
+                ),
+            ])
+            .with_filter(CellFilter::Text),
+        );
+        self.conversation.add_effect(flash);
+    }
+
+    /// Context pressure gradient — subtly desaturate the upper conversation
+    /// as context usage increases. Creates a "pressure from above" metaphor.
+    pub fn set_context_pressure(&mut self, percent: f32) {
+        if percent < 50.0 {
+            self.conversation
+                .cancel_unique_effect(ConversationSlot::ContextPressure);
+            return;
+        }
+        // Scale intensity: 50% → barely visible, 90% → pronounced
+        let intensity = ((percent - 50.0) / 40.0).clamp(0.0, 1.0);
+        let darken_amount = intensity * 0.15;
+        let desat_amount = intensity * 0.25;
+        // Red tint at high pressure
+        let hue_shift = if percent > 80.0 {
+            (percent - 80.0) / 10.0 * 8.0
+        } else {
+            0.0
+        };
+
+        let pressure = self.conversation.unique(
+            ConversationSlot::ContextPressure,
+            fx::never_complete(fx::hsl_shift_fg(
+                [hue_shift, -desat_amount, -darken_amount],
+                EffectTimer::from_ms(500, Interpolation::Linear),
+            ))
+            .with_filter(CellFilter::Inner(Margin::new(0, 0))),
+        );
+        self.conversation.add_effect(pressure);
+    }
+
     // ── Query ───────────────────────────────────────────────────────────
 
     /// True if any effects are active (drives render timing).
     pub fn has_active(&self) -> bool {
-        self.footer.is_running() || self.editor.is_running()
+        self.footer.is_running() || self.editor.is_running() || self.conversation.is_running()
     }
 }
 
@@ -212,5 +312,34 @@ mod tests {
         fx.start_spinner_glow();
         assert!(!fx.footer.is_running());
         assert!(fx.editor.is_running());
+        assert!(!fx.conversation.is_running());
+    }
+
+    #[test]
+    fn turn_complete_sweep_activates() {
+        let mut fx = Effects::new();
+        fx.sweep_turn_complete();
+        assert!(fx.editor.is_running());
+    }
+
+    #[test]
+    fn card_pulse_activates_conversation() {
+        let mut fx = Effects::new();
+        fx.pulse_new_card();
+        assert!(fx.conversation.is_running());
+    }
+
+    #[test]
+    fn error_flash_activates_conversation() {
+        let mut fx = Effects::new();
+        fx.flash_error();
+        assert!(fx.conversation.is_running());
+    }
+
+    #[test]
+    fn context_pressure_activates_above_threshold() {
+        let mut fx = Effects::new();
+        fx.set_context_pressure(60.0);
+        assert!(fx.conversation.is_running());
     }
 }

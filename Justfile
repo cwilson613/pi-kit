@@ -409,8 +409,8 @@ rc-validate:
 
     echo "Release validation..."
     echo "Rust warning gate..."
-    cd "$ROOT/core" && RUSTFLAGS="-D warnings" cargo check -p omegon -q
-    cd "$ROOT/core" && cargo test -p omegon 2>&1 | tail -3
+    RUSTFLAGS="-D warnings" cargo check -p omegon -q
+    cargo test -p omegon 2>&1 | tail -3
 
 rc:
     #!/usr/bin/env bash
@@ -500,7 +500,6 @@ rc:
         NODES_FILE=$(mktemp)
         printf '%s\n' "$MILESTONE_NODES" > "$NODES_FILE"
         cargo run --quiet -p omegon -- doctor > "$REPORT"
-        cd ..
         BLOCKING_NODE=""
         while IFS= read -r node; do
             [ -n "$node" ] || continue
@@ -522,7 +521,6 @@ rc:
     echo "Note: full release validation is now split out of 'just rc'. Run 'just rc-validate' before cutting if you need local test confirmation."
     echo "Rust warning gate..."
     RUSTFLAGS="-D warnings" cargo check -p omegon -q
-    cd ..
 
     # From here on, rollback mutated files if anything fails before commit.
     MUTATED=0
@@ -541,7 +539,6 @@ rc:
     # tree after the RC is already cut.
     echo "Refreshing lockfile..."
     cargo check -p omegon -q
-    cd ..
     MUTATED=1
 
     # Commit and tag BEFORE final build so the binary has the right sha
@@ -554,7 +551,6 @@ rc:
     # Fast local validation build. CI produces the canonical distributable release artifacts.
     echo "Building local validation binary..."
     cargo build --profile dev-release -p omegon 2>&1 | tail -3
-    cd ..
 
     # Code sign the local validation binary when possible.
     BINARY="target/dev-release/omegon"

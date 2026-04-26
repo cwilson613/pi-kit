@@ -1,5 +1,6 @@
 ---
 import Docs from "../../../layouts/Docs.astro";
+import { snippet } from "../../../lib/snippets";
 ---
 <Docs title="Local Ollama Path" description="Happy path for getting Omegon working with local Ollama inference.">
   <h1>Local Ollama Path</h1>
@@ -20,8 +21,8 @@ import Docs from "../../../layouts/Docs.astro";
   <ol>
     <li>Install or start Ollama</li>
     <li>Pull a model, for example <code>ollama pull qwen3:32b</code></li>
-    <li>Run <code>omegon</code> in your project directory</li>
-    <li>If needed, use <code>/model</code> and select a local/Ollama-backed model</li>
+    <li>Run <code>{snippet("quickstart.start_full")}</code> in your project directory</li>
+    <li>If needed, use <code>{snippet("slash.model")}</code> and select a local/Ollama-backed model</li>
     <li>Send this prompt: <code>Read README.md and summarize the project layout.</code></li>
   </ol>
 

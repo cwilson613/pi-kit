@@ -1,5 +1,6 @@
 ---
 import Docs from "../../../layouts/Docs.astro";
+import { snippet } from "../../../lib/snippets";
 ---
 <Docs title="API Key Path" description="Happy path for getting Omegon working with an inference API key.">
   <h1>API Key Path</h1>
@@ -17,9 +18,9 @@ import Docs from "../../../layouts/Docs.astro";
 
   <h2>Steps</h2>
   <ol>
-    <li>Export one key, for example <code>export ANTHROPIC_API_KEY="sk-ant-..."</code></li>
-    <li><code>cd</code> into your project and run <code>omegon</code></li>
-    <li>Optional: run <code>/status</code> to confirm the provider is visible</li>
+    <li>Export one key, for example <code>{snippet("auth.set_anthropic_key")}</code></li>
+    <li><code>cd</code> into your project and run <code>{snippet("quickstart.start_full")}</code></li>
+    <li>Optional: run <code>{snippet("slash.status")}</code> to confirm the provider is visible</li>
     <li>Send this prompt: <code>Read README.md and tell me the next high-value task in this repo.</code></li>
   </ol>
 
@@ -33,7 +34,7 @@ import Docs from "../../../layouts/Docs.astro";
   <h2>If it fails</h2>
   <ul>
     <li>Check that you exported the right environment variable for the provider</li>
-    <li>Run <code>/status</code> or <code>/auth status</code> to confirm Omegon sees the credential</li>
+    <li>Run <code>{snippet("slash.status")}</code> or <code>{snippet("slash.auth_status_slash")}</code> to confirm Omegon sees the credential</li>
     <li>If setup works only after extra undocumented steps, file a <strong>Docs confusion</strong> or <strong>Setup problem</strong> issue</li>
   </ul>
 </Docs>

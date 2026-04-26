@@ -1,6 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Providers" description="Provider authentication modes, runtime identity, and usage boundaries.">
   <h1>Providers</h1>
@@ -9,16 +9,6 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
     The active provider affects routing, allowed entry points, quota semantics, and what the
     operator sees in the engine footer.
   </p>
-
-  {isPreviewSite ? (
-    <p>
-      This preview site may mention RC/nightly-only provider behavior before it reaches the public stable docs. Stable operators should use <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
-    </p>
-  ) : (
-    <p>
-      These docs describe the public stable provider surface. For RC/nightly experiments and staging notes, see <a href={previewSiteUrl}>{previewSiteUrl}</a>.
-    </p>
-  )}
 
   <h2>Current provider auth modes</h2>
   <table>
@@ -33,13 +23,13 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
     <tbody>
       <tr>
         <td><strong>Anthropic/Claude API key</strong></td>
-        <td><code>export ANTHROPIC_API_KEY="sk-ant-..."</code></td>
+        <td><code>{snippet("auth.set_anthropic_key")}</code></td>
         <td>All Omegon entry points, including TUI, prompts, smoke, and cleave.</td>
         <td>Subject to Anthropic API terms, quota, and model limits.</td>
       </tr>
       <tr>
         <td><strong>Anthropic/Claude OAuth / subscription</strong></td>
-        <td><code>omegon login anthropic</code> or <code>/login anthropic</code></td>
+        <td><code>{snippet("auth.login_anthropic")}</code> or <code>{snippet("slash.login_slash")}</code></td>
         <td>Interactive TUI sessions.</td>
         <td>
           Omegon hard-blocks headless and automated entry points for this credential class.
@@ -49,13 +39,13 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
       </tr>
       <tr>
         <td><strong>OpenAI API</strong></td>
-        <td><code>export OPENAI_API_KEY="sk-..."</code></td>
+        <td><code>{snippet("auth.set_openai_key")}</code></td>
         <td>All supported Omegon entry points.</td>
         <td>Subject to OpenAI billing, quota, and model limits.</td>
       </tr>
       <tr>
         <td><strong>OpenAI/Codex OAuth</strong></td>
-        <td><code>omegon login openai-codex</code> or <code>/login openai-codex</code></td>
+        <td><code>{snippet("auth.login_openai_codex")}</code> or <code>/login openai-codex</code></td>
         <td>Supported Codex-backed Omegon flows, including interactive work and supported automation.</td>
         <td>
           The engine footer may show a selected model such as <code>gpt-5.4</code> while the limit row
@@ -65,13 +55,13 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
       </tr>
       <tr>
         <td><strong>Ollama (Local)</strong></td>
-        <td><code>export OLLAMA_HOST="http://127.0.0.1:11434"</code></td>
+        <td><code>{snippet("auth.set_ollama_host")}</code></td>
         <td>All supported local-model workflows.</td>
         <td>Local inference only; no external account auth.</td>
       </tr>
       <tr>
         <td><strong>Ollama Cloud</strong></td>
-        <td><code>omegon login ollama-cloud</code>, <code>/login ollama-cloud</code>, or <code>/secrets set OLLAMA_API_KEY ...</code></td>
+        <td><code>{snippet("auth.login_ollama_cloud")}</code>, <code>/login ollama-cloud</code>, or <code>{snippet("slash.secrets_set")}</code></td>
         <td>All supported hosted-Ollama workflows.</td>
         <td>Separate hosted provider from local Ollama. Uses <code>OLLAMA_API_KEY</code> against Ollama's cloud API.</td>
       </tr>

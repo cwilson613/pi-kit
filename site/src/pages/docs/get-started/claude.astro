@@ -1,5 +1,6 @@
 ---
 import Docs from "../../../layouts/Docs.astro";
+import { snippet } from "../../../lib/snippets";
 ---
 <Docs title="Claude Subscription Path" description="Fastest path to a working Omegon session using Claude Pro/Max.">
   <h1>Claude Subscription Path</h1>
@@ -18,10 +19,9 @@ import Docs from "../../../layouts/Docs.astro";
 
   <h2>Steps</h2>
   <ol>
-    <li><code>omegon login</code></li>
-    <li>Choose the Anthropic/Claude path in the login flow</li>
+    <li><code>{snippet("auth.login_anthropic")}</code></li>
     <li>Complete browser authentication</li>
-    <li><code>cd</code> into a project and run <code>omegon</code></li>
+    <li><code>cd</code> into a project and run <code>{snippet("quickstart.start_full")}</code></li>
     <li>Send this prompt: <code>Read README.md and summarize this project in 5 bullets.</code></li>
   </ol>
 
@@ -34,8 +34,8 @@ import Docs from "../../../layouts/Docs.astro";
 
   <h2>If it fails</h2>
   <ul>
-    <li>If browser login succeeds but Omegon still errors, run <code>/auth status</code></li>
-    <li>If the wrong provider appears active, run <code>/model</code> and select the Claude-backed route</li>
+    <li>If browser login succeeds but Omegon still errors, run <code>{snippet("slash.auth_status_slash")}</code></li>
+    <li>If the wrong provider appears active, run <code>{snippet("slash.model")}</code> and select the Claude-backed route</li>
     <li>If this guide is wrong or incomplete, file a <strong>Setup problem</strong> issue and say you followed the Claude subscription path</li>
   </ul>
 </Docs>

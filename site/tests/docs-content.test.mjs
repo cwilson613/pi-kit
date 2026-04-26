@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -12,71 +12,56 @@ function readDoc(name) {
   return readFileSync(resolve(docsDir, name), 'utf8');
 }
 
-test('install docs separate stable public guidance from preview guidance', () => {
+test('install docs use canonical snippets for all channels', () => {
   const content = readDoc('install.astro');
 
-  assert.match(content, /public site documents the stable channel only/i);
-  assert.match(content, /preview site tracks staging guidance/i);
-  assert.match(content, /go to <a href=\{previewSiteUrl\}>\{previewSiteUrl\}<\/a>/);
-  assert.match(content, /CHANNEL=nightly/);
+  // Uses snippet system, not hardcoded commands
+  assert.match(content, /snippet\("install\.install_rc"\)/);
+  assert.match(content, /snippet\("install\.install_nightly"\)/);
+  assert.match(content, /snippet\("install\.quick_install"\)/);
+  assert.doesNotMatch(content, /omegon\.styrene\.dev/);
+  // Auth commands use correct form
+  assert.match(content, /snippet\("auth\.login_anthropic"\)/);
+  assert.doesNotMatch(content, /omegon login(?! )/);
 });
 
-test('homepage differentiates stable public site from preview site', () => {
+test('homepage has version selector and install section', () => {
   const content = readFileSync(resolve(here, '../src/pages/index.astro'), 'utf8');
 
-  assert.match(content, /Public stable docs/);
-  assert.match(content, /Preview \/ staging docs/);
-  assert.match(content, /Preview channel/);
-  assert.match(content, /Nightly channel/);
-  assert.match(content, /Stable docs/);
-  assert.match(content, /Preview \/ RC/);
+  assert.match(content, /version-select/);
+  assert.match(content, /Stable/);
+  assert.match(content, /Nightly/);
+  assert.match(content, /install-cmd/);
+  assert.match(content, /copy-btn/);
+  assert.doesNotMatch(content, /omegon\.styrene\.dev/);
 });
 
-test('providers docs call out stable vs preview split', () => {
-  const content = readDoc('providers.astro');
-
-  assert.match(content, /public stable provider surface/i);
-  assert.match(content, /RC\/nightly/i);
-});
-
-test('homepage has mobile overflow guards for nav and install content', () => {
-  const content = readFileSync(resolve(here, '../src/pages/index.astro'), 'utf8');
-
-  assert.match(content, /max-width: min\(100%, 100vw - 36px\)/);
-  assert.match(content, /overflow-wrap: anywhere/);
-  assert.match(content, /white-space: normal/);
-  assert.match(content, /flex-wrap: wrap/);
-});
-
-test('privacy page is variant-aware instead of hard-coding the old domain', () => {
+test('privacy page uses canonical site label', () => {
   const content = readFileSync(resolve(here, '../src/pages/privacy.astro'), 'utf8');
 
   assert.match(content, /siteLabel/);
-  assert.doesNotMatch(content, /omegon\.styrene\.dev website/);
+  assert.match(content, /omegon\.styrene\.io/);
 });
 
-test('site builds in stable and preview variants', () => {
-  execFileSync('npm', ['run', 'build'], {
-    cwd: resolve(here, '..'),
-    env: {
-      ...process.env,
-      PUBLIC_SITE_VARIANT: 'stable',
-      PUBLIC_SITE_URL: 'https://omegon.styrene.io',
-      PUBLIC_STABLE_SITE_URL: 'https://omegon.styrene.io',
-      PUBLIC_PREVIEW_SITE_URL: 'https://omegon.styrene.dev',
-    },
-    stdio: 'pipe',
-  });
+test('extensions page uses extension init, not extension new', () => {
+  const content = readDoc('extensions.astro');
 
+  assert.match(content, /snippet\("cli\.extension_init"\)/);
+  assert.doesNotMatch(content, /extension new/);
+});
+
+test('no page imports siteVariant', () => {
+  const pages = readdirSync(docsDir).filter(f => f.endsWith('.astro'));
+  for (const page of pages) {
+    const content = readDoc(page);
+    assert.doesNotMatch(content, /siteVariant/, `${page} still imports siteVariant`);
+  }
+});
+
+test('site builds successfully', () => {
   execFileSync('npm', ['run', 'build'], {
     cwd: resolve(here, '..'),
-    env: {
-      ...process.env,
-      PUBLIC_SITE_VARIANT: 'preview',
-      PUBLIC_SITE_URL: 'https://omegon.styrene.dev',
-      PUBLIC_STABLE_SITE_URL: 'https://omegon.styrene.io',
-      PUBLIC_PREVIEW_SITE_URL: 'https://omegon.styrene.dev',
-    },
+    env: { ...process.env },
     stdio: 'pipe',
   });
 });

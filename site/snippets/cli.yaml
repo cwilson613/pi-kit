@@ -1,0 +1,97 @@
+# Canonical CLI flags and subcommands — validated against `omegon --help` per release.
+
+resume:
+  cmd: "omegon --resume"
+  desc: "Resume most recent session"
+
+resume_specific:
+  cmd: "omegon --resume abc123"
+  desc: "Resume a specific session by ID prefix"
+
+fresh:
+  cmd: "omegon --fresh"
+  desc: "Start a fresh session, ignoring saved history"
+
+no_session:
+  cmd: "omegon --no-session"
+  desc: "Disable session auto-save"
+
+headless_prompt:
+  cmd: 'omegon --prompt "Summarize README.md"'
+  desc: "Execute single prompt and exit"
+
+headless_file:
+  cmd: "omegon --prompt-file task.md"
+  desc: "Read prompt from file"
+
+headless_bounded:
+  cmd: 'omegon --prompt "Fix the failing test" --max-turns 10'
+  desc: "Limit agent turns"
+
+smoke:
+  cmd: "omegon --smoke"
+  desc: "Run smoke tests"
+
+serve:
+  cmd: "omegon serve"
+  desc: "Launch persistent daemon/control-plane"
+
+migrate_auto:
+  cmd: "omegon migrate auto"
+  desc: "Auto-detect and import from all sources"
+
+migrate_claude:
+  cmd: "omegon migrate claude-code"
+  desc: "Import from Claude Code"
+
+migrate_codex:
+  cmd: "omegon migrate codex"
+  desc: "Import from OpenAI Codex CLI"
+
+migrate_cursor:
+  cmd: "omegon migrate cursor"
+  desc: "Import from Cursor"
+
+extension_install:
+  cmd: "omegon extension install <git-url-or-local-path>"
+  desc: "Install extension from git URL or local path"
+
+extension_install_vox:
+  cmd: "omegon extension install https://github.com/styrene-lab/vox.git"
+  desc: "Install Vox communication extension"
+
+extension_install_scry:
+  cmd: "omegon extension install https://github.com/styrene-lab/scry.git"
+  desc: "Install Scry image generation extension"
+
+extension_list:
+  cmd: "omegon extension list"
+  desc: "List installed extensions"
+
+extension_update:
+  cmd: "omegon extension update"
+  desc: "Update all extensions"
+
+extension_remove:
+  cmd: "omegon extension remove vox"
+  desc: "Remove an extension"
+
+extension_init:
+  cmd: "omegon extension init my-extension"
+  desc: "Scaffold a new extension project"
+
+dev_clone_build:
+  cmd: |
+    git clone https://github.com/styrene-lab/omegon.git
+    cd omegon
+    cd core && cargo build -p omegon
+    cargo test -p omegon
+  desc: "Clone, build, and test from source"
+
+release_workflow:
+  cmd: |
+    just rc
+    just sign
+    just publish
+    just release
+  desc: "Release workflow (cut RC, sign, publish, release)"

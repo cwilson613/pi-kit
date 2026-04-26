@@ -1,0 +1,141 @@
+# Canonical in-TUI slash commands — validated against omegon's tool_registry per release.
+
+model:
+  cmd: "/model"
+  desc: "Switch model (opens selector)"
+
+think:
+  cmd: "/think high"
+  desc: "Raise reasoning effort"
+
+context:
+  cmd: "/context clan"
+  desc: "Raise context class"
+
+status:
+  cmd: "/status"
+  desc: "Check provider and system status"
+
+warp:
+  cmd: "/warp"
+  desc: "Toggle om <-> omegon live"
+
+tutorial:
+  cmd: "/tutorial"
+  desc: "Launch interactive overlay tutorial"
+
+tutorial_demo:
+  cmd: "/tutorial demo"
+  desc: "Launch scripted showcase tutorial"
+
+tutorial_status:
+  cmd: "/tutorial status"
+  desc: "Check tutorial progress"
+
+tutorial_reset:
+  cmd: "/tutorial reset"
+  desc: "Reset tutorial state"
+
+update:
+  cmd: "/update"
+  desc: "Inspect and install a newer release"
+
+init:
+  cmd: "/init"
+  desc: "Initialize project memory"
+
+memory:
+  cmd: "/memory"
+  desc: "Show memory overview"
+
+compact:
+  cmd: "/compact"
+  desc: "Compact conversation context"
+
+note:
+  cmd: "/note [text]"
+  desc: "Add a quick note to memory"
+
+notes:
+  cmd: "/notes"
+  desc: "List saved notes"
+
+sessions:
+  cmd: "/sessions"
+  desc: "List saved sessions"
+
+cleave:
+  cmd: "/cleave"
+  desc: "Trigger parallel task decomposition"
+
+auspex_open:
+  cmd: "/auspex open"
+  desc: "Launch primary browser surface"
+
+opsx_propose:
+  cmd: "/opsx:propose"
+  desc: "Propose a new OpenSpec design"
+
+opsx_spec:
+  cmd: "/opsx:spec"
+  desc: "Write specification scenarios"
+
+opsx_ff:
+  cmd: "/opsx:ff"
+  desc: "Fast-forward implementation"
+
+opsx_status:
+  cmd: "/opsx:status"
+  desc: "Check OpenSpec status"
+
+opsx_verify:
+  cmd: "/opsx:verify"
+  desc: "Verify specs are satisfied"
+
+opsx_archive:
+  cmd: "/opsx:archive"
+  desc: "Archive completed change"
+
+assess_spec:
+  cmd: "/assess spec"
+  desc: "Verify specs are satisfied (alias)"
+
+vault_status:
+  cmd: "/vault status"
+  desc: "Check Vault connectivity"
+
+vault_login:
+  cmd: "/vault login"
+  desc: "Authenticate to Vault"
+
+vault_configure:
+  cmd: "/vault configure"
+  desc: "Set Vault address and auth method"
+
+vault_init_policy:
+  cmd: "/vault init-policy"
+  desc: "Create a least-privilege policy for omegon"
+
+migrate_claude_code:
+  cmd: "/migrate claude-code"
+  desc: "Import CLAUDE.md from Claude Code"
+
+migrate_codex:
+  cmd: "/migrate codex"
+  desc: "Import from Codex CLI"
+
+checkin:
+  cmd: "/checkin"
+  desc: "Design tree check-in"
+
+auth_status_slash:
+  cmd: "/auth status"
+  desc: "Check auth status in-TUI"
+
+login_slash:
+  cmd: "/login anthropic"
+  desc: "Log in to provider in-TUI"
+
+secrets_set:
+  cmd: "/secrets set OLLAMA_API_KEY ..."
+  desc: "Set a secret in-TUI"

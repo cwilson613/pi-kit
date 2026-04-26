@@ -1,18 +1,9 @@
 ---
 import Docs from "../../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Security & Supply Chain" description="Signing, SBOM, supply chain integrity, and credential management.">
   <h1>Security &amp; Supply Chain</h1>
-  {isPreviewSite ? (
-    <p>
-      Security policy applies to the preview/staging docs surface at <a href={previewSiteUrl}>{previewSiteUrl}</a> as well as the public stable site at <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
-    </p>
-  ) : (
-    <p>
-      This page documents the public stable release and distribution posture. Preview/staging docs behavior is mirrored on <a href={previewSiteUrl}>{previewSiteUrl}</a>.
-    </p>
-  )}
 
   <h2>Release Signing</h2>
   <p>Every release is signed at multiple levels, but not all signatures cover the same artifact boundary:</p>
@@ -31,14 +22,10 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
 
   <h3>Verify a Release</h3>
   <pre><code># Cosign (CI-signed releases)
-cosign verify-blob omegon-*.tar.gz \
-  --signature omegon-*.tar.gz.sig \
-  --certificate omegon-*.tar.gz.pem \
-  --certificate-identity-regexp '.*' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+{snippet("verify.cosign_verify")}
 
 # GitHub Attestations
-gh attestation verify omegon-*.tar.gz --repo styrene-lab/omegon</code></pre>
+{snippet("verify.gh_attestation")}</code></pre>
 
   <h2>SBOM</h2>
   <p>
@@ -61,10 +48,10 @@ gh attestation verify omegon-*.tar.gz --repo styrene-lab/omegon</code></pre>
   </p>
 
   <h2>HashiCorp Vault Integration</h2>
-  <pre><code>/vault status       # Check Vault connectivity
-/vault login        # Authenticate to Vault
-/vault configure    # Set Vault address and auth method
-/vault init-policy  # Create a least-privilege policy for omegon</code></pre>
+  <pre><code>{snippet("slash.vault_status")}       # Check Vault connectivity
+{snippet("slash.vault_login")}        # Authenticate to Vault
+{snippet("slash.vault_configure")}    # Set Vault address and auth method
+{snippet("slash.vault_init_policy")}  # Create a least-privilege policy for omegon</code></pre>
   <p>
     For teams that manage secrets through Vault, Omegon can read credentials directly from
     Vault paths instead of environment variables or the local keychain.

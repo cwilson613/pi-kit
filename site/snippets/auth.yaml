@@ -1,0 +1,29 @@
+# Canonical auth/provider commands — validated against `omegon auth --help` per release.
+
+login_anthropic:
+  cmd: "omegon auth login anthropic"
+  desc: "OAuth login for Anthropic/Claude"
+
+login_openai_codex:
+  cmd: "omegon auth login openai-codex"
+  desc: "OAuth login for OpenAI/Codex"
+
+login_ollama_cloud:
+  cmd: "omegon auth login ollama-cloud"
+  desc: "OAuth login for Ollama Cloud"
+
+auth_status:
+  cmd: "omegon auth status"
+  desc: "Show authentication status for all providers"
+
+set_anthropic_key:
+  cmd: 'export ANTHROPIC_API_KEY="sk-ant-..."'
+  desc: "Set Anthropic API key via environment"
+
+set_openai_key:
+  cmd: 'export OPENAI_API_KEY="sk-..."'
+  desc: "Set OpenAI API key via environment"
+
+set_ollama_host:
+  cmd: 'export OLLAMA_HOST="http://127.0.0.1:11434"'
+  desc: "Configure local Ollama endpoint"

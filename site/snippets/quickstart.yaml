@@ -1,0 +1,28 @@
+# Canonical quickstart flow — the "happy path" commands shown on get-started and quickstart pages.
+
+setup_codex:
+  cmd: |
+    curl -fsSL https://omegon.styrene.io/install.sh | sh
+    omegon auth login openai-codex
+    om
+  desc: "Install + OpenAI/Codex OAuth + start slim mode"
+
+setup_apikey:
+  cmd: |
+    export ANTHROPIC_API_KEY="sk-ant-..."
+    om
+  desc: "Start with Anthropic API key"
+
+setup_ollama:
+  cmd: |
+    ollama pull qwen3:32b
+    om
+  desc: "Pull an Ollama model and start"
+
+start_slim:
+  cmd: "om"
+  desc: "Start Omegon in slim terminal-first posture"
+
+start_full:
+  cmd: "omegon"
+  desc: "Start Omegon in full harness mode"

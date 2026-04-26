@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Sessions" description="Auto-save and resume conversations across sessions.">
   <h1>Sessions</h1>
@@ -12,13 +13,13 @@ import Docs from "../../layouts/Docs.astro";
 
   <h2>Resume</h2>
   <pre><code># Resume the most recent session
-omegon --resume
+{snippet("cli.resume")}
 
 # Resume a specific session (prefix match)
-omegon --resume abc123
+{snippet("cli.resume_specific")}
 
 # List saved sessions
-/sessions</code></pre>
+{snippet("slash.sessions")}</code></pre>
 
   <h2>Session Contents</h2>
   <p>A saved session includes:</p>
@@ -31,7 +32,7 @@ omegon --resume abc123
   </ul>
 
   <h2>Disable Auto-Save</h2>
-  <pre><code>omegon --no-session</code></pre>
+  <pre><code>{snippet("cli.no_session")}</code></pre>
   <p>
     Disables session auto-save for this run. Useful for one-off queries or sensitive work
     you don't want persisted to disk.
@@ -42,16 +43,16 @@ omegon --resume abc123
     For scripted/CI use, pass a prompt directly:
   </p>
   <pre><code># Execute a single prompt and exit
-omegon --prompt "Summarize README.md"
+{snippet("cli.headless_prompt")}
 
 # Read prompt from a file
-omegon --prompt-file task.md
+{snippet("cli.headless_file")}
 
 # Limit turns
-omegon --prompt "Fix the failing test" --max-turns 10</code></pre>
+{snippet("cli.headless_bounded")}</code></pre>
 
   <h2>Smoke Tests</h2>
-  <pre><code>omegon --smoke</code></pre>
+  <pre><code>{snippet("cli.smoke")}</code></pre>
   <p>
     Runs 4 headless smoke tests through the LLM bridge: basic response, bash tool use,
     file read, and arithmetic validation. Useful for verifying provider connectivity and

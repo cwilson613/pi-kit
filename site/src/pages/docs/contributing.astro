@@ -1,18 +1,12 @@
 ---
 import Docs from "../../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Contributing" description="How to contribute to Omegon — branch policy, commits, testing, and release workflow.">
   <h1>Contributing</h1>
-  <p>
-    Contributor docs can mention RC workflow because release engineering lives here. Public install and onboarding guidance stays stable-first on <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>, while preview-specific operator guidance lives on <a href={previewSiteUrl}>{previewSiteUrl}</a>.
-  </p>
 
   <h2>Development Setup</h2>
-  <pre><code>git clone https://github.com/styrene-lab/omegon.git
-cd omegon
-cd core && cargo build -p omegon
-cargo test -p omegon</code></pre>
+  <pre><code>{snippet("cli.dev_clone_build")}</code></pre>
 
   <h2>Branch Policy</h2>
   <p>
@@ -45,16 +39,10 @@ test: add snapshot test for rounded borders</code></pre>
   <h2>Release Workflow</h2>
   <p>Releases use the <code>just</code> task runner:</p>
   <pre><code># Cut a release candidate (bump, test, commit, tag, build, sign)
-just rc
-
 # Sign the local macOS validation binary with Apple Developer ID (YubiKey — optional)
-just sign
-
 # Publish refs and trigger CI-built release artifacts
-just publish
-
 # Cut a stable release (strip -rc.N suffix)
-just release</code></pre>
+{snippet("cli.release_workflow")}</code></pre>
 
   <h3>What <code>just publish</code> Does</h3>
   <ol>
@@ -62,7 +50,7 @@ just release</code></pre>
     <li>Pushes to origin with tags — triggers three CI workflows:
       <ul>
         <li><code>release.yml</code> — builds distributable binaries for 4 platforms, signs release archives with cosign, and creates the GitHub Release</li>
-        <li><code>site.yml</code> — rebuilds and deploys both docs variants: stable public <code>omegon.styrene.io</code> and preview/staging <code>omegon.styrene.dev</code></li>
+        <li><code>site.yml</code> — rebuilds and deploys the docs site to <code>omegon.styrene.io</code></li>
       </ul>
     </li>
     <li>Builds docs site locally (verification)</li>
@@ -84,7 +72,7 @@ just release</code></pre>
       <tr><td><code>omegon-memory</code></td><td>Project memory — facts, episodes, semantic search, knowledge graph</td></tr>
       <tr><td><code>omegon-secrets</code></td><td>Credential storage — keychain, encrypted file, Vault</td></tr>
       <tr><td><code>omegon-traits</code></td><td>Shared traits and types across crates</td></tr>
-      <tr><td><code>opsx-core</code></td><td>OpenSpec engine — spec parsing, verification, lifecycle</td></tr>
+      <tr><td><code>omegon-opsx</code></td><td>OpenSpec engine — spec parsing, verification, lifecycle</td></tr>
     </tbody>
   </table>
 

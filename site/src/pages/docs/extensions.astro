@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Extensions" description="Extend Omegon with community and first-party extensions.">
   <h1>Extensions</h1>
@@ -11,7 +12,7 @@ import Docs from "../../layouts/Docs.astro";
   </p>
 
   <h2>Install an extension</h2>
-  <pre><code>omegon extension install &lt;git-url-or-local-path&gt;</code></pre>
+  <pre><code>{snippet("cli.extension_install")}</code></pre>
   <p>
     Git URLs are cloned and built automatically (requires a Rust toolchain).
     Local paths are symlinked for development.
@@ -25,7 +26,7 @@ import Docs from "../../layouts/Docs.astro";
     messages arrive as agent prompts; replies route back to the originating
     channel.
   </p>
-  <pre><code>omegon extension install https://github.com/styrene-lab/vox.git</code></pre>
+  <pre><code>{snippet("cli.extension_install_vox")}</code></pre>
   <table>
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
@@ -46,7 +47,7 @@ import Docs from "../../layouts/Docs.astro";
     (FLUX, SDXL, SD1.5). All inference runs on-device via ComfyUI &mdash; no
     external API calls.
   </p>
-  <pre><code>omegon extension install https://github.com/styrene-lab/scry.git</code></pre>
+  <pre><code>{snippet("cli.extension_install_scry")}</code></pre>
   <table>
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
@@ -66,20 +67,20 @@ import Docs from "../../layouts/Docs.astro";
 
   <h2>Managing extensions</h2>
   <pre><code># List installed extensions
-omegon extension list
+{snippet("cli.extension_list")}
 
 # Update all extensions
-omegon extension update
+{snippet("cli.extension_update")}
 
 # Remove an extension
-omegon extension remove vox</code></pre>
+{snippet("cli.extension_remove")}</code></pre>
 
   <h2>Building your own</h2>
   <p>
     Extensions are Rust binaries built against the <code>omegon-extension</code>
     SDK crate. Scaffold a new one with:
   </p>
-  <pre><code>omegon extension new my-extension</code></pre>
+  <pre><code>{snippet("cli.extension_init")}</code></pre>
   <p>
     See the <a href="https://github.com/styrene-lab/omegon/blob/main/EXTENSION_SDK.md">Extension SDK guide</a>
     for the full walkthrough, or

@@ -1,6 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
+import { snippet } from "../../lib/snippets";
 ---
 
 <Docs title="Quick Start" description="Get productive with Omegon in 5 minutes.">
@@ -12,18 +12,11 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
   </p>
 
   <h2>1. Install &amp; authenticate</h2>
-  <pre><code>curl -fsSL {canonicalSiteUrl}/install.sh | sh
-omegon login openai-codex   # or: omegon login ollama-cloud
-om                          # or: export ANTHROPIC_API_KEY="sk-ant-..." && om</code></pre>
-  {isPreviewSite ? (
-    <p>
-      This preview site also tracks RC and nightly workflows. For the public stable install surface, use <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
-    </p>
-  ) : (
-    <p>
-      Need RC or nightly builds instead of stable? Use <a href={previewSiteUrl}>{previewSiteUrl}</a>.
-    </p>
-  )}
+  <pre><code>{snippet("quickstart.setup_codex")}</code></pre>
+  <p>
+    Need RC or nightly builds? Use <code>CHANNEL=rc</code> or <code>CHANNEL=nightly</code> with the install script.
+    See <a href="/docs/install">Installation</a> for all options.
+  </p>
   <p>
     <code>om</code> starts the slim terminal-first posture: conversation-first, copy-friendly, and lower-pressure by default.
     Launch <code>omegon</code> instead if you want the full harness surfaces immediately.
@@ -53,19 +46,19 @@ om                          # or: export ANTHROPIC_API_KEY="sk-ant-..." && om</c
   </p>
 
   <h2>4. Key commands</h2>
-  <pre><code>/model         # Switch model (opens selector)
-/think high    # Raise reasoning effort
-/context clan  # Raise context class
-/status        # Check provider and system status
-/warp          # Toggle om ↔ omegon live
-/tutorial      # Launch the interactive overlay tutorial
-/update        # Inspect and install a newer release</code></pre>
+  <pre><code>{snippet("slash.model")}         # Switch model (opens selector)
+{snippet("slash.think")}    # Raise reasoning effort
+{snippet("slash.context")}  # Raise context class
+{snippet("slash.status")}        # Check provider and system status
+{snippet("slash.warp")}          # Toggle om ↔ omegon live
+{snippet("slash.tutorial")}      # Launch the interactive overlay tutorial
+{snippet("slash.update")}        # Inspect and install a newer release</code></pre>
 
   <h2>5. Project memory</h2>
   <p>
     Omegon persists durable project facts across sessions. In a fresh repo, start with:
   </p>
-  <pre><code>/init</code></pre>
+  <pre><code>{snippet("slash.init")}</code></pre>
   <p>
     The agent will orient itself to the project, store foundational facts, and carry that memory into future sessions.
   </p>
@@ -78,10 +71,10 @@ om                          # or: export ANTHROPIC_API_KEY="sk-ant-..." && om</c
 
 # If warranted, Omegon will recommend /cleave.
 # You can also trigger it explicitly:
-/cleave</code></pre>
+{snippet("slash.cleave")}</code></pre>
 
   <h2>7. Browser surfaces</h2>
-  <pre><code>/auspex open</code></pre>
+  <pre><code>{snippet("slash.auspex_open")}</code></pre>
   <p>
     Launches Omegon's primary browser surface. If the local compatibility bridge is not running yet,
     Omegon starts it first. For direct local compatibility/debug access, <code>/dash</code> remains available.
@@ -92,8 +85,8 @@ om                          # or: export ANTHROPIC_API_KEY="sk-ant-..." && om</c
     <code>/tutorial</code> is not a fake tour. It is an interactive overlay that can read code,
     store memory, and create lifecycle artifacts in your real project.
   </p>
-  <pre><code>/tutorial        # current-project path
-/tutorial demo   # scripted showcase path</code></pre>
+  <pre><code>{snippet("slash.tutorial")}        # current-project path
+{snippet("slash.tutorial_demo")}   # scripted showcase path</code></pre>
 
   <h2>Next steps</h2>
   <ul>

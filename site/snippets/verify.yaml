@@ -1,0 +1,14 @@
+# Canonical verification commands — cosign, gh attestation, etc.
+
+cosign_verify:
+  cmd: |
+    cosign verify-blob omegon-0.16.1-aarch64-apple-darwin.tar.gz \
+      --signature omegon-0.16.1-aarch64-apple-darwin.tar.gz.sig \
+      --certificate omegon-0.16.1-aarch64-apple-darwin.tar.gz.pem \
+      --certificate-identity-regexp '.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  desc: "Verify cosign signature (keyless) — replace version with actual"
+
+gh_attestation:
+  cmd: "gh attestation verify omegon-*.tar.gz --repo styrene-lab/omegon"
+  desc: "Verify GitHub Attestations (build provenance)"

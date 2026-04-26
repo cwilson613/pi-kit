@@ -372,6 +372,39 @@ enum DelegateChildFailureKind {
     Unknown,
 }
 
+/// Detect conversational acknowledgments that are not actionable task descriptions.
+/// These are phrases users say to confirm a plan ("Sure", "Go ahead", "Let's do it")
+/// that the LLM sometimes passes verbatim as delegate tasks.
+fn is_conversational_non_task(task: &str) -> bool {
+    let t = task.trim();
+    // Short conversational phrases (under 80 chars, no verbs suggesting real work)
+    if t.len() > 80 {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    let lower = lower.trim_end_matches(['.', '!', ',']);
+    matches!(
+        lower,
+        "ok" | "okay" | "sure" | "yes" | "yeah" | "yep" | "go" | "go ahead"
+            | "proceed" | "do it" | "let's do it" | "let's go" | "let's proceed"
+            | "sounds good" | "looks good" | "lgtm" | "ship it" | "go for it"
+            | "continue" | "carry on" | "make it so" | "approved" | "confirmed"
+            | "excellent" | "perfect" | "great" | "nice" | "good" | "fine"
+            | "excellent let's proceed"
+            | "excellent, let's proceed"
+            | "sure, go ahead"
+            | "yes, proceed"
+            | "ok, do it"
+            | "yes please"
+            | "please proceed"
+            | "let's get it done"
+            | "that works"
+            | "that's fine"
+            | "go with that"
+            | "sounds right"
+    )
+}
+
 fn classify_delegate_child_failure(stderr: &str, model: &str) -> DelegateChildFailureKind {
     let lower = stderr.to_ascii_lowercase();
     let provider = crate::providers::infer_provider_id(model);
@@ -1126,6 +1159,19 @@ impl Feature for DelegateFeature {
                         "Cannot delegate: the task you provided is a recycled system \
                          warning, not a real task. Stop delegating and handle the \
                          work directly."
+                    ));
+                }
+
+                // Reject conversational acknowledgments passed as task descriptions.
+                // The LLM sometimes takes user confirmation ("Sure", "Go ahead",
+                // "Excellent, let's proceed") and uses it verbatim as the delegate
+                // task, which is not actionable.
+                if is_conversational_non_task(&task) {
+                    return Err(anyhow::anyhow!(
+                        "Cannot delegate: '{}' is a conversational acknowledgment, \
+                         not a task description. Formulate a specific, actionable task \
+                         for the delegate — what to do, which files, what outcome.",
+                        task
                     ));
                 }
 

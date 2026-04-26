@@ -773,6 +773,18 @@ impl Segment {
 // Per-type renderers
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Scale an RGB color's intensity by `factor` (0.0–1.0). Non-RGB colors pass through.
+fn dim_color(color: Color, factor: f32) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f32 * factor) as u8,
+            (g as f32 * factor) as u8,
+            (b as f32 * factor) as u8,
+        ),
+        other => other,
+    }
+}
+
 fn wrapped_rows(text: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
     text.lines()
@@ -1296,7 +1308,10 @@ fn render_tool_card(
     } else if !complete {
         ("▷", t.warning(), t.warning(), t.tool_success_bg())
     } else {
-        ("▸", kind_color, kind_color, t.tool_success_bg())
+        // Border uses a muted version of the kind color so it doesn't
+        // compete with diff content (red/green lines) inside the card.
+        let muted_border = dim_color(kind_color, 0.4);
+        ("▸", kind_color, muted_border, t.tool_success_bg())
     };
 
     let timestamp = format_timestamp(meta.timestamp);

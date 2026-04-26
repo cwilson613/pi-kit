@@ -2353,14 +2353,12 @@ fn ollama_think_value(model: &str, reasoning: Option<&str>) -> Option<Value> {
 
 /// Map Omegon thinking levels onto OpenAI Responses API reasoning effort.
 ///
-/// Upstream docs indicate effort is model-dependent and can include:
-/// none, minimal, low, medium, high, xhigh.
-/// We preserve minimal instead of collapsing it to low.
+/// GPT-5.5 and newer models accept: none, low, medium, high, xhigh.
+/// "minimal" is not a valid OpenAI effort level — map it to "low".
 fn openai_reasoning_effort(reasoning: Option<&str>) -> Option<&'static str> {
     match reasoning? {
         "off" => None,
-        "minimal" => Some("minimal"),
-        "low" => Some("low"),
+        "minimal" | "low" => Some("low"),
         "medium" => Some("medium"),
         "high" => Some("high"),
         "xhigh" => Some("xhigh"),
@@ -4177,8 +4175,8 @@ mod tests {
     }
 
     #[test]
-    fn openai_reasoning_effort_preserves_minimal() {
-        assert_eq!(openai_reasoning_effort(Some("minimal")), Some("minimal"));
+    fn openai_reasoning_effort_maps_minimal_to_low() {
+        assert_eq!(openai_reasoning_effort(Some("minimal")), Some("low"));
         assert_eq!(openai_reasoning_effort(Some("low")), Some("low"));
         assert_eq!(openai_reasoning_effort(Some("medium")), Some("medium"));
         assert_eq!(openai_reasoning_effort(Some("high")), Some("high"));

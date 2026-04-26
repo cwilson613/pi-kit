@@ -193,6 +193,20 @@ impl ConversationView {
     }
 
     pub fn push_system(&mut self, text: &str) {
+        // Merge consecutive system notifications into a single card to avoid
+        // excessive vertical padding (each card has border overhead).
+        if let Some(last) = self.segments.last_mut() {
+            if let SegmentContent::SystemNotification {
+                text: ref mut existing,
+            } = last.content
+            {
+                existing.push('\n');
+                existing.push_str(text);
+                self.conv_state.invalidate();
+                self.conv_state.auto_scroll_to_bottom();
+                return;
+            }
+        }
         self.segments.push(Segment::system(text));
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();

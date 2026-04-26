@@ -192,8 +192,8 @@ pub fn resolve_api_key_sync(provider: &str) -> Option<(String, bool)> {
         }
         None => {
             // Fallback: adopt Claude Code credentials from ~/.claude.json
-            if let Some(cc) = crate::auth::read_claude_code_credentials(auth_key) {
-                tracing::info!(provider, "Adopted credentials from Claude Code (~/.claude.json)");
+            if let Some(cc) = crate::auth::read_external_credentials(auth_key) {
+                tracing::info!(provider, "Adopted credentials from external tool");
                 Some(cc)
             } else {
                 tracing::debug!(provider, auth_key, "no credentials in auth.json");

@@ -454,29 +454,58 @@ pub fn read_credentials(provider: &str) -> Option<OAuthCredentials> {
     serde_json::from_value(entry.clone()).ok()
 }
 
-/// Attempt to read Anthropic OAuth credentials from Claude Code's ~/.claude.json.
-/// This allows omegon to seamlessly adopt existing Claude Code sessions without
-/// requiring a separate login. Only applies to the "anthropic" provider.
+/// Attempt to adopt credentials from other tools installed on this machine.
+/// Checks provider-specific sources so users don't need to re-authenticate
+/// when they already have a working session in another tool.
+///
+/// Supported:
+///   - anthropic: Claude Code (~/.claude.json) OAuth tokens
+///   - github:    GitHub Copilot (~/.config/github-copilot/hosts.json) OAuth tokens
+pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
+    let home = dirs::home_dir()?;
+    match provider {
+        "anthropic" => {
+            // Claude Code stores OAuth in ~/.claude.json
+            let data: Value =
+                serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).ok()?)
+                    .ok()?;
+            let oauth = data.get("oauthAccount")?;
+            let access = oauth.get("accessToken")?.as_str().filter(|s| !s.is_empty())?;
+            let refresh = oauth.get("refreshToken")?.as_str()?;
+            let expires = oauth.get("expiresAt")?.as_i64()?;
+            Some(OAuthCredentials {
+                cred_type: "oauth".into(),
+                access: access.into(),
+                refresh: refresh.into(),
+                expires: expires as u64,
+            })
+        }
+        "github" => {
+            // GitHub Copilot stores host tokens in ~/.config/github-copilot/hosts.json
+            let hosts: Value = serde_json::from_str(
+                &std::fs::read_to_string(home.join(".config/github-copilot/hosts.json")).ok()?,
+            )
+            .ok()?;
+            let obj = hosts.as_object()?;
+            // Pick the github.com entry (most common)
+            let entry = obj
+                .get("github.com")
+                .or_else(|| obj.values().next())?;
+            let token = entry.get("oauth_token")?.as_str().filter(|s| !s.is_empty())?;
+            Some(OAuthCredentials {
+                cred_type: "oauth".into(),
+                access: token.into(),
+                refresh: String::new(),
+                expires: u64::MAX, // Copilot tokens don't carry expiry
+            })
+        }
+        _ => None,
+    }
+}
+
+// Backward-compat alias — referenced from providers.rs
 pub fn read_claude_code_credentials(provider: &str) -> Option<OAuthCredentials> {
-    if provider != "anthropic" {
-        return None;
-    }
-    let claude_json = dirs::home_dir()?.join(".claude.json");
-    let content = std::fs::read_to_string(&claude_json).ok()?;
-    let data: Value = serde_json::from_str(&content).ok()?;
-    let oauth = data.get("oauthAccount")?;
-    let access = oauth.get("accessToken")?.as_str()?;
-    let refresh = oauth.get("refreshToken")?.as_str()?;
-    let expires = oauth.get("expiresAt")?.as_i64()?;
-    if access.is_empty() {
-        return None;
-    }
-    Some(OAuthCredentials {
-        cred_type: "oauth".into(),
-        access: access.into(),
-        refresh: refresh.into(),
-        expires: expires as u64,
-    })
+    read_external_credentials(provider)
 }
 
 /// Read extra fields stored alongside credentials in auth.json.
@@ -671,8 +700,8 @@ pub async fn resolve_with_refresh(provider: &str) -> Option<(String, bool)> {
         Some(c) => c,
         None => {
             // 3. Fallback: adopt Claude Code credentials from ~/.claude.json
-            if let Some(c) = read_claude_code_credentials(auth_key) {
-                tracing::info!(provider, "Adopted credentials from Claude Code (~/.claude.json)");
+            if let Some(c) = read_external_credentials(auth_key) {
+                tracing::info!(provider, "Adopted credentials from external tool");
                 c
             } else {
                 return None;

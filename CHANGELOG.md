@@ -22,7 +22,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 - **TUI continuation affordance** — when the agent asks for confirmation ("Shall I proceed?"), the editor placeholder shows "Press Enter to continue". Empty Enter sends a continuation signal from tracked intent context. Works cross-provider and cross-model.
 - **GPT-5.5 reasoning effort** — `"minimal"` mapped to `"low"` for OpenAI. GPT-5.5 accepts `none/low/medium/high/xhigh`; `"minimal"` caused 400 errors.
 - **GPT-5.5 missing from Codex provider** — model was registered for `openai` but not `openai-codex`. ChatGPT/Codex OAuth users now see GPT-5.5 in the model selector.
-- **Claude Code credential adoption** — `~/.claude.json` OAuth tokens are used as a live fallback when omegon has no stored Anthropic credentials. No migration step, no re-login required.
+- **External credential adoption** — live fallback reads credentials from other installed tools when omegon has no stored tokens. Anthropic from Claude Code (`~/.claude.json`), GitHub from Copilot (`~/.config/github-copilot/hosts.json`). No migration step, no re-login required.
 - **Install script channel flag** — `CHANNEL=rc` before `curl` in a pipe only scoped to `curl`, not `sh`. Added `--channel` and `--version` CLI arguments: `| sh -s -- --channel=rc`. All docs and site snippets updated.
 - **System notification spacing** — consecutive system notifications merge into a single bordered card instead of each getting its own card with 3 rows of overhead.
 - **Mobile docs navigation** — added hamburger menu toggle for the docs sidebar on screens under 768px. Previously the sidebar was `display: none` with no alternative.

@@ -372,37 +372,51 @@ enum DelegateChildFailureKind {
     Unknown,
 }
 
-/// Detect conversational acknowledgments that are not actionable task descriptions.
-/// These are phrases users say to confirm a plan ("Sure", "Go ahead", "Let's do it")
-/// that the LLM sometimes passes verbatim as delegate tasks.
+/// Detect that a task description lacks actionable content — it's conversational
+/// rather than instructional. Uses structural signals instead of a static phrase
+/// list so it catches "yeah sure boss, getatit" not just "sure, go ahead".
+///
+/// Heuristic: short text (<100 chars) with no actionable structural markers
+/// (file paths, code identifiers, technical verbs) is probably not a task.
 pub fn is_conversational_non_task(task: &str) -> bool {
     let t = task.trim();
-    // Short conversational phrases (under 80 chars, no verbs suggesting real work)
-    if t.len() > 80 {
+    if t.is_empty() {
+        return true;
+    }
+    // Long text is likely a real task description
+    if t.len() > 100 {
         return false;
     }
     let lower = t.to_ascii_lowercase();
-    let lower = lower.trim_end_matches(['.', '!', ',']);
-    matches!(
-        lower,
-        "ok" | "okay" | "sure" | "yes" | "yeah" | "yep" | "go" | "go ahead"
-            | "proceed" | "do it" | "let's do it" | "let's go" | "let's proceed"
-            | "sounds good" | "looks good" | "lgtm" | "ship it" | "go for it"
-            | "continue" | "carry on" | "make it so" | "approved" | "confirmed"
-            | "excellent" | "perfect" | "great" | "nice" | "good" | "fine"
-            | "excellent let's proceed"
-            | "excellent, let's proceed"
-            | "sure, go ahead"
-            | "yes, proceed"
-            | "ok, do it"
-            | "yes please"
-            | "please proceed"
-            | "let's get it done"
-            | "that works"
-            | "that's fine"
-            | "go with that"
-            | "sounds right"
-    )
+
+    // Structural markers that indicate a real task
+    let has_path = t.contains('/') || t.contains('\\') || t.contains(".rs")
+        || t.contains(".py") || t.contains(".ts") || t.contains(".js")
+        || t.contains(".toml") || t.contains(".json") || t.contains(".yaml")
+        || t.contains(".yml") || t.contains(".md");
+    let has_code_ident = t.contains("::") || t.contains("()") || t.contains("fn ")
+        || t.contains("def ") || t.contains("class ") || t.contains("struct ");
+    let has_actionable_verb = lower.starts_with("add ") || lower.starts_with("fix ")
+        || lower.starts_with("update ") || lower.starts_with("remove ")
+        || lower.starts_with("create ") || lower.starts_with("change ")
+        || lower.starts_with("implement ") || lower.starts_with("refactor ")
+        || lower.starts_with("move ") || lower.starts_with("rename ")
+        || lower.starts_with("delete ") || lower.starts_with("write ")
+        || lower.starts_with("test ") || lower.starts_with("run ")
+        || lower.starts_with("check ") || lower.starts_with("verify ")
+        || lower.starts_with("search ") || lower.starts_with("find ")
+        || lower.starts_with("read ") || lower.starts_with("edit ")
+        || lower.starts_with("install ") || lower.starts_with("build ")
+        || lower.starts_with("deploy ") || lower.starts_with("debug ")
+        || lower.starts_with("investigate ") || lower.starts_with("analyze ");
+
+    // If it has any structural marker, it's probably a real task
+    if has_path || has_code_ident || has_actionable_verb {
+        return false;
+    }
+
+    // Short text with no structural markers — conversational
+    t.split_whitespace().count() <= 12
 }
 
 fn classify_delegate_child_failure(stderr: &str, model: &str) -> DelegateChildFailureKind {

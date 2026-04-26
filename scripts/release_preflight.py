@@ -27,10 +27,14 @@ class PreflightError(Exception):
 
 
 def read_workspace_version(repo_root: Path) -> str:
-    cargo_toml = (repo_root / "core" / "Cargo.toml").read_text()
+    # Workspace Cargo.toml lives at repo root (not core/)
+    cargo_path = repo_root / "Cargo.toml"
+    if not cargo_path.exists():
+        cargo_path = repo_root / "core" / "Cargo.toml"
+    cargo_toml = cargo_path.read_text()
     match = VERSION_RE.search(cargo_toml)
     if not match:
-        raise PreflightError("Could not read workspace version from core/Cargo.toml")
+        raise PreflightError(f"Could not read workspace version from {cargo_path}")
     return match.group(1)
 
 

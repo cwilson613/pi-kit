@@ -460,8 +460,10 @@ pub fn read_credentials(provider: &str) -> Option<OAuthCredentials> {
 ///
 /// Supported:
 ///   - anthropic:          Claude Code (~/.claude.json) OAuth tokens
+///   - openai-codex:       Codex CLI (~/.codex/auth.json) OAuth tokens
 ///   - github:             GitHub Copilot (~/.config/github-copilot/hosts.json) OAuth tokens
 ///   - google-antigravity: Gemini CLI (~/.gemini/oauth_creds.json) OAuth tokens
+///   - huggingface:        HF CLI (~/.cache/huggingface/token) API token
 pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
     let home = dirs::home_dir()?;
     match provider {
@@ -479,6 +481,36 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                 access: access.into(),
                 refresh: refresh.into(),
                 expires: expires as u64,
+            })
+        }
+        "openai-codex" => {
+            // Codex CLI stores OAuth tokens at ~/.codex/auth.json
+            // Structure: { "tokens": { "access_token": "...", "refresh_token": "..." }, ... }
+            let data: Value = serde_json::from_str(
+                &std::fs::read_to_string(home.join(".codex/auth.json")).ok()?,
+            )
+            .ok()?;
+            let tokens = data.get("tokens")?;
+            let access = tokens.get("access_token")?.as_str().filter(|s| !s.is_empty())?;
+            let refresh = tokens
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            // Codex CLI stores last_refresh as unix seconds; tokens typically last 1 hour
+            let last_refresh = data
+                .get("last_refresh")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as u64;
+            let expires = if last_refresh > 0 {
+                (last_refresh + 3600) * 1000 // 1 hour from last refresh, in ms
+            } else {
+                0
+            };
+            Some(OAuthCredentials {
+                cred_type: "oauth".into(),
+                access: access.into(),
+                refresh: refresh.into(),
+                expires,
             })
         }
         "github" => {
@@ -536,6 +568,23 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                 }
             }
             None
+        }
+        "huggingface" => {
+            // HF CLI stores a plain-text token at ~/.cache/huggingface/token
+            // (modern) or ~/.huggingface/token (legacy). Long-lived API token.
+            let token = std::fs::read_to_string(home.join(".cache/huggingface/token"))
+                .or_else(|_| std::fs::read_to_string(home.join(".huggingface/token")))
+                .ok()?;
+            let token = token.trim();
+            if token.is_empty() {
+                return None;
+            }
+            Some(OAuthCredentials {
+                cred_type: "api-key".into(),
+                access: token.into(),
+                refresh: String::new(),
+                expires: u64::MAX, // long-lived personal access token
+            })
         }
         _ => None,
     }

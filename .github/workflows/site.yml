@@ -16,7 +16,7 @@ on:
 
 jobs:
   pages:
-    name: Build & deploy Pages variants
+    name: Build & deploy Pages
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -34,47 +34,29 @@ jobs:
       - name: Install site dependencies
         run: cd site && npm ci
 
+      - name: Load canonical snippets
+        run: cd site && node scripts/load-snippets.mjs
+
+      - name: Fetch release data
+        run: cd site && node scripts/fetch-releases.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build design tree SVG
         run: cd site && node scripts/build-design-tree.mjs
 
-      - name: Build stable public site
+      - name: Build site
         run: |
           cp core/install.sh site/public/install.sh
-          cd site
-          PUBLIC_SITE_VARIANT=stable \
-          PUBLIC_SITE_URL=https://omegon.styrene.io \
-          PUBLIC_STABLE_SITE_URL=https://omegon.styrene.io \
-          PUBLIC_PREVIEW_SITE_URL=https://omegon.styrene.dev \
-          npx astro build
-          rm -rf ../site-dist-stable
-          cp -R dist ../site-dist-stable
+          cd site && npx astro build
 
-      - name: Build preview staging site
-        run: |
-          # Preview site defaults to rc channel instead of stable
-          sed 's/CHANNEL="${CHANNEL:-stable}"/CHANNEL="${CHANNEL:-rc}"/' core/install.sh > site/public/install.sh
-          cd site
-          PUBLIC_SITE_VARIANT=preview \
-          PUBLIC_SITE_URL=https://omegon.styrene.dev \
-          PUBLIC_STABLE_SITE_URL=https://omegon.styrene.io \
-          PUBLIC_PREVIEW_SITE_URL=https://omegon.styrene.dev \
-          npx astro build
-          rm -rf ../site-dist-preview
-          cp -R dist ../site-dist-preview
-
-      - name: Deploy stable Pages project
-        run: npx wrangler@3 pages deploy site-dist-stable --project-name omegon-styrene-io --commit-dirty=true
+      - name: Deploy Pages
+        run: npx wrangler@3 pages deploy site/dist --project-name omegon-styrene-io --commit-dirty=true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Deploy preview Pages project
-        run: npx wrangler@3 pages deploy site-dist-preview --project-name omegon-styrene-dev --commit-dirty=true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Add stable custom domain
+      - name: Add custom domain
         if: github.ref == 'refs/heads/main'
         run: |
           curl -s -X POST \
@@ -91,31 +73,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Add preview custom domain
-        if: github.ref == 'refs/heads/main'
-        run: |
-          curl -s -X POST \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/omegon-styrene-dev/domains" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{"name":"omegon.styrene.dev"}' | python3 -c "
-          import json,sys
-          r=json.load(sys.stdin)
-          errs=[e for e in r.get('errors',[]) if e.get('code') not in (8000018,8000019)]
-          sys.exit(1 if errs else 0)
-          "
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
       - name: Summary
         run: |
           echo "### Pages Deploy" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Stable:** omegon.styrene.io from \\`site-dist-stable\\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Preview:** omegon.styrene.dev from \\`site-dist-preview\\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Stable pages:** $(find site-dist-stable -name '*.html' | wc -l)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Preview pages:** $(find site-dist-preview -name '*.html' | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Site:** omegon.styrene.io" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pages:** $(find site/dist -name '*.html' | wc -l)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
   container:
@@ -138,18 +101,21 @@ jobs:
       - name: Install site dependencies
         run: cd site && npm ci
 
+      - name: Load canonical snippets
+        run: cd site && node scripts/load-snippets.mjs
+
+      - name: Fetch release data
+        run: cd site && node scripts/fetch-releases.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build design tree SVG
         run: cd site && node scripts/build-design-tree.mjs
 
-      - name: Build stable site for container bundle
+      - name: Build site for container bundle
         run: |
           cp core/install.sh site/public/install.sh
-          cd site
-          PUBLIC_SITE_VARIANT=stable \
-          PUBLIC_SITE_URL=https://omegon.styrene.io \
-          PUBLIC_STABLE_SITE_URL=https://omegon.styrene.io \
-          PUBLIC_PREVIEW_SITE_URL=https://omegon.styrene.dev \
-          npx astro build
+          cd site && npx astro build
 
       - name: Prepare container build context
         run: |

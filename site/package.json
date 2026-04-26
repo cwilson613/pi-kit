@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "astro dev",
-    "build": "node scripts/build-design-tree.mjs && astro build",
+    "build": "node scripts/load-snippets.mjs && node scripts/fetch-releases.mjs && node scripts/build-design-tree.mjs && astro build",
     "preview": "astro preview"
   },
   "dependencies": {

@@ -1,6 +1,5 @@
 ---
 import "../styles/global.css";
-import { isPreviewSite } from "../lib/siteVariant";
 
 interface Props {
   title: string;
@@ -86,12 +85,6 @@ const currentPath = Astro.url.pathname;
       <a href="https://github.com/styrene-lab/omegon">GitHub</a>
     </div>
   </nav>
-
-  {isPreviewSite && (
-    <div class="site-banner">
-      Preview docs: release candidates, nightly guidance, and staging-specific notes live here. Public stable docs stay on <a href="https://omegon.styrene.io">omegon.styrene.io</a>.
-    </div>
-  )}
 
   <div class="docs-layout">
     <aside class="sidebar">

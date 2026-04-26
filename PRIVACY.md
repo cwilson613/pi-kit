@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Effective date:** March 2026  
-**Applies to:** The Omegon software, the omegon.styrene.io website, and the omegon.styrene.dev preview site  
+**Applies to:** The Omegon software and the omegon.styrene.io website  
 **Controller:** Black Meridian, LLC
 
 ---

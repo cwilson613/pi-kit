@@ -1,6 +1,5 @@
 ---
 import Docs from "../../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
 ---
 <Docs title="Get Working Fast" description="Choose the shortest provider path to a working Omegon setup.">
   <h1>Get Working Fast</h1>
@@ -9,15 +8,6 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
     that matches what you already have, follow the steps exactly, and confirm the success signal
     before exploring deeper features.
   </p>
-  {isPreviewSite ? (
-    <p>
-      You are reading the preview/staging onboarding path on <a href={previewSiteUrl}>{previewSiteUrl}</a>. If you want the conservative public stable path, use <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
-    </p>
-  ) : (
-    <p>
-      This is the public stable onboarding path. If you are deliberately testing RC or nightly behavior, use <a href={previewSiteUrl}>{previewSiteUrl}</a> instead.
-    </p>
-  )}
 
   <h2>Choose Your Path</h2>
   <table>

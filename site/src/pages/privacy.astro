@@ -1,6 +1,5 @@
 ---
 import Docs from "../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../lib/siteVariant";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -12,7 +11,7 @@ try {
   raw = "# Privacy Policy\n\n*Not available during this build.*";
 }
 
-const siteLabel = isPreviewSite ? previewSiteUrl : canonicalSiteUrl;
+const siteLabel = "https://omegon.styrene.io";
 raw = raw
   .replace(/omegon\.styrene\.dev website/g, `${siteLabel} website`)
   .replace(/omegon\.styrene\.dev Website/g, `${siteLabel} Website`);

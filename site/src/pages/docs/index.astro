@@ -1,6 +1,5 @@
 ---
 import Docs from "../../layouts/Docs.astro";
-import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteVariant";
 ---
 
 <Docs title="Introduction" description="Omegon — terminal-native AI agent harness. Single binary, eleven providers, zero dependencies.">
@@ -9,15 +8,9 @@ import { canonicalSiteUrl, isPreviewSite, previewSiteUrl } from "../../lib/siteV
     Terminal-native AI agent harness — for operators who build.
     Single binary. Eleven providers. Zero runtime dependencies.
   </p>
-  {isPreviewSite ? (
-    <p>
-      This preview docs variant tracks staging, RC, and nightly-facing guidance on <a href={previewSiteUrl}>{previewSiteUrl}</a>. The public stable docs stay on <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>.
-    </p>
-  ) : (
-    <p>
-      This is the public stable documentation surface on <a href={canonicalSiteUrl}>{canonicalSiteUrl}</a>. If you need staging, RC, or nightly guidance, jump to <a href={previewSiteUrl}>{previewSiteUrl}</a>.
-    </p>
-  )}
+  <p>
+    Use the version selector on the <a href="/">home page</a> to switch between stable, RC, and nightly install channels.
+  </p>
 
   <h2>What is Omegon?</h2>
   <p>

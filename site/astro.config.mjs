@@ -1,10 +1,8 @@
 import { defineConfig } from "astro/config";
 import sitemap from "@astrojs/sitemap";
 
-const siteUrl = process.env.PUBLIC_SITE_URL || "https://omegon.styrene.io";
-
 export default defineConfig({
-  site: siteUrl,
+  site: "https://omegon.styrene.io",
   integrations: [sitemap()],
   markdown: {
     shikiConfig: {

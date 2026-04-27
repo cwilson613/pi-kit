@@ -64,15 +64,17 @@ use self::segments::{
 };
 
 /// Get current process RSS in megabytes (platform-specific).
+/// Uses getrusage(2) on macOS and /proc on Linux — no subprocess spawn.
 fn get_rss_mb() -> Option<f64> {
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("ps")
-            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-            .output()
-            .ok()?;
-        let kb: f64 = String::from_utf8_lossy(&output.stdout).trim().parse().ok()?;
-        Some(kb / 1024.0)
+        // getrusage(RUSAGE_SELF) returns ru_maxrss in BYTES on macOS
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } == 0 {
+            Some(usage.ru_maxrss as f64 / (1024.0 * 1024.0))
+        } else {
+            None
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -4316,6 +4318,9 @@ impl App {
                 }
             }
 
+            // TUI-local command — reads only rendering state (footer_data,
+            // session_start). Not routed through Feature dispatch because
+            // piping this state through BusEvent would be worse.
             "bench" | "perf" => {
                 let session_secs = self.session_start.elapsed().as_secs();
                 let turns = self.turn;

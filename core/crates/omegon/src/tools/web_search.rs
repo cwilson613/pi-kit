@@ -114,48 +114,26 @@ impl WebSearchProvider {
         Ok(results)
     }
 
-    /// Fetch a URL's content using curl as a zero-dependency fallback.
-    /// Strips HTML tags with a simple pass and truncates to 50KB.
-    /// Works anywhere — no API keys needed.
-    async fn fetch_url_curl(&self, url: &str) -> anyhow::Result<String> {
-        // SSRF protection: only allow http/https, block internal networks
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
-        match parsed.scheme() {
-            "http" | "https" => {}
-            scheme => anyhow::bail!("Blocked URL scheme: {scheme}. Only http/https allowed."),
-        }
-        if let Some(host) = parsed.host_str() {
-            let blocked = host == "localhost"
-                || host == "127.0.0.1"
-                || host == "::1"
-                || host == "0.0.0.0"
-                || host.starts_with("169.254.")
-                || host.starts_with("10.")
-                || host.starts_with("192.168.")
-                || host.starts_with("172.16.")
-                || host.starts_with("172.17.")
-                || host.starts_with("172.18.")
-                || host.starts_with("172.19.")
-                || host.starts_with("172.2")
-                || host.starts_with("172.30.")
-                || host.starts_with("172.31.")
-                || host.ends_with(".internal")
-                || host.ends_with(".local");
-            if blocked {
-                anyhow::bail!("Blocked internal/private URL: {host}");
-            }
-        }
-
-        let output = tokio::process::Command::new("curl")
-            .args(["-sL", "--max-time", "15", "--max-filesize", "1048576", url])
-            .output()
+    /// Fetch a URL's content as clean text using the existing reqwest client.
+    /// Strips HTML tags and truncates to 50KB. No external dependencies.
+    async fn fetch_url_plain(&self, url: &str) -> anyhow::Result<String> {
+        let parsed = validate_fetch_url(url)?;
+        let resp = self
+            .client
+            .get(parsed)
+            .header("User-Agent", "Mozilla/5.0 (compatible; omegon/0.17)")
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
             .await?;
-        if !output.status.success() {
-            anyhow::bail!("curl failed with status {}", output.status);
+        if !resp.status().is_success() {
+            anyhow::bail!("HTTP {}: {}", resp.status(), resp.url());
         }
-        let body = String::from_utf8_lossy(&output.stdout);
-        // Simple HTML tag stripping
+        // Limit body to 1MB to prevent OOM from streaming responses
+        let bytes = resp.bytes().await?;
+        if bytes.len() > 1_048_576 {
+            anyhow::bail!("Response too large: {} bytes (max 1MB)", bytes.len());
+        }
+        let body = String::from_utf8_lossy(&bytes);
         let stripped = strip_html_tags(&body);
         Ok(crate::util::truncate(&stripped, 50_000))
     }
@@ -447,6 +425,46 @@ struct SerperResult {
     description: Option<String>,
 }
 
+// ─── URL validation ────────────────────────────────────────────────────────
+
+/// Validate a URL for fetching: must be http/https, no internal/private hosts.
+fn validate_fetch_url(url: &str) -> anyhow::Result<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => anyhow::bail!("Blocked URL scheme: {scheme}. Only http/https allowed."),
+    }
+    if let Some(host) = parsed.host_str() {
+        // Parse as IP if possible for proper CIDR checking
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            let blocked = match ip {
+                std::net::IpAddr::V4(v4) => {
+                    v4.is_loopback()
+                        || v4.is_private()
+                        || v4.is_link_local()
+                        || v4.is_unspecified()
+                        || v4.octets()[0] == 169 && v4.octets()[1] == 254
+                }
+                std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+            };
+            if blocked {
+                anyhow::bail!("Blocked internal/private IP: {ip}");
+            }
+        } else {
+            // Hostname-based checks
+            let blocked = host == "localhost"
+                || host.ends_with(".internal")
+                || host.ends_with(".local")
+                || host.ends_with(".localhost");
+            if blocked {
+                anyhow::bail!("Blocked internal hostname: {host}");
+            }
+        }
+    }
+    Ok(parsed)
+}
+
 // ─── HTML helpers ──────────────────────────────────────────────────────────
 
 /// Strip HTML tags and decode common entities. Good enough for search snippets.
@@ -576,7 +594,7 @@ impl ToolProvider for WebSearchProvider {
 
             let content = match content {
                 Some(md) => md,
-                None => self.fetch_url_curl(url).await?,
+                None => self.fetch_url_plain(url).await?,
             };
 
             return Ok(ToolResult {

@@ -415,7 +415,7 @@ enum DelegateChildFailureKind {
 /// Heuristic: very short text with no actionable content is conversational,
 /// not a task. Errs heavily toward allowing — false negatives (letting a bad
 /// task through) are cheap, false positives (blocking a real task) are not.
-pub fn is_conversational_non_task(task: &str) -> bool {
+pub(crate) fn is_conversational_non_task(task: &str) -> bool {
     let t = task.trim();
     if t.is_empty() {
         return true;
@@ -993,14 +993,12 @@ pub struct DelegateFeature {
     /// When set, the delegation model catalog is injected into the system prompt
     /// so the orchestrator can route delegate tasks to appropriate models.
     provider_inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
-    /// User prompts captured from ContextBuild events, in order.
-    /// Used to detect when the model grabs a stale early message
-    /// (e.g., "testing", "hello") as a delegate task.
-    user_prompts: Vec<String>,
-    /// Files the parent agent has read this session. Used to auto-populate
-    /// delegate scope when the model doesn't provide one, so the child
-    /// knows what the parent was looking at.
-    parent_files_read: Vec<String>,
+    /// Recent user prompts — bounded window for echo detection.
+    /// Capped at 50 entries to prevent unbounded growth in long sessions.
+    recent_user_prompts: std::collections::VecDeque<String>,
+    /// Recent files the parent agent has read/edited — bounded LRU for
+    /// auto-populating delegate scope. Capped at 30 entries.
+    recent_parent_files: std::collections::VecDeque<String>,
 }
 
 impl DelegateFeature {
@@ -1023,8 +1021,8 @@ impl DelegateFeature {
             session_model: Arc::new(Mutex::new(initial_model)),
             consecutive_failures: Arc::new(Mutex::new(0)),
             provider_inventory: None,
-            user_prompts: Vec::new(),
-            parent_files_read: Vec::new(),
+            recent_user_prompts: std::collections::VecDeque::with_capacity(50),
+            recent_parent_files: std::collections::VecDeque::with_capacity(30),
         }
     }
 
@@ -1033,7 +1031,7 @@ impl DelegateFeature {
     /// echoed a user prompt as the delegate task.
     fn latest_substantive_prompt_excluding(&self, exclude: &str) -> Option<&str> {
         let exclude_lower = exclude.trim().to_ascii_lowercase();
-        self.user_prompts
+        self.recent_user_prompts
             .iter()
             .rev()
             .find(|p| {
@@ -1047,10 +1045,10 @@ impl DelegateFeature {
     /// It should synthesize a concrete, actionable instruction from context.
     fn is_user_prompt_echo(&self, task: &str) -> bool {
         let lower = task.trim().to_ascii_lowercase();
-        if lower.is_empty() || self.user_prompts.is_empty() {
+        if lower.is_empty() || self.recent_user_prompts.is_empty() {
             return false;
         }
-        for prompt in &self.user_prompts {
+        for prompt in &self.recent_user_prompts {
             let prompt_lower = prompt.trim().to_ascii_lowercase();
             if prompt_lower.is_empty() {
                 continue;
@@ -1389,9 +1387,9 @@ impl Feature for DelegateFeature {
                 // Auto-populate scope from parent's recently read files when the
                 // model doesn't provide one. Without scope, the child starts
                 // blind and gets blocked by its own harness for having no target.
-                let scope = if scope.is_none() && !self.parent_files_read.is_empty() {
+                let scope = if scope.is_none() && !self.recent_parent_files.is_empty() {
                     let recent: Vec<String> = self
-                        .parent_files_read
+                        .recent_parent_files
                         .iter()
                         .rev()
                         .take(10)
@@ -1632,7 +1630,10 @@ impl Feature for DelegateFeature {
         match event {
             BusEvent::ContextBuild { user_prompt, .. } => {
                 if !user_prompt.trim().is_empty() {
-                    self.user_prompts.push(user_prompt.clone());
+                    if self.recent_user_prompts.len() >= 50 {
+                        self.recent_user_prompts.pop_front();
+                    }
+                    self.recent_user_prompts.push_back(user_prompt.clone());
                 }
                 return vec![];
             }
@@ -1649,8 +1650,11 @@ impl Feature for DelegateFeature {
                         // Move to end on re-access so auto-scope reflects
                         // recency, not first-seen order.
                         let ps = p.to_string();
-                        self.parent_files_read.retain(|f| f != &ps);
-                        self.parent_files_read.push(ps);
+                        self.recent_parent_files.retain(|f| f != &ps);
+                        if self.recent_parent_files.len() >= 30 {
+                            self.recent_parent_files.pop_front();
+                        }
+                        self.recent_parent_files.push_back(ps);
                     }
                 }
                 return vec![];

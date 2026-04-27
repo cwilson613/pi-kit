@@ -383,8 +383,10 @@ fn compress_command_output(command: &str, output: &str) -> String {
     let cmd = command.trim_start();
     let lines: Vec<&str> = output.lines().collect();
 
+    const MIN_COMPRESS_LINES: usize = 10;
+
     // Short output — not worth compressing
-    if lines.len() < 10 {
+    if lines.len() < MIN_COMPRESS_LINES {
         return output.to_string();
     }
 

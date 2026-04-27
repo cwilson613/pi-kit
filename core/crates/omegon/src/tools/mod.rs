@@ -41,6 +41,10 @@ pub struct CoreTools {
     /// Repository model — tracks branch, dirty files, submodules.
     /// None if not inside a git repo.
     repo_model: Option<std::sync::Arc<omegon_git::RepoModel>>,
+    /// Shared settings — used for trusted_directories check.
+    settings: Option<crate::settings::SharedSettings>,
+    /// Session-level approved directories (cleared on restart).
+    session_approved: std::sync::Mutex<Vec<PathBuf>>,
 }
 
 impl CoreTools {
@@ -48,6 +52,8 @@ impl CoreTools {
         Self {
             cwd,
             repo_model: None,
+            settings: None,
+            session_approved: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -59,46 +65,118 @@ impl CoreTools {
         Self {
             cwd,
             repo_model: Some(repo_model),
+            settings: None,
+            session_approved: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    /// Resolve a user-provided path against cwd and verify it doesn't escape
-    /// the workspace via `../` traversal. Returns the canonical path on success.
+    /// Attach shared settings for trusted directory resolution.
+    pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
+    /// Expand `~` to the home directory in a path string.
+    fn expand_tilde(path_str: &str) -> PathBuf {
+        if let Some(rest) = path_str.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(rest);
+            }
+        }
+        PathBuf::from(path_str)
+    }
+
+    /// Check if a path is within a trusted directory (from settings or
+    /// session-level approvals).
+    fn is_trusted_path(&self, path: &Path) -> bool {
+        // Check session-level approvals
+        if let Ok(approved) = self.session_approved.lock() {
+            if approved.iter().any(|dir| {
+                let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                path.starts_with(&canonical_dir)
+            }) {
+                return true;
+            }
+        }
+
+        // Check settings-level trusted directories
+        if let Some(ref settings) = self.settings {
+            if let Ok(s) = settings.lock() {
+                for trusted in &s.trusted_directories {
+                    let expanded = Self::expand_tilde(trusted);
+                    let canonical = expanded.canonicalize().unwrap_or(expanded);
+                    if path.starts_with(&canonical) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Record a directory as approved for this session.
+    pub fn approve_directory(&self, dir: PathBuf) {
+        if let Ok(mut approved) = self.session_approved.lock() {
+            if !approved.iter().any(|d| d == &dir) {
+                approved.push(dir);
+            }
+        }
+    }
+
+    /// Resolve a user-provided path against cwd. Absolute paths and paths
+    /// outside the workspace are allowed if they're in a trusted directory.
+    /// Returns an error with a clear message if the path is outside the
+    /// workspace and not trusted — the agent should use bash for the first
+    /// write to an untrusted location (which will succeed, and the user
+    /// can then add it to trusted_directories).
     fn resolve_path(&self, path_str: &str) -> anyhow::Result<PathBuf> {
-        let joined = self.cwd.join(path_str);
+        // Handle absolute paths (including ~/...)
+        let is_absolute = path_str.starts_with('/') || path_str.starts_with('~');
+        let resolved = if is_absolute {
+            Self::expand_tilde(path_str)
+        } else {
+            self.cwd.join(path_str)
+        };
 
         // Canonicalize to resolve symlinks and `..` — but the file may not
         // exist yet (write/edit creating new files). In that case, canonicalize
         // the parent directory and append the filename.
-        let canonical = if joined.exists() {
-            joined.canonicalize()?
-        } else if let Some(parent) = joined.parent() {
-            // Create parent dirs if needed (write tool does this), then canonicalize
+        let canonical = if resolved.exists() {
+            resolved.canonicalize()?
+        } else if let Some(parent) = resolved.parent() {
             if parent.exists() {
                 parent
                     .canonicalize()?
-                    .join(joined.file_name().unwrap_or_default())
+                    .join(resolved.file_name().unwrap_or_default())
             } else {
-                // Parent doesn't exist — resolve what we can. The write tool
-                // will create parents. For now, use lexical normalization.
-                lexical_normalize(&joined)
+                lexical_normalize(&resolved)
             }
         } else {
-            joined.clone()
+            resolved.clone()
         };
 
         let cwd_canonical = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
 
-        if !canonical.starts_with(&cwd_canonical) {
-            anyhow::bail!(
-                "Path '{}' resolves to '{}' which is outside the workspace '{}'",
-                path_str,
-                canonical.display(),
-                cwd_canonical.display()
-            );
+        // Inside workspace — always allowed
+        if canonical.starts_with(&cwd_canonical) {
+            return Ok(resolved);
         }
 
-        Ok(joined)
+        // Outside workspace — check trusted directories
+        if self.is_trusted_path(&canonical) {
+            return Ok(resolved);
+        }
+
+        // Outside workspace and not trusted — reject with guidance
+        anyhow::bail!(
+            "Path '{}' is outside the workspace '{}'. \
+             To allow access, add the directory to trusted_directories in settings:\n\
+             \n  /settings set trusted_directories [\"{}\"]\n\
+             \nOr use bash to write the file directly.",
+            path_str,
+            cwd_canonical.display(),
+            canonical.parent().map(|p| p.display().to_string()).unwrap_or_default()
+        )
     }
 }
 
@@ -704,6 +782,62 @@ mod tests {
         let result = tools.resolve_path("src/main.rs");
         assert!(result.is_ok(), "error: {:?}", result.unwrap_err());
         assert!(result.unwrap().starts_with(&cwd));
+    }
+
+    #[test]
+    fn absolute_path_outside_workspace_rejected_by_default() {
+        let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
+        let result = tools.resolve_path("/etc/passwd");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("outside the workspace"), "error: {err}");
+    }
+
+    #[test]
+    fn tilde_expansion_resolves_home_directory() {
+        let expanded = CoreTools::expand_tilde("~/Documents/test.md");
+        assert!(!expanded.to_str().unwrap().contains('~'));
+        assert!(expanded.to_str().unwrap().ends_with("Documents/test.md"));
+    }
+
+    #[test]
+    fn session_approved_directory_allows_writes() {
+        let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
+        // By default, /etc/ is rejected
+        assert!(tools.resolve_path("/etc/test.txt").is_err());
+
+        // Approve /etc for this session
+        tools.approve_directory(PathBuf::from("/etc"));
+        let result = tools.resolve_path("/etc/test.txt");
+        assert!(result.is_ok(), "approved directory should be allowed: {:?}", result.unwrap_err());
+    }
+
+    #[test]
+    fn trusted_directory_from_settings_allows_writes() {
+        let settings = crate::settings::shared("anthropic:claude-sonnet-4-6");
+        if let Ok(mut s) = settings.lock() {
+            s.trusted_directories = vec!["/tmp/obsidian-vault".to_string()];
+        }
+        let tools = CoreTools::new(PathBuf::from("/tmp/workspace")).with_settings(settings);
+
+        // /tmp/obsidian-vault/file.md should be allowed
+        // Create the directory so canonicalize works
+        let _ = std::fs::create_dir_all("/tmp/obsidian-vault");
+        let result = tools.resolve_path("/tmp/obsidian-vault/eval.md");
+        assert!(result.is_ok(), "trusted directory should be allowed: {:?}", result.unwrap_err());
+
+        // /tmp/other-dir should still be rejected
+        let result = tools.resolve_path("/tmp/other-dir/file.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_message_guides_user_to_add_trusted_directory() {
+        let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
+        let result = tools.resolve_path("/home/user/obsidian/eval.md");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("trusted_directories"), "error should mention trusted_directories: {err}");
+        assert!(err.contains("bash"), "error should mention bash as alternative: {err}");
     }
 
     #[test]

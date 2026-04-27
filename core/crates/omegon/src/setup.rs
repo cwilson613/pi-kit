@@ -278,6 +278,11 @@ impl AgentSetup {
         } else {
             tools::CoreTools::new(cwd.clone())
         };
+        let core_tools = if let Some(ref s) = settings {
+            core_tools.with_settings(s.clone())
+        } else {
+            core_tools
+        };
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "core-tools",
             Box::new(core_tools),

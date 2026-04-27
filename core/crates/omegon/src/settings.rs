@@ -338,6 +338,12 @@ pub struct Settings {
     #[serde(default)]
     pub auto_update: bool,
 
+    /// Directories outside the workspace that the agent is allowed to
+    /// read/write without per-operation confirmation. Paths are expanded
+    /// at check time (~ → $HOME). Persists across sessions.
+    #[serde(default)]
+    pub trusted_directories: Vec<String>,
+
     /// Whether a live LLM provider is connected. Set to false when NullBridge
     /// is active (no credentials available). The TUI uses this to show
     /// "no provider" instead of a model name that can't actually be used.
@@ -625,6 +631,7 @@ impl Default for Settings {
             provider_order: Vec::new(),
             update_channel: default_update_channel(),
             auto_update: false,
+            trusted_directories: Vec::new(),
             provider_connected: true, // optimistic default — set false when NullBridge
             mouse: true,
             clipboard_retention_hours: default_clipboard_retention_hours(),

@@ -958,6 +958,10 @@ pub struct DelegateFeature {
     /// Used to detect when the model grabs a stale early message
     /// (e.g., "testing", "hello") as a delegate task.
     user_prompts: Vec<String>,
+    /// Files the parent agent has read this session. Used to auto-populate
+    /// delegate scope when the model doesn't provide one, so the child
+    /// knows what the parent was looking at.
+    parent_files_read: Vec<String>,
 }
 
 impl DelegateFeature {
@@ -981,6 +985,7 @@ impl DelegateFeature {
             consecutive_failures: Arc::new(Mutex::new(0)),
             provider_inventory: None,
             user_prompts: Vec::new(),
+            parent_files_read: Vec::new(),
         }
     }
 
@@ -1298,6 +1303,26 @@ impl Feature for DelegateFeature {
                     }
                 }
 
+                // Auto-populate scope from parent's recently read files when the
+                // model doesn't provide one. Without scope, the child starts
+                // blind and gets blocked by its own harness for having no target.
+                let scope = if scope.is_none() && !self.parent_files_read.is_empty() {
+                    let recent: Vec<String> = self
+                        .parent_files_read
+                        .iter()
+                        .rev()
+                        .take(10)
+                        .cloned()
+                        .collect();
+                    tracing::info!(
+                        files = ?recent,
+                        "Auto-populated delegate scope from parent's recently read files"
+                    );
+                    Some(recent)
+                } else {
+                    scope
+                };
+
                 let task_id = self.result_store.generate_task_id();
 
                 // Spawn the delegate
@@ -1525,6 +1550,23 @@ impl Feature for DelegateFeature {
             BusEvent::ContextBuild { user_prompt, .. } => {
                 if !user_prompt.trim().is_empty() {
                     self.user_prompts.push(user_prompt.clone());
+                }
+                return vec![];
+            }
+            BusEvent::ToolStart { name, args, .. } => {
+                // Track files the parent reads/edits so we can auto-populate
+                // delegate scope when the model doesn't provide one.
+                if matches!(name.as_str(), "read" | "view" | "edit" | "write" | "change") {
+                    let path = args
+                        .get("path")
+                        .or_else(|| args.get("file_path"))
+                        .or_else(|| args.get("file"))
+                        .and_then(|v| v.as_str());
+                    if let Some(p) = path {
+                        if !self.parent_files_read.contains(&p.to_string()) {
+                            self.parent_files_read.push(p.to_string());
+                        }
+                    }
                 }
                 return vec![];
             }

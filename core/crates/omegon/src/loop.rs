@@ -2968,8 +2968,17 @@ mod tests {
                 arguments: Value::Null,
             },
         ];
-        assert!(should_inject_execution_pressure(
+        // Standard broad threshold is 5, so turn 4 should NOT trigger.
+        assert!(!should_inject_execution_pressure(
             4,
+            &config,
+            &conversation,
+            &tool_calls,
+            BehavioralTier::Standard,
+        ));
+        // Turn 6 should trigger (>= broad_threshold of 5).
+        assert!(should_inject_execution_pressure(
+            6,
             &config,
             &conversation,
             &tool_calls,
@@ -3060,8 +3069,17 @@ mod tests {
             name: "read".into(),
             arguments: serde_json::json!({"path": "core/src/context.rs"}),
         }];
-        assert!(should_inject_execution_pressure(
+        // Standard targeted threshold is 6, so turn 5 should NOT trigger.
+        assert!(!should_inject_execution_pressure(
             5,
+            &config,
+            &conversation,
+            &tool_calls,
+            BehavioralTier::Standard,
+        ));
+        // Turn 7 should trigger.
+        assert!(should_inject_execution_pressure(
+            7,
             &config,
             &conversation,
             &tool_calls,
@@ -3702,9 +3720,9 @@ mod tests {
     }
 
     #[test]
-    fn targeted_read_only_batches_trigger_execution_pressure_by_turn_three() {
-        // Targeted-only reads get one extra grace turn vs broad inspection:
-        // broad fires at turn 2, targeted-only fires at turn 3.
+    fn targeted_read_only_batches_trigger_execution_pressure_after_threshold() {
+        // Standard targeted threshold is 6 — targeted-only reads don't fire
+        // until the agent has had ample time to orient.
         let config = LoopConfig {
             enforce_first_turn_execution_bias: true,
             ..LoopConfig::default()
@@ -3719,17 +3737,17 @@ mod tests {
             name: "read".into(),
             arguments: serde_json::json!({"path": "core/src/context.rs"}),
         }];
-        // Turn 2: not yet for targeted-only
+        // Turn 5: not yet for targeted-only (threshold is 6)
         assert!(!should_inject_execution_pressure(
-            2,
+            5,
             &config,
             &conversation,
             &tool_calls,
             BehavioralTier::Standard,
         ));
-        // Turn 3: fires
+        // Turn 7: fires
         assert!(should_inject_execution_pressure(
-            3,
+            7,
             &config,
             &conversation,
             &tool_calls,

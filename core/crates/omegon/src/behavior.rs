@@ -12,7 +12,18 @@ pub(crate) use omegon_traits::ProgressSignal;
 // ─── Tool classification predicates ────────────────────────────────────────
 
 pub(crate) fn is_orientation_tool(name: &str) -> bool {
-    matches!(name, "memory_recall" | "context_status" | "request_context")
+    matches!(
+        name,
+        "memory_recall"
+            | "memory_query"
+            | "memory_store"
+            | "memory_episodes"
+            | "context_status"
+            | "request_context"
+            | "manage_tools"
+            | "chronos"
+            | "whoami"
+    )
 }
 
 pub(crate) fn is_repo_inspection_tool(name: &str) -> bool {
@@ -103,10 +114,18 @@ pub(crate) fn classify_turn_phase(
         return None;
     }
 
+    // Tools that produce output or change state are Act.
     if tool_calls.iter().any(|call| {
         matches!(
             call.name.as_str(),
-            "commit" | "delegate" | "cleave_run" | "cleave_assess" | "bash"
+            "commit"
+                | "delegate"
+                | "cleave_run"
+                | "cleave_assess"
+                | "bash"
+                | "web_search"
+                | "ask_local_model"
+                | "serve"
         )
     }) {
         return Some(OodaPhase::Act);
@@ -293,10 +312,10 @@ pub(crate) fn should_inject_execution_pressure(
         .iter()
         .any(|call| is_broad_repo_inspection_tool(&call.name));
 
-    // Constrained models get pressure one turn earlier.
+    // Give the agent time to orient before pressuring execution.
     let (broad_threshold, targeted_threshold) = match behavior {
-        BehavioralTier::Constrained => (1, 2),
-        BehavioralTier::Standard => (2, 3),
+        BehavioralTier::Constrained => (3, 4),
+        BehavioralTier::Standard => (5, 6),
     };
 
     (turn >= broad_threshold && has_broad_repo_inspection)

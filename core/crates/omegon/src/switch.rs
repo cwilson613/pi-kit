@@ -18,7 +18,7 @@ use std::process::Command;
 
 /// GitHub repository info for releases
 const REPO_OWNER: &str = "styrene-lab";
-const REPO_NAME: &str = "omegon-core";
+const REPO_NAME: &str = "omegon";
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// Platform target mapping

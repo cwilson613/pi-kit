@@ -3755,6 +3755,231 @@ mod tests {
         ));
     }
 
+    // ── Proof: behavioral churn fix ─────────────────────────────────
+    // These tests exercise the exact scenarios that caused users to see
+    // the agent fight doing work (issue #64 follow-up, Obsidian vault
+    // churn report).
+
+    #[test]
+    fn bash_find_classified_as_act_not_orient() {
+        // The Obsidian vault churn: user asks agent to write files,
+        // agent runs `bash find` to explore the vault, system classified
+        // this as Orient and penalized it. Now bash is Act.
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "find ~/obsidian-vault -name '*.md' | head -20"}),
+        }];
+        let results = vec![ToolResultEntry {
+            call_id: "1".into(),
+            tool_name: "bash".into(),
+            content: vec![ContentBlock::Text { text: "file1.md\nfile2.md".into() }],
+            is_error: false,
+            args_summary: None,
+        }];
+        assert_eq!(
+            classify_turn_phase(&tool_calls, &results),
+            Some(OodaPhase::Act),
+            "bash must be Act, not Orient — shell commands are productive work"
+        );
+    }
+
+    #[test]
+    fn bash_turns_never_trigger_continuation_pressure() {
+        // Because bash is Act, continuation_pressure_tier should return
+        // None — it only fires for Observe/Orient phases.
+        let config = LoopConfig::default();
+        let conversation = ConversationState::new();
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "ls -la ~/obsidian"}),
+        }];
+        let controller = ControllerState {
+            consecutive_tool_continuations: 20,
+            orientation_churn_streak: 10,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config, &controller, &conversation, &tool_calls,
+                Some(OodaPhase::Act), BehavioralTier::Standard,
+            ),
+            None,
+            "Act-phase turns must never trigger continuation pressure, regardless of streak"
+        );
+    }
+
+    #[test]
+    fn web_search_classified_as_act() {
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "web_search".into(),
+            arguments: serde_json::json!({"query": "NGB RFI enterprise data AI"}),
+        }];
+        let results = vec![ToolResultEntry {
+            call_id: "1".into(),
+            tool_name: "web_search".into(),
+            content: vec![ContentBlock::Text { text: "results".into() }],
+            is_error: false,
+            args_summary: None,
+        }];
+        assert_eq!(
+            classify_turn_phase(&tool_calls, &results),
+            Some(OodaPhase::Act),
+            "web_search must be Act — it produces external information"
+        );
+    }
+
+    #[test]
+    fn memory_tools_classified_as_observe_not_orient() {
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "memory_store".into(),
+            arguments: serde_json::json!({"content": "project uses PostgreSQL"}),
+        }];
+        let results = vec![ToolResultEntry {
+            call_id: "1".into(),
+            tool_name: "memory_store".into(),
+            content: vec![ContentBlock::Text { text: "stored".into() }],
+            is_error: false,
+            args_summary: None,
+        }];
+        assert_eq!(
+            classify_turn_phase(&tool_calls, &results),
+            Some(OodaPhase::Observe),
+            "memory_store must be Observe, not Orient — it's legitimate context work"
+        );
+    }
+
+    #[test]
+    fn standard_model_gets_12_turns_before_first_continuation_nudge() {
+        // Simulates a frontier model (Sonnet/Opus) doing multi-turn
+        // exploration before writing. With old thresholds (6), this
+        // would trigger a nudge at turn 6. Now it needs 12.
+        let config = LoopConfig::default();
+        let mut conversation = ConversationState::new();
+        conversation.intent.files_read.insert("src/main.rs".into());
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            arguments: Value::Null,
+        }];
+
+        // At 11 consecutive tool continuations: no pressure yet
+        let controller = ControllerState {
+            consecutive_tool_continuations: 11,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config, &controller, &conversation, &tool_calls,
+                Some(OodaPhase::Observe), BehavioralTier::Standard,
+            ),
+            None,
+            "11 tool continuations on Standard tier must not trigger pressure (threshold is 12)"
+        );
+
+        // At 12: tier 1 fires
+        let controller = ControllerState {
+            consecutive_tool_continuations: 12,
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            continuation_pressure_tier(
+                &config, &controller, &conversation, &tool_calls,
+                Some(OodaPhase::Observe), BehavioralTier::Standard,
+            ),
+            Some(1),
+            "12 tool continuations on Standard tier triggers tier-1 pressure"
+        );
+    }
+
+    #[test]
+    fn orientation_churn_not_detected_before_turn_4() {
+        // OrientationChurn used to fire at turn 2. Now requires turn >= 4.
+        let mut conversation = ConversationState::new();
+        conversation.intent.files_read.insert("src/main.rs".into());
+        let tool_calls = vec![
+            ToolCall { id: "1".into(), name: "read".into(), arguments: Value::Null },
+            ToolCall { id: "2".into(), name: "codebase_search".into(), arguments: Value::Null },
+        ];
+        let results = vec![
+            ToolResultEntry { call_id: "1".into(), tool_name: "read".into(), content: vec![ContentBlock::Text { text: "ok".into() }], is_error: false, args_summary: None },
+            ToolResultEntry { call_id: "2".into(), tool_name: "codebase_search".into(), content: vec![ContentBlock::Text { text: "ok".into() }], is_error: false, args_summary: None },
+        ];
+        assert_eq!(classify_drift_kind(2, &conversation, &tool_calls, &results), None, "Turn 2 must not flag OrientationChurn");
+        assert_eq!(classify_drift_kind(3, &conversation, &tool_calls, &results), None, "Turn 3 must not flag OrientationChurn");
+        assert_eq!(classify_drift_kind(5, &conversation, &tool_calls, &results), Some(DriftKind::OrientationChurn), "Turn 5 should flag OrientationChurn");
+    }
+
+    #[test]
+    fn nudge_text_is_task_neutral() {
+        // Nudges must not mention "code change", "edit a file", or
+        // "Do NOT delegate" — these are wrong for non-code tasks like
+        // writing files to an Obsidian vault.
+        for tier in [1u8, 2, 3] {
+            let msg = continuation_pressure_message(tier, BehavioralTier::Standard);
+            assert!(!msg.contains("code change"), "tier {tier}: must not mention 'code change'");
+            assert!(!msg.contains("Do NOT delegate"), "tier {tier}: must not block delegation");
+            assert!(msg.contains("produce") || msg.contains("Produce"), "tier {tier}: must say 'produce' — task-neutral framing");
+        }
+    }
+
+    #[test]
+    fn obsidian_vault_scenario_no_churn() {
+        // End-to-end simulation: user asks agent to write files to
+        // Obsidian vault. Agent runs 6 bash commands to explore,
+        // then writes files. No nudges should fire.
+        let config = LoopConfig::default();
+
+        // Simulate 6 turns of bash exploration
+        let bash_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "find ~/vault -type d"}),
+        }];
+        let bash_results = vec![ToolResultEntry {
+            call_id: "1".into(),
+            tool_name: "bash".into(),
+            content: vec![ContentBlock::Text { text: "dir1\ndir2".into() }],
+            is_error: false,
+            args_summary: None,
+        }];
+
+        let mut controller = ControllerState::default();
+        let conversation = ConversationState::new();
+
+        for turn in 1..=6 {
+            let phase = classify_turn_phase(&bash_calls, &bash_results);
+            assert_eq!(phase, Some(OodaPhase::Act), "turn {turn}: bash must be Act");
+
+            let drift = classify_drift_kind(turn, &conversation, &bash_calls, &bash_results);
+            // bash calls don't match any drift pattern (not repo inspection tools)
+            assert_eq!(drift, None, "turn {turn}: bash exploration must not trigger drift");
+
+            let pressure = continuation_pressure_tier(
+                &config, &controller, &conversation, &bash_calls,
+                phase, BehavioralTier::Standard,
+            );
+            assert_eq!(pressure, None, "turn {turn}: Act-phase turn must never trigger pressure");
+
+            // Simulate controller update — ToolContinuation increments counter
+            controller.observe_turn(
+                omegon_traits::TurnEndReason::ToolContinuation,
+                drift,
+                ProgressSignal::None,
+                EvidenceSufficiency::None,
+            );
+        }
+
+        // After 6 turns of bash, controller should have 6 consecutive tool continuations
+        // but zero orientation churn (bash is Act, not Orient)
+        assert_eq!(controller.consecutive_tool_continuations, 6);
+        assert_eq!(controller.orientation_churn_streak, 0,
+            "bash turns must not increment orientation churn streak");
+    }
+
     #[test]
     fn auto_delegate_scout_on_slim_orientation_churn_reads() {
         let config = LoopConfig {

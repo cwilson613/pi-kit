@@ -320,14 +320,21 @@ impl ConversationView {
     }
 
     pub fn push_tool_end(&mut self, id: &str, is_error: bool, result_text: Option<&str>) {
-        for seg in self.segments.iter_mut().rev() {
+        // Find the card for this tool call and complete it.
+        let mut completed_name: Option<String> = None;
+        let mut completed_summary: Option<String> = None;
+        let mut completed_idx: Option<usize> = None;
+
+        for (i, seg) in self.segments.iter_mut().enumerate().rev() {
             if let SegmentContent::ToolCard {
                 id: tool_id,
+                name,
                 complete: c,
                 is_error: e,
                 result_summary: r,
                 detail_result: dr,
                 live_partial: lp,
+                args_summary,
                 ..
             } = &mut seg.content
                 && tool_id == id
@@ -335,10 +342,8 @@ impl ConversationView {
             {
                 *c = true;
                 *e = is_error;
-                // The completed-result render path takes over now; the
-                // last in-flight partial is stale.
                 *lp = None;
-                *r = result_text.and_then(|text| {
+                let summary = result_text.and_then(|text| {
                     let line = text
                         .lines()
                         .find(|l| {
@@ -355,12 +360,47 @@ impl ConversationView {
                         Some(line.to_string())
                     }
                 });
-                // Store the full result — truncation happens at render time
-                // based on the card's expanded/collapsed state.
+                *r = summary.clone();
                 *dr = result_text.map(|text| text.to_string());
+                completed_name = Some(name.clone());
+                completed_summary = args_summary.clone().or(summary);
+                completed_idx = Some(i);
                 break;
             }
         }
+
+        // Consolidate: if the segment before this one is a completed card
+        // of the same tool name, merge this card into it as an appended
+        // tree entry. This collapses runs of "design_tree_update" etc.
+        // into a single grouped card instead of N separate bordered cards.
+        if let (Some(name), Some(idx)) = (completed_name, completed_idx) {
+            if idx > 0 && !is_error {
+                if let SegmentContent::ToolCard {
+                    name: ref prev_name,
+                    complete: true,
+                    is_error: false,
+                    detail_result: Some(ref mut prev_result),
+                    args_summary: ref mut prev_args_summary,
+                    ..
+                } = self.segments[idx - 1].content
+                {
+                    if *prev_name == name {
+                        // Append this card's summary as a tree line in the previous card
+                        if let Some(ref summary) = completed_summary {
+                            prev_result.push('\n');
+                            prev_result.push_str(&format!("  + {summary}"));
+                        }
+                        // Update the args summary to show count
+                        let count = prev_result.matches("\n  + ").count() + 1;
+                        *prev_args_summary =
+                            Some(format!("{name} ({count} operations)"));
+                        // Remove the duplicate card
+                        self.segments.remove(idx);
+                    }
+                }
+            }
+        }
+
         self.conv_state.invalidate();
     }
 

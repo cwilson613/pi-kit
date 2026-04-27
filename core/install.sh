@@ -460,5 +460,4 @@ printf "    ${DIM}rm %s/%s${RESET}\n" "${INSTALL_DIR}" "${BINARY}"
 printf "    ${DIM}rm -rf ~/.omegon/versions${RESET}\n"
 printf "    ${DIM}rm -rf ~/.config/omegon${RESET}\n"
 echo ""
-# Rebuilt 2026-03-25T22:34:14Z
-Sat Apr 25 19:19:39 UTC 2026
+# Rebuilt 2026-04-27

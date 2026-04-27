@@ -94,6 +94,100 @@ pub struct ConversationView {
     pub tabs: TabState,
 }
 
+/// Build a rich one-liner for consolidated tree entries.
+/// Extracts tool-specific key info: path + line count, command + status, etc.
+fn consolidation_one_liner(
+    tool_name: &str,
+    args_summary: Option<&str>,
+    result_text: Option<&str>,
+) -> String {
+    let summary = args_summary.unwrap_or("");
+    let result = result_text.unwrap_or("");
+
+    match tool_name {
+        "read" | "view" => {
+            // Path + line count from result
+            let line_count = result.lines().count();
+            let first_meaningful = result
+                .lines()
+                .find(|l| {
+                    let t = l.trim();
+                    !t.is_empty() && !t.starts_with("```")
+                })
+                .unwrap_or("")
+                .trim();
+            let preview = crate::util::truncate(first_meaningful, 50);
+            if line_count > 0 {
+                format!("{summary} — {line_count} lines · {preview}")
+            } else {
+                summary.to_string()
+            }
+        }
+        "edit" | "change" => {
+            // Path + change summary from result
+            let change_line = result
+                .lines()
+                .find(|l| {
+                    l.contains("line(s)") || l.contains("→") || l.contains("Changed")
+                })
+                .unwrap_or("");
+            let change = change_line.trim().trim_start_matches("✓ ").trim_start_matches("  ");
+            if !change.is_empty() {
+                format!("{summary} — {change}")
+            } else {
+                summary.to_string()
+            }
+        }
+        "bash" => {
+            // Command preview + exit status hint from result
+            let cmd = summary;
+            let lines = result.lines().count();
+            if result.contains("exit code") || result.contains("Command exited") {
+                let status = result
+                    .lines()
+                    .rev()
+                    .find(|l| l.contains("exit") || l.contains("Command"))
+                    .unwrap_or("");
+                format!("{cmd} — {}", status.trim())
+            } else if lines > 0 {
+                format!("{cmd} — {lines} lines output")
+            } else {
+                cmd.to_string()
+            }
+        }
+        "write" => {
+            let lines = result.lines().count();
+            if lines > 0 {
+                format!("{summary} — wrote {lines} lines")
+            } else {
+                summary.to_string()
+            }
+        }
+        "glob" => {
+            let matches = result.lines().filter(|l| !l.trim().is_empty()).count();
+            format!("{summary} — {matches} matches")
+        }
+        "grep" | "codebase_search" => {
+            let matches = result.lines().filter(|l| !l.trim().is_empty()).count();
+            format!("{summary} — {matches} results")
+        }
+        _ => {
+            // Generic: summary + first result line
+            let first = result
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim();
+            if !first.is_empty() && first != summary {
+                let preview = crate::util::truncate(first, 60);
+                format!("{summary} — {preview}")
+            } else {
+                summary.to_string()
+            }
+        }
+    }
+}
+
 fn attachment_placeholder(path: &std::path::Path, idx: usize) -> String {
     let ext = path
         .extension()
@@ -363,7 +457,12 @@ impl ConversationView {
                 *r = summary.clone();
                 *dr = result_text.map(|text| text.to_string());
                 completed_name = Some(name.clone());
-                completed_summary = args_summary.clone().or(summary);
+                // Build a rich one-liner for consolidated tree view
+                completed_summary = Some(consolidation_one_liner(
+                    name,
+                    args_summary.as_deref(),
+                    result_text,
+                ));
                 completed_idx = Some(i);
                 break;
             }

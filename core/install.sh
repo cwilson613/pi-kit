@@ -22,7 +22,15 @@ set -eu
 
 REPO="styrene-lab/omegon"
 BINARY="omegon"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+# Default install dir: prefer /usr/local/bin if writable, else ~/.local/bin.
+# This avoids requiring sudo on systems where /usr/local/bin isn't writable.
+if [ -z "${INSTALL_DIR:-}" ]; then
+  if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+    INSTALL_DIR="/usr/local/bin"
+  else
+    INSTALL_DIR="${HOME}/.local/bin"
+  fi
+fi
 VERSION="${VERSION:-}"
 CHANNEL="${CHANNEL:-stable}"
 GITHUB_API="https://api.github.com/repos/${REPO}"
@@ -428,8 +436,28 @@ if command -v "$BINARY" >/dev/null 2>&1; then
   ok "Installed to ${BOLD}${VERSION_DIR}/${BINARY}${RESET}"
   ok "Symlinked from ${BOLD}${INSTALL_DIR}/${BINARY}${RESET}"
 elif [ -x "${INSTALL_DIR}/${BINARY}" ]; then
-  warn "${BINARY} installed but ${INSTALL_DIR} is not in your PATH"
-  printf "${DIM}    Add it: export PATH=\"${INSTALL_DIR}:\$PATH\"${RESET}\n"
+  ok "Installed to ${BOLD}${VERSION_DIR}/${BINARY}${RESET}"
+  ok "Symlinked from ${BOLD}${INSTALL_DIR}/${BINARY}${RESET}"
+  # Auto-wire PATH if needed
+  if ! echo "$PATH" | tr ':' '\n' | grep -qx "${INSTALL_DIR}"; then
+    SHELL_RC=""
+    CURRENT_SHELL="$(basename "${SHELL:-sh}")"
+    if [ "$CURRENT_SHELL" = "zsh" ] && [ -f "$HOME/.zshrc" ]; then
+      SHELL_RC="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+      SHELL_RC="$HOME/.bashrc"
+    elif [ -f "$HOME/.profile" ]; then
+      SHELL_RC="$HOME/.profile"
+    fi
+    if [ -n "$SHELL_RC" ] && ! grep -q "${INSTALL_DIR}" "$SHELL_RC" 2>/dev/null; then
+      printf '\n# Omegon (added by installer)\nexport PATH="%s:$PATH"\n' "${INSTALL_DIR}" >> "$SHELL_RC"
+      ok "Added ${INSTALL_DIR} to PATH in ${SHELL_RC}"
+      printf "${DIM}    Run: source ${SHELL_RC}   (or open a new terminal)${RESET}\n"
+    else
+      warn "${INSTALL_DIR} is not in your PATH"
+      printf "${DIM}    Add it: export PATH=\"${INSTALL_DIR}:\$PATH\"${RESET}\n"
+    fi
+  fi
 else
   die "installation failed — ${INSTALL_DIR}/${BINARY} is not executable"
 fi

@@ -657,8 +657,20 @@ fn child_preloaded_files() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Global startup instant — set once at process start.
+static STARTUP_INSTANT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Get time since process start in milliseconds.
+pub fn startup_elapsed_ms() -> u64 {
+    STARTUP_INSTANT
+        .get()
+        .map(|t| t.elapsed().as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = STARTUP_INSTANT.set(std::time::Instant::now());
     let mut cli = Cli::parse();
 
     // ─── Ollama integration detection ────────────────────────────────────

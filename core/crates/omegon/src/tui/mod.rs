@@ -63,6 +63,30 @@ use self::segments::{
     SegmentContent, SegmentExportMode, SegmentRenderMode, ToolVisualKind, build_meta_tag,
 };
 
+/// Get current process RSS in megabytes (platform-specific).
+fn get_rss_mb() -> Option<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        let kb: f64 = String::from_utf8_lossy(&output.stdout).trim().parse().ok()?;
+        Some(kb / 1024.0)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+        let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb / 1024.0)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptSubmission {
     pub text: String,
@@ -3987,6 +4011,7 @@ impl App {
             &["off", "low", "medium", "high"],
         ),
         ("stats", "session telemetry", &[]),
+        ("bench", "performance metrics (RSS, tokens/turn, avg turn time)", &["perf"]),
         ("new", "save current session and start fresh", &[]),
         (
             "detail",
@@ -4289,6 +4314,47 @@ impl App {
                 } else {
                     SlashResult::Display("Usage: /stats".into())
                 }
+            }
+
+            "bench" | "perf" => {
+                let session_secs = self.session_start.elapsed().as_secs();
+                let turns = self.turn;
+                let input_tokens = self.footer_data.session_input_tokens;
+                let output_tokens = self.footer_data.session_output_tokens;
+                let ctx_pct = self.footer_data.context_percent;
+                let ctx_window = self.footer_data.context_window;
+                let model = &self.footer_data.model_id;
+                let version = env!("CARGO_PKG_VERSION");
+
+                let avg_turn_secs = if turns > 0 {
+                    session_secs as f64 / turns as f64
+                } else {
+                    0.0
+                };
+                let tokens_per_turn = if turns > 0 {
+                    (input_tokens + output_tokens) / turns as u64
+                } else {
+                    0
+                };
+
+                let rss_mb = get_rss_mb().unwrap_or(0.0);
+
+                SlashResult::Display(format!(
+                    "Omegon Performance — v{version}\n\n\
+                     Startup\n\
+                     ────────────────────────────────\n\
+                     Process age:        {session_secs}s\n\
+                     RSS memory:         {rss_mb:.1} MB\n\n\
+                     Session\n\
+                     ────────────────────────────────\n\
+                     Model:              {model}\n\
+                     Turns:              {turns}\n\
+                     Avg turn time:      {avg_turn_secs:.1}s\n\
+                     Input tokens:       {input_tokens}\n\
+                     Output tokens:      {output_tokens}\n\
+                     Tokens/turn:        {tokens_per_turn}\n\
+                     Context:            {ctx_pct:.0}% of {ctx_window}"
+                ))
             }
 
             "status" => {

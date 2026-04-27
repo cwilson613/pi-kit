@@ -177,6 +177,14 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         description: "API key — Google results",
     },
     ProviderCredential {
+        id: "firecrawl",
+        auth_key: "firecrawl",
+        display_name: "Firecrawl",
+        env_vars: &["FIRECRAWL_API_KEY"],
+        auth_method: AuthMethod::ApiKey,
+        description: "API key — structured web scraping and search",
+    },
+    ProviderCredential {
         id: "github",
         auth_key: "github",
         display_name: "GitHub",

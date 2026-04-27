@@ -37,6 +37,7 @@ pub mod view {
 /// Web search — owned by `tools::web_search::WebSearchProvider`
 pub mod web_search {
     pub const WEB_SEARCH: &str = "web_search";
+    pub const WEB_FETCH: &str = "web_fetch";
 }
 
 /// Local inference — owned by `tools::local_inference::LocalInferenceProvider`
@@ -172,8 +173,9 @@ pub fn all_static_names() -> Vec<&'static str> {
         core::SERVE,
         // view (1)
         view::VIEW,
-        // web_search (1)
+        // web_search (2)
         web_search::WEB_SEARCH,
+        web_search::WEB_FETCH,
         // local_inference (3)
         local_inference::ASK_LOCAL_MODEL,
         local_inference::LIST_LOCAL_MODELS,

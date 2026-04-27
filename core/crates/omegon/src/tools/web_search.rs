@@ -58,9 +58,81 @@ impl WebSearchProvider {
         if self.resolve_key("SERPER_API_KEY").is_some() {
             providers.push("serper");
         }
+        if self.resolve_key("FIRECRAWL_API_KEY").is_some() {
+            providers.push("firecrawl");
+        }
         // DuckDuckGo is always available — no API key needed
         providers.push("ddg");
         providers
+    }
+
+    /// Firecrawl search — structured web content extraction.
+    /// Uses /v1/search for search and /v1/scrape for URL-to-markdown.
+    async fn search_firecrawl(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let api_key = self
+            .resolve_key("FIRECRAWL_API_KEY")
+            .ok_or_else(|| anyhow::anyhow!("FIRECRAWL_API_KEY not set"))?;
+        let resp = self
+            .client
+            .post("https://api.firecrawl.dev/v1/search")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&json!({
+                "query": query,
+                "limit": max_results,
+                "scrapeOptions": { "formats": ["markdown"] }
+            }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Firecrawl search error {status}: {body}");
+        }
+        let data: Value = resp.json().await?;
+        let results = data["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .take(max_results)
+                    .filter_map(|r| {
+                        Some(SearchResult {
+                            title: r["metadata"]["title"].as_str()?.to_string(),
+                            url: r["url"].as_str()?.to_string(),
+                            snippet: r["metadata"]["description"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string(),
+                            content: r["markdown"].as_str().map(|s| {
+                                crate::util::truncate(s, 2000)
+                            }),
+                            provider: "firecrawl".into(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(results)
+    }
+
+    /// Fetch a URL's content using curl as a zero-dependency fallback.
+    /// Strips HTML tags with a simple pass and truncates to 50KB.
+    /// Works anywhere — no API keys needed.
+    async fn fetch_url_curl(&self, url: &str) -> anyhow::Result<String> {
+        let output = tokio::process::Command::new("curl")
+            .args(["-sL", "--max-time", "15", "--max-filesize", "1048576", url])
+            .output()
+            .await?;
+        if !output.status.success() {
+            anyhow::bail!("curl failed with status {}", output.status);
+        }
+        let body = String::from_utf8_lossy(&output.stdout);
+        // Simple HTML tag stripping
+        let stripped = strip_html_tags(&body);
+        Ok(crate::util::truncate(&stripped, 50_000))
     }
 
     /// DuckDuckGo HTML search — zero-config, no API key.
@@ -292,6 +364,7 @@ impl WebSearchProvider {
             "brave" => self.search_brave(query, max_results, topic).await,
             "tavily" => self.search_tavily(query, max_results, topic).await,
             "serper" => self.search_serper(query, max_results, topic).await,
+            "firecrawl" => self.search_firecrawl(query, max_results).await,
             "ddg" => self.search_ddg(query, max_results).await,
             _ => anyhow::bail!("Unknown provider: {provider}"),
         }
@@ -409,31 +482,84 @@ fn format_results(results: &[SearchResult]) -> String {
 #[async_trait]
 impl ToolProvider for WebSearchProvider {
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: crate::tool_registry::web_search::WEB_SEARCH.into(),
-            label: "Web Search".into(),
-            description: "Search the web. Works out of the box via DuckDuckGo; API keys (brave, tavily, serper) optional for deeper results.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "provider": { "type": "string", "enum": ["brave", "tavily", "serper", "ddg"], "description": "Specific provider. Omit to auto-select." },
-                    "mode": { "type": "string", "enum": ["quick", "deep", "compare"], "description": "Search mode. Default: quick" },
-                    "max_results": { "type": "number", "description": "Max results per provider. Default: 5", "minimum": 1, "maximum": 20 },
-                    "topic": { "type": "string", "enum": ["general", "news"], "description": "Search topic. Default: general" }
-                },
-                "required": ["query"]
-            }),
-        }]
+        vec![
+            ToolDefinition {
+                name: crate::tool_registry::web_search::WEB_SEARCH.into(),
+                label: "Web Search".into(),
+                description: "Search the web. Works out of the box via DuckDuckGo; API keys (brave, tavily, serper, firecrawl) optional for deeper results.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search query" },
+                        "provider": { "type": "string", "enum": ["brave", "tavily", "serper", "firecrawl", "ddg"], "description": "Specific provider. Omit to auto-select." },
+                        "mode": { "type": "string", "enum": ["quick", "deep", "compare"], "description": "Search mode. Default: quick" },
+                        "max_results": { "type": "number", "description": "Max results per provider. Default: 5", "minimum": 1, "maximum": 20 },
+                        "topic": { "type": "string", "enum": ["general", "news"], "description": "Search topic. Default: general" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: crate::tool_registry::web_search::WEB_FETCH.into(),
+                label: "Web Fetch".into(),
+                description: "Fetch a URL's content as clean text. Uses Firecrawl for markdown conversion if available, falls back to curl with HTML stripping.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "The URL to fetch" }
+                    },
+                    "required": ["url"]
+                }),
+            },
+        ]
     }
 
     async fn execute(
         &self,
-        _tool_name: &str,
+        tool_name: &str,
         _call_id: &str,
         args: Value,
         _cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        // web_fetch: fetch a single URL's content
+        if tool_name == crate::tool_registry::web_search::WEB_FETCH {
+            let url = args
+                .get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("url parameter is required"))?;
+
+            // Try Firecrawl scrape first if available
+            let content = if let Some(api_key) = self.resolve_key("FIRECRAWL_API_KEY") {
+                let resp = self
+                    .client
+                    .post("https://api.firecrawl.dev/v1/scrape")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .json(&json!({ "url": url, "formats": ["markdown"] }))
+                    .send()
+                    .await?;
+                if resp.status().is_success() {
+                    let data: Value = resp.json().await?;
+                    data["data"]["markdown"]
+                        .as_str()
+                        .map(|s| crate::util::truncate(s, 50_000))
+                } else {
+                    None // fall through to curl
+                }
+            } else {
+                None
+            };
+
+            let content = match content {
+                Some(md) => md,
+                None => self.fetch_url_curl(url).await?,
+            };
+
+            return Ok(ToolResult {
+                content: vec![ContentBlock::Text { text: content }],
+                details: json!({ "url": url }),
+            });
+        }
+
         let query = args
             .get("query")
             .and_then(|v| v.as_str())

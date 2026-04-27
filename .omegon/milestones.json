@@ -923,9 +923,9 @@
     "nodes": [],
     "frozen": false,
     "opened": "2026-04-25T16:33:48Z",
-    "last_rc": "2026-04-27T12:42:54Z",
-    "rc_version": "0.17.0-rc.33",
-    "rc_count": 33,
+    "last_rc": "2026-04-27T13:53:19Z",
+    "rc_version": "0.17.0-rc.34",
+    "rc_count": 34,
     "released": null,
     "notes": [
       "feat(auth): adopt Claude Code credentials from ~/.claude.json",
@@ -1000,6 +1000,7 @@
       "fix: gitignore mock-extension state.toml to prevent test-induced tree dirt",
       "fix: map 'minimal' reasoning to 'low' for OpenAI, merge system notifications",
       "refactor: add redact_in_place as composable primitive for cross-crate use",
+      "refactor: architectural coherence — extract modules, separate concerns",
       "refactor: decouple omegon-secrets and omegon-memory for standalone use",
       "refactor: rename opsx-core to omegon-opsx"
     ]

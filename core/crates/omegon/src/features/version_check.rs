@@ -1,12 +1,12 @@
 //! version_check — Polls GitHub for new Omegon releases.
 //!
-//! Checks on session start. If a newer version exists, sends a notification.
-//! Respects OMEGON_SKIP_VERSION_CHECK and OMEGON_OFFLINE env vars.
-//!
-//! Ported from extensions/version-check.ts (94 LoC TS → ~90 LoC Rust)
+//! Checks on session start. If a newer version exists, surfaces a TUI
+//! notification via BusRequest::Notify. Respects OMEGON_SKIP_VERSION_CHECK
+//! and OMEGON_OFFLINE env vars.
 
 use async_trait::async_trait;
-use omegon_traits::{BusEvent, BusRequest, Feature};
+use omegon_traits::{BusEvent, BusRequest, Feature, NotifyLevel};
+use std::sync::{Arc, Mutex};
 
 const REPO_OWNER: &str = "styrene-lab";
 const REPO_NAME: &str = "omegon";
@@ -14,16 +14,18 @@ const FETCH_TIMEOUT_SECS: u64 = 10;
 
 pub struct VersionCheck {
     current_version: String,
-    notified_version: Option<String>,
     checked: bool,
+    /// Result slot: the spawned async task writes the update message here.
+    /// The next on_event call picks it up and returns a BusRequest::Notify.
+    pending_notification: Arc<Mutex<Option<String>>>,
 }
 
 impl VersionCheck {
     pub fn new(current_version: impl Into<String>) -> Self {
         Self {
             current_version: current_version.into(),
-            notified_version: None,
             checked: false,
+            pending_notification: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -35,6 +37,17 @@ impl Feature for VersionCheck {
     }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
+        // Check for pending notification from the async task.
+        // This fires on any subsequent event after the task completes.
+        if let Ok(mut slot) = self.pending_notification.lock() {
+            if let Some(msg) = slot.take() {
+                return vec![BusRequest::Notify {
+                    message: msg,
+                    level: NotifyLevel::Info,
+                }];
+            }
+        }
+
         if let BusEvent::SessionStart { .. } = event {
             if self.checked {
                 return vec![];
@@ -47,22 +60,18 @@ impl Feature for VersionCheck {
                 return vec![];
             }
 
-            // Fire-and-forget async check. We can't do async in on_event,
-            // so we spawn a detached task that logs the result. The notification
-            // won't show via BusRequest (since we can't return it from a spawned task),
-            // but tracing will capture it.
-            //
-            // TODO: Use a channel to send BusRequest back from the spawned task.
             let current = self.current_version.clone();
+            let slot = self.pending_notification.clone();
             crate::task_spawn::spawn_best_effort("version-check", async move {
                 match fetch_latest().await {
                     Some(latest) if is_newer(&latest, &current) => {
-                        tracing::info!(
-                            current = %current,
-                            latest = %latest,
-                            "Omegon update available: v{current} → v{latest}. \
-                             Run `curl -fsSL https://omegon.styrene.io/install.sh | sh` to upgrade."
+                        let msg = format!(
+                            "Update available: v{current} → v{latest}. Run /update to install."
                         );
+                        tracing::info!(current = %current, latest = %latest, "{msg}");
+                        if let Ok(mut s) = slot.lock() {
+                            *s = Some(msg);
+                        }
                     }
                     _ => {
                         tracing::debug!("Version check: up to date");
@@ -157,5 +166,53 @@ mod tests {
             session_id: "test-2".into(),
         });
         assert!(requests.is_empty(), "should skip duplicate check");
+    }
+
+    #[test]
+    fn pending_notification_drains_on_next_event() {
+        let mut vc = VersionCheck::new("0.12.0");
+        // Simulate the async task writing a result
+        *vc.pending_notification.lock().unwrap() =
+            Some("Update available: v0.12.0 → v0.13.0. Run /update to install.".to_string());
+
+        // Next event should drain the slot and return a Notify request
+        let requests = vc.on_event(&BusEvent::TurnEnd {
+            turn: 1,
+            model: None,
+            provider: None,
+            estimated_tokens: 0,
+            context_window: 200_000,
+            context_composition: Default::default(),
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
+        });
+        assert_eq!(requests.len(), 1);
+        assert!(
+            matches!(&requests[0], BusRequest::Notify { message, .. } if message.contains("v0.13.0")),
+            "should notify about available update"
+        );
+
+        // Slot is now empty — next event returns nothing
+        let requests = vc.on_event(&BusEvent::TurnEnd {
+            turn: 2,
+            model: None,
+            provider: None,
+            estimated_tokens: 0,
+            context_window: 200_000,
+            context_composition: Default::default(),
+            actual_input_tokens: 0,
+            actual_output_tokens: 0,
+            cache_read_tokens: 0,
+            provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_signal: omegon_traits::ProgressSignal::None,
+        });
+        assert!(requests.is_empty(), "slot should be drained after first read");
     }
 }

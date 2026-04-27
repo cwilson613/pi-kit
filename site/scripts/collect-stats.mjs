@@ -6,9 +6,11 @@
 //   - Cargo.toml workspace members → crate count
 //   - GitHub release assets → binary size (compressed + uncompressed)
 //   - core/crates/omegon/src/tools/ → tool file count (lower bound)
-//   - providers.rs → provider count
+//   - auth.rs PROVIDERS array → provider count + names (canonical source)
+//   - skills/ directory → skill count
+//   - tools/web_search.rs → search provider count
 
-import { readFileSync, writeFileSync, readdirSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -56,38 +58,37 @@ async function getBinarySize() {
   }
 }
 
-// ── Provider count from providers.rs ─────────────────────────────────────────
+// ── Provider info from auth.rs (canonical source) ───────────────────────────
+// Parses the PROVIDERS static array in auth.rs to extract provider IDs and
+// display names. This is the single source of truth — no hardcoded list.
 
-function getProviderCount() {
+function getProviderInfo() {
   try {
     const src = readFileSync(
-      resolve(ROOT, "core/crates/omegon/src/providers.rs"),
+      resolve(ROOT, "core/crates/omegon/src/auth.rs"),
       "utf-8",
     );
-    // Count unique provider slugs in the canonical slug→vec match block.
-    // These lines look like:  "openrouter" => vec!["openrouter"],
-    const slugMatch = src.match(
-      /fn.*prefer[\s\S]*?\{([\s\S]*?)\n\s*\}/,
-    );
-    // Fallback: count all unique "slug" => patterns in client instantiation
-    const allSlugs = src.matchAll(/"([a-z][-a-z]*)" =>/g);
-    const providerSlugs = new Set();
-    for (const m of allSlugs) {
-      const slug = m[1];
-      // Filter out non-provider matches (tool names, thinking levels, etc.)
-      if (
-        [
-          "anthropic", "openai", "openai-codex", "openrouter", "groq",
-          "xai", "mistral", "cerebras", "google", "google-antigravity",
-          "huggingface", "ollama", "ollama-cloud",
-        ].includes(slug)
-      ) {
-        providerSlugs.add(slug);
-      }
-    }
-    return providerSlugs.size || null;
-  } catch {}
-  return null;
+    // Extract the PROVIDERS block
+    const block = src.match(/pub static PROVIDERS[\s\S]*?\n\];/);
+    if (!block) return null;
+
+    // Split at the "Non-inference services" comment — everything before
+    // it is an inference provider, everything after is not.
+    const parts = block[0].split(/\/\/.*Non-inference services/);
+    const inferenceBlock = parts[0] || block[0];
+
+    // Parse each ProviderCredential entry from the inference section only
+    const entries = [...inferenceBlock.matchAll(/id:\s*"([^"]+)"[\s\S]*?display_name:\s*"([^"]+)"/g)];
+    const inferenceProviders = entries.map(([, id, name]) => ({ id, name }));
+
+    return {
+      count: inferenceProviders.length,
+      names: inferenceProviders.map((p) => p.name),
+      ids: inferenceProviders.map((p) => p.id),
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ── Tool count from tools directory ──────────────────────────────────────────
@@ -103,20 +104,58 @@ function getToolFileCount() {
   return null;
 }
 
+// ── Skill count from skills directory ────────────────────────────────────────
+
+function getSkillCount() {
+  try {
+    const skillsDir = resolve(ROOT, "skills");
+    if (!existsSync(skillsDir)) return null;
+    const dirs = readdirSync(skillsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory());
+    return dirs.length;
+  } catch {}
+  return null;
+}
+
+// ── Search provider count from web_search.rs ────────────────────────────────
+
+function getSearchProviderCount() {
+  try {
+    const src = readFileSync(
+      resolve(ROOT, "core/crates/omegon/src/tools/web_search.rs"),
+      "utf-8",
+    );
+    // Count distinct search provider branches in the provider match
+    const matches = src.matchAll(/"(brave|tavily|google|bing|duckduckgo|searxng|serper|exa)"/g);
+    const providers = new Set();
+    for (const m of matches) {
+      providers.add(m[1]);
+    }
+    return providers.size || null;
+  } catch {}
+  return null;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const crateCount = getCrateCount();
   const binaryInfo = await getBinarySize();
-  const providerCount = getProviderCount();
+  const providerInfo = getProviderInfo();
   const toolFiles = getToolFileCount();
+  const skillCount = getSkillCount();
+  const searchProviderCount = getSearchProviderCount();
 
   const stats = {
     crateCount,
     downloadMB: binaryInfo?.downloadMB ?? null,
     releaseTag: binaryInfo?.tag ?? null,
-    providerCount,
+    providerCount: providerInfo?.count ?? null,
+    providerNames: providerInfo?.names ?? [],
+    providerIds: providerInfo?.ids ?? [],
     toolFiles,
+    skillCount,
+    searchProviderCount,
     collectedAt: new Date().toISOString(),
   };
 
@@ -126,8 +165,10 @@ async function main() {
   console.log(`[collect-stats] Stats collected:`);
   console.log(`  crates: ${stats.crateCount}`);
   console.log(`  download: ~${stats.downloadMB}MB (${stats.releaseTag})`);
-  console.log(`  providers: ${stats.providerCount}`);
+  console.log(`  providers: ${stats.providerCount} (${stats.providerNames.join(", ")})`);
   console.log(`  tool files: ${stats.toolFiles}`);
+  console.log(`  skills: ${stats.skillCount}`);
+  console.log(`  search providers: ${stats.searchProviderCount}`);
   console.log(`[collect-stats] Wrote ${OUT}`);
 }
 

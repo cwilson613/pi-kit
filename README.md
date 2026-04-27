@@ -251,17 +251,19 @@ Omegon exposes structured tools for:
 - model control
 - background services
 
-### 11 inference providers
+### Inference providers
 
-Current surfaces include:
 - Anthropic/Claude
 - OpenAI API
 - OpenAI/Codex
 - OpenRouter
 - Groq
-- xAI
-- Mistral
+- xAI (Grok)
+- Mistral AI
 - Cerebras
+- Google Gemini
+- Google Antigravity
+- OpenCode Go
 - Hugging Face
 - Ollama (Local)
 - Ollama Cloud

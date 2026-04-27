@@ -21,9 +21,9 @@ import stats from "../../data/stats.json";
       <tr><td>CLAUDE.md</td><td>Project memory — persistent facts with semantic search, knowledge graph, episodic recall. Not a flat file.</td></tr>
       <tr><td>Model picker</td><td><code>/model</code> — {stats.providerCount} providers with tier-based routing and automatic failover</td></tr>
       <tr><td>Extended thinking toggle</td><td><code>/think off|low|medium|high</code> — five levels, agent self-adjusts per task</td></tr>
-      <tr><td>Custom slash commands (.md)</td><td>12 skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
+      <tr><td>Custom slash commands (.md)</td><td>{stats.skillCount} skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
       <tr><td>Conversation history</td><td>Sessions — auto-save, <code>--resume</code>, full replay with segment metadata</td></tr>
-      <tr><td>Anthropic only</td><td>{stats.providerCount} inference providers — Anthropic, OpenAI API, OpenAI/Codex, Google Gemini, Google Antigravity, OpenRouter, Groq, xAI, Mistral, Cerebras, Hugging Face, Ollama (Local), Ollama Cloud</td></tr>
+      <tr><td>Anthropic only</td><td>{stats.providerCount} inference providers — {stats.providerNames.join(", ")}</td></tr>
       <tr><td>—</td><td>Design tree — a structured knowledge graph of architecture decisions, open questions, dependencies, and implementation status. Nodes have typed lifecycles (seed, exploring, decided, blocked, deferred) and bridge directly into the spec and implementation system. Not a TODO list — a design exploration space.</td></tr>
       <tr><td>Subagents (shared working directory)</td><td>Cleave — each child runs in its own git worktree on its own branch. File scope enforcement, dependency-ordered dispatch waves, per-file conflict detection (never bulk-resolved), and adversarial review. See <a href="/docs/cleave">Cleave vs Subagents</a>.</td></tr>
       <tr><td>—</td><td>OpenSpec — spec-driven development lifecycle (propose, specify, execute, verify, archive)</td></tr>
@@ -104,10 +104,10 @@ import stats from "../../data/stats.json";
       <tr><td>Sandbox execution</td><td>OCI-based isolation available via the OCI skill — Containerfile authoring, multi-arch builds, registry auth, and security scanning are first-class. Plus secrets management through system keychain and HashiCorp Vault, so credentials never touch environment variables or disk in plaintext.</td></tr>
       <tr><td>Single-turn execution</td><td>Multi-turn sessions with auto-save and resume. The agent maintains context across turns and sessions.</td></tr>
       <tr><td>—</td><td>Parallel execution — cleave decomposes tasks into isolated git worktree branches with file scope enforcement, dependency waves, per-file merge, and adversarial review. Not shared-directory subagents.</td></tr>
-      <tr><td>—</td><td>Design tree — 267-node knowledge graph (in the Omegon project itself) tracking decisions, dependencies, open questions, and implementation status. Bridges directly into spec-driven implementation.</td></tr>
+      <tr><td>—</td><td>Design tree — structured knowledge graph tracking decisions, dependencies, open questions, and implementation status. Bridges directly into spec-driven implementation.</td></tr>
       <tr><td>—</td><td>OpenSpec lifecycle — specs define correctness before code is written, verified after implementation</td></tr>
       <tr><td>—</td><td>Project memory — persistent semantic knowledge base, not a flat file that gets stale</td></tr>
-      <tr><td>—</td><td>12 skills — specialized instruction sets for git, security, OCI, Rust, Python, TypeScript, etc.</td></tr>
+      <tr><td>—</td><td>{stats.skillCount} skills — specialized instruction sets for git, security, OCI, Rust, Python, TypeScript, etc.</td></tr>
       <tr><td>—</td><td>Instrument panel and web dashboard for real-time session telemetry</td></tr>
     </tbody>
   </table>

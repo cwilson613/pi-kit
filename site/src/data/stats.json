@@ -1,8 +1,40 @@
 {
   "crateCount": 7,
   "downloadMB": 13,
-  "releaseTag": "v0.17.1",
+  "releaseTag": "v0.17.2",
   "providerCount": 13,
-  "toolFiles": 15,
-  "collectedAt": "2026-04-26T03:15:55.210Z"
+  "providerNames": [
+    "Anthropic/Claude",
+    "OpenAI API",
+    "OpenAI/Codex",
+    "OpenRouter",
+    "Groq",
+    "xAI (Grok)",
+    "Mistral AI",
+    "Cerebras",
+    "Google Gemini",
+    "Google Antigravity",
+    "OpenCode Go",
+    "Ollama (Local)",
+    "Ollama Cloud"
+  ],
+  "providerIds": [
+    "anthropic",
+    "openai",
+    "openai-codex",
+    "openrouter",
+    "groq",
+    "xai",
+    "mistral",
+    "cerebras",
+    "google",
+    "google-antigravity",
+    "opencode-go",
+    "ollama",
+    "ollama-cloud"
+  ],
+  "toolFiles": 16,
+  "skillCount": 9,
+  "searchProviderCount": 3,
+  "collectedAt": "2026-04-27T22:48:22.883Z"
 }

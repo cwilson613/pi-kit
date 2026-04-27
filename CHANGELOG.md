@@ -14,6 +14,14 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.2] - 2026-04-27
+
+### Fixed
+
+- **Behavioral system actively prevented agent from producing work** — `bash` tool calls (find, ls, grep) had no OODA classification and fell through to Orient phase, triggering continuation pressure nudges that disrupted the agent's intent. Now classified as Act. `web_search`, `ask_local_model`, and `serve` also reclassified from Orient to Act. `memory_store`, `memory_query`, `chronos`, `whoami`, and `manage_tools` reclassified from Orient to Observe. Every tool now has an explicit classification — the Orient fallback only fires for genuinely mixed/unknown combinations.
+- **Continuation pressure thresholds too aggressive for frontier models** — Standard tier fired tier-1 nudges after 6 tool-continuation turns (doubled to 12). Execution pressure fired on turn 2 for broad inspection (raised to turn 5). OrientationChurn detection raised from turn 2 to turn 4. All threshold tiers raised proportionally.
+- **Nudge text was code-editing-specific** — messages like "make the smallest concrete code change" and "Do NOT delegate" were wrong for non-code tasks (e.g., writing files to an Obsidian vault). Rewritten to task-neutral framing: "produce output," "write a file, make an edit, or explain what's blocking you."
+
 ## [0.17.1] - 2026-04-27
 
 ### Fixed

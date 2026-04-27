@@ -2877,18 +2877,38 @@ impl App {
             1
         };
 
-        let status_height =
-            if matches!(self.ui_mode, UiMode::Slim) && !self.focus_mode { 1u16 } else { 0 };
+        let is_slim = matches!(self.ui_mode, UiMode::Slim) && !self.focus_mode;
+        let status_height = if is_slim { 1u16 } else { 0 };
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(3),                  // [0] conversation
-                Constraint::Length(status_height),    // [1] status line (slim only)
-                Constraint::Length(editor_height),    // [2] editor (dynamic)
-                Constraint::Length(footer_height),    // [3] footer console (dynamic)
-            ])
-            .split(main_area);
+        // Slim layout: conversation → editor → status+footer (editor above footer).
+        // Full layout: conversation → status → editor → footer (status between).
+        let chunks = if is_slim {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),                  // [0] conversation
+                    Constraint::Length(editor_height),    // [1] editor
+                    Constraint::Length(status_height),    // [2] status line
+                    Constraint::Length(footer_height),    // [3] footer
+                ])
+                .split(main_area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),                  // [0] conversation
+                    Constraint::Length(0),                // [1] (no status in Full)
+                    Constraint::Length(editor_height),    // [2] editor
+                    Constraint::Length(footer_height),    // [3] footer
+                ])
+                .split(main_area)
+        };
+
+        // Logical zone indices — consistent regardless of layout order.
+        let conversation_area = chunks[0];
+        let editor_area = if is_slim { chunks[1] } else { chunks[2] };
+        let status_area = if is_slim { chunks[2] } else { chunks[1] };
+        let footer_area = chunks[3];
 
         // Render tab bar + conversation/widget content
         let t = &self.theme;
@@ -2903,11 +2923,11 @@ impl App {
             let conv_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Min(1)])
-                .split(chunks[0]);
+                .split(conversation_area);
             self.render_tab_bar(frame, conv_chunks[0]);
             conv_chunks[1]
         } else {
-            chunks[0]
+            conversation_area
         };
 
         // Render content based on active tab
@@ -2941,18 +2961,18 @@ impl App {
             }
         }
 
-        self.conversation_area = Some(chunks[0]);
-        self.editor_area = Some(chunks[2]);
+        self.conversation_area = Some(conversation_area);
+        self.editor_area = Some(editor_area);
 
         // ── Status line (slim mode only) ────────────────────────
         if status_height > 0 {
             self.status_line.sync_from_footer(&self.footer_data);
-            self.status_line.render(chunks[1], frame, self.theme.as_ref());
+            self.status_line.render(status_area, frame, self.theme.as_ref());
         }
 
         // Overlay images on top of placeholders (second pass — needs Frame for StatefulImage)
         {
-            let conv_area = chunks[0];
+            let conv_area = conversation_area;
             // Collect image info without holding borrows
             let image_renders: Vec<(usize, Rect, std::path::PathBuf)> = {
                 let segments = self.conversation.segments();
@@ -3111,7 +3131,7 @@ impl App {
         // ── Unified footer console: engine | inference | tools ──────
         // Store instrument areas for cleanup pass to skip.
         let inst_area = if !self.focus_mode && self.ui_surfaces.footer {
-            let footer_area = chunks[3];
+            let _footer_area_inner = footer_area;
             if self.ui_surfaces.instruments {
                 let footer_cols = Layout::horizontal([
                     Constraint::Percentage(32),
@@ -3187,7 +3207,7 @@ impl App {
                 .style(Style::default().fg(t.accent_muted()).bg(t.surface_bg()))
                 .block(editor_block)
                 .wrap(ratatui::widgets::Wrap { trim: false });
-            frame.render_widget(editor_widget, chunks[2]);
+            frame.render_widget(editor_widget, editor_area);
         } else if let editor::EditorMode::ReverseSearch {
             ref query,
             ref match_idx,
@@ -3208,7 +3228,7 @@ impl App {
                 .style(Style::default().fg(t.fg()).bg(t.surface_bg()))
                 .block(editor_block)
                 .wrap(ratatui::widgets::Wrap { trim: false });
-            frame.render_widget(editor_widget, chunks[2]);
+            frame.render_widget(editor_widget, editor_area);
         } else {
             let hint_text = if self.agent_active {
                 String::new()
@@ -3251,7 +3271,7 @@ impl App {
                         .right_aligned(),
                 );
 
-            let editor_rect = chunks[2];
+            let editor_rect = editor_area;
             // Pre-split using char-boundary wrapping (same algorithm as
             // cursor_screen_position) so the terminal cursor always lands on
             // the correct visual cell.  Paragraph::wrap uses word boundaries
@@ -3303,7 +3323,7 @@ impl App {
             };
             if !matches.is_empty() {
                 let palette_height = matches.len().min(8) as u16 + 2; // +2 for borders
-                let editor_area = chunks[2];
+                let _editor_area_inner = editor_area;
                 let palette_area = Rect {
                     x: editor_area.x,
                     y: editor_area.y.saturating_sub(palette_height),
@@ -3348,11 +3368,11 @@ impl App {
 
         // ── Post-render effects (tachyonfx) — each zone processed separately ──
         self.effects
-            .process(frame.buffer_mut(), chunks[0], chunks[3], chunks[2]);
+            .process(frame.buffer_mut(), conversation_area, footer_area, editor_area);
 
         // ── Tutorial overlay — rendered on top of everything except toasts ──
         if let Some(ref overlay) = self.tutorial_overlay {
-            let footer_h = if self.focus_mode { 0 } else { chunks[3].height };
+            let footer_h = if self.focus_mode { 0 } else { footer_area.height };
             overlay.render(main_area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
         }
 

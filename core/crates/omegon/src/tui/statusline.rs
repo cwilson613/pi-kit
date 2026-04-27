@@ -186,6 +186,21 @@ impl StatusLine {
             }
         }
 
+        // Right-align version string
+        let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        let version_width = version.len() + 1; // +1 for trailing space
+        if used + version_width < w {
+            let pad = w - used - version_width;
+            spans.push(Span::styled(
+                " ".repeat(pad),
+                Style::default().bg(t.surface_bg()),
+            ));
+            spans.push(Span::styled(
+                format!("{version} "),
+                Style::default().fg(t.dim()).add_modifier(ratatui::style::Modifier::DIM),
+            ));
+        }
+
         let line = Line::from(spans);
         frame.render_widget(Clear, area);
         frame.render_widget(

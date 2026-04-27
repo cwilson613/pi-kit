@@ -794,13 +794,17 @@ pub(crate) fn auto_delegate_tool_call(
     conversation: &ConversationState,
     plan: AutoDelegatePlan,
 ) -> ToolCall {
-    // Always use the tracked task from conversation intent, never the raw
-    // user prompt. The model has already seen the conversation and proposed
-    // a plan — the intent tracker captures that. Using last_user_prompt()
-    // here caused "Excellent, let's proceed" to be delegated verbatim.
-    let task = conversation.intent.current_task.clone().unwrap_or_else(|| {
+    // Use the tracked task from conversation intent, but validate it.
+    // If the tracked task is conversational or too vague, fall back to
+    // a generic orientation instruction that the delegate can work with.
+    let raw_task = conversation.intent.current_task.clone().unwrap_or_default();
+    let task = if raw_task.trim().is_empty()
+        || crate::features::delegate::is_conversational_non_task(&raw_task)
+    {
         "Inspect the current bounded task and return concise findings.".to_string()
-    });
+    } else {
+        raw_task
+    };
     ToolCall {
         id: format!(
             "auto-delegate-{}",

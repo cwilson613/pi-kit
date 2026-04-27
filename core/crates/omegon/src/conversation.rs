@@ -199,9 +199,9 @@ impl IntentDocument {
 
     /// Auto-populate current_task from the first user message if not set.
     pub fn set_task_from_prompt(&mut self, prompt: &str) {
-        if self.current_task.is_some() {
-            return;
-        }
+        // Always update to the latest user prompt — the user's most recent
+        // instruction supersedes whatever was set before. Stale current_task
+        // caused the first prompt to be delegated verbatim for the entire session.
         // Use first line, truncated to 200 chars
         let first_line = prompt.lines().next().unwrap_or(prompt);
         let task = if first_line.len() > 200 {

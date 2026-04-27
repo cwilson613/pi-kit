@@ -21,7 +21,7 @@ fn test_settings() -> crate::settings::SharedSettings {
 
 fn test_app() -> App {
     let mut app = App::new(test_settings());
-    app.set_ui_mode(UiMode::Slim);
+    app.apply_ui_preset(UiSurfaces::lean());
     app
 }
 
@@ -1097,17 +1097,13 @@ fn ctrl_y_keeps_editor_yank_outside_conversation_focus() {
 }
 
 #[test]
-fn startup_initialization_prefers_terminal_copy_mode_in_slim_default() {
+fn startup_initialization_defaults_to_lean_compact() {
     let app = test_app();
 
-    assert!(
-        app.terminal_copy_mode,
-        "slim-default startup should prefer terminal-native selection/copy"
-    );
-    assert!(matches!(app.ui_mode, UiMode::Slim));
+    assert!(app.ui_surfaces.is_compact(), "default startup should be compact (lean)");
     assert!(
         !app.mouse_capture_enabled,
-        "slim-default startup should keep mouse capture off for free selection/paste"
+        "default startup should keep mouse capture off for terminal-native selection"
     );
 }
 
@@ -1392,9 +1388,7 @@ fn slash_shackle_switches_to_slim_runtime_profile() {
 
     let result = app.handle_slash_command("/shackle", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.ui_mode, UiMode::Slim);
-    assert!(app.terminal_copy_mode);
-    assert!(!app.mouse_capture_enabled);
+    assert!(app.ui_surfaces.is_compact());
 
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
@@ -1412,13 +1406,11 @@ fn slash_unshackle_switches_to_full_runtime_profile() {
     if let Ok(mut s) = app.settings.lock() {
         s.set_posture(crate::settings::PosturePreset::Explorator);
     }
-    app.set_ui_mode(UiMode::Slim);
+    app.apply_ui_preset(UiSurfaces::lean());
 
     let result = app.handle_slash_command("/unshackle", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.ui_mode, UiMode::Full);
-    assert!(!app.terminal_copy_mode);
-    assert!(app.mouse_capture_enabled);
+    assert!(!app.ui_surfaces.is_compact());
 
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
@@ -1436,7 +1428,7 @@ fn slash_warp_toggles_between_slim_and_full_modes() {
 
     let result = app.handle_slash_command("/warp", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.ui_mode, UiMode::Slim);
+    assert!(app.ui_surfaces.is_compact());
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
             request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim },
@@ -1451,7 +1443,7 @@ fn slash_warp_toggles_between_slim_and_full_modes() {
 
     let result = app.handle_slash_command("/warp", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.ui_mode, UiMode::Full);
+    assert!(!app.ui_surfaces.is_compact());
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
             request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim },
@@ -1466,22 +1458,25 @@ fn ui_command_switches_between_full_and_slim_presets() {
     let mut app = test_app();
     let tx = test_tx();
 
-    let result = app.handle_slash_command("/ui slim", &tx);
+    let result = app.handle_slash_command("/ui lean", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.ui_mode, UiMode::Slim);
-    assert!(app.terminal_copy_mode);
-    assert!(!app.mouse_capture_enabled);
+    assert!(app.ui_surfaces.is_compact());
     assert!(!app.ui_surfaces.dashboard);
     assert!(!app.ui_surfaces.instruments);
     assert!(!app.ui_surfaces.footer);
 
     let result = app.handle_slash_command("/ui full", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.ui_mode, UiMode::Full);
-    assert!(!app.terminal_copy_mode);
-    assert!(app.mouse_capture_enabled);
+    assert!(!app.ui_surfaces.is_compact());
     assert!(app.ui_surfaces.dashboard);
     assert!(app.ui_surfaces.instruments);
+    assert!(app.ui_surfaces.footer);
+
+    let result = app.handle_slash_command("/ui standard", &tx);
+    assert!(matches!(result, SlashResult::Display(_)));
+    assert!(app.ui_surfaces.is_compact());
+    assert!(!app.ui_surfaces.dashboard);
+    assert!(!app.ui_surfaces.instruments);
     assert!(app.ui_surfaces.footer);
 }
 
@@ -1514,7 +1509,7 @@ fn ui_command_can_toggle_individual_surfaces() {
 #[test]
 fn empty_editor_hint_mentions_ui_surfaces_when_dashboard_hidden() {
     let mut app = test_app();
-    app.set_ui_mode(UiMode::Slim);
+    app.apply_ui_preset(UiSurfaces::lean());
     let rendered = render_app_to_string(&mut app, 100, 20);
     assert!(rendered.contains("/ui surfaces"), "{rendered}");
     assert!(!rendered.contains("^D tree"), "{rendered}");
@@ -1528,9 +1523,9 @@ fn ui_status_lists_toggle_controls() {
     let SlashResult::Display(text) = result else {
         panic!("expected display");
     };
-    assert!(text.contains("/ui toggle dashboard"), "{text}");
-    assert!(text.contains("/ui toggle instruments"), "{text}");
-    assert!(text.contains("/ui toggle footer"), "{text}");
+    assert!(text.contains("dashboard"), "{text}");
+    assert!(text.contains("instruments"), "{text}");
+    assert!(text.contains("footer"), "{text}");
 }
 
 #[test]

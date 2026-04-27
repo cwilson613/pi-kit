@@ -198,12 +198,6 @@ enum PaneFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UiMode {
-    Full,
-    Slim,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiSurfaces {
     dashboard: bool,
     instruments: bool,
@@ -211,19 +205,37 @@ struct UiSurfaces {
 }
 
 impl UiSurfaces {
+    fn lean() -> Self {
+        Self { dashboard: false, instruments: false, footer: false }
+    }
+    fn standard() -> Self {
+        Self { dashboard: false, instruments: false, footer: true }
+    }
     fn full() -> Self {
-        Self {
-            dashboard: true,
-            instruments: true,
-            footer: true,
+        Self { dashboard: true, instruments: true, footer: true }
+    }
+
+    /// True when the layout should use compact rendering (no dashboard chrome).
+    fn is_compact(&self) -> bool {
+        !self.dashboard
+    }
+
+    /// Preset name for display.
+    fn preset_name(&self) -> &'static str {
+        match (self.dashboard, self.instruments, self.footer) {
+            (false, false, false) => "lean",
+            (false, false, true) => "standard",
+            (true, true, true) => "full",
+            _ => "custom",
         }
     }
 
-    fn slim() -> Self {
-        Self {
-            dashboard: false,
-            instruments: false,
-            footer: false,
+    /// Cycle to the next preset.
+    fn next_preset(&self) -> Self {
+        match self.preset_name() {
+            "lean" => Self::standard(),
+            "standard" => Self::full(),
+            _ => Self::lean(),
         }
     }
 }
@@ -263,7 +275,7 @@ pub struct App {
     instrument_panel: InstrumentPanel,
     /// Focus mode toggle state
     focus_mode: bool,
-    ui_mode: UiMode,
+    // ui_mode removed — all behavior driven by ui_surfaces
     ui_surfaces: UiSurfaces,
     theme: Box<dyn theme::Theme>,
     /// Shared settings — source of truth for model, thinking, etc.
@@ -1026,8 +1038,8 @@ impl App {
             },
             instrument_panel: InstrumentPanel::default(),
             focus_mode: false,
-            ui_mode: UiMode::Slim,
-            ui_surfaces: UiSurfaces::slim(),
+            // ui_mode removed — surfaces drive everything
+            ui_surfaces: UiSurfaces::lean(),
             theme: theme::default_theme(),
             settings,
             cancel: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -1094,21 +1106,10 @@ impl App {
         self.set_mouse_capture(true);
     }
 
-    fn set_ui_mode(&mut self, mode: UiMode) {
-        self.ui_mode = mode;
-        self.ui_surfaces = match mode {
-            UiMode::Full => UiSurfaces::full(),
-            UiMode::Slim => UiSurfaces::slim(),
-        };
-        match mode {
-            UiMode::Slim => {
-                self.focus_mode = false;
-                // Mouse capture stays on — scroll and click work in all modes.
-                // /mouse off is still available for terminal-native selection.
-            }
-            UiMode::Full => {
-                self.terminal_copy_mode = false;
-            }
+    fn apply_ui_preset(&mut self, surfaces: UiSurfaces) {
+        self.ui_surfaces = surfaces;
+        if surfaces.is_compact() {
+            self.focus_mode = false;
         }
     }
 
@@ -1172,12 +1173,9 @@ impl App {
     }
 
     fn ui_status_text(&self) -> String {
-        let mode = match self.ui_mode {
-            UiMode::Full => "full",
-            UiMode::Slim => "slim",
-        };
+        let mode = self.ui_surfaces.preset_name();
         format!(
-            "UI mode: {mode}\n  dashboard: {}\n  instruments: {}\n  footer: {}\n\nPresets\n  /ui full\n  /ui slim\n\nSurfaces\n  /ui show dashboard\n  /ui hide dashboard\n  /ui toggle dashboard\n  /ui show instruments\n  /ui hide instruments\n  /ui toggle instruments\n  /ui show footer\n  /ui hide footer\n  /ui toggle footer",
+            "UI preset: {mode}\n  dashboard: {}\n  instruments: {}\n  footer: {}\n\nPresets\n  /ui lean    (minimal)\n  /ui standard (+ footer)\n  /ui full    (+ dashboard + instruments)\n\nSurfaces\n  /ui show|hide|toggle dashboard|instruments|footer",
             if self.ui_surfaces.dashboard {
                 "on"
             } else {
@@ -2877,7 +2875,7 @@ impl App {
             1
         };
 
-        let is_slim = matches!(self.ui_mode, UiMode::Slim) && !self.focus_mode;
+        let is_slim = self.ui_surfaces.is_compact() && !self.focus_mode;
         let status_height = if is_slim { 1u16 } else { 0 };
 
         // Slim layout: conversation → editor → status+footer (editor above footer).
@@ -2914,7 +2912,7 @@ impl App {
         let t = &self.theme;
         let has_multiple_tabs = self.conversation.tabs.tabs.len() > 1;
         let show_tab_bar = has_multiple_tabs
-            && !(matches!(self.ui_mode, UiMode::Slim)
+            && !(self.ui_surfaces.is_compact()
                 && !self.ui_surfaces.dashboard
                 && !self.ui_surfaces.footer);
 
@@ -2936,7 +2934,7 @@ impl App {
             let density = self.settings().tool_detail;
             let (segments, conv_state) = self.conversation.segments_and_state();
             let conv_widget = conv_widget::ConversationWidget::new(segments, t.as_ref())
-                .with_mode(if matches!(self.ui_mode, UiMode::Slim) {
+                .with_mode(if self.ui_surfaces.is_compact() {
                     SegmentRenderMode::Slim
                 } else {
                     SegmentRenderMode::Full
@@ -3016,7 +3014,7 @@ impl App {
             self.footer_data.context_window = s.context_window;
             self.footer_data.thinking_level = s.thinking.as_str().to_string();
             self.footer_data.posture = s.posture.effective.display_name().to_string();
-            self.footer_data.runtime_brand = if matches!(self.ui_mode, UiMode::Slim) {
+            self.footer_data.runtime_brand = if self.ui_surfaces.is_compact() {
                 "OM".to_string()
             } else {
                 "Omegon".to_string()
@@ -3183,7 +3181,7 @@ impl App {
             } else {
                 "⏎ confirm  Esc cancel ".into()
             };
-            let editor_block = if matches!(self.ui_mode, UiMode::Slim) {
+            let editor_block = if self.ui_surfaces.is_compact() {
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(t.border_dim()).bg(t.surface_bg()))
@@ -4804,14 +4802,15 @@ impl App {
                 let args = args.trim();
                 if args.is_empty() || args == "status" {
                     SlashResult::Display(self.ui_status_text())
+                } else if args == "lean" || args == "slim" || args == "minimal" {
+                    self.apply_ui_preset(UiSurfaces::lean());
+                    SlashResult::Display("UI → lean (minimal)".into())
+                } else if args == "standard" || args == "std" {
+                    self.apply_ui_preset(UiSurfaces::standard());
+                    SlashResult::Display("UI → standard (+ footer)".into())
                 } else if args == "full" {
-                    self.set_ui_mode(UiMode::Full);
-                    SlashResult::Display(
-                        "UI mode → full (dashboard, instruments, footer enabled)".into(),
-                    )
-                } else if args == "slim" {
-                    self.set_ui_mode(UiMode::Slim);
-                    SlashResult::Display("UI mode → slim (conversation-first surfaces)".into())
+                    self.apply_ui_preset(UiSurfaces::full());
+                    SlashResult::Display("UI → full (+ dashboard + instruments)".into())
                 } else if let Some(surface) = args.strip_prefix("toggle ") {
                     let surface = surface.trim();
                     let enabled = match surface {
@@ -5035,7 +5034,7 @@ impl App {
 
             // ── Aliases ─────────────────────────────────────────────
             "shackle" => {
-                self.set_ui_mode(UiMode::Slim);
+                self.apply_ui_preset(UiSurfaces::lean());
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
                     request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim: true },
                     respond_to: None,
@@ -5043,7 +5042,7 @@ impl App {
                 SlashResult::Display("Shackled: om mode active.".into())
             }
             "unshackle" => {
-                self.set_ui_mode(UiMode::Full);
+                self.apply_ui_preset(UiSurfaces::full());
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
                     request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim: false },
                     respond_to: None,
@@ -5053,10 +5052,10 @@ impl App {
             "warp" => {
                 let slim_now = self.settings.lock().ok().is_some_and(|s| s.is_slim());
                 let target_slim = !slim_now;
-                self.set_ui_mode(if target_slim {
-                    UiMode::Slim
+                self.apply_ui_preset(if target_slim {
+                    UiSurfaces::lean()
                 } else {
-                    UiMode::Full
+                    UiSurfaces::full()
                 });
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
                     request: crate::control_runtime::ControlRequest::SetRuntimeMode {
@@ -6681,7 +6680,7 @@ pub async fn run_tui(
 
     // Default to slim/conversation-first startup. Operators can elevate
     // to the full harness via /ui full, /unshackle, or /warp.
-    app.set_ui_mode(UiMode::Slim);
+    app.apply_ui_preset(UiSurfaces::lean());
     if !app.settings().is_slim() {
         if let Ok(mut s) = app.settings.lock() {
             s.set_posture(crate::settings::PosturePreset::Explorator);
@@ -7530,16 +7529,12 @@ pub async fn run_tui(
                             app.set_focus_mode(!app.focus_mode);
                         }
 
-                        // Ctrl+G: UI full preset
+                        // Ctrl+G: cycle UI preset (lean → standard → full → lean)
                         (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
-                            app.set_ui_mode(UiMode::Full);
-                            app.show_toast("UI mode → full", ratatui_toaster::ToastType::Info);
-                        }
-
-                        // Ctrl+L: UI slim preset
-                        (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-                            app.set_ui_mode(UiMode::Slim);
-                            app.show_toast("UI mode → slim", ratatui_toaster::ToastType::Info);
+                            let next = app.ui_surfaces.next_preset();
+                            let name = next.preset_name();
+                            app.apply_ui_preset(next);
+                            app.show_toast(&format!("UI → {name}"), ratatui_toaster::ToastType::Info);
                         }
 
                         // Ctrl+D: toggle sidebar navigation mode (design tree)

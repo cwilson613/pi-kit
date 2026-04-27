@@ -239,7 +239,7 @@ pub fn all_static_names() -> Vec<&'static str> {
         mutation::MUTATION_REJECT,
         mutation::MUTATION_STATS,
     ]
-    // Total: 9+1+1+3+12+4+2+3+1+3+1+1+4+3+2+3+4 = 58
+    // Total: 9+1+2+3+12+4+2+3+1+3+1+1+1+4+3+2+3+4 = 59
 }
 
 #[cfg(test)]

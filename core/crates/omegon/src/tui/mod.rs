@@ -4010,15 +4010,21 @@ impl App {
         (
             "think",
             "set thinking level",
-            &["off", "low", "medium", "high"],
+            &["off", "minimal", "low", "medium", "high"],
         ),
         ("stats", "session telemetry", &[]),
-        ("bench", "performance metrics (RSS, tokens/turn, avg turn time)", &["perf"]),
+        ("bench", "performance metrics (RSS, tokens/turn, avg turn time)", &[]),
+        ("perf", "alias for /bench", &[]),
         ("new", "save current session and start fresh", &[]),
         (
             "detail",
-            "toggle tool display (compact/detailed)",
-            &["compact", "detailed"],
+            "tool output density (lean/compact/detailed/verbose)",
+            &["lean", "compact", "detailed", "verbose"],
+        ),
+        (
+            "density",
+            "alias for /detail",
+            &["lean", "compact", "detailed", "verbose"],
         ),
         (
             "context",
@@ -4088,7 +4094,7 @@ impl App {
         (
             "ui",
             "switch UI presets or toggle individual surfaces",
-            &["status", "full", "slim", "show", "hide", "toggle"],
+            &["status", "lean", "standard", "full", "slim", "show", "hide", "toggle"],
         ),
         ("shackle", "switch to slim constrained mode", &[]),
         ("unshackle", "switch to full harness mode", &[]),

@@ -29,7 +29,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
-- **Mutation system** — runtime observation of agent recovery patterns, token burn tracking, and impact evaluation bridge to the eval system. Ships in observation-only mode (`generate_artifacts = false`); skill and diagnostic generation is opt-in after signal validation. Includes `/mutation` slash command with `stats`, `review`, and `config` subcommands. Design spec at `docs/design/mutation-eval-bridge.md`.
+- **Mutation system** — runtime observation of agent recovery patterns, token burn tracking, and impact evaluation bridge to the eval system. Ships in observation-only mode (`generate_artifacts = false`); skill and diagnostic generation is opt-in after signal validation. Exposes `mutation_review`, `mutation_accept`, `mutation_reject`, and `mutation_stats` agent tools. Design spec at `docs/design/mutation-eval-bridge.md`.
 - **`ProgressSignal` enum in omegon-traits** — `Mutation`, `TargetedValidation`, `BroadValidation`, `ConstraintDiscovery`, `Commit`, `Completion`. Available to all features via `BusEvent::TurnEnd`.
 - **Behavioral signals on `BusEvent::TurnEnd`** — `dominant_phase` (OODA classification), `drift_kind` (multi-turn degradation), `progress_signal`. Previously only on `AgentEvent::TurnEnd` (for TUI/IPC); now accessible to all bus features.
 - **Slim-mode status line** — persistent 1-row telemetry bar between conversation and editor: context%, turn, model, session tokens, cwd, git branch, files r/w, OODA phase, drift warnings, persona. Fields shed right-to-left as terminal narrows. Never wraps.

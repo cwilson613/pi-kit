@@ -2,10 +2,10 @@
 # Install omegon from GitHub Releases.
 #
 # Usage:
-#   curl -fsSL https://omegon.styrene.dev/install.sh | sh
+#   curl -fsSL https://omegon.styrene.io/install.sh | sh
 #
 # Non-interactive:
-#   curl -fsSL https://omegon.styrene.dev/install.sh | sh -s -- --no-confirm
+#   curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --no-confirm
 #
 # Or directly from GitHub:
 #   curl -fsSL https://raw.githubusercontent.com/styrene-lab/omegon/main/install.sh | sh
@@ -46,7 +46,7 @@ for arg in "$@"; do
     --channel=*) CHANNEL="${arg#--channel=}" ;;
     --version=*) VERSION="${arg#--version=}" ;;
     --help|-h)
-      echo "Usage: curl -fsSL https://omegon.styrene.dev/install.sh | sh"
+      echo "Usage: curl -fsSL https://omegon.styrene.io/install.sh | sh"
       echo ""
       echo "Options (pass after 'sh -s --'):"
       echo "  --no-confirm        Skip interactive confirmation"
@@ -462,7 +462,7 @@ cat > "${RECEIPT_DIR}/install-receipt.json" 2>/dev/null <<EOF || true
   "versioned_binary": "${VERSION_DIR}/${BINARY}",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source": "https://github.com/${REPO}/releases/tag/${VERSION}",
-  "installer": "https://omegon.styrene.dev/install.sh",
+  "installer": "https://omegon.styrene.io/install.sh",
   "layout": "versioned"
 }
 EOF

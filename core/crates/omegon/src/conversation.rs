@@ -1816,11 +1816,12 @@ mod tests {
             Some("Fix the authentication bug in src/auth.rs")
         );
 
-        // Second user message should NOT overwrite the task
+        // Second user message DOES update the task — the latest prompt
+        // is always the current task (fixed: stale first-prompt bug).
         conv.push_user("Also fix the tests".into());
         assert_eq!(
             conv.intent.current_task.as_deref(),
-            Some("Fix the authentication bug in src/auth.rs")
+            Some("Also fix the tests")
         );
     }
 

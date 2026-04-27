@@ -470,30 +470,68 @@ impl ConversationView {
 
         // Consolidate: consecutive completed cards of the same tool name
         // merge into a single grouped card with tree-style entries.
-        // Density/expand controls how much detail each entry shows.
         if let (Some(ref name), Some(idx)) = (completed_name, completed_idx) {
             if idx > 0 && !is_error {
-                if let SegmentContent::ToolCard {
-                    name: ref prev_name,
-                    complete: true,
-                    is_error: false,
-                    detail_result: Some(ref mut prev_result),
-                    args_summary: ref mut prev_args_summary,
-                    ..
-                } = self.segments[idx - 1].content
-                {
-                    if *prev_name == *name {
-                        // Append this card's summary as a tree line in the previous card
+                // Check if the preceding segment is a completed non-error card
+                // of the same tool name. Allow predecessors with None detail_result.
+                let should_merge = matches!(
+                    &self.segments[idx - 1].content,
+                    SegmentContent::ToolCard {
+                        name: prev_name,
+                        complete: true,
+                        is_error: false,
+                        ..
+                    } if prev_name == name
+                );
+
+                if should_merge {
+                    // Grab the current card's full result before removing it
+                    let current_full_result = if let SegmentContent::ToolCard {
+                        detail_result: ref dr, ..
+                    } = self.segments[idx].content
+                    {
+                        dr.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+
+                    // Append to predecessor: one-liner summary + separator + full result
+                    if let SegmentContent::ToolCard {
+                        detail_result: ref mut prev_result_opt,
+                        args_summary: ref mut prev_args_summary,
+                        ..
+                    } = self.segments[idx - 1].content
+                    {
+                        let prev_result = prev_result_opt.get_or_insert_with(String::new);
                         if let Some(ref summary) = completed_summary {
                             prev_result.push('\n');
                             prev_result.push_str(&format!("  + {summary}"));
                         }
-                        // Update the args summary to show count
+                        // Append full result in a collapsible section so expand
+                        // doesn't lose content from merged cards.
+                        if !current_full_result.is_empty() {
+                            prev_result.push_str("\n--- merged entry ---\n");
+                            prev_result.push_str(&current_full_result);
+                        }
                         let count = prev_result.matches("\n  + ").count() + 1;
-                        *prev_args_summary =
-                            Some(format!("{name} ({count} operations)"));
-                        // Remove the duplicate card
-                        self.segments.remove(idx);
+                        *prev_args_summary = Some(format!("{name} ({count} operations)"));
+                    }
+
+                    // Remove the merged card and fix up indices
+                    self.segments.remove(idx);
+                    if let Some(ref mut p) = self.pinned_segment {
+                        if *p == idx {
+                            self.pinned_segment = None;
+                        } else if *p > idx {
+                            *p -= 1;
+                        }
+                    }
+                    if let Some(ref mut s) = self.selected_segment {
+                        if *s == idx {
+                            self.selected_segment = None;
+                        } else if *s > idx {
+                            *s -= 1;
+                        }
                     }
                 }
             }

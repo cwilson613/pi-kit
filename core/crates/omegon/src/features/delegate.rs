@@ -202,13 +202,16 @@ impl DelegateResultStore {
     /// Return the task description from the most recently created delegate,
     /// regardless of completion status. Used to substitute conversational
     /// non-tasks like "let's resume" with the actual prior work description.
+    /// Sorted by started_at to ensure deterministic ordering (HashMap
+    /// iteration order is nondeterministic).
     pub fn last_task_description(&self) -> Option<String> {
         let tasks = self.tasks.lock().unwrap();
-        tasks
+        let mut sorted: Vec<_> = tasks
             .values()
             .filter(|t| !is_conversational_non_task(&t.task_description))
-            .last()
-            .map(|t| t.task_description.clone())
+            .collect();
+        sorted.sort_by_key(|t| t.started_at);
+        sorted.last().map(|t| t.task_description.clone())
     }
 
     pub fn progress_snapshot(&self) -> DelegateProgress {
@@ -633,7 +636,8 @@ If blocked, say the blocker plainly.\n",
         mind: Option<&str>,
         session_model: Option<String>,
     ) -> anyhow::Result<String> {
-        let prompt_path = write_child_prompt_file(&self.cwd, ".delegate-prompt.md", prompt)?;
+        let prompt_file = format!(".delegate-prompt-{task_id}.md");
+        let prompt_path = write_child_prompt_file(&self.cwd, &prompt_file, prompt)?;
 
         let model = match runtime.model.clone() {
             Some(model) => model,
@@ -743,17 +747,30 @@ If blocked, say the blocker plainly.\n",
             let _ = child.kill().await;
         }
 
+        // Drain stdout concurrently before wait() to prevent deadlock.
+        // If the child writes more than the OS pipe buffer (16KB on macOS,
+        // 64KB on Linux), it blocks waiting for the parent to read. If
+        // the parent is waiting for the child to exit, that's a deadlock.
+        let stdout_handle = if let Some(mut stdout) = child.stdout.take() {
+            Some(tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = String::new();
+                let _ = stdout.read_to_string(&mut buf).await;
+                buf
+            }))
+        } else {
+            None
+        };
+
         let status = child
             .wait()
             .await
             .context("delegate child process failed to execute")?;
 
-        // Read stdout
-        let mut stdout_buf = String::new();
-        if let Some(mut stdout) = child.stdout.take() {
-            use tokio::io::AsyncReadExt;
-            let _ = stdout.read_to_string(&mut stdout_buf).await;
-        }
+        let stdout_buf = match stdout_handle {
+            Some(handle) => handle.await.unwrap_or_default(),
+            None => String::new(),
+        };
 
         // Timeout errors take priority over exit status
         if let Err(timeout_err) = io_result {
@@ -865,11 +882,6 @@ If blocked, say the blocker plainly.\n",
         let cwd = self.cwd.clone();
         let parent_model = session_model;
         let fail_counter = consecutive_failures;
-        // Pessimistic: increment counter synchronously before spawn so rapid-fire
-        // background delegates are blocked immediately. On success, reset to 0.
-        if let Ok(mut count) = fail_counter.lock() {
-            *count += 1;
-        }
         crate::task_spawn::spawn_best_effort_result("delegate-real-task", async move {
             let runner = DelegateRunner::new(cwd, store.clone());
             match runner
@@ -887,6 +899,10 @@ If blocked, say the blocker plainly.\n",
                     }
                 }
                 Err(err) => {
+                    // Only increment on actual failure, not pre-spawn.
+                    if let Ok(mut count) = fail_counter.lock() {
+                        *count += 1;
+                    }
                     store.update_task_status(
                         &task_id,
                         DelegateTaskStatus::Failed {
@@ -894,7 +910,6 @@ If blocked, say the blocker plainly.\n",
                         },
                         None,
                     );
-                    // Counter already incremented pre-spawn; no action needed.
                 }
             }
             Ok(())
@@ -1287,15 +1302,18 @@ impl Feature for DelegateFeature {
                 }
 
                 // Dedup: if an identical task already completed successfully,
-                // return the prior result instead of spawning again.
+                // tell the model it's done and to formulate a NEW task.
                 if let Some(prior_id) = self.result_store.find_completed_by_description(&task) {
                     if let Some(prior_task) = self.result_store.get_task(&prior_id) {
                         let result_text = prior_task.result.unwrap_or_else(|| "completed".into());
                         return Ok(ToolResult {
                             content: vec![ContentBlock::Text {
                                 text: format!(
-                                    "This task was already completed ({}). Result:\n{}",
-                                    prior_id, result_text
+                                    "This task was already completed ({prior_id}). Do NOT \
+                                     re-delegate the same task. If the user has given a new \
+                                     instruction, formulate a NEW task description that \
+                                     reflects what they asked for NOW, not the previous work.\n\n\
+                                     Previous result:\n{result_text}"
                                 ),
                             }],
                             details: serde_json::json!(null),
@@ -1563,9 +1581,11 @@ impl Feature for DelegateFeature {
                         .or_else(|| args.get("file"))
                         .and_then(|v| v.as_str());
                     if let Some(p) = path {
-                        if !self.parent_files_read.contains(&p.to_string()) {
-                            self.parent_files_read.push(p.to_string());
-                        }
+                        // Move to end on re-access so auto-scope reflects
+                        // recency, not first-seen order.
+                        let ps = p.to_string();
+                        self.parent_files_read.retain(|f| f != &ps);
+                        self.parent_files_read.push(ps);
                     }
                 }
                 return vec![];

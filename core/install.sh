@@ -153,19 +153,10 @@ if [ -z "$VERSION" ]; then
       step "Resolving latest ${CHANNEL} release..."
       RELEASE_JSON=$(curl -fsSL "${GITHUB_API}/releases" 2>/dev/null) || \
         die "could not reach GitHub API. Check your network connection."
-      VERSION=$(printf '%s' "$RELEASE_JSON" | python3 -c '
-import json, sys
-channel = sys.argv[1]
-releases = json.load(sys.stdin)
-for rel in releases:
-    tag = rel.get("tag_name", "")
-    if channel == "rc" and rel.get("prerelease") and "-rc." in tag:
-        print(tag)
-        break
-    if channel == "nightly" and rel.get("prerelease") and "-nightly." in tag:
-        print(tag)
-        break
-' "$CHANNEL")
+      # Pure shell — no python dependency. Extracts the first prerelease
+      # tag_name containing the channel marker (-rc. or -nightly.).
+      MARKER="-${CHANNEL}."
+      VERSION=$(printf '%s' "$RELEASE_JSON" | grep -o '"tag_name": *"[^"]*'"${MARKER}"'[^"]*"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
       ;;
     *)
       die "unsupported CHANNEL: $CHANNEL (expected stable, rc, or nightly)"

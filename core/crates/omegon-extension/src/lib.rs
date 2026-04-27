@@ -4,6 +4,31 @@
 //! Extension developers depend on this crate with a locked version matching their
 //! target Omegon release. The version constraint ensures compatibility.
 //!
+//! # Getting Started
+//!
+//! The fastest path to a working extension:
+//!
+//! ```bash
+//! omegon extension init my-extension
+//! cd my-extension
+//! cargo build --release
+//! omegon extension install .
+//! ```
+//!
+//! This scaffolds a v1 extension with one tool and a manifest. Start there,
+//! then read on for the full SDK surface.
+//!
+//! # Which Protocol Version?
+//!
+//! - **v1** — start here. Your extension responds to requests from Omegon.
+//!   One trait, one `serve()` call. Covers tools, widgets, and resources.
+//! - **v2** — use this when your extension needs to talk *back* to the host:
+//!   progress notifications, sampling requests, or reading host state.
+//!   Adds [`HostProxy`] and [`serve_v2()`].
+//!
+//! If you're unsure, use v1. You can migrate to v2 later by adding
+//! `on_initialized()` and switching `serve()` to `serve_v2()`.
+//!
 //! # Safety Model
 //!
 //! Extensions run in isolated processes (either native binaries or OCI containers).
@@ -14,13 +39,6 @@
 //! 3. **RPC isolation** — all communication is via JSON-RPC over stdin/stdout
 //! 4. **Timeout enforcement** — RPC calls have hard timeouts
 //! 5. **Type safety** — Rust serde validation on every message
-//!
-//! # Protocol Versions
-//!
-//! - **v1**: Unidirectional (host → extension requests, extension → host responses).
-//!   Use [`serve()`] for v1 extensions.
-//! - **v2**: Bidirectional communication. Extensions can send notifications and
-//!   requests back to the host via [`HostProxy`]. Use [`serve_v2()`] for v2 extensions.
 //!
 //! # Building a v1 Extension
 //!

@@ -149,12 +149,19 @@ impl EventBus {
 
         if slim_mode {
             // om/slim: additionally suppress delegation, orchestration,
-            // and heavyweight surfaces beyond the base defaults.
+            // lifecycle surfaces, and heavyweight tools beyond the base
+            // defaults.  Hiding design_tree and openspec from the tool
+            // list means the LLM cannot reference concepts the operator
+            // hasn't learned yet (Cruise zone — see
+            // design/junior-onramp-progressive-disclosure.md).
             disabled.insert(reg::delegate::DELEGATE.into());
             disabled.insert(reg::delegate::DELEGATE_RESULT.into());
             disabled.insert(reg::delegate::DELEGATE_STATUS.into());
             disabled.insert(reg::cleave::CLEAVE_ASSESS.into());
             disabled.insert(reg::cleave::CLEAVE_RUN.into());
+            disabled.insert(reg::lifecycle::DESIGN_TREE.into());
+            disabled.insert(reg::lifecycle::DESIGN_TREE_UPDATE.into());
+            disabled.insert(reg::lifecycle::OPENSPEC_MANAGE.into());
             disabled.insert(reg::local_inference::LIST_LOCAL_MODELS.into());
             disabled.insert(reg::local_inference::MANAGE_OLLAMA.into());
             disabled.insert(reg::core::SERVE.into());

@@ -4194,8 +4194,15 @@ impl App {
 
         match cmd {
             "help" => {
+                let show_all = args == "all";
+                let slim =
+                    !show_all && self.settings.lock().ok().is_some_and(|s| s.is_slim());
+                // Harness-lifecycle commands hidden in slim/Cruise zone.
+                const SLIM_HIDDEN: &[&str] =
+                    &["tree", "cleave", "delegate", "milestone", "shackle", "unshackle"];
                 let lines: Vec<String> = Self::COMMANDS
                     .iter()
+                    .filter(|(n, _, _)| !slim || !SLIM_HIDDEN.contains(n))
                     .map(|(n, d, subs)| {
                         if subs.is_empty() {
                             format!("  /{n:<12} {d}")
@@ -4204,8 +4211,13 @@ impl App {
                         }
                     })
                     .collect();
+                let suffix = if slim {
+                    " /help all for full list."
+                } else {
+                    ""
+                };
                 SlashResult::Display(format!(
-                    "Commands:\n{}\n\nType / to browse. Tab completes.",
+                    "Commands:\n{}\n\nType / to browse. Tab completes.{suffix}",
                     lines.join("\n")
                 ))
             }

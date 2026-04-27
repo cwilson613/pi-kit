@@ -18,8 +18,13 @@ import { snippet } from "../../lib/snippets";
     See <a href="/docs/install">Installation</a> for all options.
   </p>
   <p>
-    <code>om</code> starts the slim terminal-first posture: conversation-first, copy-friendly, and lower-pressure by default.
+    <code>om</code> starts in slim mode: you get the core coding loop — prompt, edit, validate — with
+    project memory working in the background. Design tree, OpenSpec, and parallel execution are
+    there when you need them, but they stay out of the way until you ask.
+  </p>
+  <p>
     Launch <code>omegon</code> instead if you want the full harness surfaces immediately.
+    You can always switch live with <code>/warp</code>, or peek at everything with <code>/help all</code>.
   </p>
 
   <h2>2. Your first prompt</h2>
@@ -65,13 +70,20 @@ import { snippet } from "../../lib/snippets";
 
   <h2>6. Multi-file changes</h2>
   <p>
-    For substantial work, Omegon can assess complexity and decompose it into parallel worktree children:
+    When a task spans multiple files, Omegon can decompose it into parallel branches — each
+    running in an isolated git worktree. This is <strong>cleave</strong>, and it's available
+    in full mode (<code>omegon</code>) or after <code>/warp</code> from slim mode.
   </p>
   <pre><code>Refactor the auth module to support OAuth2 PKCE flow
 
 # If warranted, Omegon will recommend /cleave.
 # You can also trigger it explicitly:
 {snippet("slash.cleave")}</code></pre>
+  <p>
+    If you started with <code>om</code>, cleave isn't shown in <code>/help</code> — that's intentional.
+    Type <code>/cleave</code> directly or <code>/warp</code> to switch to full mode when you're
+    ready for orchestration.
+  </p>
 
   <h2>7. Browser surfaces</h2>
   <pre><code>{snippet("slash.auspex_open")}</code></pre>
@@ -89,11 +101,14 @@ import { snippet } from "../../lib/snippets";
 {snippet("slash.tutorial_demo")}   # scripted showcase path</code></pre>
 
   <h2>Next steps</h2>
+  <p>Explore at your own pace. Each step builds on the last:</p>
   <ul>
-    <li><a href="/docs/tutorial">Interactive Tutorial</a> — guided current-project or showcase walkthrough</li>
+    <li><a href="/docs/tutorial">Interactive Tutorial</a> — guided walkthrough of the coding loop, memory, and more</li>
+    <li><a href="/docs/commands">Command Reference</a> — every slash command (<code>/help all</code> in-session)</li>
     <li><a href="/docs/providers">Providers</a> — auth modes, boundaries, and runtime identity</li>
-    <li><a href="/docs/tui">TUI &amp; Dashboard</a> — understand the footer, segments, and controls</li>
-    <li><a href="/docs/commands">Command Reference</a> — all slash commands</li>
+    <li><a href="/docs/design-tree">Design Tree</a> — structured architecture exploration (full mode)</li>
+    <li><a href="/docs/cleave">Cleave Orchestrator</a> — parallel multi-file execution (full mode)</li>
+    <li><a href="/docs/openspec">OpenSpec</a> — spec-driven development lifecycle (full mode)</li>
     <li><a href="/docs/faq">FAQ</a> — common questions, direct answers</li>
   </ul>
 </Docs>

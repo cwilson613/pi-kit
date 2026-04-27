@@ -4,7 +4,32 @@ The Omegon Extension SDK (`omegon-extension` crate) provides a safe, versioned i
 
 **Core principle:** Extension failures must not crash Omegon. Safety is enforced at install time and runtime.
 
-## Quick Start
+## Fastest Path
+
+```bash
+omegon extension init my-extension
+cd my-extension
+cargo build --release
+omegon extension install .
+```
+
+This scaffolds a working v1 extension with one tool and a manifest. Edit `src/main.rs` to add your logic. Done.
+
+## v1 vs v2 — Which Protocol?
+
+| | v1 | v2 |
+|---|---|---|
+| **Direction** | Host → extension only | Bidirectional |
+| **Entry point** | `serve(ext)` | `serve_v2(ext)` |
+| **Use when** | You provide tools, widgets, or resources | You need to send progress notifications, request sampling, or read host state |
+| **Complexity** | One trait, one function | Adds `HostProxy` + `on_initialized()` callback |
+| **Start here?** | Yes | Migrate from v1 when you need it |
+
+If you're building your first extension, use v1. You can switch to v2 later by adding `on_initialized()` and changing `serve()` to `serve_v2()`.
+
+## Quick Start (Manual Setup)
+
+If you prefer to set up the project yourself instead of using `omegon extension init`:
 
 ### 1. Create a new Rust project
 

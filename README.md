@@ -73,16 +73,15 @@ om
 
 Omegon now installs two standard entrypoints from the same binary:
 
-- `om` — slim, copy-friendly, familiar terminal mode
-- `omegon` — full harness mode
+- `om` — slim mode: prompt, edit, validate. The agent sees core coding tools only — no design tree, no OpenSpec, no cleave. Memory works normally. `/help` shows the essentials; `/help all` reveals everything.
+- `omegon` — full harness mode: design tree, OpenSpec lifecycle, parallel cleave execution, delegation, and the full dashboard.
 
-You can move between them interactively at runtime:
+Start with `om`. When you're ready for more, shift up:
 
 - `/warp` — toggle slim ↔ full
-- `/shackle` — force slim (`om`) mode
-- `/unshackle` — force full (`omegon`) mode
+- `/help all` — see every command without switching mode
 
-Flags still override the entrypoint default when you need the opposite posture:
+Flags override the entrypoint default when you need the opposite posture:
 
 ```sh
 om --full

@@ -3,6 +3,12 @@ import Docs from "../../layouts/Docs.astro";
 ---
 <Docs title="OpenSpec Lifecycle" description="Spec-driven development: propose, specify, execute, verify, archive. Write specs before code.">
   <h1>OpenSpec Lifecycle</h1>
+  <p class="discovery-note">
+    <strong>Discovery path:</strong> OpenSpec is a full-mode feature. In <code>om</code> (slim mode),
+    the agent won't reference it. When you want spec-driven development — defining acceptance
+    criteria before writing code — type <code>/opsx:propose</code> directly or <code>/warp</code>
+    to switch to full mode.
+  </p>
   <p>
     OpenSpec is the spec-driven development system in Omegon. Specs define what must be true
     <em>before</em> code is written — they are the source of truth for correctness. The full

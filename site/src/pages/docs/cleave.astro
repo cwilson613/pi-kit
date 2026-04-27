@@ -3,6 +3,13 @@ import Docs from "../../layouts/Docs.astro";
 ---
 <Docs title="Cleave Orchestrator" description="Parallel task execution via git worktrees with automatic merge, conflict detection, and adversarial review.">
   <h1>Cleave Orchestrator</h1>
+  <p class="discovery-note">
+    <strong>Discovery path:</strong> Cleave is a full-mode feature. In <code>om</code> (slim mode),
+    the agent won't suggest it and it doesn't appear in <code>/help</code>. When you hit a task
+    that spans many files, type <code>/cleave</code> directly or <code>/warp</code> to switch to
+    full mode. Cleave shines on multi-file parallel work — for single-file changes, the standard
+    edit loop is faster.
+  </p>
   <p>
     Cleave decomposes complex tasks into independent subtasks and executes them in parallel
     across isolated git worktree branches. Each child runs in its own worktree with its own

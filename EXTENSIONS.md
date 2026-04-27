@@ -2,6 +2,19 @@
 
 This document provides an overview of Omegon's extension system — how it works, what's available for developers, and how to build extensions.
 
+## Build your first extension in 60 seconds
+
+```bash
+omegon extension init my-extension
+cd my-extension
+cargo build --release
+omegon extension install .
+```
+
+That's it. You have a working extension with one tool. Edit `src/main.rs` to add your logic.
+
+For the full SDK reference, see [EXTENSION_SDK.md](EXTENSION_SDK.md). For advanced patterns (widgets, state management, v2 bidirectional protocol), see [EXTENSION_INTEGRATION.md](EXTENSION_INTEGRATION.md).
+
 ## Overview
 
 Omegon's extension system allows third-party developers to add tools, widgets, and features without modifying the core codebase or coupling to its release cycle.

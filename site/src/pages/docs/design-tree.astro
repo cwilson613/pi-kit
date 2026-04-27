@@ -3,6 +3,11 @@ import Docs from "../../layouts/Docs.astro";
 ---
 <Docs title="Design Tree" description="A knowledge graph tracking architecture decisions, dependencies, and implementation status.">
   <h1>Design Tree</h1>
+  <p class="discovery-note">
+    <strong>Discovery path:</strong> If you're using <code>om</code> (slim mode), the design tree tools
+    are available but not shown in <code>/help</code>. Type <code>/tree</code> to explore your design nodes
+    directly, or <code>/warp</code> to switch to full mode where the design tree is part of the default surface.
+  </p>
   <p>
     The design tree is a markdown-backed knowledge graph for tracking architecture exploration.
     Each node is a markdown file in <code>docs/</code> with structured sections: overview,

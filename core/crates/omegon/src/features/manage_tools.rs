@@ -47,6 +47,10 @@ pub static TOOL_GROUPS: &[(&str, &[&str])] = &[
             "set_thinking_level",
         ],
     ),
+    (
+        "harness-lifecycle",
+        &["design_tree", "design_tree_update", "openspec_manage"],
+    ),
 ];
 
 pub struct ManageTools {

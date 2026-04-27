@@ -5337,9 +5337,17 @@ async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
             )
             .await
         }
+        "opencode-go" => {
+            login_api_key(
+                "opencode-go",
+                "OPENCODE_GO_API_KEY",
+                "https://opencode.ai/go",
+            )
+            .await
+        }
         _ => {
             eprintln!(
-                "Unknown provider: {provider}. Use: anthropic, openai, openai-codex, google, google-antigravity, openrouter, ollama-cloud"
+                "Unknown provider: {provider}. Use: anthropic, openai, openai-codex, google, google-antigravity, openrouter, opencode-go, ollama-cloud"
             );
             std::process::exit(1);
         }

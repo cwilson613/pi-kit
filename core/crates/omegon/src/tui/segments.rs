@@ -596,6 +596,7 @@ impl Segment {
                     area,
                     buf,
                     t,
+                    mode,
                 );
             }
             SystemNotification { text } => render_system(text, area, buf, t, mode),
@@ -1187,6 +1188,7 @@ fn render_tool_card(
     area: Rect,
     buf: &mut Buffer,
     t: &dyn Theme,
+    mode: SegmentRenderMode,
 ) {
     let summarize_change_args = |args: &str| -> Option<String> {
         let v = serde_json::from_str::<serde_json::Value>(args).ok()?;
@@ -1361,14 +1363,27 @@ fn render_tool_card(
         spans
     };
 
-    let card_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color).bg(bg))
-        .title_top(title)
-        .title_top(Line::from(right_title_spans).right_aligned())
-        .padding(Padding::horizontal(1))
-        .style(Style::default().bg(bg));
+    let card_block = if matches!(mode, SegmentRenderMode::Slim) {
+        // Slim: top border only, no side borders — maximizes terminal
+        // text selection width and avoids │ chars in copied text.
+        Block::default()
+            .borders(Borders::TOP)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(border_color).bg(bg))
+            .title_top(title)
+            .title_top(Line::from(right_title_spans).right_aligned())
+            .padding(Padding::horizontal(0))
+            .style(Style::default().bg(bg))
+    } else {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(border_color).bg(bg))
+            .title_top(title)
+            .title_top(Line::from(right_title_spans).right_aligned())
+            .padding(Padding::horizontal(1))
+            .style(Style::default().bg(bg))
+    };
 
     let card_inner = card_block.inner(area);
     card_block.render(area, buf);

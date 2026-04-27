@@ -1065,7 +1065,7 @@ impl App {
             awaiting_continuation: false,
             login_prompt_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             keyboard_enhancement: false,
-            mouse_capture_enabled: true,
+            mouse_capture_enabled: false,
             terminal_copy_mode: false,
             last_left_click: None,
             extension_widgets: std::collections::HashMap::new(),
@@ -6566,9 +6566,9 @@ pub async fn run_tui(
     io::stdout().execute(crossterm::terminal::Clear(
         crossterm::terminal::ClearType::All,
     ))?;
-    // Default to mouse interaction mode — scroll, click, pane targeting.
-    // Terminal-native selection remains available via /mouse off.
-    io::stdout().execute(EnableMouseCapture)?;
+    // Mouse capture OFF by default — terminal-native text selection must
+    // always work. Scroll via Shift+Up/Down, PageUp/PageDown.
+    // /mouse on available for click/scroll interaction when needed.
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
 
     // Enable Kitty keyboard protocol when the terminal supports it.

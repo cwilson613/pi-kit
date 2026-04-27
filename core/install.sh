@@ -449,6 +449,20 @@ else
     die "could not create symlink at ${INSTALL_TARGET}"
 fi
 
+# ── Create `om` convenience symlink (slim mode entrypoint) ───
+OM_TARGET="${INSTALL_DIR}/om"
+if [ "$NEEDS_SUDO" = true ]; then
+  if [ -e "$OM_TARGET" ] || [ -L "$OM_TARGET" ]; then
+    sudo rm -f "$OM_TARGET"
+  fi
+  sudo ln -s "${VERSION_DIR}/${BINARY}" "$OM_TARGET" 2>/dev/null || true
+else
+  if [ -e "$OM_TARGET" ] || [ -L "$OM_TARGET" ]; then
+    rm -f "$OM_TARGET"
+  fi
+  ln -s "${VERSION_DIR}/${BINARY}" "$OM_TARGET" 2>/dev/null || true
+fi
+
 # ── Write install receipt ─────────────────────────────────────
 
 mkdir -p "$RECEIPT_DIR" 2>/dev/null || true

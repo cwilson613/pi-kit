@@ -1028,31 +1028,29 @@ impl DelegateFeature {
         }
     }
 
-    /// Return the most recent substantive user prompt (>10 chars, not the
-    /// first throwaway message if it was short). Used to substitute when
-    /// the model grabs a stale early message as a delegate task.
-    fn latest_substantive_prompt(&self) -> Option<&str> {
+    /// Return the most recent substantive user prompt (>10 chars) that
+    /// differs from `exclude`. Used to find a real task when the model
+    /// echoed a user prompt as the delegate task.
+    fn latest_substantive_prompt_excluding(&self, exclude: &str) -> Option<&str> {
+        let exclude_lower = exclude.trim().to_ascii_lowercase();
         self.user_prompts
             .iter()
             .rev()
-            .find(|p| p.len() > 10)
+            .find(|p| {
+                p.len() > 10 && p.trim().to_ascii_lowercase() != exclude_lower
+            })
             .map(|s| s.as_str())
     }
 
-    /// Check if a delegate task is echoing a user prompt from earlier in the
-    /// session instead of reflecting the current instruction. Uses substring
-    /// containment (not exact match) because the model often reformulates
-    /// slightly. Only checks prompts that are NOT the most recent one — the
-    /// model should be acting on the latest instruction, not earlier ones.
-    fn is_stale_user_echo(&self, task: &str) -> bool {
+    /// Check if a delegate task is echoing ANY user prompt — current or past.
+    /// The model should never pass the user's exact words as a delegate task.
+    /// It should synthesize a concrete, actionable instruction from context.
+    fn is_user_prompt_echo(&self, task: &str) -> bool {
         let lower = task.trim().to_ascii_lowercase();
-        if lower.is_empty() || self.user_prompts.len() < 2 {
+        if lower.is_empty() || self.user_prompts.is_empty() {
             return false;
         }
-        // Check all prompts EXCEPT the most recent one.
-        // If the delegate task matches an older prompt, it's stale.
-        let older_prompts = &self.user_prompts[..self.user_prompts.len() - 1];
-        for prompt in older_prompts {
+        for prompt in &self.user_prompts {
             let prompt_lower = prompt.trim().to_ascii_lowercase();
             if prompt_lower.is_empty() {
                 continue;
@@ -1303,8 +1301,8 @@ impl Feature for DelegateFeature {
                 // Detect when the model parrots a stale user message (e.g., the
                 // user's initial "testing" or "hello") as the delegate task.
                 // Substitute with the most recent substantive user instruction.
-                let task = if self.is_stale_user_echo(&task) {
-                    if let Some(recent) = self.latest_substantive_prompt() {
+                let task = if self.is_user_prompt_echo(&task) {
+                    if let Some(recent) = self.latest_substantive_prompt_excluding(&task) {
                         tracing::info!(
                             original = %task,
                             substituted = %recent,
@@ -1331,7 +1329,7 @@ impl Feature for DelegateFeature {
                             "Substituted conversational delegate task with last task description"
                         );
                         prior
-                    } else if let Some(recent) = self.latest_substantive_prompt() {
+                    } else if let Some(recent) = self.latest_substantive_prompt_excluding(&task) {
                         tracing::info!(
                             original = %task,
                             substituted = %recent,

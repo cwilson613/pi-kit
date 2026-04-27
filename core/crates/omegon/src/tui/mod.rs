@@ -2913,14 +2913,15 @@ impl App {
         // Render content based on active tab
         if self.conversation.tabs.is_conversation_active() {
             // Render conversation widget (can mutate conv_state via frame.render_stateful_widget)
+            let density = self.settings().tool_detail;
             let (segments, conv_state) = self.conversation.segments_and_state();
-            let conv_widget = conv_widget::ConversationWidget::new(segments, t.as_ref()).with_mode(
-                if matches!(self.ui_mode, UiMode::Slim) {
+            let conv_widget = conv_widget::ConversationWidget::new(segments, t.as_ref())
+                .with_mode(if matches!(self.ui_mode, UiMode::Slim) {
                     SegmentRenderMode::Slim
                 } else {
                     SegmentRenderMode::Full
-                },
-            );
+                })
+                .with_density(density);
             frame.render_stateful_widget(conv_widget, content_area, conv_state);
         } else {
             // Render extension widget with schema-aware formatting
@@ -4455,26 +4456,19 @@ impl App {
                 }
             }
 
-            "detail" => {
+            "detail" | "density" => {
                 if args.is_empty() {
-                    // Toggle
+                    // Cycle through density levels
                     let current = self.settings().tool_detail;
-                    let next = match current {
-                        crate::settings::ToolDetail::Compact => {
-                            crate::settings::ToolDetail::Detailed
-                        }
-                        crate::settings::ToolDetail::Detailed => {
-                            crate::settings::ToolDetail::Compact
-                        }
-                    };
+                    let next = current.next();
                     self.update_settings(|s| s.tool_detail = next);
-                    SlashResult::Display(format!("Tool display → {}", next.as_str()))
+                    SlashResult::Display(format!("Tool density → {}", next.as_str()))
                 } else if let Some(mode) = crate::settings::ToolDetail::parse(args) {
                     self.update_settings(|s| s.tool_detail = mode);
-                    SlashResult::Display(format!("Tool display → {}", mode.as_str()))
+                    SlashResult::Display(format!("Tool density → {}", mode.as_str()))
                 } else {
                     SlashResult::Display(format!(
-                        "Unknown mode: {args}. Options: compact, detailed"
+                        "Unknown density: {args}. Options: lean, compact, detailed, verbose"
                     ))
                 }
             }

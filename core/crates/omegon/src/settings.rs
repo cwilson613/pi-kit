@@ -362,29 +362,96 @@ fn default_clipboard_retention_hours() -> u64 {
     24
 }
 
-/// Tool card display mode in the conversation view.
+/// Tool card information density in the conversation view.
+///
+/// Controls how much tool call output is shown by default. Interactive
+/// expand (Ctrl+O) overrides this for individual cards.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolDetail {
-    /// Single-line cards with truncated args + result preview.
+    /// One-liner per tool: `▸ read src/main.rs → ok`. No args, no output.
+    /// Claude Code style. Ctrl+O to expand individual cards.
+    Lean,
+    /// 2-3 lines: name + summary arg + short result preview.
     Compact,
-    /// Bordered cards showing full command + output (first 8 lines).
+    /// Current default: 4 lines args, 12 lines results, diffs shown.
     #[default]
     Detailed,
+    /// Full output: 50 lines args, 200 lines results. For debugging.
+    Verbose,
 }
 
 impl ToolDetail {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Lean => "lean",
             Self::Compact => "compact",
             Self::Detailed => "detailed",
+            Self::Verbose => "verbose",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
+            "lean" | "l" | "tree" | "minimal" => Some(Self::Lean),
             "compact" | "c" => Some(Self::Compact),
-            "detailed" | "detail" | "d" | "verbose" | "v" => Some(Self::Detailed),
+            "detailed" | "detail" | "d" => Some(Self::Detailed),
+            "verbose" | "v" | "full" | "debug" => Some(Self::Verbose),
             _ => None,
+        }
+    }
+
+    /// Max lines of tool args to display.
+    pub fn args_budget(&self) -> usize {
+        match self {
+            Self::Lean => 0,
+            Self::Compact => 1,
+            Self::Detailed => 4,
+            Self::Verbose => 50,
+        }
+    }
+
+    /// Max lines of tool result to display.
+    pub fn result_budget(&self) -> usize {
+        match self {
+            Self::Lean => 0,
+            Self::Compact => 3,
+            Self::Detailed => 12,
+            Self::Verbose => 200,
+        }
+    }
+
+    /// Max lines of diff content to display.
+    pub fn diff_budget(&self) -> usize {
+        match self {
+            Self::Lean => 0,
+            Self::Compact => 3,
+            Self::Detailed => 8,
+            Self::Verbose => 200,
+        }
+    }
+
+    /// Max lines of live tail output.
+    pub fn tail_budget(&self) -> usize {
+        match self {
+            Self::Lean => 3,
+            Self::Compact => 6,
+            Self::Detailed => 12,
+            Self::Verbose => 50,
+        }
+    }
+
+    /// Whether to show the args summary line.
+    pub fn show_summary(&self) -> bool {
+        true // always show — it's the minimal one-liner
+    }
+
+    /// Next density level (for cycling with /density toggle).
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Lean => Self::Compact,
+            Self::Compact => Self::Detailed,
+            Self::Detailed => Self::Verbose,
+            Self::Verbose => Self::Lean,
         }
     }
 }

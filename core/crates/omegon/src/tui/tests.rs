@@ -1125,6 +1125,7 @@ fn slim_mode_renders_without_side_gutters_for_copyable_wrapped_lines() {
                 frame.buffer_mut(),
                 &crate::tui::theme::Alpharius,
                 crate::tui::segments::SegmentRenderMode::Slim,
+                crate::settings::ToolDetail::Detailed,
             );
         })
         .unwrap();

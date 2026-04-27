@@ -184,6 +184,7 @@ pub struct ConversationWidget<'a> {
     segments: &'a [Segment],
     theme: &'a dyn Theme,
     mode: SegmentRenderMode,
+    density: crate::settings::ToolDetail,
 }
 
 impl<'a> ConversationWidget<'a> {
@@ -192,11 +193,17 @@ impl<'a> ConversationWidget<'a> {
             segments,
             theme,
             mode: SegmentRenderMode::Full,
+            density: crate::settings::ToolDetail::Detailed,
         }
     }
 
     pub fn with_mode(mut self, mode: SegmentRenderMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    pub fn with_density(mut self, density: crate::settings::ToolDetail) -> Self {
+        self.density = density;
         self
     }
 }
@@ -284,7 +291,7 @@ impl<'a> StatefulWidget for ConversationWidget<'a> {
                     width: area.width,
                     height: seg_height.min(available_height),
                 };
-                segment.render(seg_area, buf, self.theme, self.mode);
+                segment.render(seg_area, buf, self.theme, self.mode, self.density);
             } else {
                 // Segment starts ABOVE the viewport — partially visible.
                 // Render into a temp buffer at full size, then copy the
@@ -308,7 +315,7 @@ impl<'a> StatefulWidget for ConversationWidget<'a> {
                         cell.set_fg(fg);
                     }
                 }
-                segment.render(temp_area, &mut temp_buf, self.theme, self.mode);
+                segment.render(temp_area, &mut temp_buf, self.theme, self.mode, self.density);
 
                 // Copy the visible portion from temp_buf to main buf
                 for row in 0..visible_rows {

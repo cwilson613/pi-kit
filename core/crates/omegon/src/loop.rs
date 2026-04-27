@@ -990,8 +990,13 @@ pub async fn run(
                 omegon_traits::BusRequest::InjectSystemMessage { content } => {
                     conversation.push_user(format!("[System: {content}]"));
                 }
+                omegon_traits::BusRequest::RequestAggressiveDecay => {
+                    tracing::info!("Bus: tier 1 aggressive decay requested");
+                    conversation.tighten_decay();
+                    bus.emit(&omegon_traits::BusEvent::Compacted);
+                }
                 omegon_traits::BusRequest::RequestCompaction => {
-                    tracing::info!("Bus: compaction requested by feature");
+                    tracing::info!("Bus: tier 2 compaction requested by feature");
                     if let Some((payload, _evict_count)) = conversation.build_compaction_payload() {
                         match compact_via_llm(bridge, &payload, &base_stream_options).await {
                             Ok(summary) => {
@@ -1120,7 +1125,8 @@ pub async fn run(
             omegon_traits::BusRequest::InjectSystemMessage { content } => {
                 tracing::debug!("post-loop InjectSystemMessage ignored (loop complete): {content}");
             }
-            omegon_traits::BusRequest::RequestCompaction => {
+            omegon_traits::BusRequest::RequestCompaction
+            | omegon_traits::BusRequest::RequestAggressiveDecay => {
                 tracing::info!("Bus requested compaction (post-loop — ignored)");
             }
             omegon_traits::BusRequest::RefreshHarnessStatus => {}

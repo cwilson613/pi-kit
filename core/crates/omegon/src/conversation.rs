@@ -281,6 +281,11 @@ pub struct ConversationState {
     /// Compaction summary — if set, injected as the first message after compaction.
     /// Replaces evicted messages so the LLM has continuity.
     compaction_summary: Option<String>,
+
+    /// Cached token estimate — invalidated on any mutation to canonical history.
+    /// Avoids rebuilding the full LLM view 12x/turn for budget checks.
+    /// Stores (message_count_at_compute_time, token_estimate).
+    token_cache: std::cell::Cell<Option<(usize, usize)>>,
 }
 
 impl ConversationState {
@@ -289,6 +294,7 @@ impl ConversationState {
             canonical: Vec::new(),
             slim_mode: false,
             intent: IntentDocument::default(),
+            token_cache: std::cell::Cell::new(None),
             decay_window: 10,
             referenced_turns: std::collections::HashSet::new(),
             compaction_summary: None,
@@ -301,10 +307,25 @@ impl ConversationState {
 
     /// Estimate token count of the LLM-facing view (chars / 4 heuristic).
     /// Good enough for budget decisions — not a precise tokenizer.
+    /// Cached by canonical message count — invalidated on any mutation.
     pub fn estimate_tokens(&self) -> usize {
+        let msg_count = self.canonical.len();
+        if let Some((cached_count, cached_tokens)) = self.token_cache.get() {
+            if cached_count == msg_count {
+                return cached_tokens;
+            }
+        }
         let view = self.build_llm_view();
         let chars: usize = view.iter().map(|m| m.char_count()).sum();
-        chars / 4
+        let tokens = chars / 4;
+        self.token_cache.set(Some((msg_count, tokens)));
+        tokens
+    }
+
+    /// Invalidate the cached token estimate. Called after any mutation
+    /// to the canonical history (push, decay, compact, etc.).
+    fn invalidate_token_cache(&self) {
+        self.token_cache.set(None);
     }
 
     /// Check if compaction is needed given a context budget.
@@ -373,6 +394,7 @@ impl ConversationState {
     pub fn decay_oldest(&mut self, count: usize) {
         let remove = count.min(self.canonical.len());
         self.canonical.drain(..remove);
+        self.invalidate_token_cache();
         tracing::info!(
             removed = remove,
             remaining = self.canonical.len(),
@@ -385,6 +407,38 @@ impl ConversationState {
         self.canonical.len()
     }
 
+    /// Tier 1 compaction: tighten the decay window and strip thinking blocks
+    /// from older messages. No LLM call — pure Rust operation.
+    pub fn tighten_decay(&mut self) {
+        let current_turn = self.intent.stats.turns;
+        let tight_window = 4u32;
+
+        // Strip extended thinking from all messages older than 2 turns
+        for msg in &mut self.canonical {
+            if current_turn.saturating_sub(msg.turn()) > 2 {
+                if let AgentMessage::Assistant(assistant, _) = msg {
+                    if assistant.thinking.as_ref().is_some_and(|t| !t.is_empty()) {
+                        assistant.thinking = None;
+                    }
+                }
+            }
+        }
+
+        // Decay messages beyond the tight window
+        let before = self.canonical.len();
+        self.canonical
+            .retain(|m| current_turn.saturating_sub(m.turn()) <= tight_window);
+        let removed = before - self.canonical.len();
+        self.invalidate_token_cache();
+        if removed > 0 {
+            tracing::info!(
+                removed,
+                remaining = self.canonical.len(),
+                "Tier 1 aggressive decay applied"
+            );
+        }
+    }
+
     pub fn apply_compaction(&mut self, summary: String) {
         let current_turn = self.intent.stats.turns;
         // Remove all messages older than the decay window
@@ -392,6 +446,7 @@ impl ConversationState {
             .retain(|m| current_turn.saturating_sub(m.turn()) <= self.decay_window as u32);
         self.compaction_summary = Some(summary);
         self.intent.stats.compactions += 1;
+        self.invalidate_token_cache();
         tracing::info!(
             compactions = self.intent.stats.compactions,
             remaining_messages = self.canonical.len(),
@@ -458,6 +513,7 @@ impl ConversationState {
         }
         self.canonical
             .push(AgentMessage::User { text, images, turn });
+        self.invalidate_token_cache();
     }
 
     pub fn push_assistant(&mut self, msg: AssistantMessage) {
@@ -466,6 +522,7 @@ impl ConversationState {
         // that appear in recent tool results. Referenced results decay slower.
         self.track_references(&msg.text);
         self.canonical.push(AgentMessage::Assistant(msg, turn));
+        self.invalidate_token_cache();
     }
 
     /// Scan assistant text for references to recent tool results.
@@ -531,6 +588,7 @@ impl ConversationState {
     pub fn push_tool_result(&mut self, result: ToolResultEntry) {
         let turn = self.intent.stats.turns;
         self.canonical.push(AgentMessage::ToolResult(result, turn));
+        self.invalidate_token_cache();
     }
 
     pub fn turn_count(&self) -> u32 {
@@ -971,6 +1029,7 @@ impl ConversationState {
             decay_window: snapshot.decay_window,
             referenced_turns: std::collections::HashSet::new(),
             compaction_summary: resume_summary,
+            token_cache: std::cell::Cell::new(None),
         })
     }
 

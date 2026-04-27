@@ -1335,8 +1335,11 @@ pub enum BusRequest {
     Notify { message: String, level: NotifyLevel },
     /// Inject a system message into the conversation.
     InjectSystemMessage { content: String },
-    /// Request context compaction before the next turn.
+    /// Request full LLM-based context compaction before the next turn.
     RequestCompaction,
+    /// Request aggressive decay (tier 1) — tighten decay window and strip
+    /// thinking blocks. Cheaper than full compaction, no LLM call.
+    RequestAggressiveDecay,
     /// Request the harness to refresh and re-emit its status.
     RefreshHarnessStatus,
     /// Automatically store a fact in memory when a lifecycle event fires.

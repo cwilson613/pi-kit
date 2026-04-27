@@ -3813,7 +3813,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         omegon_traits::BusRequest::InjectSystemMessage { content } => {
                             runtime_state.conversation.push_user(format!("[System: {content}]"));
                         }
-                        omegon_traits::BusRequest::RequestCompaction => {
+                        omegon_traits::BusRequest::RequestCompaction
+                        | omegon_traits::BusRequest::RequestAggressiveDecay => {
                             tracing::info!("Bus: compaction requested");
                         }
                         omegon_traits::BusRequest::RefreshHarnessStatus => {

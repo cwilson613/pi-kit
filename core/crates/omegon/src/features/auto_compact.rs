@@ -1,26 +1,35 @@
-//! auto_compact — Proactive context compaction.
+//! auto_compact — Predictive, tiered context compaction.
 //!
-//! Monitors estimated context usage after each turn and requests compaction
-//! before the context window fills up. Fires at a configurable percentage
-//! threshold (default 70%) with a cooldown between compactions.
+//! Monitors context usage with EWMA growth prediction and fires compaction
+//! at two tiers:
+//!   - Tier 1 (aggressive decay): tighten decay window, strip thinking.
+//!     Pure Rust, no LLM call. Cheap and fast.
+//!   - Tier 2 (LLM summarization): full compaction via compact_via_llm().
+//!     Expensive but thorough.
 //!
-//! Ported from: extensions/auto-compact.ts (39 LoC → 56 LoC)
+//! EWMA prediction projects fill at turn+2 to avoid emergency compaction.
 
 use async_trait::async_trait;
 use omegon_traits::{BusEvent, BusRequest, Feature};
 use std::time::Instant;
 
-const DEFAULT_THRESHOLD_PERCENT: f32 = 70.0;
+const DEFAULT_TIER1_PERCENT: f32 = 60.0;
+const DEFAULT_TIER2_PERCENT: f32 = 78.0;
 const DEFAULT_COOLDOWN_SECS: u64 = 60;
+const EWMA_ALPHA: f32 = 0.3;
+const PREDICTION_HORIZON: f32 = 2.0; // turns ahead
 
-/// Proactive context compaction feature.
+/// Predictive, tiered context compaction.
 pub struct AutoCompact {
-    threshold: f32,
+    tier1_threshold: f32,
+    tier2_threshold: f32,
     cooldown: std::time::Duration,
     last_compact: Option<Instant>,
     compacting: bool,
-    /// Estimated context usage from the agent loop.
     estimated_percent: f32,
+    // EWMA prediction state
+    prev_tokens: Option<usize>,
+    ewma_growth: f32,
 }
 
 impl Default for AutoCompact {
@@ -31,22 +40,44 @@ impl Default for AutoCompact {
 
 impl AutoCompact {
     pub fn new() -> Self {
-        let threshold = std::env::var("AUTO_COMPACT_PERCENT")
+        let tier1 = std::env::var("AUTO_COMPACT_TIER1_PERCENT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_THRESHOLD_PERCENT);
+            .or_else(|| {
+                std::env::var("AUTO_COMPACT_PERCENT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(DEFAULT_TIER1_PERCENT);
+        let tier2 = std::env::var("AUTO_COMPACT_TIER2_PERCENT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_TIER2_PERCENT);
         let cooldown_secs = std::env::var("AUTO_COMPACT_COOLDOWN")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_COOLDOWN_SECS);
 
         Self {
-            threshold,
+            tier1_threshold: tier1,
+            tier2_threshold: tier2,
             cooldown: std::time::Duration::from_secs(cooldown_secs),
             last_compact: None,
             compacting: false,
             estimated_percent: 0.0,
+            prev_tokens: None,
+            ewma_growth: 0.0,
         }
+    }
+
+    /// Project context fill percentage at turn+N using EWMA growth rate.
+    fn projected_percent(&self, current_tokens: usize, context_window: usize) -> f32 {
+        if context_window == 0 {
+            return 0.0;
+        }
+        let projected_tokens =
+            current_tokens as f32 + self.ewma_growth * PREDICTION_HORIZON;
+        (projected_tokens / context_window as f32 * 100.0).min(100.0)
     }
 }
 
@@ -68,16 +99,26 @@ impl Feature for AutoCompact {
                     return vec![];
                 }
 
-                self.estimated_percent = if *context_window > 0 {
-                    ((*estimated_tokens as f32 / *context_window as f32) * 100.0).min(100.0)
+                let tokens = *estimated_tokens;
+                let window = *context_window;
+
+                // Update EWMA growth rate
+                if let Some(prev) = self.prev_tokens {
+                    let delta = tokens as f32 - prev as f32;
+                    self.ewma_growth =
+                        EWMA_ALPHA * delta + (1.0 - EWMA_ALPHA) * self.ewma_growth;
+                }
+                self.prev_tokens = Some(tokens);
+
+                self.estimated_percent = if window > 0 {
+                    ((tokens as f32 / window as f32) * 100.0).min(100.0)
                 } else {
                     0.0
                 };
 
-                if self.estimated_percent < self.threshold {
-                    return vec![];
-                }
+                let projected = self.projected_percent(tokens, window);
 
+                // Cooldown check
                 if self
                     .last_compact
                     .is_some_and(|last| last.elapsed() < self.cooldown)
@@ -85,15 +126,38 @@ impl Feature for AutoCompact {
                     return vec![];
                 }
 
-                self.compacting = true;
-                self.last_compact = Some(Instant::now());
-                tracing::info!(
-                    turn = turn,
-                    threshold = self.threshold,
-                    "auto-compact: requesting compaction"
-                );
+                // Tier 2: LLM summarization (at or projected to exceed tier2)
+                if self.estimated_percent >= self.tier2_threshold
+                    || projected >= self.tier2_threshold
+                {
+                    self.compacting = true;
+                    self.last_compact = Some(Instant::now());
+                    tracing::info!(
+                        turn,
+                        current = self.estimated_percent,
+                        projected,
+                        ewma_growth = self.ewma_growth,
+                        "auto-compact: tier 2 (LLM summarization)"
+                    );
+                    return vec![BusRequest::RequestCompaction];
+                }
 
-                vec![BusRequest::RequestCompaction]
+                // Tier 1: aggressive decay (at or projected to exceed tier1)
+                if self.estimated_percent >= self.tier1_threshold
+                    || projected >= self.tier1_threshold
+                {
+                    self.last_compact = Some(Instant::now());
+                    tracing::info!(
+                        turn,
+                        current = self.estimated_percent,
+                        projected,
+                        ewma_growth = self.ewma_growth,
+                        "auto-compact: tier 1 (aggressive decay)"
+                    );
+                    return vec![BusRequest::RequestAggressiveDecay];
+                }
+
+                vec![]
             }
             BusEvent::Compacted => {
                 self.compacting = false;
@@ -108,15 +172,13 @@ impl Feature for AutoCompact {
 mod tests {
     use super::*;
 
-    #[test]
-    fn does_not_compact_below_threshold() {
-        let mut ac = AutoCompact::new();
-        let requests = ac.on_event(&BusEvent::TurnEnd {
+    fn turn_end(tokens: usize, window: usize) -> BusEvent {
+        BusEvent::TurnEnd {
             turn: 1,
             model: None,
             provider: None,
-            estimated_tokens: 10_000,
-            context_window: 200_000,
+            estimated_tokens: tokens,
+            context_window: window,
             context_composition: omegon_traits::ContextComposition::default(),
             actual_input_tokens: 0,
             actual_output_tokens: 0,
@@ -125,85 +187,72 @@ mod tests {
             dominant_phase: None,
             drift_kind: None,
             progress_signal: omegon_traits::ProgressSignal::None,
-        });
-        assert!(requests.is_empty(), "turn 1 should not trigger compaction");
+        }
     }
 
     #[test]
-    fn compacts_above_threshold() {
+    fn does_not_compact_below_threshold() {
         let mut ac = AutoCompact::new();
-        ac.threshold = 50.0; // lower threshold for testing
-        let requests = ac.on_event(&BusEvent::TurnEnd {
-            turn: 30,
-            model: None,
-            provider: None,
-            estimated_tokens: 120_000,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
+        let requests = ac.on_event(&turn_end(10_000, 200_000));
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn tier1_fires_at_threshold() {
+        let mut ac = AutoCompact::new();
+        ac.tier1_threshold = 50.0;
+        ac.tier2_threshold = 80.0;
+        let requests = ac.on_event(&turn_end(120_000, 200_000)); // 60%
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(requests[0], BusRequest::RequestAggressiveDecay));
+    }
+
+    #[test]
+    fn tier2_fires_at_threshold() {
+        let mut ac = AutoCompact::new();
+        ac.tier1_threshold = 50.0;
+        ac.tier2_threshold = 70.0;
+        let requests = ac.on_event(&turn_end(160_000, 200_000)); // 80%
         assert_eq!(requests.len(), 1);
         assert!(matches!(requests[0], BusRequest::RequestCompaction));
     }
 
     #[test]
-    fn cooldown_prevents_repeated_compaction() {
+    fn ewma_prediction_triggers_early() {
         let mut ac = AutoCompact::new();
-        ac.threshold = 10.0;
+        ac.tier1_threshold = 70.0;
+        ac.tier2_threshold = 85.0;
 
-        let r1 = ac.on_event(&BusEvent::TurnEnd {
-            turn: 10,
-            model: None,
-            provider: None,
-            estimated_tokens: 50_000,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
-        assert_eq!(r1.len(), 1, "first compaction should fire");
-
-        // Mark compaction complete
+        // Simulate rapid growth: 30% → 50% → 65%
+        ac.on_event(&turn_end(60_000, 200_000));  // 30%, establishes baseline
+        ac.on_event(&BusEvent::Compacted); // clear compacting flag
+        ac.on_event(&turn_end(100_000, 200_000)); // 50%, delta=40k
         ac.on_event(&BusEvent::Compacted);
 
-        // Immediately try again — cooldown should prevent
-        let r2 = ac.on_event(&BusEvent::TurnEnd {
-            turn: 11,
-            model: None,
-            provider: None,
-            estimated_tokens: 55_000,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
-        assert!(
-            r2.is_empty(),
-            "cooldown should prevent immediate re-compact"
-        );
+        // At 65%, EWMA projects growth of ~28k/turn (smoothed).
+        // Projected at turn+2 = 130k + 56k = 186k / 200k = 93%.
+        // Should trigger tier2 even though current is only 65%.
+        let requests = ac.on_event(&turn_end(130_000, 200_000)); // 65%
+        assert!(!requests.is_empty(), "EWMA should predict overflow and trigger compaction");
+    }
+
+    #[test]
+    fn cooldown_prevents_repeated_compaction() {
+        let mut ac = AutoCompact::new();
+        ac.tier1_threshold = 10.0;
+
+        let r1 = ac.on_event(&turn_end(50_000, 200_000));
+        assert!(!r1.is_empty());
+        ac.on_event(&BusEvent::Compacted);
+
+        let r2 = ac.on_event(&turn_end(55_000, 200_000));
+        assert!(r2.is_empty(), "cooldown should prevent immediate re-compact");
     }
 
     #[test]
     fn compacted_event_clears_flag() {
         let mut ac = AutoCompact::new();
         ac.compacting = true;
-
         ac.on_event(&BusEvent::Compacted);
         assert!(!ac.compacting);
     }

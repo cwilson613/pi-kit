@@ -918,15 +918,15 @@
     "notes": []
   },
   "0.17.0": {
-    "status": "rc",
+    "status": "released",
     "channel": "stable",
     "nodes": [],
-    "frozen": false,
+    "frozen": true,
     "opened": "2026-04-25T16:33:48Z",
     "last_rc": "2026-04-27T14:49:51Z",
     "rc_version": "0.17.0-rc.37",
     "rc_count": 37,
-    "released": null,
+    "released": "2026-04-27T22:00:00Z",
     "notes": [
       "feat(auth): adopt Claude Code credentials from ~/.claude.json",
       "feat(auth): adopt Gemini CLI credentials for Google Antigravity",

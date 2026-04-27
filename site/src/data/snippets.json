@@ -1,0 +1,334 @@
+{
+  "auth.login_anthropic": {
+    "cmd": "omegon auth login anthropic",
+    "desc": "OAuth login for Anthropic/Claude"
+  },
+  "auth.login_openai_codex": {
+    "cmd": "omegon auth login openai-codex",
+    "desc": "OAuth login for OpenAI/Codex"
+  },
+  "auth.login_ollama_cloud": {
+    "cmd": "omegon auth login ollama-cloud",
+    "desc": "OAuth login for Ollama Cloud"
+  },
+  "auth.auth_status": {
+    "cmd": "omegon auth status",
+    "desc": "Show authentication status for all providers"
+  },
+  "auth.set_anthropic_key": {
+    "cmd": "export ANTHROPIC_API_KEY=\"sk-ant-...\"",
+    "desc": "Set Anthropic API key via environment"
+  },
+  "auth.set_openai_key": {
+    "cmd": "export OPENAI_API_KEY=\"sk-...\"",
+    "desc": "Set OpenAI API key via environment"
+  },
+  "auth.set_ollama_host": {
+    "cmd": "export OLLAMA_HOST=\"http://127.0.0.1:11434\"",
+    "desc": "Configure local Ollama endpoint"
+  },
+  "cli.resume": {
+    "cmd": "omegon --resume",
+    "desc": "Resume most recent session"
+  },
+  "cli.resume_specific": {
+    "cmd": "omegon --resume abc123",
+    "desc": "Resume a specific session by ID prefix"
+  },
+  "cli.fresh": {
+    "cmd": "omegon --fresh",
+    "desc": "Start a fresh session, ignoring saved history"
+  },
+  "cli.no_session": {
+    "cmd": "omegon --no-session",
+    "desc": "Disable session auto-save"
+  },
+  "cli.headless_prompt": {
+    "cmd": "omegon --prompt \"Summarize README.md\"",
+    "desc": "Execute single prompt and exit"
+  },
+  "cli.headless_file": {
+    "cmd": "omegon --prompt-file task.md",
+    "desc": "Read prompt from file"
+  },
+  "cli.headless_bounded": {
+    "cmd": "omegon --prompt \"Fix the failing test\" --max-turns 10",
+    "desc": "Limit agent turns"
+  },
+  "cli.smoke": {
+    "cmd": "omegon --smoke",
+    "desc": "Run smoke tests"
+  },
+  "cli.serve": {
+    "cmd": "omegon serve",
+    "desc": "Launch persistent daemon/control-plane"
+  },
+  "cli.migrate_auto": {
+    "cmd": "omegon migrate auto",
+    "desc": "Auto-detect and import from all sources"
+  },
+  "cli.migrate_claude": {
+    "cmd": "omegon migrate claude-code",
+    "desc": "Import from Claude Code"
+  },
+  "cli.migrate_codex": {
+    "cmd": "omegon migrate codex",
+    "desc": "Import from OpenAI Codex CLI"
+  },
+  "cli.migrate_cursor": {
+    "cmd": "omegon migrate cursor",
+    "desc": "Import from Cursor"
+  },
+  "cli.extension_install": {
+    "cmd": "omegon extension install <git-url-or-local-path>",
+    "desc": "Install extension from git URL or local path"
+  },
+  "cli.extension_install_vox": {
+    "cmd": "omegon extension install https://github.com/styrene-lab/vox.git",
+    "desc": "Install Vox communication extension"
+  },
+  "cli.extension_install_scry": {
+    "cmd": "omegon extension install https://github.com/styrene-lab/scry.git",
+    "desc": "Install Scry image generation extension"
+  },
+  "cli.extension_list": {
+    "cmd": "omegon extension list",
+    "desc": "List installed extensions"
+  },
+  "cli.extension_update": {
+    "cmd": "omegon extension update",
+    "desc": "Update all extensions"
+  },
+  "cli.extension_remove": {
+    "cmd": "omegon extension remove vox",
+    "desc": "Remove an extension"
+  },
+  "cli.extension_init": {
+    "cmd": "omegon extension init my-extension",
+    "desc": "Scaffold a new extension project"
+  },
+  "cli.dev_clone_build": {
+    "cmd": "git clone https://github.com/styrene-lab/omegon.git\ncd omegon\ncd core && cargo build -p omegon\ncargo test -p omegon",
+    "desc": "Clone, build, and test from source"
+  },
+  "cli.release_workflow": {
+    "cmd": "just rc\njust sign\njust publish\njust release",
+    "desc": "Release workflow (cut RC, sign, publish, release)"
+  },
+  "install.quick_install": {
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "desc": "Quick install — downloads latest signed binary"
+  },
+  "install.install_custom_dir": {
+    "cmd": "INSTALL_DIR=~/.local/bin curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "desc": "Install to a custom directory"
+  },
+  "install.install_rc": {
+    "cmd": "CHANNEL=rc curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "desc": "Install latest RC"
+  },
+  "install.install_nightly": {
+    "cmd": "CHANNEL=nightly curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "desc": "Install latest nightly"
+  },
+  "install.install_version": {
+    "cmd": "VERSION=0.17.0 curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "desc": "Install a specific version (stable, RC, or nightly)"
+  },
+  "install.install_ci": {
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --no-confirm",
+    "desc": "Non-interactive install (CI)"
+  },
+  "install.brew_stable": {
+    "cmd": "brew tap styrene-lab/tap\nbrew install omegon",
+    "desc": "Homebrew stable install"
+  },
+  "install.brew_rc": {
+    "cmd": "brew tap styrene-lab/tap\nbrew install styrene-lab/tap/omegon-rc",
+    "desc": "Homebrew RC channel install"
+  },
+  "install.brew_switch_stable": {
+    "cmd": "brew unlink omegon-rc\nbrew install omegon",
+    "desc": "Switch from RC back to stable Homebrew"
+  },
+  "install.brew_upgrade_stable": {
+    "cmd": "brew upgrade omegon",
+    "desc": "Update stable Homebrew install"
+  },
+  "install.brew_upgrade_rc": {
+    "cmd": "brew upgrade styrene-lab/tap/omegon-rc",
+    "desc": "Update RC Homebrew install"
+  },
+  "install.update_script": {
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "desc": "Re-run install script to update"
+  },
+  "quickstart.setup_codex": {
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh\nomegon auth login openai-codex\nom",
+    "desc": "Install + OpenAI/Codex OAuth + start slim mode"
+  },
+  "quickstart.setup_apikey": {
+    "cmd": "export ANTHROPIC_API_KEY=\"sk-ant-...\"\nom",
+    "desc": "Start with Anthropic API key"
+  },
+  "quickstart.setup_ollama": {
+    "cmd": "ollama pull qwen3:32b\nom",
+    "desc": "Pull an Ollama model and start"
+  },
+  "quickstart.start_slim": {
+    "cmd": "om",
+    "desc": "Start Omegon in slim terminal-first posture"
+  },
+  "quickstart.start_full": {
+    "cmd": "omegon",
+    "desc": "Start Omegon in full harness mode"
+  },
+  "slash.model": {
+    "cmd": "/model",
+    "desc": "Switch model (opens selector)"
+  },
+  "slash.think": {
+    "cmd": "/think high",
+    "desc": "Raise reasoning effort"
+  },
+  "slash.context": {
+    "cmd": "/context clan",
+    "desc": "Raise context class"
+  },
+  "slash.status": {
+    "cmd": "/status",
+    "desc": "Check provider and system status"
+  },
+  "slash.warp": {
+    "cmd": "/warp",
+    "desc": "Toggle om <-> omegon live"
+  },
+  "slash.tutorial": {
+    "cmd": "/tutorial",
+    "desc": "Launch interactive overlay tutorial"
+  },
+  "slash.tutorial_demo": {
+    "cmd": "/tutorial demo",
+    "desc": "Launch scripted showcase tutorial"
+  },
+  "slash.tutorial_status": {
+    "cmd": "/tutorial status",
+    "desc": "Check tutorial progress"
+  },
+  "slash.tutorial_reset": {
+    "cmd": "/tutorial reset",
+    "desc": "Reset tutorial state"
+  },
+  "slash.update": {
+    "cmd": "/update",
+    "desc": "Inspect and install a newer release"
+  },
+  "slash.init": {
+    "cmd": "/init",
+    "desc": "Initialize project memory"
+  },
+  "slash.memory": {
+    "cmd": "/memory",
+    "desc": "Show memory overview"
+  },
+  "slash.compact": {
+    "cmd": "/compact",
+    "desc": "Compact conversation context"
+  },
+  "slash.note": {
+    "cmd": "/note [text]",
+    "desc": "Add a quick note to memory"
+  },
+  "slash.notes": {
+    "cmd": "/notes",
+    "desc": "List saved notes"
+  },
+  "slash.sessions": {
+    "cmd": "/sessions",
+    "desc": "List saved sessions"
+  },
+  "slash.cleave": {
+    "cmd": "/cleave",
+    "desc": "Trigger parallel task decomposition"
+  },
+  "slash.auspex_open": {
+    "cmd": "/auspex open",
+    "desc": "Launch primary browser surface"
+  },
+  "slash.opsx_propose": {
+    "cmd": "/opsx:propose",
+    "desc": "Propose a new OpenSpec design"
+  },
+  "slash.opsx_spec": {
+    "cmd": "/opsx:spec",
+    "desc": "Write specification scenarios"
+  },
+  "slash.opsx_ff": {
+    "cmd": "/opsx:ff",
+    "desc": "Fast-forward implementation"
+  },
+  "slash.opsx_status": {
+    "cmd": "/opsx:status",
+    "desc": "Check OpenSpec status"
+  },
+  "slash.opsx_verify": {
+    "cmd": "/opsx:verify",
+    "desc": "Verify specs are satisfied"
+  },
+  "slash.opsx_archive": {
+    "cmd": "/opsx:archive",
+    "desc": "Archive completed change"
+  },
+  "slash.assess_spec": {
+    "cmd": "/assess spec",
+    "desc": "Verify specs are satisfied (alias)"
+  },
+  "slash.vault_status": {
+    "cmd": "/vault status",
+    "desc": "Check Vault connectivity"
+  },
+  "slash.vault_login": {
+    "cmd": "/vault login",
+    "desc": "Authenticate to Vault"
+  },
+  "slash.vault_configure": {
+    "cmd": "/vault configure",
+    "desc": "Set Vault address and auth method"
+  },
+  "slash.vault_init_policy": {
+    "cmd": "/vault init-policy",
+    "desc": "Create a least-privilege policy for omegon"
+  },
+  "slash.migrate_claude_code": {
+    "cmd": "/migrate claude-code",
+    "desc": "Import CLAUDE.md from Claude Code"
+  },
+  "slash.migrate_codex": {
+    "cmd": "/migrate codex",
+    "desc": "Import from Codex CLI"
+  },
+  "slash.checkin": {
+    "cmd": "/checkin",
+    "desc": "Design tree check-in"
+  },
+  "slash.auth_status_slash": {
+    "cmd": "/auth status",
+    "desc": "Check auth status in-TUI"
+  },
+  "slash.login_slash": {
+    "cmd": "/login anthropic",
+    "desc": "Log in to provider in-TUI"
+  },
+  "slash.secrets_set": {
+    "cmd": "/secrets set OLLAMA_API_KEY ...",
+    "desc": "Set a secret in-TUI"
+  },
+  "verify.cosign_verify": {
+    "cmd": "cosign verify-blob omegon-0.16.1-aarch64-apple-darwin.tar.gz \\\n  --signature omegon-0.16.1-aarch64-apple-darwin.tar.gz.sig \\\n  --certificate omegon-0.16.1-aarch64-apple-darwin.tar.gz.pem \\\n  --certificate-identity-regexp '.*' \\\n  --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "desc": "Verify cosign signature (keyless) — replace version with actual"
+  },
+  "verify.gh_attestation": {
+    "cmd": "gh attestation verify omegon-*.tar.gz --repo styrene-lab/omegon",
+    "desc": "Verify GitHub Attestations (build provenance)"
+  }
+}

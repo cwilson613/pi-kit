@@ -106,7 +106,7 @@ pub(crate) fn classify_turn_phase(
     if tool_calls.iter().any(|call| {
         matches!(
             call.name.as_str(),
-            "commit" | "delegate" | "cleave_run" | "cleave_assess"
+            "commit" | "delegate" | "cleave_run" | "cleave_assess" | "bash"
         )
     }) {
         return Some(OodaPhase::Act);
@@ -175,7 +175,7 @@ pub(crate) fn classify_drift_kind(
         && tool_calls
             .iter()
             .all(|call| is_repo_inspection_tool(&call.name))
-        && turn >= 2
+        && turn >= 4
         && broad_repo_inspection_calls > 0
         && targeted_repo_inspection_calls <= 1
     {
@@ -184,7 +184,7 @@ pub(crate) fn classify_drift_kind(
 
     if conversation.intent.files_modified.is_empty()
         && conversation.intent.files_read.is_empty()
-        && turn >= 1
+        && turn >= 3
         && broad_orientation_calls == tool_calls.len()
     {
         return Some(DriftKind::OrientationChurn);
@@ -671,15 +671,15 @@ pub(crate) fn continuation_pressure_tier(
         && has_local_target_hypothesis(conversation);
     let constrained = behavior == BehavioralTier::Constrained;
     let (tier1, tier2, tier3) = if om_local_first_lock {
-        if constrained { (1, 2, 3) } else { (2, 3, 4) }
+        if constrained { (2, 3, 5) } else { (4, 6, 8) }
     } else if evidence_sufficient {
-        if constrained { (2, 3, 4) } else { (3, 4, 5) }
+        if constrained { (3, 4, 6) } else { (6, 8, 10) }
     } else if is_slim_execution_bias(config) {
-        if constrained { (3, 4, 6) } else { (5, 7, 9) }
+        if constrained { (4, 6, 8) } else { (8, 12, 16) }
     } else if constrained {
-        (2, 3, 5)
+        (3, 5, 7)
     } else {
-        (6, 8, 10)
+        (12, 16, 20)
     };
 
     let continuation = controller.consecutive_tool_continuations;
@@ -713,12 +713,12 @@ pub(crate) fn continuation_pressure_tier(
 
 pub(crate) fn continuation_pressure_message(tier: u8, behavior: BehavioralTier) -> String {
     match (tier, behavior) {
-        (1, BehavioralTier::Constrained) => "[System: Stop searching. Edit one file or state one blocker.]".to_string(),
-        (2, BehavioralTier::Constrained) => "[System: Edit one file now. No more reading.]".to_string(),
-        (_, BehavioralTier::Constrained) => "[System: You must edit a file on this turn. Do not read or search.]".to_string(),
-        (1, _) => "[System: You are accumulating tool-continuation turns without a progress boundary. Stop broad inspection. Next turn: either make the smallest concrete code change justified by current evidence, or run one narrow validation tied to the exact file/symbol already inspected. Do NOT delegate this — act directly.]".to_string(),
-        (2, _) => "[System: Orientation churn is persisting. Next turn must choose exactly one: (1) mutate one named file, (2) run one targeted validation tied to one named file/symbol, or (3) state one blocker. Do NOT delegate — take the action yourself directly.]".to_string(),
-        _ => "[System: Controller escalation: you are burning turns without converging. On the next turn, do exactly one of these and nothing else: (1) edit/write/change one named file, (2) run one validating command for one named file/symbol, or (3) declare the concrete blocker. Do NOT delegate — act directly.]".to_string(),
+        (1, BehavioralTier::Constrained) => "[System: You have been exploring. Produce output now — write, edit, or state what's blocking you.]".to_string(),
+        (2, BehavioralTier::Constrained) => "[System: Produce output now. Write or edit a file, or state the blocker.]".to_string(),
+        (_, BehavioralTier::Constrained) => "[System: You must produce output on this turn. Write, edit, or explain why you cannot.]".to_string(),
+        (1, _) => "[System: You have spent several turns exploring without producing output. You likely have enough context. Take the next concrete step toward completing the user's request — write a file, make an edit, run a command that produces a result, or explain what's blocking you.]".to_string(),
+        (2, _) => "[System: You are still exploring. Produce a concrete result now: write or edit a file, run a command that changes state, or tell the user exactly what's blocking progress.]".to_string(),
+        _ => "[System: You have been exploring for many turns without producing output. On this turn, you must do one of: (1) write or edit a file, (2) run a command that produces the requested result, or (3) tell the user exactly what is preventing you from completing the task.]".to_string(),
     }
 }
 
@@ -776,15 +776,15 @@ pub(crate) fn classify_auto_delegate_plan(
 
 pub(crate) fn evidence_sufficiency_message(behavior: BehavioralTier) -> String {
     match behavior {
-        BehavioralTier::Constrained => "[System: You have enough context. Make an edit now.]".to_string(),
-        BehavioralTier::Standard => "[System: Actionability threshold reached. The next reversible step is justified. Do exactly one: (1) make the smallest edit, (2) run targeted validation, or (3) declare the blocker. Do NOT delegate — act directly.]".to_string(),
+        BehavioralTier::Constrained => "[System: You have enough context. Produce output now.]".to_string(),
+        BehavioralTier::Standard => "[System: You have gathered enough context to act. Produce a concrete result — write a file, make an edit, or explain what's blocking you.]".to_string(),
     }
 }
 
 pub(crate) fn om_local_first_message(behavior: BehavioralTier) -> String {
     match behavior {
-        BehavioralTier::Constrained => "[System: Make the edit now. Do not search again.]".to_string(),
-        BehavioralTier::Standard => "[System: OM coding mode — actionability reached. Apply the smallest patch, run narrow validation, or state the blocker. Do NOT delegate — act directly.]".to_string(),
+        BehavioralTier::Constrained => "[System: Produce output now. Do not search again.]".to_string(),
+        BehavioralTier::Standard => "[System: You have enough context. Produce the requested output — write, edit, or state the blocker.]".to_string(),
     }
 }
 

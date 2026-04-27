@@ -886,8 +886,8 @@ pub async fn run(
                 "First-turn orientation churn detected — injecting execution-bias nudge"
             );
             let msg = match behavior {
-                BehavioralTier::Constrained => "[System: Read the target file or make an edit. Do not use orientation tools.]",
-                BehavioralTier::Standard => "[System: This run is execution-biased. Stop spending turns on orientation tools unless they are strictly required to unblock execution. On the next turn, take a concrete repo-inspection or implementation step: read the most relevant file, search the codebase for the target symbol/path, or make the smallest justified change.]",
+                BehavioralTier::Constrained => "[System: Read the relevant file or produce output. Do not use broad orientation tools.]",
+                BehavioralTier::Standard => "[System: Focus on the user's request. Read the most relevant file, or start producing the requested output.]",
             };
             conversation.push_user(msg.to_string());
         } else if is_slim_execution_bias(config)
@@ -905,8 +905,8 @@ pub async fn run(
                 "Execution stall detected after repo inspection — injecting execution-pressure nudge"
             );
             let msg = match behavior {
-                BehavioralTier::Constrained => "[System: You have enough context. Make an edit now.]",
-                BehavioralTier::Standard => "[System: You have enough evidence. Make one edit or name one blocker. Do NOT delegate — act directly.]",
+                BehavioralTier::Constrained => "[System: You have enough context. Produce output now.]",
+                BehavioralTier::Standard => "[System: You have enough context. Produce the requested result or explain what's blocking you.]",
             };
             conversation.push_user(msg.to_string());
         } else if let Some(tier) = continuation_tier {
@@ -3122,8 +3122,8 @@ mod tests {
             },
         ];
         let controller = ControllerState {
-            consecutive_tool_continuations: 6,
-            orientation_churn_streak: 2,
+            consecutive_tool_continuations: 12,
+            orientation_churn_streak: 4,
             ..ControllerState::default()
         };
         assert_eq!(
@@ -3199,8 +3199,13 @@ mod tests {
                 args_summary: None,
             },
         ];
+        // OrientationChurn requires turn >= 4 (raised from 2)
         assert_eq!(
             classify_drift_kind(3, &conversation, &tool_calls, &results),
+            None
+        );
+        assert_eq!(
+            classify_drift_kind(5, &conversation, &tool_calls, &results),
             Some(DriftKind::OrientationChurn)
         );
     }
@@ -3347,8 +3352,8 @@ mod tests {
             arguments: Value::Null,
         }];
         let controller = ControllerState {
-            consecutive_tool_continuations: 8,
-            orientation_churn_streak: 3,
+            consecutive_tool_continuations: 16,
+            orientation_churn_streak: 12,
             ..ControllerState::default()
         };
         assert!(
@@ -3422,8 +3427,8 @@ mod tests {
             arguments: Value::Null,
         }];
         let controller = ControllerState {
-            consecutive_tool_continuations: 7,
-            orientation_churn_streak: 2,
+            consecutive_tool_continuations: 12,
+            orientation_churn_streak: 8,
             ..ControllerState::default()
         };
         assert_eq!(
@@ -3492,16 +3497,15 @@ mod tests {
     #[test]
     fn evidence_sufficiency_message_explicitly_forces_action() {
         let text = evidence_sufficiency_message(BehavioralTier::Standard);
-        assert!(text.contains("Actionability threshold reached"));
-        assert!(text.contains("Do NOT delegate"));
+        assert!(text.contains("enough context to act"));
+        assert!(text.contains("Produce a concrete result"));
     }
 
     #[test]
     fn om_local_first_message_forces_patch_or_validate_or_blocker() {
         let text = om_local_first_message(BehavioralTier::Standard);
-        assert!(text.contains("OM coding mode"));
-        assert!(text.contains("Do NOT delegate"));
-        assert!(!text.contains("full Omegon is required"));
+        assert!(text.contains("enough context"));
+        assert!(text.contains("Produce the requested output"));
     }
 
     #[test]

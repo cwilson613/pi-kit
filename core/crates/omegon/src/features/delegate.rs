@@ -199,6 +199,27 @@ impl DelegateResultStore {
         })
     }
 
+    /// Check if a task with this description is already running or has already
+    /// been attempted (running, completed, or failed). Prevents the model from
+    /// spawning the same task repeatedly when earlier attempts time out or fail.
+    pub fn find_any_by_description(&self, description: &str) -> Option<(String, &'static str)> {
+        let tasks = self.tasks.lock().unwrap();
+        let desc_lower = description.to_lowercase();
+        tasks.values().find_map(|t| {
+            if t.task_description.to_lowercase() == desc_lower {
+                let status_label = match &t.status {
+                    DelegateTaskStatus::Running => "running",
+                    DelegateTaskStatus::Completed { success: true } => "completed",
+                    DelegateTaskStatus::Completed { success: false } => "failed",
+                    DelegateTaskStatus::Failed { .. } => "failed",
+                };
+                Some((t.task_id.clone(), status_label))
+            } else {
+                None
+            }
+        })
+    }
+
     /// Return the task description from the most recently created delegate,
     /// regardless of completion status. Used to substitute conversational
     /// non-tasks like "let's resume" with the actual prior work description.
@@ -1301,24 +1322,40 @@ impl Feature for DelegateFeature {
                     return Err(anyhow::anyhow!("Unknown agent: {}", agent_name));
                 }
 
-                // Dedup: if an identical task already completed successfully,
-                // tell the model it's done and to formulate a NEW task.
-                if let Some(prior_id) = self.result_store.find_completed_by_description(&task) {
-                    if let Some(prior_task) = self.result_store.get_task(&prior_id) {
-                        let result_text = prior_task.result.unwrap_or_else(|| "completed".into());
-                        return Ok(ToolResult {
-                            content: vec![ContentBlock::Text {
-                                text: format!(
-                                    "This task was already completed ({prior_id}). Do NOT \
-                                     re-delegate the same task. If the user has given a new \
-                                     instruction, formulate a NEW task description that \
-                                     reflects what they asked for NOW, not the previous work.\n\n\
-                                     Previous result:\n{result_text}"
-                                ),
-                            }],
-                            details: serde_json::json!(null),
-                        });
-                    }
+                // Dedup: block if an identical task is already running, completed,
+                // or failed. Prevents infinite retry loops when tasks time out.
+                if let Some((prior_id, status)) = self.result_store.find_any_by_description(&task) {
+                    let message = match status {
+                        "running" => format!(
+                            "A delegate with this exact task is already running ({prior_id}). \
+                             Do NOT spawn duplicates. Wait for it to complete or formulate \
+                             a DIFFERENT task."
+                        ),
+                        "completed" => {
+                            let result_text = self
+                                .result_store
+                                .get_task(&prior_id)
+                                .and_then(|t| t.result.clone())
+                                .unwrap_or_else(|| "completed".into());
+                            format!(
+                                "This task was already completed ({prior_id}). Do NOT \
+                                 re-delegate the same task. If the user gave a new \
+                                 instruction, formulate a NEW task description that \
+                                 reflects what they asked for NOW.\n\n\
+                                 Previous result:\n{result_text}"
+                            )
+                        }
+                        _ => format!(
+                            "A previous delegate with this exact task already failed \
+                             ({prior_id}). Re-delegating the same task will fail again. \
+                             Either handle the work directly or formulate a different, \
+                             more specific task."
+                        ),
+                    };
+                    return Ok(ToolResult {
+                        content: vec![ContentBlock::Text { text: message }],
+                        details: serde_json::json!(null),
+                    });
                 }
 
                 // Auto-populate scope from parent's recently read files when the

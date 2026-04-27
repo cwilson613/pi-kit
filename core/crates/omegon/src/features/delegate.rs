@@ -1296,26 +1296,39 @@ impl Feature for DelegateFeature {
                     ));
                 }
 
-                // Detect when the model parrots a stale user message (e.g., the
-                // user's initial "testing" or "hello") as the delegate task.
-                // Substitute with the most recent substantive user instruction.
+                // Detect when the model parrots a user message or asks a
+                // question instead of formulating an actionable task.
+                tracing::debug!(
+                    task = %task,
+                    prompts = self.recent_user_prompts.len(),
+                    "Delegate task check — echo={}, non_task={}",
+                    self.is_user_prompt_echo(&task),
+                    is_conversational_non_task(&task),
+                );
                 let task = if self.is_user_prompt_echo(&task) {
                     if let Some(recent) = self.latest_substantive_prompt_excluding(&task) {
                         tracing::info!(
                             original = %task,
                             substituted = %recent,
-                            "Substituted stale user echo with latest substantive prompt"
+                            "Substituted user echo with latest substantive prompt"
                         );
                         recent.to_string()
                     } else if let Some(prior) = self.result_store.last_task_description() {
                         tracing::info!(
                             original = %task,
                             substituted = %prior,
-                            "Substituted stale user echo with last delegate task"
+                            "Substituted user echo with last delegate task"
                         );
                         prior
                     } else {
-                        task // no better option — let it through
+                        // Echo detected but no substitute available — the model
+                        // is parroting the user's first/only prompt. Reject so
+                        // it handles the work directly instead of delegating.
+                        return Err(anyhow::anyhow!(
+                            "Cannot delegate the user's own prompt as a task. \
+                             Formulate a specific, actionable instruction for the \
+                             delegate based on your analysis of what needs to be done."
+                        ));
                     }
                 } else if is_conversational_non_task(&task) {
                     // Short conversational phrase with no actionable content.

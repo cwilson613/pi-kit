@@ -2300,7 +2300,7 @@ pub struct OllamaCloudClient {
 }
 
 /// Base URLs for known OpenAI-compatible providers.
-fn compat_base_url(provider_id: &str) -> Option<&'static str> {
+pub fn compat_base_url(provider_id: &str) -> Option<&'static str> {
     match provider_id {
         "groq" => Some("https://api.groq.com/openai"),
         "xai" => Some("https://api.x.ai"),
@@ -4491,5 +4491,103 @@ mod tests {
         assert_eq!(sanitize_tool_id("call abc"), "call_abc");
         assert_eq!(sanitize_tool_id("call.abc"), "call_abc");
         assert_eq!(sanitize_tool_id(""), "");
+    }
+
+    // ── Endpoint reachability probes ─────────────────────────────────
+    // These tests validate that every OpenAI-compatible provider's base
+    // URL is reachable and speaks the right protocol. No API keys needed.
+    //
+    // An OpenAI-compatible endpoint should return a JSON error body for
+    // unauthenticated requests — not HTML, not 404, not connection refused.
+    // This catches base URL typos, protocol mismatches, and dead endpoints.
+
+    /// Probe an endpoint without auth. Returns true if we get a non-HTML
+    /// response (JSON error body = correct protocol, or 3xx redirect).
+    async fn probe_compat_endpoint(base_url: &str) -> (bool, String) {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client");
+
+        let url = format!("{base_url}/v1/chat/completions");
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 1
+        });
+
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let body_text = resp.text().await.unwrap_or_default();
+
+                // Success criteria:
+                // - 401/403 with JSON body = endpoint exists, speaks the protocol
+                // - 400 with JSON body = endpoint exists, rejected our dummy request
+                // - 3xx = redirect (still reachable)
+                // - HTML body = wrong URL (landing page, not API)
+                let is_json = content_type.contains("json")
+                    || body_text.trim_start().starts_with('{');
+                let is_html = content_type.contains("html")
+                    || body_text.trim_start().starts_with('<');
+
+                if is_html {
+                    (false, format!("HTTP {status} — got HTML, not JSON (wrong base URL?)"))
+                } else if is_json || (300..400).contains(&status) {
+                    (true, format!("HTTP {status} — {}", &body_text[..body_text.len().min(120)]))
+                } else {
+                    (false, format!("HTTP {status} — unexpected content-type: {content_type}"))
+                }
+            }
+            Err(e) => (false, format!("Connection failed: {e}")),
+        }
+    }
+
+    #[tokio::test]
+    async fn compat_endpoints_are_reachable_and_speak_openai_protocol() {
+        // Probe every non-local OpenAI-compatible endpoint without auth.
+        // This is a free validation that base URLs are correct.
+        // HuggingFace excluded: returns HTML on 401 (auth page), but
+        // works correctly with a valid token. Their router doesn't
+        // distinguish unauthenticated API calls from browser requests.
+        let providers = [
+            "groq",
+            "xai",
+            "mistral",
+            "cerebras",
+            "opencode-go",
+            "google",
+        ];
+
+        let mut failures = Vec::new();
+        for provider in providers {
+            let base_url = compat_base_url(provider).expect("known provider");
+            let (ok, detail) = probe_compat_endpoint(base_url).await;
+            if ok {
+                eprintln!("  ✓ {provider:<15} {detail}");
+            } else {
+                eprintln!("  ✗ {provider:<15} {detail}");
+                failures.push(format!("{provider}: {detail}"));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "Compat endpoint probe failures:\n{}",
+            failures.join("\n")
+        );
     }
 }

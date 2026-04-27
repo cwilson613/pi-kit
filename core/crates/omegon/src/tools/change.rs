@@ -185,10 +185,14 @@ pub async fn execute(
             ));
         }
 
-        tokio::fs::write(&path, &content).await.map_err(|e| {
-            tracing::error!("Write failed during atomic change, partial state: {e}");
-            e
-        })?;
+        if let Err(e) = tokio::fs::write(&path, &content).await {
+            tracing::error!("Write failed during atomic change, rolling back: {e}");
+            rollback(&snapshots, &written_files).await;
+            anyhow::bail!(
+                "Write failed for {}: {e}. All previously written files have been rolled back.",
+                path.display()
+            );
+        }
         written_files.insert(path, content);
     }
 

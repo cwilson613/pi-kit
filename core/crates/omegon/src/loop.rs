@@ -240,6 +240,10 @@ pub async fn run(
     let mut dead_mouse_nudges: u8 = 0;
     let mut session_used_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut turn: u32 = 0;
+    // Active model for this turn — updated each iteration from settings.
+    // Used in TurnEnd events and error classification instead of the
+    // immutable config.model which is frozen at startup.
+    let mut active_model = config.model.clone();
 
     loop {
         if cancel.is_cancelled() {
@@ -306,8 +310,8 @@ pub async fn run(
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
                 turn_end_reason: TurnEndReason::AssistantCompleted,
-                model: Some(config.model.clone()),
-                provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                model: Some(active_model.clone()),
+                provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
                 estimated_tokens: conversation.estimate_tokens(),
                 context_window,
                 context_composition,
@@ -484,6 +488,9 @@ pub async fn run(
                 .as_ref()
                 .and_then(|s| s.lock().ok().map(|g| g.model.clone()))
                 .or_else(|| Some(config.model.clone()));
+            // Track the active model for this turn so TurnEnd events and
+            // error classification use the current model, not the startup value.
+            active_model = opts.model.clone().unwrap_or_else(|| config.model.clone());
             opts
         };
 
@@ -582,8 +589,8 @@ pub async fn run(
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
                     turn_end_reason: TurnEndReason::Cancelled,
-                    model: Some(config.model.clone()),
-                    provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                    model: Some(active_model.clone()),
+                    provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
                     context_window,
                     context_composition: default_context_composition(context_window),
@@ -651,8 +658,8 @@ pub async fn run(
                 );
                 bus.emit(&omegon_traits::BusEvent::TurnEnd {
                     turn,
-                    model: Some(config.model.clone()),
-                    provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                    model: Some(active_model.clone()),
+                    provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
                     context_window,
                     context_composition: nudge_context_composition.clone(),
@@ -667,8 +674,8 @@ pub async fn run(
                 let _ = events.send(AgentEvent::TurnEnd {
                     turn,
                     turn_end_reason: TurnEndReason::ProgressNudge,
-                    model: Some(config.model.clone()),
-                    provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                    model: Some(active_model.clone()),
+                    provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
                     estimated_tokens: conversation.estimate_tokens(),
                     context_window,
                     context_composition: nudge_context_composition,
@@ -753,8 +760,8 @@ pub async fn run(
             );
             bus.emit(&omegon_traits::BusEvent::TurnEnd {
                 turn,
-                model: Some(config.model.clone()),
-                provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                model: Some(active_model.clone()),
+                provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
                 estimated_tokens: conversation.estimate_tokens(),
                 context_window,
                 context_composition: turn_context_composition.clone(),
@@ -769,8 +776,8 @@ pub async fn run(
             let _ = events.send(AgentEvent::TurnEnd {
                 turn,
                 turn_end_reason: TurnEndReason::AssistantCompleted,
-                model: Some(config.model.clone()),
-                provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+                model: Some(active_model.clone()),
+                provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
                 estimated_tokens: conversation.estimate_tokens(),
                 context_window,
                 context_composition: turn_context_composition,
@@ -959,8 +966,8 @@ pub async fn run(
         );
         bus.emit(&omegon_traits::BusEvent::TurnEnd {
             turn,
-            model: Some(config.model.clone()),
-            provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+            model: Some(active_model.clone()),
+            provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
             estimated_tokens: conversation.estimate_tokens(),
             context_window,
             context_composition: turn_context_composition.clone(),
@@ -1049,8 +1056,8 @@ pub async fn run(
         let _ = events.send(AgentEvent::TurnEnd {
             turn,
             turn_end_reason: TurnEndReason::ToolContinuation,
-            model: Some(config.model.clone()),
-            provider: Some(crate::providers::infer_provider_id(&config.model).to_string()),
+            model: Some(active_model.clone()),
+            provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
             estimated_tokens,
             context_window,
             context_composition: turn_context_composition,
@@ -1290,7 +1297,7 @@ async fn stream_with_retry(
         let upstream_class = classify_upstream_error_for_provider(&provider, &err_msg);
         let transient_kind = upstream_class.transient_kind();
         let is_transient = transient_kind.is_some();
-        let model = config.model.clone();
+        let model = options.model.clone().unwrap_or_else(|| config.model.clone());
 
         if !is_transient {
             if attempt > 1 {

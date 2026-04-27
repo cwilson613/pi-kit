@@ -82,6 +82,27 @@ pub async fn execute(
         new_content
     };
 
+    // TOCTOU protection: re-read the file and verify it hasn't changed
+    // since we read it. If another process (user, build tool, another agent)
+    // modified the file between our read and write, abort rather than
+    // silently clobbering their changes.
+    let current = tokio::time::timeout(timeout, tokio::fs::read_to_string(path))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Re-read timed out after {EDIT_TIMEOUT_SECS}s: {}",
+                path.display()
+            )
+        })??;
+    if current != content {
+        anyhow::bail!(
+            "File {} was modified by another process since it was read. \
+             Your edit was NOT applied to avoid overwriting external changes. \
+             Read the file again to see the current content, then retry.",
+            path.display()
+        );
+    }
+
     tokio::time::timeout(timeout, tokio::fs::write(path, &final_content))
         .await
         .map_err(|_| {

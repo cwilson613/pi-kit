@@ -944,7 +944,10 @@ If blocked, say the blocker plainly.\n",
         task_id: &str,
         cancel: CancellationToken,
     ) -> anyhow::Result<String> {
-        for _ in 0..60 {
+        // Poll for up to 300s (matching the child wall-clock timeout).
+        // Previous 30s limit caused premature "Task timed out" for any
+        // delegate doing real work (patch workers routinely take 45-120s).
+        for _ in 0..600 {
             if cancel.is_cancelled() {
                 anyhow::bail!("Delegate task cancelled")
             }

@@ -332,6 +332,12 @@ pub struct Settings {
     #[serde(default = "default_update_channel")]
     pub update_channel: String,
 
+    /// Automatic update between sessions. When true, downloads and replaces
+    /// the binary after session end if a newer version is available on the
+    /// configured channel. Default: false (notification only).
+    #[serde(default)]
+    pub auto_update: bool,
+
     /// Whether a live LLM provider is connected. Set to false when NullBridge
     /// is active (no credentials available). The TUI uses this to show
     /// "no provider" instead of a model name that can't actually be used.
@@ -618,6 +624,7 @@ impl Default for Settings {
             tool_detail: ToolDetail::Detailed,
             provider_order: Vec::new(),
             update_channel: default_update_channel(),
+            auto_update: false,
             provider_connected: true, // optimistic default — set false when NullBridge
             mouse: true,
             clipboard_retention_hours: default_clipboard_retention_hours(),

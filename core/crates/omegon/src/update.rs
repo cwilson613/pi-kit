@@ -79,7 +79,76 @@ fn find_asset_url(assets: &[GitHubAsset], suffix: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Path for the update check cache file.
+fn cache_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".omegon/update-check.json"))
+}
+
+/// Read the cached update check result. Returns Some if the cache is
+/// fresh (< 24 hours old) and matches the requested channel.
+pub fn read_cache(channel: UpdateChannel) -> Option<UpdateInfo> {
+    let path = cache_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let cached: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let cached_channel = cached["channel"].as_str()?;
+    if cached_channel != channel.as_str() {
+        return None;
+    }
+
+    let cached_at = cached["checked_at"].as_str()?;
+    let checked_at = chrono::DateTime::parse_from_rfc3339(cached_at).ok()?;
+    let age = chrono::Utc::now().signed_duration_since(checked_at);
+    if age.num_hours() >= 24 {
+        return None;
+    }
+
+    let latest = cached["latest"].as_str()?.to_string();
+    let current = env!("CARGO_PKG_VERSION");
+    if !is_newer(&latest, current) {
+        return None;
+    }
+
+    Some(UpdateInfo {
+        current: current.to_string(),
+        latest,
+        download_url: cached["download_url"].as_str().unwrap_or("").to_string(),
+        signature_url: cached["signature_url"].as_str().unwrap_or("").to_string(),
+        certificate_url: cached["certificate_url"].as_str().unwrap_or("").to_string(),
+        release_notes: cached["release_notes"].as_str().unwrap_or("").to_string(),
+        is_newer: true,
+    })
+}
+
+/// Write the update check result to cache.
+fn write_cache(info: &UpdateInfo, channel: UpdateChannel) {
+    let Some(path) = cache_path() else { return };
+    let cached = serde_json::json!({
+        "channel": channel.as_str(),
+        "latest": info.latest,
+        "download_url": info.download_url,
+        "signature_url": info.signature_url,
+        "certificate_url": info.certificate_url,
+        "release_notes": info.release_notes,
+        "checked_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&cached).unwrap_or_default());
+}
+
 pub fn spawn_check_with_delay(tx: UpdateSender, channel: UpdateChannel, delay: Duration) {
+    // Check cache first — avoid a GitHub API call if we checked recently.
+    if let Some(cached) = read_cache(channel) {
+        tracing::debug!(
+            latest = %cached.latest,
+            "update check: using cached result (< 24h old)"
+        );
+        let _ = tx.send(Some(cached));
+        return;
+    }
+
     let current = env!("CARGO_PKG_VERSION").to_string();
     crate::task_spawn::spawn_best_effort_result("update-check", async move {
         tokio::time::sleep(delay).await;
@@ -92,6 +161,7 @@ pub fn spawn_check_with_delay(tx: UpdateSender, channel: UpdateChannel, delay: D
                     channel = channel.as_str(),
                     "new version available"
                 );
+                write_cache(&info, channel);
                 let _ = tx.send(Some(info));
             }
             Ok(None) => {

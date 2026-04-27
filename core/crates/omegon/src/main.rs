@@ -3990,6 +3990,35 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         let _ = profile.save(&agent.cwd);
     }
 
+    // Auto-update: if enabled and a cached update check found a newer
+    // version during this session, download and replace the binary before
+    // exit. The next launch uses the new version automatically.
+    if shared_settings.lock().ok().is_some_and(|s| s.auto_update) {
+        let channel = shared_settings
+            .lock()
+            .ok()
+            .map(|s| s.update_channel.clone())
+            .unwrap_or_else(|| "stable".to_string());
+        let channel = crate::update::UpdateChannel::parse(&channel)
+            .unwrap_or(crate::update::UpdateChannel::Stable);
+        if let Some(info) = crate::update::read_cache(channel) {
+            eprintln!(
+                "Auto-updating: v{} → v{} ...",
+                info.current, info.latest
+            );
+            match crate::update::download_and_replace(&info).await {
+                Ok(path) => {
+                    eprintln!("✓ Updated to v{}. Next launch uses the new version.", info.latest);
+                    tracing::info!(path = %path.display(), "auto-update installed");
+                }
+                Err(e) => {
+                    eprintln!("Auto-update failed (non-fatal): {e}");
+                    tracing::warn!("auto-update failed: {e}");
+                }
+            }
+        }
+    }
+
     bridge.read().await.shutdown().await;
     tui_handle.abort();
     Ok(())

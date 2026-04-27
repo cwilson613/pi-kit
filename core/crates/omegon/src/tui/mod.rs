@@ -1065,7 +1065,7 @@ impl App {
             awaiting_continuation: false,
             login_prompt_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             keyboard_enhancement: false,
-            mouse_capture_enabled: false,
+            mouse_capture_enabled: true,
             terminal_copy_mode: false,
             last_left_click: None,
             extension_widgets: std::collections::HashMap::new(),
@@ -1103,15 +1103,11 @@ impl App {
         match mode {
             UiMode::Slim => {
                 self.focus_mode = false;
-                self.terminal_copy_mode = true;
-                // Disable mouse capture — must call set_mouse_capture BEFORE
-                // updating the field, otherwise the early-return guard skips
-                // the actual DisableMouseCapture escape sequence.
-                self.set_mouse_capture(false);
+                // Mouse capture stays on — scroll and click work in all modes.
+                // /mouse off is still available for terminal-native selection.
             }
             UiMode::Full => {
                 self.terminal_copy_mode = false;
-                self.set_mouse_capture(true);
             }
         }
     }
@@ -6570,8 +6566,9 @@ pub async fn run_tui(
     io::stdout().execute(crossterm::terminal::Clear(
         crossterm::terminal::ClearType::All,
     ))?;
-    // Default to mouse interaction mode. Terminal-native selection remains
-    // available via /mouse off.
+    // Default to mouse interaction mode — scroll, click, pane targeting.
+    // Terminal-native selection remains available via /mouse off.
+    io::stdout().execute(EnableMouseCapture)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
 
     // Enable Kitty keyboard protocol when the terminal supports it.

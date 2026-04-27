@@ -323,7 +323,7 @@ enum Commands {
 
 
     /// Migrate settings from another CLI agent tool.
-    /// Usage: omegon-agent migrate [auto|claude-code|pi|codex|cursor|aider|continue|copilot|windsurf]
+    /// Usage: omegon migrate [auto|claude-code|pi|codex|cursor|aider|continue|copilot|windsurf]
     Migrate {
         /// Source to migrate from. "auto" detects all available tools.
         #[arg(default_value = "auto")]
@@ -4753,7 +4753,7 @@ fn write_benchmark_usage_json(
 }
 
 async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Result<()> {
-    tracing::info!(model = %cli.model, "omegon-agent starting");
+    tracing::info!(model = %cli.model, "omegon starting");
 
     let requested_model = cli.model.clone();
     let requested_provider = providers::infer_provider_id(&requested_model);
@@ -4776,10 +4776,10 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
             })?
         }
         (None, None) => {
-            eprintln!("Usage: omegon-agent --prompt \"<task>\" [--cwd <path>]");
-            eprintln!("       omegon-agent --prompt-file <path> [--cwd <path>]");
+            eprintln!("Usage: omegon --prompt \"<task>\" [--cwd <path>]");
+            eprintln!("       omegon --prompt-file <path> [--cwd <path>]");
             eprintln!(
-                "       omegon-agent cleave --plan <plan.json> --directive \"<task>\" --workspace <dir>"
+                "       omegon cleave --plan <plan.json> --directive \"<task>\" --workspace <dir>"
             );
             eprintln!();
             eprintln!("Headless coding agent — executes a task and exits.");

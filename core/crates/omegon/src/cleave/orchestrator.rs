@@ -855,7 +855,7 @@ fn spawn_child_process(
     label: &str,
     prompt: &str,
 ) -> Result<(Child, u32)> {
-    tracing::info!(child = %label, cwd = %cwd.display(), "spawning omegon-agent");
+    tracing::info!(child = %label, cwd = %cwd.display(), "spawning omegon child");
     tracing::info!(child = %label, binary = %config.agent_binary.display(), bridge = %config.bridge_path.display(), node = %config.node, model = %config.model, max_turns = config.max_turns, "dispatch params");
     if !cwd.exists() {
         anyhow::bail!("Child cwd does not exist: {}", cwd.display());
@@ -1276,7 +1276,7 @@ mod tests {
     #[test]
     fn cleave_config_accepts_custom_idle_timeout() {
         let config = CleaveConfig {
-            agent_binary: PathBuf::from("/usr/bin/omegon-agent"),
+            agent_binary: PathBuf::from("/usr/bin/omegon"),
             bridge_path: PathBuf::from("/usr/lib/bridge.mjs"),
             node: "test".into(),
             model: "anthropic:claude-sonnet-4-6".into(),

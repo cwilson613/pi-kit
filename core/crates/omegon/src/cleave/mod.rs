@@ -1,7 +1,7 @@
 //! Cleave orchestrator — parallel child dispatch with worktree isolation.
 //!
 //! Replaces the TypeScript dispatcher (extensions/cleave/dispatcher.ts).
-//! Spawns omegon-agent children in git worktrees, manages dependency waves,
+//! Spawns omegon children in git worktrees, manages dependency waves,
 //! tracks state, and merges results.
 
 pub mod context;

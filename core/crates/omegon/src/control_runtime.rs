@@ -3199,7 +3199,7 @@ pub async fn vault_init_policy_response() -> SlashCommandResponse {
         accepted: true,
         output: Some(
             "# Omegon Agent Vault Policy\n\
-             # Apply with: vault policy write omegon-agent omegon-policy.hcl\n\n\
+             # Apply with: vault policy write omegon omegon-policy.hcl\n\n\
              ```hcl\n\
              # Read/write agent-scoped secrets\n\
              path \"secret/data/omegon/*\" {\n  capabilities = [\"read\", \"create\", \"update\"]\n}\n\
@@ -3209,7 +3209,7 @@ pub async fn vault_init_policy_response() -> SlashCommandResponse {
              # Allow minting child tokens for cleave\n\
              path \"auth/token/create\" {\n  capabilities = [\"create\", \"update\"]\n  allowed_parameters = {\n    \"policies\" = [\"omegon-child\"]\n    \"ttl\" = [\"30m\"]\n    \"num_uses\" = [\"100\"]\n  }\n}\n\
              ```\n\n\
-             Save to a file and apply: `vault policy write omegon-agent <file>`"
+             Save to a file and apply: `vault policy write omegon <file>`"
                 .to_string(),
         ),
     }

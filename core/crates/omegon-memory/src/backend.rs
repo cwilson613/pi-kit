@@ -6,7 +6,7 @@
 //!
 //! The trait surface mirrors api-types.ts endpoints as direct Rust calls.
 //! Each method maps 1:1 to an HTTP endpoint in the Omega daemon model,
-//! but is called directly when linked into the omegon-agent binary.
+//! but is called directly when linked into the omegon binary.
 
 use crate::types::*;
 use async_trait::async_trait;

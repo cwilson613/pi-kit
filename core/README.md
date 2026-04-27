@@ -4,28 +4,18 @@ Rust-native agent harness. See the [root README](../README.md) for usage and ins
 
 ## Architecture
 
-A single Rust binary (`omegon-agent`) that owns the agent loop, lifecycle engine, and core tools. LLM provider access is through a ~100-line Node.js subprocess bridge that imports `@styrene-lab/pi-ai`.
+A single Rust binary (`omegon`) that owns the agent loop, lifecycle engine, and core tools. Native HTTPS clients for 11 LLM providers — no Node.js runtime dependency.
 
 ```
-omegon-agent (Rust)
+omegon (Rust)
   ├── Agent Loop — state machine, steering, follow-up
   ├── Lifecycle Engine — explore → specify → decompose → implement → verify
-  │     ├── Ambient capture (omg: XML tags from agent reasoning)
-  │     ├── Autonomous decomposition (above complexity threshold)
-  │     └── sqlite lifecycle store (ai/lifecycle.db)
   ├── ContextManager — dynamic per-turn system prompt injection
   ├── ConversationState — context decay, IntentDocument
-  ├── Core Tools — understand, change, execute, remember, speculate
-  └── Feature Crates — memory, render, view, search, ollama, mcp
+  ├── Core Tools — read, edit, write, bash, change, commit
+  └── Feature Crates — memory, lifecycle, cleave, extensions, ollama
         ↕ ToolProvider / ContextProvider / EventSubscriber / SessionHook
 ```
-
-## Phases
-
-- **Phase 0**: Headless agent loop for cleave children. First production consumer.
-- **Phase 1**: Process owner. Node.js subprocesses for LLM bridge + TUI bridge.
-- **Phase 2**: Native TUI (ratatui). Node.js only for LLM bridge.
-- **Phase 3**: Native LLM clients (reqwest). Node.js for long-tail providers only.
 
 ## Development
 

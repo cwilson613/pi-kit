@@ -619,7 +619,7 @@ impl Default for Settings {
             provider_order: Vec::new(),
             update_channel: default_update_channel(),
             provider_connected: true, // optimistic default — set false when NullBridge
-            mouse: false,
+            mouse: true,
             clipboard_retention_hours: default_clipboard_retention_hours(),
             posture_disabled_tools: Vec::new(),
             posture_enabled_tools: Vec::new(),

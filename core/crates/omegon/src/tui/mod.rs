@@ -1214,10 +1214,9 @@ impl App {
                 ratatui_toaster::ToastType::Info,
             );
         } else {
-            // Don't re-enable mouse capture on focus exit — text selection
-            // must keep working. /mouse on is available if needed.
+            self.set_mouse_capture(true);
             self.show_toast(
-                "Focus mode disabled — full conversation restored",
+                "Focus mode disabled — Shift+click-drag to select text",
                 ratatui_toaster::ToastType::Info,
             );
         }
@@ -6630,9 +6629,10 @@ pub async fn run_tui(
         },
     );
 
-    // Mouse capture off by default — terminal-native text selection must
-    // always work. Scroll via Shift+Up/Down, PageUp/PageDown.
-    let mouse_enabled = settings.lock().map(|s| s.mouse).unwrap_or(false);
+    // Mouse capture on by default — required for scroll wheel to work
+    // without being reinterpreted as arrow keys. Text selection via
+    // Shift+click-drag (works in all modern terminals).
+    let mouse_enabled = settings.lock().map(|s| s.mouse).unwrap_or(true);
     let mut app = App::new(settings.clone());
     app.keyboard_enhancement = has_keyboard_enhancement;
     // Populate extension widgets and receivers from config

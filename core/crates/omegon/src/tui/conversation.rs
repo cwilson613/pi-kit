@@ -369,20 +369,11 @@ impl ConversationView {
             }
         }
 
-        // Consolidate: if the segment before this one is a completed card
-        // of the same tool name, merge this card into it as an appended
-        // tree entry. Only for tools where grouping makes sense — NOT for
-        // content-bearing tools (read, write, edit, bash) where each call
-        // operates on different files/commands and the output matters.
-        const CONSOLIDATABLE: &[&str] = &[
-            "design_tree", "design_tree_update", "openspec_manage",
-            "lifecycle_doctor", "memory_store", "memory_recall",
-            "memory_query", "memory_archive", "memory_focus",
-            "memory_release", "memory_compact", "memory_supersede",
-            "codebase_search", "codebase_index",
-        ];
+        // Consolidate: consecutive completed cards of the same tool name
+        // merge into a single grouped card with tree-style entries.
+        // Density/expand controls how much detail each entry shows.
         if let (Some(ref name), Some(idx)) = (completed_name, completed_idx) {
-            if idx > 0 && !is_error && CONSOLIDATABLE.iter().any(|t| t == name) {
+            if idx > 0 && !is_error {
                 if let SegmentContent::ToolCard {
                     name: ref prev_name,
                     complete: true,

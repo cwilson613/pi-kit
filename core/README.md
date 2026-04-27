@@ -1,6 +1,6 @@
-# omegon-core
+# omegon
 
-Rust-native agent loop and lifecycle engine for [Omegon](https://github.com/styrene-lab/omegon).
+Rust-native agent harness. See the [root README](../README.md) for usage and installation.
 
 ## Architecture
 

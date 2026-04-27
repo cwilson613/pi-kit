@@ -10,7 +10,7 @@ spec:
       - name: ref          # refs/tags/v0.13.0
       - name: commit-sha
       - name: repo
-        value: styrene-lab/omegon-core
+        value: styrene-lab/omegon
   entrypoint: pipeline
   serviceAccountName: ci-workflow-sa
 

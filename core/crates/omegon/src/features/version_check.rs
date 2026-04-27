@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use omegon_traits::{BusEvent, BusRequest, Feature};
 
 const REPO_OWNER: &str = "styrene-lab";
-const REPO_NAME: &str = "omegon-core";
+const REPO_NAME: &str = "omegon";
 const FETCH_TIMEOUT_SECS: u64 = 10;
 
 pub struct VersionCheck {
@@ -61,7 +61,7 @@ impl Feature for VersionCheck {
                             current = %current,
                             latest = %latest,
                             "Omegon update available: v{current} → v{latest}. \
-                             Run `curl -fsSL https://omegon.styrene.dev/install | sh` to upgrade."
+                             Run `curl -fsSL https://omegon.styrene.io/install.sh | sh` to upgrade."
                         );
                     }
                     _ => {

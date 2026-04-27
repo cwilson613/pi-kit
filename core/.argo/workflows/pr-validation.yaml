@@ -10,7 +10,7 @@ spec:
       - name: commit-sha
       - name: pr-number
       - name: repo
-        value: styrene-lab/omegon-core
+        value: styrene-lab/omegon
   entrypoint: pipeline
   serviceAccountName: ci-workflow-sa
 

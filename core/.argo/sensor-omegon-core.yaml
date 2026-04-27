@@ -1,10 +1,10 @@
-# Sensor: maps GitHub events for omegon-core to Argo Workflows
+# Sensor: maps GitHub events for omegon to Argo Workflows
 # Deploy to: vanderlyn/apps/argo-events/ (alongside existing sensors)
-# Also requires adding "omegon-core" to eventsource-github.yaml repo names
+# Also requires adding "omegon" to eventsource-github.yaml repo names
 apiVersion: argoproj.io/v1alpha1
 kind: Sensor
 metadata:
-  name: omegon-core-ci
+  name: omegon-ci
   namespace: argo-events
 spec:
   template:
@@ -24,7 +24,7 @@ spec:
             value: ["tag"]
           - path: "body.repository.name"
             type: string
-            value: ["omegon-core"]
+            value: ["omegon"]
 
     # PR → validation
     - name: pull-request
@@ -40,7 +40,7 @@ spec:
             value: ["opened", "synchronize"]
           - path: "body.repository.name"
             type: string
-            value: ["omegon-core"]
+            value: ["omegon"]
 
   triggers:
     # Tag → release build

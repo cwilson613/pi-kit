@@ -105,9 +105,6 @@ pub struct ShadowEntry {
     pub last_scored_turn: u32,
     pub diversity_key: Option<String>,
     pub diversity_cap: Option<usize>,
-    /// Cached embedding vector for semantic relevance scoring.
-    /// Computed lazily when an embedding service is available.
-    pub embedding: Option<Vec<f32>>,
 }
 
 impl ShadowEntry {
@@ -129,7 +126,6 @@ impl ShadowEntry {
             last_scored_turn: 0,
             diversity_key: None,
             diversity_cap: None,
-            embedding: None,
         }
     }
 
@@ -185,6 +181,9 @@ pub struct SelectedContext {
 pub struct ShadowContext {
     entries: Vec<ShadowEntry>,
     selector_policy: SelectorPolicy,
+    /// Embedding cache — keyed by entry ID, separate from entry data.
+    /// Prevents ML concern from leaking into the context selection abstraction.
+    embed_cache: HashMap<EntryId, Vec<f32>>,
 }
 
 impl ShadowContext {
@@ -192,6 +191,7 @@ impl ShadowContext {
         Self {
             entries: Vec::new(),
             selector_policy,
+            embed_cache: HashMap::new(),
         }
     }
 
@@ -221,7 +221,7 @@ impl ShadowContext {
     pub fn entries_needing_embeddings(&self) -> Vec<(EntryId, String)> {
         self.entries
             .iter()
-            .filter(|e| e.embedding.is_none() && e.kind.tier() >= 2)
+            .filter(|e| !self.embed_cache.contains_key(&e.id) && e.kind.tier() >= 2)
             .map(|e| (e.id.clone(), e.search_text()))
             .collect()
     }
@@ -229,9 +229,7 @@ impl ShadowContext {
     /// Set embedding vectors for entries by ID.
     pub fn set_embeddings(&mut self, embeddings: &[(EntryId, Vec<f32>)]) {
         for (id, vec) in embeddings {
-            if let Some(entry) = self.entries.iter_mut().find(|e| e.id == *id) {
-                entry.embedding = Some(vec.clone());
-            }
+            self.embed_cache.insert(id.clone(), vec.clone());
         }
     }
 
@@ -261,7 +259,8 @@ impl ShadowContext {
             entry.last_scored_turn = turn;
 
             // Semantic relevance via embedding cosine similarity when available
-            let embedding_score = match (query_embedding, &entry.embedding) {
+            let entry_embed = self.embed_cache.get(&entry.id);
+            let embedding_score = match (query_embedding, entry_embed) {
                 (Some(q), Some(e)) if !q.is_empty() && !e.is_empty() && q.len() == e.len() => {
                     Some(omegon_memory::vectors::cosine_similarity(q, e).max(0.0))
                 }

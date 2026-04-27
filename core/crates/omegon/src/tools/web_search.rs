@@ -780,8 +780,9 @@ mod tests {
     fn tool_definition_schema() {
         let provider = WebSearchProvider::new();
         let tools = provider.tools();
-        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, "web_search");
+        assert_eq!(tools[1].name, "web_fetch");
         let params = &tools[0].parameters;
         assert!(params.get("properties").unwrap().get("query").is_some());
     }

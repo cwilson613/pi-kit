@@ -468,76 +468,82 @@ impl ConversationView {
             }
         }
 
-        // Consolidate: consecutive completed cards of the same tool name
-        // merge into a single grouped card with tree-style entries.
+        // ── CONSOLIDATION ─────────────────────────────────────────
+        // Merge consecutive completed cards of the same tool name
+        // into a single grouped card with tree-style entries.
         if let (Some(ref name), Some(idx)) = (completed_name, completed_idx) {
             if idx > 0 && !is_error {
-                // Check if the preceding segment is a completed non-error card
-                // of the same tool name. Allow predecessors with None detail_result.
-                let should_merge = matches!(
-                    &self.segments[idx - 1].content,
-                    SegmentContent::ToolCard {
-                        name: prev_name,
-                        complete: true,
-                        is_error: false,
-                        ..
-                    } if prev_name == name
-                );
-
-                if should_merge {
-                    // Grab the current card's full result before removing it
-                    let current_full_result = if let SegmentContent::ToolCard {
-                        detail_result: ref dr, ..
-                    } = self.segments[idx].content
-                    {
-                        dr.clone().unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-
-                    // Append to predecessor: one-liner summary + separator + full result
-                    if let SegmentContent::ToolCard {
-                        detail_result: ref mut prev_result_opt,
-                        args_summary: ref mut prev_args_summary,
-                        ..
-                    } = self.segments[idx - 1].content
-                    {
-                        let prev_result = prev_result_opt.get_or_insert_with(String::new);
-                        if let Some(ref summary) = completed_summary {
-                            prev_result.push('\n');
-                            prev_result.push_str(&format!("  + {summary}"));
-                        }
-                        // Append full result in a collapsible section so expand
-                        // doesn't lose content from merged cards.
-                        if !current_full_result.is_empty() {
-                            prev_result.push_str("\n--- merged entry ---\n");
-                            prev_result.push_str(&current_full_result);
-                        }
-                        let count = prev_result.matches("\n  + ").count() + 1;
-                        *prev_args_summary = Some(format!("{name} ({count} operations)"));
-                    }
-
-                    // Remove the merged card and fix up indices
-                    self.segments.remove(idx);
-                    if let Some(ref mut p) = self.pinned_segment {
-                        if *p == idx {
-                            self.pinned_segment = None;
-                        } else if *p > idx {
-                            *p -= 1;
-                        }
-                    }
-                    if let Some(ref mut s) = self.selected_segment {
-                        if *s == idx {
-                            self.selected_segment = None;
-                        } else if *s > idx {
-                            *s -= 1;
-                        }
-                    }
-                }
+                self.try_merge_with_predecessor(idx, name, completed_summary.as_deref());
             }
         }
 
         self.conv_state.invalidate();
+    }
+
+    /// Attempt to merge segment at `idx` into the preceding segment if both
+    /// are completed, non-error tool cards of the same name. Handles index
+    /// fixup for pinned_segment and selected_segment after removal.
+    fn try_merge_with_predecessor(&mut self, idx: usize, name: &str, summary: Option<&str>) {
+        let should_merge = matches!(
+            &self.segments[idx - 1].content,
+            SegmentContent::ToolCard {
+                name: prev_name,
+                complete: true,
+                is_error: false,
+                ..
+            } if prev_name == name
+        );
+
+        if !should_merge {
+            return;
+        }
+
+        // Grab the current card's full result before removing
+        let current_full_result = if let SegmentContent::ToolCard {
+            detail_result: ref dr, ..
+        } = self.segments[idx].content
+        {
+            dr.clone().unwrap_or_default()
+        } else {
+            return;
+        };
+
+        // Append to predecessor
+        if let SegmentContent::ToolCard {
+            detail_result: ref mut prev_result_opt,
+            args_summary: ref mut prev_args_summary,
+            ..
+        } = self.segments[idx - 1].content
+        {
+            let prev_result = prev_result_opt.get_or_insert_with(String::new);
+            if let Some(s) = summary {
+                prev_result.push('\n');
+                prev_result.push_str(&format!("  + {s}"));
+            }
+            if !current_full_result.is_empty() {
+                prev_result.push_str("\n--- merged entry ---\n");
+                prev_result.push_str(&current_full_result);
+            }
+            let count = prev_result.matches("\n  + ").count() + 1;
+            *prev_args_summary = Some(format!("{name} ({count} operations)"));
+        }
+
+        // Remove and fix up tracked indices
+        self.segments.remove(idx);
+        if let Some(ref mut p) = self.pinned_segment {
+            if *p == idx {
+                self.pinned_segment = None;
+            } else if *p > idx {
+                *p -= 1;
+            }
+        }
+        if let Some(ref mut s) = self.selected_segment {
+            if *s == idx {
+                self.selected_segment = None;
+            } else if *s > idx {
+                *s -= 1;
+            }
+        }
     }
 
     pub fn finalize_message(&mut self) {

@@ -7,6 +7,7 @@
 pub mod bash;
 pub mod change;
 pub mod native_cmd;
+pub(crate) mod output_filter;
 pub mod chronos;
 pub mod codebase_search;
 pub mod edit;

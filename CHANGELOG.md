@@ -14,6 +14,25 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.3] - 2026-04-27
+
+### Fixed
+
+- **Write/read outside workspace no longer causes churn** — tool descriptions now tell the model to use bash for paths outside the workspace. Error message starts with "OUTSIDE WORKSPACE" and gives an actionable recovery path instead of a vague rejection. Eliminates the retry→nudge→churn cycle for users writing to Obsidian vaults, ~/Documents, etc.
+- **OpenCode Go login wired into CLI** — `omegon login opencode-go` was missing from the login handler and would print "Unknown provider." Now prompts for API key.
+
+### Added
+
+- **OpenCode Go provider** — $10/mo access to DeepSeek V4, Kimi K2.6, Qwen 3.6, GLM 5.1, MiniMax M2.7 via opencode.ai/go. OpenAI-compatible API. 6 models registered. Usage: `om --model opencode-go:deepseek-v4-pro`. (#52)
+- **Trusted directories** — `trusted_directories` setting allows the agent to read/write outside the workspace. Add paths like `~/Library/Mobile Documents/iCloud~md~obsidian` to `~/.config/omegon/settings.json`. Session-level approvals also supported programmatically.
+- **Update notifications in TUI** — startup version check now surfaces "Update available: vX → vY. Run /update to install." as a TUI notification instead of only logging to tracing. (#62)
+- **24h update check cache** — cached at `~/.omegon/update-check.json`. Skips GitHub API on startup if cache is fresh.
+- **Auto-update opt-in** — `auto_update: true` in settings downloads and replaces the binary on session exit when a newer version is available. Cosign verification required. Default: false.
+- **`om` symlink** — install script creates `om` as a symlink to `omegon` for the slim mode entrypoint.
+- **Ecosystem & Integrations docs page** — MCP servers, IDE rules, API keys, plugins, extensions, compatibility matrix. Targets newcomers from other tools.
+- **Site stats derived from source** — `collect-stats.mjs` now parses `auth.rs` for provider count/names, `skills/` for skill count, `web_search.rs` for search provider count. No more hardcoded numbers in site copy.
+- **Unauthenticated endpoint probe test** — validates all OpenAI-compat provider base URLs are reachable and speak the right protocol. Zero API keys needed. Runs in CI.
+
 ## [0.17.2] - 2026-04-27
 
 ### Fixed

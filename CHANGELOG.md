@@ -14,7 +14,13 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
-## [0.17.0] - 2026-04-27
+## [0.17.1] - 2026-04-27
+
+### Fixed
+
+- **Release attestation conflict** — `v0.17.0` tag was tainted by GitHub's immutable attestation system after a partial release. Re-released as `v0.17.1` with identical content.
+
+## [0.17.0] - 2026-04-27 (tag tainted — use 0.17.1)
 
 ### Fixed
 

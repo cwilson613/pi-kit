@@ -60,7 +60,8 @@ impl BM25Index {
         let code_docs: Vec<_> = code
             .iter()
             .map(|c| {
-                let text = format!("{} {} {}", c.item_name, c.item_kind, c.text);
+                let scope = c.parent_scope.as_deref().unwrap_or("");
+                let text = format!("{} {} {} {}", scope, c.item_name, c.item_kind, c.text);
                 (c.clone(), tokenize(&text))
             })
             .collect();
@@ -210,6 +211,7 @@ mod tests {
             item_name: name.into(),
             item_kind: "fn".into(),
             text: text.into(),
+            parent_scope: None,
         }
     }
     fn mk_knowledge(heading: &str, text: &str) -> KnowledgeChunk {

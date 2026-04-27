@@ -32,7 +32,8 @@ impl ScanCache {
                  item_name TEXT NOT NULL,
                  item_kind TEXT NOT NULL,
                  text TEXT NOT NULL,
-                 content_hash TEXT NOT NULL
+                 content_hash TEXT NOT NULL,
+                 parent_scope TEXT
              );
              CREATE INDEX IF NOT EXISTS idx_code_path ON code_chunks(path);
              CREATE TABLE IF NOT EXISTS knowledge_chunks (
@@ -113,9 +114,9 @@ impl ScanCache {
             .execute("DELETE FROM code_chunks WHERE path = ?1", params![path_str])?;
         for chunk in chunks {
             self.conn.execute(
-                "INSERT INTO code_chunks (path, start_line, end_line, item_name, item_kind, text, content_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![path_str, chunk.start_line, chunk.end_line, chunk.item_name, chunk.item_kind, chunk.text, hash],
+                "INSERT INTO code_chunks (path, start_line, end_line, item_name, item_kind, text, content_hash, parent_scope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![path_str, chunk.start_line, chunk.end_line, chunk.item_name, chunk.item_kind, chunk.text, hash, chunk.parent_scope],
             )?;
         }
         Ok(())
@@ -167,7 +168,7 @@ impl ScanCache {
 
     pub fn all_code_chunks(&self) -> Result<Vec<CodeChunk>> {
         let mut stmt = self.conn.prepare(
-            "SELECT path, start_line, end_line, item_name, item_kind, text FROM code_chunks",
+            "SELECT path, start_line, end_line, item_name, item_kind, text, parent_scope FROM code_chunks",
         )?;
         let chunks = stmt
             .query_map([], |row| {
@@ -178,6 +179,7 @@ impl ScanCache {
                     item_name: row.get(3)?,
                     item_kind: row.get(4)?,
                     text: row.get(5)?,
+                    parent_scope: row.get(6)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -265,6 +267,7 @@ mod tests {
             item_name: "foo".into(),
             item_kind: "fn".into(),
             text: "fn foo() {}".into(),
+            parent_scope: None,
         };
         cache.upsert_code_chunks(path, "h1", &[chunk]).unwrap();
         let loaded = cache.all_code_chunks().unwrap();
@@ -303,6 +306,7 @@ mod tests {
             item_name: "a".into(),
             item_kind: "fn".into(),
             text: "fn a(){}".into(),
+            parent_scope: None,
         };
         cache
             .upsert_code_chunks(&path_a, "hash_a", &[chunk])
@@ -327,6 +331,7 @@ mod tests {
             item_name: "x".into(),
             item_kind: "fn".into(),
             text: "".into(),
+            parent_scope: None,
         };
         cache
             .upsert_code_chunks(Path::new("x.rs"), "abc123", &[chunk])
@@ -360,6 +365,7 @@ mod tests {
                     item_name: "keep".into(),
                     item_kind: "fn".into(),
                     text: "fn keep() {}".into(),
+            parent_scope: None,
                 }],
             )
             .unwrap();
@@ -374,6 +380,7 @@ mod tests {
                     item_name: "stale".into(),
                     item_kind: "fn".into(),
                     text: "fn stale() {}".into(),
+            parent_scope: None,
                 }],
             )
             .unwrap();

@@ -16,6 +16,9 @@ pub struct CodeChunk {
     pub item_name: String,
     pub item_kind: String,
     pub text: String,
+    /// Enclosing scope (e.g., "impl ShadowContext" for a method inside it).
+    /// None for top-level declarations.
+    pub parent_scope: Option<String>,
 }
 
 pub struct CodeScanner;
@@ -268,6 +271,38 @@ impl ScanResult {
     }
 }
 
+/// Container kinds — nodes that should be recursed into to extract children.
+const CONTAINER_KINDS: &[&str] = &[
+    // Rust
+    "impl_item",
+    "trait_item",
+    "mod_item",
+    // TypeScript / JavaScript
+    "class_declaration",
+    "abstract_class_declaration",
+    "class_body",
+    // Python
+    "class_definition",
+    // Go — type declarations contain method sets via receiver, not nesting
+];
+
+/// Inner declaration kinds — what we extract from inside containers.
+const INNER_KINDS: &[&str] = &[
+    // Rust
+    "function_item",
+    "function_signature_item",
+    "type_alias",
+    "const_item",
+    // TS/JS
+    "method_definition",
+    "public_field_definition",
+    "function_declaration",
+    "function",
+    // Python
+    "function_definition",
+    "decorated_definition",
+];
+
 fn scan_with_ts(
     path: &Path,
     content: &str,
@@ -290,32 +325,93 @@ fn scan_with_ts(
     let total = lines.len();
 
     let mut chunks = Vec::new();
-    let cursor = &mut root.walk();
 
-    for child in root.children(cursor) {
-        let kind = child.kind();
-        if !top_kinds.contains(&kind) {
-            continue;
-        }
-        let name = name_extractor(&child, source);
-        // Skip trivial anonymous constants that are just single-line values
-        if name == "(anonymous)" && child.end_position().row == child.start_position().row {
-            continue;
-        }
-        let start = child.start_position().row;
-        let end = child.end_position().row;
-        let chunk_end = end.min(start + 99).min(total.saturating_sub(1));
-        let text = lines[start..=chunk_end].join("\n");
+    fn visit(
+        node: &Node,
+        path: &Path,
+        source: &[u8],
+        lines: &[&str],
+        total: usize,
+        top_kinds: &[&str],
+        kind_label: fn(&str) -> &'static str,
+        name_extractor: fn(&Node, &[u8]) -> String,
+        parent_scope: Option<&str>,
+        chunks: &mut Vec<CodeChunk>,
+    ) {
+        let cursor = &mut node.walk();
+        for child in node.children(cursor) {
+            let kind = child.kind();
 
-        chunks.push(CodeChunk {
-            path: path.to_path_buf(),
-            start_line: start + 1,
-            end_line: chunk_end + 1,
-            item_name: name,
-            item_kind: kind_label(kind).to_string(),
-            text,
-        });
+            // Skip non-interesting nodes
+            let is_top = top_kinds.contains(&kind);
+            let is_inner = INNER_KINDS.contains(&kind);
+            let is_container = CONTAINER_KINDS.contains(&kind);
+
+            if !is_top && !is_inner && !is_container {
+                continue;
+            }
+
+            let name = name_extractor(&child, source);
+            if name == "(anonymous)" && child.end_position().row == child.start_position().row {
+                continue;
+            }
+
+            let start = child.start_position().row;
+            let end = child.end_position().row;
+            let chunk_end = end.min(start + 99).min(total.saturating_sub(1));
+
+            // Emit a chunk for this node
+            if is_top || is_inner {
+                let text = lines[start..=chunk_end].join("\n");
+                let qualified_name = match parent_scope {
+                    Some(scope) => format!("{scope}::{name}"),
+                    None => name.clone(),
+                };
+                chunks.push(CodeChunk {
+                    path: path.to_path_buf(),
+                    start_line: start + 1,
+                    end_line: chunk_end + 1,
+                    item_name: qualified_name,
+                    item_kind: kind_label(kind).to_string(),
+                    text,
+                    parent_scope: parent_scope.map(String::from),
+                });
+            }
+
+            // Recurse into containers to extract inner declarations
+            if is_container {
+                let scope_name = match parent_scope {
+                    Some(scope) => format!("{scope}::{name}"),
+                    None => name,
+                };
+                visit(
+                    &child,
+                    path,
+                    source,
+                    lines,
+                    total,
+                    top_kinds,
+                    kind_label,
+                    name_extractor,
+                    Some(&scope_name),
+                    chunks,
+                );
+            }
+        }
     }
+
+    visit(
+        &root,
+        path,
+        source,
+        &lines,
+        total,
+        top_kinds,
+        kind_label,
+        name_extractor,
+        None,
+        &mut chunks,
+    );
 
     ScanResult(chunks)
 }
@@ -427,6 +523,7 @@ fn scan_with_regex(path: &Path, content: &str, patterns: &[PatternPair]) -> Vec<
             item_name: name.clone(),
             item_kind: kind.clone(),
             text,
+            parent_scope: None,
         });
     }
     chunks

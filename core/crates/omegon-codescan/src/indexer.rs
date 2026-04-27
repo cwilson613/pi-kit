@@ -280,6 +280,7 @@ mod tests {
                     item_name: "transient_workspace_copy".into(),
                     item_kind: "fn".into(),
                     text: "fn transient_workspace_copy() {}".into(),
+                    parent_scope: None,
                 }],
             )
             .unwrap();

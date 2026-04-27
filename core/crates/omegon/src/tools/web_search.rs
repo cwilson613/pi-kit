@@ -32,8 +32,7 @@ impl WebSearchProvider {
     }
 
     /// Lazily resolve a search API key: check env first, then fall back to
-    /// the secrets manager (keyring/recipe). On first hit, the resolved value
-    /// is exported to the process env so subsequent calls are instant.
+    /// the secrets manager (keyring/recipe).
     fn resolve_key(&self, env_name: &str) -> Option<String> {
         if let Ok(v) = env::var(env_name) {
             if !v.is_empty() {
@@ -41,10 +40,7 @@ impl WebSearchProvider {
             }
         }
         let secrets = self.secrets.as_ref()?;
-        let value = secrets.resolve(env_name)?;
-        // Cache in process env so we only hit the keyring once per session.
-        unsafe { env::set_var(env_name, &value) };
-        Some(value)
+        secrets.resolve(env_name)
     }
 
     fn available_providers(&self) -> Vec<&'static str> {
@@ -122,6 +118,35 @@ impl WebSearchProvider {
     /// Strips HTML tags with a simple pass and truncates to 50KB.
     /// Works anywhere — no API keys needed.
     async fn fetch_url_curl(&self, url: &str) -> anyhow::Result<String> {
+        // SSRF protection: only allow http/https, block internal networks
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+        match parsed.scheme() {
+            "http" | "https" => {}
+            scheme => anyhow::bail!("Blocked URL scheme: {scheme}. Only http/https allowed."),
+        }
+        if let Some(host) = parsed.host_str() {
+            let blocked = host == "localhost"
+                || host == "127.0.0.1"
+                || host == "::1"
+                || host == "0.0.0.0"
+                || host.starts_with("169.254.")
+                || host.starts_with("10.")
+                || host.starts_with("192.168.")
+                || host.starts_with("172.16.")
+                || host.starts_with("172.17.")
+                || host.starts_with("172.18.")
+                || host.starts_with("172.19.")
+                || host.starts_with("172.2")
+                || host.starts_with("172.30.")
+                || host.starts_with("172.31.")
+                || host.ends_with(".internal")
+                || host.ends_with(".local");
+            if blocked {
+                anyhow::bail!("Blocked internal/private URL: {host}");
+            }
+        }
+
         let output = tokio::process::Command::new("curl")
             .args(["-sL", "--max-time", "15", "--max-filesize", "1048576", url])
             .output()

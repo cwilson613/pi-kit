@@ -26,6 +26,9 @@ pub struct AutoCompact {
     cooldown: std::time::Duration,
     last_compact: Option<Instant>,
     compacting: bool,
+    /// Watchdog: when compaction was requested. Reset `compacting` if
+    /// no `Compacted` event arrives within the timeout.
+    compaction_requested_at: Option<Instant>,
     estimated_percent: f32,
     // EWMA prediction state
     prev_tokens: Option<usize>,
@@ -64,6 +67,7 @@ impl AutoCompact {
             cooldown: std::time::Duration::from_secs(cooldown_secs),
             last_compact: None,
             compacting: false,
+            compaction_requested_at: None,
             estimated_percent: 0.0,
             prev_tokens: None,
             ewma_growth: 0.0,
@@ -95,8 +99,19 @@ impl Feature for AutoCompact {
                 context_window,
                 ..
             } => {
+                // Watchdog: if compaction was requested >120s ago and no
+                // Compacted event arrived, assume it failed and reset.
                 if self.compacting {
-                    return vec![];
+                    if self
+                        .compaction_requested_at
+                        .is_some_and(|t| t.elapsed().as_secs() > 120)
+                    {
+                        tracing::warn!("auto-compact: compaction watchdog fired — resetting after 120s timeout");
+                        self.compacting = false;
+                        self.compaction_requested_at = None;
+                    } else {
+                        return vec![];
+                    }
                 }
 
                 let tokens = *estimated_tokens;
@@ -132,6 +147,7 @@ impl Feature for AutoCompact {
                 {
                     self.compacting = true;
                     self.last_compact = Some(Instant::now());
+                    self.compaction_requested_at = Some(Instant::now());
                     tracing::info!(
                         turn,
                         current = self.estimated_percent,
@@ -161,6 +177,11 @@ impl Feature for AutoCompact {
             }
             BusEvent::Compacted => {
                 self.compacting = false;
+                self.compaction_requested_at = None;
+                // Reset EWMA after compaction — the sharp token drop would
+                // otherwise suppress early warning for several turns.
+                self.ewma_growth = 0.0;
+                self.prev_tokens = None;
                 vec![]
             }
             _ => vec![],
@@ -224,10 +245,15 @@ mod tests {
         ac.tier2_threshold = 85.0;
 
         // Simulate rapid growth: 30% → 50% → 65%
-        ac.on_event(&turn_end(60_000, 200_000));  // 30%, establishes baseline
-        ac.on_event(&BusEvent::Compacted); // clear compacting flag
+        // Don't fire Compacted between turns — that resets EWMA.
+        // Just clear the compacting flag directly to simulate
+        // turns passing without compaction.
+        ac.on_event(&turn_end(60_000, 200_000)); // 30%, establishes baseline
+        ac.compacting = false; // clear without resetting EWMA
+        ac.last_compact = None;
         ac.on_event(&turn_end(100_000, 200_000)); // 50%, delta=40k
-        ac.on_event(&BusEvent::Compacted);
+        ac.compacting = false;
+        ac.last_compact = None;
 
         // At 65%, EWMA projects growth of ~28k/turn (smoothed).
         // Projected at turn+2 = 130k + 56k = 186k / 200k = 93%.

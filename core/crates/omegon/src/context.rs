@@ -88,6 +88,10 @@ impl ContextManager {
             return;
         };
 
+        // Clear stale query embedding before computing new one —
+        // if embed fails, we don't want the old one lingering.
+        self.query_embedding = None;
+
         // Compute query embedding
         match service.embed(user_prompt).await {
             Ok(vec) => self.query_embedding = Some(vec),

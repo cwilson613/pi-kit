@@ -262,7 +262,7 @@ impl ShadowContext {
 
             // Semantic relevance via embedding cosine similarity when available
             let embedding_score = match (query_embedding, &entry.embedding) {
-                (Some(q), Some(e)) if !q.is_empty() && !e.is_empty() => {
+                (Some(q), Some(e)) if !q.is_empty() && !e.is_empty() && q.len() == e.len() => {
                     Some(omegon_memory::vectors::cosine_similarity(q, e).max(0.0))
                 }
                 _ => None,

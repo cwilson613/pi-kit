@@ -134,7 +134,16 @@ esac
 # e.g. omegon-0.15.2-aarch64-apple-darwin.tar.gz
 case "$OS_NAME" in
   darwin) TARGET="${ARCH_NAME}-apple-darwin" ;;
-  linux)  TARGET="${ARCH_NAME}-unknown-linux-gnu" ;;
+  linux)
+    # Prefer musl (static, works on NixOS/Alpine/containers) over gnu.
+    # Fall back to gnu if musl asset doesn't exist in the release.
+    if [ "$ARCH_NAME" = "x86_64" ]; then
+      TARGET="${ARCH_NAME}-unknown-linux-musl"
+      TARGET_FALLBACK="${ARCH_NAME}-unknown-linux-gnu"
+    else
+      TARGET="${ARCH_NAME}-unknown-linux-gnu"
+    fi
+    ;;
 esac
 
 PLATFORM="${TARGET}"
@@ -238,10 +247,22 @@ step "Downloading ${ARCHIVE}..."
 
 HTTP_CODE=$(curl -fSL -w '%{http_code}' -o "${TMP}/${ARCHIVE}" "$ARCHIVE_URL" 2>/dev/null) || true
 if [ ! -f "${TMP}/${ARCHIVE}" ] || [ "$HTTP_CODE" = "404" ]; then
-  die "release artifact not found: ${ARCHIVE_URL}
+  # Fallback: if musl target not available, try gnu
+  if [ -n "${TARGET_FALLBACK:-}" ]; then
+    step "Static (musl) build not available, falling back to gnu..."
+    PLATFORM="${TARGET_FALLBACK}"
+    VERSION_NUM=$(echo "$VERSION" | sed 's/^v//')
+    ARCHIVE="${BINARY}-${VERSION_NUM}-${TARGET_FALLBACK}.tar.gz"
+    ARCHIVE_URL="${BASE_URL}/${ARCHIVE}"
+    rm -f "${TMP}/${ARCHIVE}" 2>/dev/null
+    HTTP_CODE=$(curl -fSL -w '%{http_code}' -o "${TMP}/${ARCHIVE}" "$ARCHIVE_URL" 2>/dev/null) || true
+  fi
+  if [ ! -f "${TMP}/${ARCHIVE}" ] || [ "$HTTP_CODE" = "404" ]; then
+    die "release artifact not found: ${ARCHIVE_URL}
 
-  Available targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+  Available targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu
   Check releases: https://github.com/${REPO}/releases/tag/${VERSION}"
+  fi
 fi
 
 ARCHIVE_SIZE=$(wc -c < "${TMP}/${ARCHIVE}" | tr -d ' ')

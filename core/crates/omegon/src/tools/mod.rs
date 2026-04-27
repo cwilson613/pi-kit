@@ -167,14 +167,17 @@ impl CoreTools {
             return Ok(resolved);
         }
 
-        // Outside workspace and not trusted — reject with guidance
+        // Outside workspace and not trusted — reject with actionable guidance.
+        // The error message is seen by both the model and the user. The model
+        // needs to know it should switch to bash; the user needs to know how
+        // to add trusted directories for future sessions.
         anyhow::bail!(
-            "Path '{}' is outside the workspace '{}'. \
-             To allow access, add the directory to trusted_directories in settings:\n\
-             \n  /settings set trusted_directories [\"{}\"]\n\
-             \nOr use bash to write the file directly.",
-            path_str,
+            "OUTSIDE WORKSPACE — this tool only operates within '{}'. \
+             Use bash to write to '{}' instead (e.g., mkdir -p <dir> && cat > <file> << 'EOF' ... EOF). \
+             The operator can add '{}' to trusted_directories in settings to allow \
+             direct read/write access in future sessions.",
             cwd_canonical.display(),
+            path_str,
             canonical.parent().map(|p| p.display().to_string()).unwrap_or_default()
         )
     }
@@ -233,9 +236,10 @@ impl ToolProvider for CoreTools {
             ToolDefinition {
                 name: reg::READ.into(),
                 label: reg::READ.into(),
-                description: "Read the contents of a file. Supports text files and \
-                    images. Output is truncated to 2000 lines or 50KB. Use offset/limit \
-                    for large files."
+                description: "Read the contents of a file within the workspace. Supports \
+                    text files and images. Output is truncated to 2000 lines or 50KB. \
+                    Use offset/limit for large files. For files outside the workspace, \
+                    use bash (e.g., `cat ~/path/to/file`) instead."
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -259,8 +263,11 @@ impl ToolProvider for CoreTools {
             ToolDefinition {
                 name: reg::WRITE.into(),
                 label: reg::WRITE.into(),
-                description: "Write content to a file. Creates the file if it doesn't \
-                    exist, overwrites if it does. Automatically creates parent directories."
+                description: "Write content to a file within the workspace or a trusted \
+                    directory. Creates the file if it doesn't exist, overwrites if it does. \
+                    Automatically creates parent directories. For files outside the \
+                    workspace (e.g., ~/Documents, Obsidian vaults), use bash with a \
+                    heredoc instead: `bash cat > ~/path/to/file << 'EOF'\n...\nEOF`"
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -766,7 +773,7 @@ mod tests {
         let result = tools.resolve_path("../../../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("outside the workspace"), "error: {err}");
+        assert!(err.contains("OUTSIDE WORKSPACE"), "error: {err}");
     }
 
     #[test]
@@ -790,7 +797,7 @@ mod tests {
         let result = tools.resolve_path("/etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("outside the workspace"), "error: {err}");
+        assert!(err.contains("OUTSIDE WORKSPACE"), "error: {err}");
     }
 
     #[test]
@@ -832,12 +839,13 @@ mod tests {
     }
 
     #[test]
-    fn error_message_guides_user_to_add_trusted_directory() {
+    fn error_message_guides_model_to_use_bash() {
         let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
         let result = tools.resolve_path("/home/user/obsidian/eval.md");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("trusted_directories"), "error should mention trusted_directories: {err}");
-        assert!(err.contains("bash"), "error should mention bash as alternative: {err}");
+        assert!(err.contains("OUTSIDE WORKSPACE"), "error should start with clear marker: {err}");
+        assert!(err.contains("bash"), "error should tell model to use bash: {err}");
+        assert!(err.contains("trusted_directories"), "error should mention trusted_directories for user: {err}");
     }
 
     #[test]

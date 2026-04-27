@@ -243,6 +243,7 @@ fn is_known_provider_id(provider_id: &str) -> bool {
             | "openai"
             | "openai-codex"
             | "openrouter"
+            | "opencode-go"
             | "groq"
             | "xai"
             | "mistral"
@@ -377,6 +378,7 @@ fn fallback_order_for_model(model_spec: &str) -> Vec<&'static str> {
         "google" => vec!["google"],
         "google-antigravity" => vec!["google-antigravity", "google"],
         "huggingface" => vec!["huggingface"],
+        "opencode-go" => vec!["opencode-go"],
         "ollama" => vec!["ollama"],
         "ollama-cloud" => vec!["ollama-cloud"],
         _ => vec!["anthropic"],
@@ -478,7 +480,7 @@ pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
         }
         // OpenAI-compatible providers — all use the Chat Completions protocol
         "groq" | "xai" | "mistral" | "cerebras" | "google"
-        | "huggingface" | "ollama" => {
+        | "huggingface" | "ollama" | "opencode-go" => {
             OpenAICompatClient::from_env(provider_id).map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
         "ollama-cloud" => OllamaCloudClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
@@ -2304,6 +2306,7 @@ fn compat_base_url(provider_id: &str) -> Option<&'static str> {
         "xai" => Some("https://api.x.ai"),
         "mistral" => Some("https://api.mistral.ai"),
         "cerebras" => Some("https://api.cerebras.ai"),
+        "opencode-go" => Some("https://opencode.ai/zen/go"),
         "google" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         // Antigravity OAuth tokens require the Cloud Code Assist internal API
         // (cloudcode-pa.googleapis.com/v1internal), not the public OpenAI-compatible
@@ -4034,6 +4037,7 @@ mod tests {
             "huggingface",
             "ollama",
             "ollama-cloud",
+            "opencode-go",
         ] {
             assert!(
                 crate::model_registry::ModelRegistry::global().default_model(id).is_some(),

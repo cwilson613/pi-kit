@@ -36,7 +36,8 @@
     "openrouter": "anthropic/claude-sonnet-4-7",
     "huggingface": "Qwen/Qwen3-32B",
     "ollama-cloud": "gpt-oss:120b-cloud",
-    "ollama": "qwen3:32b"
+    "ollama": "qwen3:32b",
+    "opencode-go": "deepseek-v4-pro"
   },
   "tiers": {
     "gloriana": {
@@ -69,7 +70,8 @@
       "mistral": "devstral-small-2505",
       "cerebras": "llama-3.3-70b",
       "huggingface": "Qwen/Qwen3-32B",
-      "ollama": "qwen3:32b"
+      "ollama": "qwen3:32b",
+      "opencode-go": "deepseek-v4-flash"
     }
   },
   "routes": [
@@ -308,6 +310,49 @@
       "costTier": "cheap", "pricing": { "input": 0.75, "output": 4.5 },
       "capabilities": ["fast", "instruction", "coding"],
       "description": "GPT-5.4 Mini via ChatGPT/Codex OAuth"
+    },
+
+    {
+      "id": "deepseek-v4-pro", "provider": "opencode-go", "name": "DeepSeek V4 Pro",
+      "contextInput": 131072, "contextOutput": 32768,
+      "costTier": "cheap",
+      "capabilities": ["reasoning", "coding"],
+      "description": "DeepSeek V4 Pro via OpenCode Go — $10/mo subscription"
+    },
+    {
+      "id": "deepseek-v4-flash", "provider": "opencode-go", "name": "DeepSeek V4 Flash",
+      "contextInput": 131072, "contextOutput": 32768,
+      "costTier": "cheap",
+      "capabilities": ["fast", "coding"],
+      "description": "DeepSeek V4 Flash via OpenCode Go — fast, cheap"
+    },
+    {
+      "id": "kimi-k2.6", "provider": "opencode-go", "name": "Kimi K2.6",
+      "contextInput": 131072, "contextOutput": 32768,
+      "costTier": "cheap",
+      "capabilities": ["reasoning", "coding"],
+      "description": "Kimi K2.6 via OpenCode Go"
+    },
+    {
+      "id": "qwen3.6-plus", "provider": "opencode-go", "name": "Qwen 3.6 Plus",
+      "contextInput": 131072, "contextOutput": 32768,
+      "costTier": "cheap",
+      "capabilities": ["reasoning", "coding"],
+      "description": "Qwen 3.6 Plus via OpenCode Go"
+    },
+    {
+      "id": "glm-5.1", "provider": "opencode-go", "name": "GLM 5.1",
+      "contextInput": 131072, "contextOutput": 32768,
+      "costTier": "cheap",
+      "capabilities": ["reasoning", "coding"],
+      "description": "GLM 5.1 via OpenCode Go"
+    },
+    {
+      "id": "minimax-m2.7", "provider": "opencode-go", "name": "MiniMax M2.7",
+      "contextInput": 131072, "contextOutput": 32768,
+      "costTier": "cheap",
+      "capabilities": ["reasoning", "coding"],
+      "description": "MiniMax M2.7 via OpenCode Go"
     }
   ]
 }

@@ -4058,6 +4058,7 @@ impl App {
                 "openai",
                 "openai-codex",
                 "openrouter",
+                "opencode-go",
                 "ollama-cloud",
                 "github",
             ],

@@ -136,6 +136,14 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         description: "OAuth — Gemini models via Google Antigravity IDE subscription",
     },
     ProviderCredential {
+        id: "opencode-go",
+        auth_key: "opencode-go",
+        display_name: "OpenCode Go",
+        env_vars: &["OPENCODE_GO_API_KEY"],
+        auth_method: AuthMethod::ApiKey,
+        description: "API key — DeepSeek, Kimi, Qwen, MiniMax via opencode.ai/go",
+    },
+    ProviderCredential {
         id: "ollama",
         auth_key: "ollama",
         display_name: "Ollama (Local)",

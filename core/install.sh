@@ -336,6 +336,24 @@ esac
 
 ok "Binary validated"
 
+# ── NixOS compatibility check ────────────────────────────────
+
+if [ -f /etc/NIXOS ] || [ -d /nix/store ]; then
+  warn "NixOS detected — prebuilt binaries require nix-ld or an FHS wrapper"
+  echo ""
+  printf "  ${DIM}Option 1: Enable nix-ld (recommended, system-wide):${RESET}\n"
+  printf "  ${DIM}  Add to your NixOS configuration:${RESET}\n"
+  printf "  ${DIM}    programs.nix-ld.enable = true;${RESET}\n"
+  printf "  ${DIM}    programs.nix-ld.libraries = with pkgs; [ stdenv.cc.cc ];${RESET}\n"
+  echo ""
+  printf "  ${DIM}Option 2: Run with steam-run (per-session):${RESET}\n"
+  printf "  ${DIM}    nix-shell -p steam-run --run omegon${RESET}\n"
+  echo ""
+  printf "  ${DIM}Option 3: Build from source:${RESET}\n"
+  printf "  ${DIM}    cargo install --git https://github.com/${REPO}${RESET}\n"
+  echo ""
+fi
+
 # ── Install ───────────────────────────────────────────────────
 
 VERSION_DIR="${HOME}/.omegon/versions/${VERSION}"

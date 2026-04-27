@@ -339,6 +339,7 @@ impl AgentSetup {
         let mut context_memory_backend: Option<std::sync::Arc<dyn omegon_memory::MemoryBackend>> =
             None;
         let mut context_memory_mind: Option<String> = None;
+        let mut context_embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = None;
 
         if let Ok(backend) = omegon_memory::SqliteBackend::open(&db_path) {
             tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "memory backend loaded");
@@ -409,8 +410,9 @@ impl AgentSetup {
             };  // end if is_child else probe
 
             let mut memory_feature = features::memory::MemoryFeature::new(memory_backend, mind);
-            if let Some(svc) = embed_service {
-                memory_feature = memory_feature.with_embed_service(svc);
+            if let Some(ref svc) = embed_service {
+                memory_feature = memory_feature.with_embed_service(svc.clone());
+                context_embed_service = Some(svc.clone());
             }
             if let Some(ref vp) = codex_vault_path {
                 memory_feature = memory_feature.with_codex_vault(vp.clone());
@@ -729,7 +731,11 @@ impl AgentSetup {
         // still need the ContextManager for the injection pipeline (TTL decay,
         // budget management, priority sorting). Pass no standalone providers —
         // the bus will provide context via collect_context().
-        let context_manager = ContextManager::new(base_prompt, vec![]);
+        let mut context_manager = ContextManager::new(base_prompt, vec![]);
+        // Wire embedding service for semantic context relevance scoring
+        if let Some(svc) = context_embed_service {
+            context_manager.set_embed_service(svc);
+        }
 
         // ─── Conversation ───────────────────────────────────────────────
         let mut resume_info: Option<ResumeInfo> = None;

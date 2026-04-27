@@ -453,6 +453,11 @@ pub async fn run(
             }]);
         }
 
+        // ─── Pre-compute embeddings for semantic context scoring ────
+        context
+            .prepare_embeddings(conversation.last_user_prompt())
+            .await;
+
         // ─── Build LLM-facing context ───────────────────────────────
         let system_prompt =
             context.build_system_prompt(conversation.last_user_prompt(), conversation);

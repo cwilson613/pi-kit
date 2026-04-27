@@ -188,7 +188,7 @@ impl ContextProvider {
             candidate_ids = ?candidate_ids,
             "request_context: selecting pack candidates"
         );
-        let selected = shadow.select_for_turn_with_budget(1, query, 900);
+        let selected = shadow.select_for_turn_with_budget(1, query, 900, None);
         let body = shadow.render_selection(&selected);
         if body.trim().is_empty() {
             tracing::debug!(

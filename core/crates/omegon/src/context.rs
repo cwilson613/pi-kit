@@ -28,6 +28,10 @@ pub struct ContextManager {
     context_window: usize,
     shadow: ShadowContext,
     last_prompt_telemetry: PromptTelemetry,
+    /// Optional embedding service for semantic context relevance.
+    embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>>,
+    /// Cached query embedding from the last prepare_embeddings() call.
+    query_embedding: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -63,6 +67,56 @@ impl ContextManager {
                 tool_schema_reserve: 4_096,
             }),
             last_prompt_telemetry: PromptTelemetry::default(),
+            embed_service: None,
+            query_embedding: None,
+        }
+    }
+
+    /// Set the embedding service for semantic context relevance scoring.
+    pub fn set_embed_service(
+        &mut self,
+        service: std::sync::Arc<dyn omegon_memory::EmbeddingService>,
+    ) {
+        self.embed_service = Some(service);
+    }
+
+    /// Pre-compute embeddings for the query and any entries that need them.
+    /// Call this before `build_system_prompt()` to enable semantic scoring.
+    /// Async because embedding requires a network call to Ollama.
+    pub async fn prepare_embeddings(&mut self, user_prompt: &str) {
+        let Some(ref service) = self.embed_service else {
+            return;
+        };
+
+        // Compute query embedding
+        match service.embed(user_prompt).await {
+            Ok(vec) => self.query_embedding = Some(vec),
+            Err(e) => {
+                tracing::debug!("Embedding query failed (falling back to substring): {e}");
+                self.query_embedding = None;
+                return;
+            }
+        }
+
+        // Compute embeddings for entries that don't have them yet
+        let needed = self.shadow.entries_needing_embeddings();
+        if needed.is_empty() {
+            return;
+        }
+        // Batch: embed up to 20 entries per turn to avoid blocking
+        let batch: Vec<_> = needed.into_iter().take(20).collect();
+        let mut computed = Vec::new();
+        for (id, text) in &batch {
+            match service.embed(text).await {
+                Ok(vec) => computed.push((id.clone(), vec)),
+                Err(e) => {
+                    tracing::debug!("Embedding entry {id} failed: {e}");
+                }
+            }
+        }
+        if !computed.is_empty() {
+            tracing::debug!(count = computed.len(), "Computed embeddings for shadow entries");
+            self.shadow.set_embeddings(&computed);
         }
     }
 
@@ -439,9 +493,15 @@ impl ContextManager {
             self.shadow.upsert(entry);
         }
 
-        let selected = self
-            .shadow
-            .select_for_turn(conversation.turn_count(), user_prompt);
+        let selected = {
+            let budget = self.shadow.selector_policy().assembly_budget();
+            self.shadow.select_for_turn_with_budget(
+                conversation.turn_count(),
+                user_prompt,
+                budget,
+                self.query_embedding.as_deref(),
+            )
+        };
         self.last_prompt_telemetry = telemetry;
         self.shadow.render_selection(&selected)
     }

@@ -105,6 +105,9 @@ pub struct ShadowEntry {
     pub last_scored_turn: u32,
     pub diversity_key: Option<String>,
     pub diversity_cap: Option<usize>,
+    /// Cached embedding vector for semantic relevance scoring.
+    /// Computed lazily when an embedding service is available.
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl ShadowEntry {
@@ -126,6 +129,7 @@ impl ShadowEntry {
             last_scored_turn: 0,
             diversity_key: None,
             diversity_cap: None,
+            embedding: None,
         }
     }
 
@@ -212,6 +216,25 @@ impl ShadowContext {
         }
     }
 
+    /// Return entries that need embedding vectors computed.
+    /// Used by the async caller to batch-embed new entries.
+    pub fn entries_needing_embeddings(&self) -> Vec<(EntryId, String)> {
+        self.entries
+            .iter()
+            .filter(|e| e.embedding.is_none() && e.kind.tier() >= 2)
+            .map(|e| (e.id.clone(), e.search_text()))
+            .collect()
+    }
+
+    /// Set embedding vectors for entries by ID.
+    pub fn set_embeddings(&mut self, embeddings: &[(EntryId, Vec<f32>)]) {
+        for (id, vec) in embeddings {
+            if let Some(entry) = self.entries.iter_mut().find(|e| e.id == *id) {
+                entry.embedding = Some(vec.clone());
+            }
+        }
+    }
+
     pub fn remove_by_source_prefix(&mut self, prefix: &str) {
         self.entries.retain(|entry| !entry.id.starts_with(prefix));
     }
@@ -222,7 +245,7 @@ impl ShadowContext {
 
     pub fn select_for_turn(&mut self, turn: u32, user_prompt: &str) -> SelectedContext {
         let budget = self.selector_policy.assembly_budget();
-        self.select_for_turn_with_budget(turn, user_prompt, budget)
+        self.select_for_turn_with_budget(turn, user_prompt, budget, None)
     }
 
     pub fn select_for_turn_with_budget(
@@ -230,39 +253,55 @@ impl ShadowContext {
         turn: u32,
         user_prompt: &str,
         budget: usize,
+        query_embedding: Option<&[f32]>,
     ) -> SelectedContext {
         self.retain_nonexpired(turn);
 
         for entry in &mut self.entries {
             entry.last_scored_turn = turn;
-            let prompt_lower = user_prompt.to_lowercase();
-            let content_lower = entry.search_text().to_lowercase();
-            let query_tokens = prompt_lower
-                .split_whitespace()
-                .filter(|word| !word.is_empty())
-                .collect::<Vec<_>>();
-            let normalized_phrase = prompt_lower.replace(' ', "_");
-            entry.relevance = if prompt_lower.is_empty() {
-                0.0
+
+            // Semantic relevance via embedding cosine similarity when available
+            let embedding_score = match (query_embedding, &entry.embedding) {
+                (Some(q), Some(e)) if !q.is_empty() && !e.is_empty() => {
+                    Some(omegon_memory::vectors::cosine_similarity(q, e).max(0.0))
+                }
+                _ => None,
+            };
+
+            entry.relevance = if let Some(sim) = embedding_score {
+                // Embedding-based: cosine similarity scaled to match substring range
+                (sim * 1.5).min(1.5)
             } else {
-                let exact_phrase = if content_lower.contains(&prompt_lower) {
-                    0.65
-                } else {
+                // Fallback: substring matching
+                let prompt_lower = user_prompt.to_lowercase();
+                let content_lower = entry.search_text().to_lowercase();
+                if prompt_lower.is_empty() {
                     0.0
-                };
-                let normalized_phrase_hit = if !normalized_phrase.is_empty()
-                    && content_lower.contains(&normalized_phrase)
-                {
-                    0.45
                 } else {
-                    0.0
-                };
-                let overlap = query_tokens
-                    .iter()
-                    .filter(|word| content_lower.contains(**word))
-                    .count();
-                let overlap_score = overlap as f32 / query_tokens.len().max(1) as f32;
-                (exact_phrase + normalized_phrase_hit + overlap_score).min(1.5)
+                    let query_tokens = prompt_lower
+                        .split_whitespace()
+                        .filter(|word| !word.is_empty())
+                        .collect::<Vec<_>>();
+                    let normalized_phrase = prompt_lower.replace(' ', "_");
+                    let exact_phrase = if content_lower.contains(&prompt_lower) {
+                        0.65
+                    } else {
+                        0.0
+                    };
+                    let normalized_phrase_hit = if !normalized_phrase.is_empty()
+                        && content_lower.contains(&normalized_phrase)
+                    {
+                        0.45
+                    } else {
+                        0.0
+                    };
+                    let overlap = query_tokens
+                        .iter()
+                        .filter(|word| content_lower.contains(**word))
+                        .count();
+                    let overlap_score = overlap as f32 / query_tokens.len().max(1) as f32;
+                    (exact_phrase + normalized_phrase_hit + overlap_score).min(1.5)
+                }
             };
             entry.recency = match entry.last_included_turn {
                 Some(last) => 1.0 / (turn.saturating_sub(last).max(1) as f32),

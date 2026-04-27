@@ -999,5 +999,12 @@
       "refactor: decouple omegon-secrets and omegon-memory for standalone use",
       "refactor: rename opsx-core to omegon-opsx"
     ]
+  },
+  "nightly": {
+    "status": "nightly",
+    "channel": "nightly",
+    "version": "0.17.0-nightly.20260427",
+    "last_build": "2026-04-27T09:31:51Z",
+    "build_count": 1
   }
 }

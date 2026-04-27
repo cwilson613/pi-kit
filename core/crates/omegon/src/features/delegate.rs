@@ -1036,18 +1036,45 @@ impl DelegateFeature {
             .map(|s| s.as_str())
     }
 
-    /// Check if a task string matches any early user prompt that was likely
-    /// a throwaway test message (first 2 prompts, or any prompt ≤10 chars).
+    /// Check if a delegate task is echoing a user prompt from earlier in the
+    /// session instead of reflecting the current instruction. Uses substring
+    /// containment (not exact match) because the model often reformulates
+    /// slightly. Only checks prompts that are NOT the most recent one — the
+    /// model should be acting on the latest instruction, not earlier ones.
     fn is_stale_user_echo(&self, task: &str) -> bool {
         let lower = task.trim().to_ascii_lowercase();
-        if lower.is_empty() {
+        if lower.is_empty() || self.user_prompts.len() < 2 {
             return false;
         }
-        for (i, prompt) in self.user_prompts.iter().enumerate() {
+        // Check all prompts EXCEPT the most recent one.
+        // If the delegate task matches an older prompt, it's stale.
+        let older_prompts = &self.user_prompts[..self.user_prompts.len() - 1];
+        for prompt in older_prompts {
             let prompt_lower = prompt.trim().to_ascii_lowercase();
+            if prompt_lower.is_empty() {
+                continue;
+            }
+            // Exact match
             if prompt_lower == lower {
-                // Exact match to a user prompt — stale if it's early or short
-                if i < 2 || prompt.len() <= 10 {
+                return true;
+            }
+            // Delegate task contains the older prompt (model wrapped it)
+            if prompt_lower.len() > 15 && lower.contains(&prompt_lower) {
+                return true;
+            }
+            // Older prompt contains the delegate task (model truncated it)
+            if lower.len() > 15 && prompt_lower.contains(&lower) {
+                return true;
+            }
+            // Significant prefix overlap (model appended to it)
+            let min_len = prompt_lower.len().min(lower.len());
+            if min_len > 20 {
+                let prefix_len = prompt_lower
+                    .chars()
+                    .zip(lower.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                if prefix_len > min_len * 2 / 3 {
                     return true;
                 }
             }

@@ -4114,6 +4114,9 @@ fn format_agent_error(
             );
         }
         crate::upstream_errors::UpstreamErrorClass::AuthInvalid => {
+            // Always log the raw error for diagnostics
+            tracing::warn!(provider = %who, raw = %raw, "AuthInvalid — raw upstream response");
+
             if let Some(start) = raw.find("\"message\":\"") {
                 let rest = &raw[start + 11..];
                 if let Some(end) = rest.find('"') {
@@ -4123,8 +4126,12 @@ fn format_agent_error(
                     );
                 }
             }
+            // Include truncated raw error so the user can report it
+            let truncated = if raw.len() > 200 { &raw[..200] } else { &raw };
             return format!(
-                "⚠ Authentication error ({who}) — credentials were rejected. This may be an expired/invalid session, wrong account identity, or a provider-side auth mismatch. Re-authenticate and verify the active account before retrying."
+                "⚠ Authentication error ({who}) — credentials were rejected.\n\
+                 Raw: {truncated}\n\
+                 Re-authenticate with /login or check your API key."
             );
         }
         _ => {}

@@ -1129,6 +1129,16 @@ pub async fn login_anthropic_with_callbacks(
             "Anthropic login completed but persisted credentials do not match the issued token"
         );
     }
+
+    // Update the env var so resolve_with_refresh uses the new token
+    // immediately (env vars take priority over auth.json). Without this,
+    // a stale token from a previous account stays in ANTHROPIC_OAUTH_TOKEN
+    // and gets used instead of the freshly-issued one.
+    // SAFETY: single-threaded at login time — no other threads reading env.
+    unsafe {
+        std::env::set_var("ANTHROPIC_OAUTH_TOKEN", &creds.access);
+    }
+
     progress("✓ Authentication successful. Credentials saved.");
 
     Ok(creds)
@@ -1296,6 +1306,11 @@ pub async fn login_openai_with_callbacks(
             );
         }
     }
+    // Update env var so resolve_with_refresh uses the new token immediately.
+    unsafe {
+        std::env::set_var("CHATGPT_OAUTH_TOKEN", &creds.access);
+    }
+
     progress("✓ OpenAI authentication successful. Credentials saved.");
 
     Ok(creds)
@@ -1459,6 +1474,9 @@ pub async fn login_antigravity_with_callbacks(
     };
 
     write_credentials("google-antigravity", &creds)?;
+    unsafe {
+        std::env::set_var("ANTIGRAVITY_OAUTH_TOKEN", &creds.access);
+    }
     progress("✓ Google Antigravity authentication successful. Credentials saved.");
 
     Ok(creds)

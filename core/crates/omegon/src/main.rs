@@ -4117,6 +4117,14 @@ fn format_agent_error(
             // Always log the raw error for diagnostics
             tracing::warn!(provider = %who, raw = %raw, "AuthInvalid — raw upstream response");
 
+            // Codex scope errors: provide targeted guidance
+            if raw.contains("api.responses.write") || raw.contains("insufficient permissions") {
+                return format!(
+                    "⚠ Authentication error ({who}) — your session may have expired or \
+                     lacks required permissions. Re-authenticate with /login and retry."
+                );
+            }
+
             if let Some(start) = raw.find("\"message\":\"") {
                 let rest = &raw[start + 11..];
                 if let Some(end) = rest.find('"') {
@@ -5728,7 +5736,8 @@ mod tests {
             result.contains("Authentication error (OpenAI/Codex)"),
             "got: {result}"
         );
-        assert!(result.contains("expired/invalid session"), "got: {result}");
+        assert!(result.contains("Re-authenticate with /login"), "got: {result}");
+        // Should NOT expose internal scope names to the user
         assert!(!result.contains("api.responses.write"), "got: {result}");
         assert!(
             !result.contains("insufficient permissions"),

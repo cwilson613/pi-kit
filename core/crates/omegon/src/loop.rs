@@ -106,8 +106,9 @@ fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize
 // Behavioral classifiers, streak tracking, continuation pressure, and
 // auto-delegation logic live in `behavior.rs`. Re-export convenience
 // aliases used by the main loop body.
+// auto-delegation disabled — import retained for the test that verifies it returns None
+#[cfg(test)]
 use behavior::classify_auto_delegate_plan;
-use behavior::auto_delegate_tool_call;
 use behavior::classify_drift_kind;
 use behavior::classify_progress_signal;
 use behavior::classify_turn_phase;
@@ -818,15 +819,9 @@ pub async fn run(
         }
 
         // ─── Dispatch tool calls ────────────────────────────────────
-        let auto_delegate_plan =
-            classify_auto_delegate_plan(config, conversation, tool_calls, None, None);
-        let dispatch_calls_storage;
-        let dispatch_calls: &[ToolCall] = if let Some(plan) = auto_delegate_plan {
-            dispatch_calls_storage = vec![auto_delegate_tool_call(conversation, plan)];
-            &dispatch_calls_storage
-        } else {
-            tool_calls
-        };
+        // Auto-delegation is disabled — the agent always executes its
+        // own tool calls directly. See classify_auto_delegate_plan().
+        let dispatch_calls = tool_calls;
         let dispatch = dispatch_tools(
             bus,
             dispatch_calls,
@@ -4144,33 +4139,6 @@ mod tests {
             ToolCall { id: "1".into(), name: "edit".into(), arguments: serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}) },
         ];
         assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Act), None).is_none());
-    }
-
-    #[test]
-    fn auto_delegate_tool_call_marks_background_for_scout_only() {
-        let conversation = ConversationState::new();
-        let scout = auto_delegate_tool_call(
-            &conversation,
-            AutoDelegatePlan {
-                worker_profile: "scout",
-                background: true,
-            },
-        );
-        let patch = auto_delegate_tool_call(
-            &conversation,
-            AutoDelegatePlan {
-                worker_profile: "patch",
-                background: false,
-            },
-        );
-        assert_eq!(
-            scout.arguments.get("background").and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            patch.arguments.get("background").and_then(|v| v.as_bool()),
-            Some(false)
-        );
     }
 
     #[test]

@@ -14,6 +14,29 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.4] - 2026-04-28
+
+### Fixed
+
+- **OAuth stale token on account switch** — logging in with a different Anthropic/OpenAI/Google account left the old token in the env var. `resolve_with_refresh` checked env vars first and used the stale credential. Now all OAuth flows update the env var immediately after token exchange.
+- **Auth errors now show raw API response** — previously showed a generic "credentials were rejected" message that swallowed the actual rejection reason. Now includes the first 200 chars of the raw error for diagnostics.
+- **Security: trust_directory removed from LLM tool list** — the model could previously call it to grant itself filesystem access without user consent. Now internal-only, called by the dispatch layer after interactive TUI approval.
+- **Allow vs AlwaysAllow permission responses now differ** — Allow approves for the session, AlwaysAllow shows a hint to use `/trust add` for persistence. Previously both were identical.
+- **Profile capture no longer writes default values** — tool_detail only saved if != Detailed, mouse only if != true. Keeps profile.json clean.
+
+### Added
+
+- **`render_diagram` tool** — renders D2, Mermaid, GraphViz, or PlantUML source to PNG/SVG images. Auto-detects format from source content. Outputs saved to `~/.omegon/visuals/`. Requires CLI backend installed (`brew install d2`, `npm i -g @mermaid-js/mermaid-cli`, etc.). Graceful error with install instructions when backend missing.
+- **Interactive TUI permission prompt** — when the agent tries to read/write outside the workspace, the TUI shows `[y] allow [a] always allow [n] deny`. One keypress, tool continues or stops. No model involvement, no conversation hijacking. Same pattern as Claude Code's permission system.
+- **`/trust` command** — manage trusted directories from the TUI. `/trust add ~/vault`, `/trust remove ~/old`, `/trust list`. Persisted to profile.json immediately.
+- **`/preferences` menu** — interactive settings editor showing all configurable options with current values. Select an item to open its sub-selector (model, thinking, density, mouse, persona, tone, trusted dirs, update channel). Same UX as `/model` and `/login`.
+- **Settings persistence** — `tool_detail` (via `/detail`), `mouse` (via `/mouse`), `persona`, and `tone` now persist to profile.json across sessions. Previously lost on restart.
+- **Structured audit log** — `.omegon/audit-log.jsonl` with machine-parseable JSONL entries for every significant event: session start/end, turn telemetry (model, tokens, OODA phase, drift, progress, full context breakdown), tool calls (name, args summary, result preview, error flag), behavioral nudges (reason, turn, message), permission decisions (path, approve/deny), context compaction.
+- **Audit log rotation** — 5MB max per file, 3 rotated archives (`audit-log.1.jsonl`, `.2.jsonl`, `.3.jsonl`). ~20MB total ceiling. Checked lazily, rotates mid-session.
+- **BusEvent extensions in omegon-traits** — `PermissionDecision`, `NudgeInjected` as first-class bus events. Full-stack traceability from dispatch layer through bus to audit log file.
+- **Pkl Profile schema** — `trustedDirectories`, `updateChannel`, `autoUpdate`, `toolDetail`, `mouse`, `persona`, `tone` fields validated.
+- **Design doc** — `design/tool-execution-permissions.md` for configurable tool approval (Allow/Ask/Deny presets).
+
 ## [0.17.3] - 2026-04-27
 
 ### Fixed

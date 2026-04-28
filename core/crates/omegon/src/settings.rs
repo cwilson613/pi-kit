@@ -1140,10 +1140,18 @@ impl Profile {
         if !settings.trusted_directories.is_empty() {
             self.trusted_directories = settings.trusted_directories.clone();
         }
-        self.update_channel = Some(settings.update_channel.clone());
-        self.auto_update = Some(settings.auto_update);
-        self.tool_detail = Some(settings.tool_detail.as_str().to_string());
-        self.mouse = Some(settings.mouse);
+        if settings.update_channel != "stable" {
+            self.update_channel = Some(settings.update_channel.clone());
+        }
+        if settings.auto_update {
+            self.auto_update = Some(true);
+        }
+        if settings.tool_detail != ToolDetail::Detailed {
+            self.tool_detail = Some(settings.tool_detail.as_str().to_string());
+        }
+        if !settings.mouse {
+            self.mouse = Some(false);
+        }
     }
 
 }

@@ -1940,10 +1940,11 @@ async fn dispatch_single_tool(
             }).await.unwrap_or(omegon_traits::PermissionResponse::Deny);
 
             match response {
-                omegon_traits::PermissionResponse::Allow
-                | omegon_traits::PermissionResponse::AlwaysAllow => {
-                    // Approve the directory via the trust_directory tool, then retry.
-                    tracing::info!(dir = %perm_err.directory, "user approved directory access");
+                omegon_traits::PermissionResponse::Allow => {
+                    // One-time: approve the specific file path only.
+                    // We approve the parent directory so the tool can create
+                    // the file, but this is session-scoped (cleared on restart).
+                    tracing::info!(path = %perm_err.requested_path, "user approved one-time access");
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
                     let _ = bus.execute_tool(
                         crate::tool_registry::core::TRUST_DIRECTORY,
@@ -1951,7 +1952,30 @@ async fn dispatch_single_tool(
                         trust_args,
                         cancel.clone(),
                     ).await;
-                    // Retry the original tool — directory is now approved
+                    match execute(cancel, sink).await {
+                        Ok(result) => (result, false),
+                        Err(e) => (
+                            omegon_traits::ToolResult {
+                                content: vec![ContentBlock::Text { text: e.to_string() }],
+                                details: Value::Null,
+                            },
+                            true,
+                        ),
+                    }
+                }
+                omegon_traits::PermissionResponse::AlwaysAllow => {
+                    // Session + hint to persist: approve directory and log that
+                    // the user wants persistent access. Profile capture on session
+                    // exit will persist trusted_directories if /trust add was used,
+                    // or the TUI prompt shows "use /trust add <path> to persist."
+                    tracing::info!(dir = %perm_err.directory, "user approved directory (always)");
+                    let trust_args = serde_json::json!({ "path": perm_err.directory });
+                    let _ = bus.execute_tool(
+                        crate::tool_registry::core::TRUST_DIRECTORY,
+                        "__permission_grant",
+                        trust_args,
+                        cancel.clone(),
+                    ).await;
                     match execute(cancel, sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (

@@ -473,25 +473,10 @@ impl ToolProvider for CoreTools {
                     "required": ["action"]
                 }),
             },
-            ToolDefinition {
-                name: reg::TRUST_DIRECTORY.into(),
-                label: reg::TRUST_DIRECTORY.into(),
-                description: "Grant read/write access to a directory outside the workspace \
-                    for this session. Call this ONLY after the user has explicitly approved \
-                    access. The approval lasts for the current session only — it is not \
-                    persisted across restarts."
-                    .into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Absolute directory path to approve (e.g., ~/Documents/vault)"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
+            // trust_directory is NOT exposed to the model — it's an internal
+            // tool called only by the dispatch layer after interactive TUI
+            // approval. Exposing it would let the model grant itself access.
+            //
             // NOTE: view, web_search, ask_local_model, list_local_models,
             // manage_ollama, context_status, context_compact, context_clear are
             // provided by their dedicated ToolProvider implementations
@@ -962,12 +947,14 @@ mod tests {
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // Should have 10 core tools (bash, read, write, edit, change,
-        // commit, whoami, chronos, serve, trust_directory)
+        // Should have 9 core tools (bash, read, write, edit, change,
+        // commit, whoami, chronos, serve).
+        // trust_directory is intentionally NOT exposed to the model —
+        // it's an internal tool called only by the dispatch layer.
         assert_eq!(
             tool_names.len(),
-            10,
-            "Expected 10 core tools, got {}",
+            9,
+            "Expected 9 core tools, got {}",
             tool_names.len()
         );
     }

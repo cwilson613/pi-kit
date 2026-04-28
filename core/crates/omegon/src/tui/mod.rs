@@ -7482,8 +7482,10 @@ pub async fn run_tui(
                                 }
                             }
                             let label = match resp {
-                                omegon_traits::PermissionResponse::Allow => "allowed (this time)",
-                                omegon_traits::PermissionResponse::AlwaysAllow => "allowed (session)",
+                                omegon_traits::PermissionResponse::Allow => "allowed (this session)",
+                                omegon_traits::PermissionResponse::AlwaysAllow => {
+                                    "allowed (this session). Use /trust add <path> to persist."
+                                }
                                 omegon_traits::PermissionResponse::Deny => "denied",
                             };
                             app.conversation.push_system(&format!("→ {label}"));

@@ -146,6 +146,9 @@ impl EventBus {
         disabled.insert(reg::model_budget::SET_MODEL_TIER.into());
         disabled.insert(reg::model_budget::SWITCH_TO_OFFLINE_DRIVER.into());
         disabled.insert(reg::model_budget::SET_THINKING_LEVEL.into());
+        // trust_directory is internal-only — called by the dispatch layer
+        // after interactive TUI approval. Never shown to the LLM.
+        disabled.insert(reg::core::TRUST_DIRECTORY.into());
 
         if slim_mode {
             // om/slim: additionally suppress delegation, orchestration,

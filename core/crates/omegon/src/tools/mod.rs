@@ -114,9 +114,24 @@ impl CoreTools {
     fn is_trusted_path(&self, path: &Path) -> bool {
         // Check session-level approvals
         if let Ok(approved) = self.session_approved.lock() {
+            tracing::trace!(
+                path = %path.display(),
+                approved_count = approved.len(),
+                approved_dirs = ?approved.iter().map(|d| d.display().to_string()).collect::<Vec<_>>(),
+                "checking trusted path"
+            );
             if approved.iter().any(|dir| {
                 let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                path.starts_with(&canonical_dir)
+                let matches = path.starts_with(&canonical_dir);
+                if !matches {
+                    tracing::trace!(
+                        path = %path.display(),
+                        dir = %dir.display(),
+                        canonical = %canonical_dir.display(),
+                        "no match"
+                    );
+                }
+                matches
             }) {
                 return true;
             }
@@ -141,6 +156,7 @@ impl CoreTools {
     pub fn approve_directory(&self, dir: PathBuf) {
         if let Ok(mut approved) = self.session_approved.lock() {
             if !approved.iter().any(|d| d == &dir) {
+                tracing::info!(dir = %dir.display(), count = approved.len() + 1, "session directory approved");
                 approved.push(dir);
             }
         }
@@ -473,10 +489,26 @@ impl ToolProvider for CoreTools {
                     "required": ["action"]
                 }),
             },
-            // trust_directory is NOT exposed to the model — it's an internal
-            // tool called only by the dispatch layer after interactive TUI
-            // approval. Exposing it would let the model grant itself access.
-            //
+            // trust_directory: internal-only tool called by the dispatch layer
+            // after interactive TUI approval. Hidden from the LLM via the
+            // base disabled set in bus.rs — the model cannot call it directly.
+            ToolDefinition {
+                name: reg::TRUST_DIRECTORY.into(),
+                label: reg::TRUST_DIRECTORY.into(),
+                description: "Internal: grant session-level directory access. \
+                    Called by the permission system after user approval."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Directory path to approve"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
             // NOTE: view, web_search, ask_local_model, list_local_models,
             // manage_ollama, context_status, context_compact, context_clear are
             // provided by their dedicated ToolProvider implementations
@@ -947,14 +979,14 @@ mod tests {
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // Should have 9 core tools (bash, read, write, edit, change,
-        // commit, whoami, chronos, serve).
-        // trust_directory is intentionally NOT exposed to the model —
-        // it's an internal tool called only by the dispatch layer.
+        // Should have 10 core tools (bash, read, write, edit, change,
+        // commit, whoami, chronos, serve, trust_directory).
+        // trust_directory is registered for bus dispatch but hidden from
+        // the LLM via the base disabled set.
         assert_eq!(
             tool_names.len(),
-            9,
-            "Expected 9 core tools, got {}",
+            10,
+            "Expected 10 core tools, got {}",
             tool_names.len()
         );
     }

@@ -411,8 +411,8 @@ enum Commands {
         #[arg(long)]
         latest: bool,
 
-        /// Switch to the latest release candidate
-        #[arg(long)]
+        /// Deprecated — use --latest. Kept for backward compatibility.
+        #[arg(long, hide = true)]
         latest_rc: bool,
     },
 

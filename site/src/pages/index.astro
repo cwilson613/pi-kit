@@ -89,7 +89,6 @@ const valueCards = [
         <div class="install-label">Install</div>
         <select id="version-select" class="version-select" aria-label="Channel">
           <option value="stable" data-tag={stableTag} data-url={stableUrl} selected>Stable ({stableTag})</option>
-          {rcTag && <option value="rc" data-tag={rcTag} data-url={rcUrl}>RC ({rcTag})</option>}
           <option value="nightly" data-tag="">Nightly</option>
         </select>
       </div>
@@ -170,8 +169,6 @@ const valueCards = [
 
         if (channel === 'stable') {
           cmd.textContent = `curl -fsSL ${installUrl} | sh`;
-        } else if (channel === 'rc') {
-          cmd.textContent = `curl -fsSL ${installUrl} | sh -s -- --channel=rc`;
         } else if (channel === 'nightly') {
           cmd.textContent = `curl -fsSL ${installUrl} | sh -s -- --channel=nightly`;
         }

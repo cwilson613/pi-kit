@@ -17,37 +17,20 @@ import { snippet } from "../../lib/snippets";
   <pre><code># Install to a custom directory
 {snippet("install.install_custom_dir")}
 
-# Install latest RC
-{snippet("install.install_rc")}
-
-# Install latest nightly
+# Install latest nightly (bleeding-edge from main)
 {snippet("install.install_nightly")}
 
-# Install a specific version (Replace 0.17.1 with the release you actually want)
+# Install a specific version (Replace 0.17.4 with the release you actually want)
 {snippet("install.install_version")}
 
 # Non-interactive (CI)
 {snippet("install.install_ci")}</code></pre>
 
   <h2>Homebrew (macOS / Linux)</h2>
-
-  <h3>Stable</h3>
   <pre><code>{snippet("install.brew_stable")}</code></pre>
   <p>
     Tracks the latest stable release. Updates via <code>{snippet("install.brew_upgrade_stable")}</code>.
   </p>
-
-  <h3>RC channel</h3>
-  <pre><code>{snippet("install.brew_rc")}</code></pre>
-  <p>
-    Tracks the latest release candidate. Updated automatically by CI on every RC cut.
-    Updates via <code>{snippet("install.brew_upgrade_rc")}</code>.
-  </p>
-  <p>
-    <code>omegon-rc</code> conflicts with <code>omegon</code> — both install the same binary name.
-    Switch back to stable with:
-  </p>
-  <pre><code>{snippet("install.brew_switch_stable")}</code></pre>
 
   <h2>GitHub Releases</h2>
   <p>
@@ -122,11 +105,7 @@ import { snippet } from "../../lib/snippets";
   </p>
 
   <h3>Homebrew installs</h3>
-  <pre><code># Stable
-{snippet("install.brew_upgrade_stable")}
-
-# RC channel
-{snippet("install.brew_upgrade_rc")}</code></pre>
+  <pre><code>{snippet("install.brew_upgrade_stable")}</code></pre>
   <p>
     The in-app <code>/update</code> command detects Homebrew-managed installs and redirects
     to the appropriate <code>brew upgrade</code> command automatically. Do not use the install

@@ -705,44 +705,38 @@ pub async fn run(
 
             // ─── Dead-mouse detection ──────────────────────────────
             // Model responded with text-only (no tool calls) but hasn't
-            // made any file changes. It's reporting back instead of acting.
+            // made any file changes. It's narrating instead of acting.
             // Nudge up to 2 times, then give up.
             //
-            // Only fires for Constrained (Mid/Leaf) models. Frontier models
-            // don't exhibit this pattern — a text-only response after tool
-            // use is almost always intentional (summarizing, answering Q&A).
+            // Fires for ALL model tiers — frontier models exhibit this
+            // pattern too (e.g., dumping HTML as text instead of calling
+            // write). The full harness with 60+ tools makes this MORE
+            // likely, not less.
             //
             // Guards against false positives:
-            // - Skip frontier models entirely
             // - Skip turn 1: a text-only first response is normal
-            // - Skip if model never used tools: conversational exchange, not a task
-            // - First text-only response gets a free pass (model may be
-            //   summarizing tool output from the previous turn). Only nudge
-            //   on the SECOND consecutive text-only response.
+            // - Skip if model never used tools: conversational exchange
+            // - First text-only response gets a free pass (summary)
             let in_task_mode = conversation.intent.stats.tool_calls > 0;
-            if behavioral_tier(config) == BehavioralTier::Constrained
-                && !has_mutations(conversation)
+            if !has_mutations(conversation)
                 && turn > 1
                 && in_task_mode
                 && turn < config.max_turns
                 && dead_mouse_nudges < 3
             {
                 dead_mouse_nudges += 1;
-                // First text-only response is a free pass (legitimate summary).
-                // Only start nudging on the second consecutive one.
                 if dead_mouse_nudges < 2 {
                     continue;
                 }
                 let msg = if dead_mouse_nudges == 2 {
-                    match behavioral_tier(config) {
-                        BehavioralTier::Constrained => "[System: Do not summarize. Use tools now.]",
-                        BehavioralTier::Standard => "[System: You described what to do but did not use tools. Take action now — read files, edit code, or run commands.]",
-                    }
+                    "[System: You output content as text instead of using tools. \
+                     If you generated file content (HTML, code, config), use the \
+                     write tool to save it to a file. Do not paste file contents \
+                     into the conversation.]"
                 } else {
-                    match behavioral_tier(config) {
-                        BehavioralTier::Constrained => "[System: Use tools or this session will end.]",
-                        BehavioralTier::Standard => "[System: Final warning: use tools to make the change, or the session will end without completing the task.]",
-                    }
+                    "[System: You must use tools to produce output. Write files \
+                     with the write tool, not as conversation text. This is your \
+                     final warning before the session ends.]"
                 };
                 tracing::info!(nudge = dead_mouse_nudges, "Dead-mouse detection — model responded without acting");
                 conversation.push_user(msg.to_string());

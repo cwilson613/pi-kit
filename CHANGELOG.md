@@ -14,6 +14,18 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.5] - 2026-04-28
+
+### Fixed
+
+- **Auto-delegation disabled** — the root cause of "agent cannot perform work" reports. In slim mode (`om`), the behavioral system silently intercepted tool calls and dispatched them to background workers (scout, patch, verify) that frequently failed or returned no result. Users saw "content dispatched" messages with no actual work done. `classify_auto_delegate_plan()` now unconditionally returns None. Explicit delegation via the `delegate` tool still works.
+- **Dead auto-delegation code paths removed** — dispatch layer branch, unused imports, and obsolete tests cleaned up.
+
+### Changed
+
+- **RC release channel retired** — only stable and nightly channels remain. `--channel=rc` in the install script prints a deprecation warning and installs stable. `UpdateChannel::parse("rc")` maps to Stable. `omegon switch --latest-rc` hidden from help, behaves as `--latest`. Site landing page, install docs, FAQ, and snippets all updated.
+- **Nightly version format** — changed from `0.17.4-nightly.20260428` to `0.17.0-nightly.20260428`. Uses `major.minor.0` as the base with datestamp as the prerelease identifier. Valid semver, sorts correctly.
+
 ## [0.17.4] - 2026-04-28
 
 ### Fixed

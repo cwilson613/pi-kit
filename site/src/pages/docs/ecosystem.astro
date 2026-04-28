@@ -25,7 +25,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/home"]
 # Docker/OCI container
 [servers.postgres]
 image = "ghcr.io/mcp/server-postgres:latest"
-env = {{ DATABASE_URL = "{{DATABASE_URL}}" }}
+env = {"{ DATABASE_URL = \"{DATABASE_URL}\" }"}
 
 # Remote HTTP endpoint
 [servers.my-api]

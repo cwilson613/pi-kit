@@ -4112,7 +4112,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_delegate_scout_on_slim_orientation_churn_reads() {
+    fn auto_delegate_disabled_returns_none() {
+        // Auto-delegation is disabled — all calls should return None
+        // regardless of tool calls, phase, or drift.
         let config = LoopConfig {
             settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
                 let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
@@ -4122,93 +4124,26 @@ mod tests {
             ..LoopConfig::default()
         };
         let conversation = ConversationState::new();
-        let tool_calls = vec![
-            ToolCall {
-                id: "1".into(),
-                name: "read".into(),
-                arguments: Value::Null,
-            },
-            ToolCall {
-                id: "2".into(),
-                name: "codebase_search".into(),
-                arguments: Value::Null,
-            },
-        ];
-        let plan = classify_auto_delegate_plan(
-            &config,
-            &conversation,
-            &tool_calls,
-            Some(OodaPhase::Observe),
-            Some(DriftKind::OrientationChurn),
-        );
-        assert_eq!(plan.map(|p| p.worker_profile), Some("scout"));
-        assert_eq!(plan.map(|p| p.background), Some(true));
-    }
 
-    #[test]
-    fn auto_delegate_verify_on_slim_validation_only_turns() {
-        let config = LoopConfig {
-            settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
-                let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
-                s.set_posture(crate::settings::PosturePreset::Explorator);
-                s
-            }))),
-            ..LoopConfig::default()
-        };
-        let conversation = ConversationState::new();
+        // Would have been "scout" — now None
+        let tool_calls = vec![
+            ToolCall { id: "1".into(), name: "read".into(), arguments: Value::Null },
+            ToolCall { id: "2".into(), name: "codebase_search".into(), arguments: Value::Null },
+        ];
+        assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Observe), Some(DriftKind::OrientationChurn)).is_none());
+
+        // Would have been "verify" — now None
         let tool_calls = vec![ToolCall {
-            id: "1".into(),
-            name: "bash".into(),
-            arguments: serde_json::json!({"command": "cargo test -p omegon delegate"}),
+            id: "1".into(), name: "bash".into(),
+            arguments: serde_json::json!({"command": "cargo test"}),
         }];
-        let plan = classify_auto_delegate_plan(
-            &config,
-            &conversation,
-            &tool_calls,
-            Some(OodaPhase::Act),
-            None,
-        );
-        assert_eq!(plan.map(|p| p.worker_profile), Some("verify"));
-        assert_eq!(plan.map(|p| p.background), Some(false));
-    }
+        assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Act), None).is_none());
 
-    #[test]
-    fn auto_delegate_patch_on_small_scoped_edit_turn() {
-        let config = LoopConfig {
-            settings: Some(std::sync::Arc::new(std::sync::Mutex::new({
-                let mut s = crate::settings::Settings::new("openai-codex:gpt-4.1");
-                s.set_posture(crate::settings::PosturePreset::Explorator);
-                s
-            }))),
-            ..LoopConfig::default()
-        };
-        let conversation = ConversationState::new();
+        // Would have been "patch" — now None
         let tool_calls = vec![
-            ToolCall {
-                id: "1".into(),
-                name: "read".into(),
-                arguments: serde_json::json!({"path": "src/lib.rs"}),
-            },
-            ToolCall {
-                id: "2".into(),
-                name: "edit".into(),
-                arguments: serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}),
-            },
-            ToolCall {
-                id: "3".into(),
-                name: "bash".into(),
-                arguments: serde_json::json!({"command": "cargo test -p omegon lib"}),
-            },
+            ToolCall { id: "1".into(), name: "edit".into(), arguments: serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}) },
         ];
-        let plan = classify_auto_delegate_plan(
-            &config,
-            &conversation,
-            &tool_calls,
-            Some(OodaPhase::Act),
-            None,
-        );
-        assert_eq!(plan.map(|p| p.worker_profile), Some("patch"));
-        assert_eq!(plan.map(|p| p.background), Some(false));
+        assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Act), None).is_none());
     }
 
     #[test]

@@ -749,47 +749,23 @@ pub(crate) struct AutoDelegatePlan {
     pub background: bool,
 }
 
+/// Auto-delegation is DISABLED. It was an experimental feature that
+/// intercepted the agent's tool calls and dispatched them to background
+/// workers. In practice, the workers frequently failed silently, causing
+/// "content dispatched" messages with no actual work done. Users reported
+/// this as "the agent cannot perform work" — the exact opposite of what
+/// auto-delegation was supposed to achieve.
+///
+/// The agent should always execute its own tool calls directly.
+/// Delegation is still available as an explicit tool the agent can
+/// choose to call — just not as an invisible interception layer.
 pub(crate) fn classify_auto_delegate_plan(
-    config: &super::r#loop::LoopConfig,
-    conversation: &ConversationState,
-    tool_calls: &[ToolCall],
-    dominant_phase: Option<OodaPhase>,
-    drift_kind: Option<DriftKind>,
+    _config: &super::r#loop::LoopConfig,
+    _conversation: &ConversationState,
+    _tool_calls: &[ToolCall],
+    _dominant_phase: Option<OodaPhase>,
+    _drift_kind: Option<DriftKind>,
 ) -> Option<AutoDelegatePlan> {
-    if !is_slim_execution_bias(config) || tool_calls.is_empty() {
-        return None;
-    }
-    if tool_calls.iter().any(|call| call.name == "delegate") {
-        return None;
-    }
-    if !conversation.intent.files_modified.is_empty() {
-        return None;
-    }
-    if tool_calls.iter().any(|call| call.name == "commit") {
-        return None;
-    }
-    if matches!(drift_kind, Some(DriftKind::OrientationChurn))
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(&call.name))
-    {
-        return Some(AutoDelegatePlan {
-            worker_profile: "scout",
-            background: true,
-        });
-    }
-    if is_narrow_patch_candidate(tool_calls) {
-        return Some(AutoDelegatePlan {
-            worker_profile: "patch",
-            background: false,
-        });
-    }
-    if matches!(dominant_phase, Some(OodaPhase::Act)) && tool_calls.iter().all(is_validation_tool) {
-        return Some(AutoDelegatePlan {
-            worker_profile: "verify",
-            background: false,
-        });
-    }
     None
 }
 

@@ -827,7 +827,7 @@ pub async fn run(
         } else {
             tool_calls
         };
-        let results = dispatch_tools(
+        let dispatch = dispatch_tools(
             bus,
             dispatch_calls,
             events,
@@ -836,6 +836,16 @@ pub async fn run(
             config.secrets.as_deref(),
         )
         .await;
+        let results = dispatch.results;
+
+        // Emit permission decisions as bus events (requires &mut bus).
+        for perm in dispatch.permission_decisions {
+            bus.emit(&omegon_traits::BusEvent::PermissionDecision {
+                tool_name: perm.tool_name,
+                path: perm.path,
+                decision: perm.decision,
+            });
+        }
 
         // Push tool results to conversation and update intent
         for result in &results {
@@ -1671,6 +1681,21 @@ async fn consume_llm_stream(
 /// previously applied mutations are rolled back. This makes the existing `edit`
 /// tool secretly atomic across multi-file changes — the agent doesn't need to
 /// learn the `change` tool to get atomic behavior.
+/// Record of a permission decision made during tool dispatch.
+/// Returned to the caller so it can emit BusEvent::PermissionDecision
+/// (which requires &mut bus, unavailable inside dispatch).
+#[derive(Debug)]
+struct PermissionRecord {
+    tool_name: String,
+    path: String,
+    decision: String,
+}
+
+struct DispatchResult {
+    results: Vec<ToolResultEntry>,
+    permission_decisions: Vec<PermissionRecord>,
+}
+
 async fn dispatch_tools(
     bus: &crate::bus::EventBus,
     tool_calls: &[ToolCall],
@@ -1678,7 +1703,8 @@ async fn dispatch_tools(
     cancel: CancellationToken,
     cwd: &std::path::Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
-) -> Vec<ToolResultEntry> {
+) -> DispatchResult {
+    let mut permission_decisions: Vec<PermissionRecord> = Vec::new();
     let mut results = Vec::with_capacity(tool_calls.len());
 
     // ── Auto-batch: snapshot files targeted by mutation tools ────────
@@ -1740,7 +1766,9 @@ async fn dispatch_tools(
             let events = events.clone();
             let cancel = cancel.clone();
             async move {
-                let result = dispatch_single_tool(bus, &call, &events, cancel, None).await;
+                // Parallel calls are read-only — no permission prompts expected.
+                let mut perm_log = Vec::new();
+                let result = dispatch_single_tool(bus, &call, &events, cancel, None, &mut perm_log).await;
                 (idx, result)
             }
         }))
@@ -1753,7 +1781,7 @@ async fn dispatch_tools(
     let mut batch_failed = false;
 
     for (idx, call) in serial_calls {
-        let dispatched = dispatch_single_tool(bus, &call, events, cancel.clone(), secrets).await;
+        let dispatched = dispatch_single_tool(bus, &call, events, cancel.clone(), secrets, &mut permission_decisions).await;
 
         if !dispatched.is_error
             && is_mutation_tool(&call.name)
@@ -1854,7 +1882,10 @@ async fn dispatch_tools(
 
     indexed_results.sort_by_key(|(idx, _)| *idx);
     results.extend(indexed_results.into_iter().map(|(_, result)| result));
-    results
+    DispatchResult {
+        results,
+        permission_decisions,
+    }
 }
 
 fn is_parallel_safe_read_only_tool(name: &str) -> bool {
@@ -1867,6 +1898,7 @@ async fn dispatch_single_tool(
     events: &broadcast::Sender<AgentEvent>,
     cancel: CancellationToken,
     secrets: Option<&omegon_secrets::SecretsManager>,
+    permission_log: &mut Vec<PermissionRecord>,
 ) -> ToolResultEntry {
     if let Some(sm) = secrets
         && let Some(decision) = sm.check_guard(&call.name, &call.arguments)
@@ -1948,6 +1980,11 @@ async fn dispatch_single_tool(
             match response {
                 omegon_traits::PermissionResponse::Allow => {
                     tracing::info!(path = %perm_err.requested_path, decision = "allow", "permission decision");
+                    permission_log.push(PermissionRecord {
+                        tool_name: call.name.clone(),
+                        path: perm_err.requested_path.clone(),
+                        decision: "allow".into(),
+                    });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
                     let _ = bus.execute_tool(
                         crate::tool_registry::core::TRUST_DIRECTORY,
@@ -1968,6 +2005,11 @@ async fn dispatch_single_tool(
                 }
                 omegon_traits::PermissionResponse::AlwaysAllow => {
                     tracing::info!(dir = %perm_err.directory, decision = "always_allow", "permission decision");
+                    permission_log.push(PermissionRecord {
+                        tool_name: call.name.clone(),
+                        path: perm_err.requested_path.clone(),
+                        decision: "always_allow".into(),
+                    });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
                     let _ = bus.execute_tool(
                         crate::tool_registry::core::TRUST_DIRECTORY,
@@ -1988,6 +2030,11 @@ async fn dispatch_single_tool(
                 }
                 omegon_traits::PermissionResponse::Deny => {
                     tracing::info!(path = %perm_err.requested_path, decision = "deny", "permission decision");
+                    permission_log.push(PermissionRecord {
+                        tool_name: call.name.clone(),
+                        path: perm_err.requested_path.clone(),
+                        decision: "deny".into(),
+                    });
                     (omegon_traits::ToolResult {
                         content: vec![ContentBlock::Text {
                             text: format!(
@@ -2646,7 +2693,8 @@ mod tests {
             },
         ];
 
-        let results = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
+        let dispatch = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
+        let results = dispatch.results;
 
         // The second edit should have failed
         assert!(results[1].is_error, "second edit should fail");
@@ -2716,9 +2764,9 @@ mod tests {
             arguments: serde_json::json!({"path": "/tmp/fake.rs", "oldText": "a", "newText": "b"}),
         }];
 
-        let results = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
-        assert!(!results[0].is_error);
-        let text = results[0].content[0].as_text().unwrap();
+        let dispatch = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
+        assert!(!dispatch.results[0].is_error);
+        let text = dispatch.results[0].content[0].as_text().unwrap();
         assert!(
             !text.contains("rollback"),
             "single edit should have no batch overhead"
@@ -2790,13 +2838,13 @@ mod tests {
         ];
 
         let start = Instant::now();
-        let results = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
+        let dispatch = dispatch_tools(&bus, &calls, &events_tx, cancel, dir.path(), None).await;
         let elapsed = start.elapsed();
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(dispatch.results.len(), 2);
         assert!(elapsed < Duration::from_millis(260), "expected parallel dispatch, got {elapsed:?}");
-        assert_eq!(results[0].tool_name, "read");
-        assert_eq!(results[1].tool_name, "view");
+        assert_eq!(dispatch.results[0].tool_name, "read");
+        assert_eq!(dispatch.results[1].tool_name, "view");
     }
 
     // ── Turn limit + config tests ──────────────────────────────────────

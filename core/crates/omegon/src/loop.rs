@@ -881,40 +881,46 @@ pub async fn run(
             behavior,
         );
 
+        // Nudge injection macro — push message + emit audit event.
+        macro_rules! inject_nudge {
+            ($reason:expr, $msg:expr) => {{
+                let msg_str: String = $msg.into();
+                conversation.push_user(msg_str.clone());
+                bus.emit(&omegon_traits::BusEvent::NudgeInjected {
+                    turn,
+                    reason: $reason.into(),
+                    message_preview: msg_str.chars().take(100).collect(),
+                });
+            }};
+        }
+
         if is_first_turn_orientation_churn(turn, config, conversation, dispatch_calls) {
-            tracing::info!(
-                "First-turn orientation churn detected — injecting execution-bias nudge"
-            );
+            tracing::info!("First-turn orientation churn — injecting execution-bias nudge");
             let msg = match behavior {
                 BehavioralTier::Constrained => "[System: Read the relevant file or produce output. Do not use broad orientation tools.]",
                 BehavioralTier::Standard => "[System: Focus on the user's request. Read the most relevant file, or start producing the requested output.]",
             };
-            conversation.push_user(msg.to_string());
+            inject_nudge!("first_turn_execution_bias", msg);
         } else if is_slim_execution_bias(config)
             && controller.evidence_sufficient_streak > 0
             && has_local_target_hypothesis(conversation)
             && continuation_tier.is_some()
         {
-            tracing::info!("OM local-first lock engaged — injecting patch-or-prove nudge");
-            conversation.push_user(om_local_first_message(behavior));
+            tracing::info!("OM local-first lock — injecting patch-or-prove nudge");
+            inject_nudge!("om_local_first_lock", om_local_first_message(behavior));
         } else if controller.evidence_sufficient_streak > 0 && continuation_tier.is_some() {
-            tracing::info!("Actionability threshold reached — injecting forced-convergence nudge");
-            conversation.push_user(evidence_sufficiency_message(behavior));
+            tracing::info!("Actionability threshold — injecting forced-convergence nudge");
+            inject_nudge!("evidence_sufficiency", evidence_sufficiency_message(behavior));
         } else if should_inject_execution_pressure(turn, config, conversation, dispatch_calls, behavior) {
-            tracing::info!(
-                "Execution stall detected after repo inspection — injecting execution-pressure nudge"
-            );
+            tracing::info!("Execution stall — injecting execution-pressure nudge");
             let msg = match behavior {
                 BehavioralTier::Constrained => "[System: You have enough context. Produce output now.]",
                 BehavioralTier::Standard => "[System: You have enough context. Produce the requested result or explain what's blocking you.]",
             };
-            conversation.push_user(msg.to_string());
+            inject_nudge!("execution_pressure", msg);
         } else if let Some(tier) = continuation_tier {
-            tracing::info!(
-                tier,
-                "Sustained tool-continuation churn detected — injecting continuation-pressure nudge"
-            );
-            conversation.push_user(continuation_pressure_message(tier, behavior));
+            tracing::info!(tier, "Continuation churn — injecting continuation-pressure nudge");
+            inject_nudge!(format!("continuation_pressure_tier_{tier}"), continuation_pressure_message(tier, behavior));
         }
 
         // ─── Emit tool events to bus features ───────────────────────
@@ -1941,10 +1947,7 @@ async fn dispatch_single_tool(
 
             match response {
                 omegon_traits::PermissionResponse::Allow => {
-                    // One-time: approve the specific file path only.
-                    // We approve the parent directory so the tool can create
-                    // the file, but this is session-scoped (cleared on restart).
-                    tracing::info!(path = %perm_err.requested_path, "user approved one-time access");
+                    tracing::info!(path = %perm_err.requested_path, decision = "allow", "permission decision");
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
                     let _ = bus.execute_tool(
                         crate::tool_registry::core::TRUST_DIRECTORY,
@@ -1964,11 +1967,7 @@ async fn dispatch_single_tool(
                     }
                 }
                 omegon_traits::PermissionResponse::AlwaysAllow => {
-                    // Session + hint to persist: approve directory and log that
-                    // the user wants persistent access. Profile capture on session
-                    // exit will persist trusted_directories if /trust add was used,
-                    // or the TUI prompt shows "use /trust add <path> to persist."
-                    tracing::info!(dir = %perm_err.directory, "user approved directory (always)");
+                    tracing::info!(dir = %perm_err.directory, decision = "always_allow", "permission decision");
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
                     let _ = bus.execute_tool(
                         crate::tool_registry::core::TRUST_DIRECTORY,
@@ -1988,7 +1987,7 @@ async fn dispatch_single_tool(
                     }
                 }
                 omegon_traits::PermissionResponse::Deny => {
-                    tracing::info!(path = %perm_err.requested_path, "user denied access");
+                    tracing::info!(path = %perm_err.requested_path, decision = "deny", "permission decision");
                     (omegon_traits::ToolResult {
                         content: vec![ContentBlock::Text {
                             text: format!(

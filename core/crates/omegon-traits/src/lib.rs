@@ -1297,6 +1297,22 @@ pub enum BusEvent {
         respond: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
     },
 
+    // ── Permission decisions ──────────────────────────────────────────
+    /// Emitted after the user responds to a permission prompt.
+    PermissionDecision {
+        tool_name: String,
+        path: String,
+        decision: String, // "allow", "always_allow", "deny"
+    },
+
+    // ── Behavioral nudge ────────────────────────────────────────────
+    /// Emitted when the behavioral system injects a nudge message.
+    NudgeInjected {
+        turn: u32,
+        reason: String, // e.g. "continuation_pressure_tier_1", "execution_bias"
+        message_preview: String, // first 100 chars of the injected message
+    },
+
     // ── Agent lifecycle ─────────────────────────────────────────────
     AgentEnd,
 

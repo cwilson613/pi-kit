@@ -2038,6 +2038,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
                 "block_count": result.content.len(),
             })
         }
+        AgentEvent::PermissionRequest { .. } => json!(null), // handled by TUI, not WS
         AgentEvent::AgentEnd => json!({
             "type": "agent_end",
             "event_name": "agent.completed",
@@ -2642,6 +2643,7 @@ mod tests {
             AgentEvent::WebDashboardStarted { .. } => {}
             AgentEvent::ContextUpdated { .. } => {}
             AgentEvent::SessionReset => {}
+            AgentEvent::PermissionRequest { .. } => {}
         }
     }
 

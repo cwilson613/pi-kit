@@ -1284,6 +1284,19 @@ pub enum BusEvent {
         is_error: bool,
     },
 
+    // ── Permission ──────────────────────────────────────────────────
+    /// The agent wants to access a path outside the workspace.
+    /// The TUI should display a blocking prompt and send the response
+    /// via the oneshot sender inside the Arc<Mutex<Option<...>>>.
+    PermissionRequest {
+        tool_name: String,
+        path: String,
+        /// Response channel. The TUI takes the sender via `.lock().unwrap().take()`
+        /// and sends `true` (approved) or `false` (denied). Wrapped in Arc<Mutex>
+        /// because AgentEvent must be Clone for broadcast channels.
+        respond: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
+    },
+
     // ── Agent lifecycle ─────────────────────────────────────────────
     AgentEnd,
 
@@ -1424,6 +1437,17 @@ pub enum NotifyLevel {
     Info,
     Warning,
     Error,
+}
+
+/// Response to a permission request from the TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionResponse {
+    /// Allow this one operation.
+    Allow,
+    /// Allow all operations in this directory for the session.
+    AlwaysAllow,
+    /// Deny the operation.
+    Deny,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1832,6 +1856,14 @@ pub enum AgentEvent {
         name: String,
         result: ToolResult,
         is_error: bool,
+    },
+    /// The agent wants to access a path outside the workspace.
+    /// The TUI renders a blocking permission prompt and sends the
+    /// response via the channel inside the Arc<Mutex<Option<...>>>.
+    PermissionRequest {
+        tool_name: String,
+        path: String,
+        respond: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
     },
     TurnEnd {
         turn: u32,

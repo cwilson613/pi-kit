@@ -362,6 +362,8 @@ pub struct App {
     /// Tutorial overlay — game-style first-play advisor.
     /// Renders on top of the UI and guides the operator through steps.
     tutorial_overlay: Option<tutorial::Tutorial>,
+    /// Pending permission prompt — waiting for user to press y/a/n.
+    pending_permission: Option<std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<omegon_traits::PermissionResponse>>>>>,
     /// Update checker — receives notification when a newer version is available.
     update_rx: Option<crate::update::UpdateReceiver>,
     /// Update checker sender — allows re-checking when channel changes.
@@ -1098,6 +1100,7 @@ impl App {
             capability_tier: None,
             tutorial: None,
             tutorial_overlay: None,
+            pending_permission: None,
             update_rx: None,
             update_tx: None,
             awaiting_continuation: false,
@@ -5708,6 +5711,23 @@ impl App {
                 self.tool_calls += 1;
                 self.last_tool_name = Some(name);
             }
+            AgentEvent::PermissionRequest {
+                tool_name,
+                path,
+                respond,
+            } => {
+                // Show a blocking permission prompt in the TUI.
+                // Render inline as a system notification with key hints.
+                let prompt_text = format!(
+                    "🔒 {tool_name} wants to access: {path}\n   \
+                     [y] allow   [a] always allow   [n] deny"
+                );
+                self.conversation.push_system(&prompt_text);
+
+                // Store the responder — the next key event (y/a/n) will
+                // resolve it. See handle_permission_key below.
+                self.pending_permission = Some(respond.clone());
+            }
             AgentEvent::ToolEnd {
                 id,
                 name,
@@ -7190,6 +7210,38 @@ pub async fn run_tui(
                     }
                 }
                 Event::Key(key) => {
+                    // ── Permission prompt intercepts y/a/n when pending ─
+                    if app.pending_permission.is_some() {
+                        let response = match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                Some(omegon_traits::PermissionResponse::Allow)
+                            }
+                            KeyCode::Char('a') | KeyCode::Char('A') => {
+                                Some(omegon_traits::PermissionResponse::AlwaysAllow)
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                Some(omegon_traits::PermissionResponse::Deny)
+                            }
+                            _ => None, // ignore other keys
+                        };
+                        if let Some(resp) = response {
+                            if let Some(respond) = app.pending_permission.take() {
+                                if let Ok(mut slot) = respond.lock() {
+                                    if let Some(tx) = slot.take() {
+                                        let _ = tx.send(resp);
+                                    }
+                                }
+                            }
+                            let label = match resp {
+                                omegon_traits::PermissionResponse::Allow => "allowed (this time)",
+                                omegon_traits::PermissionResponse::AlwaysAllow => "allowed (session)",
+                                omegon_traits::PermissionResponse::Deny => "denied",
+                            };
+                            app.conversation.push_system(&format!("→ {label}"));
+                        }
+                        continue; // don't process key further
+                    }
+
                     // ── Selector popup intercepts all keys when open ────
                     if app.selector.is_some() {
                         match key.code {

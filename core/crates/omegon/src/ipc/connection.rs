@@ -888,6 +888,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
                 },
             })
         }
+        AgentEvent::PermissionRequest { .. } => None, // handled by TUI, not IPC
         AgentEvent::AgentEnd => Some(IpcEventPayload::AgentCompleted),
         AgentEvent::PhaseChanged { phase } => Some(IpcEventPayload::PhaseChanged {
             phase: format!("{:?}", phase),

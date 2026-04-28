@@ -1906,17 +1906,77 @@ async fn dispatch_single_tool(
         });
     });
 
-    let (result, is_error) = match bus
-        .execute_tool_with_sink(
+    let execute = |cancel: CancellationToken, sink: omegon_traits::ToolProgressSink| {
+        bus.execute_tool_with_sink(
             &call.name,
             &call.id,
             call.arguments.clone(),
             cancel,
             sink,
         )
-        .await
-    {
+    };
+
+    let first_result = execute(cancel.clone(), sink.clone()).await;
+
+    // Intercept PathPermissionError — show interactive TUI prompt
+    let (result, is_error) = match first_result {
         Ok(result) => (result, false),
+        Err(e) if e.downcast_ref::<crate::tools::PathPermissionError>().is_some() => {
+            let perm_err = e.downcast::<crate::tools::PathPermissionError>().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+
+            let _ = events.send(AgentEvent::PermissionRequest {
+                tool_name: call.name.clone(),
+                path: perm_err.requested_path.clone(),
+                respond,
+            });
+
+            // Wait for TUI response (blocks tool execution until user responds).
+            // Use spawn_blocking to avoid blocking the tokio runtime.
+            let response = tokio::task::spawn_blocking(move || {
+                rx.recv_timeout(std::time::Duration::from_secs(120))
+                    .unwrap_or(omegon_traits::PermissionResponse::Deny)
+            }).await.unwrap_or(omegon_traits::PermissionResponse::Deny);
+
+            match response {
+                omegon_traits::PermissionResponse::Allow
+                | omegon_traits::PermissionResponse::AlwaysAllow => {
+                    // Approve the directory via the trust_directory tool, then retry.
+                    tracing::info!(dir = %perm_err.directory, "user approved directory access");
+                    let trust_args = serde_json::json!({ "path": perm_err.directory });
+                    let _ = bus.execute_tool(
+                        crate::tool_registry::core::TRUST_DIRECTORY,
+                        "__permission_grant",
+                        trust_args,
+                        cancel.clone(),
+                    ).await;
+                    // Retry the original tool — directory is now approved
+                    match execute(cancel, sink).await {
+                        Ok(result) => (result, false),
+                        Err(e) => (
+                            omegon_traits::ToolResult {
+                                content: vec![ContentBlock::Text { text: e.to_string() }],
+                                details: Value::Null,
+                            },
+                            true,
+                        ),
+                    }
+                }
+                omegon_traits::PermissionResponse::Deny => {
+                    tracing::info!(path = %perm_err.requested_path, "user denied access");
+                    (omegon_traits::ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!(
+                                "Access denied by user. Cannot read/write '{}'.",
+                                perm_err.requested_path
+                            ),
+                        }],
+                        details: Value::Null,
+                    }, true)
+                }
+            }
+        }
         Err(e) => (
             omegon_traits::ToolResult {
                 content: vec![ContentBlock::Text {

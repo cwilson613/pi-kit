@@ -36,6 +36,28 @@ use tokio_util::sync::CancellationToken;
 
 use crate::tool_registry::core as reg;
 
+/// Error returned by `resolve_path` when a path is outside the workspace
+/// and not in any trusted directory. The dispatch layer intercepts this
+/// to show an interactive permission prompt in the TUI.
+#[derive(Debug)]
+pub struct PathPermissionError {
+    pub requested_path: String,
+    pub directory: String,
+    pub workspace: String,
+}
+
+impl std::fmt::Display for PathPermissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PERMISSION REQUIRED — '{}' is outside workspace '{}'",
+            self.requested_path, self.workspace
+        )
+    }
+}
+
+impl std::error::Error for PathPermissionError {}
+
 /// Core tool provider — registers the primitive tools.
 pub struct CoreTools {
     cwd: PathBuf,
@@ -168,22 +190,17 @@ impl CoreTools {
             return Ok(resolved);
         }
 
-        // Outside workspace and not trusted — reject with guidance for the model.
-        // The model should ask the user for permission, not try to bypass via bash.
+        // Outside workspace and not trusted — return a typed error that
+        // the dispatch layer can intercept for interactive approval.
         let parent_dir = canonical
             .parent()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        anyhow::bail!(
-            "PERMISSION REQUIRED — '{}' is outside the workspace '{}'. \
-             Ask the user: \"I need to access files in {}. Should I proceed?\" \
-             If they approve, call the trust_directory tool with path \"{}\" \
-             and then retry this operation.",
-            path_str,
-            cwd_canonical.display(),
-            parent_dir,
-            parent_dir,
-        )
+        Err(PathPermissionError {
+            requested_path: path_str.to_string(),
+            directory: parent_dir,
+            workspace: cwd_canonical.display().to_string(),
+        }.into())
     }
 }
 
@@ -882,13 +899,14 @@ mod tests {
     }
 
     #[test]
-    fn error_message_guides_model_to_ask_user() {
+    fn error_is_typed_permission_error() {
         let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
         let result = tools.resolve_path("/home/user/obsidian/eval.md");
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("PERMISSION REQUIRED"), "error should start with clear marker: {err}");
-        assert!(err.contains("trust_directory"), "error should tell model to call trust_directory: {err}");
-        assert!(err.contains("Ask the user"), "error should instruct model to ask the user: {err}");
+        let err = result.unwrap_err();
+        assert!(err.downcast_ref::<PathPermissionError>().is_some(),
+            "should return PathPermissionError, got: {err}");
+        assert!(err.to_string().contains("PERMISSION REQUIRED"),
+            "display should contain marker: {err}");
     }
 
     #[test]

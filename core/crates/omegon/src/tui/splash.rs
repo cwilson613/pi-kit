@@ -715,7 +715,8 @@ impl SplashScreen {
         let delta = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
         let duration = tachyonfx::Duration::from_millis(delta.as_millis() as u32);
-        self.effects.process_effects(duration, frame.buffer_mut(), area);
+        self.effects
+            .process_effects(duration, frame.buffer_mut(), area);
     }
 }
 

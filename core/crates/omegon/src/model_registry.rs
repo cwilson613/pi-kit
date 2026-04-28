@@ -42,9 +42,15 @@ pub struct InferenceDefaults {
     pub name_patterns: HashMap<String, Vec<String>>,
 }
 
-fn default_context_input() -> usize { 131_072 }
-fn default_context_output() -> usize { 32_768 }
-fn default_cost_tier() -> String { "free".into() }
+fn default_context_input() -> usize {
+    131_072
+}
+fn default_context_output() -> usize {
+    32_768
+}
+fn default_cost_tier() -> String {
+    "free".into()
+}
 
 impl Default for InferenceDefaults {
     fn default() -> Self {
@@ -162,7 +168,11 @@ impl ModelRegistry {
 
     /// Context ceiling from route patterns (glob match, highest specificity wins).
     pub fn context_ceiling(&self, provider: &str, model_id: &str) -> Option<usize> {
-        let prov = if provider == "ollama" { "local" } else { provider };
+        let prov = if provider == "ollama" {
+            "local"
+        } else {
+            provider
+        };
         let mut best: Option<(usize, usize)> = None; // (specificity, ceiling)
         for route in &self.routes {
             if route.provider != prov && route.provider != provider {
@@ -180,7 +190,11 @@ impl ModelRegistry {
 
     /// Infer capability tier from route patterns.
     pub fn infer_tier(&self, provider: &str, model_id: &str) -> Option<&str> {
-        let prov = if provider == "ollama" { "local" } else { provider };
+        let prov = if provider == "ollama" {
+            "local"
+        } else {
+            provider
+        };
         let mut best: Option<(usize, &str)> = None;
         for route in &self.routes {
             if route.provider != prov && route.provider != provider {
@@ -323,7 +337,10 @@ mod tests {
     #[test]
     fn context_ceiling_glob() {
         let reg = ModelRegistry::global();
-        assert_eq!(reg.context_ceiling("anthropic", "claude-opus-4-6"), Some(1_000_000));
+        assert_eq!(
+            reg.context_ceiling("anthropic", "claude-opus-4-6"),
+            Some(1_000_000)
+        );
         assert_eq!(reg.context_ceiling("openai", "gpt-5.5"), Some(1_000_000));
         assert_eq!(reg.context_ceiling("openai", "gpt-5.4"), Some(272_000));
         assert_eq!(reg.context_ceiling("openai", "gpt-5.4-mini"), Some(400_000));
@@ -333,7 +350,10 @@ mod tests {
     fn infer_tier_from_routes() {
         let reg = ModelRegistry::global();
         assert_eq!(reg.infer_tier("openai", "gpt-5.5"), Some("gloriana"));
-        assert_eq!(reg.infer_tier("anthropic", "claude-haiku-4-5-20251001"), Some("retribution"));
+        assert_eq!(
+            reg.infer_tier("anthropic", "claude-haiku-4-5-20251001"),
+            Some("retribution")
+        );
         assert_eq!(reg.infer_tier("openai", "gpt-5-mini"), Some("retribution"));
     }
 

@@ -181,8 +181,8 @@ pub fn load(id: &str) -> anyhow::Result<ScoreCard> {
     // Canonicalize both paths and verify the target stays inside eval-results/.
     let canonical_root = std::fs::canonicalize(&root)
         .map_err(|_| anyhow::anyhow!("eval-results directory does not exist"))?;
-    let canonical_path = std::fs::canonicalize(&path)
-        .map_err(|_| anyhow::anyhow!("score card not found: {id}"))?;
+    let canonical_path =
+        std::fs::canonicalize(&path).map_err(|_| anyhow::anyhow!("score card not found: {id}"))?;
     if !canonical_path.starts_with(&canonical_root) {
         anyhow::bail!("invalid score card id: path escapes eval-results directory");
     }
@@ -428,8 +428,10 @@ fn read_burn_summary_between(ts_a: &str, ts_b: &str) -> Option<MutationBurnSumma
             if let Some(ts) = entry.get("timestamp").and_then(|v| v.as_str()) {
                 if ts > ts_a && ts <= ts_b {
                     sessions += 1;
-                    total_burn_ratio +=
-                        entry.get("burn_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    total_burn_ratio += entry
+                        .get("burn_ratio")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
                     total_recoveries += entry
                         .get("recoveries")
                         .and_then(|v| v.as_u64())

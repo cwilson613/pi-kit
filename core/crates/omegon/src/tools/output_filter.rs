@@ -248,7 +248,9 @@ mod tests {
     fn cargo_build_collapses_compiling() {
         let output = (0..20)
             .map(|i| format!("   Compiling crate-{i} v0.1.0"))
-            .chain(std::iter::once("    Finished `dev` profile in 4.2s".to_string()))
+            .chain(std::iter::once(
+                "    Finished `dev` profile in 4.2s".to_string(),
+            ))
             .collect::<Vec<_>>()
             .join("\n");
         let filtered = filter_tool_output("cargo build", &output);
@@ -283,10 +285,13 @@ mod tests {
     fn rustflags_cargo_is_caught() {
         let output = (0..15)
             .map(|i| format!("   Compiling crate-{i} v0.1.0"))
-            .chain(std::iter::once("    Finished `dev` profile in 2s".to_string()))
+            .chain(std::iter::once(
+                "    Finished `dev` profile in 2s".to_string(),
+            ))
             .collect::<Vec<_>>()
             .join("\n");
-        let filtered = filter_tool_output("RUSTFLAGS=\"-D warnings\" cargo check -p omegon", &output);
+        let filtered =
+            filter_tool_output("RUSTFLAGS=\"-D warnings\" cargo check -p omegon", &output);
         assert!(filtered.contains("[compiled 15 crates]"));
     }
 }

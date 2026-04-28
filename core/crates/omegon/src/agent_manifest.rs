@@ -112,8 +112,7 @@ pub fn load(bundle_dir: &Path) -> anyhow::Result<ResolvedManifest> {
     let toml_path = bundle_dir.join("agent.toml");
 
     let manifest: AgentManifest = if pkl_path.exists() {
-        rpkl::from_config(&pkl_path)
-            .map_err(|e| anyhow::anyhow!("agent.pkl: {e}"))?
+        rpkl::from_config(&pkl_path).map_err(|e| anyhow::anyhow!("agent.pkl: {e}"))?
     } else if toml_path.exists() {
         let content = std::fs::read_to_string(&toml_path)?;
         toml::from_str(&content)?
@@ -132,9 +131,10 @@ fn resolve(manifest: AgentManifest, bundle_dir: &Path) -> anyhow::Result<Resolve
     let persona_directive = if let Some(ref persona) = manifest.persona {
         if let Some(ref path) = persona.directive {
             let full = bundle_dir.join(path);
-            Some(std::fs::read_to_string(&full).map_err(|e| {
-                anyhow::anyhow!("persona directive {}: {e}", full.display())
-            })?)
+            Some(
+                std::fs::read_to_string(&full)
+                    .map_err(|e| anyhow::anyhow!("persona directive {}: {e}", full.display()))?,
+            )
         } else {
             persona.directive_inline.clone()
         }
@@ -145,9 +145,10 @@ fn resolve(manifest: AgentManifest, bundle_dir: &Path) -> anyhow::Result<Resolve
     let mind_facts_content = if let Some(ref persona) = manifest.persona {
         if let Some(ref path) = persona.mind_facts {
             let full = bundle_dir.join(path);
-            Some(std::fs::read_to_string(&full).map_err(|e| {
-                anyhow::anyhow!("mind facts {}: {e}", full.display())
-            })?)
+            Some(
+                std::fs::read_to_string(&full)
+                    .map_err(|e| anyhow::anyhow!("mind facts {}: {e}", full.display()))?,
+            )
         } else {
             None
         }
@@ -200,11 +201,21 @@ template = "Run status check."
         assert_eq!(manifest.agent.id, "test.coding-agent");
         assert_eq!(manifest.agent.domain, "coding");
         assert_eq!(
-            manifest.persona.as_ref().unwrap().directive_inline.as_deref(),
+            manifest
+                .persona
+                .as_ref()
+                .unwrap()
+                .directive_inline
+                .as_deref(),
             Some("You are a test agent.")
         );
         assert_eq!(
-            manifest.settings.as_ref().unwrap().thinking_level.as_deref(),
+            manifest
+                .settings
+                .as_ref()
+                .unwrap()
+                .thinking_level
+                .as_deref(),
             Some("medium")
         );
         assert_eq!(manifest.triggers.as_ref().unwrap().len(), 1);
@@ -296,7 +307,10 @@ mind_facts = "mind/facts.jsonl"
 
         let resolved = load(dir.path()).unwrap();
         assert_eq!(resolved.manifest.agent.id, "test.bundle");
-        assert_eq!(resolved.persona_directive.as_deref(), Some("You are helpful."));
+        assert_eq!(
+            resolved.persona_directive.as_deref(),
+            Some("You are helpful.")
+        );
         assert!(resolved.mind_facts_content.is_some());
     }
 
@@ -335,7 +349,13 @@ settings {
         let resolved = load(dir.path()).unwrap();
         assert_eq!(resolved.manifest.agent.id, "test.pkl-agent");
         assert_eq!(
-            resolved.manifest.settings.as_ref().unwrap().model.as_deref(),
+            resolved
+                .manifest
+                .settings
+                .as_ref()
+                .unwrap()
+                .model
+                .as_deref(),
             Some("anthropic:claude-sonnet-4-6")
         );
     }

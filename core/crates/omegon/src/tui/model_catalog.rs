@@ -144,7 +144,8 @@ impl ModelCatalog {
         }
         // Look up in the centralized model registry
         let reg = crate::model_registry::ModelRegistry::global();
-        reg.pricing(model_id).map(|p| TokenPricing::new(p.input, p.output))
+        reg.pricing(model_id)
+            .map(|p| TokenPricing::new(p.input, p.output))
     }
 
     pub fn find_by_id(&self, model_id: &str) -> Option<&ModelInfo> {
@@ -276,9 +277,7 @@ impl ModelCatalog {
                             _ => None,
                         })
                         .collect();
-                    let pricing = m
-                        .pricing
-                        .map(|p| TokenPricing::new(p.input, p.output));
+                    let pricing = m.pricing.map(|p| TokenPricing::new(p.input, p.output));
                     ModelInfo {
                         id: format!("{}:{}", provider_id, m.id),
                         name: m.name.clone(),

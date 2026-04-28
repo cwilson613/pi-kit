@@ -250,7 +250,7 @@ pub(crate) fn tool_short_name(name: &str) -> String {
         "edit" | "Edit" => ("✎", "edit"),    // U+270E (NOT U+270F which is emoji)
         "view" => ("◈", "view"),
         // ── Git ──
-        "commit" => ("⊕", "commit"),         // add to history
+        "commit" => ("⊕", "commit"), // add to history
         // ── Memory ── (▪/▫ are in the emoji set; using ▣/▢ instead)
         "memory_store" => ("▣", "mem+"),
         "memory_recall" => ("▢", "recall"),
@@ -1648,8 +1648,7 @@ impl InstrumentPanel {
             } else {
                 sanitized
             };
-            let _ =
-                render_str_colored(&display, x, y, inner.right(), panel_bg(t), buf, |_i| color);
+            let _ = render_str_colored(&display, x, y, inner.right(), panel_bg(t), buf, |_i| color);
 
             rendered += 1;
         }
@@ -1798,8 +1797,7 @@ impl InstrumentPanel {
 
             // ── Task sub-rows for running children ──
             if show_tasks && child.status == "running" && !child.tasks.is_empty() {
-                let max =
-                    MAX_TASK_ROWS_PER_DELEGATE.min(child_rows.saturating_sub(current_row));
+                let max = MAX_TASK_ROWS_PER_DELEGATE.min(child_rows.saturating_sub(current_row));
                 let rendered = Self::render_task_rows(
                     &child.tasks,
                     inner.y + current_row as u16,

@@ -221,12 +221,14 @@ fn load_legacy_plugin(
     cwd: &Path,
 ) -> anyhow::Result<Option<Box<dyn omegon_traits::Feature>>> {
     let manifest: PluginManifest = if manifest_path.extension().is_some_and(|e| e == "pkl") {
-        rpkl::from_config(manifest_path)
-            .map_err(|e| anyhow::anyhow!("invalid plugin manifest {}: {e}", manifest_path.display()))?
+        rpkl::from_config(manifest_path).map_err(|e| {
+            anyhow::anyhow!("invalid plugin manifest {}: {e}", manifest_path.display())
+        })?
     } else {
         let content = std::fs::read_to_string(manifest_path)?;
-        toml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("invalid plugin manifest {}: {e}", manifest_path.display()))?
+        toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("invalid plugin manifest {}: {e}", manifest_path.display())
+        })?
     };
 
     if !manifest.activation.is_active(cwd) {

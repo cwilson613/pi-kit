@@ -21,6 +21,8 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod acp;
+mod acp_worker;
 mod auth;
 mod behavior;
 mod bootstrap;
@@ -31,55 +33,53 @@ mod cleave_smoke;
 mod clipboard;
 mod codex_config;
 mod context;
-pub mod tool_schema;
 mod control_actions;
 mod control_runtime;
 mod embedding;
 pub mod extensions;
 pub mod features;
-mod ipc;
-mod acp;
-mod acp_worker;
 mod first_run;
+mod ipc;
 mod migrate;
 mod shadow_context;
 mod skills;
 mod smoke;
 mod switch;
 mod task_spawn;
+pub mod tool_schema;
 mod update;
 mod upstream_errors;
 mod usage;
 mod workspace;
 
+mod agent_manifest;
+mod bundle_verify;
+mod catalog;
 mod checkpoint;
 mod child_agent;
 mod conversation;
+mod eval;
+mod extension_cli;
 mod lifecycle;
 mod r#loop;
+mod model_registry;
 mod ollama;
-mod extension_cli;
 mod paths;
 mod plugin_cli;
-mod secret_cli;
-mod model_registry;
 mod plugins;
 mod prompt;
 mod providers;
 pub mod routing;
+mod secret_cli;
 mod session;
-mod agent_manifest;
-mod bundle_verify;
-mod catalog;
-mod eval;
 mod session_router;
 pub mod settings;
-mod triggers;
 mod setup;
 mod startup;
 pub mod status;
 pub mod tool_registry;
 mod tools;
+mod triggers;
 mod tui;
 pub mod util;
 mod web;
@@ -320,7 +320,6 @@ enum Commands {
         #[command(subcommand)]
         action: AuthAction,
     },
-
 
     /// Migrate settings from another CLI agent tool.
     /// Usage: omegon migrate [auto|claude-code|pi|codex|cursor|aider|continue|copilot|windsurf]
@@ -786,9 +785,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Secret { ref action }) => {
             match action {
-                SecretAction::Set { name, value, recipe, stdin } => {
-                    secret_cli::set(name, value.as_deref(), recipe.as_deref(), *stdin)?
-                }
+                SecretAction::Set {
+                    name,
+                    value,
+                    recipe,
+                    stdin,
+                } => secret_cli::set(name, value.as_deref(), recipe.as_deref(), *stdin)?,
                 SecretAction::List => secret_cli::list()?,
                 SecretAction::Delete { name } => secret_cli::delete(name)?,
             }
@@ -804,7 +806,11 @@ async fn main() -> anyhow::Result<()> {
             control_port,
             strict_port,
         }) => run_embedded_command(control_port, strict_port, &cli.model, None).await,
-        Some(Commands::Eval { agent, suite, model_override }) => {
+        Some(Commands::Eval {
+            agent,
+            suite,
+            model_override,
+        }) => {
             if let Some(model) = &model_override {
                 tracing::info!(model = %model, "eval: model override active — testing model portability");
             }
@@ -881,9 +887,9 @@ async fn main() -> anyhow::Result<()> {
                 .map(|path| load_task_spec(path))
                 .transpose()?;
 
-            let effective_prompt = prompt.as_deref().or_else(|| {
-                spec.as_ref().and_then(|s| s.task.prompt.as_deref())
-            });
+            let effective_prompt = prompt
+                .as_deref()
+                .or_else(|| spec.as_ref().and_then(|s| s.task.prompt.as_deref()));
             let effective_prompt_file = prompt_file.as_deref().or_else(|| {
                 spec.as_ref()
                     .and_then(|s| s.task.prompt_file.as_deref())
@@ -896,20 +902,33 @@ async fn main() -> anyhow::Result<()> {
                     .map(Path::new)
             });
             let effective_max_turns = max_turns
-                .or_else(|| spec.as_ref().and_then(|s| s.bounds.as_ref()).map(|b| b.max_turns))
+                .or_else(|| {
+                    spec.as_ref()
+                        .and_then(|s| s.bounds.as_ref())
+                        .map(|b| b.max_turns)
+                })
                 .unwrap_or(30);
             let effective_timeout = timeout
-                .or_else(|| spec.as_ref().and_then(|s| s.bounds.as_ref()).map(|b| b.timeout_secs))
+                .or_else(|| {
+                    spec.as_ref()
+                        .and_then(|s| s.bounds.as_ref())
+                        .map(|b| b.timeout_secs)
+                })
                 .unwrap_or(600);
-            let effective_token_budget = token_budget
-                .or_else(|| spec.as_ref().and_then(|s| s.bounds.as_ref()).and_then(|b| b.token_budget));
-            let effective_cwd = spec.as_ref()
+            let effective_token_budget = token_budget.or_else(|| {
+                spec.as_ref()
+                    .and_then(|s| s.bounds.as_ref())
+                    .and_then(|b| b.token_budget)
+            });
+            let effective_cwd = spec
+                .as_ref()
                 .and_then(|s| s.task.cwd.as_deref())
                 .map(Path::new)
                 .unwrap_or(&cli.cwd);
 
             // Apply agent settings from spec — model override
-            let effective_model = spec.as_ref()
+            let effective_model = spec
+                .as_ref()
                 .and_then(|s| s.agent.as_ref())
                 .and_then(|a| a.model.clone())
                 .unwrap_or_else(|| cli.model.clone());
@@ -1118,7 +1137,8 @@ fn apply_agent_manifest_pre_setup(
         }
         anyhow::bail!(
             "agent bundle '{}' failed verification with {} error(s)",
-            resolved.manifest.agent.id, verification.errors().len()
+            resolved.manifest.agent.id,
+            verification.errors().len()
         );
     }
     tracing::info!("agent bundle verified");
@@ -1126,13 +1146,17 @@ fn apply_agent_manifest_pre_setup(
     // ── Apply settings ───────────────────────────────────────────────
     if let Some(ref s) = resolved.manifest.settings {
         if let Ok(mut settings) = shared_settings.lock() {
-            if let Some(ref m) = s.model { settings.model = m.clone(); }
+            if let Some(ref m) = s.model {
+                settings.model = m.clone();
+            }
             if let Some(ref tl) = s.thinking_level {
                 if let Some(level) = settings::ThinkingLevel::parse(tl) {
                     settings.thinking = level;
                 }
             }
-            if let Some(mt) = s.max_turns { settings.max_turns = mt; }
+            if let Some(mt) = s.max_turns {
+                settings.max_turns = mt;
+            }
         }
     }
 
@@ -1152,20 +1176,41 @@ fn apply_agent_manifest_pre_setup(
         }
 
         let persona_cfg = resolved.manifest.persona.as_ref();
-        let badge = persona_cfg.and_then(|p| p.badge.as_deref())
+        let badge = persona_cfg
+            .and_then(|p| p.badge.as_deref())
             .map(|b| format!("\n[persona.style]\nbadge = \"{b}\""))
             .unwrap_or_default();
-        let skills = persona_cfg.and_then(|p| p.activated_skills.as_ref())
+        let skills = persona_cfg
+            .and_then(|p| p.activated_skills.as_ref())
             .filter(|s| !s.is_empty())
-            .map(|s| format!("\n[persona.skills]\nactivate = [{}]", s.iter().map(|sk| format!("\"{sk}\"")).collect::<Vec<_>>().join(", ")))
+            .map(|s| {
+                format!(
+                    "\n[persona.skills]\nactivate = [{}]",
+                    s.iter()
+                        .map(|sk| format!("\"{sk}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
             .unwrap_or_default();
-        let tools = persona_cfg.and_then(|p| p.disabled_tools.as_ref())
+        let tools = persona_cfg
+            .and_then(|p| p.disabled_tools.as_ref())
             .filter(|t| !t.is_empty())
-            .map(|t| format!("\n[persona.tools]\ndisable = [{}]", t.iter().map(|tk| format!("\"{tk}\"")).collect::<Vec<_>>().join(", ")))
+            .map(|t| {
+                format!(
+                    "\n[persona.tools]\ndisable = [{}]",
+                    t.iter()
+                        .map(|tk| format!("\"{tk}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
             .unwrap_or_default();
         let mind = if resolved.mind_facts_content.is_some() {
             "\n[persona.mind]\nseed_facts = \"mind/facts.jsonl\""
-        } else { "" };
+        } else {
+            ""
+        };
 
         let plugin_toml = format!(
             "[plugin]\ntype = \"persona\"\nid = \"agent.{persona_slug}\"\n\
@@ -1188,11 +1233,15 @@ fn apply_agent_manifest_pre_setup(
         for t in trigs {
             let config = triggers::TriggerConfig {
                 trigger: triggers::TriggerMeta {
-                    name: t.name.clone(), enabled: true,
-                    schedule: t.schedule.clone(), interval: t.interval.clone(),
+                    name: t.name.clone(),
+                    enabled: true,
+                    schedule: t.schedule.clone(),
+                    interval: t.interval.clone(),
                 },
                 filter: None,
-                prompt: triggers::PromptTemplate { template: t.template.clone() },
+                prompt: triggers::PromptTemplate {
+                    template: t.template.clone(),
+                },
                 session: None,
             };
             let toml_str = toml::to_string_pretty(&config).unwrap_or_default();
@@ -1204,16 +1253,23 @@ fn apply_agent_manifest_pre_setup(
     if let Some(ref wf) = resolved.manifest.workflow {
         let wf_dir = cwd.join(".omegon").join("workflows");
         std::fs::create_dir_all(&wf_dir).ok();
-        let map_phase = |p: &std::collections::HashMap<String, agent_manifest::PhaseConfig>, name: &str| -> Option<workflow::PhaseConfig> {
+        let map_phase = |p: &std::collections::HashMap<String, agent_manifest::PhaseConfig>,
+                         name: &str|
+         -> Option<workflow::PhaseConfig> {
             p.get(name).map(|pc| workflow::PhaseConfig {
-                persona: pc.persona.clone(), model: pc.model.clone(),
-                max_turns: pc.max_turns, context_class: pc.context_class.clone(),
+                persona: pc.persona.clone(),
+                model: pc.model.clone(),
+                max_turns: pc.max_turns,
+                context_class: pc.context_class.clone(),
                 thinking_level: pc.thinking_level.clone(),
             })
         };
         let phases = wf.phases.as_ref();
         let template = workflow::WorkflowTemplate {
-            workflow: workflow::WorkflowMeta { name: wf.name.clone(), description: String::new() },
+            workflow: workflow::WorkflowMeta {
+                name: wf.name.clone(),
+                description: String::new(),
+            },
             phases: workflow::WorkflowPhases {
                 exploring: phases.and_then(|p| map_phase(p, "exploring")),
                 specifying: phases.and_then(|p| map_phase(p, "specifying")),
@@ -1240,7 +1296,12 @@ fn apply_agent_manifest_pre_setup(
     Ok(resolved)
 }
 
-async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str, agent_id: Option<&str>) -> anyhow::Result<()> {
+async fn run_embedded_command(
+    control_port: u16,
+    strict_port: bool,
+    model: &str,
+    agent_id: Option<&str>,
+) -> anyhow::Result<()> {
     let cwd = std::fs::canonicalize(".")?;
 
     // ─── Shared setup ───────────────────────────────────────────────────
@@ -1257,7 +1318,11 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     // Settings, persona, triggers, and workflows must be materialized
     // before setup so persona registry and tool surface are correct.
     let agent_manifest_resolved = if let Some(agent_id) = agent_id {
-        Some(apply_agent_manifest_pre_setup(agent_id, &cwd, &shared_settings)?)
+        Some(apply_agent_manifest_pre_setup(
+            agent_id,
+            &cwd,
+            &shared_settings,
+        )?)
     } else {
         None
     };
@@ -1356,11 +1421,8 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
     let (ipc_cmd_tx, mut ipc_cmd_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(32);
     {
-        let ipc_cfg = ipc::IpcServerConfig::from_cwd(
-            &cwd,
-            env!("CARGO_PKG_VERSION"),
-            &agent.session_id,
-        );
+        let ipc_cfg =
+            ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), &agent.session_id);
         let shared_cancel: tui::SharedCancel =
             Arc::new(std::sync::Mutex::new(Some(global_cancel.clone())));
         ipc::start_ipc_server(
@@ -1444,9 +1506,8 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     vox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // ─── SIGHUP handler (graceful reload) ──────────────────────────────
-    let mut sighup = tokio::signal::unix::signal(
-        tokio::signal::unix::SignalKind::hangup(),
-    ).expect("failed to register SIGHUP handler");
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .expect("failed to register SIGHUP handler");
 
     tracing::info!("daemon dispatch loop started");
     loop {
@@ -1566,7 +1627,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
 
                         // Clone handles for the spawned task.
                         let session = default_session.clone();
-    
+
                         let events_tx = events_tx.clone();
                         let shared_settings = shared_settings.clone();
                         let model = model.clone();
@@ -1626,7 +1687,7 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
                             format!("/{name} {args}")
                         };
                         let session = default_session.clone();
-    
+
                         let events_tx = events_tx.clone();
                         let shared_settings = shared_settings.clone();
                         let model = model.clone();
@@ -1944,12 +2005,15 @@ async fn run_embedded_command(control_port: u16, strict_port: bool, model: &str,
     {
         let guard = default_session.lock().await;
         if let Some(ref sess) = *guard {
-            if let Err(e) = session::save_session(&sess.conversation, &agent_cwd, Some(&agent_session_id))
+            if let Err(e) =
+                session::save_session(&sess.conversation, &agent_cwd, Some(&agent_session_id))
             {
                 tracing::debug!("Daemon session save failed (non-fatal): {e}");
             }
         } else {
-            tracing::warn!("session still in-flight at shutdown — state will be saved by completing turn");
+            tracing::warn!(
+                "session still in-flight at shutdown — state will be saved by completing turn"
+            );
         }
     }
     Ok(())
@@ -2214,8 +2278,7 @@ fn ollama_symlink_path() -> PathBuf {
 }
 
 async fn ollama_register() -> anyhow::Result<()> {
-    let binary = std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("omegon"));
+    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omegon"));
     let binary_str = binary.display().to_string();
 
     let integrations_dir = ollama_integrations_dir();
@@ -2285,7 +2348,11 @@ async fn ollama_status() -> anyhow::Result<()> {
         println!(
             "Registration:  ✓ registered (binary: {}{})  ",
             registered_binary,
-            if binary_exists { "" } else { " ⚠ binary not found" }
+            if binary_exists {
+                ""
+            } else {
+                " ⚠ binary not found"
+            }
         );
     } else {
         println!("Registration:  ✗ not registered (run `omegon ollama register`)");
@@ -2389,7 +2456,9 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
                 if has_embed {
                     println!("Embeddings:    ✓ nomic-embed-text present");
                 } else {
-                    println!("Embeddings:    ⚠ nomic-embed-text not found — run `ollama pull nomic-embed-text` for hybrid search");
+                    println!(
+                        "Embeddings:    ⚠ nomic-embed-text not found — run `ollama pull nomic-embed-text` for hybrid search"
+                    );
                 }
             }
             Err(e) => println!("Models:        ✗ failed to list ({e})"),
@@ -2419,10 +2488,7 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
     // ─── Toolchain diagnostics ──────────────────────────────────────
     println!("\n═══ Toolchain ═══");
     // PKL (required for custom postures/agent configs)
-    match std::process::Command::new("pkl")
-        .arg("--version")
-        .output()
-    {
+    match std::process::Command::new("pkl").arg("--version").output() {
         Ok(output) if output.status.success() => {
             let ver = String::from_utf8_lossy(&output.stdout);
             println!("PKL:           ✓ {}", ver.trim());
@@ -2494,11 +2560,7 @@ fn resolve_cli_posture(cli: &Cli) -> Option<String> {
 }
 
 /// Apply a posture name to settings, resolving custom postures from the filesystem.
-fn apply_posture_to_settings(
-    name: &str,
-    settings: &mut settings::Settings,
-    cwd: &std::path::Path,
-) {
+fn apply_posture_to_settings(name: &str, settings: &mut settings::Settings, cwd: &std::path::Path) {
     match settings::resolve_posture_by_name(name, cwd) {
         Ok(settings::ResolvedPosture::BuiltIn(preset)) => {
             settings.set_posture(preset);
@@ -4128,10 +4190,7 @@ fn format_agent_error(
             if let Some(start) = raw.find("\"message\":\"") {
                 let rest = &raw[start + 11..];
                 if let Some(end) = rest.find('"') {
-                    return format!(
-                        "⚠ Authentication error ({who}) — {}",
-                        &rest[..end]
-                    );
+                    return format!("⚠ Authentication error ({who}) — {}", &rest[..end]);
                 }
             }
             // Include truncated raw error so the user can report it
@@ -4736,10 +4795,14 @@ impl BenchmarkUsageSummary {
             context_composition,
             turn_end_reason: reason_key,
             dominant_phase: dominant_phase.and_then(|p| {
-                serde_json::to_value(p).ok().and_then(|v| v.as_str().map(str::to_string))
+                serde_json::to_value(p)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
             }),
             drift_kind: drift_kind.and_then(|d| {
-                serde_json::to_value(d).ok().and_then(|v| v.as_str().map(str::to_string))
+                serde_json::to_value(d)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
             }),
         });
     }
@@ -5106,7 +5169,10 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     result
 }
 
-async fn maybe_run_injected_cleave_smoke_child(cwd: &Path, cli_model: &str) -> anyhow::Result<bool> {
+async fn maybe_run_injected_cleave_smoke_child(
+    cwd: &Path,
+    cli_model: &str,
+) -> anyhow::Result<bool> {
     let Some(mode) = std::env::var("OMEGON_CLEAVE_SMOKE_CHILD_MODE").ok() else {
         return Ok(false);
     };
@@ -5132,19 +5198,20 @@ async fn maybe_run_injected_cleave_smoke_child(cwd: &Path, cli_model: &str) -> a
             let shared_settings = settings::shared(cli_model);
             // Apply child runtime profile overrides from env (set by orchestrator)
             if let Ok(mut s) = shared_settings.lock() {
-                if let Some(thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL").ok()
+                if let Some(thinking) = std::env::var("OMEGON_CHILD_THINKING_LEVEL")
+                    .ok()
                     .and_then(|v| settings::ThinkingLevel::parse(&v))
                 {
                     s.thinking = thinking;
                 }
-                if let Some(class) = std::env::var("OMEGON_CHILD_CONTEXT_CLASS").ok()
+                if let Some(class) = std::env::var("OMEGON_CHILD_CONTEXT_CLASS")
+                    .ok()
                     .and_then(|v| settings::ContextClass::parse(&v))
                 {
                     s.set_requested_context_class(class);
                 }
             }
-            let agent =
-                setup::AgentSetup::new(cwd, None, Some(shared_settings.clone())).await?;
+            let agent = setup::AgentSetup::new(cwd, None, Some(shared_settings.clone())).await?;
             let status = agent.initial_harness_status.clone();
             let tool_names: Vec<String> = agent
                 .bus
@@ -5158,7 +5225,10 @@ async fn maybe_run_injected_cleave_smoke_child(cwd: &Path, cli_model: &str) -> a
                 .map(|s| s.model_short())
                 .unwrap_or_else(|| "unknown".into());
             let selected_provider = crate::providers::infer_provider_id(
-                &settings_guard.as_ref().map(|s| s.model.clone()).unwrap_or_default(),
+                &settings_guard
+                    .as_ref()
+                    .map(|s| s.model.clone())
+                    .unwrap_or_default(),
             );
             let preloaded_files = child_preloaded_files()
                 .into_iter()
@@ -5457,8 +5527,12 @@ struct TaskSpecOutput {
     path: Option<String>,
 }
 
-fn default_max_turns() -> u32 { 30 }
-fn default_timeout() -> u64 { 600 }
+fn default_max_turns() -> u32 {
+    30
+}
+fn default_timeout() -> u64 {
+    600
+}
 
 fn load_task_spec(path: &Path) -> anyhow::Result<TaskSpec> {
     let content = std::fs::read_to_string(path)
@@ -5507,8 +5581,9 @@ async fn run_bounded_task(
             } else {
                 cwd.join(path)
             };
-            std::fs::read_to_string(&resolved)
-                .map_err(|e| anyhow::anyhow!("Failed to read prompt file {}: {e}", resolved.display()))?
+            std::fs::read_to_string(&resolved).map_err(|e| {
+                anyhow::anyhow!("Failed to read prompt file {}: {e}", resolved.display())
+            })?
         }
         (None, None) => {
             eprintln!("omegon run: --prompt or --prompt-file required");
@@ -5577,7 +5652,8 @@ async fn run_bounded_task(
                     ..
                 } => {
                     total_in_t.fetch_add(actual_input_tokens, std::sync::atomic::Ordering::Relaxed);
-                    total_out_t.fetch_add(actual_output_tokens, std::sync::atomic::Ordering::Relaxed);
+                    total_out_t
+                        .fetch_add(actual_output_tokens, std::sync::atomic::Ordering::Relaxed);
                 }
                 AgentEvent::AgentEnd => break,
                 _ => {}
@@ -5620,7 +5696,9 @@ async fn run_bounded_task(
         if in_tokens + out_tokens > budget {
             tracing::warn!(
                 "Token budget exceeded: {}+{} = {} > {budget}",
-                in_tokens, out_tokens, in_tokens + out_tokens
+                in_tokens,
+                out_tokens,
+                in_tokens + out_tokens
             );
         }
     }
@@ -5634,7 +5712,11 @@ async fn run_bounded_task(
     let (status, error, exit_code) = match &loop_result {
         Ok(()) => {
             if cancel.is_cancelled() {
-                ("timeout".to_string(), Some("wall-clock timeout".to_string()), 3)
+                (
+                    "timeout".to_string(),
+                    Some("wall-clock timeout".to_string()),
+                    3,
+                )
             } else {
                 ("completed".to_string(), None, 0)
             }
@@ -5653,8 +5735,20 @@ async fn run_bounded_task(
         turns,
         total_input_tokens: in_tokens,
         total_output_tokens: out_tokens,
-        files_read: agent.conversation.intent.files_read.iter().map(|p| p.display().to_string()).collect(),
-        files_modified: agent.conversation.intent.files_modified.iter().map(|p| p.display().to_string()).collect(),
+        files_read: agent
+            .conversation
+            .intent
+            .files_read
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
+        files_modified: agent
+            .conversation
+            .intent
+            .files_modified
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
         duration_secs: elapsed,
         summary,
         error,
@@ -5736,7 +5830,10 @@ mod tests {
             result.contains("Authentication error (OpenAI/Codex)"),
             "got: {result}"
         );
-        assert!(result.contains("Re-authenticate with /login"), "got: {result}");
+        assert!(
+            result.contains("Re-authenticate with /login"),
+            "got: {result}"
+        );
         // Should NOT expose internal scope names to the user
         assert!(!result.contains("api.responses.write"), "got: {result}");
         assert!(
@@ -6278,7 +6375,10 @@ mod tests {
             output.contains("OpenAI/Codex") || output.contains("openai-codex"),
             "got: {output}"
         );
-        assert!(output.contains("cleared this session's cached auth env"), "got: {output}");
+        assert!(
+            output.contains("cleared this session's cached auth env"),
+            "got: {output}"
+        );
     }
 
     #[test]
@@ -6321,7 +6421,9 @@ mod tests {
 
     #[test]
     fn provider_connected_helper_rejects_unknown_model_provider() {
-        assert!(!auth::provider_connected_for_model("nonexistent-provider:test-model"));
+        assert!(!auth::provider_connected_for_model(
+            "nonexistent-provider:test-model"
+        ));
     }
 
     #[test]

@@ -1415,8 +1415,13 @@ mod tests {
 
         let view = conv.build_llm_view();
         // Find the assistant message (it's between the two user messages)
-        let assistant = view.iter().find(|m| matches!(m, LlmMessage::Assistant { .. }));
-        assert!(assistant.is_some(), "should have a decayed assistant message");
+        let assistant = view
+            .iter()
+            .find(|m| matches!(m, LlmMessage::Assistant { .. }));
+        assert!(
+            assistant.is_some(),
+            "should have a decayed assistant message"
+        );
         if let LlmMessage::Assistant { text, .. } = assistant.unwrap() {
             let combined: String = text.join("");
             assert!(
@@ -2394,7 +2399,9 @@ mod tests {
             "orphaned assistant tool_use/raw blocks should not survive: {view:?}"
         );
         assert!(
-            view.iter().any(|msg| matches!(msg, LlmMessage::User { content, .. } if content == "continue")),
+            view.iter().any(
+                |msg| matches!(msg, LlmMessage::User { content, .. } if content == "continue")
+            ),
             "follow-up user turn should survive repair: {view:?}"
         );
     }
@@ -2499,7 +2506,10 @@ mod tests {
         match &view[0] {
             LlmMessage::User { content, .. } => {
                 assert!(content.contains("Intent — session state"), "{content}");
-                assert!(content.contains("Recover provider-compatible history"), "{content}");
+                assert!(
+                    content.contains("Recover provider-compatible history"),
+                    "{content}"
+                );
             }
             other => panic!("expected fallback user message, got {other:?}"),
         }

@@ -119,7 +119,10 @@ impl ContextManager {
             }
         }
         if !computed.is_empty() {
-            tracing::debug!(count = computed.len(), "Computed embeddings for shadow entries");
+            tracing::debug!(
+                count = computed.len(),
+                "Computed embeddings for shadow entries"
+            );
             self.shadow.set_embeddings(&computed);
         }
     }

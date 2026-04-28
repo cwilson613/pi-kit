@@ -91,7 +91,10 @@ pub async fn execute_streaming(
         let truncated = truncate_tail(&native.stdout);
         let mut text = truncated.content;
         if native.exit_code != 0 {
-            text.push_str(&format!("\n\nCommand exited with code {}", native.exit_code));
+            text.push_str(&format!(
+                "\n\nCommand exited with code {}",
+                native.exit_code
+            ));
         }
         return Ok(ToolResult {
             content: vec![ContentBlock::Text { text }],

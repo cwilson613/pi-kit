@@ -74,9 +74,7 @@ pub fn start_vox_bridge(
             }
 
             // Poll vox_route via direct RPC (not through the agent/EventBus)
-            let result = handle
-                .rpc_call("execute_vox_route", json!({}))
-                .await;
+            let result = handle.rpc_call("execute_vox_route", json!({})).await;
 
             let route_result = match result {
                 Ok(v) => v,
@@ -190,16 +188,14 @@ fn format_vox_event(msg: &Value) -> Option<omegon_traits::DaemonEventEnvelope> {
     };
 
     // Extract thread from session_key if present (e.g., "discord:U123:C456:T789")
-    let source_thread = session_key
-        .as_str()
-        .and_then(|sk| {
-            let parts: Vec<&str> = sk.splitn(4, ':').collect();
-            if parts.len() >= 4 {
-                Some(parts[3].to_string())
-            } else {
-                None
-            }
-        });
+    let source_thread = session_key.as_str().and_then(|sk| {
+        let parts: Vec<&str> = sk.splitn(4, ':').collect();
+        if parts.len() >= 4 {
+            Some(parts[3].to_string())
+        } else {
+            None
+        }
+    });
 
     Some(omegon_traits::DaemonEventEnvelope {
         event_id: format!(

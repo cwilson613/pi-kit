@@ -79,8 +79,7 @@ impl AutoCompact {
         if context_window == 0 {
             return 0.0;
         }
-        let projected_tokens =
-            current_tokens as f32 + self.ewma_growth * PREDICTION_HORIZON;
+        let projected_tokens = current_tokens as f32 + self.ewma_growth * PREDICTION_HORIZON;
         (projected_tokens / context_window as f32 * 100.0).min(100.0)
     }
 }
@@ -106,7 +105,9 @@ impl Feature for AutoCompact {
                         .compaction_requested_at
                         .is_some_and(|t| t.elapsed().as_secs() > 120)
                     {
-                        tracing::warn!("auto-compact: compaction watchdog fired — resetting after 120s timeout");
+                        tracing::warn!(
+                            "auto-compact: compaction watchdog fired — resetting after 120s timeout"
+                        );
                         self.compacting = false;
                         self.compaction_requested_at = None;
                     } else {
@@ -120,8 +121,7 @@ impl Feature for AutoCompact {
                 // Update EWMA growth rate
                 if let Some(prev) = self.prev_tokens {
                     let delta = tokens as f32 - prev as f32;
-                    self.ewma_growth =
-                        EWMA_ALPHA * delta + (1.0 - EWMA_ALPHA) * self.ewma_growth;
+                    self.ewma_growth = EWMA_ALPHA * delta + (1.0 - EWMA_ALPHA) * self.ewma_growth;
                 }
                 self.prev_tokens = Some(tokens);
 
@@ -259,7 +259,10 @@ mod tests {
         // Projected at turn+2 = 130k + 56k = 186k / 200k = 93%.
         // Should trigger tier2 even though current is only 65%.
         let requests = ac.on_event(&turn_end(130_000, 200_000)); // 65%
-        assert!(!requests.is_empty(), "EWMA should predict overflow and trigger compaction");
+        assert!(
+            !requests.is_empty(),
+            "EWMA should predict overflow and trigger compaction"
+        );
     }
 
     #[test]
@@ -272,7 +275,10 @@ mod tests {
         ac.on_event(&BusEvent::Compacted);
 
         let r2 = ac.on_event(&turn_end(55_000, 200_000));
-        assert!(r2.is_empty(), "cooldown should prevent immediate re-compact");
+        assert!(
+            r2.is_empty(),
+            "cooldown should prevent immediate re-compact"
+        );
     }
 
     #[test]

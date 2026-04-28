@@ -315,7 +315,13 @@ impl<'a> StatefulWidget for ConversationWidget<'a> {
                         cell.set_fg(fg);
                     }
                 }
-                segment.render(temp_area, &mut temp_buf, self.theme, self.mode, self.density);
+                segment.render(
+                    temp_area,
+                    &mut temp_buf,
+                    self.theme,
+                    self.mode,
+                    self.density,
+                );
 
                 // Copy the visible portion from temp_buf to main buf
                 for row in 0..visible_rows {

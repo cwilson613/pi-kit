@@ -1294,7 +1294,8 @@ pub enum BusEvent {
         /// Response channel. The TUI takes the sender via `.lock().unwrap().take()`
         /// and sends `true` (approved) or `false` (denied). Wrapped in Arc<Mutex>
         /// because AgentEvent must be Clone for broadcast channels.
-        respond: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
+        respond:
+            std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
     },
 
     // ── Permission decisions ──────────────────────────────────────────
@@ -1879,7 +1880,8 @@ pub enum AgentEvent {
     PermissionRequest {
         tool_name: String,
         path: String,
-        respond: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
+        respond:
+            std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
     },
     TurnEnd {
         turn: u32,

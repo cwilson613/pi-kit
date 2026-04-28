@@ -1025,8 +1025,8 @@ pub async fn get_eval(
 pub async fn get_eval_compare(
     axum::extract::Query(params): axum::extract::Query<CompareParams>,
 ) -> Result<Json<crate::eval::store::ScoreCardDiff>, StatusCode> {
-    let diff = crate::eval::store::compare(&params.a, &params.b)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let diff =
+        crate::eval::store::compare(&params.a, &params.b).map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(diff))
 }
 

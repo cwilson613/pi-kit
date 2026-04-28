@@ -136,7 +136,10 @@ pub fn is_agent_artifact(path: &str) -> bool {
 /// Resolve the JSONL facts file for import.
 /// Checks: `ai/memory/facts.jsonl` → `.omegon/memory/facts.jsonl`
 pub fn facts_jsonl(repo_root: &Path) -> Option<PathBuf> {
-    for dir in [repo_root.join("ai/memory"), repo_root.join(".omegon/memory")] {
+    for dir in [
+        repo_root.join("ai/memory"),
+        repo_root.join(".omegon/memory"),
+    ] {
         let path = dir.join("facts.jsonl");
         if path.exists() {
             return Some(path);
@@ -172,13 +175,16 @@ pub fn omegon_home() -> anyhow::Result<PathBuf> {
     if let Ok(home) = std::env::var("OMEGON_HOME") {
         let path = PathBuf::from(home);
         if path.is_relative() {
-            anyhow::bail!("OMEGON_HOME must be an absolute path, got: {}", path.display());
+            anyhow::bail!(
+                "OMEGON_HOME must be an absolute path, got: {}",
+                path.display()
+            );
         }
         return Ok(path);
     }
-    dirs::home_dir()
-        .map(|h| h.join(".omegon"))
-        .ok_or_else(|| anyhow::anyhow!("cannot determine home directory and OMEGON_HOME is not set"))
+    dirs::home_dir().map(|h| h.join(".omegon")).ok_or_else(|| {
+        anyhow::anyhow!("cannot determine home directory and OMEGON_HOME is not set")
+    })
 }
 
 #[cfg(test)]
@@ -210,7 +216,10 @@ mod tests {
         assert_eq!(openspec_dir(tmp.path()), Some(tmp.path().join("openspec")));
 
         std::fs::create_dir_all(tmp.path().join("ai/openspec")).unwrap();
-        assert_eq!(openspec_dir(tmp.path()), Some(tmp.path().join("ai/openspec")));
+        assert_eq!(
+            openspec_dir(tmp.path()),
+            Some(tmp.path().join("ai/openspec"))
+        );
     }
 
     #[test]
@@ -231,11 +240,17 @@ mod tests {
     #[test]
     fn milestones_fallback() {
         let tmp = TempDir::new().unwrap();
-        assert_eq!(milestones_file(tmp.path()), tmp.path().join("ai/milestones.json"));
+        assert_eq!(
+            milestones_file(tmp.path()),
+            tmp.path().join("ai/milestones.json")
+        );
 
         std::fs::create_dir_all(tmp.path().join(".omegon")).unwrap();
         std::fs::write(tmp.path().join(".omegon/milestones.json"), "{}").unwrap();
-        assert_eq!(milestones_file(tmp.path()), tmp.path().join(".omegon/milestones.json"));
+        assert_eq!(
+            milestones_file(tmp.path()),
+            tmp.path().join(".omegon/milestones.json")
+        );
     }
 
     #[test]
@@ -278,6 +293,9 @@ mod tests {
 
         // If ai/openspec also exists, it wins
         std::fs::create_dir_all(tmp.path().join("ai/openspec")).unwrap();
-        assert_eq!(openspec_dir_write(tmp.path()), tmp.path().join("ai/openspec"));
+        assert_eq!(
+            openspec_dir_write(tmp.path()),
+            tmp.path().join("ai/openspec")
+        );
     }
 }

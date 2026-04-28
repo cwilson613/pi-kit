@@ -82,7 +82,9 @@ impl ToolProvider for SecretToolsProvider {
                 let recipe = args.get("recipe").and_then(|v| v.as_str());
 
                 match (value, recipe) {
-                    (Some(_), Some(_)) => anyhow::bail!("provide either 'value' or 'recipe', not both"),
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!("provide either 'value' or 'recipe', not both")
+                    }
                     (None, None) => anyhow::bail!("missing 'value' or 'recipe' argument"),
                     (Some(value), None) => {
                         self.secrets.set_keyring_secret(name, value)?;

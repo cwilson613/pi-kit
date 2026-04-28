@@ -9,8 +9,8 @@ use crate::settings::{ContextClass, Settings, ThinkingLevel};
 use crate::tui::dashboard::FocusedNodeSummary;
 use crate::update::{UpdateChannel, UpdateInfo};
 use crate::web::WebDaemonStatus;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use tokio::sync::mpsc;
 
 fn test_settings() -> crate::settings::SharedSettings {
@@ -89,7 +89,9 @@ fn draw_clears_tab_bar_and_dashboard_leakage_from_dirty_background() {
     app.ui_surfaces.dashboard = true;
     app.ui_surfaces.footer = false;
     app.ui_surfaces.instruments = false;
-    app.conversation.tabs.add_extension_tab("widget-1".into(), "tools".into());
+    app.conversation
+        .tabs
+        .add_extension_tab("widget-1".into(), "tools".into());
     app.dashboard.status_counts.total = 1;
     app.dashboard.all_nodes = vec![crate::tui::dashboard::NodeSummary {
         id: "runtime-task-spawn-policy".into(),
@@ -1100,7 +1102,10 @@ fn ctrl_y_keeps_editor_yank_outside_conversation_focus() {
 fn startup_initialization_defaults_to_lean_compact() {
     let app = test_app();
 
-    assert!(app.ui_surfaces.is_compact(), "default startup should be compact (lean)");
+    assert!(
+        app.ui_surfaces.is_compact(),
+        "default startup should be compact (lean)"
+    );
     assert!(
         !app.mouse_capture_enabled,
         "default startup should keep mouse capture off for terminal-native selection"
@@ -1135,8 +1140,14 @@ fn slim_mode_renders_without_side_gutters_for_copyable_wrapped_lines() {
         rendered.push('\n');
     }
 
-    assert!(!rendered.contains("│"), "slim mode should avoid side gutters: {rendered}");
-    assert!(!rendered.contains("╭"), "slim mode should avoid card borders: {rendered}");
+    assert!(
+        !rendered.contains("│"),
+        "slim mode should avoid side gutters: {rendered}"
+    );
+    assert!(
+        !rendered.contains("╭"),
+        "slim mode should avoid card borders: {rendered}"
+    );
 }
 
 #[test]
@@ -1620,9 +1631,15 @@ fn focus_mode_render_shows_plaintext_fullscreen_conversation() {
     assert!(rendered.contains("PgUp/PgDn jump"), "{rendered}");
     assert!(!rendered.contains("focus — segment"), "{rendered}");
     // New card format uses ╰── tail and ▌/▎side borders (no ╭ top border)
-    assert!(!rendered.contains("╭"), "should not have top-border box drawing: {rendered}");
+    assert!(
+        !rendered.contains("╭"),
+        "should not have top-border box drawing: {rendered}"
+    );
     assert!(rendered.contains("╰"), "should have card tail: {rendered}");
-    assert!(rendered.contains("▌") || rendered.contains("▎"), "should have side borders: {rendered}");
+    assert!(
+        rendered.contains("▌") || rendered.contains("▎"),
+        "should have side borders: {rendered}"
+    );
 }
 
 #[test]
@@ -1696,10 +1713,7 @@ fn slash_update_reports_available_version() {
     if let SlashResult::Display(text) = result {
         assert!(text.contains("0.15.3-rc.7"), "{text}");
         assert!(text.contains("/update install"), "{text}");
-        assert!(
-            text.contains("/update channel [stable|nightly]"),
-            "{text}"
-        );
+        assert!(text.contains("/update channel [stable|nightly]"), "{text}");
         assert!(text.contains("rc"), "{text}");
     } else {
         panic!("expected Display result");
@@ -1716,7 +1730,10 @@ fn slash_update_without_update_still_shows_channel_help() {
         assert!(text.contains("/update channel nightly"), "{text}");
         assert!(text.contains("/update channel stable"), "{text}");
         // RC is no longer listed — only stable and nightly
-        assert!(!text.contains("channel rc"), "RC should not appear in help: {text}");
+        assert!(
+            !text.contains("channel rc"),
+            "RC should not appear in help: {text}"
+        );
     } else {
         panic!("expected Display result");
     }

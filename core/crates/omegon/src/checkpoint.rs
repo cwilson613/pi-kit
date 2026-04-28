@@ -47,10 +47,8 @@ pub struct MetricsSnapshot {
 
 /// Resolve the checkpoint JSONL path for a session.
 pub fn checkpoint_path(session_id: &str) -> PathBuf {
-    let base = crate::paths::omegon_home()
-        .unwrap_or_else(|_| PathBuf::from(".omegon"));
-    base.join("checkpoints")
-        .join(format!("{session_id}.jsonl"))
+    let base = crate::paths::omegon_home().unwrap_or_else(|_| PathBuf::from(".omegon"));
+    base.join("checkpoints").join(format!("{session_id}.jsonl"))
 }
 
 /// Append a checkpoint entry. Follows the upstream_errors.rs append pattern:

@@ -479,8 +479,8 @@ pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
             None
         }
         // OpenAI-compatible providers — all use the Chat Completions protocol
-        "groq" | "xai" | "mistral" | "cerebras" | "google"
-        | "huggingface" | "ollama" | "opencode-go" => {
+        "groq" | "xai" | "mistral" | "cerebras" | "google" | "huggingface" | "ollama"
+        | "opencode-go" => {
             OpenAICompatClient::from_env(provider_id).map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
         "ollama-cloud" => OllamaCloudClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
@@ -712,7 +712,8 @@ fn strip_parameter_descriptions(value: &Value) -> Value {
 
 fn openai_function_parameters(value: &Value) -> Value {
     let stripped = strip_parameter_descriptions(value);
-    let mut normalized = crate::tool_schema::normalize(&stripped, crate::tool_schema::SchemaDialect::OpenAI);
+    let mut normalized =
+        crate::tool_schema::normalize(&stripped, crate::tool_schema::SchemaDialect::OpenAI);
 
     // OpenAI also doesn't handle top-level enum on function parameters
     if let Value::Object(ref mut map) = normalized {
@@ -906,7 +907,8 @@ impl AnthropicClient {
                     raw,
                 } => {
                     if let Some(raw_val) = raw {
-                        if let Some(raw_content) = raw_val.get("content").and_then(|c| c.as_array()) {
+                        if let Some(raw_content) = raw_val.get("content").and_then(|c| c.as_array())
+                        {
                             if !raw_content.is_empty() {
                                 wire.push(json!({"role": "assistant", "content": raw_content}));
                                 idx += 1;
@@ -2771,10 +2773,7 @@ async fn parse_ollama_ndjson_stream(
                 .get("prompt_eval_count")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            output_tokens = chunk
-                .get("eval_count")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            output_tokens = chunk.get("eval_count").and_then(Value::as_u64).unwrap_or(0);
             // Some models include the final message content in the done chunk
             if let Some(msg) = chunk.get("message") {
                 final_message = msg.clone();
@@ -2806,10 +2805,7 @@ async fn parse_ollama_ndjson_stream(
         }
 
         // Content delta
-        let content_delta = message
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let content_delta = message.get("content").and_then(Value::as_str).unwrap_or("");
         if !content_delta.is_empty() {
             // Transition from thinking to text
             if in_thinking {
@@ -2909,7 +2905,9 @@ impl AntigravityClient {
                         "parts": [{ "text": content }]
                     }));
                 }
-                LlmMessage::Assistant { text, tool_calls, .. } => {
+                LlmMessage::Assistant {
+                    text, tool_calls, ..
+                } => {
                     let mut parts: Vec<Value> = Vec::new();
                     for t in text {
                         if !t.is_empty() {
@@ -2928,7 +2926,12 @@ impl AntigravityClient {
                         contents.push(json!({ "role": "model", "parts": parts }));
                     }
                 }
-                LlmMessage::ToolResult { call_id: _, tool_name, content, .. } => {
+                LlmMessage::ToolResult {
+                    call_id: _,
+                    tool_name,
+                    content,
+                    ..
+                } => {
                     contents.push(json!({
                         "role": "user",
                         "parts": [{
@@ -3011,7 +3014,8 @@ impl LlmBridge for AntigravityClient {
         }
 
         // Generate a unique prompt ID
-        let prompt_id = format!("{:016x}{:016x}",
+        let prompt_id = format!(
+            "{:016x}{:016x}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -3041,9 +3045,7 @@ impl LlmBridge for AntigravityClient {
         if !response.status().is_success() {
             let status = response.status();
             let err_body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Antigravity API error ({status}): {err_body}"
-            );
+            anyhow::bail!("Antigravity API error ({status}): {err_body}");
         }
 
         // Stream SSE events
@@ -3062,15 +3064,19 @@ impl LlmBridge for AntigravityClient {
                     Ok(Ok(Some(c))) => c,
                     Ok(Ok(None)) => break,
                     Ok(Err(e)) => {
-                        let _ = tx.send(LlmEvent::Error {
-                            message: format!("stream error: {e}"),
-                        }).await;
+                        let _ = tx
+                            .send(LlmEvent::Error {
+                                message: format!("stream error: {e}"),
+                            })
+                            .await;
                         break;
                     }
                     Err(_) => {
-                        let _ = tx.send(LlmEvent::Error {
-                            message: "Antigravity stream timed out (90s idle)".to_string(),
-                        }).await;
+                        let _ = tx
+                            .send(LlmEvent::Error {
+                                message: "Antigravity stream timed out (90s idle)".to_string(),
+                            })
+                            .await;
                         break;
                     }
                 };
@@ -3119,9 +3125,7 @@ impl LlmBridge for AntigravityClient {
                     }
 
                     // Extract candidates
-                    let candidates = gemini
-                        .get("candidates")
-                        .and_then(|c| c.as_array());
+                    let candidates = gemini.get("candidates").and_then(|c| c.as_array());
 
                     if let Some(candidates) = candidates {
                         for candidate in candidates {
@@ -3153,10 +3157,7 @@ impl LlmBridge for AntigravityClient {
                                             .and_then(|n| n.as_str())
                                             .unwrap_or("")
                                             .to_string();
-                                        let args = fc
-                                            .get("args")
-                                            .cloned()
-                                            .unwrap_or(json!({}));
+                                        let args = fc.get("args").cloned().unwrap_or(json!({}));
 
                                         if text_started {
                                             let _ = tx.send(LlmEvent::TextEnd).await;
@@ -3483,7 +3484,11 @@ mod tests {
             },
         ];
         let wire = AnthropicClient::build_messages(&messages);
-        assert_eq!(wire.len(), 1, "adjacent tool results must batch into one user message");
+        assert_eq!(
+            wire.len(),
+            1,
+            "adjacent tool results must batch into one user message"
+        );
         assert_eq!(wire[0]["role"], "user");
         let blocks = wire[0]["content"].as_array().expect("tool_result blocks");
         assert_eq!(blocks.len(), 2);
@@ -3683,7 +3688,10 @@ mod tests {
         }
 
         let client = OllamaCloudClient::from_env();
-        assert!(client.is_some(), "OLLAMA_API_KEY should make ollama-cloud executable");
+        assert!(
+            client.is_some(),
+            "OLLAMA_API_KEY should make ollama-cloud executable"
+        );
 
         unsafe {
             std::env::remove_var("OLLAMA_API_KEY");
@@ -3724,7 +3732,9 @@ mod tests {
 
         assert_eq!(wire_tools[0]["function"]["parameters"]["type"], "object");
         assert!(
-            wire_tools[0]["function"]["parameters"].get("allOf").is_none(),
+            wire_tools[0]["function"]["parameters"]
+                .get("allOf")
+                .is_none(),
             "chat completions tool parameters should not include top-level allOf"
         );
     }
@@ -4040,7 +4050,9 @@ mod tests {
             "opencode-go",
         ] {
             assert!(
-                crate::model_registry::ModelRegistry::global().default_model(id).is_some(),
+                crate::model_registry::ModelRegistry::global()
+                    .default_model(id)
+                    .is_some(),
                 "missing default model for {id}"
             );
         }
@@ -4539,17 +4551,26 @@ mod tests {
                 // - 400 with JSON body = endpoint exists, rejected our dummy request
                 // - 3xx = redirect (still reachable)
                 // - HTML body = wrong URL (landing page, not API)
-                let is_json = content_type.contains("json")
-                    || body_text.trim_start().starts_with('{');
-                let is_html = content_type.contains("html")
-                    || body_text.trim_start().starts_with('<');
+                let is_json =
+                    content_type.contains("json") || body_text.trim_start().starts_with('{');
+                let is_html =
+                    content_type.contains("html") || body_text.trim_start().starts_with('<');
 
                 if is_html {
-                    (false, format!("HTTP {status} — got HTML, not JSON (wrong base URL?)"))
+                    (
+                        false,
+                        format!("HTTP {status} — got HTML, not JSON (wrong base URL?)"),
+                    )
                 } else if is_json || (300..400).contains(&status) {
-                    (true, format!("HTTP {status} — {}", &body_text[..body_text.len().min(120)]))
+                    (
+                        true,
+                        format!("HTTP {status} — {}", &body_text[..body_text.len().min(120)]),
+                    )
                 } else {
-                    (false, format!("HTTP {status} — unexpected content-type: {content_type}"))
+                    (
+                        false,
+                        format!("HTTP {status} — unexpected content-type: {content_type}"),
+                    )
                 }
             }
             Err(e) => (false, format!("Connection failed: {e}")),

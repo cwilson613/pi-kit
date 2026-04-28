@@ -143,11 +143,19 @@ impl ScoreCard {
             out.push_str(&format!("  persona: {p}\n"));
         }
         if !c.extensions.is_empty() {
-            let exts: Vec<String> = c.extensions.iter().map(|e| format!("{}@{}", e.name, e.version)).collect();
+            let exts: Vec<String> = c
+                .extensions
+                .iter()
+                .map(|e| format!("{}@{}", e.name, e.version))
+                .collect();
             out.push_str(&format!("  extensions: {}\n", exts.join(", ")));
         }
         if !c.plugins.is_empty() {
-            let plugs: Vec<String> = c.plugins.iter().map(|p| format!("{}@{}", p.name, p.version)).collect();
+            let plugs: Vec<String> = c
+                .plugins
+                .iter()
+                .map(|p| format!("{}@{}", p.name, p.version))
+                .collect();
             out.push_str(&format!("  plugins: {}\n", plugs.join(", ")));
         }
         if !c.skills.is_empty() {
@@ -165,7 +173,9 @@ impl ScoreCard {
             let status = if s.passed { "PASS" } else { "FAIL" };
             out.push_str(&format!(
                 "  [{status}] {} (L{}) — {:.0}%",
-                s.name, s.difficulty, s.weighted_score * 100.0
+                s.name,
+                s.difficulty,
+                s.weighted_score * 100.0
             ));
             if let Some(ref e) = s.error {
                 out.push_str(&format!(" — error: {e}"));
@@ -208,7 +218,10 @@ fn compute_aggregate(scenarios: &[ScenarioResult]) -> AggregateScore {
     // By difficulty
     let mut by_diff: HashMap<u8, Vec<f64>> = HashMap::new();
     for s in scenarios {
-        by_diff.entry(s.difficulty).or_default().push(s.weighted_score);
+        by_diff
+            .entry(s.difficulty)
+            .or_default()
+            .push(s.weighted_score);
     }
     let by_difficulty: HashMap<String, f64> = by_diff
         .into_iter()
@@ -237,7 +250,10 @@ fn compute_aggregate(scenarios: &[ScenarioResult]) -> AggregateScore {
     let mut by_comp: HashMap<String, Vec<f64>> = HashMap::new();
     for s in scenarios {
         for comp in &s.tests_component {
-            by_comp.entry(comp.clone()).or_default().push(s.weighted_score);
+            by_comp
+                .entry(comp.clone())
+                .or_default()
+                .push(s.weighted_score);
         }
     }
     let by_component: HashMap<String, f64> = by_comp

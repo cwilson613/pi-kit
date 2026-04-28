@@ -38,7 +38,11 @@ pub fn build_base_prompt_with_breakdown(
     tools: &[ToolDefinition],
     slim: bool,
 ) -> PromptAssembly {
-    let mode = if slim { PromptMode::Slim } else { PromptMode::Full };
+    let mode = if slim {
+        PromptMode::Slim
+    } else {
+        PromptMode::Full
+    };
     build_base_prompt_for_mode(cwd, tools, mode)
 }
 
@@ -90,7 +94,9 @@ pub fn build_base_prompt_for_mode(
         let base = "# Behavior\n\nThese are harness defaults. Project directives (AGENTS.md) and direct operator requests override these defaults — but never the Core Directives, which are immutable.\n\n- Always respond to the user. After calling tools, synthesize what you found into a direct response.\n- Be direct — act, don't narrate intent. If a task requires a tool call, emit the tool call immediately — do not respond with text saying you will do it on the next turn. Combine information-gathering and action tool calls in a single response when possible. Disagree when you see a better path.\n- Stop exploring once the next reversible step is justified. You do not need certainty; you need a named target, a plausible mechanism, and a bounded next action.\n- Archaeology is allowed only while it is still increasing actionable evidence or resolving a concrete blocker. Do not reopen the search space after the target is already local.\n- Read files before editing. Edit requires exact text matches.\n- Ground claims in evidence — cite files and lines. Don't assert about unread code.\n- Every non-trivial change needs tests. Commit when done. Do not push automatically after committing — but if the operator asks you to push, do it.\n- Prefer `request_context` before making multiple exploratory tool calls when you need session orientation or recent runtime evidence. Use direct read/search tools first only when you already know the exact target.\n";
         let tool_surface = "\n## Tool surface\n\nSome situational tools (persona, model-budget, lifecycle management, advanced memory) are hidden by default to reduce context overhead. If the task requires them, use `manage_tools` with `list_groups` to discover available groups and `enable_group` to activate them.\n";
         if has_delegate {
-            format!("{base}\n## Delegation\n\n- When local models are available, use `delegate` for mechanical file edits, test runs, and pattern-application tasks. Specify `model` to route to a local or cheaper model. Reserve your own turns for planning, architecture, review, and decisions that require frontier reasoning.\n- Worker profiles: `scout` (read/search only), `patch` (small scoped edits), `verify` (run tests/checks).\n- Delegate tasks should be specific and self-contained. Include file paths in `scope` and relevant context in `facts`.\n- You are the orchestrator. Local models are your hands. Think, plan, and review — let them type.\n{tool_surface}")
+            format!(
+                "{base}\n## Delegation\n\n- When local models are available, use `delegate` for mechanical file edits, test runs, and pattern-application tasks. Specify `model` to route to a local or cheaper model. Reserve your own turns for planning, architecture, review, and decisions that require frontier reasoning.\n- Worker profiles: `scout` (read/search only), `patch` (small scoped edits), `verify` (run tests/checks).\n- Delegate tasks should be specific and self-contained. Include file paths in `scope` and relevant context in `facts`.\n- You are the orchestrator. Local models are your hands. Think, plan, and review — let them type.\n{tool_surface}"
+            )
         } else {
             format!("{base}{tool_surface}")
         }
@@ -615,10 +621,14 @@ mod tests {
         assert!(section_keys.contains(&"core_directives"));
         assert!(assembly.prompt.contains("OM coding mode"));
         assert!(assembly.prompt.contains("lean terminal coding loop"));
-        assert!(assembly.prompt.contains("next reversible step is justified"));
-        assert!(assembly
-            .prompt
-            .contains("Archaeology is allowed only while it is still increasing actionable evidence"));
+        assert!(
+            assembly
+                .prompt
+                .contains("next reversible step is justified")
+        );
+        assert!(assembly.prompt.contains(
+            "Archaeology is allowed only while it is still increasing actionable evidence"
+        ));
         assert!(
             !assembly
                 .prompt

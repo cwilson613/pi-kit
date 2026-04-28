@@ -36,10 +36,7 @@ pub fn run_interactive(_cwd: &Path, shared_settings: &settings::SharedSettings) 
 
     // Header
     let _ = writeln!(out, "\n\x1b[1m  Welcome to Omegon\x1b[0m\n");
-    let _ = writeln!(
-        out,
-        "  First time here — let me set things up.\n"
-    );
+    let _ = writeln!(out, "  First time here — let me set things up.\n");
 
     // ─── System sweep ──────────────────────────────────────────
     let sources = crate::migrate::detect_sources();
@@ -66,12 +63,12 @@ pub fn run_interactive(_cwd: &Path, shared_settings: &settings::SharedSettings) 
 
     // ─── Recommend a starting posture ──────────────────────────
     // Map detected tools to a recommendation
-    let has_ide_tool = found.iter().any(|(id, _, _)| {
-        matches!(*id, "cursor" | "copilot" | "continue" | "windsurf")
-    });
-    let has_cli_tool = found.iter().any(|(id, _, _)| {
-        matches!(*id, "claude-code" | "aider" | "codex")
-    });
+    let has_ide_tool = found
+        .iter()
+        .any(|(id, _, _)| matches!(*id, "cursor" | "copilot" | "continue" | "windsurf"));
+    let has_cli_tool = found
+        .iter()
+        .any(|(id, _, _)| matches!(*id, "claude-code" | "aider" | "codex"));
 
     let recommended = if has_cli_tool {
         // Coming from CLI coding agents — they know the terminal loop

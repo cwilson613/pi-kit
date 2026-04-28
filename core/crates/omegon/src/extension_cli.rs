@@ -51,9 +51,7 @@ pub fn init(name: &str) -> anyhow::Result<()> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
-        anyhow::bail!(
-            "Extension name must be lowercase alphanumeric + hyphens (got '{name}')"
-        );
+        anyhow::bail!("Extension name must be lowercase alphanumeric + hyphens (got '{name}')");
     }
 
     let dir = Path::new(name);
@@ -269,7 +267,12 @@ pub fn list_summary() -> anyhow::Result<String> {
                 let symlink_marker = if dir.is_symlink() { " →" } else { "" };
                 lines.push(format!(
                     "{:<20} {:<10} {:<10} {:<12} {}{}",
-                    info.name, info.version, info.runtime, info.status, info.description, symlink_marker
+                    info.name,
+                    info.version,
+                    info.runtime,
+                    info.status,
+                    info.description,
+                    symlink_marker
                 ));
             }
             Err(e) => {
@@ -387,7 +390,9 @@ pub fn update(name: Option<&str>) -> anyhow::Result<()> {
                         .status();
                     match build {
                         Ok(s) if s.success() => println!("updated + rebuilt"),
-                        _ => println!("updated but rebuild failed — run cargo build --release manually"),
+                        _ => println!(
+                            "updated but rebuild failed — run cargo build --release manually"
+                        ),
                     }
                     continue;
                 }
@@ -500,11 +505,7 @@ fn install_local(extensions_dir: &Path, local_path: &Path) -> anyhow::Result<()>
     #[cfg(windows)]
     std::os::windows::fs::symlink_dir(&canonical, &target)?;
 
-    println!(
-        "Linked extension '{}' → {}",
-        name,
-        canonical.display()
-    );
+    println!("Linked extension '{}' → {}", name, canonical.display());
 
     print_secrets_hint(&manifest);
 
@@ -590,7 +591,10 @@ fn install_git(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
         }
     }
 
-    println!("Installed extension '{}' from {uri}", manifest.extension.name);
+    println!(
+        "Installed extension '{}' from {uri}",
+        manifest.extension.name
+    );
     print_secrets_hint(&manifest);
 
     Ok(())

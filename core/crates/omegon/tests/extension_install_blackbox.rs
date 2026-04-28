@@ -71,8 +71,12 @@ fn install_local_extension() {
     let home = tempfile::tempdir().expect("tempdir");
     let fixture = fixture_path();
 
-    let out = omegon(&bin, &home, &["extension", "install", fixture.to_str().unwrap()])
-        .expect("install");
+    let out = omegon(
+        &bin,
+        &home,
+        &["extension", "install", fixture.to_str().unwrap()],
+    )
+    .expect("install");
     assert!(
         out.status.success(),
         "install failed: stdout={} stderr={}",
@@ -101,8 +105,12 @@ fn list_shows_installed_extension() {
     let fixture = fixture_path();
 
     // Install first
-    let inst = omegon(&bin, &home, &["extension", "install", fixture.to_str().unwrap()])
-        .expect("install");
+    let inst = omegon(
+        &bin,
+        &home,
+        &["extension", "install", fixture.to_str().unwrap()],
+    )
+    .expect("install");
     assert!(inst.status.success());
 
     // List
@@ -130,13 +138,16 @@ fn disable_and_enable_extension() {
     let fixture = fixture_path();
 
     // Install
-    let inst = omegon(&bin, &home, &["extension", "install", fixture.to_str().unwrap()])
-        .expect("install");
+    let inst = omegon(
+        &bin,
+        &home,
+        &["extension", "install", fixture.to_str().unwrap()],
+    )
+    .expect("install");
     assert!(inst.status.success());
 
     // Disable
-    let dis = omegon(&bin, &home, &["extension", "disable", "mock-extension"])
-        .expect("disable");
+    let dis = omegon(&bin, &home, &["extension", "disable", "mock-extension"]).expect("disable");
     assert!(dis.status.success());
     let dis_text = stdout(&dis);
     assert!(
@@ -153,8 +164,7 @@ fn disable_and_enable_extension() {
     );
 
     // Enable
-    let en = omegon(&bin, &home, &["extension", "enable", "mock-extension"])
-        .expect("enable");
+    let en = omegon(&bin, &home, &["extension", "enable", "mock-extension"]).expect("enable");
     assert!(en.status.success());
     let en_text = stdout(&en);
     assert!(
@@ -170,8 +180,12 @@ fn remove_installed_extension() {
     let fixture = fixture_path();
 
     // Install
-    let inst = omegon(&bin, &home, &["extension", "install", fixture.to_str().unwrap()])
-        .expect("install");
+    let inst = omegon(
+        &bin,
+        &home,
+        &["extension", "install", fixture.to_str().unwrap()],
+    )
+    .expect("install");
     assert!(inst.status.success());
 
     // Remove
@@ -197,12 +211,20 @@ fn install_duplicate_fails() {
     let home = tempfile::tempdir().expect("tempdir");
     let fixture = fixture_path();
 
-    let inst1 = omegon(&bin, &home, &["extension", "install", fixture.to_str().unwrap()])
-        .expect("first install");
+    let inst1 = omegon(
+        &bin,
+        &home,
+        &["extension", "install", fixture.to_str().unwrap()],
+    )
+    .expect("first install");
     assert!(inst1.status.success());
 
-    let inst2 = omegon(&bin, &home, &["extension", "install", fixture.to_str().unwrap()])
-        .expect("second install");
+    let inst2 = omegon(
+        &bin,
+        &home,
+        &["extension", "install", fixture.to_str().unwrap()],
+    )
+    .expect("second install");
     assert!(!inst2.status.success(), "duplicate install should fail");
     let combined = format!("{}{}", stdout(&inst2), stderr(&inst2));
     assert!(
@@ -254,7 +276,11 @@ fn github_install_vox() {
     let out = omegon(
         &bin,
         &home,
-        &["extension", "install", "https://github.com/styrene-lab/vox.git"],
+        &[
+            "extension",
+            "install",
+            "https://github.com/styrene-lab/vox.git",
+        ],
     )
     .expect("install");
     assert!(
@@ -293,7 +319,11 @@ fn github_install_scry() {
     let out = omegon(
         &bin,
         &home,
-        &["extension", "install", "https://github.com/styrene-lab/scry.git"],
+        &[
+            "extension",
+            "install",
+            "https://github.com/styrene-lab/scry.git",
+        ],
     )
     .expect("install");
     assert!(

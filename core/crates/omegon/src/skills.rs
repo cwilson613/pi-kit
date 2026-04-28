@@ -214,7 +214,8 @@ mod tests {
 
     #[test]
     fn extract_description_parses_toml_frontmatter() {
-        let content = "+++\nid = \"abc\"\nname = \"test\"\ndescription = \"A TOML skill\"\n+++\n\n# Test";
+        let content =
+            "+++\nid = \"abc\"\nname = \"test\"\ndescription = \"A TOML skill\"\n+++\n\n# Test";
         assert_eq!(extract_description(content), Some("A TOML skill"));
     }
 

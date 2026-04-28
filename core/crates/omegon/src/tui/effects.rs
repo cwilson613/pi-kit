@@ -131,12 +131,10 @@ impl Effects {
     pub fn start_spinner_glow(&mut self) {
         let glow = self.editor.unique(
             EditorSlot::SpinnerGlow,
-            fx::never_complete(fx::ping_pong(
-                fx::hsl_shift_fg(
-                    [25.0, 0.0, 0.12],
-                    EffectTimer::from_ms(2500, Interpolation::SineInOut),
-                ),
-            )),
+            fx::never_complete(fx::ping_pong(fx::hsl_shift_fg(
+                [25.0, 0.0, 0.12],
+                EffectTimer::from_ms(2500, Interpolation::SineInOut),
+            ))),
         );
         self.editor.add_effect(glow);
     }
@@ -150,12 +148,10 @@ impl Effects {
     pub fn start_border_pulse(&mut self) {
         let pulse = self.editor.unique(
             EditorSlot::BorderPulse,
-            fx::never_complete(fx::ping_pong(
-                fx::hsl_shift_fg(
-                    [15.0, 0.0, 0.05],
-                    EffectTimer::from_ms(3000, Interpolation::SineInOut),
-                ),
-            )),
+            fx::never_complete(fx::ping_pong(fx::hsl_shift_fg(
+                [15.0, 0.0, 0.05],
+                EffectTimer::from_ms(3000, Interpolation::SineInOut),
+            ))),
         );
         self.editor.add_effect(pulse);
     }

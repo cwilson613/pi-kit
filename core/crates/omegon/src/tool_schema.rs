@@ -82,9 +82,18 @@ fn strip_gemini_recursive(schema: &Value, is_schema_root: bool) -> Value {
     // Keywords that Gemini's API rejects in function declarations.
     const UNSUPPORTED: &[&str] = &[
         // Composition / conditional
-        "allOf", "anyOf", "oneOf", "if", "then", "else", "not",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "if",
+        "then",
+        "else",
+        "not",
         // Reference / meta
-        "$ref", "$schema", "$defs", "definitions",
+        "$ref",
+        "$schema",
+        "$defs",
+        "definitions",
         // Not supported on tool parameters
         "additionalProperties",
     ];
@@ -110,9 +119,11 @@ fn strip_gemini_recursive(schema: &Value, is_schema_root: bool) -> Value {
             }
             Value::Object(clean)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(|v| strip_gemini_recursive(v, false)).collect())
-        }
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| strip_gemini_recursive(v, false))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -143,7 +154,10 @@ mod tests {
         let result = normalize(&schema, SchemaDialect::OpenAI);
         assert!(result.get("allOf").is_none(), "allOf should be stripped");
         assert!(result.get("anyOf").is_none(), "anyOf should be stripped");
-        assert!(result.get("properties").is_some(), "properties should remain");
+        assert!(
+            result.get("properties").is_some(),
+            "properties should remain"
+        );
         assert_eq!(result["type"], "object");
     }
 
@@ -175,11 +189,26 @@ mod tests {
         });
         let result = normalize(&schema, SchemaDialect::Gemini);
         let config = &result["properties"]["config"];
-        assert!(config.get("allOf").is_none(), "allOf in nested should be stripped");
-        assert!(config.get("if").is_none(), "if in nested should be stripped");
-        assert!(config.get("then").is_none(), "then in nested should be stripped");
-        assert!(config["properties"]["flag"].get("$ref").is_none(), "$ref should be stripped");
-        assert_eq!(config["properties"]["flag"]["type"], "boolean", "type should remain");
+        assert!(
+            config.get("allOf").is_none(),
+            "allOf in nested should be stripped"
+        );
+        assert!(
+            config.get("if").is_none(),
+            "if in nested should be stripped"
+        );
+        assert!(
+            config.get("then").is_none(),
+            "then in nested should be stripped"
+        );
+        assert!(
+            config["properties"]["flag"].get("$ref").is_none(),
+            "$ref should be stripped"
+        );
+        assert_eq!(
+            config["properties"]["flag"]["type"], "boolean",
+            "type should remain"
+        );
     }
 
     #[test]
@@ -204,7 +233,10 @@ mod tests {
     fn dialect_resolution() {
         assert_eq!(dialect_for_provider("anthropic"), SchemaDialect::Full);
         assert_eq!(dialect_for_provider("google"), SchemaDialect::Gemini);
-        assert_eq!(dialect_for_provider("google-antigravity"), SchemaDialect::Gemini);
+        assert_eq!(
+            dialect_for_provider("google-antigravity"),
+            SchemaDialect::Gemini
+        );
         assert_eq!(dialect_for_provider("openai"), SchemaDialect::OpenAI);
         assert_eq!(dialect_for_provider("groq"), SchemaDialect::OpenAI);
         assert_eq!(dialect_for_provider("ollama"), SchemaDialect::OpenAI);

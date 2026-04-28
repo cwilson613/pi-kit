@@ -1339,7 +1339,8 @@ mod tests {
             1,
             12_000,
             3_000,
-            0, 0,
+            0,
+            0,
             &[SessionUsageSlice {
                 model_id: "anthropic:claude-sonnet-4-6".into(),
                 provider: "anthropic".into(),
@@ -1442,7 +1443,8 @@ mod tests {
             2,
             12_000,
             3_000,
-            0, 0,
+            0,
+            0,
             &[SessionUsageSlice {
                 model_id: "unknown:custom-model".into(),
                 provider: "unknown".into(),
@@ -1459,7 +1461,8 @@ mod tests {
             2,
             12_000,
             3_000,
-            0, 0,
+            0,
+            0,
             &[SessionUsageSlice {
                 model_id: "openai:gpt-5.4".into(),
                 provider: "openai".into(),
@@ -1476,7 +1479,8 @@ mod tests {
             3,
             112_000,
             23_000,
-            0, 0,
+            0,
+            0,
             &[
                 SessionUsageSlice {
                     model_id: "openai:gpt-5.4".into(),

@@ -1393,8 +1393,8 @@ async fn handle_client_command(
             };
             let _ = snapshot_tx.send(message).await;
         }
-        "set_context_class" | "set_runtime_mode" | "set_max_turns"
-        | "profile_view" | "profile_export" | "persona_list" | "persona_switch" => {
+        "set_context_class" | "set_runtime_mode" | "set_max_turns" | "profile_view"
+        | "profile_export" | "persona_list" | "persona_switch" => {
             let classified = crate::control_actions::classify_web_method(cmd_type);
             if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {
                 let _ = snapshot_tx
@@ -2744,7 +2744,9 @@ mod tests {
             // guard above is the *only* thing the test relies on for
             // coverage. If you add a new AgentEvent variant, you must
             // both extend the guard above AND add an entry here.
-            AgentEvent::MessageAbort { reason: Some("test abort".into()) },
+            AgentEvent::MessageAbort {
+                reason: Some("test abort".into()),
+            },
             AgentEvent::HarnessStatusChanged {
                 status_json: serde_json::json!({"thinking_level": "low"}),
             },

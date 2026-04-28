@@ -39,8 +39,8 @@ pub fn list(omegon_home: &Path) -> Vec<CatalogEntry> {
         }
 
         // Check for manifest file
-        let has_manifest = bundle_dir.join("agent.pkl").exists()
-            || bundle_dir.join("agent.toml").exists();
+        let has_manifest =
+            bundle_dir.join("agent.pkl").exists() || bundle_dir.join("agent.toml").exists();
         if !has_manifest {
             continue;
         }

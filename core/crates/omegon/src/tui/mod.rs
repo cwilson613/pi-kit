@@ -232,13 +232,25 @@ struct UiSurfaces {
 
 impl UiSurfaces {
     fn lean() -> Self {
-        Self { dashboard: false, instruments: false, footer: false }
+        Self {
+            dashboard: false,
+            instruments: false,
+            footer: false,
+        }
     }
     fn standard() -> Self {
-        Self { dashboard: false, instruments: false, footer: true }
+        Self {
+            dashboard: false,
+            instruments: false,
+            footer: true,
+        }
     }
     fn full() -> Self {
-        Self { dashboard: true, instruments: true, footer: true }
+        Self {
+            dashboard: true,
+            instruments: true,
+            footer: true,
+        }
     }
 
     /// True when the layout should use compact rendering (no dashboard chrome).
@@ -363,7 +375,11 @@ pub struct App {
     /// Renders on top of the UI and guides the operator through steps.
     tutorial_overlay: Option<tutorial::Tutorial>,
     /// Pending permission prompt — waiting for user to press y/a/n.
-    pending_permission: Option<std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<omegon_traits::PermissionResponse>>>>>,
+    pending_permission: Option<
+        std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::mpsc::Sender<omegon_traits::PermissionResponse>>>,
+        >,
+    >,
     /// Update checker — receives notification when a newer version is available.
     update_rx: Option<crate::update::UpdateReceiver>,
     /// Update checker sender — allows re-checking when channel changes.
@@ -1190,7 +1206,9 @@ impl App {
             || lower.contains("go ahead?")
             || lower.contains("let me know")
             || lower.ends_with('?')
-                && (lower.contains("proceed") || lower.contains("continue") || lower.contains("implement"));
+                && (lower.contains("proceed")
+                    || lower.contains("continue")
+                    || lower.contains("implement"));
 
         self.awaiting_continuation = seeking;
         if seeking {
@@ -1531,7 +1549,14 @@ impl App {
             selector::SelectOption {
                 value: "mouse".into(),
                 label: "Mouse Mode".into(),
-                description: format!("Current: {}", if s.mouse { "enabled" } else { "disabled (terminal selection)" }),
+                description: format!(
+                    "Current: {}",
+                    if s.mouse {
+                        "enabled"
+                    } else {
+                        "disabled (terminal selection)"
+                    }
+                ),
                 active: false,
             },
             selector::SelectOption {
@@ -1555,7 +1580,11 @@ impl App {
             selector::SelectOption {
                 value: "update".into(),
                 label: "Update Channel".into(),
-                description: format!("Current: {} (auto: {})", s.update_channel, if s.auto_update { "on" } else { "off" }),
+                description: format!(
+                    "Current: {} (auto: {})",
+                    s.update_channel,
+                    if s.auto_update { "on" } else { "off" }
+                ),
                 active: false,
             },
         ];
@@ -2050,24 +2079,50 @@ impl App {
             SelectorKind::Preferences => {
                 // Open the sub-selector for the chosen preference category
                 match value.as_str() {
-                    "model" => { self.open_model_selector(); None }
-                    "thinking" => { self.open_thinking_selector(); None }
-                    "context" => { self.open_context_selector(); None }
-                    "detail" => { self.open_tool_detail_selector(); None }
-                    "mouse" => { self.open_mouse_selector(); None }
-                    "persona" => { self.open_persona_selector(); None }
-                    "tone" => { self.open_tone_selector(); None }
+                    "model" => {
+                        self.open_model_selector();
+                        None
+                    }
+                    "thinking" => {
+                        self.open_thinking_selector();
+                        None
+                    }
+                    "context" => {
+                        self.open_context_selector();
+                        None
+                    }
+                    "detail" => {
+                        self.open_tool_detail_selector();
+                        None
+                    }
+                    "mouse" => {
+                        self.open_mouse_selector();
+                        None
+                    }
+                    "persona" => {
+                        self.open_persona_selector();
+                        None
+                    }
+                    "tone" => {
+                        self.open_tone_selector();
+                        None
+                    }
                     "trust" => {
                         let s = self.settings();
                         if s.trusted_directories.is_empty() {
                             Some("No trusted directories. Use /trust add <path> to add one.".into())
                         } else {
                             let list = s.trusted_directories.join("\n  ");
-                            Some(format!("Trusted directories:\n  {list}\n\nUse /trust add|remove <path> to manage."))
+                            Some(format!(
+                                "Trusted directories:\n  {list}\n\nUse /trust add|remove <path> to manage."
+                            ))
                         }
                     }
-                    "update" => { self.open_update_channel_selector(); None }
-                    _ => Some(format!("Unknown preference: {value}"))
+                    "update" => {
+                        self.open_update_channel_selector();
+                        None
+                    }
+                    _ => Some(format!("Unknown preference: {value}")),
                 }
             }
             SelectorKind::ToolDetail => {
@@ -2082,7 +2137,10 @@ impl App {
                 let enabled = value == "on";
                 self.set_terminal_copy_mode(!enabled);
                 self.update_and_persist(|s| s.mouse = enabled);
-                Some(format!("Mouse → {}", if enabled { "enabled" } else { "disabled" }))
+                Some(format!(
+                    "Mouse → {}",
+                    if enabled { "enabled" } else { "disabled" }
+                ))
             }
         }
     }
@@ -3079,20 +3137,20 @@ impl App {
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(3),                  // [0] conversation
-                    Constraint::Length(editor_height),    // [1] editor
-                    Constraint::Length(status_height),    // [2] status line
-                    Constraint::Length(footer_height),    // [3] footer
+                    Constraint::Min(3),                // [0] conversation
+                    Constraint::Length(editor_height), // [1] editor
+                    Constraint::Length(status_height), // [2] status line
+                    Constraint::Length(footer_height), // [3] footer
                 ])
                 .split(main_area)
         } else {
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(3),                  // [0] conversation
-                    Constraint::Length(0),                // [1] (no status in Full)
-                    Constraint::Length(editor_height),    // [2] editor
-                    Constraint::Length(footer_height),    // [3] footer
+                    Constraint::Min(3),                // [0] conversation
+                    Constraint::Length(0),             // [1] (no status in Full)
+                    Constraint::Length(editor_height), // [2] editor
+                    Constraint::Length(footer_height), // [3] footer
                 ])
                 .split(main_area)
         };
@@ -3160,7 +3218,8 @@ impl App {
         // ── Status line (slim mode only) ────────────────────────
         if status_height > 0 {
             self.status_line.sync_from_footer(&self.footer_data);
-            self.status_line.render(status_area, frame, self.theme.as_ref());
+            self.status_line
+                .render(status_area, frame, self.theme.as_ref());
         }
 
         // Overlay images on top of placeholders (second pass — needs Frame for StatefulImage)
@@ -3448,8 +3507,16 @@ impl App {
                 let verb_display = spinner::maybe_glitch(self.working_verb)
                     .unwrap_or_else(|| self.working_verb.to_string());
                 Line::from(vec![
-                    Span::styled(" ⟳ ", Style::default().fg(t.accent_bright()).add_modifier(ratatui::style::Modifier::BOLD)),
-                    Span::styled(format!("{verb_display} "), Style::default().fg(t.accent_muted())),
+                    Span::styled(
+                        " ⟳ ",
+                        Style::default()
+                            .fg(t.accent_bright())
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{verb_display} "),
+                        Style::default().fg(t.accent_muted()),
+                    ),
                 ])
             } else {
                 Line::from(Span::styled(format!(" {model_short} ▸ "), t.style_accent()))
@@ -3560,12 +3627,20 @@ impl App {
         }
 
         // ── Post-render effects (tachyonfx) — each zone processed separately ──
-        self.effects
-            .process(frame.buffer_mut(), conversation_area, footer_area, editor_area);
+        self.effects.process(
+            frame.buffer_mut(),
+            conversation_area,
+            footer_area,
+            editor_area,
+        );
 
         // ── Tutorial overlay — rendered on top of everything except toasts ──
         if let Some(ref overlay) = self.tutorial_overlay {
-            let footer_h = if self.focus_mode { 0 } else { footer_area.height };
+            let footer_h = if self.focus_mode {
+                0
+            } else {
+                footer_area.height
+            };
             overlay.render(main_area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
         }
 
@@ -3664,10 +3739,7 @@ impl App {
                     last_turn = Some(turn);
                     if !lines.is_empty() {
                         let mut turn_spans: Vec<Span<'static>> = vec![
-                            Span::styled(
-                                "─── ",
-                                Style::default().fg(self.theme.border_dim()),
-                            ),
+                            Span::styled("─── ", Style::default().fg(self.theme.border_dim())),
                             Span::styled(
                                 format!("turn {turn}"),
                                 Style::default()
@@ -3675,11 +3747,8 @@ impl App {
                                     .add_modifier(Modifier::BOLD),
                             ),
                         ];
-                        if let Some(ctx) =
-                            segment.meta.context_percent.filter(|p| *p > 5.0)
-                        {
-                            let ctx_color =
-                                widgets::percent_color(ctx, self.theme.as_ref());
+                        if let Some(ctx) = segment.meta.context_percent.filter(|p| *p > 5.0) {
+                            let ctx_color = widgets::percent_color(ctx, self.theme.as_ref());
                             turn_spans.push(Span::styled(
                                 format!(" · ctx:{ctx:.0}%"),
                                 Style::default().fg(ctx_color),
@@ -3711,15 +3780,11 @@ impl App {
                     (kind.label(), "⚙", kind.color(self.theme.as_ref()))
                 }
                 crate::tui::segments::SegmentRole::System => ("system", "ℹ", self.theme.dim()),
-                crate::tui::segments::SegmentRole::Lifecycle => {
-                    ("event", "⚡", self.theme.dim())
-                }
+                crate::tui::segments::SegmentRole::Lifecycle => ("event", "⚡", self.theme.dim()),
                 crate::tui::segments::SegmentRole::Media => {
                     ("media", "◈", self.theme.accent_muted())
                 }
-                crate::tui::segments::SegmentRole::Separator => {
-                    ("separator", "", self.theme.dim())
-                }
+                crate::tui::segments::SegmentRole::Separator => ("separator", "", self.theme.dim()),
             };
 
             let timestamp: Option<String> = segment.meta.timestamp.and_then(|ts| {
@@ -3818,10 +3883,7 @@ impl App {
             for line in content.lines().take(max_lines) {
                 lines.push(Line::from(vec![
                     Span::styled(gutter_char.to_string(), gutter_style),
-                    Span::styled(
-                        format!("  {line}"),
-                        Style::default().fg(content_color),
-                    ),
+                    Span::styled(format!("  {line}"), Style::default().fg(content_color)),
                 ]));
             }
             let total_content_lines = content.lines().count();
@@ -3854,8 +3916,7 @@ impl App {
         if self.conversation.conv_state.scroll_offset > max_scroll {
             self.conversation.conv_state.scroll_offset = max_scroll;
         }
-        self.conversation.conv_state.user_scrolled =
-            self.conversation.conv_state.scroll_offset > 0;
+        self.conversation.conv_state.user_scrolled = self.conversation.conv_state.scroll_offset > 0;
         let top_line = max_scroll.saturating_sub(self.conversation.conv_state.scroll_offset);
 
         let paragraph = Paragraph::new(lines)
@@ -4114,7 +4175,10 @@ impl App {
         }
         let full = parts.join("\n\n---\n\n");
         if full.is_empty() {
-            self.show_toast("No conversation to copy", ratatui_toaster::ToastType::Warning);
+            self.show_toast(
+                "No conversation to copy",
+                ratatui_toaster::ToastType::Warning,
+            );
             return;
         }
         let byte_size = full.len();
@@ -4128,7 +4192,9 @@ impl App {
 
         if byte_size > 5_000_000 {
             self.show_toast(
-                &format!("Session too large for clipboard ({size_label}). Use /export to save to file."),
+                &format!(
+                    "Session too large for clipboard ({size_label}). Use /export to save to file."
+                ),
                 ratatui_toaster::ToastType::Warning,
             );
             return;
@@ -4141,10 +4207,7 @@ impl App {
                 ratatui_toaster::ToastType::Success,
             );
         } else {
-            self.show_toast(
-                "Clipboard unavailable",
-                ratatui_toaster::ToastType::Warning,
-            );
+            self.show_toast("Clipboard unavailable", ratatui_toaster::ToastType::Warning);
         }
     }
 
@@ -4169,7 +4232,11 @@ impl App {
     /// Command registry: (name, description, subcommands).
     const COMMANDS: &'static [(&'static str, &'static str, &'static [&'static str])] = &[
         ("help", "show available commands", &[]),
-        ("copy", "copy selected segment or session", &["raw", "plain", "session"]),
+        (
+            "copy",
+            "copy selected segment or session",
+            &["raw", "plain", "session"],
+        ),
         (
             "mouse",
             "toggle pane mouse interaction mode",
@@ -4182,7 +4249,11 @@ impl App {
             &["off", "minimal", "low", "medium", "high"],
         ),
         ("stats", "session telemetry", &[]),
-        ("bench", "performance metrics (RSS, tokens/turn, avg turn time)", &[]),
+        (
+            "bench",
+            "performance metrics (RSS, tokens/turn, avg turn time)",
+            &[],
+        ),
         ("perf", "alias for /bench", &[]),
         ("new", "save current session and start fresh", &[]),
         (
@@ -4264,7 +4335,9 @@ impl App {
         (
             "ui",
             "switch UI presets or toggle individual surfaces",
-            &["status", "lean", "standard", "full", "slim", "show", "hide", "toggle"],
+            &[
+                "status", "lean", "standard", "full", "slim", "show", "hide", "toggle",
+            ],
         ),
         ("shackle", "switch to slim constrained mode", &[]),
         ("unshackle", "switch to full harness mode", &[]),
@@ -4376,11 +4449,16 @@ impl App {
         match cmd {
             "help" => {
                 let show_all = args == "all";
-                let slim =
-                    !show_all && self.settings.lock().ok().is_some_and(|s| s.is_slim());
+                let slim = !show_all && self.settings.lock().ok().is_some_and(|s| s.is_slim());
                 // Harness-lifecycle commands hidden in slim/Cruise zone.
-                const SLIM_HIDDEN: &[&str] =
-                    &["tree", "cleave", "delegate", "milestone", "shackle", "unshackle"];
+                const SLIM_HIDDEN: &[&str] = &[
+                    "tree",
+                    "cleave",
+                    "delegate",
+                    "milestone",
+                    "shackle",
+                    "unshackle",
+                ];
                 let lines: Vec<String> = Self::COMMANDS
                     .iter()
                     .filter(|(n, _, _)| !slim || !SLIM_HIDDEN.contains(n))
@@ -5352,7 +5430,10 @@ impl App {
                 let path = path.trim();
                 match sub {
                     "list" | "" => {
-                        let dirs = self.settings.lock().ok()
+                        let dirs = self
+                            .settings
+                            .lock()
+                            .ok()
                             .map(|s| s.trusted_directories.clone())
                             .unwrap_or_default();
                         if dirs.is_empty() {
@@ -5362,7 +5443,8 @@ impl App {
                                     .into(),
                             )
                         } else {
-                            let list = dirs.iter()
+                            let list = dirs
+                                .iter()
                                 .map(|d| format!("  {d}"))
                                 .collect::<Vec<_>>()
                                 .join("\n");
@@ -5722,8 +5804,11 @@ impl App {
         use ratatui::widgets::Paragraph;
 
         frame.render_widget(
-            Paragraph::new(Line::from(""))
-                .style(Style::default().bg(self.theme.surface_bg()).fg(self.theme.fg())),
+            Paragraph::new(Line::from("")).style(
+                Style::default()
+                    .bg(self.theme.surface_bg())
+                    .fg(self.theme.fg()),
+            ),
             area,
         );
 
@@ -6765,15 +6850,11 @@ fn handle_editor_command(args: &str) -> String {
                         obj.insert("Omegon".to_string(), omegon_entry);
                         let json = serde_json::to_string_pretty(&settings).unwrap_or_default();
                         if std::fs::write(&config_path, &json).is_ok() {
-                            result_lines.push(format!(
-                                "✓ Added Omegon to {}",
-                                config_path.display()
-                            ));
+                            result_lines
+                                .push(format!("✓ Added Omegon to {}", config_path.display()));
                         } else {
-                            result_lines.push(format!(
-                                "✗ Failed to write {}",
-                                config_path.display()
-                            ));
+                            result_lines
+                                .push(format!("✗ Failed to write {}", config_path.display()));
                         }
                     }
                 }
@@ -6784,7 +6865,9 @@ fn handle_editor_command(args: &str) -> String {
                         "Omegon": omegon_entry
                     }
                 });
-                let _ = std::fs::create_dir_all(config_path.parent().unwrap_or(std::path::Path::new(".")));
+                let _ = std::fs::create_dir_all(
+                    config_path.parent().unwrap_or(std::path::Path::new(".")),
+                );
                 let json = serde_json::to_string_pretty(&settings).unwrap_or_default();
                 if std::fs::write(&config_path, &json).is_ok() {
                     result_lines.push(format!(
@@ -6792,19 +6875,12 @@ fn handle_editor_command(args: &str) -> String {
                         config_path.display()
                     ));
                 } else {
-                    result_lines.push(format!(
-                        "✗ Failed to create {}",
-                        config_path.display()
-                    ));
+                    result_lines.push(format!("✗ Failed to create {}", config_path.display()));
                 }
             }
 
             // Try to launch Zed — check CLI first, then macOS app bundle
-            let launched = if std::process::Command::new("zed")
-                .arg(".")
-                .spawn()
-                .is_ok()
-            {
+            let launched = if std::process::Command::new("zed").arg(".").spawn().is_ok() {
                 true
             } else if cfg!(target_os = "macos")
                 && std::process::Command::new("open")
@@ -6822,7 +6898,9 @@ fn handle_editor_command(args: &str) -> String {
                 result_lines.push("  Select Omegon from the Agent Panel (+ button).".to_string());
             } else {
                 result_lines.push("Zed not found on PATH or in /Applications.".to_string());
-                result_lines.push("Install from https://zed.dev or run: brew install --cask zed".to_string());
+                result_lines.push(
+                    "Install from https://zed.dev or run: brew install --cask zed".to_string(),
+                );
             }
 
             result_lines.push(
@@ -6832,8 +6910,7 @@ fn handle_editor_command(args: &str) -> String {
 
             result_lines.join("\n")
         }
-        "vscode" => {
-            "VS Code Integration\n\n\
+        "vscode" => "VS Code Integration\n\n\
              1. Install the vscode-acp extension:\n\
                 https://github.com/nicolo-ribaudo/vscode-acp\n\n\
              2. Add to VS Code settings.json:\n\n\
@@ -6848,8 +6925,7 @@ fn handle_editor_command(args: &str) -> String {
                ]\n\
              }\n\n\
              3. Restart VS Code and open the ACP panel."
-                .to_string()
-        }
+            .to_string(),
         "status" => {
             let mut lines = vec!["Editor Integration Status\n".to_string()];
             lines.push(format!("  Binary: {omegon_bin}"));
@@ -6893,18 +6969,16 @@ fn handle_editor_command(args: &str) -> String {
             lines.push("\nRun /editor zed or /editor vscode for setup instructions.".to_string());
             lines.join("\n")
         }
-        "" => {
-            "Editor Integration\n\n\
+        "" => "Editor Integration\n\n\
              /editor zed      Setup instructions for Zed\n\
              /editor vscode   Setup instructions for VS Code\n\
              /editor status   Check installed editors\n\n\
              Omegon integrates with editors via the Agent Client Protocol (ACP).\n\
              The editor spawns `omegon acp` and communicates via JSON-RPC over stdio."
-                .to_string()
+            .to_string(),
+        other => {
+            format!("Unknown editor: {other}\n\nSupported: zed, vscode\nRun /editor for help.")
         }
-        other => format!(
-            "Unknown editor: {other}\n\nSupported: zed, vscode\nRun /editor for help."
-        ),
     }
 }
 
@@ -7268,7 +7342,6 @@ pub async fn run_tui(
 
     // Queue startup reveal effects (footer sweep-in, conversation fade)
 
-
     // Queue initial prompt if provided (--initial-prompt / --initial-prompt-file)
     if let Some(prompt) = config.initial_prompt {
         app.queue_prompt(prompt, Vec::new());
@@ -7478,7 +7551,9 @@ pub async fn run_tui(
                                 }
                             }
                             let label = match resp {
-                                omegon_traits::PermissionResponse::Allow => "allowed (this session)",
+                                omegon_traits::PermissionResponse::Allow => {
+                                    "allowed (this session)"
+                                }
                                 omegon_traits::PermissionResponse::AlwaysAllow => {
                                     "allowed (this session). Use /trust add <path> to persist."
                                 }
@@ -7926,7 +8001,10 @@ pub async fn run_tui(
                             let next = app.ui_surfaces.next_preset();
                             let name = next.preset_name();
                             app.apply_ui_preset(next);
-                            app.show_toast(&format!("UI → {name}"), ratatui_toaster::ToastType::Info);
+                            app.show_toast(
+                                &format!("UI → {name}"),
+                                ratatui_toaster::ToastType::Info,
+                            );
                         }
 
                         // Ctrl+D: toggle sidebar navigation mode (design tree)

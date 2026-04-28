@@ -6,15 +6,15 @@
 //! the HTTP event API, collects results, and runs scorers to produce a
 //! score card.
 
+pub mod report;
 pub mod scenario;
 pub mod scorer;
-pub mod report;
 pub mod store;
 
 use std::path::Path;
 
-use scenario::{EvalSuite, Scenario};
 use report::{ComponentMatrix, ComponentVersion, ScenarioResult, ScoreCard};
+use scenario::{EvalSuite, Scenario};
 
 /// Run an eval suite against an agent bundle.
 /// If `model_override` is set, the component matrix records it instead of
@@ -40,7 +40,10 @@ pub async fn run_suite(
     let mut results = Vec::new();
 
     for scenario_ref in &suite.scenarios {
-        let scenario_path = suite_path.parent().unwrap_or(Path::new(".")).join(&scenario_ref.path);
+        let scenario_path = suite_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(&scenario_ref.path);
         let scenario = Scenario::load(&scenario_path)?;
 
         tracing::info!(
@@ -83,7 +86,12 @@ pub async fn run_suite(
         }
     }
 
-    Ok(ScoreCard::from_results(agent_id, &suite.suite.name, components, results))
+    Ok(ScoreCard::from_results(
+        agent_id,
+        &suite.suite.name,
+        components,
+        results,
+    ))
 }
 
 /// Build the component matrix from the agent manifest.
@@ -147,7 +155,11 @@ fn build_component_matrix(agent_id: &str) -> ComponentMatrix {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.join("plugin.toml").exists() {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     matrix.plugins.push(ComponentVersion {
                         name,
                         version: "installed".into(),
@@ -164,7 +176,11 @@ fn build_component_matrix(agent_id: &str) -> ComponentMatrix {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.join("manifest.toml").exists() {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     matrix.extensions.push(ComponentVersion {
                         name,
                         version: "installed".into(),
@@ -181,10 +197,7 @@ fn build_component_matrix(agent_id: &str) -> ComponentMatrix {
 /// scenario in-process (no daemon spawn) by evaluating the scoring
 /// rules against simulated/provided outputs. Full daemon integration
 /// comes in a follow-up.
-async fn run_scenario(
-    _agent_id: &str,
-    scenario: &Scenario,
-) -> anyhow::Result<ScenarioResult> {
+async fn run_scenario(_agent_id: &str, scenario: &Scenario) -> anyhow::Result<ScenarioResult> {
     let start = std::time::Instant::now();
 
     // For now, score the scenario structure itself (validation).

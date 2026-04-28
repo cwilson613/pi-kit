@@ -127,11 +127,12 @@ fn consolidation_one_liner(
             // Path + change summary from result
             let change_line = result
                 .lines()
-                .find(|l| {
-                    l.contains("line(s)") || l.contains("→") || l.contains("Changed")
-                })
+                .find(|l| l.contains("line(s)") || l.contains("→") || l.contains("Changed"))
                 .unwrap_or("");
-            let change = change_line.trim().trim_start_matches("✓ ").trim_start_matches("  ");
+            let change = change_line
+                .trim()
+                .trim_start_matches("✓ ")
+                .trim_start_matches("  ");
             if !change.is_empty() {
                 format!("{summary} — {change}")
             } else {
@@ -500,7 +501,8 @@ impl ConversationView {
 
         // Grab the current card's full result before removing
         let current_full_result = if let SegmentContent::ToolCard {
-            detail_result: ref dr, ..
+            detail_result: ref dr,
+            ..
         } = self.segments[idx].content
         {
             dr.clone().unwrap_or_default()

@@ -9,8 +9,8 @@
 
 use async_trait::async_trait;
 use omegon_traits::{
-    BusEvent, BusRequest, ContentBlock, DriftKind, Feature, NotifyLevel, OodaPhase,
-    ProgressSignal, ToolDefinition, ToolResult,
+    BusEvent, BusRequest, ContentBlock, DriftKind, Feature, NotifyLevel, OodaPhase, ProgressSignal,
+    ToolDefinition, ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -311,7 +311,11 @@ fn get_or_create_instance_id(omegon_home: &std::path::Path) -> String {
         (fxhash("a") >> 16) as u16,
         (fxhash("b") >> 32) as u16,
         (fxhash("c") >> 48) as u16,
-        fxhash(&format!("{:?}{}", std::time::SystemTime::now(), std::process::id())),
+        fxhash(&format!(
+            "{:?}{}",
+            std::time::SystemTime::now(),
+            std::process::id()
+        )),
     );
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -464,9 +468,17 @@ fn owning_crate(tool_name: &str) -> &'static str {
         "web_search" => "omegon (web_search)",
         "ask_local_model" | "list_local_models" | "manage_ollama" => "omegon (local_inference)",
         "codebase_search" | "codebase_index" => "omegon-codescan",
-        "memory_store" | "memory_recall" | "memory_query" | "memory_archive"
-        | "memory_supersede" | "memory_connect" | "memory_focus" | "memory_release"
-        | "memory_episodes" | "memory_compact" | "memory_search_archive"
+        "memory_store"
+        | "memory_recall"
+        | "memory_query"
+        | "memory_archive"
+        | "memory_supersede"
+        | "memory_connect"
+        | "memory_focus"
+        | "memory_release"
+        | "memory_episodes"
+        | "memory_compact"
+        | "memory_search_archive"
         | "memory_ingest_lifecycle" => "omegon-memory",
         "design_tree" | "design_tree_update" | "openspec_manage" | "lifecycle_doctor" => {
             "omegon (lifecycle)"
@@ -524,10 +536,7 @@ impl MutationFeature {
     // ── Trajectory accumulation ─────────────────────────────────────────
 
     fn on_tool_start(&mut self, id: &str, name: &str, args: &Value) {
-        let target_path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let target_path = args.get("path").and_then(|v| v.as_str()).map(String::from);
         let mut summary = serde_json::Map::new();
         if let Some(p) = args.get("path") {
             summary.insert("path".into(), p.clone());
@@ -781,10 +790,8 @@ impl MutationFeature {
     // ── Burn metrics ────────────────────────────────────────────────────
 
     fn compute_burn_metrics(&self, recoveries: &[RecoverySequence]) -> BurnMetrics {
-        let total =
-            self.trajectory.total_input_tokens + self.trajectory.total_output_tokens;
-        let burn =
-            self.trajectory.burn_input_tokens + self.trajectory.burn_output_tokens;
+        let total = self.trajectory.total_input_tokens + self.trajectory.total_output_tokens;
+        let burn = self.trajectory.burn_input_tokens + self.trajectory.burn_output_tokens;
         let ratio = if total > 0 {
             burn as f32 / total as f32
         } else {
@@ -891,7 +898,10 @@ This pattern applies when working with `{tool}` on files matching the recovery c
         owning_crate: &str,
         burn: &BurnMetrics,
     ) -> Option<(String, String)> {
-        let hash = format!("{:08x}", fxhash(&format!("{}{}", seq.failure.name, seq.start_turn)));
+        let hash = format!(
+            "{:08x}",
+            fxhash(&format!("{}{}", seq.failure.name, seq.start_turn))
+        );
         let date = chrono_date();
         let filename = format!("{}-{}-{}", date, seq.failure.name, hash);
 
@@ -1002,9 +1012,8 @@ This pattern applies when working with `{tool}` on files matching the recovery c
             Err(_) => return,
         };
 
-        let burn_entries = self.read_recent_burn_entries(
-            self.impact_config.windows.burn_comparison_sessions as usize,
-        );
+        let burn_entries = self
+            .read_recent_burn_entries(self.impact_config.windows.burn_comparison_sessions as usize);
 
         for entry in entries.flatten() {
             let skill_path = entry.path().join("SKILL.md");
@@ -1078,12 +1087,20 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                 .clamp(cfg.confidence.floor, cfg.confidence.ceiling);
 
             if (new_confidence - confidence).abs() > 0.001 {
-                let updated = update_frontmatter_field(&content, "confidence", &format!("{new_confidence:.2}"));
+                let updated = update_frontmatter_field(
+                    &content,
+                    "confidence",
+                    &format!("{new_confidence:.2}"),
+                );
                 let _ = std::fs::write(&skill_path, &updated);
             }
 
             if new_confidence < cfg.confidence.auto_archive_threshold {
-                let archive_dir = self.skills_dir.parent().unwrap_or(&self.skills_dir).join("archived");
+                let archive_dir = self
+                    .skills_dir
+                    .parent()
+                    .unwrap_or(&self.skills_dir)
+                    .join("archived");
                 let _ = std::fs::create_dir_all(&archive_dir);
                 let _ = std::fs::rename(entry.path(), archive_dir.join(entry.file_name()));
             }
@@ -1193,7 +1210,9 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                     .flatten()
                     .filter(|e| {
                         let name = e.file_name().to_string_lossy().to_lowercase();
-                        tag_list.iter().any(|tag| name.contains(&tag.to_lowercase()))
+                        tag_list
+                            .iter()
+                            .any(|tag| name.contains(&tag.to_lowercase()))
                     })
                     .count()
             })
@@ -1234,7 +1253,10 @@ This pattern applies when working with `{tool}` on files matching the recovery c
 
         let candidates_dir = self.omegon_home.join("eval-candidates");
         let normalizer = self.impact_config.escalation.severity_normalizer as f64;
-        let threshold = self.impact_config.escalation.diagnostic_recurrence_threshold;
+        let threshold = self
+            .impact_config
+            .escalation
+            .diagnostic_recurrence_threshold;
         let mut generated = Vec::new();
 
         // Group diagnostics by tool name (extracted from filename: YYYY-MM-DD-{tool}-{hash}.md).
@@ -1250,7 +1272,10 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                 // Parse tool name from filename: YYYY-MM-DD-{tool}-{hash}.md
                 let parts: Vec<&str> = name.trim_end_matches(".md").splitn(4, '-').collect();
                 if parts.len() >= 4 {
-                    let tool = parts[3].rsplit_once('-').map(|(t, _)| t).unwrap_or(parts[3]);
+                    let tool = parts[3]
+                        .rsplit_once('-')
+                        .map(|(t, _)| t)
+                        .unwrap_or(parts[3]);
                     // Try to extract token cost from content.
                     let token_cost = std::fs::read_to_string(entry.path())
                         .ok()
@@ -1259,14 +1284,12 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                                 .lines()
                                 .find(|l| l.starts_with("**Recovery cost**:"))
                                 .and_then(|l| {
-                                    l.split(':')
-                                        .nth(1)
-                                        .and_then(|s| {
-                                            s.trim()
-                                                .split_whitespace()
-                                                .next()
-                                                .and_then(|n| n.parse::<u64>().ok())
-                                        })
+                                    l.split(':').nth(1).and_then(|s| {
+                                        s.trim()
+                                            .split_whitespace()
+                                            .next()
+                                            .and_then(|n| n.parse::<u64>().ok())
+                                    })
                                 })
                         })
                         .unwrap_or(0);
@@ -1281,7 +1304,10 @@ This pattern applies when working with `{tool}` on files matching the recovery c
 
         for (tool, diagnostics) in &by_tool {
             let count = diagnostics.len() as f64;
-            let severity: f64 = diagnostics.iter().map(|(_, cost)| *cost as f64 / normalizer).sum();
+            let severity: f64 = diagnostics
+                .iter()
+                .map(|(_, cost)| *cost as f64 / normalizer)
+                .sum();
             let escalation_score = count + severity;
 
             if escalation_score >= threshold as f64 {
@@ -1364,9 +1390,7 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                         confidence,
                     } => {
                         if confidence >= 0.6 {
-                            if let Some((name, content)) =
-                                self.generate_skill(seq, &description)
-                            {
+                            if let Some((name, content)) = self.generate_skill(seq, &description) {
                                 let dir = self.skills_dir.join(&name);
                                 let _ = std::fs::create_dir_all(&dir);
                                 let path = dir.join("SKILL.md");
@@ -1375,9 +1399,7 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                                     skills_created += 1;
                                     requests.push(BusRequest::AutoStoreFact {
                                         section: "patterns_conventions".into(),
-                                        content: format!(
-                                            "Learned skill: {name} — {description}"
-                                        ),
+                                        content: format!("Learned skill: {name} — {description}"),
                                         source: "mutation".into(),
                                     });
                                 }
@@ -1394,8 +1416,7 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                                 self.generate_diagnostic(seq, crate_name, &burn)
                             {
                                 let _ = std::fs::create_dir_all(&self.diagnostics_dir);
-                                let path =
-                                    self.diagnostics_dir.join(format!("{filename}.md"));
+                                let path = self.diagnostics_dir.join(format!("{filename}.md"));
                                 if !path.exists() {
                                     let _ = std::fs::write(&path, &content);
                                     diagnostics_created += 1;
@@ -1466,9 +1487,7 @@ This pattern applies when working with `{tool}` on files matching the recovery c
         let escalated = self.check_diagnostic_escalation();
         for candidate in &escalated {
             requests.push(BusRequest::Notify {
-                message: format!(
-                    "Mutation: diagnostic escalated to eval candidate — {candidate}"
-                ),
+                message: format!("Mutation: diagnostic escalated to eval candidate — {candidate}"),
                 level: NotifyLevel::Info,
             });
         }
@@ -1525,10 +1544,7 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                 let mut found = false;
                 for entry in entries.flatten() {
                     if entry.path().extension().is_some_and(|e| e == "md") {
-                        lines.push(format!(
-                            "- {}",
-                            entry.file_name().to_string_lossy()
-                        ));
+                        lines.push(format!("- {}", entry.file_name().to_string_lossy()));
                         found = true;
                     }
                 }
@@ -1712,7 +1728,11 @@ This pattern applies when working with `{tool}` on files matching the recovery c
              - Share impact data: {share}\n\n\
              To customize, create or edit `{config_path}`.",
             config_source = config_source,
-            artifact_gen = if cfg.behavior.generate_artifacts { "**enabled**" } else { "disabled (observation only)" },
+            artifact_gen = if cfg.behavior.generate_artifacts {
+                "**enabled**"
+            } else {
+                "disabled (observation only)"
+            },
             min_turns = cfg.behavior.min_turns_for_analysis,
             w_comp = w.component_score_delta,
             w_burn = w.burn_ratio_delta,
@@ -1751,11 +1771,7 @@ impl Feature for MutationFeature {
         vec![omegon_traits::CommandDefinition {
             name: "mutation".into(),
             description: "Mutation system — burn metrics, learned skills, diagnostics".into(),
-            subcommands: vec![
-                "stats".into(),
-                "review".into(),
-                "config".into(),
-            ],
+            subcommands: vec!["stats".into(), "review".into(), "config".into()],
         }]
     }
 
@@ -1791,9 +1807,7 @@ impl Feature for MutationFeature {
                     .join("\n");
                 omegon_traits::CommandResult::Display(text)
             }
-            "config" => {
-                omegon_traits::CommandResult::Display(self.format_config())
-            }
+            "config" => omegon_traits::CommandResult::Display(self.format_config()),
             _ => omegon_traits::CommandResult::Display(
                 "Unknown subcommand. Available: stats, review, config".into(),
             ),
@@ -1805,7 +1819,9 @@ impl Feature for MutationFeature {
             ToolDefinition {
                 name: tool_registry::mutation::MUTATION_REVIEW.into(),
                 label: "Mutation Review".into(),
-                description: "List learned skills and diagnostic records created by the mutation system.".into(),
+                description:
+                    "List learned skills and diagnostic records created by the mutation system."
+                        .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -1815,7 +1831,8 @@ impl Feature for MutationFeature {
             ToolDefinition {
                 name: tool_registry::mutation::MUTATION_ACCEPT.into(),
                 label: "Mutation Accept".into(),
-                description: "Accept a learned skill or diagnostic, boosting its confidence.".into(),
+                description: "Accept a learned skill or diagnostic, boosting its confidence."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1847,7 +1864,8 @@ impl Feature for MutationFeature {
             ToolDefinition {
                 name: tool_registry::mutation::MUTATION_STATS.into(),
                 label: "Mutation Stats".into(),
-                description: "Show token burn metrics for the current session and recent history.".into(),
+                description: "Show token burn metrics for the current session and recent history."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -1914,20 +1932,15 @@ impl Feature for MutationFeature {
             // Match on tags.
             let tags = extract_frontmatter_field(&content, "tags").unwrap_or_default();
             let matched = recent_tools.iter().any(|t| tags.contains(t))
-                || signals
-                    .recent_files
-                    .iter()
-                    .any(|f| {
-                        f.extension()
-                            .and_then(|e| e.to_str())
-                            .is_some_and(|ext| tags.contains(ext))
-                    });
+                || signals.recent_files.iter().any(|f| {
+                    f.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|ext| tags.contains(ext))
+                });
 
             if matched {
-                let desc =
-                    extract_frontmatter_field(&content, "description").unwrap_or_default();
-                let name =
-                    extract_frontmatter_field(&content, "name").unwrap_or_default();
+                let desc = extract_frontmatter_field(&content, "description").unwrap_or_default();
+                let name = extract_frontmatter_field(&content, "name").unwrap_or_default();
                 let line = format!("- **{name}**: {desc}");
                 if line.len() <= budget {
                     budget = budget.saturating_sub(line.len());
@@ -2149,18 +2162,12 @@ fn compact_args(args: &Value) -> String {
 
 fn recovery_description(kind: &RecoveryKind) -> String {
     match kind {
-        RecoveryKind::SameToolDifferentArgs => {
-            "same tool retried with different arguments".into()
-        }
-        RecoveryKind::RetryAfterCodeChange => {
-            "code change followed by successful retry".into()
-        }
+        RecoveryKind::SameToolDifferentArgs => "same tool retried with different arguments".into(),
+        RecoveryKind::RetryAfterCodeChange => "code change followed by successful retry".into(),
         RecoveryKind::ToolSwitch { from, to } => {
             format!("tool switch from {from} to {to}")
         }
-        RecoveryKind::ConstraintDiscoveryRecovery => {
-            "constraint discovery led to recovery".into()
-        }
+        RecoveryKind::ConstraintDiscoveryRecovery => "constraint discovery led to recovery".into(),
     }
 }
 
@@ -2187,7 +2194,10 @@ fn derive_tags(seq: &RecoverySequence) -> Vec<String> {
         tags.push(seq.success.name.clone());
     }
     if let Some(path) = &seq.failure.target_path {
-        if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
             tags.push(ext.to_string());
         }
     }
@@ -2361,7 +2371,10 @@ mod tests {
 
         let recoveries = feature.detect_recoveries();
         assert_eq!(recoveries.len(), 1);
-        assert!(matches!(recoveries[0].kind, RecoveryKind::ToolSwitch { .. }));
+        assert!(matches!(
+            recoveries[0].kind,
+            RecoveryKind::ToolSwitch { .. }
+        ));
     }
 
     #[test]
@@ -2384,9 +2397,11 @@ mod tests {
         ];
 
         let recoveries = feature.detect_recoveries();
-        assert!(recoveries
-            .iter()
-            .any(|r| matches!(r.kind, RecoveryKind::ConstraintDiscoveryRecovery)));
+        assert!(
+            recoveries
+                .iter()
+                .any(|r| matches!(r.kind, RecoveryKind::ConstraintDiscoveryRecovery))
+        );
     }
 
     #[test]
@@ -2508,24 +2523,39 @@ mod tests {
             BurnLogEntry {
                 session_id: "s1".into(),
                 timestamp: "t".into(),
-                turns: 5, total_tokens: 0, burn_tokens: 0, burn_ratio: 0.0,
-                recoveries: 0, skills_created: 0, diagnostics_created: 0,
+                turns: 5,
+                total_tokens: 0,
+                burn_tokens: 0,
+                burn_ratio: 0.0,
+                recoveries: 0,
+                skills_created: 0,
+                diagnostics_created: 0,
                 active_learned_skills: vec!["skill-a".into()],
                 active_diagnostics: vec![],
             },
             BurnLogEntry {
                 session_id: "s2".into(),
                 timestamp: "t".into(),
-                turns: 5, total_tokens: 0, burn_tokens: 0, burn_ratio: 0.0,
-                recoveries: 0, skills_created: 0, diagnostics_created: 0,
+                turns: 5,
+                total_tokens: 0,
+                burn_tokens: 0,
+                burn_ratio: 0.0,
+                recoveries: 0,
+                skills_created: 0,
+                diagnostics_created: 0,
                 active_learned_skills: vec![],
                 active_diagnostics: vec![],
             },
             BurnLogEntry {
                 session_id: "s3".into(),
                 timestamp: "t".into(),
-                turns: 5, total_tokens: 0, burn_tokens: 0, burn_ratio: 0.0,
-                recoveries: 0, skills_created: 0, diagnostics_created: 0,
+                turns: 5,
+                total_tokens: 0,
+                burn_tokens: 0,
+                burn_ratio: 0.0,
+                recoveries: 0,
+                skills_created: 0,
+                diagnostics_created: 0,
                 active_learned_skills: vec!["skill-a".into()],
                 active_diagnostics: vec![],
             },
@@ -2538,13 +2568,19 @@ mod tests {
     #[test]
     fn age_decay_at_half_life() {
         let decay = compute_age_decay(30.0, 30.0);
-        assert!((decay - 0.5).abs() < 0.1, "at half-life, decay should be ~0.5: {decay}");
+        assert!(
+            (decay - 0.5).abs() < 0.1,
+            "at half-life, decay should be ~0.5: {decay}"
+        );
     }
 
     #[test]
     fn age_decay_at_zero() {
         let decay = compute_age_decay(0.0, 30.0);
-        assert!((decay - 1.0).abs() < 0.01, "at age 0, decay should be ~1.0: {decay}");
+        assert!(
+            (decay - 1.0).abs() < 0.01,
+            "at age 0, decay should be ~1.0: {decay}"
+        );
     }
 
     #[test]
@@ -2620,7 +2656,9 @@ mod tests {
                 3,
                 vec![{
                     let mut t = make_trace("edit", Some("src/lib.rs"), false);
-                    t.args_summary.as_object_mut().unwrap()
+                    t.args_summary
+                        .as_object_mut()
+                        .unwrap()
                         .insert("command".into(), Value::String("expanded".into()));
                     t
                 }],
@@ -2630,9 +2668,10 @@ mod tests {
         ];
         // Pad to 10 turns
         for i in 4..=10 {
-            feature.trajectory.turns.push(
-                make_turn(i, vec![], ProgressSignal::None, None),
-            );
+            feature
+                .trajectory
+                .turns
+                .push(make_turn(i, vec![], ProgressSignal::None, None));
         }
 
         let requests = feature.on_session_end(10);
@@ -2649,7 +2688,9 @@ mod tests {
 
         // No AutoStoreFact requests
         assert!(
-            !requests.iter().any(|r| matches!(r, BusRequest::AutoStoreFact { .. })),
+            !requests
+                .iter()
+                .any(|r| matches!(r, BusRequest::AutoStoreFact { .. })),
             "should not create artifacts when generate_artifacts is disabled"
         );
     }
@@ -2673,7 +2714,9 @@ mod tests {
             id: "c1".into(),
             name: "read".into(),
             result: ToolResult {
-                content: vec![ContentBlock::Text { text: "file content".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "file content".into(),
+                }],
                 details: Value::Null,
             },
             is_error: false,

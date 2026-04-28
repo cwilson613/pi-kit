@@ -287,8 +287,16 @@ impl SessionLog {
                 .last()
                 .and_then(|s| s.model.as_deref())
                 .unwrap_or("unknown");
-            let total_in: u64 = self.turn_summaries.iter().map(|s| s.actual_input_tokens).sum();
-            let total_out: u64 = self.turn_summaries.iter().map(|s| s.actual_output_tokens).sum();
+            let total_in: u64 = self
+                .turn_summaries
+                .iter()
+                .map(|s| s.actual_input_tokens)
+                .sum();
+            let total_out: u64 = self
+                .turn_summaries
+                .iter()
+                .map(|s| s.actual_output_tokens)
+                .sum();
             lines.push(format!(
                 "**Model:** {model} — {total_in} in / {total_out} out tokens across {} turns",
                 self.turn_summaries.len()
@@ -1009,8 +1017,14 @@ mod tests {
         let content = fs::read_to_string(&feature.log_path).unwrap();
         assert!(content.contains("# Agent Journal"), "should have header");
         assert!(content.contains("(5t 20tc 5m0s)"), "should have stats");
-        assert!(content.contains("**Task:** build the widget"), "should have task");
-        assert!(content.contains("**Outcome:** widget built"), "should have outcome");
+        assert!(
+            content.contains("**Task:** build the widget"),
+            "should have task"
+        );
+        assert!(
+            content.contains("**Outcome:** widget built"),
+            "should have outcome"
+        );
     }
 
     #[test]

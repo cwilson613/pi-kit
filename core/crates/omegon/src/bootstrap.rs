@@ -129,7 +129,10 @@ pub async fn resolve_bridge_or_bail(model: &str) -> anyhow::Result<Box<dyn LlmBr
 pub fn wire_event_channel(
     agent: &setup::AgentSetup,
     capacity: usize,
-) -> (broadcast::Sender<AgentEvent>, broadcast::Receiver<AgentEvent>) {
+) -> (
+    broadcast::Sender<AgentEvent>,
+    broadcast::Receiver<AgentEvent>,
+) {
     let (events_tx, events_rx) = broadcast::channel::<AgentEvent>(capacity);
 
     if let Ok(mut slot) = agent.cleave_event_slot.lock() {
@@ -209,11 +212,7 @@ pub fn build_loop_config(
         .map(|s| (s.model.clone(), s.max_turns))
         .unwrap_or_else(|_| (model_fallback.to_string(), 50));
 
-    let soft_limit_turns = if max_turns > 0 {
-        max_turns * 2 / 3
-    } else {
-        0
-    };
+    let soft_limit_turns = if max_turns > 0 { max_turns * 2 / 3 } else { 0 };
 
     crate::r#loop::LoopConfig {
         max_turns,

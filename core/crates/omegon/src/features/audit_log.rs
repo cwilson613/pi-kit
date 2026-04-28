@@ -56,9 +56,7 @@ impl AuditLog {
         // Lazy size check on first write — avoids startup I/O.
         if !self.size_checked {
             self.size_checked = true;
-            self.bytes_written = fs::metadata(&self.path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            self.bytes_written = fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
             if self.bytes_written >= MAX_LOG_BYTES {
                 self.rotate();
             }

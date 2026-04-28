@@ -19,7 +19,9 @@ pub struct NativeResult {
 
 /// Shell metacharacters that require bash interpretation.
 /// If ANY of these appear in the command string (outside quotes), we bail.
-const SHELL_META: &[char] = &['|', '>', '<', '$', ';', '&', '`', '(', ')', '{', '}', '*', '?'];
+const SHELL_META: &[char] = &[
+    '|', '>', '<', '$', ';', '&', '`', '(', ')', '{', '}', '*', '?',
+];
 
 /// Try to execute a command natively. Returns `None` if the command should
 /// fall through to bash (unrecognized command, shell syntax, unsupported flags).
@@ -45,10 +47,7 @@ pub fn try_dispatch(command: &str, cwd: &Path) -> Option<NativeResult> {
     }
 
     // Expand ~ to home directory in arguments
-    let argv: Vec<String> = argv
-        .into_iter()
-        .map(|arg| expand_tilde(&arg))
-        .collect();
+    let argv: Vec<String> = argv.into_iter().map(|arg| expand_tilde(&arg)).collect();
     let cmd = argv[0].as_str();
     let args = &argv[1..];
 
@@ -74,8 +73,14 @@ pub fn try_dispatch(command: &str, cwd: &Path) -> Option<NativeResult> {
             stdout: cwd.to_string_lossy().to_string(),
             exit_code: 0,
         }),
-        "true" => Some(NativeResult { stdout: String::new(), exit_code: 0 }),
-        "false" => Some(NativeResult { stdout: String::new(), exit_code: 1 }),
+        "true" => Some(NativeResult {
+            stdout: String::new(),
+            exit_code: 0,
+        }),
+        "false" => Some(NativeResult {
+            stdout: String::new(),
+            exit_code: 1,
+        }),
         _ => None,
     }
 }
@@ -309,7 +314,10 @@ fn cmd_wc(args: &[String], cwd: &Path) -> Option<NativeResult> {
             Ok(content) => {
                 let mut parts = Vec::new();
                 if count_lines {
-                    parts.push(format!("{:>8}", content.iter().filter(|&&b| b == b'\n').count()));
+                    parts.push(format!(
+                        "{:>8}",
+                        content.iter().filter(|&&b| b == b'\n').count()
+                    ));
                 }
                 if count_words {
                     let text = String::from_utf8_lossy(&content);
@@ -350,7 +358,7 @@ fn cmd_ls(args: &[String], cwd: &Path) -> Option<NativeResult> {
                 match c {
                     'a' => show_hidden = true,
                     'l' => long_format = true,
-                    '1' => {} // one-per-line is our default
+                    '1' => {}         // one-per-line is our default
                     _ => return None, // unknown flag → bash fallback
                 }
             }
@@ -510,10 +518,7 @@ fn cmd_find(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 /// Simple glob matching supporting `*` and `?` only.
 fn simple_glob_match(pattern: &str, text: &str) -> bool {
-    fn match_inner(
-        pattern: &[char],
-        text: &[char],
-    ) -> bool {
+    fn match_inner(pattern: &[char], text: &[char]) -> bool {
         if pattern.is_empty() {
             return text.is_empty();
         }
@@ -527,12 +532,8 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
                 }
                 false
             }
-            '?' => {
-                !text.is_empty() && match_inner(&pattern[1..], &text[1..])
-            }
-            c => {
-                !text.is_empty() && text[0] == c && match_inner(&pattern[1..], &text[1..])
-            }
+            '?' => !text.is_empty() && match_inner(&pattern[1..], &text[1..]),
+            c => !text.is_empty() && text[0] == c && match_inner(&pattern[1..], &text[1..]),
         }
     }
 
@@ -791,7 +792,10 @@ fn cmd_touch(args: &[String], cwd: &Path) -> Option<NativeResult> {
             }
         }
     }
-    Some(NativeResult { stdout: String::new(), exit_code: 0 })
+    Some(NativeResult {
+        stdout: String::new(),
+        exit_code: 0,
+    })
 }
 
 // ── rm ─────────────────────────────────────────────────────────────────
@@ -832,7 +836,9 @@ fn cmd_rm(args: &[String], cwd: &Path) -> Option<NativeResult> {
         }
 
         if !path.exists() {
-            if force { continue; }
+            if force {
+                continue;
+            }
             return Some(NativeResult {
                 stdout: format!("rm: cannot remove '{}': No such file or directory", file),
                 exit_code: 1,
@@ -842,7 +848,10 @@ fn cmd_rm(args: &[String], cwd: &Path) -> Option<NativeResult> {
             if recursive {
                 std::fs::remove_dir_all(&path)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "Is a directory"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Is a directory",
+                ))
             }
         } else {
             std::fs::remove_file(&path)
@@ -856,7 +865,10 @@ fn cmd_rm(args: &[String], cwd: &Path) -> Option<NativeResult> {
             }
         }
     }
-    Some(NativeResult { stdout: String::new(), exit_code: 0 })
+    Some(NativeResult {
+        stdout: String::new(),
+        exit_code: 0,
+    })
 }
 
 /// Check if a path is too dangerous to rm.
@@ -962,7 +974,10 @@ fn cmd_cp(args: &[String], cwd: &Path) -> Option<NativeResult> {
             });
         }
     }
-    Some(NativeResult { stdout: String::new(), exit_code: 0 })
+    Some(NativeResult {
+        stdout: String::new(),
+        exit_code: 0,
+    })
 }
 
 fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
@@ -1056,7 +1071,10 @@ fn cmd_mv(args: &[String], cwd: &Path) -> Option<NativeResult> {
             }
         }
     }
-    Some(NativeResult { stdout: String::new(), exit_code: 0 })
+    Some(NativeResult {
+        stdout: String::new(),
+        exit_code: 0,
+    })
 }
 
 // ── sort ───────────────────────────────────────────────────────────────
@@ -1103,8 +1121,16 @@ fn cmd_sort(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     if numeric {
         all_lines.sort_by(|a, b| {
-            let na: f64 = a.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let nb: f64 = b.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let na: f64 = a
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let nb: f64 = b
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
         });
     } else {
@@ -1121,7 +1147,10 @@ fn cmd_sort(args: &[String], cwd: &Path) -> Option<NativeResult> {
     if !output.is_empty() {
         output.push('\n');
     }
-    Some(NativeResult { stdout: output, exit_code: 0 })
+    Some(NativeResult {
+        stdout: output,
+        exit_code: 0,
+    })
 }
 
 // ── basename / dirname / realpath ──────────────────────────────────────
@@ -1327,7 +1356,11 @@ mod tests {
     #[test]
     fn grep_finds_pattern() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "hello world\nfoo bar\nhello again\n").unwrap();
+        std::fs::write(
+            dir.path().join("a.txt"),
+            "hello world\nfoo bar\nhello again\n",
+        )
+        .unwrap();
         let result = try_dispatch("grep hello a.txt", dir.path()).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout.lines().count(), 2);
@@ -1416,7 +1449,10 @@ mod tests {
         std::fs::write(dir.path().join("src.txt"), "content").unwrap();
         let result = try_dispatch("cp src.txt dst.txt", dir.path()).unwrap();
         assert_eq!(result.exit_code, 0);
-        assert_eq!(std::fs::read_to_string(dir.path().join("dst.txt")).unwrap(), "content");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dst.txt")).unwrap(),
+            "content"
+        );
     }
 
     #[test]
@@ -1426,7 +1462,10 @@ mod tests {
         let result = try_dispatch("mv old.txt new.txt", dir.path()).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(!dir.path().join("old.txt").exists());
-        assert_eq!(std::fs::read_to_string(dir.path().join("new.txt")).unwrap(), "data");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+            "data"
+        );
     }
 
     #[test]

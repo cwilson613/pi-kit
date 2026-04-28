@@ -63,7 +63,8 @@ impl OmegonAcpAgent {
         let ollama_ok = std::net::TcpStream::connect_timeout(
             &"127.0.0.1:11434".parse().unwrap(),
             std::time::Duration::from_millis(100),
-        ).is_ok();
+        )
+        .is_ok();
         if ollama_ok {
             if let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:11434") {
                 use std::io::{Read, Write};
@@ -73,7 +74,9 @@ impl OmegonAcpAgent {
                 let mut buf = vec![0u8; 65536];
                 let mut total = 0;
                 while let Ok(n) = s.read(&mut buf[total..]) {
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     total += n;
                 }
                 let body = String::from_utf8_lossy(&buf[..total]);
@@ -106,31 +109,65 @@ impl OmegonAcpAgent {
             model_options.push(SessionConfigSelectOption::new(id, name));
         }
 
-        if !model_options.iter().any(|o| o.value.0.as_ref() == current_model) {
-            model_options.insert(0, SessionConfigSelectOption::new(
-                current_model.to_string(), current_model.to_string(),
-            ));
+        if !model_options
+            .iter()
+            .any(|o| o.value.0.as_ref() == current_model)
+        {
+            model_options.insert(
+                0,
+                SessionConfigSelectOption::new(
+                    current_model.to_string(),
+                    current_model.to_string(),
+                ),
+            );
         }
 
         let thinking_options: Vec<SessionConfigSelectOption> = [
-            ("off", "Off"), ("minimal", "Minimal"), ("low", "Low"),
-            ("medium", "Medium"), ("high", "High"),
-        ].iter().map(|(id, name)| SessionConfigSelectOption::new(*id, *name)).collect();
+            ("off", "Off"),
+            ("minimal", "Minimal"),
+            ("low", "Low"),
+            ("medium", "Medium"),
+            ("high", "High"),
+        ]
+        .iter()
+        .map(|(id, name)| SessionConfigSelectOption::new(*id, *name))
+        .collect();
 
         let posture_options: Vec<SessionConfigSelectOption> = [
             ("fabricator", "Fabricator — balanced coding"),
             ("architect", "Architect — orchestrator"),
             ("explorator", "Explorator — lean, read-heavy"),
             ("devastator", "Devastator — maximum force"),
-        ].iter().map(|(id, name)| SessionConfigSelectOption::new(*id, *name)).collect();
+        ]
+        .iter()
+        .map(|(id, name)| SessionConfigSelectOption::new(*id, *name))
+        .collect();
 
         vec![
-            SessionConfigOption::new("model", "Model",
-                SessionConfigKind::Select(SessionConfigSelect::new(current_model.to_string(), model_options))),
-            SessionConfigOption::new("thinking", "Thinking Level",
-                SessionConfigKind::Select(SessionConfigSelect::new(current_thinking.to_string(), thinking_options))),
-            SessionConfigOption::new("posture", "Posture",
-                SessionConfigKind::Select(SessionConfigSelect::new(current_posture.to_string(), posture_options))),
+            SessionConfigOption::new(
+                "model",
+                "Model",
+                SessionConfigKind::Select(SessionConfigSelect::new(
+                    current_model.to_string(),
+                    model_options,
+                )),
+            ),
+            SessionConfigOption::new(
+                "thinking",
+                "Thinking Level",
+                SessionConfigKind::Select(SessionConfigSelect::new(
+                    current_thinking.to_string(),
+                    thinking_options,
+                )),
+            ),
+            SessionConfigOption::new(
+                "posture",
+                "Posture",
+                SessionConfigKind::Select(SessionConfigSelect::new(
+                    current_posture.to_string(),
+                    posture_options,
+                )),
+            ),
         ]
     }
 
@@ -153,12 +190,9 @@ impl OmegonAcpAgent {
 impl Agent for OmegonAcpAgent {
     async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse> {
         let mut response = InitializeResponse::new(args.protocol_version);
-        response.agent_info = Some(
-            Implementation::new("omegon", env!("CARGO_PKG_VERSION"))
-                .title("Omegon Agent"),
-        );
-        response.agent_capabilities = AgentCapabilities::default()
-            .load_session(true);
+        response.agent_info =
+            Some(Implementation::new("omegon", env!("CARGO_PKG_VERSION")).title("Omegon Agent"));
+        response.agent_capabilities = AgentCapabilities::default().load_session(true);
         response.auth_methods = vec![AuthMethod::Agent(
             AuthMethodAgent::new("omegon-auth", "Omegon Authentication")
                 .description("Run `omegon auth login` in a terminal or set API keys."),
@@ -195,19 +229,22 @@ impl Agent for OmegonAcpAgent {
         tokio::task::spawn_local(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             if let Some(c) = conn.borrow().as_ref() {
-                let _ = c.session_notification(SessionNotification::new(cmd_sid,
-                    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
-                        AvailableCommand::new("model", "List or switch LLM model"),
-                        AvailableCommand::new("thinking", "Show or set thinking level"),
-                        AvailableCommand::new("posture", "Show or set behavioral posture"),
-                        AvailableCommand::new("compact", "Compact context window"),
-                        AvailableCommand::new("clear", "Clear conversation"),
-                        AvailableCommand::new("secrets", "Show configured secrets (no values)"),
-                        AvailableCommand::new("status", "Session status"),
-                        AvailableCommand::new("login", "Authentication help"),
-                        AvailableCommand::new("help", "List all commands"),
-                    ]))
-                )).await;
+                let _ = c
+                    .session_notification(SessionNotification::new(
+                        cmd_sid,
+                        SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                            AvailableCommand::new("model", "List or switch LLM model"),
+                            AvailableCommand::new("thinking", "Show or set thinking level"),
+                            AvailableCommand::new("posture", "Show or set behavioral posture"),
+                            AvailableCommand::new("compact", "Compact context window"),
+                            AvailableCommand::new("clear", "Clear conversation"),
+                            AvailableCommand::new("secrets", "Show configured secrets (no values)"),
+                            AvailableCommand::new("status", "Session status"),
+                            AvailableCommand::new("login", "Authentication help"),
+                            AvailableCommand::new("help", "List all commands"),
+                        ])),
+                    ))
+                    .await;
             }
         });
 
@@ -222,9 +259,15 @@ impl Agent for OmegonAcpAgent {
         self.ensure_worker(&cwd);
 
         // Extract user text
-        let user_text: String = args.prompt.iter()
+        let user_text: String = args
+            .prompt
+            .iter()
             .filter_map(|block| {
-                if let ContentBlock::Text(text) = block { Some(text.text.to_string()) } else { None }
+                if let ContentBlock::Text(text) = block {
+                    Some(text.text.to_string())
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -237,11 +280,14 @@ impl Agent for OmegonAcpAgent {
             tokio::task::spawn_local(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 if let Some(c) = conn.borrow().as_ref() {
-                    let _ = c.session_notification(SessionNotification::new(notify_sid,
-                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                            ContentBlock::Text(TextContent::new(response_text)),
-                        )),
-                    )).await;
+                    let _ = c
+                        .session_notification(SessionNotification::new(
+                            notify_sid,
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new(response_text)),
+                            )),
+                        ))
+                        .await;
                 }
             });
             return Ok(PromptResponse::new(StopReason::EndTurn));
@@ -253,13 +299,17 @@ impl Agent for OmegonAcpAgent {
         self.send_to_worker(WorkerRequest::Prompt {
             text: user_text,
             response_tx,
-        }).await;
+        })
+        .await;
 
         // Subscribe to worker events and forward as ACP notifications.
         // The forwarder signals completion via done_tx so we don't return
         // PromptResponse (which tells Zed "turn is over") before all
         // streamed chunks have been delivered.
-        let event_rx = self.worker.borrow().as_ref()
+        let event_rx = self
+            .worker
+            .borrow()
+            .as_ref()
             .map(|w| w.event_rx.resubscribe());
 
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
@@ -272,52 +322,71 @@ impl Agent for OmegonAcpAgent {
                     match event_rx.recv().await {
                         Ok(WorkerEvent::TextChunk(text)) => {
                             if let Some(c) = conn.borrow().as_ref() {
-                                let _ = c.session_notification(SessionNotification::new(
-                                    stream_sid.clone(),
-                                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                                        ContentBlock::Text(TextContent::new(text)),
-                                    )),
-                                )).await;
+                                let _ = c
+                                    .session_notification(SessionNotification::new(
+                                        stream_sid.clone(),
+                                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                            ContentBlock::Text(TextContent::new(text)),
+                                        )),
+                                    ))
+                                    .await;
                             }
                         }
                         Ok(WorkerEvent::ThinkingChunk(text)) => {
                             if let Some(c) = conn.borrow().as_ref() {
-                                let _ = c.session_notification(SessionNotification::new(
-                                    stream_sid.clone(),
-                                    SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-                                        ContentBlock::Text(TextContent::new(text)),
-                                    )),
-                                )).await;
+                                let _ = c
+                                    .session_notification(SessionNotification::new(
+                                        stream_sid.clone(),
+                                        SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                                            ContentBlock::Text(TextContent::new(text)),
+                                        )),
+                                    ))
+                                    .await;
                             }
                         }
                         Ok(WorkerEvent::ToolStart { id, name }) => {
                             if let Some(c) = conn.borrow().as_ref() {
                                 let mut tc = ToolCall::new(ToolCallId::new(id), name);
                                 tc.status = ToolCallStatus::InProgress;
-                                let _ = c.session_notification(SessionNotification::new(
-                                    stream_sid.clone(),
-                                    SessionUpdate::ToolCall(tc),
-                                )).await;
+                                let _ = c
+                                    .session_notification(SessionNotification::new(
+                                        stream_sid.clone(),
+                                        SessionUpdate::ToolCall(tc),
+                                    ))
+                                    .await;
                             }
                         }
                         Ok(WorkerEvent::StatusUpdate(msg)) => {
                             if let Some(c) = conn.borrow().as_ref() {
-                                let _ = c.session_notification(SessionNotification::new(
-                                    stream_sid.clone(),
-                                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                                        ContentBlock::Text(TextContent::new(format!("_{msg}_\n\n"))),
-                                    )),
-                                )).await;
+                                let _ = c
+                                    .session_notification(SessionNotification::new(
+                                        stream_sid.clone(),
+                                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                            ContentBlock::Text(TextContent::new(format!(
+                                                "_{msg}_\n\n"
+                                            ))),
+                                        )),
+                                    ))
+                                    .await;
                             }
                         }
                         Ok(WorkerEvent::ToolEnd { id, success }) => {
                             if let Some(c) = conn.borrow().as_ref() {
-                                let status = if success { ToolCallStatus::Completed } else { ToolCallStatus::Failed };
+                                let status = if success {
+                                    ToolCallStatus::Completed
+                                } else {
+                                    ToolCallStatus::Failed
+                                };
                                 let fields = ToolCallUpdateFields::new().status(status);
-                                let _ = c.session_notification(SessionNotification::new(
-                                    stream_sid.clone(),
-                                    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(ToolCallId::new(id), fields)),
-                                )).await;
+                                let _ = c
+                                    .session_notification(SessionNotification::new(
+                                        stream_sid.clone(),
+                                        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                            ToolCallId::new(id),
+                                            fields,
+                                        )),
+                                    ))
+                                    .await;
                             }
                         }
                         Ok(WorkerEvent::TurnComplete) => break,
@@ -333,8 +402,7 @@ impl Agent for OmegonAcpAgent {
 
         // Wait for the worker to finish AND the event forwarder to flush
         // all notifications to Zed before signaling end-of-turn.
-        let worker_resp = response_rx.await
-            .map_err(|_| Error::internal_error())?;
+        let worker_resp = response_rx.await.map_err(|_| Error::internal_error())?;
         let _ = done_rx.await;
 
         // Send error after all chunks have been delivered
@@ -345,11 +413,14 @@ impl Agent for OmegonAcpAgent {
             tokio::task::spawn_local(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 if let Some(c) = conn.borrow().as_ref() {
-                    let _ = c.session_notification(SessionNotification::new(err_sid,
-                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                            ContentBlock::Text(TextContent::new(err_text)),
-                        )),
-                    )).await;
+                    let _ = c
+                        .session_notification(SessionNotification::new(
+                            err_sid,
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new(err_text)),
+                            )),
+                        ))
+                        .await;
                 }
             });
         }
@@ -362,7 +433,10 @@ impl Agent for OmegonAcpAgent {
         Ok(())
     }
 
-    async fn set_session_mode(&self, args: SetSessionModeRequest) -> Result<SetSessionModeResponse> {
+    async fn set_session_mode(
+        &self,
+        args: SetSessionModeRequest,
+    ) -> Result<SetSessionModeResponse> {
         let posture = match args.mode_id.0.as_ref() {
             "code" => "fabricator",
             "architect" => "architect",
@@ -370,26 +444,51 @@ impl Agent for OmegonAcpAgent {
             "agent" => "devastator",
             _ => return Err(Error::invalid_params()),
         };
-        self.send_to_worker(WorkerRequest::SetPosture(posture.to_string())).await;
+        self.send_to_worker(WorkerRequest::SetPosture(posture.to_string()))
+            .await;
         Ok(SetSessionModeResponse::new())
     }
 
-    async fn set_session_config_option(&self, args: SetSessionConfigOptionRequest) -> Result<SetSessionConfigOptionResponse> {
+    async fn set_session_config_option(
+        &self,
+        args: SetSessionConfigOptionRequest,
+    ) -> Result<SetSessionConfigOptionResponse> {
         let config_id = args.config_id.0.to_string();
         let value = args.value.0.to_string();
 
         match config_id.as_str() {
-            "model" => self.send_to_worker(WorkerRequest::SetModel(value.clone())).await,
-            "thinking" => self.send_to_worker(WorkerRequest::SetThinking(value.clone())).await,
-            "posture" => self.send_to_worker(WorkerRequest::SetPosture(value.clone())).await,
+            "model" => {
+                self.send_to_worker(WorkerRequest::SetModel(value.clone()))
+                    .await
+            }
+            "thinking" => {
+                self.send_to_worker(WorkerRequest::SetThinking(value.clone()))
+                    .await
+            }
+            "posture" => {
+                self.send_to_worker(WorkerRequest::SetPosture(value.clone()))
+                    .await
+            }
             _ => return Err(Error::invalid_params()),
         }
 
         // Return the full config list with updated value so Zed keeps
         // showing all dropdowns. Rebuilding the options is cheap.
-        let current_model = if config_id == "model" { value.clone() } else { self.model.clone() };
-        let current_thinking = if config_id == "thinking" { value.clone() } else { "minimal".into() };
-        let current_posture = if config_id == "posture" { value.clone() } else { "fabricator".into() };
+        let current_model = if config_id == "model" {
+            value.clone()
+        } else {
+            self.model.clone()
+        };
+        let current_thinking = if config_id == "thinking" {
+            value.clone()
+        } else {
+            "minimal".into()
+        };
+        let current_posture = if config_id == "posture" {
+            value.clone()
+        } else {
+            "fabricator".into()
+        };
 
         Ok(SetSessionConfigOptionResponse::new(
             self.build_config_options(&current_model, &current_thinking, &current_posture),
@@ -406,10 +505,19 @@ impl Agent for OmegonAcpAgent {
     }
 
     async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
-        let cwd = args.cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let cwd = args
+            .cwd
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let entries = crate::session::list_sessions(&cwd);
-        let sessions: Vec<SessionInfo> = entries.into_iter().take(50)
-            .map(|e| SessionInfo::new(SessionId::new(e.meta.session_id.as_str()), std::path::PathBuf::from(&e.meta.cwd)))
+        let sessions: Vec<SessionInfo> = entries
+            .into_iter()
+            .take(50)
+            .map(|e| {
+                SessionInfo::new(
+                    SessionId::new(e.meta.session_id.as_str()),
+                    std::path::PathBuf::from(&e.meta.cwd),
+                )
+            })
             .collect();
         Ok(ListSessionsResponse::new(sessions))
     }
@@ -418,7 +526,9 @@ impl Agent for OmegonAcpAgent {
 impl OmegonAcpAgent {
     fn handle_slash_command(&self, input: &str) -> String {
         let trimmed = input.trim();
-        let (cmd, args) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
+        let (cmd, args) = trimmed
+            .split_once(char::is_whitespace)
+            .unwrap_or((trimmed, ""));
 
         match cmd {
             "/model" if !args.is_empty() => {
@@ -513,10 +623,9 @@ pub async fn run(model: &str) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin().compat();
 
     let agent_clone = agent.clone();
-    let (conn, io_task) = AgentSideConnection::new(
-        agent_clone, stdout, stdin,
-        |fut| { tokio::task::spawn_local(fut); },
-    );
+    let (conn, io_task) = AgentSideConnection::new(agent_clone, stdout, stdin, |fut| {
+        tokio::task::spawn_local(fut);
+    });
 
     agent.set_client(conn);
 

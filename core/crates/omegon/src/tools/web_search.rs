@@ -102,9 +102,9 @@ impl WebSearchProvider {
                                 .as_str()
                                 .unwrap_or("")
                                 .to_string(),
-                            content: r["markdown"].as_str().map(|s| {
-                                crate::util::truncate(s, 2000)
-                            }),
+                            content: r["markdown"]
+                                .as_str()
+                                .map(|s| crate::util::truncate(s, 2000)),
                             provider: "firecrawl".into(),
                         })
                     })
@@ -429,8 +429,7 @@ struct SerperResult {
 
 /// Validate a URL for fetching: must be http/https, no internal/private hosts.
 fn validate_fetch_url(url: &str) -> anyhow::Result<reqwest::Url> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+    let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     match parsed.scheme() {
         "http" | "https" => {}
         scheme => anyhow::bail!("Blocked URL scheme: {scheme}. Only http/https allowed."),

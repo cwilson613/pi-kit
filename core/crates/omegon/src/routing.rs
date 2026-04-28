@@ -153,11 +153,7 @@ impl ProviderInventory {
         if let Some(entry) = self.entries.iter_mut().find(|e| e.provider_id == "ollama") {
             entry.has_credentials = true;
             entry.is_reachable = true;
-            entry.models = self
-                .ollama_models
-                .iter()
-                .map(|m| m.name.clone())
-                .collect();
+            entry.models = self.ollama_models.iter().map(|m| m.name.clone()).collect();
         }
     }
 
@@ -216,8 +212,8 @@ impl ProviderInventory {
             lines.push("**Cloud (credentialed):**".to_string());
             for e in &cloud {
                 let default_model = default_model_for_provider(&e.provider_id, e.capability_tier);
-                let is_current = session_model
-                    .is_some_and(|s| s.starts_with(&format!("{}:", e.provider_id)));
+                let is_current =
+                    session_model.is_some_and(|s| s.starts_with(&format!("{}:", e.provider_id)));
                 let marker = if is_current { " ← current" } else { "" };
                 let cost = match e.cost_tier {
                     CostTier::Free => "free",

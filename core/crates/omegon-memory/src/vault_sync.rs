@@ -203,7 +203,11 @@ pub async fn materialize_to_vault_with_subdir(
         }
 
         // Sort by confidence descending
-        facts.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        facts.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let slug = section_to_slug(section);
         let display_name = section_display_name(section);
@@ -242,7 +246,11 @@ pub async fn materialize_to_vault_with_subdir(
             .await
             .with_context(|| format!("writing {}", file_path.display()))?;
 
-        tracing::debug!(section = display_name, facts = fact_count, "materialized section");
+        tracing::debug!(
+            section = display_name,
+            facts = fact_count,
+            "materialized section"
+        );
 
         sections_written += 1;
         facts_written += fact_count;
@@ -318,9 +326,7 @@ pub async fn materialize_episodes_to_vault_with_subdir(
         content.push_str("+++\n");
         content.push_str(&format!("id = \"episode-{date}\"\n"));
         content.push_str("kind = \"memory_episode\"\n");
-        content.push_str(&format!(
-            "tags = [\"memory\", \"episode\", \"{date}\"]\n"
-        ));
+        content.push_str(&format!("tags = [\"memory\", \"episode\", \"{date}\"]\n"));
         content.push_str("\n[data]\n");
         content.push_str(&format!("date = \"{date}\"\n"));
         content.push_str(&format!("mind = \"{mind}\"\n"));
@@ -461,7 +467,11 @@ fn extract_toml_string_array(frontmatter: &str, key: &str) -> Vec<String> {
                         .split(',')
                         .filter_map(|s| {
                             let s = s.trim().trim_matches('"');
-                            if s.is_empty() { None } else { Some(s.to_string()) }
+                            if s.is_empty() {
+                                None
+                            } else {
+                                Some(s.to_string())
+                            }
                         })
                         .collect();
                 }
@@ -529,10 +539,7 @@ pub async fn reinforce_referenced_facts(
                 continue;
             }
 
-            let rel_path = path
-                .strip_prefix(vault_path)
-                .unwrap_or(&path)
-                .to_path_buf();
+            let rel_path = path.strip_prefix(vault_path).unwrap_or(&path).to_path_buf();
 
             for fact_id in &fact_ids {
                 match backend.get_fact(fact_id).await {
@@ -669,7 +676,10 @@ mod tests {
             );
             // Also verify description is non-empty
             let desc = section_description(section);
-            assert!(!desc.is_empty(), "description should not be empty for {section:?}");
+            assert!(
+                !desc.is_empty(),
+                "description should not be empty for {section:?}"
+            );
         }
     }
 
@@ -862,6 +872,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(report.facts_reinforced, 0);
-        assert_eq!(report.references_dangling, 0, "should not have scanned .codex/");
+        assert_eq!(
+            report.references_dangling, 0,
+            "should not have scanned .codex/"
+        );
     }
 }

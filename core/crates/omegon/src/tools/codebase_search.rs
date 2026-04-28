@@ -207,9 +207,12 @@ impl CodescanProvider {
         let repo_path = self.repo_path.clone();
         let cache_arc = Arc::clone(&self.cache);
         crate::task_spawn::spawn_best_effort("codescan-head-check", async move {
-            let head_sha = git2::Repository::discover(&repo_path)
-                .ok()
-                .and_then(|r| r.head().ok().and_then(|h| h.target()).map(|oid| oid.to_string()));
+            let head_sha = git2::Repository::discover(&repo_path).ok().and_then(|r| {
+                r.head()
+                    .ok()
+                    .and_then(|h| h.target())
+                    .map(|oid| oid.to_string())
+            });
             let Some(head) = head_sha else {
                 return;
             };

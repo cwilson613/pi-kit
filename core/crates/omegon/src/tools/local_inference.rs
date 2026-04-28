@@ -284,7 +284,8 @@ impl LocalInferenceProvider {
                         tracing::debug!("Ollama server still starting after 5s...");
                     }
                 }
-                "Ollama server spawned but not reachable after 10s. Check `ollama serve` logs.".into()
+                "Ollama server spawned but not reachable after 10s. Check `ollama serve` logs."
+                    .into()
             }
             Err(e) => format!("Failed to start Ollama: {e}. Is it installed?"),
         }
@@ -415,16 +416,29 @@ impl LocalInferenceProvider {
         // The hardware profile determines the maximum size class to consider.
         let preferred: &[&str] = match max_params {
             "100B+" => &[
-                "qwen3:72b", "llama3:70b", "devstral-small",
-                "qwen3:32b", "qwen3:30b", "qwen3:14b", "qwen3:8b",
+                "qwen3:72b",
+                "llama3:70b",
+                "devstral-small",
+                "qwen3:32b",
+                "qwen3:30b",
+                "qwen3:14b",
+                "qwen3:8b",
             ],
             "70B" => &[
-                "qwen3:72b", "llama3:70b", "devstral-small",
-                "qwen3:32b", "qwen3:30b", "qwen3:14b", "qwen3:8b",
+                "qwen3:72b",
+                "llama3:70b",
+                "devstral-small",
+                "qwen3:32b",
+                "qwen3:30b",
+                "qwen3:14b",
+                "qwen3:8b",
             ],
             "32B" => &[
-                "devstral-small", "qwen3:32b", "qwen3:30b",
-                "qwen3:14b", "qwen3:8b",
+                "devstral-small",
+                "qwen3:32b",
+                "qwen3:30b",
+                "qwen3:14b",
+                "qwen3:8b",
             ],
             "14B" => &["qwen3:14b", "qwen3:8b", "llama3:8b"],
             _ => &["qwen3:8b", "llama3:8b", "phi3:mini"],
@@ -608,17 +622,16 @@ impl ToolProvider for LocalInferenceProvider {
                         self.ollama_pull(model, None).await
                     }
                     "delete" => {
-                        let model = args
-                            .get("model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let model = args.get("model").and_then(|v| v.as_str()).unwrap_or("");
                         if model.is_empty() {
                             "Model name required for delete action.".into()
                         } else {
                             self.ollama_delete(model).await
                         }
                     }
-                    _ => format!("Unknown action: {action}. Use: start, stop, status, pull, delete"),
+                    _ => {
+                        format!("Unknown action: {action}. Use: start, stop, status, pull, delete")
+                    }
                 };
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text }],

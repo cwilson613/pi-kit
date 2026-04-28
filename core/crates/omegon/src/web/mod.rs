@@ -338,7 +338,10 @@ pub async fn start_server_with_options(
         .route("/api/graph", axum::routing::get(api::get_graph))
         .route("/api/events", axum::routing::post(api::post_event))
         .route("/api/evals", axum::routing::get(api::get_evals))
-        .route("/api/evals/compare", axum::routing::get(api::get_eval_compare))
+        .route(
+            "/api/evals/compare",
+            axum::routing::get(api::get_eval_compare),
+        )
         .route("/api/evals/{*id}", axum::routing::get(api::get_eval))
         .route("/ws", axum::routing::get(ws::ws_handler))
         .route("/evals", axum::routing::get(serve_eval_dashboard))
@@ -637,13 +640,13 @@ fn bind_ip() -> [u8; 4] {
 
 async fn bind_strict(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
     let addr: SocketAddr = (bind_ip(), port).into();
-    tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| anyhow::anyhow!(
+    tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        anyhow::anyhow!(
             "Failed to bind control port {port}: {e}\n  \
              Hint: another process may be using this port. Check with: lsof -i :{port}\n  \
              Use --strict-port=false to auto-fallback to the next available port."
-        ))
+        )
+    })
 }
 
 async fn bind_with_fallback(preferred: u16) -> anyhow::Result<tokio::net::TcpListener> {
@@ -765,10 +768,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let err = bind_strict(port).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("Failed to bind control port")
-        );
+        assert!(err.to_string().contains("Failed to bind control port"));
     }
 
     #[test]

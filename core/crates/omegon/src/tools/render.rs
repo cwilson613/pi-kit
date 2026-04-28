@@ -115,7 +115,10 @@ pub fn detect_backends() -> Vec<(&'static str, &'static str)> {
         available.push(("d2", "D2 — architecture, flowcharts, ER, sequence diagrams"));
     }
     if has_cmd("mmdc") {
-        available.push(("mermaid", "Mermaid — flowcharts, sequence, class, state diagrams"));
+        available.push((
+            "mermaid",
+            "Mermaid — flowcharts, sequence, class, state diagrams",
+        ));
     }
     if has_cmd("dot") {
         available.push(("graphviz", "GraphViz — directed/undirected graphs"));
@@ -256,7 +259,11 @@ fn render_mermaid(source: &str, output_path: &Path, output_format: &str) -> Resu
 
 /// Render a GraphViz diagram via the `dot` CLI.
 fn render_graphviz(source: &str, output_path: &Path, output_format: &str) -> Result<()> {
-    let fmt_flag = if output_format == "svg" { "-Tsvg" } else { "-Tpng" };
+    let fmt_flag = if output_format == "svg" {
+        "-Tsvg"
+    } else {
+        "-Tpng"
+    };
     let result = Command::new("dot")
         .args([fmt_flag, "-o", &output_path.display().to_string()])
         .stdin(std::process::Stdio::piped())
@@ -283,7 +290,11 @@ fn render_plantuml(source: &str, output_path: &Path, output_format: &str) -> Res
     let tmp_input = output_path.with_extension("puml");
     std::fs::write(&tmp_input, source)?;
 
-    let fmt_flag = if output_format == "svg" { "-tsvg" } else { "-tpng" };
+    let fmt_flag = if output_format == "svg" {
+        "-tsvg"
+    } else {
+        "-tpng"
+    };
     let result = Command::new("plantuml")
         .args([fmt_flag, &tmp_input.display().to_string()])
         .output()?;
@@ -300,11 +311,7 @@ fn render_plantuml(source: &str, output_path: &Path, output_format: &str) -> Res
     }
 
     // PlantUML outputs to the same directory with the diagram extension
-    let expected_out = tmp_input.with_extension(if output_format == "svg" {
-        "svg"
-    } else {
-        "png"
-    });
+    let expected_out = tmp_input.with_extension(if output_format == "svg" { "svg" } else { "png" });
     if expected_out != *output_path && expected_out.exists() {
         std::fs::rename(&expected_out, output_path)?;
     }
@@ -333,7 +340,11 @@ pub async fn execute(
         "mermaid" => "mmdc",
         "graphviz" => "dot",
         "plantuml" => "plantuml",
-        other => return Err(anyhow!("Unknown diagram format: {other}. Use: d2, mermaid, graphviz, plantuml.")),
+        other => {
+            return Err(anyhow!(
+                "Unknown diagram format: {other}. Use: d2, mermaid, graphviz, plantuml."
+            ));
+        }
     };
     if !has_cmd(cmd) {
         let install_hint = match fmt {
@@ -422,14 +433,20 @@ mod tests {
     #[test]
     fn detect_d2_syntax() {
         assert_eq!(detect_format("a -> b: hello"), Some("d2"));
-        assert_eq!(detect_format("server: {\n  shape: rectangle\n}"), Some("d2"));
+        assert_eq!(
+            detect_format("server: {\n  shape: rectangle\n}"),
+            Some("d2")
+        );
     }
 
     #[test]
     fn detect_mermaid_syntax() {
         assert_eq!(detect_format("graph TD\n  A --> B"), Some("mermaid"));
         assert_eq!(detect_format("flowchart LR\n  A --> B"), Some("mermaid"));
-        assert_eq!(detect_format("sequenceDiagram\n  Alice->>Bob: Hello"), Some("mermaid"));
+        assert_eq!(
+            detect_format("sequenceDiagram\n  Alice->>Bob: Hello"),
+            Some("mermaid")
+        );
     }
 
     #[test]
@@ -439,7 +456,10 @@ mod tests {
 
     #[test]
     fn detect_plantuml_syntax() {
-        assert_eq!(detect_format("@startuml\nAlice -> Bob\n@enduml"), Some("plantuml"));
+        assert_eq!(
+            detect_format("@startuml\nAlice -> Bob\n@enduml"),
+            Some("plantuml")
+        );
     }
 
     #[test]

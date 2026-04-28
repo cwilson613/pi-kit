@@ -429,12 +429,19 @@ pub(crate) fn is_conversational_non_task(task: &str) -> bool {
     let lower = lower.trim_end_matches(['.', '!', ',', '?']);
 
     // Structural markers anywhere in the text
-    let has_path = t.contains('/') || t.contains('\\')
-        || [".rs", ".py", ".ts", ".js", ".toml", ".json", ".yaml", ".yml", ".md"]
-            .iter()
-            .any(|ext| t.contains(ext));
-    let has_code = t.contains("::") || t.contains("()") || t.contains("fn ")
-        || t.contains("def ") || t.contains("class ") || t.contains("struct ");
+    let has_path = t.contains('/')
+        || t.contains('\\')
+        || [
+            ".rs", ".py", ".ts", ".js", ".toml", ".json", ".yaml", ".yml", ".md",
+        ]
+        .iter()
+        .any(|ext| t.contains(ext));
+    let has_code = t.contains("::")
+        || t.contains("()")
+        || t.contains("fn ")
+        || t.contains("def ")
+        || t.contains("class ")
+        || t.contains("struct ");
     if has_path || has_code {
         return false;
     }
@@ -444,15 +451,52 @@ pub(crate) fn is_conversational_non_task(task: &str) -> bool {
     // We check that the verb is preceded by a word boundary (start of string,
     // space, or punctuation) and followed by a space or end of string.
     const VERBS: &[&str] = &[
-        "add", "fix", "update", "remove", "create", "change", "implement", "refactor",
-        "move", "rename", "delete", "write", "test", "run", "check", "verify", "search",
-        "find", "read", "edit", "install", "build", "deploy", "debug", "investigate",
-        "analyze", "repair", "set up", "configure", "migrate", "convert", "extract",
-        "document", "review", "merge", "revert", "inspect", "assess", "plan",
+        "add",
+        "fix",
+        "update",
+        "remove",
+        "create",
+        "change",
+        "implement",
+        "refactor",
+        "move",
+        "rename",
+        "delete",
+        "write",
+        "test",
+        "run",
+        "check",
+        "verify",
+        "search",
+        "find",
+        "read",
+        "edit",
+        "install",
+        "build",
+        "deploy",
+        "debug",
+        "investigate",
+        "analyze",
+        "repair",
+        "set up",
+        "configure",
+        "migrate",
+        "convert",
+        "extract",
+        "document",
+        "review",
+        "merge",
+        "revert",
+        "inspect",
+        "assess",
+        "plan",
     ];
     let lower_words: Vec<&str> = lower.split_whitespace().collect();
     for verb in VERBS {
-        if lower_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *verb) {
+        if lower_words
+            .iter()
+            .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *verb)
+        {
             return false;
         }
     }
@@ -484,7 +528,20 @@ fn classify_delegate_child_failure(stderr: &str, model: &str) -> DelegateChildFa
     {
         return DelegateChildFailureKind::WorkspaceStartup;
     }
-    if matches!(provider.as_str(), "anthropic" | "openai" | "openai-codex" | "openrouter" | "groq" | "xai" | "mistral" | "cerebras" | "huggingface" | "ollama" | "ollama-cloud") {
+    if matches!(
+        provider.as_str(),
+        "anthropic"
+            | "openai"
+            | "openai-codex"
+            | "openrouter"
+            | "groq"
+            | "xai"
+            | "mistral"
+            | "cerebras"
+            | "huggingface"
+            | "ollama"
+            | "ollama-cloud"
+    ) {
         return DelegateChildFailureKind::ProviderStartup;
     }
     DelegateChildFailureKind::Unknown
@@ -521,7 +578,10 @@ fn format_delegate_child_failure(
     out.push_str("Delegate child context\n");
     out.push_str(&format!("  provider: {provider}\n"));
     out.push_str(&format!("  model: {model}\n"));
-    out.push_str(&format!("  worker_profile: {}\n", runtime.worker_profile.as_str()));
+    out.push_str(&format!(
+        "  worker_profile: {}\n",
+        runtime.worker_profile.as_str()
+    ));
     out.push_str(&format!(
         "  thinking: {}\n",
         runtime.thinking_level.as_deref().unwrap_or("minimal")
@@ -532,7 +592,11 @@ fn format_delegate_child_failure(
         runtime
             .scope
             .as_ref()
-            .map(|s| if s.is_empty() { "(none)".to_string() } else { s.join(", ") })
+            .map(|s| if s.is_empty() {
+                "(none)".to_string()
+            } else {
+                s.join(", ")
+            })
             .unwrap_or_else(|| "(none)".to_string())
     ));
     out.push_str(&format!("  prompt_file: {}\n", prompt_path.display()));
@@ -684,8 +748,7 @@ If blocked, say the blocker plainly.\n",
                 mind,
             ),
         };
-        let (mut child, _pid) =
-            spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?;
+        let (mut child, _pid) = spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?;
 
         // Stream stderr for live activity tracking.
         // Timeouts: delegate workers are short-lived (4–6 turns), so use
@@ -700,8 +763,7 @@ If blocked, say the blocker plainly.\n",
         let wall_timeout = tokio::time::Duration::from_secs(300); // 5 min
         let idle_timeout = tokio::time::Duration::from_secs(120); // 2 min
         let mut last_activity = std::time::Instant::now();
-        let mut last_activity_event = std::time::Instant::now()
-            - std::time::Duration::from_secs(2); // ensure first event fires
+        let mut last_activity_event = std::time::Instant::now() - std::time::Duration::from_secs(2); // ensure first event fires
 
         let io_result: Result<(), anyhow::Error> = tokio::select! {
             _ = tokio::time::sleep(wall_timeout) => {
@@ -992,7 +1054,8 @@ pub struct DelegateFeature {
     /// Provider inventory for surfacing available models in context injection.
     /// When set, the delegation model catalog is injected into the system prompt
     /// so the orchestrator can route delegate tasks to appropriate models.
-    provider_inventory: Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
+    provider_inventory:
+        Option<std::sync::Arc<tokio::sync::RwLock<crate::routing::ProviderInventory>>>,
     /// Recent user prompts — bounded window for echo detection.
     /// Capped at 50 entries to prevent unbounded growth in long sessions.
     recent_user_prompts: std::collections::VecDeque<String>,
@@ -1034,9 +1097,7 @@ impl DelegateFeature {
         self.recent_user_prompts
             .iter()
             .rev()
-            .find(|p| {
-                p.len() > 10 && p.trim().to_ascii_lowercase() != exclude_lower
-            })
+            .find(|p| p.len() > 10 && p.trim().to_ascii_lowercase() != exclude_lower)
             .map(|s| s.as_str())
     }
 
@@ -1139,7 +1200,10 @@ impl DelegateFeature {
                         .started_at
                         .and_then(|ts| ts.elapsed().ok())
                         .map(|d| d.as_secs_f64()),
-                    last_tool: child.last_tool.clone().or_else(|| child.result_summary.clone()),
+                    last_tool: child
+                        .last_tool
+                        .clone()
+                        .or_else(|| child.result_summary.clone()),
                     last_turn: child.last_turn,
                     tokens_in: 0,
                     tokens_out: 0,
@@ -1603,13 +1667,8 @@ impl Feature for DelegateFeature {
                     );
                 }
 
-                let session_model = self
-                    .session_model
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone());
-                let catalog =
-                    inventory.format_delegation_catalog(session_model.as_deref());
+                let session_model = self.session_model.lock().ok().and_then(|g| g.clone());
+                let catalog = inventory.format_delegation_catalog(session_model.as_deref());
                 if !catalog.is_empty() {
                     sections.push(catalog);
                 }
@@ -1851,7 +1910,8 @@ mod tests {
             "",
         );
         assert!(
-            prompt.contains("single final answer") && prompt.contains("trailing assistant prefill stub"),
+            prompt.contains("single final answer")
+                && prompt.contains("trailing assistant prefill stub"),
             "got: {prompt}"
         );
     }
@@ -2085,11 +2145,23 @@ This agent runs in write mode and can modify files.
         });
 
         // Exact match (case-insensitive)
-        assert!(store.find_completed_by_description("fix the auth bug").is_some());
-        assert!(store.find_completed_by_description("FIX THE AUTH BUG").is_some());
+        assert!(
+            store
+                .find_completed_by_description("fix the auth bug")
+                .is_some()
+        );
+        assert!(
+            store
+                .find_completed_by_description("FIX THE AUTH BUG")
+                .is_some()
+        );
 
         // Different description — no match
-        assert!(store.find_completed_by_description("Fix the login bug").is_none());
+        assert!(
+            store
+                .find_completed_by_description("Fix the login bug")
+                .is_none()
+        );
 
         // Failed task — not returned
         store.store_task(DelegateTask {
@@ -2106,7 +2178,11 @@ This agent runs in write mode and can modify files.
             last_turn: None,
             tasks: Vec::new(),
         });
-        assert!(store.find_completed_by_description("Fix the login bug").is_none());
+        assert!(
+            store
+                .find_completed_by_description("Fix the login bug")
+                .is_none()
+        );
     }
 
     #[tokio::test]

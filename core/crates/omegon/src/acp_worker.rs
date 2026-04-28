@@ -39,8 +39,14 @@ pub struct WorkerResponse {
 pub enum WorkerEvent {
     TextChunk(String),
     ThinkingChunk(String),
-    ToolStart { id: String, name: String },
-    ToolEnd { id: String, success: bool },
+    ToolStart {
+        id: String,
+        name: String,
+    },
+    ToolEnd {
+        id: String,
+        success: bool,
+    },
     /// Status update from the agent loop (e.g., "Loading model into memory…")
     StatusUpdate(String),
     TurnComplete,
@@ -92,19 +98,14 @@ async fn worker_loop(
         s.set_model(&model);
     }
 
-    let agent_setup = match crate::setup::AgentSetup::new(
-        &cwd,
-        None,
-        Some(shared_settings.clone()),
-    )
-    .await
-    {
-        Ok(setup) => setup,
-        Err(e) => {
-            tracing::error!(error = %e, "worker setup failed");
-            return;
-        }
-    };
+    let agent_setup =
+        match crate::setup::AgentSetup::new(&cwd, None, Some(shared_settings.clone())).await {
+            Ok(setup) => setup,
+            Err(e) => {
+                tracing::error!(error = %e, "worker setup failed");
+                return;
+            }
+        };
 
     let mut bus = agent_setup.bus;
     let mut context_manager = agent_setup.context_manager;
@@ -212,10 +213,7 @@ async fn worker_loop(
                 drop(loop_events_tx);
                 let _ = event_tx.send(WorkerEvent::TurnComplete);
 
-                let response_text = conversation
-                    .last_assistant_text()
-                    .unwrap_or("")
-                    .to_string();
+                let response_text = conversation.last_assistant_text().unwrap_or("").to_string();
 
                 let error = match result {
                     Ok(()) => None,

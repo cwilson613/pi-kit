@@ -15,8 +15,8 @@
 //! and editorial criteria.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -72,7 +72,10 @@ pub fn seed(value: usize) {
 }
 
 fn active_verbs() -> &'static [&'static str] {
-    COMBINED.get().map(|v| v.as_slice()).unwrap_or(BUILTIN_VERBS)
+    COMBINED
+        .get()
+        .map(|v| v.as_slice())
+        .unwrap_or(BUILTIN_VERBS)
 }
 
 /// Get the next spinner verb.  Advances the counter each call.
@@ -97,11 +100,31 @@ pub fn verb_count() -> usize {
 /// Unicode substitution table — visually similar but not identical glyphs.
 /// Each entry is (ASCII char, glitched replacement).
 const GLITCH_CHARS: &[(char, char)] = &[
-    ('a', 'α'), ('e', 'ε'), ('i', 'ι'), ('o', 'σ'), ('u', 'μ'),
-    ('s', '§'), ('t', '†'), ('n', 'η'), ('r', 'г'), ('l', 'ℓ'),
-    ('c', 'ϲ'), ('d', 'δ'), ('g', 'ğ'), ('h', 'ħ'), ('m', 'ɱ'),
-    ('C', 'Ↄ'), ('S', '§'), ('R', 'Я'), ('A', 'Λ'), ('T', 'Ŧ'),
-    ('I', 'Ї'), ('N', 'Ͷ'), ('P', 'Ρ'), ('D', 'Ð'), ('G', 'Ǥ'),
+    ('a', 'α'),
+    ('e', 'ε'),
+    ('i', 'ι'),
+    ('o', 'σ'),
+    ('u', 'μ'),
+    ('s', '§'),
+    ('t', '†'),
+    ('n', 'η'),
+    ('r', 'г'),
+    ('l', 'ℓ'),
+    ('c', 'ϲ'),
+    ('d', 'δ'),
+    ('g', 'ğ'),
+    ('h', 'ħ'),
+    ('m', 'ɱ'),
+    ('C', 'Ↄ'),
+    ('S', '§'),
+    ('R', 'Я'),
+    ('A', 'Λ'),
+    ('T', 'Ŧ'),
+    ('I', 'Ї'),
+    ('N', 'Ͷ'),
+    ('P', 'Ρ'),
+    ('D', 'Ð'),
+    ('G', 'Ǥ'),
 ];
 
 /// Frame counter for glitch timing — not worth an AtomicU64, we don't care
@@ -133,7 +156,11 @@ pub fn maybe_glitch(verb: &str) -> Option<String> {
     let mut out = chars.clone();
     let pos = mixed.wrapping_shr(12) as usize % chars.len();
 
-    if let Some(replacement) = GLITCH_CHARS.iter().find(|(c, _)| *c == chars[pos]).map(|(_, g)| *g) {
+    if let Some(replacement) = GLITCH_CHARS
+        .iter()
+        .find(|(c, _)| *c == chars[pos])
+        .map(|(_, g)| *g)
+    {
         out[pos] = replacement;
     } else {
         // No mapping for this char — shift it by one codepoint.
@@ -383,7 +410,10 @@ mod tests {
             .map(|l| l.trim())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
-        assert_eq!(parsed, &["Traversing the Wandering Inn", "Consulting the Cthaeh"]);
+        assert_eq!(
+            parsed,
+            &["Traversing the Wandering Inn", "Consulting the Cthaeh"]
+        );
     }
 
     #[test]
@@ -404,7 +434,10 @@ mod tests {
 
         let verb = "Consulting the palantír";
         let glitched = maybe_glitch(verb);
-        assert!(glitched.is_some(), "glitch should fire on the triggering frame");
+        assert!(
+            glitched.is_some(),
+            "glitch should fire on the triggering frame"
+        );
         let g = glitched.unwrap();
         assert_ne!(g, verb, "glitched text should differ from original");
         // Same length in chars (substitution, not insertion/deletion)

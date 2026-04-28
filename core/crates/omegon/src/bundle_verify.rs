@@ -100,15 +100,24 @@ pub struct BundleVerification {
 
 impl BundleVerification {
     pub fn passed(&self) -> bool {
-        !self.findings.iter().any(|f| matches!(f.severity, Severity::Error))
+        !self
+            .findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Error))
     }
 
     pub fn errors(&self) -> Vec<&Finding> {
-        self.findings.iter().filter(|f| matches!(f.severity, Severity::Error)).collect()
+        self.findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Error))
+            .collect()
     }
 
     pub fn warnings(&self) -> Vec<&Finding> {
-        self.findings.iter().filter(|f| matches!(f.severity, Severity::Warning)).collect()
+        self.findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Warning))
+            .collect()
     }
 }
 
@@ -169,13 +178,15 @@ pub fn verify_bundle(resolved: &ResolvedManifest) -> BundleVerification {
 
 // ── Structural validation ────────────────────────────────────────────────
 
-fn validate_manifest(
-    manifest: &crate::agent_manifest::AgentManifest,
-    findings: &mut Vec<Finding>,
-) {
+fn validate_manifest(manifest: &crate::agent_manifest::AgentManifest, findings: &mut Vec<Finding>) {
     let known_domains = [
-        "chat", "coding", "coding-python", "coding-node", "coding-rust",
-        "infra", "full",
+        "chat",
+        "coding",
+        "coding-python",
+        "coding-node",
+        "coding-rust",
+        "infra",
+        "full",
     ];
 
     if !known_domains.contains(&manifest.agent.domain.as_str()) {
@@ -195,7 +206,10 @@ fn validate_manifest(
         findings.push(Finding {
             severity: Severity::Error,
             category: "path-traversal",
-            message: format!("agent id '{}' contains path traversal characters", manifest.agent.id),
+            message: format!(
+                "agent id '{}' contains path traversal characters",
+                manifest.agent.id
+            ),
             location: "agent.id".into(),
         });
     }
@@ -255,12 +269,7 @@ fn check_path_containment(
 
 // ── Content screening ────────────────────────────────────────────────────
 
-fn screen_content(
-    content: &str,
-    content_type: &str,
-    location: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn screen_content(content: &str, content_type: &str, location: &str, findings: &mut Vec<Finding>) {
     let lower = content.to_lowercase();
 
     for pattern in INJECTION_PATTERNS {
@@ -327,7 +336,11 @@ fn screen_content(
     // Check for excessive base64 blocks (potential encoded payloads)
     let base64_block_count = content
         .split_whitespace()
-        .filter(|w| w.len() > 100 && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='))
+        .filter(|w| {
+            w.len() > 100
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+        })
         .count();
     if base64_block_count > 0 {
         findings.push(Finding {
@@ -359,11 +372,7 @@ fn screen_content(
     }
 }
 
-fn screen_facts(
-    content: &str,
-    bundle_dir: &Path,
-    findings: &mut Vec<Finding>,
-) {
+fn screen_facts(content: &str, bundle_dir: &Path, findings: &mut Vec<Finding>) {
     let location = bundle_dir.join("mind/facts.jsonl").display().to_string();
 
     for (i, line) in content.lines().enumerate() {
@@ -468,7 +477,12 @@ mod tests {
         let resolved = make_resolved(manifest);
         let result = verify_bundle(&resolved);
         assert!(!result.passed());
-        assert!(result.errors().iter().any(|f| f.category == "destructive-command"));
+        assert!(
+            result
+                .errors()
+                .iter()
+                .any(|f| f.category == "destructive-command")
+        );
     }
 
     #[test]
@@ -479,7 +493,12 @@ mod tests {
         );
         let result = verify_bundle(&resolved);
         assert!(!result.passed());
-        assert!(result.errors().iter().any(|f| f.category == "secret-exfiltration"));
+        assert!(
+            result
+                .errors()
+                .iter()
+                .any(|f| f.category == "secret-exfiltration")
+        );
     }
 
     #[test]
@@ -498,7 +517,12 @@ mod tests {
         let resolved = make_resolved(manifest);
         let result = verify_bundle(&resolved);
         assert!(!result.passed());
-        assert!(result.errors().iter().any(|f| f.category == "path-traversal"));
+        assert!(
+            result
+                .errors()
+                .iter()
+                .any(|f| f.category == "path-traversal")
+        );
     }
 
     #[test]
@@ -511,17 +535,28 @@ mod tests {
         let resolved = make_resolved(manifest);
         let result = verify_bundle(&resolved);
         assert!(result.passed()); // warning, not error
-        assert!(result.warnings().iter().any(|f| f.category == "extension-pinning"));
+        assert!(
+            result
+                .warnings()
+                .iter()
+                .any(|f| f.category == "extension-pinning")
+        );
     }
 
     #[test]
     fn unicode_control_chars_detected() {
         let mut resolved = make_resolved(make_manifest("coding"));
         // 10 null bytes = suspicious
-        resolved.persona_directive = Some("Normal text.\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".into());
+        resolved.persona_directive =
+            Some("Normal text.\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".into());
         let result = verify_bundle(&resolved);
         assert!(!result.passed());
-        assert!(result.errors().iter().any(|f| f.category == "unicode-control"));
+        assert!(
+            result
+                .errors()
+                .iter()
+                .any(|f| f.category == "unicode-control")
+        );
     }
 
     #[test]
@@ -554,18 +589,15 @@ mod tests {
             interval: None,
             template: "Run kubectl health checks across all namespaces.".into(),
         }]);
-        manifest.extensions = Some(vec![
-            crate::agent_manifest::ExtensionDep {
-                name: "vox".into(),
-                version: ">=0.3.0".into(),
-            },
-        ]);
+        manifest.extensions = Some(vec![crate::agent_manifest::ExtensionDep {
+            name: "vox".into(),
+            version: ">=0.3.0".into(),
+        }]);
         let mut resolved = make_resolved(manifest);
-        resolved.persona_directive = Some(
-            "You are an infrastructure engineer specializing in Kubernetes.".into()
-        );
+        resolved.persona_directive =
+            Some("You are an infrastructure engineer specializing in Kubernetes.".into());
         resolved.mind_facts_content = Some(
-            r#"{"section":"Ops","content":"Always run kubectl diff before kubectl apply"}"#.into()
+            r#"{"section":"Ops","content":"Always run kubectl diff before kubectl apply"}"#.into(),
         );
         let result = verify_bundle(&resolved);
         assert!(result.passed(), "findings: {:?}", result.findings);

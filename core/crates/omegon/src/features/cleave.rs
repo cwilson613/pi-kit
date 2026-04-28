@@ -427,9 +427,7 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
                 c.last_activity_at = Some(std::time::Instant::now());
             }
         }
-        ProgressEvent::ChildTaskInventory {
-            child, tasks, ..
-        } => {
+        ProgressEvent::ChildTaskInventory { child, tasks, .. } => {
             if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
                 if !tasks.is_empty() {
                     c.tasks = tasks.clone();
@@ -437,9 +435,7 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
                 }
             }
         }
-        ProgressEvent::ChildTaskDone {
-            child, task_index,
-        } => {
+        ProgressEvent::ChildTaskDone { child, task_index } => {
             if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
                 if *task_index > 0 && *task_index <= c.tasks.len() {
                     c.tasks[task_index - 1].done = true;
@@ -914,7 +910,9 @@ impl CleaveFeature {
             agent_binary,
             bridge_path: PathBuf::new(), // Not used in native mode
             node: String::new(),
-            model: std::env::var("OMEGON_MODEL").ok().filter(|s| !s.is_empty())
+            model: std::env::var("OMEGON_MODEL")
+                .ok()
+                .filter(|s| !s.is_empty())
                 .or_else(crate::providers::automation_safe_model)
                 .unwrap_or_else(|| "anthropic:claude-sonnet-4-6".into()),
             max_parallel,

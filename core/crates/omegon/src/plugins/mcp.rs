@@ -354,20 +354,22 @@ impl McpFeature {
                                     "MCP prompts discovered"
                                 );
                             }
-                            all_prompts.extend(prompts.into_iter().map(|p| McpPrompt {
-                                name: format!("{}::{}", server_name, p.name),
-                                description: p.description.map(|d| d.to_string()),
-                                arguments: p
-                                    .arguments
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|a| McpPromptArgument {
-                                        name: a.name,
-                                        description: a.description.map(|d| d.to_string()),
-                                        required: a.required.unwrap_or(false),
-                                    })
-                                    .collect(),
-                                server_name: server_name.clone(),
+                            all_prompts.extend(prompts.into_iter().map(|p| {
+                                McpPrompt {
+                                    name: format!("{}::{}", server_name, p.name),
+                                    description: p.description.map(|d| d.to_string()),
+                                    arguments: p
+                                        .arguments
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|a| McpPromptArgument {
+                                            name: a.name,
+                                            description: a.description.map(|d| d.to_string()),
+                                            required: a.required.unwrap_or(false),
+                                        })
+                                        .collect(),
+                                    server_name: server_name.clone(),
+                                }
                             }));
                         }
                         Err(e) => {
@@ -616,16 +618,18 @@ impl McpFeature {
             .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
 
         let params = ReadResourceRequestParams::new(uri);
-        let result =
-            tokio_timeout(Duration::from_secs(timeout_secs), client.read_resource(params))
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "MCP resource read timed out after {}s (server: '{}')",
-                        timeout_secs,
-                        server_name
-                    )
-                })??;
+        let result = tokio_timeout(
+            Duration::from_secs(timeout_secs),
+            client.read_resource(params),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "MCP resource read timed out after {}s (server: '{}')",
+                timeout_secs,
+                server_name
+            )
+        })??;
 
         let content: Vec<ContentBlock> = result
             .contents
@@ -656,9 +660,8 @@ impl McpFeature {
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("missing required argument: name"))?;
-        let prompt_args: Option<serde_json::Map<String, Value>> = args
-            .get("arguments")
-            .and_then(|v| v.as_object().cloned());
+        let prompt_args: Option<serde_json::Map<String, Value>> =
+            args.get("arguments").and_then(|v| v.as_object().cloned());
 
         let timeout_secs = self.timeouts.get(server_name).copied().unwrap_or(30);
         let clients = self.clients.lock().await;
@@ -690,16 +693,14 @@ impl McpFeature {
             let body = match &msg.content {
                 PromptMessageContent::Text { text } => text.clone(),
                 PromptMessageContent::Image { .. } => "[image content]".to_string(),
-                PromptMessageContent::Resource { resource } => {
-                    match &resource.raw.resource {
-                        ResourceContents::TextResourceContents { text, uri, .. } => {
-                            format!("[resource: {}]\n{}", uri, text)
-                        }
-                        ResourceContents::BlobResourceContents { uri, .. } => {
-                            format!("[resource: {}] (binary)", uri)
-                        }
+                PromptMessageContent::Resource { resource } => match &resource.raw.resource {
+                    ResourceContents::TextResourceContents { text, uri, .. } => {
+                        format!("[resource: {}]\n{}", uri, text)
                     }
-                }
+                    ResourceContents::BlobResourceContents { uri, .. } => {
+                        format!("[resource: {}] (binary)", uri)
+                    }
+                },
                 PromptMessageContent::ResourceLink { link } => {
                     format!("[resource link: {}]", link.uri)
                 }
@@ -850,7 +851,10 @@ impl Feature for McpFeature {
             }
         }
 
-        lines.push("Use mcp_read_resource to fetch resource content, mcp_get_prompt to expand prompts.".to_string());
+        lines.push(
+            "Use mcp_read_resource to fetch resource content, mcp_get_prompt to expand prompts."
+                .to_string(),
+        );
 
         Some(ContextInjection {
             source: format!("mcp:{}", self.feature_name),
@@ -1695,7 +1699,8 @@ mod tests {
         let args = serde_json::json!({"uri": "file:///tmp/x"});
         let err = feat.execute_read_resource(&args).await.unwrap_err();
         assert!(
-            err.to_string().contains("missing required argument: server"),
+            err.to_string()
+                .contains("missing required argument: server"),
             "unexpected error: {err}"
         );
     }
@@ -1717,7 +1722,8 @@ mod tests {
         let args = serde_json::json!({"name": "summarize"});
         let err = feat.execute_get_prompt(&args).await.unwrap_err();
         assert!(
-            err.to_string().contains("missing required argument: server"),
+            err.to_string()
+                .contains("missing required argument: server"),
             "unexpected error: {err}"
         );
     }
@@ -1748,7 +1754,10 @@ mod tests {
         );
         let defs = feat.tools();
         let has_read_resource = defs.iter().any(|d| d.name.contains("mcp_read_resource"));
-        assert!(has_read_resource, "expected mcp_read_resource tool in: {defs:?}");
+        assert!(
+            has_read_resource,
+            "expected mcp_read_resource tool in: {defs:?}"
+        );
     }
 
     #[test]
@@ -1756,6 +1765,9 @@ mod tests {
         let feat = make_test_feature(vec![], vec![], vec![]);
         let defs = feat.tools();
         let has_read_resource = defs.iter().any(|d| d.name.contains("mcp_read_resource"));
-        assert!(!has_read_resource, "mcp_read_resource should not be present when no resources exist");
+        assert!(
+            !has_read_resource,
+            "mcp_read_resource should not be present when no resources exist"
+        );
     }
 }

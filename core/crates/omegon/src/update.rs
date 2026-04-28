@@ -133,7 +133,10 @@ fn write_cache(info: &UpdateInfo, channel: UpdateChannel) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(&cached).unwrap_or_default());
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&cached).unwrap_or_default(),
+    );
 }
 
 pub fn spawn_check_with_delay(tx: UpdateSender, channel: UpdateChannel, delay: Duration) {

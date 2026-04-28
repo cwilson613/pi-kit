@@ -107,15 +107,15 @@ fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize
 // auto-delegation logic live in `behavior.rs`. Re-export convenience
 // aliases used by the main loop body.
 // auto-delegation disabled — import retained for the test that verifies it returns None
+use behavior::behavioral_tier;
 #[cfg(test)]
 use behavior::classify_auto_delegate_plan;
 use behavior::classify_drift_kind;
 use behavior::classify_progress_signal;
 use behavior::classify_turn_phase;
-use behavior::continuation_pressure_tier;
 use behavior::continuation_pressure_message;
+use behavior::continuation_pressure_tier;
 use behavior::detect_evidence_sufficiency;
-use behavior::behavioral_tier;
 use behavior::is_first_turn_orientation_churn;
 use behavior::is_mutation_tool_name;
 use behavior::is_repo_inspection_tool;
@@ -123,15 +123,13 @@ use behavior::progress_nudge_reason_for_drift;
 use behavior::should_inject_execution_pressure;
 
 use behavior::evidence_sufficiency_message;
-use behavior::om_local_first_message;
-use behavior::is_slim_execution_bias;
 use behavior::has_local_target_hypothesis;
-
+use behavior::is_slim_execution_bias;
+use behavior::om_local_first_message;
 
 // ─── Remaining classifier bodies removed — see behavior.rs ──────────────
 
 // Anchor: is_narrow_patch_candidate was here. Now using behavior::*.
-
 
 pub(crate) fn compute_context_composition(
     system_prompt: &str,
@@ -239,7 +237,8 @@ pub async fn run(
     let session_start = Instant::now();
     let mut controller = ControllerState::default();
     let mut dead_mouse_nudges: u8 = 0;
-    let mut session_used_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut session_used_tools: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut turn: u32 = 0;
     // Active model for this turn — updated each iteration from settings.
     // Used in TurnEnd events and error classification instead of the
@@ -257,10 +256,7 @@ pub async fn run(
         // mid-session and we must reflect that in the schema sent to the LLM.
         // Slim/constrained modes use compact schemas and lazy injection to reduce
         // token overhead: core tools always present, extended tools only if used.
-        let is_constrained = matches!(
-            behavioral_tier(config),
-            BehavioralTier::Constrained
-        );
+        let is_constrained = matches!(behavioral_tier(config), BehavioralTier::Constrained);
         let tool_defs = if is_constrained {
             // Constrained models (≤32B, Ollama, etc.) get core-only tools
             // even on turn 1 — 50+ schemas overwhelm small context windows.
@@ -651,8 +647,8 @@ pub async fn run(
                      Please commit your work now with a descriptive message, then summarize what you did.]"
                         .to_string(),
                 );
-                let nudge_system_prompt = context
-                    .build_system_prompt(conversation.last_user_prompt(), conversation);
+                let nudge_system_prompt =
+                    context.build_system_prompt(conversation.last_user_prompt(), conversation);
                 let nudge_llm_messages = conversation.build_llm_view();
                 let nudge_prompt_telemetry = context.last_prompt_telemetry();
                 let nudge_context_composition = compute_context_composition(
@@ -753,7 +749,10 @@ pub async fn run(
                      with the write tool, not as conversation text. This is your \
                      final warning before the session ends.]"
                 };
-                tracing::info!(nudge = dead_mouse_nudges, "Dead-mouse detection — model responded without acting");
+                tracing::info!(
+                    nudge = dead_mouse_nudges,
+                    "Dead-mouse detection — model responded without acting"
+                );
                 conversation.push_user(msg.to_string());
                 continue;
             }
@@ -911,8 +910,12 @@ pub async fn run(
         if is_first_turn_orientation_churn(turn, config, conversation, dispatch_calls) {
             tracing::info!("First-turn orientation churn — injecting execution-bias nudge");
             let msg = match behavior {
-                BehavioralTier::Constrained => "[System: Read the relevant file or produce output. Do not use broad orientation tools.]",
-                BehavioralTier::Standard => "[System: Focus on the user's request. Read the most relevant file, or start producing the requested output.]",
+                BehavioralTier::Constrained => {
+                    "[System: Read the relevant file or produce output. Do not use broad orientation tools.]"
+                }
+                BehavioralTier::Standard => {
+                    "[System: Focus on the user's request. Read the most relevant file, or start producing the requested output.]"
+                }
             };
             inject_nudge!("first_turn_execution_bias", msg);
         } else if is_slim_execution_bias(config)
@@ -924,17 +927,36 @@ pub async fn run(
             inject_nudge!("om_local_first_lock", om_local_first_message(behavior));
         } else if controller.evidence_sufficient_streak > 0 && continuation_tier.is_some() {
             tracing::info!("Actionability threshold — injecting forced-convergence nudge");
-            inject_nudge!("evidence_sufficiency", evidence_sufficiency_message(behavior));
-        } else if should_inject_execution_pressure(turn, config, conversation, dispatch_calls, behavior) {
+            inject_nudge!(
+                "evidence_sufficiency",
+                evidence_sufficiency_message(behavior)
+            );
+        } else if should_inject_execution_pressure(
+            turn,
+            config,
+            conversation,
+            dispatch_calls,
+            behavior,
+        ) {
             tracing::info!("Execution stall — injecting execution-pressure nudge");
             let msg = match behavior {
-                BehavioralTier::Constrained => "[System: You have enough context. Produce output now.]",
-                BehavioralTier::Standard => "[System: You have enough context. Produce the requested result or explain what's blocking you.]",
+                BehavioralTier::Constrained => {
+                    "[System: You have enough context. Produce output now.]"
+                }
+                BehavioralTier::Standard => {
+                    "[System: You have enough context. Produce the requested result or explain what's blocking you.]"
+                }
             };
             inject_nudge!("execution_pressure", msg);
         } else if let Some(tier) = continuation_tier {
-            tracing::info!(tier, "Continuation churn — injecting continuation-pressure nudge");
-            inject_nudge!(format!("continuation_pressure_tier_{tier}"), continuation_pressure_message(tier, behavior));
+            tracing::info!(
+                tier,
+                "Continuation churn — injecting continuation-pressure nudge"
+            );
+            inject_nudge!(
+                format!("continuation_pressure_tier_{tier}"),
+                continuation_pressure_message(tier, behavior)
+            );
         }
 
         // ─── Emit tool events to bus features ───────────────────────
@@ -1328,7 +1350,10 @@ async fn stream_with_retry(
         let upstream_class = classify_upstream_error_for_provider(&provider, &err_msg);
         let transient_kind = upstream_class.transient_kind();
         let is_transient = transient_kind.is_some();
-        let model = options.model.clone().unwrap_or_else(|| config.model.clone());
+        let model = options
+            .model
+            .clone()
+            .unwrap_or_else(|| config.model.clone());
 
         if !is_transient {
             if attempt > 1 {
@@ -1532,7 +1557,9 @@ async fn consume_llm_stream(
                 "LLM stream idle for {}s — connection may be stalled",
                 idle_timeout().as_secs()
             );
-            let _ = events.send(AgentEvent::MessageAbort { reason: Some(reason.clone()) });
+            let _ = events.send(AgentEvent::MessageAbort {
+                reason: Some(reason.clone()),
+            });
             anyhow::bail!("{reason}");
         }
     } {
@@ -1570,11 +1597,11 @@ async fn consume_llm_stream(
                             );
                             let reason = format!(
                                 "Model output degenerate: phrase {:?} repeated {}/{} recent chunks — aborting to prevent runaway",
-                                latest,
-                                matches,
-                                REPETITION_WINDOW_SIZE
+                                latest, matches, REPETITION_WINDOW_SIZE
                             );
-                            let _ = events.send(AgentEvent::MessageAbort { reason: Some(reason.clone()) });
+                            let _ = events.send(AgentEvent::MessageAbort {
+                                reason: Some(reason.clone()),
+                            });
                             anyhow::bail!("{reason}");
                         }
                     }
@@ -1638,7 +1665,9 @@ async fn consume_llm_stream(
                 break;
             }
             LlmEvent::Error { message } => {
-                let _ = events.send(AgentEvent::MessageAbort { reason: Some(message.clone()) });
+                let _ = events.send(AgentEvent::MessageAbort {
+                    reason: Some(message.clone()),
+                });
                 anyhow::bail!("LLM error: {message}");
             }
         }
@@ -1772,7 +1801,8 @@ async fn dispatch_tools(
             async move {
                 // Parallel calls are read-only — no permission prompts expected.
                 let mut perm_log = Vec::new();
-                let result = dispatch_single_tool(bus, &call, &events, cancel, None, &mut perm_log).await;
+                let result =
+                    dispatch_single_tool(bus, &call, &events, cancel, None, &mut perm_log).await;
                 (idx, result)
             }
         }))
@@ -1785,7 +1815,15 @@ async fn dispatch_tools(
     let mut batch_failed = false;
 
     for (idx, call) in serial_calls {
-        let dispatched = dispatch_single_tool(bus, &call, events, cancel.clone(), secrets, &mut permission_decisions).await;
+        let dispatched = dispatch_single_tool(
+            bus,
+            &call,
+            events,
+            cancel.clone(),
+            secrets,
+            &mut permission_decisions,
+        )
+        .await;
 
         if !dispatched.is_error
             && is_mutation_tool(&call.name)
@@ -1794,7 +1832,11 @@ async fn dispatch_tools(
             mutated_files.push(cwd_buf.join(&path_str));
         }
 
-        if dispatched.is_error && batch_mode && is_mutation_tool(&call.name) && !mutated_files.is_empty() {
+        if dispatched.is_error
+            && batch_mode
+            && is_mutation_tool(&call.name)
+            && !mutated_files.is_empty()
+        {
             batch_failed = true;
             tracing::warn!(
                 failed_tool = call.name,
@@ -1808,12 +1850,14 @@ async fn dispatch_tools(
                 if let Some(original) = snapshots.get(file) {
                     match tokio::fs::write(file, original).await {
                         Ok(_) => rollback_report.push(format!("  ✓ restored {}", file.display())),
-                        Err(e) => rollback_report.push(format!("  ✗ rollback failed {}: {e}", file.display())),
+                        Err(e) => rollback_report
+                            .push(format!("  ✗ rollback failed {}: {e}", file.display())),
                     }
                 } else if created_files.contains(file) {
                     match tokio::fs::remove_file(file).await {
                         Ok(_) => rollback_report.push(format!("  ✓ removed {}", file.display())),
-                        Err(e) => rollback_report.push(format!("  ✗ remove failed {}: {e}", file.display())),
+                        Err(e) => rollback_report
+                            .push(format!("  ✗ remove failed {}: {e}", file.display())),
                     }
                 }
             }
@@ -1949,13 +1993,7 @@ async fn dispatch_single_tool(
     });
 
     let execute = |cancel: CancellationToken, sink: omegon_traits::ToolProgressSink| {
-        bus.execute_tool_with_sink(
-            &call.name,
-            &call.id,
-            call.arguments.clone(),
-            cancel,
-            sink,
-        )
+        bus.execute_tool_with_sink(&call.name, &call.id, call.arguments.clone(), cancel, sink)
     };
 
     let first_result = execute(cancel.clone(), sink.clone()).await;
@@ -1963,7 +2001,10 @@ async fn dispatch_single_tool(
     // Intercept PathPermissionError — show interactive TUI prompt
     let (result, is_error) = match first_result {
         Ok(result) => (result, false),
-        Err(e) if e.downcast_ref::<crate::tools::PathPermissionError>().is_some() => {
+        Err(e)
+            if e.downcast_ref::<crate::tools::PathPermissionError>()
+                .is_some() =>
+        {
             let perm_err = e.downcast::<crate::tools::PathPermissionError>().unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
@@ -1979,7 +2020,9 @@ async fn dispatch_single_tool(
             let response = tokio::task::spawn_blocking(move || {
                 rx.recv_timeout(std::time::Duration::from_secs(120))
                     .unwrap_or(omegon_traits::PermissionResponse::Deny)
-            }).await.unwrap_or(omegon_traits::PermissionResponse::Deny);
+            })
+            .await
+            .unwrap_or(omegon_traits::PermissionResponse::Deny);
 
             match response {
                 omegon_traits::PermissionResponse::Allow => {
@@ -1990,19 +2033,24 @@ async fn dispatch_single_tool(
                         decision: "allow".into(),
                     });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
-                    if let Err(e) = bus.execute_internal(
-                        crate::tool_registry::core::TRUST_DIRECTORY,
-                        "__permission_grant",
-                        trust_args,
-                        cancel.clone(),
-                    ).await {
+                    if let Err(e) = bus
+                        .execute_internal(
+                            crate::tool_registry::core::TRUST_DIRECTORY,
+                            "__permission_grant",
+                            trust_args,
+                            cancel.clone(),
+                        )
+                        .await
+                    {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
                     match execute(cancel, sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (
                             omegon_traits::ToolResult {
-                                content: vec![ContentBlock::Text { text: e.to_string() }],
+                                content: vec![ContentBlock::Text {
+                                    text: e.to_string(),
+                                }],
                                 details: Value::Null,
                             },
                             true,
@@ -2017,19 +2065,24 @@ async fn dispatch_single_tool(
                         decision: "always_allow".into(),
                     });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
-                    if let Err(e) = bus.execute_internal(
-                        crate::tool_registry::core::TRUST_DIRECTORY,
-                        "__permission_grant",
-                        trust_args,
-                        cancel.clone(),
-                    ).await {
+                    if let Err(e) = bus
+                        .execute_internal(
+                            crate::tool_registry::core::TRUST_DIRECTORY,
+                            "__permission_grant",
+                            trust_args,
+                            cancel.clone(),
+                        )
+                        .await
+                    {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
                     match execute(cancel, sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (
                             omegon_traits::ToolResult {
-                                content: vec![ContentBlock::Text { text: e.to_string() }],
+                                content: vec![ContentBlock::Text {
+                                    text: e.to_string(),
+                                }],
                                 details: Value::Null,
                             },
                             true,
@@ -2043,15 +2096,18 @@ async fn dispatch_single_tool(
                         path: perm_err.requested_path.clone(),
                         decision: "deny".into(),
                     });
-                    (omegon_traits::ToolResult {
-                        content: vec![ContentBlock::Text {
-                            text: format!(
-                                "Access denied by user. Cannot read/write '{}'.",
-                                perm_err.requested_path
-                            ),
-                        }],
-                        details: Value::Null,
-                    }, true)
+                    (
+                        omegon_traits::ToolResult {
+                            content: vec![ContentBlock::Text {
+                                text: format!(
+                                    "Access denied by user. Cannot read/write '{}'.",
+                                    perm_err.requested_path
+                                ),
+                            }],
+                            details: Value::Null,
+                        },
+                        true,
+                    )
                 }
             }
         }
@@ -2850,7 +2906,10 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(dispatch.results.len(), 2);
-        assert!(elapsed < Duration::from_millis(260), "expected parallel dispatch, got {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_millis(260),
+            "expected parallel dispatch, got {elapsed:?}"
+        );
         assert_eq!(dispatch.results[0].tool_name, "read");
         assert_eq!(dispatch.results[1].tool_name, "view");
     }
@@ -3853,9 +3912,18 @@ mod tests {
             );
         }
         let warning = detector.check().expect("warning");
-        assert!(warning.message.contains("same file multiple times"), "got: {warning}");
-        assert!(warning.message.contains("edit, validate, or summarize"), "got: {warning}");
-        assert!(!warning.message.contains("same arguments"), "got: {warning}");
+        assert!(
+            warning.message.contains("same file multiple times"),
+            "got: {warning}"
+        );
+        assert!(
+            warning.message.contains("edit, validate, or summarize"),
+            "got: {warning}"
+        );
+        assert!(
+            !warning.message.contains("same arguments"),
+            "got: {warning}"
+        );
     }
 
     #[test]
@@ -3912,7 +3980,9 @@ mod tests {
         let results = vec![ToolResultEntry {
             call_id: "1".into(),
             tool_name: "bash".into(),
-            content: vec![ContentBlock::Text { text: "file1.md\nfile2.md".into() }],
+            content: vec![ContentBlock::Text {
+                text: "file1.md\nfile2.md".into(),
+            }],
             is_error: false,
             args_summary: None,
         }];
@@ -3941,8 +4011,12 @@ mod tests {
         };
         assert_eq!(
             continuation_pressure_tier(
-                &config, &controller, &conversation, &tool_calls,
-                Some(OodaPhase::Act), BehavioralTier::Standard,
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Act),
+                BehavioralTier::Standard,
             ),
             None,
             "Act-phase turns must never trigger continuation pressure, regardless of streak"
@@ -3959,7 +4033,9 @@ mod tests {
         let results = vec![ToolResultEntry {
             call_id: "1".into(),
             tool_name: "web_search".into(),
-            content: vec![ContentBlock::Text { text: "results".into() }],
+            content: vec![ContentBlock::Text {
+                text: "results".into(),
+            }],
             is_error: false,
             args_summary: None,
         }];
@@ -3980,7 +4056,9 @@ mod tests {
         let results = vec![ToolResultEntry {
             call_id: "1".into(),
             tool_name: "memory_store".into(),
-            content: vec![ContentBlock::Text { text: "stored".into() }],
+            content: vec![ContentBlock::Text {
+                text: "stored".into(),
+            }],
             is_error: false,
             args_summary: None,
         }];
@@ -4012,8 +4090,12 @@ mod tests {
         };
         assert_eq!(
             continuation_pressure_tier(
-                &config, &controller, &conversation, &tool_calls,
-                Some(OodaPhase::Observe), BehavioralTier::Standard,
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Observe),
+                BehavioralTier::Standard,
             ),
             None,
             "11 tool continuations on Standard tier must not trigger pressure (threshold is 12)"
@@ -4026,8 +4108,12 @@ mod tests {
         };
         assert_eq!(
             continuation_pressure_tier(
-                &config, &controller, &conversation, &tool_calls,
-                Some(OodaPhase::Observe), BehavioralTier::Standard,
+                &config,
+                &controller,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Observe),
+                BehavioralTier::Standard,
             ),
             Some(1),
             "12 tool continuations on Standard tier triggers tier-1 pressure"
@@ -4040,16 +4126,48 @@ mod tests {
         let mut conversation = ConversationState::new();
         conversation.intent.files_read.insert("src/main.rs".into());
         let tool_calls = vec![
-            ToolCall { id: "1".into(), name: "read".into(), arguments: Value::Null },
-            ToolCall { id: "2".into(), name: "codebase_search".into(), arguments: Value::Null },
+            ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                arguments: Value::Null,
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "codebase_search".into(),
+                arguments: Value::Null,
+            },
         ];
         let results = vec![
-            ToolResultEntry { call_id: "1".into(), tool_name: "read".into(), content: vec![ContentBlock::Text { text: "ok".into() }], is_error: false, args_summary: None },
-            ToolResultEntry { call_id: "2".into(), tool_name: "codebase_search".into(), content: vec![ContentBlock::Text { text: "ok".into() }], is_error: false, args_summary: None },
+            ToolResultEntry {
+                call_id: "1".into(),
+                tool_name: "read".into(),
+                content: vec![ContentBlock::Text { text: "ok".into() }],
+                is_error: false,
+                args_summary: None,
+            },
+            ToolResultEntry {
+                call_id: "2".into(),
+                tool_name: "codebase_search".into(),
+                content: vec![ContentBlock::Text { text: "ok".into() }],
+                is_error: false,
+                args_summary: None,
+            },
         ];
-        assert_eq!(classify_drift_kind(2, &conversation, &tool_calls, &results), None, "Turn 2 must not flag OrientationChurn");
-        assert_eq!(classify_drift_kind(3, &conversation, &tool_calls, &results), None, "Turn 3 must not flag OrientationChurn");
-        assert_eq!(classify_drift_kind(5, &conversation, &tool_calls, &results), Some(DriftKind::OrientationChurn), "Turn 5 should flag OrientationChurn");
+        assert_eq!(
+            classify_drift_kind(2, &conversation, &tool_calls, &results),
+            None,
+            "Turn 2 must not flag OrientationChurn"
+        );
+        assert_eq!(
+            classify_drift_kind(3, &conversation, &tool_calls, &results),
+            None,
+            "Turn 3 must not flag OrientationChurn"
+        );
+        assert_eq!(
+            classify_drift_kind(5, &conversation, &tool_calls, &results),
+            Some(DriftKind::OrientationChurn),
+            "Turn 5 should flag OrientationChurn"
+        );
     }
 
     #[test]
@@ -4059,9 +4177,18 @@ mod tests {
         // writing files to an Obsidian vault.
         for tier in [1u8, 2, 3] {
             let msg = continuation_pressure_message(tier, BehavioralTier::Standard);
-            assert!(!msg.contains("code change"), "tier {tier}: must not mention 'code change'");
-            assert!(!msg.contains("Do NOT delegate"), "tier {tier}: must not block delegation");
-            assert!(msg.contains("produce") || msg.contains("Produce"), "tier {tier}: must say 'produce' — task-neutral framing");
+            assert!(
+                !msg.contains("code change"),
+                "tier {tier}: must not mention 'code change'"
+            );
+            assert!(
+                !msg.contains("Do NOT delegate"),
+                "tier {tier}: must not block delegation"
+            );
+            assert!(
+                msg.contains("produce") || msg.contains("Produce"),
+                "tier {tier}: must say 'produce' — task-neutral framing"
+            );
         }
     }
 
@@ -4081,7 +4208,9 @@ mod tests {
         let bash_results = vec![ToolResultEntry {
             call_id: "1".into(),
             tool_name: "bash".into(),
-            content: vec![ContentBlock::Text { text: "dir1\ndir2".into() }],
+            content: vec![ContentBlock::Text {
+                text: "dir1\ndir2".into(),
+            }],
             is_error: false,
             args_summary: None,
         }];
@@ -4095,13 +4224,23 @@ mod tests {
 
             let drift = classify_drift_kind(turn, &conversation, &bash_calls, &bash_results);
             // bash calls don't match any drift pattern (not repo inspection tools)
-            assert_eq!(drift, None, "turn {turn}: bash exploration must not trigger drift");
+            assert_eq!(
+                drift, None,
+                "turn {turn}: bash exploration must not trigger drift"
+            );
 
             let pressure = continuation_pressure_tier(
-                &config, &controller, &conversation, &bash_calls,
-                phase, BehavioralTier::Standard,
+                &config,
+                &controller,
+                &conversation,
+                &bash_calls,
+                phase,
+                BehavioralTier::Standard,
             );
-            assert_eq!(pressure, None, "turn {turn}: Act-phase turn must never trigger pressure");
+            assert_eq!(
+                pressure, None,
+                "turn {turn}: Act-phase turn must never trigger pressure"
+            );
 
             // Simulate controller update — ToolContinuation increments counter
             controller.observe_turn(
@@ -4115,8 +4254,10 @@ mod tests {
         // After 6 turns of bash, controller should have 6 consecutive tool continuations
         // but zero orientation churn (bash is Act, not Orient)
         assert_eq!(controller.consecutive_tool_continuations, 6);
-        assert_eq!(controller.orientation_churn_streak, 0,
-            "bash turns must not increment orientation churn streak");
+        assert_eq!(
+            controller.orientation_churn_streak, 0,
+            "bash turns must not increment orientation churn streak"
+        );
     }
 
     #[test]
@@ -4135,23 +4276,61 @@ mod tests {
 
         // Would have been "scout" — now None
         let tool_calls = vec![
-            ToolCall { id: "1".into(), name: "read".into(), arguments: Value::Null },
-            ToolCall { id: "2".into(), name: "codebase_search".into(), arguments: Value::Null },
+            ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                arguments: Value::Null,
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "codebase_search".into(),
+                arguments: Value::Null,
+            },
         ];
-        assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Observe), Some(DriftKind::OrientationChurn)).is_none());
+        assert!(
+            classify_auto_delegate_plan(
+                &config,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Observe),
+                Some(DriftKind::OrientationChurn)
+            )
+            .is_none()
+        );
 
         // Would have been "verify" — now None
         let tool_calls = vec![ToolCall {
-            id: "1".into(), name: "bash".into(),
+            id: "1".into(),
+            name: "bash".into(),
             arguments: serde_json::json!({"command": "cargo test"}),
         }];
-        assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Act), None).is_none());
+        assert!(
+            classify_auto_delegate_plan(
+                &config,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Act),
+                None
+            )
+            .is_none()
+        );
 
         // Would have been "patch" — now None
-        let tool_calls = vec![
-            ToolCall { id: "1".into(), name: "edit".into(), arguments: serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}) },
-        ];
-        assert!(classify_auto_delegate_plan(&config, &conversation, &tool_calls, Some(OodaPhase::Act), None).is_none());
+        let tool_calls = vec![ToolCall {
+            id: "1".into(),
+            name: "edit".into(),
+            arguments: serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}),
+        }];
+        assert!(
+            classify_auto_delegate_plan(
+                &config,
+                &conversation,
+                &tool_calls,
+                Some(OodaPhase::Act),
+                None
+            )
+            .is_none()
+        );
     }
 
     #[test]

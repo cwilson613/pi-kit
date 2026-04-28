@@ -153,8 +153,7 @@ impl AgentSetup {
         let is_child = std::env::var("OMEGON_CHILD").is_ok();
 
         // ─── Secrets manager ────────────────────────────────────────────
-        let secrets_dir = crate::paths::omegon_home()
-            .unwrap_or_else(|_| cwd.join(".omegon"));
+        let secrets_dir = crate::paths::omegon_home().unwrap_or_else(|_| cwd.join(".omegon"));
         let secrets = match omegon_secrets::SecretsManager::new(&secrets_dir) {
             Ok(s) => std::sync::Arc::new(s),
             Err(e) => {
@@ -293,7 +292,9 @@ impl AgentSetup {
         // ─── Feature tool providers ─────────────────────────────────────
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "web-search",
-            Box::new(tools::web_search::WebSearchProvider::with_secrets(secrets.clone())),
+            Box::new(tools::web_search::WebSearchProvider::with_secrets(
+                secrets.clone(),
+            )),
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "local-inference",
@@ -309,15 +310,17 @@ impl AgentSetup {
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "secret-tools",
-            Box::new(tools::secret_tools::SecretToolsProvider::new(secrets.clone())),
+            Box::new(tools::secret_tools::SecretToolsProvider::new(
+                secrets.clone(),
+            )),
         )));
 
         // ─── Codex integration (optional) ──────────────────────────────
         let project_root = find_project_root(&cwd);
         let codex_integration = crate::codex_config::load(&project_root);
-        let codex_vault_path = codex_integration.as_ref().map(|c| {
-            crate::codex_config::resolve_vault_path(&project_root, c)
-        });
+        let codex_vault_path = codex_integration
+            .as_ref()
+            .map(|c| crate::codex_config::resolve_vault_path(&project_root, c));
 
         // ─── Memory ─────────────────────────────────────────────────────
         let mind = "default".to_string();
@@ -350,7 +353,8 @@ impl AgentSetup {
         let mut context_memory_backend: Option<std::sync::Arc<dyn omegon_memory::MemoryBackend>> =
             None;
         let mut context_memory_mind: Option<String> = None;
-        let mut context_embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = None;
+        let mut context_embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> =
+            None;
 
         if let Ok(backend) = omegon_memory::SqliteBackend::open(&db_path) {
             tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "memory backend loaded");
@@ -399,26 +403,27 @@ impl AgentSetup {
             // ── Embedding service (optional, for hybrid search) ──
             // Skip the probe in child processes — the async HTTP request blocks
             // single-threaded runtimes (ACP, delegate children).
-            let embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = if is_child {
-                None
-            } else {
-                let profile = crate::settings::Profile::load(&cwd);
-                let svc = crate::embedding::OllamaEmbeddingService::from_config(
-                    profile.embed_url.as_deref(),
-                    profile.embed_model.as_deref(),
-                );
-                if svc.probe().await {
-                    tracing::info!(
-                        url = svc.base_url(),
-                        model = svc.model_name(),
-                        "embedding service available — hybrid search enabled"
-                    );
-                    Some(std::sync::Arc::new(svc))
-                } else {
-                    tracing::info!("embedding service not reachable — FTS-only recall");
+            let embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> =
+                if is_child {
                     None
-                }
-            };  // end if is_child else probe
+                } else {
+                    let profile = crate::settings::Profile::load(&cwd);
+                    let svc = crate::embedding::OllamaEmbeddingService::from_config(
+                        profile.embed_url.as_deref(),
+                        profile.embed_model.as_deref(),
+                    );
+                    if svc.probe().await {
+                        tracing::info!(
+                            url = svc.base_url(),
+                            model = svc.model_name(),
+                            "embedding service available — hybrid search enabled"
+                        );
+                        Some(std::sync::Arc::new(svc))
+                    } else {
+                        tracing::info!("embedding service not reachable — FTS-only recall");
+                        None
+                    }
+                }; // end if is_child else probe
 
             let mut memory_feature = features::memory::MemoryFeature::new(memory_backend, mind);
             if let Some(ref svc) = embed_service {
@@ -445,7 +450,10 @@ impl AgentSetup {
         // from a subdirectory like core/.
         let mut lifecycle_feature = features::lifecycle::LifecycleFeature::new(&project_root);
         if let Some(ref vp) = codex_vault_path {
-            if codex_integration.as_ref().is_some_and(|c| c.design_tree.enabled) {
+            if codex_integration
+                .as_ref()
+                .is_some_and(|c| c.design_tree.enabled)
+            {
                 lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
                 tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
             }
@@ -494,12 +502,18 @@ impl AgentSetup {
 
         // ─── Audit log (structured JSONL trail for postmortem) ──────────
         let audit_session = std::env::var("OMEGON_SESSION_ID").unwrap_or_else(|_| {
-            format!("{}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0))
+            format!(
+                "{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            )
         });
-        bus.register(Box::new(features::audit_log::AuditLog::new(&cwd, &audit_session)));
+        bus.register(Box::new(features::audit_log::AuditLog::new(
+            &cwd,
+            &audit_session,
+        )));
 
         // ─── Mutation (evolutionary skill/diagnostic creation) ───────────
         bus.register(Box::new(features::mutation::MutationFeature::new(
@@ -635,7 +649,11 @@ impl AgentSetup {
                 .as_ref()
                 .and_then(|s| {
                     s.lock().ok().map(|g| {
-                        (g.is_slim(), g.posture_disabled_tools.clone(), g.posture_enabled_tools.clone())
+                        (
+                            g.is_slim(),
+                            g.posture_disabled_tools.clone(),
+                            g.posture_enabled_tools.clone(),
+                        )
                     })
                 })
                 .unwrap_or_default();
@@ -733,8 +751,7 @@ impl AgentSetup {
                 (t.name.len() + t.description.len() + schema.len()) / 4
             })
             .sum();
-        let base_prompt =
-            prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode).prompt;
+        let base_prompt = prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode).prompt;
         let prompt_tokens = base_prompt.len() / 4;
 
         tracing::info!(
@@ -1099,9 +1116,7 @@ fn collect_extension_secret_requirements() -> Vec<String> {
     names
 }
 
-fn hydrate_provider_auth_env_from_auth_json(
-    session_secret_env: &mut Vec<(String, String)>,
-) {
+fn hydrate_provider_auth_env_from_auth_json(session_secret_env: &mut Vec<(String, String)>) {
     // Hydrate credentials for ALL providers that have stored auth, not just the
     // parent session's model. Children (cleave, delegate) may use any provider
     // and need the corresponding API keys in their inherited environment.

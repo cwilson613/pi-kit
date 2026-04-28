@@ -213,6 +213,9 @@ mod tests {
             drift_kind: None,
             progress_signal: omegon_traits::ProgressSignal::None,
         });
-        assert!(requests.is_empty(), "slot should be drained after first read");
+        assert!(
+            requests.is_empty(),
+            "slot should be drained after first read"
+        );
     }
 }

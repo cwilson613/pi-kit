@@ -6,8 +6,8 @@
 //! the core state machine focused on turn orchestration.
 
 use crate::conversation::{ConversationState, ToolCall, ToolResultEntry};
-use omegon_traits::{DriftKind, OodaPhase, ProgressNudgeReason};
 pub(crate) use omegon_traits::ProgressSignal;
+use omegon_traits::{DriftKind, OodaPhase, ProgressNudgeReason};
 
 // ─── Tool classification predicates ────────────────────────────────────────
 
@@ -410,7 +410,10 @@ impl ControllerState {
             ProgressSignal::BroadValidation | ProgressSignal::None => {}
         }
 
-        if matches!(turn_end_reason, omegon_traits::TurnEndReason::ToolContinuation) {
+        if matches!(
+            turn_end_reason,
+            omegon_traits::TurnEndReason::ToolContinuation
+        ) {
             self.consecutive_tool_continuations =
                 self.consecutive_tool_continuations.saturating_add(1);
         } else {
@@ -446,15 +449,14 @@ impl ControllerState {
             } else {
                 self.constraint_discovery_streak / 2
             };
-        self.targeted_evidence_streak =
-            if matches!(
-                evidence_sufficiency,
-                EvidenceSufficiency::Targeted | EvidenceSufficiency::Actionable
-            ) {
-                self.targeted_evidence_streak.saturating_add(1)
-            } else {
-                self.targeted_evidence_streak / 2
-            };
+        self.targeted_evidence_streak = if matches!(
+            evidence_sufficiency,
+            EvidenceSufficiency::Targeted | EvidenceSufficiency::Actionable
+        ) {
+            self.targeted_evidence_streak.saturating_add(1)
+        } else {
+            self.targeted_evidence_streak / 2
+        };
         self.evidence_sufficient_streak =
             if matches!(evidence_sufficiency, EvidenceSufficiency::Actionable) {
                 self.evidence_sufficient_streak.saturating_add(1)
@@ -483,10 +485,7 @@ where
     })
 }
 
-pub(crate) fn has_progress_boundary(
-    tool_calls: &[ToolCall],
-    results: &[ToolResultEntry],
-) -> bool {
+pub(crate) fn has_progress_boundary(tool_calls: &[ToolCall], results: &[ToolResultEntry]) -> bool {
     has_successful_tool_call(tool_calls, results, |call| {
         is_mutation_tool_name(&call.name)
     }) || has_successful_tool_call(tool_calls, results, is_validation_tool)
@@ -564,8 +563,7 @@ pub(crate) fn classify_progress_signal(
         return ProgressSignal::Commit;
     }
     if has_successful_tool_call(tool_calls, results, |call| {
-        is_mutation_tool_name(&call.name)
-            || matches!(call.name.as_str(), "delegate" | "cleave_run")
+        is_mutation_tool_name(&call.name) || matches!(call.name.as_str(), "delegate" | "cleave_run")
     }) {
         return ProgressSignal::Mutation;
     }
@@ -629,7 +627,9 @@ pub(crate) fn detect_evidence_sufficiency(
         .filter_map(|call| call.arguments.get("path").and_then(|v| v.as_str()))
         .collect();
     let narrow_target_cluster = !targeted_reads.is_empty()
-        && tool_calls.iter().all(|call| is_repo_inspection_tool(&call.name))
+        && tool_calls
+            .iter()
+            .all(|call| is_repo_inspection_tool(&call.name))
         && !tool_calls
             .iter()
             .any(|call| is_broad_repo_inspection_tool(&call.name));

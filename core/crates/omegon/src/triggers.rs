@@ -187,9 +187,7 @@ fn preset_is_due(
             let wd = wall.weekday().num_days_from_monday(); // 0=Mon, 6=Sun
             wd < 5 && h == 9 && m == 0
         }
-        Preset::Weekly => {
-            wall.weekday() == chrono::Weekday::Mon && h == 9 && m == 0
-        }
+        Preset::Weekly => wall.weekday() == chrono::Weekday::Mon && h == 9 && m == 0,
     }
 }
 
@@ -320,9 +318,7 @@ pub fn load_trigger_configs(cwd: &Path) -> Vec<TriggerConfig> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_config = path
-            .extension()
-            .is_some_and(|e| e == "toml" || e == "pkl");
+        let is_config = path.extension().is_some_and(|e| e == "toml" || e == "pkl");
         if !is_config {
             continue;
         }
@@ -355,8 +351,8 @@ fn load_single(path: &Path) -> anyhow::Result<TriggerConfig> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "pkl" => {
-            let config: TriggerConfig = rpkl::from_config(path)
-                .map_err(|e| anyhow::anyhow!("pkl: {e}"))?;
+            let config: TriggerConfig =
+                rpkl::from_config(path).map_err(|e| anyhow::anyhow!("pkl: {e}"))?;
             Ok(config)
         }
         _ => {
@@ -519,7 +515,11 @@ mod tests {
         let payload = json!({});
 
         // Wrong source
-        assert!(triggers.match_envelope("slack", "prompt", &payload).is_none());
+        assert!(
+            triggers
+                .match_envelope("slack", "prompt", &payload)
+                .is_none()
+        );
     }
 
     #[test]

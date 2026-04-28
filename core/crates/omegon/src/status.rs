@@ -236,7 +236,7 @@ pub struct ProviderStatus {
     pub auth_method: Option<String>, // "oauth" / "api-key" / "copilot"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_state: Option<ProviderAuthState>,
-    pub model: Option<String>,       // active model name
+    pub model: Option<String>, // active model name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_status: Option<ProviderRuntimeStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -488,12 +488,20 @@ impl HarnessStatus {
             let skills_dir = home.join("skills/learned");
             self.mutation_learned_skills = std::fs::read_dir(&skills_dir)
                 .ok()
-                .map(|e| e.flatten().filter(|d| d.path().join("SKILL.md").exists()).count())
+                .map(|e| {
+                    e.flatten()
+                        .filter(|d| d.path().join("SKILL.md").exists())
+                        .count()
+                })
                 .unwrap_or(0);
             let diag_dir = home.join("diagnostics");
             self.mutation_diagnostics = std::fs::read_dir(&diag_dir)
                 .ok()
-                .map(|e| e.flatten().filter(|d| d.path().extension().is_some_and(|ext| ext == "md")).count())
+                .map(|e| {
+                    e.flatten()
+                        .filter(|d| d.path().extension().is_some_and(|ext| ext == "md"))
+                        .count()
+                })
                 .unwrap_or(0);
         }
 

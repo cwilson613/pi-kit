@@ -7,11 +7,11 @@
 //! drift warnings, and persona appear when space allows.
 
 use omegon_traits::{DriftKind, OodaPhase};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
-use ratatui::Frame;
 
 use super::theme::Theme;
 use super::widgets;
@@ -34,10 +34,7 @@ pub struct StatusLine {
 
 impl StatusLine {
     /// Update fields from footer_data at the start of each draw cycle.
-    pub fn sync_from_footer(
-        &mut self,
-        footer: &super::footer::FooterData,
-    ) {
+    pub fn sync_from_footer(&mut self, footer: &super::footer::FooterData) {
         self.context_percent = footer.context_percent;
         self.turn = footer.turn;
         self.model_short = crate::settings::humanize_model_id(&footer.model_id);
@@ -91,10 +88,7 @@ impl StatusLine {
 
         // CWD basename (≥55)
         if w >= 55 && !self.cwd_basename.is_empty() {
-            let field = Span::styled(
-                self.cwd_basename.clone(),
-                Style::default().fg(t.muted()),
-            );
+            let field = Span::styled(self.cwd_basename.clone(), Style::default().fg(t.muted()));
             let cost = sect.width() + field.width();
             if used + cost < w {
                 spans.push(sect.clone());
@@ -106,10 +100,7 @@ impl StatusLine {
         // Git branch (≥65)
         if w >= 65 {
             if let Some(ref branch) = self.git_branch {
-                let field = Span::styled(
-                    branch.clone(),
-                    Style::default().fg(t.muted()),
-                );
+                let field = Span::styled(branch.clone(), Style::default().fg(t.muted()));
                 let cost = sep.width() + field.width();
                 if used + cost < w {
                     spans.push(sep.clone());
@@ -174,10 +165,8 @@ impl StatusLine {
         // Persona (≥100)
         if w >= 100 {
             if let Some(ref persona) = self.persona {
-                let field = Span::styled(
-                    format!("@{persona}"),
-                    Style::default().fg(t.accent_muted()),
-                );
+                let field =
+                    Span::styled(format!("@{persona}"), Style::default().fg(t.accent_muted()));
                 let cost = sep.width() + field.width();
                 if used + cost < w {
                     spans.push(sep.clone());
@@ -197,7 +186,9 @@ impl StatusLine {
             ));
             spans.push(Span::styled(
                 format!("{version} "),
-                Style::default().fg(t.dim()).add_modifier(ratatui::style::Modifier::DIM),
+                Style::default()
+                    .fg(t.dim())
+                    .add_modifier(ratatui::style::Modifier::DIM),
             ));
         }
 

@@ -489,7 +489,10 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                 serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).ok()?)
                     .ok()?;
             let oauth = data.get("oauthAccount")?;
-            let access = oauth.get("accessToken")?.as_str().filter(|s| !s.is_empty())?;
+            let access = oauth
+                .get("accessToken")?
+                .as_str()
+                .filter(|s| !s.is_empty())?;
             let refresh = oauth.get("refreshToken")?.as_str()?;
             let expires = oauth.get("expiresAt")?.as_i64()?;
             Some(OAuthCredentials {
@@ -502,12 +505,14 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
         "openai-codex" => {
             // Codex CLI stores OAuth tokens at ~/.codex/auth.json
             // Structure: { "tokens": { "access_token": "...", "refresh_token": "..." }, ... }
-            let data: Value = serde_json::from_str(
-                &std::fs::read_to_string(home.join(".codex/auth.json")).ok()?,
-            )
-            .ok()?;
+            let data: Value =
+                serde_json::from_str(&std::fs::read_to_string(home.join(".codex/auth.json")).ok()?)
+                    .ok()?;
             let tokens = data.get("tokens")?;
-            let access = tokens.get("access_token")?.as_str().filter(|s| !s.is_empty())?;
+            let access = tokens
+                .get("access_token")?
+                .as_str()
+                .filter(|s| !s.is_empty())?;
             let refresh = tokens
                 .get("refresh_token")
                 .and_then(|v| v.as_str())
@@ -536,10 +541,11 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
             )
             .ok()?;
             let obj = hosts.as_object()?;
-            let entry = obj
-                .get("github.com")
-                .or_else(|| obj.values().next())?;
-            let token = entry.get("oauth_token")?.as_str().filter(|s| !s.is_empty())?;
+            let entry = obj.get("github.com").or_else(|| obj.values().next())?;
+            let token = entry
+                .get("oauth_token")?
+                .as_str()
+                .filter(|s| !s.is_empty())?;
             Some(OAuthCredentials {
                 cred_type: "oauth".into(),
                 access: token.into(),
@@ -569,10 +575,7 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                         let expires = data
                             .get("expiry")
                             .and_then(|v| v.as_i64())
-                            .or_else(|| {
-                                data.get("token_expiry")
-                                    .and_then(|v| v.as_i64())
-                            })
+                            .or_else(|| data.get("token_expiry").and_then(|v| v.as_i64()))
                             .unwrap_or(0) as u64;
                         return Some(OAuthCredentials {
                             cred_type: "oauth".into(),
@@ -1042,7 +1045,10 @@ pub async fn login_anthropic_with_callbacks(
         // fallback to 127.0.0.1. A dual-stack [::] socket with
         // IPV6_V6ONLY=false accepts connections on both protocols.
         let listener = bind_callback_listener(CALLBACK_PORT)?;
-        tracing::debug!(port = CALLBACK_PORT, "OAuth callback server listening (dual-stack)");
+        tracing::debug!(
+            port = CALLBACK_PORT,
+            "OAuth callback server listening (dual-stack)"
+        );
 
         progress("Opening browser for Anthropic login…");
         // Spawn browser open in a background thread — xdg-open on some Linux
@@ -1055,16 +1061,14 @@ pub async fn login_anthropic_with_callbacks(
         // Give the browser a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let (mut stream, _addr) = tokio::time::timeout(
-            std::time::Duration::from_secs(300),
-            listener.accept(),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Login timed out waiting for browser callback. Run /login again to retry."
-            )
-        })??;
+        let (mut stream, _addr) =
+            tokio::time::timeout(std::time::Duration::from_secs(300), listener.accept())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Login timed out waiting for browser callback. Run /login again to retry."
+                    )
+                })??;
         let mut buf = [0u8; 4096];
         let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await?;
         let request = String::from_utf8_lossy(&buf[..n]);
@@ -1200,8 +1204,7 @@ pub async fn login_openai_with_callbacks(
         parse_callback_url(&pasted)?
     } else {
         // ── Normal browser flow ────────────────────────────────────────
-        let listener =
-            bind_callback_listener(OPENAI_CALLBACK_PORT)?;
+        let listener = bind_callback_listener(OPENAI_CALLBACK_PORT)?;
         tracing::debug!(
             port = OPENAI_CALLBACK_PORT,
             "OpenAI OAuth callback server listening"
@@ -1214,16 +1217,14 @@ pub async fn login_openai_with_callbacks(
         });
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let (mut stream, _addr) = tokio::time::timeout(
-            std::time::Duration::from_secs(300),
-            listener.accept(),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Login timed out waiting for browser callback. Run /login again to retry."
-            )
-        })??;
+        let (mut stream, _addr) =
+            tokio::time::timeout(std::time::Duration::from_secs(300), listener.accept())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Login timed out waiting for browser callback. Run /login again to retry."
+                    )
+                })??;
         let mut buf = [0u8; 4096];
         let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await?;
         let request = String::from_utf8_lossy(&buf[..n]);
@@ -1414,8 +1415,7 @@ pub async fn login_antigravity_with_callbacks(
         progress(&format!(
             "Waiting for callback on localhost:{ANTIGRAVITY_CALLBACK_PORT}…"
         ));
-        let listener =
-            bind_callback_listener(ANTIGRAVITY_CALLBACK_PORT)?;
+        let listener = bind_callback_listener(ANTIGRAVITY_CALLBACK_PORT)?;
         tracing::info!(
             port = ANTIGRAVITY_CALLBACK_PORT,
             "listening for Antigravity OAuth callback"
@@ -1435,7 +1435,9 @@ pub async fn login_antigravity_with_callbacks(
     };
 
     if recv_state != state {
-        anyhow::bail!("OAuth state mismatch — browser may have been closed or network interrupted. Please try again.");
+        anyhow::bail!(
+            "OAuth state mismatch — browser may have been closed or network interrupted. Please try again."
+        );
     }
 
     progress("Exchanging authorization code for tokens…");

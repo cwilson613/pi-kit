@@ -49,7 +49,10 @@ pub fn export_node_to_codex_markdown(node: &DesignNode, sections: &DocumentSecti
             tags.push(prefixed);
         }
     }
-    let tag_literals: Vec<String> = tags.iter().map(|t| format!("\"{}\"", escape_toml(t))).collect();
+    let tag_literals: Vec<String> = tags
+        .iter()
+        .map(|t| format!("\"{}\"", escape_toml(t)))
+        .collect();
     writeln!(out, "tags = [{}]", tag_literals.join(", ")).unwrap();
 
     // [data] table
@@ -215,7 +218,10 @@ fn write_toml_string_array(out: &mut String, key: &str, items: &[String]) {
     if items.is_empty() {
         writeln!(out, "{key} = []").unwrap();
     } else {
-        let literals: Vec<String> = items.iter().map(|s| format!("\"{}\"", escape_toml(s))).collect();
+        let literals: Vec<String> = items
+            .iter()
+            .map(|s| format!("\"{}\"", escape_toml(s)))
+            .collect();
         writeln!(out, "{key} = [{}]", literals.join(", ")).unwrap();
     }
 }
@@ -234,10 +240,7 @@ mod tests {
             tags: vec!["rust".into(), "lifecycle".into()],
             dependencies: vec!["dep-1".into(), "dep-2".into()],
             related: vec!["related-1".into()],
-            open_questions: vec![
-                "Question 1?".into(),
-                "[assumption] Assumed fact".into(),
-            ],
+            open_questions: vec!["Question 1?".into(), "[assumption] Assumed fact".into()],
             branches: vec![],
             openspec_change: None,
             issue_type: Some(IssueType::Feature),
@@ -261,10 +264,7 @@ mod tests {
                 status: "decided".into(),
                 rationale: "It is simpler.".into(),
             }],
-            open_questions: vec![
-                "Question 1?".into(),
-                "[assumption] Assumed fact".into(),
-            ],
+            open_questions: vec!["Question 1?".into(), "[assumption] Assumed fact".into()],
             impl_file_scope: vec![FileScope {
                 path: "src/foo.rs".into(),
                 description: "Main impl".into(),

@@ -335,7 +335,9 @@ pub async fn execute_control(
         &ctx.agent.secrets,
         &ctx.agent.cwd,
         &ctx.agent.dashboard_handles,
-    ).await {
+    )
+    .await
+    {
         return resp;
     }
 
@@ -476,9 +478,9 @@ pub async fn execute_daemon_control(
             | ControlRequest::SetMaxTurns { .. }
     );
     // Try stateless handlers first (shared with TUI mode).
-    let resp = if let Some(resp) = try_stateless_control(
-        &request, shared_settings, secrets, cwd, handles,
-    ).await {
+    let resp = if let Some(resp) =
+        try_stateless_control(&request, shared_settings, secrets, cwd, handles).await
+    {
         resp
     } else {
         match request {
@@ -495,12 +497,13 @@ pub async fn execute_daemon_control(
             ControlRequest::SetRuntimeMode { slim } => {
                 set_runtime_mode_daemon_response(shared_settings, cwd, slim).await
             }
-            ControlRequest::AuthLogin { provider } => {
-                auth_login_daemon_response(&provider).await
-            }
+            ControlRequest::AuthLogin { provider } => auth_login_daemon_response(&provider).await,
             ControlRequest::ListSessions => {
                 let msg = list_sessions_message(cwd);
-                SlashCommandResponse { accepted: true, output: Some(msg) }
+                SlashCommandResponse {
+                    accepted: true,
+                    output: Some(msg),
+                }
             }
             // ── Operations requiring TUI state ──────────────────────────
             other => SlashCommandResponse {
@@ -705,11 +708,10 @@ pub async fn switch_dispatcher_response(
     let current_provider = crate::providers::infer_provider_id(&current_model);
     let reg = crate::model_registry::ModelRegistry::global();
     let tier_model = match normalized_profile.as_str() {
-        tier @ ("retribution" | "victory" | "gloriana") => {
-            reg.tier_model(tier, &current_provider)
-                .unwrap_or(&current_model)
-                .to_string()
-        }
+        tier @ ("retribution" | "victory" | "gloriana") => reg
+            .tier_model(tier, &current_provider)
+            .unwrap_or(&current_model)
+            .to_string(),
         _ => current_model.clone(),
     };
     let requested_model_spec = requested_model.map(ToOwned::to_owned).unwrap_or_else(|| {
@@ -874,7 +876,12 @@ pub async fn set_runtime_mode_response(
     let (posture_disabled, posture_enabled) = shared_settings
         .lock()
         .ok()
-        .map(|s| (s.posture_disabled_tools.clone(), s.posture_enabled_tools.clone()))
+        .map(|s| {
+            (
+                s.posture_disabled_tools.clone(),
+                s.posture_enabled_tools.clone(),
+            )
+        })
         .unwrap_or_default();
     runtime_state
         .bus
@@ -2154,27 +2161,41 @@ pub async fn context_status_response(
     let tool_guidance_tokens = crate::util::estimate_chars_to_tokens(telemetry.tool_guidance_chars);
     let file_guidance_tokens = crate::util::estimate_chars_to_tokens(telemetry.file_guidance_chars);
     let injection_total = external_tokens + tool_guidance_tokens + file_guidance_tokens;
-    let conversation_tokens = est.saturating_sub(
-        base_tokens + hud_tokens + intent_tokens + injection_total,
-    );
+    let conversation_tokens =
+        est.saturating_sub(base_tokens + hud_tokens + intent_tokens + injection_total);
 
     let mut lines = vec![
         format!("Context: {} / {} tokens ({}%)", est, ctx_window, pct),
         format!("  System prompt:   {:>6} tokens", base_tokens),
-        format!("  Tool schemas:    {:>6} tokens ({} tools, compact)", 0, tool_count), // schema tokens not in telemetry
+        format!(
+            "  Tool schemas:    {:>6} tokens ({} tools, compact)",
+            0, tool_count
+        ), // schema tokens not in telemetry
         format!("  Session HUD:     {:>6} tokens", hud_tokens),
         format!("  Intent:          {:>6} tokens", intent_tokens),
     ];
     if external_tokens > 0 {
-        lines.push(format!("  Features:        {:>6} tokens (memory, lifecycle, etc.)", external_tokens));
+        lines.push(format!(
+            "  Features:        {:>6} tokens (memory, lifecycle, etc.)",
+            external_tokens
+        ));
     }
     if tool_guidance_tokens > 0 {
-        lines.push(format!("  Tool guidance:   {:>6} tokens", tool_guidance_tokens));
+        lines.push(format!(
+            "  Tool guidance:   {:>6} tokens",
+            tool_guidance_tokens
+        ));
     }
     if file_guidance_tokens > 0 {
-        lines.push(format!("  File guidance:   {:>6} tokens", file_guidance_tokens));
+        lines.push(format!(
+            "  File guidance:   {:>6} tokens",
+            file_guidance_tokens
+        ));
     }
-    lines.push(format!("  Conversation:    {:>6} tokens", conversation_tokens));
+    lines.push(format!(
+        "  Conversation:    {:>6} tokens",
+        conversation_tokens
+    ));
     lines.push(format!(
         "Policy: {} | Thinking: {}",
         settings.effective_requested_class().label(),
@@ -2511,9 +2532,9 @@ pub async fn auth_login_response(
                 "OLLAMA_API_KEY",
                 "Ollama Cloud"
             ))),
-            _ => Err(anyhow::anyhow!(auth::operator_auth_unknown_provider_message(
-                &provider_clone
-            ))),
+            _ => Err(anyhow::anyhow!(
+                auth::operator_auth_unknown_provider_message(&provider_clone)
+            )),
         };
         let provider_label = crate::auth::provider_by_id(&provider_clone)
             .map(|p| p.display_name)
@@ -2551,7 +2572,8 @@ pub async fn auth_login_response(
                 *guard = new_bridge;
                 if let Ok(mut s) = settings_for_login.lock() {
                     s.set_model(&effective_model);
-                    s.provider_connected = crate::auth::provider_connected_for_model(&effective_model);
+                    s.provider_connected =
+                        crate::auth::provider_connected_for_model(&effective_model);
                 }
                 let _ = events_tx_clone.send(AgentEvent::SystemNotification {
                     message: auth::operator_provider_connected_message(&effective_model),
@@ -2572,12 +2594,10 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
     if provider.is_empty() {
         return SlashCommandResponse {
             accepted: false,
-            output: Some(
-                format!(
-                    "Provider required for logout. Use one of: {}",
-                    auth::operator_auth_provider_help_list()
-                ),
-            ),
+            output: Some(format!(
+                "Provider required for logout. Use one of: {}",
+                auth::operator_auth_provider_help_list()
+            )),
         };
     }
     let provider = crate::auth::canonical_provider_id(provider);
@@ -2610,7 +2630,6 @@ pub async fn auth_logout_response(provider: &str) -> SlashCommandResponse {
     }
 }
 
-
 /// Daemon-mode auth login. OAuth providers return guidance (browser flow
 /// must be initiated by the client). API key providers are not yet
 /// supported via WebSocket — the client should write auth.json directly
@@ -2632,18 +2651,15 @@ pub async fn auth_login_daemon_response(provider: &str) -> SlashCommandResponse 
         };
     };
     match provider_info.auth_method {
-        auth::AuthMethod::OAuth => {
-            SlashCommandResponse {
-                accepted: false,
-                output: Some(format!(
-                    "{} uses OAuth login which requires a browser. \
+        auth::AuthMethod::OAuth => SlashCommandResponse {
+            accepted: false,
+            output: Some(format!(
+                "{} uses OAuth login which requires a browser. \
                      Run `omegon auth login {}` from a terminal with browser access, \
                      then the daemon will pick up the new credentials on the next request.",
-                    provider_info.display_name,
-                    provider,
-                )),
-            }
-        }
+                provider_info.display_name, provider,
+            )),
+        },
         auth::AuthMethod::ApiKey | auth::AuthMethod::Dynamic => {
             let env_hint = provider_info.env_vars.first().copied().unwrap_or("API_KEY");
             SlashCommandResponse {
@@ -2652,9 +2668,7 @@ pub async fn auth_login_daemon_response(provider: &str) -> SlashCommandResponse 
                     "{} uses API key auth. Set {} in the environment or run \
                      `omegon auth login {}` from a terminal to store the key. \
                      The daemon will pick up credentials on the next request.",
-                    provider_info.display_name,
-                    env_hint,
-                    provider,
+                    provider_info.display_name, env_hint, provider,
                 )),
             }
         }
@@ -2784,7 +2798,11 @@ pub async fn set_max_turns_response(
         accepted: true,
         output: Some(format!(
             "Max turns → {}",
-            if max_turns == 0 { "unlimited".to_string() } else { max_turns.to_string() }
+            if max_turns == 0 {
+                "unlimited".to_string()
+            } else {
+                max_turns.to_string()
+            }
         )),
     }
 }

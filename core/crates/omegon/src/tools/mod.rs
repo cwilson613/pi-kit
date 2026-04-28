@@ -6,19 +6,19 @@
 
 pub mod bash;
 pub mod change;
-pub mod native_cmd;
-pub(crate) mod output_filter;
 pub mod chronos;
 pub mod codebase_search;
 pub mod edit;
 pub mod local_inference;
+pub mod native_cmd;
+pub(crate) mod output_filter;
 pub mod read;
+pub mod render;
 pub mod serve;
 pub mod validate;
 pub mod view;
 pub mod web_search;
 pub mod whoami;
-pub mod render;
 pub mod write;
 
 pub mod secret_tools;
@@ -216,7 +216,8 @@ impl CoreTools {
             requested_path: path_str.to_string(),
             directory: parent_dir,
             workspace: cwd_canonical.display().to_string(),
-        }.into())
+        }
+        .into())
     }
 }
 
@@ -408,7 +409,8 @@ impl ToolProvider for CoreTools {
                 description: "Check authentication status across development tools \
                     (git, GitHub, GitLab, AWS, Kubernetes, OCI registries). Returns \
                     structured status with error diagnosis and refresh commands for \
-                    expired or missing sessions.".into(),
+                    expired or missing sessions."
+                    .into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {},
@@ -427,7 +429,8 @@ impl ToolProvider for CoreTools {
                     expression like '3 days ago', 'next Monday'\n  iso — ISO 8601 week number, \
                     year, day-of-year\n  epoch — Unix timestamp (seconds and milliseconds)\n  \
                     tz — Timezone abbreviation and UTC offset\n  range — Calendar and business \
-                    days between two dates\n  all — All of the above combined".into(),
+                    days between two dates\n  all — All of the above combined"
+                    .into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -631,7 +634,9 @@ impl ToolProvider for CoreTools {
                     let branch = git2::Repository::discover(&self.cwd)
                         .ok()
                         .and_then(|r| {
-                            r.head().ok().and_then(|h| h.shorthand().map(|s| s.to_string()))
+                            r.head()
+                                .ok()
+                                .and_then(|h| h.shorthand().map(|s| s.to_string()))
                         })
                         .unwrap_or_default();
                     return Ok(ToolResult {
@@ -877,7 +882,11 @@ mod tests {
         // Approve /etc for this session
         tools.approve_directory(PathBuf::from("/etc"));
         let result = tools.resolve_path("/etc/test.txt");
-        assert!(result.is_ok(), "approved directory should be allowed: {:?}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "approved directory should be allowed: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -892,7 +901,11 @@ mod tests {
         // Create the directory so canonicalize works
         let _ = std::fs::create_dir_all("/tmp/obsidian-vault");
         let result = tools.resolve_path("/tmp/obsidian-vault/eval.md");
-        assert!(result.is_ok(), "trusted directory should be allowed: {:?}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "trusted directory should be allowed: {:?}",
+            result.unwrap_err()
+        );
 
         // /tmp/other-dir should still be rejected
         let result = tools.resolve_path("/tmp/other-dir/file.txt");
@@ -904,10 +917,14 @@ mod tests {
         let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
         let result = tools.resolve_path("/home/user/obsidian/eval.md");
         let err = result.unwrap_err();
-        assert!(err.downcast_ref::<PathPermissionError>().is_some(),
-            "should return PathPermissionError, got: {err}");
-        assert!(err.to_string().contains("PERMISSION REQUIRED"),
-            "display should contain marker: {err}");
+        assert!(
+            err.downcast_ref::<PathPermissionError>().is_some(),
+            "should return PathPermissionError, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("PERMISSION REQUIRED"),
+            "display should contain marker: {err}"
+        );
     }
 
     #[test]
@@ -919,7 +936,11 @@ mod tests {
         tools.approve_directory(PathBuf::from("/home/user/vault"));
         // Now allowed
         let result = tools.resolve_path("/home/user/vault/file.md");
-        assert!(result.is_ok(), "approved directory should be allowed: {:?}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "approved directory should be allowed: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[test]

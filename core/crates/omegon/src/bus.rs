@@ -184,11 +184,8 @@ impl EventBus {
         // except the listed tools. This is applied last so it overrides all
         // other disable/enable decisions.
         if !posture_enabled.is_empty() {
-            let all_tools: Vec<String> = self
-                .tool_defs
-                .iter()
-                .map(|(_, d)| d.name.clone())
-                .collect();
+            let all_tools: Vec<String> =
+                self.tool_defs.iter().map(|(_, d)| d.name.clone()).collect();
             for tool in &all_tools {
                 if !posture_enabled.contains(tool) {
                     disabled.insert(tool.clone());
@@ -218,9 +215,12 @@ impl EventBus {
     /// registered feature.
     pub fn register_internal_tool(&mut self, tool_name: &str, feature_name: &str) {
         if let Some(idx) = self.features.iter().position(|f| f.name() == feature_name) {
-            tracing::debug!(tool = tool_name, feature = feature_name, "registered internal tool");
-            self.internal_tool_owners
-                .insert(tool_name.to_string(), idx);
+            tracing::debug!(
+                tool = tool_name,
+                feature = feature_name,
+                "registered internal tool"
+            );
+            self.internal_tool_owners.insert(tool_name.to_string(), idx);
         } else {
             tracing::warn!(
                 tool = tool_name,
@@ -426,8 +426,7 @@ impl EventBus {
             if def.name == tool_name {
                 return match tokio::time::timeout(
                     timeout,
-                    self.features[*idx]
-                        .execute_with_sink(tool_name, call_id, args, cancel, sink),
+                    self.features[*idx].execute_with_sink(tool_name, call_id, args, cancel, sink),
                 )
                 .await
                 {
@@ -875,8 +874,18 @@ mod tests {
         // Parameter descriptions stripped
         let params = compact.parameters.as_object().unwrap();
         let props = params["properties"].as_object().unwrap();
-        assert!(!props["path"].as_object().unwrap().contains_key("description"));
-        assert!(!props["limit"].as_object().unwrap().contains_key("description"));
+        assert!(
+            !props["path"]
+                .as_object()
+                .unwrap()
+                .contains_key("description")
+        );
+        assert!(
+            !props["limit"]
+                .as_object()
+                .unwrap()
+                .contains_key("description")
+        );
 
         // Structural info preserved
         assert_eq!(props["path"]["type"], "string");
@@ -932,8 +941,7 @@ mod tests {
                 parameters: json!({"type": "object", "properties": {}}),
             })
             .collect();
-        let disabled =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let disabled = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let mut bus = EventBus::new();
         bus.register(Box::new(MultiToolFeature { tools }));
         bus.finalize();
@@ -980,10 +988,14 @@ mod tests {
                 "'{tool}' must be disabled by base defaults"
             );
         }
-        assert!(def_names.contains(&reg::delegate::DELEGATE),
-            "delegate stays enabled in Full mode");
-        assert!(def_names.contains(&reg::cleave::CLEAVE_RUN),
-            "cleave stays enabled in Full mode");
+        assert!(
+            def_names.contains(&reg::delegate::DELEGATE),
+            "delegate stays enabled in Full mode"
+        );
+        assert!(
+            def_names.contains(&reg::cleave::CLEAVE_RUN),
+            "cleave stays enabled in Full mode"
+        );
     }
 
     #[test]
@@ -1041,5 +1053,4 @@ mod tests {
         assert!(!def_names.contains(&"write"));
         assert!(!def_names.contains(&"delegate"));
     }
-
 }

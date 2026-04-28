@@ -571,7 +571,6 @@ impl ContextClass {
     }
 }
 
-
 fn default_update_channel() -> String {
     "stable".to_string()
 }
@@ -1096,11 +1095,7 @@ impl Profile {
     }
 
     /// Apply profile to settings with posture resolution (needs cwd for custom postures).
-    pub fn apply_to_with_posture(
-        &self,
-        settings: &mut Settings,
-        cwd: &std::path::Path,
-    ) {
+    pub fn apply_to_with_posture(&self, settings: &mut Settings, cwd: &std::path::Path) {
         // Apply default posture first (before other overrides)
         if let Some(ref posture_name) = self.default_posture {
             match resolve_posture_by_name(posture_name, cwd) {
@@ -1117,7 +1112,10 @@ impl Profile {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(posture = posture_name, "failed to resolve default posture: {e}");
+                    tracing::warn!(
+                        posture = posture_name,
+                        "failed to resolve default posture: {e}"
+                    );
                 }
             }
         }
@@ -1153,7 +1151,6 @@ impl Profile {
             self.mouse = Some(false);
         }
     }
-
 }
 
 fn project_profile_path(cwd: &std::path::Path) -> std::path::PathBuf {
@@ -1353,7 +1350,7 @@ fn load_custom_posture(path: &std::path::Path) -> Result<ResolvedPosture, String
             return Err(format!(
                 "invalid base posture '{other}' in {}: must be explorator/fabricator/architect/devastator",
                 path.display()
-            ))
+            ));
         }
     };
 
@@ -1366,10 +1363,22 @@ fn load_custom_posture(path: &std::path::Path) -> Result<ResolvedPosture, String
 /// List all available postures (built-in + custom from project and user directories).
 pub fn list_available_postures(cwd: &std::path::Path) -> Vec<(String, String, bool)> {
     let mut postures: Vec<(String, String, bool)> = vec![
-        ("explorator".into(), "Cheap-first reconnaissance, lean execution".into(), true),
+        (
+            "explorator".into(),
+            "Cheap-first reconnaissance, lean execution".into(),
+            true,
+        ),
         ("fabricator".into(), "Balanced implementation".into(), true),
-        ("architect".into(), "Systems-engineering orchestrator (default)".into(), true),
-        ("devastator".into(), "Maximum-force deep reasoning".into(), true),
+        (
+            "architect".into(),
+            "Systems-engineering orchestrator (default)".into(),
+            true,
+        ),
+        (
+            "devastator".into(),
+            "Maximum-force deep reasoning".into(),
+            true,
+        ),
     ];
 
     // Scan custom posture directories
@@ -1807,7 +1816,10 @@ mod tests {
     #[test]
     fn is_slim_true_only_for_explorator() {
         let mut s = Settings::new("anthropic:claude-sonnet-4-6");
-        assert!(!s.is_slim(), "default posture (Architect) should not be slim");
+        assert!(
+            !s.is_slim(),
+            "default posture (Architect) should not be slim"
+        );
 
         s.set_posture(PosturePreset::Explorator);
         assert!(s.is_slim(), "Explorator posture should be slim");

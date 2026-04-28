@@ -971,8 +971,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                             }
                         }
 
-                        let rendered =
-                            renderer.render_context(&facts, &episodes, &wm_facts, 8_000);
+                        let rendered = renderer.render_context(&facts, &episodes, &wm_facts, 8_000);
                         if rendered.markdown.is_empty() {
                             return None;
                         }
@@ -984,7 +983,9 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         let content_hash = hasher.finish();
 
                         // Skip re-injection if content is unchanged and no mutation occurred
-                        let dirty = self.context_dirty.swap(false, std::sync::atomic::Ordering::Relaxed);
+                        let dirty = self
+                            .context_dirty
+                            .swap(false, std::sync::atomic::Ordering::Relaxed);
                         let mut last_hash = self.last_context_hash.lock().unwrap();
                         if !dirty && *last_hash == content_hash && content_hash != 0 {
                             return None; // existing injection persists via TTL

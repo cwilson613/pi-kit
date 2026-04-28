@@ -490,6 +490,15 @@ impl AgentSetup {
         // ─── Session log (context injection) ────────────────────────────
         bus.register(Box::new(features::session_log::SessionLog::new(&cwd)));
 
+        // ─── Audit log (structured JSONL trail for postmortem) ──────────
+        let audit_session = std::env::var("OMEGON_SESSION_ID").unwrap_or_else(|_| {
+            format!("{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0))
+        });
+        bus.register(Box::new(features::audit_log::AuditLog::new(&cwd, &audit_session)));
+
         // ─── Mutation (evolutionary skill/diagnostic creation) ───────────
         bus.register(Box::new(features::mutation::MutationFeature::new(
             crate::paths::omegon_home()?,

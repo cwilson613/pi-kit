@@ -980,7 +980,7 @@ pub struct Profile {
     pub trusted_directories: Vec<String>,
 
     // ── Updates ──
-    /// Update channel: "stable", "rc", or "nightly".
+    /// Update channel: "stable" or "nightly".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_channel: Option<String>,
     /// Auto-update on session exit when a newer version is available.

@@ -34,6 +34,11 @@ pub mod view {
     pub const VIEW: &str = "view";
 }
 
+/// Render tools — owned by `tools::render::RenderProvider`
+pub mod render {
+    pub const RENDER_DIAGRAM: &str = "render_diagram";
+}
+
 /// Web search — owned by `tools::web_search::WebSearchProvider`
 pub mod web_search {
     pub const WEB_SEARCH: &str = "web_search";
@@ -157,7 +162,7 @@ pub mod mutation {
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.
 /// Number of statically registered tools (for splash screen display).
-pub const TOOL_COUNT: usize = 59;
+pub const TOOL_COUNT: usize = 60;
 
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
@@ -173,6 +178,8 @@ pub fn all_static_names() -> Vec<&'static str> {
         core::SERVE,
         // view (1)
         view::VIEW,
+        // render (1)
+        render::RENDER_DIAGRAM,
         // web_search (2)
         web_search::WEB_SEARCH,
         web_search::WEB_FETCH,

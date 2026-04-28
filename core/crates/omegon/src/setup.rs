@@ -302,6 +302,10 @@ impl AgentSetup {
             Box::new(tools::view::ViewProvider::new(cwd.clone())),
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
+            "render",
+            Box::new(tools::render::RenderProvider::new()),
+        )));
+        bus.register(Box::new(features::adapter::ToolAdapter::new(
             "secret-tools",
             Box::new(tools::secret_tools::SecretToolsProvider::new(secrets.clone())),
         )));

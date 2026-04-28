@@ -18,6 +18,7 @@ pub mod validate;
 pub mod view;
 pub mod web_search;
 pub mod whoami;
+pub mod render;
 pub mod write;
 
 pub mod secret_tools;

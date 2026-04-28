@@ -50,13 +50,13 @@ for arg in "$@"; do
       echo ""
       echo "Options (pass after 'sh -s --'):"
       echo "  --no-confirm        Skip interactive confirmation"
-      echo "  --channel=CHANNEL   Release channel: stable | rc | nightly (default: stable)"
+      echo "  --channel=CHANNEL   Release channel: stable | nightly (default: stable)"
       echo "  --version=VERSION   Pin a specific version tag (default: latest for channel)"
       echo ""
       echo "Environment:"
       echo "  INSTALL_DIR     Installation directory (default: /usr/local/bin)"
       echo "  VERSION         Pin a specific version tag (default: latest for selected channel)"
-      echo "  CHANNEL         Release channel: stable | rc | nightly (default: stable)"
+      echo "  CHANNEL         Release channel: stable | nightly (default: stable)"
       echo "  NO_COLOR        Disable colored output"
       exit 0
       ;;
@@ -166,13 +166,22 @@ if [ -z "$VERSION" ]; then
         die "could not reach GitHub API. Check your network connection."
       VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
       ;;
-    rc|nightly)
+    rc)
+      # RC channel deprecated — redirect to stable.
+      warn "RC channel is deprecated. Use 'stable' or 'nightly'. Installing latest stable."
+      CHANNEL="stable"
+      step "Resolving latest stable release..."
+      RELEASE_JSON=$(curl -fsSL "${GITHUB_API}/releases/latest" 2>/dev/null) || \
+        die "could not reach GitHub API. Check your network connection."
+      VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
+      ;;
+    nightly)
       step "Resolving latest ${CHANNEL} release..."
       RELEASE_JSON=$(curl -fsSL "${GITHUB_API}/releases" 2>/dev/null) || \
         die "could not reach GitHub API. Check your network connection."
       # Pure shell — no python dependency. Extracts the first prerelease
-      # tag_name containing the channel marker (-rc. or -nightly.).
-      MARKER="-${CHANNEL}."
+      # tag_name containing the nightly marker.
+      MARKER="-nightly."
       VERSION=$(printf '%s' "$RELEASE_JSON" | grep -o '"tag_name": *"[^"]*'"${MARKER}"'[^"]*"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
       ;;
     *)

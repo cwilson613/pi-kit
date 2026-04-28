@@ -766,34 +766,29 @@ pub async fn switch_to_version(version: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `omegon switch --latest` / `--latest-rc` — find and switch to latest.
-pub async fn switch_to_latest(include_rc: bool) -> anyhow::Result<()> {
+/// `omegon switch --latest` — find and switch to latest stable release.
+/// The `_include_rc` parameter is accepted for backward compatibility
+/// but ignored — the RC channel has been retired.
+pub async fn switch_to_latest(_include_rc: bool) -> anyhow::Result<()> {
     let mut switcher = VersionSwitcher::new();
     println!("Fetching releases...");
     let releases = switcher.fetch_releases().await?;
 
-    // Parse and sort by version (not API order) to find the true latest
     let mut candidates: Vec<(&GitHubRelease, Version)> = releases
         .iter()
-        .filter(|r| include_rc || !r.prerelease)
+        .filter(|r| !r.prerelease)
         .filter_map(|r| Version::parse(&r.tag_name).ok().map(|v| (r, v)))
         .collect();
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
-    let (release, _) = candidates.first().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No {} releases found",
-            if include_rc { "RC" } else { "stable" }
-        )
-    })?;
+    let (release, _) = candidates
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No stable releases found"))?;
     let version = release
         .tag_name
         .strip_prefix('v')
         .unwrap_or(&release.tag_name);
-    println!(
-        "Latest {}: {version}",
-        if include_rc { "RC" } else { "stable" }
-    );
+    println!("Latest stable: {version}");
     switch_to_version(version).await
 }
 

@@ -31,7 +31,7 @@ defaultPosture: ("explorator"|"fabricator"|"architect"|"devastator")?
 trustedDirectories: Listing<String>?
 
 /// Update channel for self-update.
-updateChannel: ("stable"|"rc"|"nightly")?
+updateChannel: ("stable"|"nightly")?
 
 /// Auto-update on session exit when a newer version is available.
 autoUpdate: Boolean?

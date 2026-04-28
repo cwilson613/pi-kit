@@ -24,7 +24,6 @@ pub struct UpdateInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateChannel {
     Stable,
-    Rc,
     Nightly,
 }
 
@@ -32,7 +31,7 @@ impl UpdateChannel {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "stable" => Some(Self::Stable),
-            "rc" => Some(Self::Rc),
+            "rc" => Some(Self::Stable), // RC deprecated — redirect to stable
             "nightly" => Some(Self::Nightly),
             _ => None,
         }
@@ -41,7 +40,6 @@ impl UpdateChannel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Stable => "stable",
-            Self::Rc => "rc",
             Self::Nightly => "nightly",
         }
     }
@@ -230,7 +228,6 @@ pub async fn check_latest_for_channel(
         let latest = latest.to_lowercase();
         let channel_match = match channel {
             UpdateChannel::Stable => !resp.prerelease,
-            UpdateChannel::Rc => resp.prerelease && latest.contains("-rc."),
             UpdateChannel::Nightly => resp.prerelease && latest.contains("-nightly."),
         };
         channel_match && is_newer(&latest, current)
@@ -448,11 +445,7 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
     let current_exe = std::env::current_exe()?;
 
     if is_homebrew_managed(&current_exe) {
-        let formula = if info.latest.contains("-rc.") {
-            "styrene-lab/tap/omegon-rc"
-        } else {
-            "omegon"
-        };
+        let formula = "omegon";
         anyhow::bail!(
             "This binary is managed by Homebrew — in-place upgrade would corrupt brew's \
              version tracking.\n\nTo upgrade, run:\n  brew upgrade {formula}"
@@ -586,7 +579,8 @@ mod tests {
 
     #[test]
     fn rc_channel_parses_distinct_from_nightly() {
-        assert_eq!(UpdateChannel::parse("rc"), Some(UpdateChannel::Rc));
+        // RC is deprecated — parses to Stable for backward compatibility
+        assert_eq!(UpdateChannel::parse("rc"), Some(UpdateChannel::Stable));
         assert_eq!(
             UpdateChannel::parse("nightly"),
             Some(UpdateChannel::Nightly)

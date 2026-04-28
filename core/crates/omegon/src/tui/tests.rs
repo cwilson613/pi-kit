@@ -1667,9 +1667,10 @@ fn slash_update_channel_without_args_opens_selector() {
 fn slash_update_channel_changes_setting() {
     let mut app = test_app();
     let tx = test_tx();
-    let result = app.handle_slash_command("/update channel rc", &tx);
+    // RC is deprecated — redirects to stable
+    let result = app.handle_slash_command("/update channel nightly", &tx);
     assert!(matches!(result, SlashResult::Display(_)));
-    assert_eq!(app.settings.lock().unwrap().update_channel, "rc");
+    assert_eq!(app.settings.lock().unwrap().update_channel, "nightly");
 }
 
 #[test]
@@ -1690,13 +1691,13 @@ fn slash_update_reports_available_version() {
         is_newer: true,
     }));
     app.update_rx = Some(update_rx);
-    app.settings.lock().unwrap().update_channel = UpdateChannel::Rc.as_str().to_string();
+    app.settings.lock().unwrap().update_channel = "stable".to_string();
     let result = app.handle_slash_command("/update", &tx);
     if let SlashResult::Display(text) = result {
         assert!(text.contains("0.15.3-rc.7"), "{text}");
         assert!(text.contains("/update install"), "{text}");
         assert!(
-            text.contains("/update channel [stable|rc|nightly]"),
+            text.contains("/update channel [stable|nightly]"),
             "{text}"
         );
         assert!(text.contains("rc"), "{text}");
@@ -1713,8 +1714,9 @@ fn slash_update_without_update_still_shows_channel_help() {
     if let SlashResult::Display(text) = result {
         assert!(text.contains("You're up to date"), "{text}");
         assert!(text.contains("/update channel nightly"), "{text}");
-        assert!(text.contains("/update channel rc"), "{text}");
         assert!(text.contains("/update channel stable"), "{text}");
+        // RC is no longer listed — only stable and nightly
+        assert!(!text.contains("channel rc"), "RC should not appear in help: {text}");
     } else {
         panic!("expected Display result");
     }

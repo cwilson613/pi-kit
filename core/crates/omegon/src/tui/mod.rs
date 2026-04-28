@@ -1656,7 +1656,6 @@ impl App {
         let current = self.settings().update_channel;
         let options = [
             crate::update::UpdateChannel::Stable,
-            crate::update::UpdateChannel::Rc,
             crate::update::UpdateChannel::Nightly,
         ]
         .into_iter()
@@ -1664,11 +1663,8 @@ impl App {
             value: channel.as_str().to_string(),
             label: channel.as_str().to_string(),
             description: match channel {
-                crate::update::UpdateChannel::Stable => "Release builds only".to_string(),
-                crate::update::UpdateChannel::Rc => "Release candidates only".to_string(),
-                crate::update::UpdateChannel::Nightly => {
-                    "Nightly / dev prereleases only".to_string()
-                }
+                crate::update::UpdateChannel::Stable => "Stable releases".to_string(),
+                crate::update::UpdateChannel::Nightly => "Nightly builds from main".to_string(),
             },
             active: current == channel.as_str(),
         })
@@ -4916,7 +4912,7 @@ impl App {
                             channel.as_str()
                         ))
                     } else {
-                        SlashResult::Display("Usage: /update channel [stable|rc|nightly]".into())
+                        SlashResult::Display("Usage: /update channel [stable|nightly]".into())
                     }
                 } else {
                     // Check if an update is available
@@ -4924,7 +4920,7 @@ impl App {
                     let channel = self.settings().update_channel;
                     match info {
                         Some(info) if info.is_newer => SlashResult::Display(format!(
-                            "🆕 Update available on {channel}: v{} → v{}\n\n{}\n\n{}\n\nCommands:\n  /update install\n  /update channel [stable|rc|nightly]",
+                            "🆕 Update available on {channel}: v{} → v{}\n\n{}\n\n{}\n\nCommands:\n  /update install\n  /update channel [stable|nightly]",
                             info.current,
                             info.latest,
                             if info.release_notes.is_empty() {
@@ -4943,7 +4939,7 @@ impl App {
                             },
                         )),
                         _ => SlashResult::Display(format!(
-                            "✓ You're up to date on the {channel} channel.\n\nCommands:\n  /update channel stable  — use stable releases only\n  /update channel rc      — follow release candidates only\n  /update channel nightly — opt into nightly prereleases\n  /update channel         — show current channel"
+                            "✓ You're up to date on the {channel} channel.\n\nCommands:\n  /update channel stable  — stable releases only\n  /update channel nightly — nightly builds from main\n  /update channel         — show current channel"
                         )),
                     }
                 }

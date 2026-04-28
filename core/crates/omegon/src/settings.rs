@@ -986,6 +986,22 @@ pub struct Profile {
     /// Auto-update on session exit when a newer version is available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
+
+    // ── Display preferences ──
+    /// Tool output density: "lean", "compact", "detailed", "verbose".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_detail: Option<String>,
+    /// Mouse interaction mode. false = terminal-native text selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse: Option<bool>,
+
+    // ── Persona / Tone ──
+    /// Active persona name. Restored on next session start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
+    /// Active tone name. Restored on next session start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1067,6 +1083,16 @@ impl Profile {
         if let Some(au) = self.auto_update {
             settings.auto_update = au;
         }
+        if let Some(ref td) = self.tool_detail
+            && let Some(detail) = ToolDetail::parse(td)
+        {
+            settings.tool_detail = detail;
+        }
+        if let Some(m) = self.mouse {
+            settings.mouse = m;
+        }
+        // persona and tone are restored by the plugin system at session start,
+        // not by Settings.apply_to — Profile stores the name for resumption.
     }
 
     /// Apply profile to settings with posture resolution (needs cwd for custom postures).
@@ -1116,6 +1142,8 @@ impl Profile {
         }
         self.update_channel = Some(settings.update_channel.clone());
         self.auto_update = Some(settings.auto_update);
+        self.tool_detail = Some(settings.tool_detail.as_str().to_string());
+        self.mouse = Some(settings.mouse);
     }
 
 }

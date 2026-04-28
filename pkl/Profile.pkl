@@ -35,3 +35,15 @@ updateChannel: ("stable"|"rc"|"nightly")?
 
 /// Auto-update on session exit when a newer version is available.
 autoUpdate: Boolean?
+
+/// Tool output density.
+toolDetail: ("lean"|"compact"|"detailed"|"verbose")?
+
+/// Mouse interaction mode. false = terminal-native text selection.
+mouse: Boolean?
+
+/// Active persona to restore on session start.
+persona: String?
+
+/// Active tone to restore on session start.
+tone: String?

@@ -1944,6 +1944,17 @@ impl App {
         }
     }
 
+    /// Write a setting AND persist to profile.json.
+    fn update_and_persist<F: FnOnce(&mut crate::settings::Settings)>(&self, f: F) {
+        let cwd = self.cwd().to_path_buf();
+        if let Ok(mut s) = self.settings.lock() {
+            f(&mut s);
+            let mut profile = crate::settings::Profile::load(&cwd);
+            profile.capture_from(&s);
+            let _ = profile.save(&cwd);
+        }
+    }
+
     /// Try to cancel the active agent turn. Returns true if cancelled.
     /// Queue a prompt to be sent when the agent finishes.
     // ─── Well-known secret names for the /secrets selector ────────
@@ -4234,14 +4245,17 @@ impl App {
             "mouse" => match args {
                 "" => {
                     self.set_terminal_copy_mode(!self.terminal_copy_mode);
+                    self.update_and_persist(|s| s.mouse = !self.terminal_copy_mode);
                     SlashResult::Handled
                 }
                 "on" => {
                     self.set_terminal_copy_mode(false);
+                    self.update_and_persist(|s| s.mouse = true);
                     SlashResult::Handled
                 }
                 "off" => {
                     self.set_terminal_copy_mode(true);
+                    self.update_and_persist(|s| s.mouse = false);
                     SlashResult::Handled
                 }
                 _ => SlashResult::Display("Usage: /mouse [on|off]".into()),
@@ -4574,13 +4588,12 @@ impl App {
 
             "detail" | "density" => {
                 if args.is_empty() {
-                    // Cycle through density levels
                     let current = self.settings().tool_detail;
                     let next = current.next();
-                    self.update_settings(|s| s.tool_detail = next);
+                    self.update_and_persist(|s| s.tool_detail = next);
                     SlashResult::Display(format!("Tool density → {}", next.as_str()))
                 } else if let Some(mode) = crate::settings::ToolDetail::parse(args) {
-                    self.update_settings(|s| s.tool_detail = mode);
+                    self.update_and_persist(|s| s.tool_detail = mode);
                     SlashResult::Display(format!("Tool density → {}", mode.as_str()))
                 } else {
                     SlashResult::Display(format!(

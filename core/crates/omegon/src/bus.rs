@@ -97,6 +97,10 @@ pub struct EventBus {
     disabled_tools: Option<crate::features::manage_tools::DisabledTools>,
     /// Per-tool execution timeouts. Tools not listed use DEFAULT_TOOL_TIMEOUT.
     tool_timeouts: HashMap<String, Duration>,
+    /// Internal tool owners — maps tool names that may NOT be in tool_defs
+    /// (because they're not LLM-visible) to the feature index that handles them.
+    /// Populated explicitly via `register_internal_tool`.
+    internal_tool_owners: HashMap<String, usize>,
 }
 
 impl EventBus {
@@ -107,6 +111,7 @@ impl EventBus {
             tool_defs: Vec::new(),
             command_defs: Vec::new(),
             disabled_tools: None,
+            internal_tool_owners: HashMap::new(),
             tool_timeouts: HashMap::from([
                 ("bash".into(), Duration::from_secs(120)),
                 ("web_search".into(), Duration::from_secs(30)),
@@ -205,6 +210,24 @@ impl EventBus {
     pub fn register(&mut self, feature: Box<dyn Feature>) {
         tracing::info!(feature = feature.name(), "registered feature");
         self.features.push(feature);
+    }
+
+    /// Register an internal tool name → feature mapping. Internal tools
+    /// are NOT in the LLM-visible tool_defs but can be called via
+    /// `execute_internal`. The feature_name must match a previously
+    /// registered feature.
+    pub fn register_internal_tool(&mut self, tool_name: &str, feature_name: &str) {
+        if let Some(idx) = self.features.iter().position(|f| f.name() == feature_name) {
+            tracing::debug!(tool = tool_name, feature = feature_name, "registered internal tool");
+            self.internal_tool_owners
+                .insert(tool_name.to_string(), idx);
+        } else {
+            tracing::warn!(
+                tool = tool_name,
+                feature = feature_name,
+                "cannot register internal tool — feature not found"
+            );
+        }
     }
 
     /// Finalize registration — cache tool and command definitions.
@@ -439,6 +462,17 @@ impl EventBus {
     /// looking up the tool name in the registered definitions. Used for harness
     /// plumbing (trust_directory, etc.) that the model should never call but
     /// the dispatch layer needs.
+    /// Execute an internal tool that is NOT in the LLM-visible tool_defs.
+    ///
+    /// Tries each feature that declares matching tools. Unlike `execute_tool`,
+    /// this checks the full tool registry (including tools not in the disabled
+    /// set) by looking at each feature's `tools()` output. Used for harness
+    /// plumbing (trust_directory, etc.) that the model should never call.
+    /// Execute an internal tool that may not be in the LLM-visible tool_defs.
+    ///
+    /// Unlike `execute_tool`, this doesn't require the tool to be in the
+    /// registered definitions. It uses the `internal_tool_owners` map
+    /// populated at registration time to find the owning feature directly.
     pub async fn execute_internal(
         &self,
         tool_name: &str,
@@ -446,21 +480,18 @@ impl EventBus {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<omegon_traits::ToolResult> {
-        for feature in &self.features {
-            match feature
-                .execute(tool_name, call_id, args.clone(), cancel.clone())
-                .await
-            {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    let msg = e.to_string();
-                    // "Unknown core tool" / "not implemented" = this feature doesn't own it
-                    if msg.contains("Unknown") || msg.contains("not implemented") {
-                        continue;
-                    }
-                    // Real error from the owning feature
-                    return Err(e);
-                }
+        // Check the internal tool owner map first
+        if let Some(&idx) = self.internal_tool_owners.get(tool_name) {
+            return self.features[idx]
+                .execute(tool_name, call_id, args, cancel)
+                .await;
+        }
+        // Fallback: check tool_defs (tool might be registered but disabled)
+        for (idx, def) in &self.tool_defs {
+            if def.name == tool_name {
+                return self.features[*idx]
+                    .execute(tool_name, call_id, args, cancel)
+                    .await;
             }
         }
         anyhow::bail!("no feature handles internal tool '{tool_name}'")

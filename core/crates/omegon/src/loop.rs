@@ -718,9 +718,24 @@ pub async fn run(
             // - Skip if model never used tools: conversational exchange
             // - First text-only response gets a free pass (summary)
             let in_task_mode = conversation.intent.stats.tool_calls > 0;
+            // Skip dead-mouse if the user's last prompt looks like a question
+            // or request for explanation — text-only responses are legitimate.
+            let user_asked_question = {
+                let prompt = conversation.last_user_prompt().to_lowercase();
+                prompt.contains('?')
+                    || prompt.starts_with("explain")
+                    || prompt.starts_with("what ")
+                    || prompt.starts_with("why ")
+                    || prompt.starts_with("how ")
+                    || prompt.starts_with("describe")
+                    || prompt.starts_with("summarize")
+                    || prompt.starts_with("tell me")
+                    || prompt.starts_with("list ")
+            };
             if !has_mutations(conversation)
                 && turn > 1
                 && in_task_mode
+                && !user_asked_question
                 && turn < config.max_turns
                 && dead_mouse_nudges < 3
             {
@@ -1975,12 +1990,14 @@ async fn dispatch_single_tool(
                         decision: "allow".into(),
                     });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
-                    let _ = bus.execute_internal(
+                    if let Err(e) = bus.execute_internal(
                         crate::tool_registry::core::TRUST_DIRECTORY,
                         "__permission_grant",
                         trust_args,
                         cancel.clone(),
-                    ).await;
+                    ).await {
+                        tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
+                    }
                     match execute(cancel, sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (
@@ -2000,12 +2017,14 @@ async fn dispatch_single_tool(
                         decision: "always_allow".into(),
                     });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
-                    let _ = bus.execute_internal(
+                    if let Err(e) = bus.execute_internal(
                         crate::tool_registry::core::TRUST_DIRECTORY,
                         "__permission_grant",
                         trust_args,
                         cancel.clone(),
-                    ).await;
+                    ).await {
+                        tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
+                    }
                     match execute(cancel, sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (

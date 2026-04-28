@@ -287,6 +287,8 @@ impl AgentSetup {
             "core-tools",
             Box::new(core_tools),
         )));
+        // Register internal tools that the dispatch layer calls but the LLM never sees.
+        bus.register_internal_tool(crate::tool_registry::core::TRUST_DIRECTORY, "core-tools");
 
         // ─── Feature tool providers ─────────────────────────────────────
         bus.register(Box::new(features::adapter::ToolAdapter::new(

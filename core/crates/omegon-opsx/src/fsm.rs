@@ -134,33 +134,30 @@ impl<S: StateStore> Lifecycle<S> {
         }
 
         // Enforce preconditions for specific transitions
-        match target {
-            NodeState::Decided => {
-                if !self.state.nodes[idx].open_questions.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(format!(
-                        "node '{}' has {} open questions — resolve before deciding",
-                        id,
-                        self.state.nodes[idx].open_questions.len()
-                    )));
-                }
-            }
-            NodeState::Implementing => {
-                if from != NodeState::Decided && from != NodeState::Blocked {
-                    return Err(OpsxError::PreconditionFailed(format!(
-                        "node '{}' must be decided (or blocked) before implementing",
-                        id
-                    )));
-                }
-            }
-            _ => {}
+        if target == NodeState::Decided && !self.state.nodes[idx].open_questions.is_empty() {
+            return Err(OpsxError::PreconditionFailed(format!(
+                "node '{}' has {} open questions — resolve before deciding",
+                id,
+                self.state.nodes[idx].open_questions.len()
+            )));
+        }
+        if target == NodeState::Implementing
+            && from != NodeState::Decided
+            && from != NodeState::Blocked
+        {
+            return Err(OpsxError::PreconditionFailed(format!(
+                "node '{}' must be decided (or blocked) before implementing",
+                id
+            )));
         }
 
         // Check milestone freeze — only block regression, not forward progress
         for ms in &self.state.milestones {
-            if ms.state == MilestoneState::Frozen && ms.nodes.contains(&id.to_string()) {
-                if target == NodeState::Exploring || target == NodeState::Seed {
-                    return Err(OpsxError::MilestoneFrozen(ms.name.clone()));
-                }
+            if ms.state == MilestoneState::Frozen
+                && ms.nodes.contains(&id.to_string())
+                && (target == NodeState::Exploring || target == NodeState::Seed)
+            {
+                return Err(OpsxError::MilestoneFrozen(ms.name.clone()));
             }
         }
 
@@ -465,46 +462,41 @@ impl<S: StateStore> Lifecycle<S> {
         // Enforce preconditions — specs before code, plan before implementation
         let change = &self.state.changes[idx];
         match target {
-            ChangeState::Specced => {
-                if change.specs.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("change '{}' has no specs — write Given/When/Then scenarios before marking as specced", name)
-                    ));
-                }
+            ChangeState::Specced if change.specs.is_empty() => {
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "change '{}' has no specs — write Given/When/Then scenarios before marking as specced",
+                    name
+                )));
             }
-            ChangeState::Planned => {
-                if change.specs.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(format!(
-                        "change '{}' has no specs — specs are required before planning",
-                        name
-                    )));
-                }
-                if change.tasks_total == 0 {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("change '{}' has no tasks — generate a plan (tasks.md) before marking as planned", name)
-                    ));
-                }
+            ChangeState::Planned if change.specs.is_empty() => {
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "change '{}' has no specs — specs are required before planning",
+                    name
+                )));
             }
-            ChangeState::Testing => {
-                if change.specs.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("change '{}' has no specs — specs with scenarios are required before writing test stubs", name)
-                    ));
-                }
+            ChangeState::Planned if change.tasks_total == 0 => {
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "change '{}' has no tasks — generate a plan (tasks.md) before marking as planned",
+                    name
+                )));
             }
-            ChangeState::Implementing => {
-                if change.test_files.is_empty() {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("change '{}' has no test files — write failing test stubs before implementing (TDD)", name)
-                    ));
-                }
+            ChangeState::Testing if change.specs.is_empty() => {
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "change '{}' has no specs — specs with scenarios are required before writing test stubs",
+                    name
+                )));
             }
-            ChangeState::Verifying => {
-                if change.tasks_done == 0 {
-                    return Err(OpsxError::PreconditionFailed(
-                        format!("change '{}' has no completed tasks — complete implementation before verifying", name)
-                    ));
-                }
+            ChangeState::Implementing if change.test_files.is_empty() => {
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "change '{}' has no test files — write failing test stubs before implementing (TDD)",
+                    name
+                )));
+            }
+            ChangeState::Verifying if change.tasks_done == 0 => {
+                return Err(OpsxError::PreconditionFailed(format!(
+                    "change '{}' has no completed tasks — complete implementation before verifying",
+                    name
+                )));
             }
             _ => {}
         }

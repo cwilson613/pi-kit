@@ -32,21 +32,21 @@ impl Indexer {
 
         // ── Fast path: skip file walk if HEAD hasn't changed ─────────────
         let current_head = git_head(repo_path);
-        if let Some(ref head) = current_head {
-            if cache.get_meta("last_head").as_deref() == Some(head.as_str()) {
-                // Already up to date — return cached counts without touching the filesystem
-                let code_chunks = cache.code_chunk_count();
-                let knowledge_chunks = cache.knowledge_chunk_count();
-                if code_chunks > 0 || knowledge_chunks > 0 {
-                    tracing::debug!(head = %head, "codescan fast-path: HEAD unchanged");
-                    return Ok(IndexStats {
-                        code_files: 0, // unknown without walk; 0 = "not re-scanned"
-                        knowledge_files: 0,
-                        code_chunks,
-                        knowledge_chunks,
-                        duration_ms: started.elapsed().as_millis() as u64,
-                    });
-                }
+        if let Some(ref head) = current_head
+            && cache.get_meta("last_head").as_deref() == Some(head.as_str())
+        {
+            // Already up to date — return cached counts without touching the filesystem
+            let code_chunks = cache.code_chunk_count();
+            let knowledge_chunks = cache.knowledge_chunk_count();
+            if code_chunks > 0 || knowledge_chunks > 0 {
+                tracing::debug!(head = %head, "codescan fast-path: HEAD unchanged");
+                return Ok(IndexStats {
+                    code_files: 0, // unknown without walk; 0 = "not re-scanned"
+                    knowledge_files: 0,
+                    code_chunks,
+                    knowledge_chunks,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                });
             }
         }
 

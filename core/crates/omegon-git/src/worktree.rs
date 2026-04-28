@@ -176,15 +176,15 @@ pub fn remove(repo_path: &Path, worktree_path: &Path) -> Result<()> {
     // Find the worktree by matching its path against registered worktrees
     let worktree_names = repo.worktrees().context("failed to list worktrees")?;
     for name in worktree_names.iter().flatten() {
-        if let Ok(wt) = repo.find_worktree(name) {
-            if wt.path() == worktree_path || worktree_path.starts_with(wt.path()) {
-                // Prune the worktree reference (with force flags)
-                let mut opts = git2::WorktreePruneOptions::new();
-                opts.valid(true);
-                opts.working_tree(true);
-                let _ = wt.prune(Some(&mut opts));
-                break;
-            }
+        if let Ok(wt) = repo.find_worktree(name)
+            && (wt.path() == worktree_path || worktree_path.starts_with(wt.path()))
+        {
+            // Prune the worktree reference (with force flags)
+            let mut opts = git2::WorktreePruneOptions::new();
+            opts.valid(true);
+            opts.working_tree(true);
+            let _ = wt.prune(Some(&mut opts));
+            break;
         }
     }
 

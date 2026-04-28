@@ -476,16 +476,16 @@ impl SecretsManager {
         }
 
         // No recipe — fall back to environment variable
-        if let Ok(val) = std::env::var(name) {
-            if !val.is_empty() {
-                let secret = SecretString::from(val);
-                let value = secret.expose_secret().to_string();
-                let mut set = self.redaction_set.write().unwrap();
-                set.insert(name.to_string(), secret);
-                let new_redactor = Redactor::build(&set);
-                *self.redactor.write().unwrap() = new_redactor;
-                return Some(value);
-            }
+        if let Ok(val) = std::env::var(name)
+            && !val.is_empty()
+        {
+            let secret = SecretString::from(val);
+            let value = secret.expose_secret().to_string();
+            let mut set = self.redaction_set.write().unwrap();
+            set.insert(name.to_string(), secret);
+            let new_redactor = Redactor::build(&set);
+            *self.redactor.write().unwrap() = new_redactor;
+            return Some(value);
         }
 
         None
@@ -664,10 +664,11 @@ impl SecretsManager {
                 // Already resolved from recipe — skip env override
                 continue;
             }
-            if let Ok(value) = std::env::var(env_name) {
-                if !value.is_empty() && !set.values().any(|v| v.expose_secret() == value) {
-                    set.insert(env_name.to_string(), SecretString::from(value));
-                }
+            if let Ok(value) = std::env::var(env_name)
+                && !value.is_empty()
+                && !set.values().any(|v| v.expose_secret() == value)
+            {
+                set.insert(env_name.to_string(), SecretString::from(value));
             }
         }
 

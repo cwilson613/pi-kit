@@ -137,17 +137,17 @@ pub(crate) fn keyring_delete(service: &str, name: &str) -> Result<(), keyring::E
 #[allow(dead_code)]
 pub fn resolve_secret(name: &str, recipes: &RecipeStore) -> Option<SecretString> {
     // 1. Check recipe store (authoritative source)
-    if let Some(recipe) = recipes.get(name) {
-        if let Some(value) = execute_recipe(name, recipe) {
-            return Some(value);
-        }
+    if let Some(recipe) = recipes.get(name)
+        && let Some(value) = execute_recipe(name, recipe)
+    {
+        return Some(value);
     }
 
     // 2. Fallback: check environment variable (only if no recipe matched)
-    if let Ok(val) = std::env::var(name) {
-        if !val.is_empty() {
-            return Some(SecretString::from(val));
-        }
+    if let Ok(val) = std::env::var(name)
+        && !val.is_empty()
+    {
+        return Some(SecretString::from(val));
     }
 
     None
@@ -164,17 +164,16 @@ pub async fn resolve_secret_async(
     vault_client: Option<&VaultClient>,
 ) -> Option<SecretString> {
     // 1. Check recipe store (authoritative source)
-    if let Some(recipe) = recipes.get(name) {
-        if let Some(value) = execute_recipe_async(name, recipe, vault_client).await {
-            return Some(value);
-        }
+    if let Some(recipe) = recipes.get(name)
+        && let Some(value) = execute_recipe_async(name, recipe, vault_client).await
+    {
+        return Some(value);
     }
 
     // 2. Fallback: check environment variable (only if no recipe matched)
-    if let Ok(val) = std::env::var(name) {
-        if !val.is_empty() {
-            return Some(SecretString::from(val));
-        }
+    if let Ok(val) = std::env::var(name)
+        && !val.is_empty()
+    {
     }
 
     None

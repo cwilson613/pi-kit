@@ -195,12 +195,11 @@ fn go_name(node: &Node, source: &[u8]) -> String {
         // type_declaration contains one or more type_spec nodes
         let cursor = &mut node.walk();
         for child in node.children(cursor) {
-            if child.kind() == "type_spec" {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    if let Ok(text) = name_node.utf8_text(source) {
-                        return text.to_string();
-                    }
-                }
+            if child.kind() == "type_spec"
+                && let Some(name_node) = child.child_by_field_name("name")
+                && let Ok(text) = name_node.utf8_text(source)
+            {
+                return text.to_string();
             }
         }
     }
@@ -209,10 +208,10 @@ fn go_name(node: &Node, source: &[u8]) -> String {
 
 fn generic_name(node: &Node, source: &[u8]) -> String {
     // Try standard "name" field first, then descend into export wrapper
-    if let Some(name_node) = node.child_by_field_name("name") {
-        if let Ok(text) = name_node.utf8_text(source) {
-            return text.to_string();
-        }
+    if let Some(name_node) = node.child_by_field_name("name")
+        && let Ok(text) = name_node.utf8_text(source)
+    {
+        return text.to_string();
     }
     // export_statement → declaration child
     if node.kind() == "export_statement" {
@@ -225,12 +224,11 @@ fn generic_name(node: &Node, source: &[u8]) -> String {
             if child.kind() == "export_clause" {
                 let sub = &mut child.walk();
                 for spec in child.children(sub) {
-                    if spec.kind() == "export_specifier" {
-                        if let Some(n) = spec.child_by_field_name("name") {
-                            if let Ok(t) = n.utf8_text(source) {
-                                return t.to_string();
-                            }
-                        }
+                    if spec.kind() == "export_specifier"
+                        && let Some(n) = spec.child_by_field_name("name")
+                        && let Ok(t) = n.utf8_text(source)
+                    {
+                        return t.to_string();
                     }
                 }
             }
@@ -240,12 +238,11 @@ fn generic_name(node: &Node, source: &[u8]) -> String {
     if matches!(node.kind(), "lexical_declaration" | "variable_declaration") {
         let cursor = &mut node.walk();
         for child in node.children(cursor) {
-            if matches!(child.kind(), "variable_declarator") {
-                if let Some(n) = child.child_by_field_name("name") {
-                    if let Ok(t) = n.utf8_text(source) {
-                        return t.to_string();
-                    }
-                }
+            if matches!(child.kind(), "variable_declarator")
+                && let Some(n) = child.child_by_field_name("name")
+                && let Ok(t) = n.utf8_text(source)
+            {
+                return t.to_string();
             }
         }
     }

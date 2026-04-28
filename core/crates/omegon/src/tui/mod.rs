@@ -409,6 +409,9 @@ enum SelectorKind {
     UpdateChannel,
     WorkspaceRole,
     WorkspaceKind,
+    Preferences,
+    ToolDetail,
+    MouseMode,
 }
 
 /// Result of handling a slash command.
@@ -1493,6 +1496,125 @@ impl App {
             .unwrap_or(0)
     }
 
+    fn open_preferences_selector(&mut self) {
+        let s = self.settings();
+        let dirs = if s.trusted_directories.is_empty() {
+            "none".to_string()
+        } else {
+            format!("{}", s.trusted_directories.len())
+        };
+        let options = vec![
+            selector::SelectOption {
+                value: "model".into(),
+                label: "Model".into(),
+                description: format!("Current: {}", s.model),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "thinking".into(),
+                label: "Thinking Level".into(),
+                description: format!("Current: {}", s.thinking.as_str()),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "context".into(),
+                label: "Context Class".into(),
+                description: format!("Current: {}", s.context_class.label()),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "detail".into(),
+                label: "Tool Density".into(),
+                description: format!("Current: {}", s.tool_detail.as_str()),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "mouse".into(),
+                label: "Mouse Mode".into(),
+                description: format!("Current: {}", if s.mouse { "enabled" } else { "disabled (terminal selection)" }),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "persona".into(),
+                label: "Persona".into(),
+                description: "Activate or change persona".into(),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "tone".into(),
+                label: "Tone".into(),
+                description: "Activate or change tone".into(),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "trust".into(),
+                label: "Trusted Directories".into(),
+                description: format!("Configured: {dirs}"),
+                active: false,
+            },
+            selector::SelectOption {
+                value: "update".into(),
+                label: "Update Channel".into(),
+                description: format!("Current: {} (auto: {})", s.update_channel, if s.auto_update { "on" } else { "off" }),
+                active: false,
+            },
+        ];
+        self.selector = Some(selector::Selector::new("Preferences", options));
+        self.selector_kind = Some(SelectorKind::Preferences);
+    }
+
+    fn open_tool_detail_selector(&mut self) {
+        let current = self.settings().tool_detail;
+        let options = vec![
+            selector::SelectOption {
+                value: "lean".into(),
+                label: "Lean".into(),
+                description: "One-liner per tool. Minimal noise.".into(),
+                active: current == crate::settings::ToolDetail::Lean,
+            },
+            selector::SelectOption {
+                value: "compact".into(),
+                label: "Compact".into(),
+                description: "2-3 lines: name + summary + short result.".into(),
+                active: current == crate::settings::ToolDetail::Compact,
+            },
+            selector::SelectOption {
+                value: "detailed".into(),
+                label: "Detailed".into(),
+                description: "Full args and results. Default.".into(),
+                active: current == crate::settings::ToolDetail::Detailed,
+            },
+            selector::SelectOption {
+                value: "verbose".into(),
+                label: "Verbose".into(),
+                description: "Maximum output. For debugging.".into(),
+                active: current == crate::settings::ToolDetail::Verbose,
+            },
+        ];
+        self.selector = Some(selector::Selector::new("Tool Density", options));
+        self.selector_kind = Some(SelectorKind::ToolDetail);
+    }
+
+    fn open_mouse_selector(&mut self) {
+        let current = self.settings().mouse;
+        let options = vec![
+            selector::SelectOption {
+                value: "on".into(),
+                label: "Mouse Enabled".into(),
+                description: "Omegon captures mouse for scrolling and interaction.".into(),
+                active: current,
+            },
+            selector::SelectOption {
+                value: "off".into(),
+                label: "Mouse Disabled".into(),
+                description: "Terminal-native text selection. Better for copy/paste.".into(),
+                active: !current,
+            },
+        ];
+        self.selector = Some(selector::Selector::new("Mouse Mode", options));
+        self.selector_kind = Some(SelectorKind::MouseMode);
+    }
+
     fn open_login_selector(&mut self) {
         // Build from canonical provider map — single source of truth
         let options: Vec<selector::SelectOption> = crate::auth::PROVIDERS
@@ -1928,6 +2050,43 @@ impl App {
                 } else {
                     Some(format!("Unknown workspace kind: {value}"))
                 }
+            }
+            SelectorKind::Preferences => {
+                // Open the sub-selector for the chosen preference category
+                match value.as_str() {
+                    "model" => { self.open_model_selector(); None }
+                    "thinking" => { self.open_thinking_selector(); None }
+                    "context" => { self.open_context_selector(); None }
+                    "detail" => { self.open_tool_detail_selector(); None }
+                    "mouse" => { self.open_mouse_selector(); None }
+                    "persona" => { self.open_persona_selector(); None }
+                    "tone" => { self.open_tone_selector(); None }
+                    "trust" => {
+                        let s = self.settings();
+                        if s.trusted_directories.is_empty() {
+                            Some("No trusted directories. Use /trust add <path> to add one.".into())
+                        } else {
+                            let list = s.trusted_directories.join("\n  ");
+                            Some(format!("Trusted directories:\n  {list}\n\nUse /trust add|remove <path> to manage."))
+                        }
+                    }
+                    "update" => { self.open_update_channel_selector(); None }
+                    _ => Some(format!("Unknown preference: {value}"))
+                }
+            }
+            SelectorKind::ToolDetail => {
+                if let Some(mode) = crate::settings::ToolDetail::parse(&value) {
+                    self.update_and_persist(|s| s.tool_detail = mode);
+                    Some(format!("Tool density → {}", mode.as_str()))
+                } else {
+                    Some(format!("Unknown density: {value}"))
+                }
+            }
+            SelectorKind::MouseMode => {
+                let enabled = value == "on";
+                self.set_terminal_copy_mode(!enabled);
+                self.update_and_persist(|s| s.mouse = enabled);
+                Some(format!("Mouse → {}", if enabled { "enabled" } else { "disabled" }))
             }
         }
     }
@@ -4183,6 +4342,12 @@ impl App {
             &["zed", "vscode", "status"],
         ),
         (
+            "preferences",
+            "open preferences menu (model, thinking, density, mouse, etc.)",
+            &[],
+        ),
+        ("prefs", "alias for /preferences", &[]),
+        (
             "trust",
             "manage trusted directories (outside-workspace access)",
             &["add", "remove", "list"],
@@ -5182,6 +5347,10 @@ impl App {
             }
             "thinking" => self.handle_slash_command(&format!("/think {args}"), tx),
             "models" => self.handle_slash_command("/model", tx),
+            "preferences" | "prefs" => {
+                self.open_preferences_selector();
+                SlashResult::Handled
+            }
             "trust" => {
                 let (sub, path) = args.split_once(' ').unwrap_or((args, ""));
                 let path = path.trim();

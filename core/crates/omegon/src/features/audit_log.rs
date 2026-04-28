@@ -25,9 +25,19 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
+/// Maximum audit log size before rotation (5 MB).
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Number of rotated archives to keep (audit-log.1.jsonl, .2.jsonl, .3.jsonl).
+const MAX_ROTATED_FILES: usize = 3;
+
 pub struct AuditLog {
     path: PathBuf,
     session_id: String,
+    /// Bytes written this session — avoids stat() on every append.
+    bytes_written: u64,
+    /// Checked once at startup to seed bytes_written.
+    size_checked: bool,
 }
 
 impl AuditLog {
@@ -37,10 +47,23 @@ impl AuditLog {
         Self {
             path: dir.join("audit-log.jsonl"),
             session_id: session_id.to_string(),
+            bytes_written: 0,
+            size_checked: false,
         }
     }
 
-    fn append(&self, entry: &AuditEntry) {
+    fn append(&mut self, entry: &AuditEntry) {
+        // Lazy size check on first write — avoids startup I/O.
+        if !self.size_checked {
+            self.size_checked = true;
+            self.bytes_written = fs::metadata(&self.path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            if self.bytes_written >= MAX_LOG_BYTES {
+                self.rotate();
+            }
+        }
+
         let Ok(json) = serde_json::to_string(entry) else {
             return;
         };
@@ -52,6 +75,33 @@ impl AuditLog {
             return;
         };
         let _ = writeln!(file, "{json}");
+        self.bytes_written += json.len() as u64 + 1; // +1 for newline
+
+        // Check after write — rotate if we crossed the threshold mid-session.
+        if self.bytes_written >= MAX_LOG_BYTES {
+            self.rotate();
+        }
+    }
+
+    /// Rotate: audit-log.jsonl → .1.jsonl, .1 → .2, .2 → .3, delete .3.
+    fn rotate(&mut self) {
+        for i in (1..MAX_ROTATED_FILES).rev() {
+            let from = self.path.with_extension(format!("{i}.jsonl"));
+            let to = self.path.with_extension(format!("{}.jsonl", i + 1));
+            if from.exists() {
+                let _ = fs::rename(&from, &to);
+            }
+        }
+        let archive_1 = self.path.with_extension("1.jsonl");
+        if self.path.exists() {
+            let _ = fs::rename(&self.path, &archive_1);
+        }
+        self.bytes_written = 0;
+        tracing::debug!(
+            rotated_to = %archive_1.display(),
+            "audit log rotated (>{} MB)",
+            MAX_LOG_BYTES / 1024 / 1024
+        );
     }
 
     fn now_ms() -> u64 {

@@ -4171,6 +4171,11 @@ impl App {
             "integrate omegon with an editor/IDE",
             &["zed", "vscode", "status"],
         ),
+        (
+            "trust",
+            "manage trusted directories (outside-workspace access)",
+            &["add", "remove", "list"],
+        ),
         ("version", "show build version and git sha", &[]),
         ("exit", "quit (or double Ctrl+C)", &[]),
     ];
@@ -5164,6 +5169,68 @@ impl App {
             }
             "thinking" => self.handle_slash_command(&format!("/think {args}"), tx),
             "models" => self.handle_slash_command("/model", tx),
+            "trust" => {
+                let (sub, path) = args.split_once(' ').unwrap_or((args, ""));
+                let path = path.trim();
+                match sub {
+                    "list" | "" => {
+                        let dirs = self.settings.lock().ok()
+                            .map(|s| s.trusted_directories.clone())
+                            .unwrap_or_default();
+                        if dirs.is_empty() {
+                            SlashResult::Display(
+                                "No trusted directories configured.\n\
+                                 Use /trust add <path> to allow access outside the workspace."
+                                    .into(),
+                            )
+                        } else {
+                            let list = dirs.iter()
+                                .map(|d| format!("  {d}"))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            SlashResult::Display(format!(
+                                "Trusted directories:\n{list}\n\n\
+                                 /trust add <path>    add a directory\n\
+                                 /trust remove <path> remove a directory"
+                            ))
+                        }
+                    }
+                    "add" if !path.is_empty() => {
+                        let cwd = self.cwd().to_path_buf();
+                        if let Ok(mut s) = self.settings.lock() {
+                            let path_str = path.to_string();
+                            if !s.trusted_directories.contains(&path_str) {
+                                s.trusted_directories.push(path_str.clone());
+                            }
+                            let mut profile = crate::settings::Profile::load(&cwd);
+                            profile.capture_from(&s);
+                            let _ = profile.save(&cwd);
+                            SlashResult::Display(format!(
+                                "✓ Added trusted directory: {path_str}\n\
+                                 The agent can now read/write files in this directory."
+                            ))
+                        } else {
+                            SlashResult::Display("Failed to update settings.".into())
+                        }
+                    }
+                    "remove" if !path.is_empty() => {
+                        let cwd = self.cwd().to_path_buf();
+                        if let Ok(mut s) = self.settings.lock() {
+                            let path_str = path.to_string();
+                            s.trusted_directories.retain(|d| d != &path_str);
+                            let mut profile = crate::settings::Profile::load(&cwd);
+                            profile.capture_from(&s);
+                            let _ = profile.save(&cwd);
+                            SlashResult::Display(format!("✓ Removed trusted directory: {path_str}"))
+                        } else {
+                            SlashResult::Display("Failed to update settings.".into())
+                        }
+                    }
+                    _ => SlashResult::Display(
+                        "Usage: /trust list | /trust add <path> | /trust remove <path>".into(),
+                    ),
+                }
+            }
             "version" => SlashResult::Display(format!(
                 "omegon {} ({} {})",
                 env!("CARGO_PKG_VERSION"),

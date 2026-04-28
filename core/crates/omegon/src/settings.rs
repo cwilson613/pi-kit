@@ -972,6 +972,20 @@ pub struct Profile {
     /// or a custom posture defined in `.omegon/postures/<name>.pkl`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_posture: Option<String>,
+
+    // ── Permissions ──
+    /// Directories outside the workspace that the agent can access without
+    /// per-operation confirmation. Paths are expanded at runtime (~ → $HOME).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_directories: Vec<String>,
+
+    // ── Updates ──
+    /// Update channel: "stable", "rc", or "nightly".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_channel: Option<String>,
+    /// Auto-update on session exit when a newer version is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1044,6 +1058,15 @@ impl Profile {
         if !self.provider_order.is_empty() {
             settings.provider_order = self.provider_order.clone();
         }
+        if !self.trusted_directories.is_empty() {
+            settings.trusted_directories = self.trusted_directories.clone();
+        }
+        if let Some(ref ch) = self.update_channel {
+            settings.update_channel = ch.clone();
+        }
+        if let Some(au) = self.auto_update {
+            settings.auto_update = au;
+        }
     }
 
     /// Apply profile to settings with posture resolution (needs cwd for custom postures).
@@ -1088,6 +1111,11 @@ impl Profile {
         if !settings.provider_order.is_empty() {
             self.provider_order = settings.provider_order.clone();
         }
+        if !settings.trusted_directories.is_empty() {
+            self.trusted_directories = settings.trusted_directories.clone();
+        }
+        self.update_channel = Some(settings.update_channel.clone());
+        self.auto_update = Some(settings.auto_update);
     }
 
 }

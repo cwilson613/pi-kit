@@ -1975,7 +1975,7 @@ async fn dispatch_single_tool(
                         decision: "allow".into(),
                     });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
-                    let _ = bus.execute_tool(
+                    let _ = bus.execute_internal(
                         crate::tool_registry::core::TRUST_DIRECTORY,
                         "__permission_grant",
                         trust_args,
@@ -2000,7 +2000,7 @@ async fn dispatch_single_tool(
                         decision: "always_allow".into(),
                     });
                     let trust_args = serde_json::json!({ "path": perm_err.directory });
-                    let _ = bus.execute_tool(
+                    let _ = bus.execute_internal(
                         crate::tool_registry::core::TRUST_DIRECTORY,
                         "__permission_grant",
                         trust_args,

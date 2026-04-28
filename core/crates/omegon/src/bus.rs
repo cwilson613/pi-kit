@@ -146,9 +146,6 @@ impl EventBus {
         disabled.insert(reg::model_budget::SET_MODEL_TIER.into());
         disabled.insert(reg::model_budget::SWITCH_TO_OFFLINE_DRIVER.into());
         disabled.insert(reg::model_budget::SET_THINKING_LEVEL.into());
-        // trust_directory is internal-only — called by the dispatch layer
-        // after interactive TUI approval. Never shown to the LLM.
-        disabled.insert(reg::core::TRUST_DIRECTORY.into());
 
         if slim_mode {
             // om/slim: additionally suppress delegation, orchestration,
@@ -434,6 +431,39 @@ impl EventBus {
             }
         }
         anyhow::bail!("no feature provides tool '{tool_name}'")
+    }
+
+    /// Execute an internal tool that may not be in the LLM-visible tool_defs.
+    ///
+    /// Unlike `execute_tool`, this tries every feature directly rather than
+    /// looking up the tool name in the registered definitions. Used for harness
+    /// plumbing (trust_directory, etc.) that the model should never call but
+    /// the dispatch layer needs.
+    pub async fn execute_internal(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<omegon_traits::ToolResult> {
+        for feature in &self.features {
+            match feature
+                .execute(tool_name, call_id, args.clone(), cancel.clone())
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    let msg = e.to_string();
+                    // "Unknown core tool" / "not implemented" = this feature doesn't own it
+                    if msg.contains("Unknown") || msg.contains("not implemented") {
+                        continue;
+                    }
+                    // Real error from the owning feature
+                    return Err(e);
+                }
+            }
+        }
+        anyhow::bail!("no feature handles internal tool '{tool_name}'")
     }
 
     /// Get the configured timeout for a tool.

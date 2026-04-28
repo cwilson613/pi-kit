@@ -489,26 +489,10 @@ impl ToolProvider for CoreTools {
                     "required": ["action"]
                 }),
             },
-            // trust_directory: internal-only tool called by the dispatch layer
-            // after interactive TUI approval. Hidden from the LLM via the
-            // base disabled set in bus.rs — the model cannot call it directly.
-            ToolDefinition {
-                name: reg::TRUST_DIRECTORY.into(),
-                label: reg::TRUST_DIRECTORY.into(),
-                description: "Internal: grant session-level directory access. \
-                    Called by the permission system after user approval."
-                    .into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Directory path to approve"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
+            // trust_directory is NOT in the tool schema — it's internal harness
+            // plumbing called via bus.execute_internal() by the permission
+            // dispatch layer. The handler is in CoreTools::execute().
+            //
             // NOTE: view, web_search, ask_local_model, list_local_models,
             // manage_ollama, context_status, context_compact, context_clear are
             // provided by their dedicated ToolProvider implementations
@@ -979,14 +963,12 @@ mod tests {
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // Should have 10 core tools (bash, read, write, edit, change,
-        // commit, whoami, chronos, serve, trust_directory).
-        // trust_directory is registered for bus dispatch but hidden from
-        // the LLM via the base disabled set.
+        // 9 LLM-visible core tools. trust_directory is internal-only
+        // (handled via bus.execute_internal, not in tool_defs).
         assert_eq!(
             tool_names.len(),
-            10,
-            "Expected 10 core tools, got {}",
+            9,
+            "Expected 9 core tools, got {}",
             tool_names.len()
         );
     }

@@ -1352,8 +1352,9 @@ async fn stream_with_retry(
         let is_transient = transient_kind.is_some();
         let model = options
             .model
-            .clone()
-            .unwrap_or_else(|| config.model.clone());
+            .as_deref()
+            .unwrap_or(&config.model)
+            .to_string();
 
         if !is_transient {
             if attempt > 1 {

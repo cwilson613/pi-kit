@@ -905,9 +905,9 @@ impl Feature for SessionLog {
                 duration_secs,
                 initial_prompt,
                 outcome_summary,
-            } => {
+            }
                 // Only write an entry if the session did meaningful work
-                if *turns > 0 {
+                if *turns > 0 => {
                     self.append_entry(
                         *turns,
                         *tool_calls,
@@ -917,7 +917,6 @@ impl Feature for SessionLog {
                     );
                     tracing::info!("Session log entry appended to {}", self.log_path.display());
                 }
-            }
             _ => {}
         }
         vec![]

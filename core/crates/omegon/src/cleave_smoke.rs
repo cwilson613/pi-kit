@@ -390,7 +390,7 @@ fn assert_runtime_profile_report(report: &serde_json::Value) -> anyhow::Result<(
         .iter()
         .filter_map(|v| v.as_str())
         .collect::<Vec<_>>();
-    if plugin_names.iter().any(|name| *name == "Beta Plugin") {
+    if plugin_names.contains(&"Beta Plugin") {
         anyhow::bail!("disabled extension loaded: {plugin_names:?}");
     }
     if report["thinking_level"] != "high" {

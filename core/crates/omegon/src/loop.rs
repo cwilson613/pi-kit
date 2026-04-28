@@ -501,14 +501,13 @@ pub async fn run(
         // The SSE idle timeout (90s) fires before the first token arrives
         // on a cold start. We pre-flight the model load here and surface
         // progress in the TUI via toast notifications.
-        if let Some(model_spec) = stream_options.model.as_deref() {
-            if crate::providers::infer_provider_id(model_spec) == "ollama" {
+        if let Some(model_spec) = stream_options.model.as_deref()
+            && crate::providers::infer_provider_id(model_spec) == "ollama" {
                 let bare = model_spec
                     .trim_start_matches("ollama:")
                     .trim_start_matches("local:");
                 maybe_warmup_ollama(bare, events, config.ollama_manager.as_ref()).await;
             }
-        }
 
         let assistant_msg = tokio::select! {
             result = stream_with_retry(
@@ -1439,7 +1438,7 @@ async fn stream_with_retry(
         // Milestone warnings → persistent (pushed to conversation).
         // These escalate so the operator notices accumulated failures.
         let is_milestone =
-            matches!(attempt, 10 | 25 | 50 | 100) || (attempt > 100 && attempt % 100 == 0);
+            matches!(attempt, 10 | 25 | 50 | 100) || (attempt > 100 && attempt.is_multiple_of(100));
         if is_milestone {
             let elapsed = started.elapsed();
             let kind_label = transient_kind
@@ -2214,7 +2213,7 @@ impl StuckDetector {
             // Normalize: hash path only, ignore offset/limit/lines
             call.arguments
                 .get("path")
-                .map(|v| hash_value(v))
+                .map(hash_value)
                 .unwrap_or_else(|| hash_value(&call.arguments))
         } else {
             hash_value(&call.arguments)
@@ -2232,14 +2231,13 @@ impl StuckDetector {
             if let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
                 self.recent_file_accesses.retain(|p| p != path);
             }
-        } else if is_repo_inspection_tool(&call.name) {
-            if let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
+        } else if is_repo_inspection_tool(&call.name)
+            && let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
                 self.recent_file_accesses.push(path.to_string());
                 if self.recent_file_accesses.len() > self.window * 2 {
                     self.recent_file_accesses.drain(..self.window);
                 }
             }
-        }
     }
 
     /// Check for stuck patterns. Returns a warning with escalation level if detected.

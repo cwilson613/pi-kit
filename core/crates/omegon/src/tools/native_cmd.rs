@@ -402,7 +402,7 @@ fn cmd_ls(args: &[String], cwd: &Path) -> Option<NativeResult> {
                 names.push((name, meta));
             }
         }
-        names.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        names.sort_by_key(|a| a.0.to_lowercase());
 
         if paths.len() > 1 {
             output.push_str(&format!("{}:\n", dir_path));
@@ -848,22 +848,20 @@ fn cmd_rm(args: &[String], cwd: &Path) -> Option<NativeResult> {
             if recursive {
                 std::fs::remove_dir_all(&path)
             } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Err(std::io::Error::other(
                     "Is a directory",
                 ))
             }
         } else {
             std::fs::remove_file(&path)
         };
-        if let Err(e) = result {
-            if !force {
+        if let Err(e) = result
+            && !force {
                 return Some(NativeResult {
                     stdout: format!("rm: cannot remove '{}': {}", file, e),
                     exit_code: 1,
                 });
             }
-        }
     }
     Some(NativeResult {
         stdout: String::new(),
@@ -890,11 +888,10 @@ fn is_dangerous_rm_target(path: &Path) -> bool {
     }
 
     // Home directory itself
-    if let Some(home) = dirs::home_dir() {
-        if canonical == home {
+    if let Some(home) = dirs::home_dir()
+        && canonical == home {
             return true;
         }
-    }
 
     // Parent traversal above cwd (.. resolving above where we are)
     // This catches `rm -rf ../..` etc.
@@ -986,8 +983,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 
 fn copy_dir_recursive_depth(src: &Path, dest: &Path, depth: usize) -> std::io::Result<()> {
     if depth > 50 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(std::io::Error::other(
             "directory copy depth limit exceeded (possible symlink loop)",
         ));
     }

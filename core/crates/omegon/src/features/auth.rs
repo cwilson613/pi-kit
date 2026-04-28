@@ -26,6 +26,12 @@ pub struct AuthFeature {
     last_probe_time: Option<SystemTime>,
 }
 
+impl Default for AuthFeature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuthFeature {
     pub fn new() -> Self {
         Self {
@@ -329,13 +335,12 @@ impl Feature for AuthFeature {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::TurnEnd { turn, .. } => {
+            BusEvent::TurnEnd { turn, .. }
                 // Check for expiring credentials every N turns
-                if turn.saturating_sub(self.last_expiry_check) >= EXPIRY_CHECK_INTERVAL {
+                if turn.saturating_sub(self.last_expiry_check) >= EXPIRY_CHECK_INTERVAL => {
                     self.last_expiry_check = *turn;
                     return self.check_expiring_credentials();
                 }
-            }
             BusEvent::ContextBuild { .. } => {
                 // Refresh provider cache on context build
                 crate::task_spawn::spawn_best_effort("auth-context-refresh", async {

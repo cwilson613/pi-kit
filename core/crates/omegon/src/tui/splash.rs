@@ -313,7 +313,7 @@ fn render_grid<'a>(
 ) -> Vec<Line<'a>> {
     const COLS: usize = 3;
     const SEP: &str = "   "; // 3-space column separator
-    let rows = (items.len() + COLS - 1) / COLS;
+    let rows = items.len().div_ceil(COLS);
     let mut output = Vec::with_capacity(rows);
 
     for row in 0..rows {

@@ -288,7 +288,7 @@ async fn try_stateless_control(
             let resp = auth_logout_response(provider).await;
             if resp.accepted {
                 let env_vars = crate::auth::provider_env_vars(provider);
-                secrets.evict_secrets(&env_vars.to_vec());
+                secrets.evict_secrets(env_vars);
             }
             resp
         }
@@ -514,9 +514,9 @@ pub async fn execute_daemon_control(
     };
     // Emit HarnessStatusChanged for mutations so WebSocket/IPC clients see
     // updated state without polling.
-    if resp.accepted && is_settings_mutation {
-        if let Some(ref harness_handle) = handles.harness {
-            if let Ok(mut status) = harness_handle.lock() {
+    if resp.accepted && is_settings_mutation
+        && let Some(ref harness_handle) = handles.harness
+            && let Ok(mut status) = harness_handle.lock() {
                 // Refresh settings-derived fields in the live harness status.
                 if let Ok(s) = shared_settings.lock() {
                     status.context_class = s.effective_requested_class().label().to_string();
@@ -526,8 +526,6 @@ pub async fn execute_daemon_control(
                     let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json: json });
                 }
             }
-        }
-    }
     omegon_traits::ControlOutputResponse {
         accepted: resp.accepted,
         output: resp.output,
@@ -2235,7 +2233,7 @@ pub async fn context_compact_response(
                     metrics.update(
                         est,
                         settings.context_window,
-                        &settings.effective_requested_class().label(),
+                        settings.effective_requested_class().label(),
                         settings.thinking.as_str(),
                     );
                 }

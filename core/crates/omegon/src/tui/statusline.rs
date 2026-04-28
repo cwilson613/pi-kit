@@ -98,8 +98,8 @@ impl StatusLine {
         }
 
         // Git branch (≥65)
-        if w >= 65 {
-            if let Some(ref branch) = self.git_branch {
+        if w >= 65
+            && let Some(ref branch) = self.git_branch {
                 let field = Span::styled(branch.clone(), Style::default().fg(t.muted()));
                 let cost = sep.width() + field.width();
                 if used + cost < w {
@@ -108,7 +108,6 @@ impl StatusLine {
                     used += cost;
                 }
             }
-        }
 
         // Files r/w (≥75)
         if w >= 75 && (self.files_read > 0 || self.files_modified > 0) {
@@ -125,8 +124,8 @@ impl StatusLine {
         }
 
         // OODA phase (≥85)
-        if w >= 85 {
-            if let Some(phase) = &self.phase {
+        if w >= 85
+            && let Some(phase) = &self.phase {
                 let (label, color) = match phase {
                     OodaPhase::Act => ("Act", t.accent()),
                     OodaPhase::Observe => ("Observe", t.muted()),
@@ -141,11 +140,10 @@ impl StatusLine {
                     used += cost;
                 }
             }
-        }
 
         // Drift warning (≥90)
-        if w >= 90 {
-            if let Some(drift) = &self.drift {
+        if w >= 90
+            && let Some(drift) = &self.drift {
                 let label = match drift {
                     DriftKind::OrientationChurn => "⚠ churn",
                     DriftKind::RepeatedActionFailure => "⚠ retry",
@@ -160,11 +158,10 @@ impl StatusLine {
                     used += cost;
                 }
             }
-        }
 
         // Persona (≥100)
-        if w >= 100 {
-            if let Some(ref persona) = self.persona {
+        if w >= 100
+            && let Some(ref persona) = self.persona {
                 let field =
                     Span::styled(format!("@{persona}"), Style::default().fg(t.accent_muted()));
                 let cost = sep.width() + field.width();
@@ -173,7 +170,6 @@ impl StatusLine {
                     spans.push(field);
                 }
             }
-        }
 
         // Right-align version string
         let version = concat!("v", env!("CARGO_PKG_VERSION"));

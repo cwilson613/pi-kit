@@ -43,11 +43,10 @@ pub fn truncate_output(s: &str, max_chars: usize) -> String {
 /// Non-text blocks (images, tool_use, etc.) are passed through unchanged.
 pub fn truncate_content_blocks(blocks: &mut Vec<ContentBlock>, max_chars: usize) {
     for block in blocks.iter_mut() {
-        if let ContentBlock::Text { text } = block {
-            if text.chars().count() > max_chars {
+        if let ContentBlock::Text { text } = block
+            && text.chars().count() > max_chars {
                 *text = truncate_output(text, max_chars);
             }
-        }
     }
 }
 

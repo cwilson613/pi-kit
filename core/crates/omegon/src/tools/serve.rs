@@ -67,7 +67,7 @@ async fn start(args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
     let name = args
         .get("name")
         .and_then(|v| v.as_str())
-        .map(|s| sanitize_name(s))
+        .map(sanitize_name)
         .unwrap_or_else(|| slugify_command(command));
 
     let persist = args
@@ -84,16 +84,14 @@ async fn start(args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
 
     // Check if already running
     if pid_path.exists() {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                if is_alive(pid) {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+                && is_alive(pid) {
                     return err(format!(
                         "Service '{name}' is already running (PID {pid}).\nLogs: {}\nUse 'stop' first to restart.",
                         log_path.display()
                     ));
                 }
-            }
-        }
         std::fs::remove_file(&pid_path).ok();
     }
 
@@ -198,8 +196,8 @@ async fn list() -> Result<ToolResult> {
 
     let mut lines = Vec::new();
     for entry in entries {
-        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-            if let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content) {
+        if let Ok(content) = std::fs::read_to_string(entry.path())
+            && let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content) {
                 let status = if is_alive(meta.pid) {
                     "running"
                 } else {
@@ -211,7 +209,6 @@ async fn list() -> Result<ToolResult> {
                     meta.name, meta.pid, status, persist_flag, meta.command
                 ));
             }
-        }
     }
 
     ok(format!("Services:\n{}", lines.join("\n")))
@@ -265,14 +262,13 @@ async fn check(args: &serde_json::Value) -> Result<ToolResult> {
         if alive { "running" } else { "dead" }
     );
 
-    if let Ok(mc) = std::fs::read_to_string(&meta_path) {
-        if let Ok(meta) = serde_json::from_str::<ServiceMeta>(&mc) {
+    if let Ok(mc) = std::fs::read_to_string(&meta_path)
+        && let Ok(meta) = serde_json::from_str::<ServiceMeta>(&mc) {
             info.push_str(&format!(
                 "\nCommand: {}\nStarted: {}\nPersist: {}",
                 meta.command, meta.started_at, meta.persist
             ));
         }
-    }
 
     ok(info)
 }
@@ -290,10 +286,9 @@ pub fn cleanup_session_services() {
             .extension()
             .map(|x| x == "meta")
             .unwrap_or(false)
-        {
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                if let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content) {
-                    if !meta.persist && is_alive(meta.pid) {
+            && let Ok(content) = std::fs::read_to_string(entry.path())
+                && let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content)
+                    && !meta.persist && is_alive(meta.pid) {
                         tracing::info!(name = %meta.name, pid = meta.pid, "stopping session service");
                         unsafe {
                             libc::kill(meta.pid as i32, libc::SIGTERM);
@@ -301,9 +296,6 @@ pub fn cleanup_session_services() {
                         std::fs::remove_file(dir.join(format!("{}.pid", meta.name))).ok();
                         std::fs::remove_file(entry.path()).ok();
                     }
-                }
-            }
-        }
     }
 }
 
@@ -334,8 +326,7 @@ pub fn running_services() -> Vec<(String, u32, bool)> {
 /// Sanitize a service name to prevent path traversal.
 /// Strips path separators, `..`, and non-safe characters.
 fn sanitize_name(name: &str) -> String {
-    name.replace('/', "")
-        .replace('\\', "")
+    name.replace(['/', '\\'], "")
         .replace("..", "")
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.' || *c == '_')

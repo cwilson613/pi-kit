@@ -65,8 +65,8 @@ impl OmegonAcpAgent {
             std::time::Duration::from_millis(100),
         )
         .is_ok();
-        if ollama_ok {
-            if let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:11434") {
+        if ollama_ok
+            && let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:11434") {
                 use std::io::{Read, Write};
                 let mut s = stream;
                 let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
@@ -80,9 +80,9 @@ impl OmegonAcpAgent {
                     total += n;
                 }
                 let body = String::from_utf8_lossy(&buf[..total]);
-                if let Some(start) = body.find('{') {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body[start..]) {
-                        if let Some(models) = v["models"].as_array() {
+                if let Some(start) = body.find('{')
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&body[start..])
+                        && let Some(models) = v["models"].as_array() {
                             for m in models {
                                 if let Some(name) = m["name"].as_str() {
                                     let size = m["size"].as_u64().unwrap_or(0);
@@ -94,10 +94,7 @@ impl OmegonAcpAgent {
                                 }
                             }
                         }
-                    }
-                }
             }
-        }
 
         for (id, name) in [
             ("anthropic:claude-opus-4-7", "Claude Opus 4.7"),
@@ -571,8 +568,8 @@ impl OmegonAcpAgent {
                     .join(".omegon/secrets.json");
                 let mut lines = vec!["**Configured secrets:**".to_string()];
                 let mut found = false;
-                if let Ok(data) = std::fs::read_to_string(&secrets_path) {
-                    if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&data) {
+                if let Ok(data) = std::fs::read_to_string(&secrets_path)
+                    && let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&data) {
                         for (name, source) in &map {
                             let src = source.as_str().unwrap_or("unknown");
                             let kind = if src.starts_with("keyring:") {
@@ -590,7 +587,6 @@ impl OmegonAcpAgent {
                             found = true;
                         }
                     }
-                }
                 // Check env-only keys not in recipes
                 for key in &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"] {
                     if std::env::var(key).is_ok() && !lines.iter().any(|l| l.contains(key)) {

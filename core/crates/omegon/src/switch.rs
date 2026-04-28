@@ -497,11 +497,10 @@ impl VersionSwitcher {
                     KeyCode::Up => {
                         selected = selected.saturating_sub(1);
                     }
-                    KeyCode::Down => {
-                        if selected < all_options.len() - 1 {
+                    KeyCode::Down
+                        if selected < all_options.len() - 1 => {
                             selected += 1;
                         }
-                    }
                     KeyCode::Enter => {
                         let chosen_version = &all_options[selected].0;
                         break Some(chosen_version.raw.clone());

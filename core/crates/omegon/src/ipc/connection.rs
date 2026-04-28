@@ -157,11 +157,10 @@ impl IpcConnection {
                             let subs = sub_ref.lock().await;
                             if subs.contains(name) {
                                 drop(subs);
-                                if let Ok(raw) = build_event_frame(&ipc_ev) {
-                                    if event_out_tx.send(raw).await.is_err() {
+                                if let Ok(raw) = build_event_frame(&ipc_ev)
+                                    && event_out_tx.send(raw).await.is_err() {
                                         break;
                                     }
-                                }
                             }
                         }
                     }

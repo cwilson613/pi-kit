@@ -196,11 +196,10 @@ impl CodescanProvider {
                 Ok(g) => g,
                 Err(_) => return,
             };
-            if let Some(t) = *last {
-                if t.elapsed() < Duration::from_secs(HEAD_CHECK_INTERVAL_SECS) {
+            if let Some(t) = *last
+                && t.elapsed() < Duration::from_secs(HEAD_CHECK_INTERVAL_SECS) {
                     return; // still within cooldown — skip
                 }
-            }
             *last = Some(Instant::now());
         }
 

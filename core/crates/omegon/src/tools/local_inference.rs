@@ -185,14 +185,12 @@ impl LocalInferenceProvider {
                         // of the stream is still useful.
                         continue;
                     };
-                    if let Some(choice) = chunk_obj.choices.first() {
-                        if let Some(content) = choice.delta.content.as_deref() {
-                            if !content.is_empty() {
+                    if let Some(choice) = chunk_obj.choices.first()
+                        && let Some(content) = choice.delta.content.as_deref()
+                            && !content.is_empty() {
                                 accumulated.push_str(content);
                                 deltas_seen += 1;
                             }
-                        }
-                    }
                 }
             }
 
@@ -303,11 +301,10 @@ impl LocalInferenceProvider {
                 .arg("-e")
                 .arg("tell application \"Ollama\" to quit")
                 .output();
-            if let Ok(output) = quit_result {
-                if output.status.success() {
+            if let Ok(output) = quit_result
+                && output.status.success() {
                     return "Ollama stopped (macOS app).".into();
                 }
-            }
         }
 
         // Fall back to exact process name match (not -f substring match)
@@ -359,8 +356,8 @@ impl LocalInferenceProvider {
 
                 last_status = status.to_string();
 
-                if let Some(sink) = sink {
-                    if sink.is_active() && total > 0 {
+                if let Some(sink) = sink
+                    && sink.is_active() && total > 0 {
                         sink.send(PartialToolResult {
                             tail: format!("{status}: {completed}/{total}"),
                             progress: ToolProgress {
@@ -377,7 +374,6 @@ impl LocalInferenceProvider {
                             details: json!({"model": model, "status": status}),
                         });
                     }
-                }
             }
         }
 

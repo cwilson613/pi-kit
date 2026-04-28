@@ -241,6 +241,7 @@ impl IntentDocument {
 /// (which may lack newer fields) deserialize without error.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct SessionSnapshot {
     messages: Vec<LlmMessage>,
     intent: IntentDocument,
@@ -248,16 +249,6 @@ struct SessionSnapshot {
     compaction_summary: Option<String>,
 }
 
-impl Default for SessionSnapshot {
-    fn default() -> Self {
-        Self {
-            messages: Vec::new(),
-            intent: IntentDocument::default(),
-            decay_window: 0,
-            compaction_summary: None,
-        }
-    }
-}
 
 /// The full conversation state.
 pub struct ConversationState {
@@ -310,11 +301,10 @@ impl ConversationState {
     /// Cached by canonical message count — invalidated on any mutation.
     pub fn estimate_tokens(&self) -> usize {
         let msg_count = self.canonical.len();
-        if let Some((cached_count, cached_tokens)) = self.token_cache.get() {
-            if cached_count == msg_count {
+        if let Some((cached_count, cached_tokens)) = self.token_cache.get()
+            && cached_count == msg_count {
                 return cached_tokens;
             }
-        }
         let view = self.build_llm_view();
         let chars: usize = view.iter().map(|m| m.char_count()).sum();
         let tokens = chars / 4;
@@ -415,13 +405,11 @@ impl ConversationState {
 
         // Strip extended thinking from all messages older than 2 turns
         for msg in &mut self.canonical {
-            if current_turn.saturating_sub(msg.turn()) > 2 {
-                if let AgentMessage::Assistant(assistant, _) = msg {
-                    if assistant.thinking.as_ref().is_some_and(|t| !t.is_empty()) {
+            if current_turn.saturating_sub(msg.turn()) > 2
+                && let AgentMessage::Assistant(assistant, _) = msg
+                    && assistant.thinking.as_ref().is_some_and(|t| !t.is_empty()) {
                         assistant.thinking = None;
                     }
-                }
-            }
         }
 
         // Decay messages beyond the tight window

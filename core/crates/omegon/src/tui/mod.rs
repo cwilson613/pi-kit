@@ -1753,14 +1753,13 @@ impl App {
         // Check for persona changes
         if prev.active_persona != current.active_persona {
             match (&prev.active_persona, &current.active_persona) {
-                (Some(old), Some(new)) => {
-                    if old.id != new.id {
+                (Some(old), Some(new))
+                    if old.id != new.id => {
                         self.show_toast(
                             &format!("Persona → {} {}", new.badge, new.name),
                             ratatui_toaster::ToastType::Info,
                         );
                     }
-                }
                 (Some(old), None) => {
                     self.show_toast(
                         &format!("Persona deactivated: {} {}", old.badge, old.name),
@@ -1780,14 +1779,13 @@ impl App {
         // Check for tone changes
         if prev.active_tone != current.active_tone {
             match (&prev.active_tone, &current.active_tone) {
-                (Some(old), Some(new)) => {
-                    if old.id != new.id {
+                (Some(old), Some(new))
+                    if old.id != new.id => {
                         self.show_toast(
                             &format!("Tone → {}", new.name),
                             ratatui_toaster::ToastType::Info,
                         );
                     }
-                }
                 (Some(old), None) => {
                     self.show_toast(
                         &format!("Tone deactivated: {}", old.name),
@@ -2350,15 +2348,14 @@ impl App {
             }
             "demo" => {
                 // Resume existing overlay if still active
-                if let Some(ref overlay) = self.tutorial_overlay {
-                    if overlay.active {
+                if let Some(ref overlay) = self.tutorial_overlay
+                    && overlay.active {
                         return SlashResult::Display(format!(
                             "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.",
                             overlay.step_index() + 1,
                             overlay.total_steps(),
                         ));
                     }
-                }
                 // Start demo overlay
                 let has_design = self.dashboard.status_counts.total > 0;
                 self.tutorial_overlay = Some(tutorial::Tutorial::new_demo(has_design));
@@ -2369,8 +2366,8 @@ impl App {
             "lessons" => {
                 // Explicit opt-in to legacy lesson-based tutorial (if project has lesson files)
                 let tutorial_dir = self.cwd().join(".omegon").join("tutorial");
-                if tutorial_dir.is_dir() {
-                    if let Some(tut) = TutorialState::load(&tutorial_dir) {
+                if tutorial_dir.is_dir()
+                    && let Some(tut) = TutorialState::load(&tutorial_dir) {
                         let lesson = tut.current_lesson().clone();
                         let status = tut.status_line();
                         self.tutorial = Some(tut);
@@ -2379,7 +2376,6 @@ impl App {
                             "{status}\n\nLesson queued. The agent will begin when ready."
                         ));
                     }
-                }
                 SlashResult::Display("No lesson files found in .omegon/tutorial/".into())
             }
             "consent" => {
@@ -2401,8 +2397,8 @@ impl App {
             }
             _ => {
                 // Resume existing overlay if still active
-                if let Some(ref overlay) = self.tutorial_overlay {
-                    if overlay.active {
+                if let Some(ref overlay) = self.tutorial_overlay
+                    && overlay.active {
                         let mode_note = match overlay.mode {
                             tutorial::TutorialMode::ConsentRequired => {
                                 "\n\nℹ Anthropic subscription detected. Type /tutorial consent\nto enable interactive agent steps (uses subscription quota)."
@@ -2419,7 +2415,6 @@ impl App {
                             mode_note,
                         ));
                     }
-                }
                 // Gate: detect what the operator has available
                 let has_design = self.dashboard.status_counts.total > 0;
                 let mode = tutorial::tutorial_gate();
@@ -2452,8 +2447,8 @@ impl App {
 
     /// Advance to the next tutorial step/lesson.
     fn handle_tutorial_next(&mut self) -> SlashResult {
-        if let Some(ref mut overlay) = self.tutorial_overlay {
-            if overlay.active {
+        if let Some(ref mut overlay) = self.tutorial_overlay
+            && overlay.active {
                 overlay.advance();
                 return SlashResult::Display(format!(
                     "Tutorial step {}/{}",
@@ -2461,7 +2456,6 @@ impl App {
                     overlay.total_steps()
                 ));
             }
-        }
         if let Some(ref mut tut) = self.tutorial {
             if tut.advance() {
                 let lesson = tut.current_lesson().clone();
@@ -2480,8 +2474,8 @@ impl App {
 
     /// Go back to the previous tutorial step/lesson.
     fn handle_tutorial_prev(&mut self) -> SlashResult {
-        if let Some(ref mut overlay) = self.tutorial_overlay {
-            if overlay.active {
+        if let Some(ref mut overlay) = self.tutorial_overlay
+            && overlay.active {
                 overlay.go_back();
                 return SlashResult::Display(format!(
                     "Tutorial step {}/{}",
@@ -2489,7 +2483,6 @@ impl App {
                     overlay.total_steps()
                 ));
             }
-        }
         if let Some(ref mut tut) = self.tutorial {
             if tut.go_back() {
                 let lesson = tut.current_lesson().clone();
@@ -3196,20 +3189,16 @@ impl App {
             frame.render_stateful_widget(conv_widget, content_area, conv_state);
         } else {
             // Render extension widget with schema-aware formatting
-            match self.conversation.tabs.active() {
-                Tab::Extension { widget_id, .. } => {
-                    if let Some(widget) = self.extension_widgets.get(widget_id) {
-                        widget_renderer::render_widget(
-                            frame,
-                            content_area,
-                            &widget.renderer,
-                            &widget.current_data,
-                            &widget.label,
-                        );
-                    }
+            if let Tab::Extension { widget_id, .. } = self.conversation.tabs.active()
+                && let Some(widget) = self.extension_widgets.get(widget_id) {
+                    widget_renderer::render_widget(
+                        frame,
+                        content_area,
+                        &widget.renderer,
+                        &widget.current_data,
+                        &widget.label,
+                    );
                 }
-                _ => {}
-            }
         }
 
         self.conversation_area = Some(conversation_area);
@@ -3359,8 +3348,8 @@ impl App {
 
             // Push live cleave progress into the instrument panel each render tick
             // so the tools→cleave swap happens without turn-boundary latency.
-            if let Some(ref cp_lock) = self.dashboard_handles.cleave {
-                if let Ok(cp) = cp_lock.lock() {
+            if let Some(ref cp_lock) = self.dashboard_handles.cleave
+                && let Ok(cp) = cp_lock.lock() {
                     let snapshot = if cp.active { Some(cp.clone()) } else { None };
                     self.instrument_panel.set_cleave_progress(snapshot);
                     // Roll new child tokens into session totals (delta only).
@@ -3377,7 +3366,6 @@ impl App {
                         self.cleave_tokens_accounted_out += new_out;
                     }
                 }
-            }
         }
 
         // ── Unified footer console: engine | inference | tools ──────
@@ -3497,7 +3485,7 @@ impl App {
                 .footer_data
                 .model_id
                 .split(':')
-                .last()
+                .next_back()
                 .unwrap_or(&self.footer_data.model_id)
                 .split('-')
                 .take(2)
@@ -3734,8 +3722,8 @@ impl App {
             }
 
             // ── Turn boundary header ────────────────────────────────
-            if let Some(turn) = segment.meta.turn {
-                if last_turn != Some(turn) {
+            if let Some(turn) = segment.meta.turn
+                && last_turn != Some(turn) {
                     last_turn = Some(turn);
                     if !lines.is_empty() {
                         let mut turn_spans: Vec<Span<'static>> = vec![
@@ -3762,7 +3750,6 @@ impl App {
                         lines.push(Line::from(turn_spans));
                     }
                 }
-            }
 
             let is_selected = selected == Some(idx);
             let presentation = segment.presentation();
@@ -6882,16 +6869,10 @@ fn handle_editor_command(args: &str) -> String {
             // Try to launch Zed — check CLI first, then macOS app bundle
             let launched = if std::process::Command::new("zed").arg(".").spawn().is_ok() {
                 true
-            } else if cfg!(target_os = "macos")
-                && std::process::Command::new("open")
+            } else { cfg!(target_os = "macos") && std::process::Command::new("open")
                     .args(["-a", "Zed", "."])
                     .spawn()
-                    .is_ok()
-            {
-                true
-            } else {
-                false
-            };
+                    .is_ok() };
 
             if launched {
                 result_lines.push("✓ Launching Zed...".to_string());
@@ -6929,7 +6910,7 @@ fn handle_editor_command(args: &str) -> String {
         "status" => {
             let mut lines = vec!["Editor Integration Status\n".to_string()];
             lines.push(format!("  Binary: {omegon_bin}"));
-            lines.push(format!("  ACP: omegon acp"));
+            lines.push("  ACP: omegon acp".to_string());
 
             // Check if Zed is installed (CLI or macOS app bundle)
             let has_zed_cli = std::process::Command::new("zed")
@@ -7113,11 +7094,10 @@ pub async fn run_tui(
     // Default to slim/conversation-first startup. Operators can elevate
     // to the full harness via /ui full, /unshackle, or /warp.
     app.apply_ui_preset(UiSurfaces::lean());
-    if !app.settings().is_slim() {
-        if let Ok(mut s) = app.settings.lock() {
+    if !app.settings().is_slim()
+        && let Ok(mut s) = app.settings.lock() {
             s.set_posture(crate::settings::PosturePreset::Explorator);
         }
-    }
 
     // Pre-populate from initial state so first frame isn't empty
     app.footer_data.total_facts = config.initial.total_facts;
@@ -7293,13 +7273,12 @@ pub async fn run_tui(
                 // HarnessStatusChanged carries the startup memory snapshot —
                 // keep the latest one so it isn't lost before the main loop.
                 while let Ok(ev) = events_rx.try_recv() {
-                    if let AgentEvent::HarnessStatusChanged { status_json } = ev {
-                        if let Ok(status) =
+                    if let AgentEvent::HarnessStatusChanged { status_json } = ev
+                        && let Ok(status) =
                             serde_json::from_value::<crate::status::HarnessStatus>(status_json)
                         {
                             app.footer_data.update_harness(status);
                         }
-                    }
                 }
 
                 // Safety timeout
@@ -7543,13 +7522,11 @@ pub async fn run_tui(
                             _ => None, // ignore other keys
                         };
                         if let Some(resp) = response {
-                            if let Some(respond) = app.pending_permission.take() {
-                                if let Ok(mut slot) = respond.lock() {
-                                    if let Some(tx) = slot.take() {
+                            if let Some(respond) = app.pending_permission.take()
+                                && let Ok(mut slot) = respond.lock()
+                                    && let Some(tx) = slot.take() {
                                         let _ = tx.send(resp);
                                     }
-                                }
-                            }
                             let label = match resp {
                                 omegon_traits::PermissionResponse::Allow => {
                                     "allowed (this session)"
@@ -7676,8 +7653,8 @@ pub async fn run_tui(
                     }
 
                     // ── Tutorial overlay intercepts keys when active ────
-                    if let Some(ref mut overlay) = app.tutorial_overlay {
-                        if overlay.active {
+                    if let Some(ref mut overlay) = app.tutorial_overlay
+                        && overlay.active {
                             let step_trigger = overlay.step().trigger.clone();
                             match key.code {
                                 KeyCode::Esc => {
@@ -7811,7 +7788,6 @@ pub async fn run_tui(
                                 }
                             }
                         }
-                    }
 
                     // ── Sidebar navigation mode ──────────────────────
                     // When dashboard sidebar is active, route keys to the tree.
@@ -7837,9 +7813,9 @@ pub async fn run_tui(
                     }
 
                     // Handle action prompt input (1-9 keys) before other keys
-                    if let Some((widget_id, actions)) = &app.active_action_prompt {
-                        if let KeyCode::Char(c) = key.code {
-                            if let Some(digit) = c.to_digit(10) {
+                    if let Some((widget_id, actions)) = &app.active_action_prompt
+                        && let KeyCode::Char(c) = key.code
+                            && let Some(digit) = c.to_digit(10) {
                                 let idx = (digit - 1) as usize;
                                 if idx < actions.len() {
                                     let action = actions[idx].clone();
@@ -7855,8 +7831,6 @@ pub async fn run_tui(
                                     continue;
                                 }
                             }
-                        }
-                    }
 
                     if app.focus_mode {
                         match (key.code, key.modifiers) {
@@ -8032,35 +8006,30 @@ pub async fn run_tui(
                                     let cmd = format!("/{}", matches[0].0);
                                     app.editor.set_text(&cmd);
                                 }
-                            } else if text.is_empty() {
-                                if let Some(idx) = app.conversation.focused_tool_card() {
+                            } else if text.is_empty()
+                                && let Some(idx) = app.conversation.focused_tool_card() {
                                     app.conversation.toggle_expand(idx);
                                 }
-                            }
                         }
 
                         // Alt+N: next conversation tab
-                        (KeyCode::Char('n'), KeyModifiers::ALT) => {
-                            if app.conversation.tabs.tabs.len() > 1 {
+                        (KeyCode::Char('n'), KeyModifiers::ALT)
+                            if app.conversation.tabs.tabs.len() > 1 => {
                                 app.conversation.tabs.next_tab();
                             }
-                        }
 
                         // Alt+P: previous conversation tab
-                        (KeyCode::Char('p'), KeyModifiers::ALT) => {
-                            if app.conversation.tabs.tabs.len() > 1 {
+                        (KeyCode::Char('p'), KeyModifiers::ALT)
+                            if app.conversation.tabs.tabs.len() > 1 => {
                                 app.conversation.tabs.prev_tab();
                             }
-                        }
 
                         // Shift+Enter or Alt+Enter: insert newline (multiline input)
                         (KeyCode::Enter, m)
-                            if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
-                        {
-                            if !app.agent_active {
+                            if (m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT))
+                            && !app.agent_active => {
                                 app.editor.insert_newline();
                             }
-                        }
 
                         // Enter in focus mode toggles expansion for the focused segment.
                         (KeyCode::Enter, _) if app.focus_mode => {

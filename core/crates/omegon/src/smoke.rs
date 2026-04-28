@@ -135,8 +135,8 @@ async fn run_single(
                     LlmEvent::ToolCallEnd { .. } => tool_used = true,
                     LlmEvent::Done { message, .. } => {
                         // Extract text from the done message if we missed deltas
-                        if response_text.is_empty() {
-                            if let Some(text) = message
+                        if response_text.is_empty()
+                            && let Some(text) = message
                                 .get("content")
                                 .and_then(|c| c.as_array())
                                 .and_then(|arr| {
@@ -149,7 +149,6 @@ async fn run_single(
                             {
                                 response_text.push_str(text);
                             }
-                        }
                         break;
                     }
                     LlmEvent::Error { message } => anyhow::bail!("LLM error: {message}"),

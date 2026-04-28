@@ -97,15 +97,14 @@ pub async fn resolve_bridge_or_bail(model: &str) -> anyhow::Result<Box<dyn LlmBr
         }
         None => {
             // Try auto-detecting any available provider before giving up.
-            if let Some(safe_model) = providers::automation_safe_model() {
-                if let Some(bridge) = providers::auto_detect_bridge(&safe_model).await {
+            if let Some(safe_model) = providers::automation_safe_model()
+                && let Some(bridge) = providers::auto_detect_bridge(&safe_model).await {
                     tracing::info!(
                         requested = model, resolved = %safe_model,
                         "requested model unavailable — falling back to detected provider"
                     );
                     return Ok(bridge);
                 }
-            }
             anyhow::bail!(
                 "No LLM provider available.\n\n\
                  To get started:\n  \
@@ -171,6 +170,7 @@ pub fn apply_runtime_posture(
 ///
 /// This replaces the 7+ identical inline constructions in the daemon handler
 /// and the standalone headless config at run_agent_command.
+#[derive(Default)]
 pub struct LoopConfigOverrides {
     /// Override max_retries (default: 0 for interactive, >0 for headless).
     pub max_retries: u32,
@@ -186,18 +186,6 @@ pub struct LoopConfigOverrides {
     pub ollama_manager: Option<crate::ollama::OllamaManager>,
 }
 
-impl Default for LoopConfigOverrides {
-    fn default() -> Self {
-        Self {
-            max_retries: 0,
-            allow_commit_nudge: false,
-            enforce_first_turn_execution_bias: false,
-            force_compact: None,
-            secrets: None,
-            ollama_manager: None,
-        }
-    }
-}
 
 /// Build a LoopConfig reading model/max_turns from shared settings, with the
 /// given working directory and overrides.

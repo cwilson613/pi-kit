@@ -85,13 +85,12 @@ where
             cell.set_bg(bg);
         }
         // Blank the overflow cell for wide characters so we don't draw into it.
-        if w == 2 && cur_x + 1 < max_x {
-            if let Some(cell) = buf.cell_mut(Position::new(cur_x + 1, y)) {
+        if w == 2 && cur_x + 1 < max_x
+            && let Some(cell) = buf.cell_mut(Position::new(cur_x + 1, y)) {
                 cell.set_char(' ');
                 cell.set_fg(bg);
                 cell.set_bg(bg);
             }
-        }
         cur_x = cur_x.saturating_add(w);
     }
     cur_x
@@ -624,22 +623,20 @@ impl InstrumentPanel {
         // When a cleave run is active, swap the tools panel to show the child grid.
         // Guard on active only — total_children persists after the run ends and
         // would keep the cleave panel showing forever.
-        if let Some(ref cp) = self.cleave_progress {
-            if cp.active {
+        if let Some(ref cp) = self.cleave_progress
+            && cp.active {
                 let border = t.border_dim();
                 let label = t.dim();
                 self.render_cleave_panel(area, frame, border, label, t, cp);
                 return;
             }
-        }
-        if let Some(ref dp) = self.delegate_progress {
-            if dp.active {
+        if let Some(ref dp) = self.delegate_progress
+            && dp.active {
                 let border = t.border_dim();
                 let label = t.dim();
                 self.render_delegate_panel(area, frame, border, label, t, dp);
                 return;
             }
-        }
         // Border warms with tool activity
         let cold = if self.has_ever_fired {
             t.border_dim()
@@ -975,8 +972,8 @@ impl InstrumentPanel {
         }
 
         // Memory: pluck the string
-        if let Some((mind_idx, direction)) = memory_op {
-            if mind_idx < self.minds.len() {
+        if let Some((mind_idx, direction)) = memory_op
+            && mind_idx < self.minds.len() {
                 if !self.minds[mind_idx].active {
                     self.minds[mind_idx].active = true;
                     self.minds[mind_idx].wave = vec![0.0; 80];
@@ -984,7 +981,6 @@ impl InstrumentPanel {
                 }
                 self.minds[mind_idx].pluck(direction);
             }
-        }
 
         // Update wave physics
         for mind in &mut self.minds {
@@ -1276,12 +1272,11 @@ impl InstrumentPanel {
             // Vertical trunk on earlier rows
             for prev in 0..row_idx {
                 let py = area.y + prev as u16;
-                if let Some(cell) = buf.cell_mut(Position::new(area.x, py)) {
-                    if cell.symbol() != "├" && cell.symbol() != "└" {
+                if let Some(cell) = buf.cell_mut(Position::new(area.x, py))
+                    && cell.symbol() != "├" && cell.symbol() != "└" {
                         cell.set_char('│');
                         cell.set_fg(Color::Rgb(32, 72, 96));
                     }
-                }
             }
 
             // Mind name + fact count
@@ -1857,7 +1852,7 @@ impl InstrumentPanel {
         let w = inner.width as usize;
         let duration_w = 6usize.min(w.saturating_sub(8)).max(4);
         let name_w = 14.min(w.saturating_sub(duration_w + 6)).max(7);
-        let bar_w = w.saturating_sub(name_w + duration_w + 2).max(0);
+        let bar_w = w.saturating_sub(name_w + duration_w + 2);
 
         // Sort by recency
         let mut sorted: Vec<&ToolEntry> = self.tools.iter().collect();

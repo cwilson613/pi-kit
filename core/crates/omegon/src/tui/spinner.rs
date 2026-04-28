@@ -33,8 +33,8 @@ static COMBINED: OnceLock<Vec<&'static str>> = OnceLock::new();
 pub fn init(seed_value: usize, extras_path: Option<&Path>) {
     let mut combined: Vec<&'static str> = BUILTIN_VERBS.to_vec();
 
-    if let Some(path) = extras_path {
-        if let Ok(content) = std::fs::read_to_string(path) {
+    if let Some(path) = extras_path
+        && let Ok(content) = std::fs::read_to_string(path) {
             for line in content.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -46,7 +46,6 @@ pub fn init(seed_value: usize, extras_path: Option<&Path>) {
                 combined.push(leaked);
             }
         }
-    }
 
     // Fisher-Yates shuffle so consecutive verbs don't cluster by category.
     // Uses a simple xorshift PRNG seeded from the same process-start value
@@ -143,7 +142,7 @@ pub fn maybe_glitch(verb: &str) -> Option<String> {
     // Cheap modular check — avoids calling any PRNG on non-glitch frames.
     // Mix the frame counter a bit so it doesn't fire on exact multiples.
     let mixed = frame.wrapping_mul(2654435761); // Knuth multiplicative hash
-    if mixed % GLITCH_ODDS != 0 {
+    if !mixed.is_multiple_of(GLITCH_ODDS) {
         return None;
     }
 
@@ -154,7 +153,7 @@ pub fn maybe_glitch(verb: &str) -> Option<String> {
     }
 
     let mut out = chars.clone();
-    let pos = mixed.wrapping_shr(12) as usize % chars.len();
+    let pos = mixed.wrapping_shr(12) % chars.len();
 
     if let Some(replacement) = GLITCH_CHARS
         .iter()

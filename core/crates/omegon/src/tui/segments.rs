@@ -98,8 +98,8 @@ pub struct TokenUsage {
 impl TokenUsage {
     /// Render as a compact title-bar annotation: `↑1.2k ↓340`. Numbers
     /// > 1000 are shortened with a `k` suffix; smaller numbers render
-    /// as-is. The arrows are non-emoji single-cell glyphs (the same
-    /// constraint as the instruments-panel pass).
+    /// > as-is. The arrows are non-emoji single-cell glyphs (the same
+    /// > constraint as the instruments-panel pass).
     pub fn format_compact(&self) -> String {
         format!(
             "↑{} ↓{}",
@@ -882,7 +882,7 @@ pub fn build_meta_tag(meta: &SegmentMeta) -> String {
     let mut parts = Vec::new();
     if let Some(ref m) = meta.model_id {
         // Trim provider prefix if present (e.g. "anthropic:claude-..." → "claude-...")
-        let short = m.split(':').last().unwrap_or(m);
+        let short = m.split(':').next_back().unwrap_or(m);
         parts.push(short.to_string());
     }
     if let Some(ref p) = meta.provider {
@@ -891,11 +891,10 @@ pub fn build_meta_tag(meta: &SegmentMeta) -> String {
     if let Some(ref tier) = meta.tier {
         parts.push(tier.clone());
     }
-    if let Some(ref tl) = meta.thinking_level {
-        if tl != "off" {
+    if let Some(ref tl) = meta.thinking_level
+        && tl != "off" {
             parts.push(format!("think:{tl}"));
         }
-    }
     if let Some(ref persona) = meta.persona {
         parts.push(format!("⌘ {persona}"));
     }
@@ -1249,7 +1248,7 @@ fn render_tool_card(
         match tool_name {
             "edit" => serde_json::from_str::<serde_json::Value>(args)
                 .ok()
-                .and_then(|v| {
+                .map(|v| {
                     let path = v
                         .get("file")
                         .or(v.get("path"))
@@ -1265,7 +1264,7 @@ fn render_tool_card(
                         .and_then(|s| s.as_str())
                         .map(|s| s.lines().count())
                         .unwrap_or(0);
-                    Some(format!("{path} · {old_len}→{new_len} lines"))
+                    format!("{path} · {old_len}→{new_len} lines")
                 })
                 .or_else(|| Some(crate::util::truncate(args, 80))),
             "change" => {
@@ -1352,11 +1351,10 @@ fn render_tool_card(
         let sep = Span::styled(" · ", dim_style);
         let mut spans: Vec<Span<'_>> = Vec::new();
         // Execution duration for completed tools
-        if complete {
-            if let Some(ms) = meta.duration_ms {
+        if complete
+            && let Some(ms) = meta.duration_ms {
                 spans.push(Span::styled(format_duration_compact(ms), dim_style));
             }
-        }
         if let Some(tokens) = meta.actual_tokens {
             if !spans.is_empty() {
                 spans.push(sep.clone());
@@ -1446,8 +1444,8 @@ fn render_tool_card(
     }
 
     // ── Args section ────────────────────────────────────────────
-    if args_budget > 0 {
-        if let Some(args) = detail_args {
+    if args_budget > 0
+        && let Some(args) = detail_args {
             match name {
                 "bash" => {
                     for (i, line) in args.lines().take(args_budget).enumerate().skip(1) {
@@ -1482,8 +1480,7 @@ fn render_tool_card(
                     }
                 }
             }
-        }
-    } // args_budget > 0
+        } // args_budget > 0
 
     // ── Live progress section (in-flight tools only) ────────────
     // While the tool is still running and we don't yet have a final
@@ -1516,15 +1513,14 @@ fn render_tool_card(
             .and_then(|p| p.progress.phase.as_deref())
             .unwrap_or("running");
         status_parts.push(phase_label.to_string());
-        if let Some(partial) = live_partial {
-            if let Some(units) = &partial.progress.units {
+        if let Some(partial) = live_partial
+            && let Some(units) = &partial.progress.units {
                 let label = match units.total {
                     Some(total) => format!("{}/{} {}", units.current, total, units.unit),
                     None => format!("{} {}", units.current, units.unit),
                 };
                 status_parts.push(label);
             }
-        }
         // Elapsed time: prefer the live wall-clock from `started_at` so
         // the displayed timer ticks with every frame draw. Fall back to
         // the partial's `elapsed_ms` (captured at flush time, freezes
@@ -1543,11 +1539,10 @@ fn render_tool_card(
                 status_parts.push(format!("{secs}.{tenths}s"));
             }
         }
-        if let Some(partial) = live_partial {
-            if partial.progress.heartbeat {
+        if let Some(partial) = live_partial
+            && partial.progress.heartbeat {
                 status_parts.push("idle".to_string());
             }
-        }
         let status_text = format!("▶ {}", status_parts.join(" · "));
         lines.push(Line::from(vec![Span::styled(
             status_text,
@@ -1571,8 +1566,8 @@ fn render_tool_card(
         // and the terminal would interpret them as the start of new
         // sequences, swallowing nearby cells. (Same root cause as the
         // instruments-panel ANSI fragment leakage.)
-        if let Some(partial) = live_partial {
-            if !partial.tail.is_empty() {
+        if let Some(partial) = live_partial
+            && !partial.tail.is_empty() {
                 let tail_lines: Vec<&str> = partial.tail.lines().collect();
                 let max_tail_lines = tail_budget;
                 let take = tail_lines.len().min(max_tail_lines);
@@ -1622,7 +1617,6 @@ fn render_tool_card(
                     }
                 }
             }
-        }
     }
 
     // ── Edit/change diff section ────────────────────────────────
@@ -1748,15 +1742,14 @@ fn render_tool_card(
 
         // If the tool actually erred, surface the error result text
         // below the diff so the operator sees both intent and outcome.
-        if is_error {
-            if let Some(err_text) = detail_result {
+        if is_error
+            && let Some(err_text) = detail_result {
                 lines.push(Line::from(Span::styled(
                     err_text.lines().next().unwrap_or(err_text).to_string(),
                     Style::default().fg(t.error()).bg(bg),
                 )));
                 result_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
             }
-        }
     } else if let Some(result) = detail_result {
         let pre_result_line_count = lines.len();
         if !lines.is_empty() {

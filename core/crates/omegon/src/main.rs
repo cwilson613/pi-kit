@@ -675,12 +675,11 @@ async fn main() -> anyhow::Result<()> {
     // ─── Ollama integration detection ────────────────────────────────────
     // When launched via `ollama launch omegon`, the --ollama-model flag
     // (set by Ollama) should override the --model CLI flag.
-    if cli.ollama_integration {
-        if let Some(ref model) = cli.ollama_model {
+    if cli.ollama_integration
+        && let Some(ref model) = cli.ollama_model {
             cli.model = model.clone();
             tracing::info!(model = %model, "using Ollama-provided model");
         }
-    }
 
     // ─── Logging setup ──────────────────────────────────────────────────
     // Priority: RUST_LOG env > --log-level flag > "info" default
@@ -950,8 +949,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Ollama { ref action }) => run_ollama_command(action).await,
         Some(Commands::Doctor) => run_doctor_command(&cli).await,
         Some(Commands::Skills { ref action }) => match action {
-            SkillsAction::List => skills::cmd_list().map_err(Into::into),
-            SkillsAction::Install => skills::cmd_install().map_err(Into::into),
+            SkillsAction::List => skills::cmd_list(),
+            SkillsAction::Install => skills::cmd_install(),
         },
         Some(Commands::Bench { ref action }) => match action {
             BenchAction::RunTask {
@@ -1144,21 +1143,19 @@ fn apply_agent_manifest_pre_setup(
     tracing::info!("agent bundle verified");
 
     // ── Apply settings ───────────────────────────────────────────────
-    if let Some(ref s) = resolved.manifest.settings {
-        if let Ok(mut settings) = shared_settings.lock() {
+    if let Some(ref s) = resolved.manifest.settings
+        && let Ok(mut settings) = shared_settings.lock() {
             if let Some(ref m) = s.model {
                 settings.model = m.clone();
             }
-            if let Some(ref tl) = s.thinking_level {
-                if let Some(level) = settings::ThinkingLevel::parse(tl) {
+            if let Some(ref tl) = s.thinking_level
+                && let Some(level) = settings::ThinkingLevel::parse(tl) {
                     settings.thinking = level;
                 }
-            }
             if let Some(mt) = s.max_turns {
                 settings.max_turns = mt;
             }
         }
-    }
 
     // ── Materialize persona as plugin for setup discovery ────────────
     if resolved.persona_directive.is_some() {
@@ -1283,15 +1280,14 @@ fn apply_agent_manifest_pre_setup(
     }
 
     // ── Secret pre-flight ────────────────────────────────────────────
-    if let Some(ref secrets) = resolved.manifest.secrets {
-        if let Some(ref required) = secrets.required {
+    if let Some(ref secrets) = resolved.manifest.secrets
+        && let Some(ref required) = secrets.required {
             for s in required {
                 if std::env::var(s).is_err() {
                     tracing::warn!(secret = %s, "required secret not found in environment");
                 }
             }
         }
-    }
 
     Ok(resolved)
 }
@@ -1335,8 +1331,8 @@ async fn run_embedded_command(
     );
 
     // ─── Extension/plugin pre-flight reconciliation ──────────────────────
-    if let Some(ref resolved) = agent_manifest_resolved {
-        if let Some(ref exts) = resolved.manifest.extensions {
+    if let Some(ref resolved) = agent_manifest_resolved
+        && let Some(ref exts) = resolved.manifest.extensions {
             let omegon_home = paths::omegon_home().unwrap_or_else(|_| cwd.join(".omegon"));
             let ext_dir = omegon_home.join("extensions");
             for ext in exts {
@@ -1353,7 +1349,6 @@ async fn run_embedded_command(
                 }
             }
         }
-    }
 
     // ─── LLM model (bridge resolved per-turn for credential freshness) ───
     let mut model = shared_settings
@@ -1361,8 +1356,8 @@ async fn run_embedded_command(
         .map(|s| s.model.clone())
         .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into());
     // If the configured model's provider isn't available, try auto-detection.
-    if providers::auto_detect_bridge(&model).await.is_none() {
-        if let Some(safe) = providers::automation_safe_model() {
+    if providers::auto_detect_bridge(&model).await.is_none()
+        && let Some(safe) = providers::automation_safe_model() {
             tracing::info!(
                 configured = %model, resolved = %safe,
                 "configured model unavailable — switching to detected provider"
@@ -1372,7 +1367,6 @@ async fn run_embedded_command(
                 s.set_model(&safe);
             }
         }
-    }
     // Validate provider availability at startup (fail-fast).
     if providers::auto_detect_bridge(&model).await.is_none() {
         tracing::warn!(
@@ -2521,12 +2515,10 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
                     .args(["log", "--no-graph", "-r", "@", "-T", "change_id.short()"])
                     .current_dir(&project_root)
                     .output()
-                {
-                    if out.status.success() {
+                    && out.status.success() {
                         let id = String::from_utf8_lossy(&out.stdout);
                         println!("               working copy: {}", id.trim());
                     }
-                }
             }
         }
         _ => {
@@ -2799,9 +2791,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             .map(|(_, model)| model)
             .unwrap_or(&selected_model);
         let provider = crate::providers::infer_provider_id(&selected_model);
-        if provider == "anthropic" {
-            if let Some(limits) = auth::probe_anthropic_model_limits(model_id).await {
-                if let Ok(mut s) = shared_settings.lock() {
+        if provider == "anthropic"
+            && let Some(limits) = auth::probe_anthropic_model_limits(model_id).await
+                && let Ok(mut s) = shared_settings.lock() {
                     let old = s.context_window;
                     s.context_window = limits.max_input_tokens;
                     if cli.context_class.is_none() {
@@ -2815,8 +2807,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         );
                     }
                 }
-            }
-        }
     }
 
     let is_oauth = shared_settings
@@ -2827,8 +2817,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         .is_some_and(|(_, oauth)| oauth);
 
     // ─── Apply CLI overrides ──────────────────────────────────────────
-    if let Some(ref class_str) = cli.context_class {
-        if let Ok(mut s) = shared_settings.lock() {
+    if let Some(ref class_str) = cli.context_class
+        && let Ok(mut s) = shared_settings.lock() {
             match class_str.to_lowercase().as_str() {
                 "squad" => s.set_requested_context_class(settings::ContextClass::Squad),
                 "maniple" => s.set_requested_context_class(settings::ContextClass::Maniple),
@@ -2838,7 +2828,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             }
             tracing::info!(class = %class_str, "requested context class policy applied");
         }
-    }
 
     // ─── Launch TUI ─────────────────────────────────────────────────────
     let initial = agent.initial_tui_state();
@@ -3217,7 +3206,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                     metrics.update(
                                         est,
                                         ctx_window,
-                                        &s.effective_requested_class().label(),
+                                        s.effective_requested_class().label(),
                                         s.thinking.as_str(),
                                     );
                                 }
@@ -3628,7 +3617,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                     &shared_settings,
                     &bridge,
                     &login_prompt_tx,
-                    &cli,
+                    cli,
                     &name,
                     &args,
                 )
@@ -3937,10 +3926,10 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
 
             tui::TuiCommand::SubmitPrompt(prompt) => {
                 let actor = RuntimeActor {
-                    kind: runtime_actor_kind_from_via(&prompt.via),
+                    kind: runtime_actor_kind_from_via(prompt.via),
                     label: prompt.submitted_by.clone(),
                 };
-                let via = control_surface_from_via(&prompt.via);
+                let via = control_surface_from_via(prompt.via);
 
                 runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, Some(match prompt.queue_mode {
                         crate::tui::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
@@ -4000,10 +3989,10 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                 match cmd {
                                     tui::TuiCommand::SubmitPrompt(prompt) => {
                                         let actor = RuntimeActor {
-                                            kind: runtime_actor_kind_from_via(&prompt.via),
+                                            kind: runtime_actor_kind_from_via(prompt.via),
                                             label: prompt.submitted_by.clone(),
                                         };
-                                        let via = control_surface_from_via(&prompt.via);
+                                        let via = control_surface_from_via(prompt.via);
                                         runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, Some(match prompt.queue_mode {
                                             crate::tui::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
                                             crate::tui::PromptQueueMode::UntilReady => QueueMode::UntilReady,
@@ -4304,17 +4293,14 @@ enum ControlSurface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 enum QueueMode {
+    #[default]
     InterruptAfterTurn,
     UntilReady,
     Immediate,
 }
 
-impl Default for QueueMode {
-    fn default() -> Self {
-        Self::InterruptAfterTurn
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PromptEnvelope {
@@ -4386,11 +4372,7 @@ pub(crate) struct CliRuntimeView<'a> {
 fn interactive_resume_mode(cli: &Cli) -> Option<Option<&str>> {
     if cli.fresh {
         None
-    } else if let Some(ref r) = cli.resume {
-        Some(r.as_deref())
-    } else {
-        None
-    }
+    } else { cli.resume.as_ref().map(|r| r.as_deref()) }
 }
 
 fn split_interactive_agent(
@@ -4533,7 +4515,7 @@ async fn run_interactive_active_turn(
         metrics.update(
             est,
             settings.context_window,
-            &settings.effective_requested_class().label(),
+            settings.effective_requested_class().label(),
             settings.thinking.as_str(),
         );
     }
@@ -4997,7 +4979,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                         .map(|c| match c {
                             omegon_traits::ContentBlock::Text { text } => {
                                 if text.len() > 200 {
-                                    crate::util::truncate(&text, 200)
+                                    crate::util::truncate(text, 200)
                                 } else {
                                     text.clone()
                                 }
@@ -5154,7 +5136,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
             }
         }
         Err(e) => {
-            if r#loop::is_upstream_exhausted(&e) {
+            if r#loop::is_upstream_exhausted(e) {
                 // Exit 2 signals the cleave orchestrator (and any supervisor) that this
                 // child failed due to upstream provider exhaustion, not a logic error.
                 // The orchestrator may retry with a cross-provider fallback.
@@ -5692,8 +5674,8 @@ async fn run_bounded_task(
     let out_tokens = total_out.load(std::sync::atomic::Ordering::Relaxed);
 
     // Check token budget
-    if let Some(budget) = token_budget {
-        if in_tokens + out_tokens > budget {
+    if let Some(budget) = token_budget
+        && in_tokens + out_tokens > budget {
             tracing::warn!(
                 "Token budget exceeded: {}+{} = {} > {budget}",
                 in_tokens,
@@ -5701,7 +5683,6 @@ async fn run_bounded_task(
                 in_tokens + out_tokens
             );
         }
-    }
 
     let summary = agent
         .conversation

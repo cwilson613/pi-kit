@@ -408,11 +408,10 @@ pub async fn delegate_default_model() -> String {
     // explicit configuration before probing available providers.
 
     // 1. Explicit operator override via env var.
-    if let Ok(env_model) = std::env::var("OMEGON_MODEL") {
-        if !env_model.is_empty() {
+    if let Ok(env_model) = std::env::var("OMEGON_MODEL")
+        && !env_model.is_empty() {
             return env_model;
         }
-    }
 
     // 2. Automation-safe providers (API-key-based, not consumer subscriptions).
     if let Some(model) = automation_safe_model() {
@@ -675,7 +674,7 @@ fn log_rate_limit_headers(provider: &str, headers: &reqwest::header::HeaderMap) 
 fn sanitize_tool_id(id: &str) -> String {
     // Strip Codex compound suffix (pipe-separated item ID)
     let base = if id.contains('|') {
-        id.splitn(2, '|').next().unwrap_or(id)
+        id.split('|').next().unwrap_or(id)
     } else {
         id
     };
@@ -906,16 +905,13 @@ impl AnthropicClient {
                     tool_calls,
                     raw,
                 } => {
-                    if let Some(raw_val) = raw {
-                        if let Some(raw_content) = raw_val.get("content").and_then(|c| c.as_array())
-                        {
-                            if !raw_content.is_empty() {
+                    if let Some(raw_val) = raw
+                        && let Some(raw_content) = raw_val.get("content").and_then(|c| c.as_array())
+                            && !raw_content.is_empty() {
                                 wire.push(json!({"role": "assistant", "content": raw_content}));
                                 idx += 1;
                                 continue;
                             }
-                        }
-                    }
                     let mut content = Vec::new();
                     for t in text {
                         content.push(json!({"type": "text", "text": t}));
@@ -1032,7 +1028,7 @@ impl LlmBridge for AnthropicClient {
         let model = options
             .model
             .as_deref()
-            .map(|m| model_id_from_spec(m))
+            .map(model_id_from_spec)
             .unwrap_or("claude-sonnet-4-6");
 
         // System prompt: always array-of-blocks format (required for cache_control).
@@ -1374,11 +1370,10 @@ async fn parse_anthropic_stream(
                         None => current_thinking_signature = Some(sig.to_string()),
                     }
                     // Patch the last thinking block in content_blocks if it exists
-                    if let Some(last) = content_blocks.last_mut() {
-                        if last.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                    if let Some(last) = content_blocks.last_mut()
+                        && last.get("type").and_then(|t| t.as_str()) == Some("thinking") {
                             last["signature"] = json!(current_thinking_signature.as_deref().unwrap_or(""));
                         }
-                    }
                 }
                 tracing::trace!(event_type = etype, "signature event");
             }
@@ -1496,7 +1491,7 @@ impl LlmBridge for OpenAIClient {
         let model = options
             .model
             .as_deref()
-            .map(|m| model_id_from_spec(m))
+            .map(model_id_from_spec)
             .unwrap_or("gpt-4.1");
 
         let wire_msgs = Self::build_wire_messages(system_prompt, messages);
@@ -1709,11 +1704,10 @@ impl LlmBridge for OpenRouterClient {
             opts.model = Some("openrouter:openrouter/free".into());
         }
         // Rewrite model prefix: strip "openrouter:" for the wire request
-        if let Some(ref mut m) = opts.model {
-            if let Some(stripped) = m.strip_prefix("openrouter:") {
+        if let Some(ref mut m) = opts.model
+            && let Some(stripped) = m.strip_prefix("openrouter:") {
                 *m = stripped.to_string();
             }
-        }
         self.inner
             .stream(system_prompt, messages, tools, &opts)
             .await
@@ -1834,7 +1828,7 @@ impl CodexClient {
                     call_id, content, ..
                 } => {
                     let cid = if call_id.contains('|') {
-                        call_id.splitn(2, '|').next().unwrap_or(call_id).to_string()
+                        call_id.split('|').next().unwrap_or(call_id).to_string()
                     } else {
                         call_id.clone()
                     };
@@ -2107,11 +2101,10 @@ async fn parse_codex_stream(
                 }
             }
             "response.function_call_arguments.done" => {
-                if let Some(tc) = tool_calls.last_mut() {
-                    if let Some(args) = event["arguments"].as_str() {
+                if let Some(tc) = tool_calls.last_mut()
+                    && let Some(args) = event["arguments"].as_str() {
                         tc.args_json = args.into();
                     }
-                }
             }
             "response.output_item.done" => {
                 let item = &event["item"];
@@ -2622,11 +2615,10 @@ impl LlmBridge for OpenAICompatClient {
         }
 
         // Apply default model if none specified
-        if opts.model.is_none() || opts.model.as_deref() == Some("") {
-            if let Some(ref default) = self.default_model {
+        if (opts.model.is_none() || opts.model.as_deref() == Some(""))
+            && let Some(ref default) = self.default_model {
                 opts.model = Some(default.clone());
             }
-        }
 
         // For Ollama: inject num_ctx and keep_alive so the model doesn't
         // silently truncate the prompt at Ollama's default 2048-token KV cache.
@@ -2750,7 +2742,7 @@ async fn parse_ollama_ndjson_stream(
 
     let byte_stream = response.bytes_stream();
     let reader = tokio_util::io::StreamReader::new(
-        byte_stream.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+        byte_stream.map(|r| r.map_err(std::io::Error::other)),
     );
     let mut lines = tokio::io::BufReader::new(reader).lines();
 

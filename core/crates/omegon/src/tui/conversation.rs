@@ -290,8 +290,8 @@ impl ConversationView {
     pub fn push_system(&mut self, text: &str) {
         // Merge consecutive system notifications into a single card to avoid
         // excessive vertical padding (each card has border overhead).
-        if let Some(last) = self.segments.last_mut() {
-            if let SegmentContent::SystemNotification {
+        if let Some(last) = self.segments.last_mut()
+            && let SegmentContent::SystemNotification {
                 text: ref mut existing,
             } = last.content
             {
@@ -301,7 +301,6 @@ impl ConversationView {
                 self.conv_state.auto_scroll_to_bottom();
                 return;
             }
-        }
         self.segments.push(Segment::system(text));
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();
@@ -337,11 +336,10 @@ impl ConversationView {
         }
         self.streaming = true;
 
-        if let Some(seg) = self.segments.last_mut() {
-            if let SegmentContent::AssistantText { text, .. } = &mut seg.content {
+        if let Some(seg) = self.segments.last_mut()
+            && let SegmentContent::AssistantText { text, .. } = &mut seg.content {
                 text.push_str(delta);
             }
-        }
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();
     }
@@ -360,11 +358,10 @@ impl ConversationView {
         }
         self.streaming = true;
 
-        if let Some(seg) = self.segments.last_mut() {
-            if let SegmentContent::AssistantText { thinking, .. } = &mut seg.content {
+        if let Some(seg) = self.segments.last_mut()
+            && let SegmentContent::AssistantText { thinking, .. } = &mut seg.content {
                 thinking.push_str(delta);
             }
-        }
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();
     }
@@ -472,11 +469,10 @@ impl ConversationView {
         // ── CONSOLIDATION ─────────────────────────────────────────
         // Merge consecutive completed cards of the same tool name
         // into a single grouped card with tree-style entries.
-        if let (Some(ref name), Some(idx)) = (completed_name, completed_idx) {
-            if idx > 0 && !is_error {
+        if let (Some(ref name), Some(idx)) = (completed_name, completed_idx)
+            && idx > 0 && !is_error {
                 self.try_merge_with_predecessor(idx, name, completed_summary.as_deref());
             }
-        }
 
         self.conv_state.invalidate();
     }
@@ -549,11 +545,10 @@ impl ConversationView {
     }
 
     pub fn finalize_message(&mut self) {
-        if let Some(seg) = self.segments.last_mut() {
-            if let SegmentContent::AssistantText { complete, .. } = &mut seg.content {
+        if let Some(seg) = self.segments.last_mut()
+            && let SegmentContent::AssistantText { complete, .. } = &mut seg.content {
                 *complete = true;
             }
-        }
         self.streaming = false;
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();
@@ -623,12 +618,11 @@ impl ConversationView {
 
     /// Toggle expansion state of a tool card at the given segment index.
     pub fn toggle_expand(&mut self, segment_idx: usize) {
-        if let Some(seg) = self.segments.get_mut(segment_idx) {
-            if let SegmentContent::ToolCard { expanded, .. } = &mut seg.content {
+        if let Some(seg) = self.segments.get_mut(segment_idx)
+            && let SegmentContent::ToolCard { expanded, .. } = &mut seg.content {
                 *expanded = !*expanded;
                 self.conv_state.invalidate();
             }
-        }
     }
 
     /// Toggle pin on the selected tool card if present, otherwise the nearest
@@ -654,14 +648,12 @@ impl ConversationView {
 
         if let Some(idx) = target {
             // Pin: expand and lock focus
-            if let Some(seg) = self.segments.get_mut(idx) {
-                if let SegmentContent::ToolCard { expanded, .. } = &mut seg.content {
-                    if !*expanded {
+            if let Some(seg) = self.segments.get_mut(idx)
+                && let SegmentContent::ToolCard { expanded, .. } = &mut seg.content
+                    && !*expanded {
                         *expanded = true;
                         self.conv_state.invalidate();
                     }
-                }
-            }
             self.selected_segment = Some(idx);
             self.pinned_segment = Some(idx);
         }

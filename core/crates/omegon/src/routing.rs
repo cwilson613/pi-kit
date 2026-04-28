@@ -423,15 +423,14 @@ fn infer_local_model_tier(model_name: &str) -> CapabilityTier {
     let lower = model_name.to_lowercase();
     // Look for patterns like "70b", "72b", "120b", "405b"
     for part in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
-        if let Some(num_str) = part.strip_suffix('b') {
-            if let Ok(params) = num_str.parse::<u32>() {
+        if let Some(num_str) = part.strip_suffix('b')
+            && let Ok(params) = num_str.parse::<u32>() {
                 return match params {
                     70.. => CapabilityTier::Frontier,
                     14..=69 => CapabilityTier::Mid,
                     _ => CapabilityTier::Leaf,
                 };
             }
-        }
     }
     // Also check for "scout" pattern (llama4:scout = large model)
     if lower.contains("scout") || lower.contains("maverick") {

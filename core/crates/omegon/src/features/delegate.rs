@@ -178,11 +178,10 @@ impl DelegateResultStore {
     /// Mark a specific task item as done (1-indexed).
     pub fn mark_task_done(&self, task_id: &str, task_index: usize) {
         let mut tasks = self.tasks.lock().unwrap();
-        if let Some(task) = tasks.get_mut(task_id) {
-            if task_index > 0 && task_index <= task.tasks.len() {
+        if let Some(task) = tasks.get_mut(task_id)
+            && task_index > 0 && task_index <= task.tasks.len() {
                 task.tasks[task_index - 1].done = true;
             }
-        }
     }
 
     pub fn find_completed_by_description(&self, description: &str) -> Option<String> {
@@ -680,7 +679,7 @@ impl DelegateRunner {
 
         prompt.push_str("## Task\n");
         prompt.push_str(task);
-        prompt.push_str("\n");
+        prompt.push('\n');
         if let Some(scope) = scope
             && !scope.is_empty()
         {
@@ -782,8 +781,8 @@ If blocked, say the blocker plainly.\n",
                             stderr_tail.push(line.clone());
 
                             // Throttle: parse at most once per second
-                            if last_activity.duration_since(last_activity_event).as_secs() >= 1 {
-                                if let Some(event) =
+                            if last_activity.duration_since(last_activity_event).as_secs() >= 1
+                                && let Some(event) =
                                     crate::cleave::progress::parse_child_activity(&tid, &line)
                                 {
                                     last_activity_event = std::time::Instant::now();
@@ -808,7 +807,6 @@ If blocked, say the blocker plainly.\n",
                                         _ => {}
                                     }
                                 }
-                            }
                         }
                         Ok(Ok(None)) => break, // EOF
                         Ok(Err(e)) => {
@@ -834,16 +832,12 @@ If blocked, say the blocker plainly.\n",
         // If the child writes more than the OS pipe buffer (16KB on macOS,
         // 64KB on Linux), it blocks waiting for the parent to read. If
         // the parent is waiting for the child to exit, that's a deadlock.
-        let stdout_handle = if let Some(mut stdout) = child.stdout.take() {
-            Some(tokio::spawn(async move {
+        let stdout_handle = child.stdout.take().map(|mut stdout| tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
                 let mut buf = String::new();
                 let _ = stdout.read_to_string(&mut buf).await;
                 buf
-            }))
-        } else {
-            None
-        };
+            }));
 
         let status = child
             .wait()
@@ -1653,8 +1647,8 @@ impl Feature for DelegateFeature {
         let mut sections = Vec::new();
 
         // Model catalog from provider inventory
-        if let Some(ref inventory_lock) = self.provider_inventory {
-            if let Ok(inventory) = inventory_lock.try_read() {
+        if let Some(ref inventory_lock) = self.provider_inventory
+            && let Ok(inventory) = inventory_lock.try_read() {
                 // Trigger background re-probe if inventory is stale (>60s)
                 if inventory.probed_at.elapsed().as_secs() > 60 {
                     let inv = inventory_lock.clone();
@@ -1673,7 +1667,6 @@ impl Feature for DelegateFeature {
                     sections.push(catalog);
                 }
             }
-        }
 
         // Available agents
         if !self.available_agents.is_empty() {
@@ -1707,7 +1700,7 @@ impl Feature for DelegateFeature {
                     }
                     self.recent_user_prompts.push_back(user_prompt.clone());
                 }
-                return vec![];
+                vec![]
             }
             BusEvent::ToolStart { name, args, .. } => {
                 // Track files the parent reads/edits so we can auto-populate
@@ -1729,16 +1722,15 @@ impl Feature for DelegateFeature {
                         self.recent_parent_files.push_back(ps);
                     }
                 }
-                return vec![];
+                vec![]
             }
             BusEvent::TurnEnd { model, .. } => {
                 // Capture the parent session's model so delegate children
                 // inherit it instead of falling back to hardcoded defaults.
-                if let Some(m) = model {
-                    if let Ok(mut slot) = self.session_model.lock() {
+                if let Some(m) = model
+                    && let Ok(mut slot) = self.session_model.lock() {
                         *slot = Some(m.clone());
                     }
-                }
                 if let Ok(mut handle) = self.progress_handle.lock() {
                     *handle = self.result_store.progress_snapshot();
                 }

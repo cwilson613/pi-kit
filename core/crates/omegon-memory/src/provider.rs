@@ -549,7 +549,7 @@ impl<B: MemoryBackend + 'static, R: ContextRenderer + 'static> ToolProvider
                         "Ingested ({authority}/{source_kind}): {}",
                         content.chars().take(80).collect::<String>()
                     ),
-                    StoreAction::Reinforced => format!("Reinforced lifecycle fact"),
+                    StoreAction::Reinforced => "Reinforced lifecycle fact".to_string(),
                     StoreAction::Deduplicated => {
                         "Duplicate lifecycle fact — already exists".to_string()
                     }

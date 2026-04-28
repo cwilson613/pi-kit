@@ -317,7 +317,7 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
         },
         "login" => (CanonicalAction::AuthLogin, ControlRole::Admin, false),
         "logout" => (CanonicalAction::AuthLogout, ControlRole::Admin, false),
-        "secrets" => match args.trim().split_whitespace().next().unwrap_or("") {
+        "secrets" => match args.split_whitespace().next().unwrap_or("") {
             "" | "list" => (CanonicalAction::SecretsView, ControlRole::Edit, false),
             "set" => (CanonicalAction::SecretsSet, ControlRole::Edit, false),
             "get" => (CanonicalAction::SecretsGet, ControlRole::Edit, false),
@@ -334,7 +334,7 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
         "status" | "stats" | "auspex" | "dash" => {
             (CanonicalAction::StatusView, ControlRole::Read, true)
         }
-        "plugin" => match args.trim().split_whitespace().next().unwrap_or("") {
+        "plugin" => match args.split_whitespace().next().unwrap_or("") {
             "" | "list" => (CanonicalAction::PluginView, ControlRole::Read, true),
             "install" => (CanonicalAction::PluginInstall, ControlRole::Edit, false),
             "remove" => (CanonicalAction::PluginRemove, ControlRole::Edit, false),

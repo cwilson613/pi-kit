@@ -39,14 +39,13 @@ impl Feature for VersionCheck {
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         // Check for pending notification from the async task.
         // This fires on any subsequent event after the task completes.
-        if let Ok(mut slot) = self.pending_notification.lock() {
-            if let Some(msg) = slot.take() {
+        if let Ok(mut slot) = self.pending_notification.lock()
+            && let Some(msg) = slot.take() {
                 return vec![BusRequest::Notify {
                     message: msg,
                     level: NotifyLevel::Info,
                 }];
             }
-        }
 
         if let BusEvent::SessionStart { .. } = event {
             if self.checked {

@@ -23,6 +23,12 @@ pub struct UsageFeature {
     latest: LatestUsageSnapshot,
 }
 
+impl Default for UsageFeature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UsageFeature {
     pub fn new() -> Self {
         Self {

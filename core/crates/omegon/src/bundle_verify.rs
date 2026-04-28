@@ -249,9 +249,9 @@ fn check_path_containment(
     }
 
     let full = bundle_dir.join(relative_path);
-    if let Ok(canonical) = std::fs::canonicalize(&full) {
-        if let Ok(canonical_bundle) = std::fs::canonicalize(bundle_dir) {
-            if !canonical.starts_with(&canonical_bundle) {
+    if let Ok(canonical) = std::fs::canonicalize(&full)
+        && let Ok(canonical_bundle) = std::fs::canonicalize(bundle_dir)
+            && !canonical.starts_with(&canonical_bundle) {
                 findings.push(Finding {
                     severity: Severity::Error,
                     category: "path-traversal",
@@ -263,8 +263,6 @@ fn check_path_containment(
                     location: field_name.into(),
                 });
             }
-        }
-    }
 }
 
 // ── Content screening ────────────────────────────────────────────────────
@@ -304,8 +302,8 @@ fn screen_content(content: &str, content_type: &str, location: &str, findings: &
         // Simple glob-style matching for patterns with .*
         if pattern.contains(".*") {
             let parts: Vec<&str> = pattern.split(".*").collect();
-            if parts.len() == 2 {
-                if let Some(idx) = lower.find(parts[0]) {
+            if parts.len() == 2
+                && let Some(idx) = lower.find(parts[0]) {
                     let after = &lower[idx + parts[0].len()..];
                     if after.contains(parts[1]) {
                         findings.push(Finding {
@@ -319,7 +317,6 @@ fn screen_content(content: &str, content_type: &str, location: &str, findings: &
                         });
                     }
                 }
-            }
         } else if lower.contains(pattern) {
             findings.push(Finding {
                 severity: Severity::Error,

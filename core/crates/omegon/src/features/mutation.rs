@@ -29,6 +29,7 @@ use crate::tool_registry;
 /// `~/.omegon/mutation/impact.toml`, falling back to seed defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct ImpactConfig {
     pub weights: ImpactWeights,
     pub learning: LearningConfig,
@@ -108,23 +109,11 @@ pub struct BehaviorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct TelemetryConfig {
     pub share_impact_data: bool,
 }
 
-impl Default for ImpactConfig {
-    fn default() -> Self {
-        Self {
-            weights: ImpactWeights::default(),
-            learning: LearningConfig::default(),
-            confidence: ConfidenceConfig::default(),
-            windows: WindowsConfig::default(),
-            escalation: EscalationConfig::default(),
-            telemetry: TelemetryConfig::default(),
-            behavior: BehaviorConfig::default(),
-        }
-    }
-}
 
 impl Default for ImpactWeights {
     fn default() -> Self {
@@ -187,13 +176,6 @@ impl Default for EscalationConfig {
     }
 }
 
-impl Default for TelemetryConfig {
-    fn default() -> Self {
-        Self {
-            share_impact_data: false,
-        }
-    }
-}
 
 impl Default for BehaviorConfig {
     fn default() -> Self {
@@ -744,9 +726,7 @@ impl MutationFeature {
                 if path_changed {
                     PatternClass::DomainPattern {
                         confidence: 0.6,
-                        description: format!(
-                            "Agent targeted wrong file initially, recovered to correct target"
-                        ),
+                        description: "Agent targeted wrong file initially, recovered to correct target".to_string(),
                     }
                 } else {
                     PatternClass::InternalDeficiency {
@@ -782,7 +762,7 @@ impl MutationFeature {
             }
             RecoveryKind::ConstraintDiscoveryRecovery => PatternClass::DomainPattern {
                 confidence: 0.9,
-                description: format!("Constraint discovery led to successful resolution"),
+                description: "Constraint discovery led to successful resolution".to_string(),
             },
         }
     }
@@ -1285,8 +1265,7 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                                 .find(|l| l.starts_with("**Recovery cost**:"))
                                 .and_then(|l| {
                                     l.split(':').nth(1).and_then(|s| {
-                                        s.trim()
-                                            .split_whitespace()
+                                        s.split_whitespace()
                                             .next()
                                             .and_then(|n| n.parse::<u64>().ok())
                                     })
@@ -1389,8 +1368,8 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                         description,
                         confidence,
                     } => {
-                        if confidence >= 0.6 {
-                            if let Some((name, content)) = self.generate_skill(seq, &description) {
+                        if confidence >= 0.6
+                            && let Some((name, content)) = self.generate_skill(seq, &description) {
                                 let dir = self.skills_dir.join(&name);
                                 let _ = std::fs::create_dir_all(&dir);
                                 let path = dir.join("SKILL.md");
@@ -1404,15 +1383,14 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                                     });
                                 }
                             }
-                        }
                     }
                     PatternClass::InternalDeficiency {
                         owning_crate: crate_name,
                         tool_name,
                         confidence,
                     } => {
-                        if confidence >= 0.7 {
-                            if let Some((filename, content)) =
+                        if confidence >= 0.7
+                            && let Some((filename, content)) =
                                 self.generate_diagnostic(seq, crate_name, &burn)
                             {
                                 let _ = std::fs::create_dir_all(&self.diagnostics_dir);
@@ -1430,7 +1408,6 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                                     });
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -1513,8 +1490,8 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                 let mut found = false;
                 for entry in entries.flatten() {
                     let skill_path = entry.path().join("SKILL.md");
-                    if skill_path.exists() {
-                        if let Ok(content) = std::fs::read_to_string(&skill_path) {
+                    if skill_path.exists()
+                        && let Ok(content) = std::fs::read_to_string(&skill_path) {
                             let desc = extract_frontmatter_field(&content, "description")
                                 .unwrap_or_else(|| entry.file_name().to_string_lossy().into());
                             let conf = extract_frontmatter_field(&content, "confidence")
@@ -1527,7 +1504,6 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                             ));
                             found = true;
                         }
-                    }
                 }
                 if !found {
                     lines.push("(none)".to_string());
@@ -1946,11 +1922,10 @@ impl Feature for MutationFeature {
                     budget = budget.saturating_sub(line.len());
                     injections.push(line);
                     // Track that this skill was loaded for burn-history enrichment.
-                    if let Ok(mut loaded) = self.trajectory.skills_loaded.lock() {
-                        if !loaded.contains(&name) {
+                    if let Ok(mut loaded) = self.trajectory.skills_loaded.lock()
+                        && !loaded.contains(&name) {
                             loaded.push(name);
                         }
-                    }
                 }
             }
 
@@ -2193,14 +2168,13 @@ fn derive_tags(seq: &RecoverySequence) -> Vec<String> {
     if seq.success.name != seq.failure.name {
         tags.push(seq.success.name.clone());
     }
-    if let Some(path) = &seq.failure.target_path {
-        if let Some(ext) = std::path::Path::new(path)
+    if let Some(path) = &seq.failure.target_path
+        && let Some(ext) = std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
         {
             tags.push(ext.to_string());
         }
-    }
     tags
 }
 
@@ -2222,15 +2196,13 @@ fn bump_confidence(content: &str) -> String {
     // Find confidence = X.Y and bump by 0.1, cap at 1.0.
     let mut result = String::new();
     for line in content.lines() {
-        if line.trim().starts_with("confidence = ") {
-            if let Some(val_str) = line.trim().strip_prefix("confidence = ") {
-                if let Ok(val) = val_str.parse::<f32>() {
+        if line.trim().starts_with("confidence = ")
+            && let Some(val_str) = line.trim().strip_prefix("confidence = ")
+                && let Ok(val) = val_str.parse::<f32>() {
                     let new_val = (val + 0.1).min(1.0);
                     result.push_str(&format!("confidence = {new_val:.1}\n"));
                     continue;
                 }
-            }
-        }
         result.push_str(line);
         result.push('\n');
     }

@@ -157,11 +157,10 @@ impl PluginRegistry {
                     continue;
                 }
                 let skill_file = entry.path().join("SKILL.md");
-                if let Ok(content) = std::fs::read_to_string(&skill_file) {
-                    if !content.trim().is_empty() {
+                if let Ok(content) = std::fs::read_to_string(&skill_file)
+                    && !content.trim().is_empty() {
                         skills.push(content);
                     }
-                }
             }
         }
         skills

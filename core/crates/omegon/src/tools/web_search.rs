@@ -34,11 +34,10 @@ impl WebSearchProvider {
     /// Lazily resolve a search API key: check env first, then fall back to
     /// the secrets manager (keyring/recipe).
     fn resolve_key(&self, env_name: &str) -> Option<String> {
-        if let Ok(v) = env::var(env_name) {
-            if !v.is_empty() {
+        if let Ok(v) = env::var(env_name)
+            && !v.is_empty() {
                 return Some(v);
             }
-        }
         let secrets = self.secrets.as_ref()?;
         secrets.resolve(env_name)
     }
@@ -200,7 +199,7 @@ impl WebSearchProvider {
                 .split('>')
                 .nth(1)
                 .and_then(|s| s.split("</a>").next())
-                .map(|s| strip_html_tags(s))
+                .map(strip_html_tags)
                 .unwrap_or_default();
             // Extract snippet from result__snippet class
             let snippet = chunk
@@ -208,7 +207,7 @@ impl WebSearchProvider {
                 .nth(1)
                 .and_then(|s| s.split('>').nth(1))
                 .and_then(|s| s.split("</").next())
-                .map(|s| strip_html_tags(s))
+                .map(strip_html_tags)
                 .unwrap_or_default();
 
             if !title.is_empty() {

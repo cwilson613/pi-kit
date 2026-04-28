@@ -994,8 +994,8 @@ impl Editor {
             .map(|span| span.start)
             .unwrap_or_else(|| {
                 self.textarea.delete_word();
-                let new_end = self.projected_cursor();
-                new_end
+                
+                self.projected_cursor()
             });
         if start < end {
             self.delete_projected_range(start, end);

@@ -741,8 +741,8 @@ impl Settings {
     }
 
     pub fn provider(&self) -> String {
-        let id = crate::providers::infer_provider_id(&self.model);
-        id
+        
+        crate::providers::infer_provider_id(&self.model)
     }
 }
 
@@ -1251,16 +1251,14 @@ impl ResolvedCustomPosture {
         settings.set_posture(self.base_preset);
 
         // Override with custom values
-        if let Some(ref t) = self.def.posture.thinking {
-            if let Some(level) = ThinkingLevel::parse(t) {
+        if let Some(ref t) = self.def.posture.thinking
+            && let Some(level) = ThinkingLevel::parse(t) {
                 settings.thinking = level;
             }
-        }
-        if let Some(ref cc) = self.def.posture.context_class {
-            if let Some(class) = ContextClass::parse(cc) {
+        if let Some(ref cc) = self.def.posture.context_class
+            && let Some(class) = ContextClass::parse(cc) {
                 settings.requested_context_class = Some(class);
             }
-        }
         if let Some(true) = self.def.posture.slim {
             settings.set_posture(PosturePreset::Explorator);
         }
@@ -1386,8 +1384,8 @@ pub fn list_available_postures(cwd: &std::path::Path) -> Vec<(String, String, bo
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "pkl") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if path.extension().is_some_and(|e| e == "pkl")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         // Skip if same name as built-in
                         if !postures.iter().any(|(n, _, _)| n == stem) {
                             let desc = rpkl::from_config::<PostureFile>(&path)
@@ -1397,7 +1395,6 @@ pub fn list_available_postures(cwd: &std::path::Path) -> Vec<(String, String, bo
                             postures.push((stem.to_string(), desc, false));
                         }
                     }
-                }
             }
         }
     }

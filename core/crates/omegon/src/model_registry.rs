@@ -180,7 +180,7 @@ impl ModelRegistry {
             }
             if glob_match(&route.model_id_pattern, model_id) {
                 let specificity = route.model_id_pattern.len();
-                if best.map_or(true, |(s, _)| specificity > s) {
+                if best.is_none_or(|(s, _)| specificity > s) {
                     best = Some((specificity, route.context_ceiling));
                 }
             }
@@ -202,7 +202,7 @@ impl ModelRegistry {
             }
             if glob_match(&route.model_id_pattern, model_id) {
                 let specificity = route.model_id_pattern.len();
-                if best.map_or(true, |(s, _)| specificity > s) {
+                if best.is_none_or(|(s, _)| specificity > s) {
                     best = Some((specificity, route.tier.as_str()));
                 }
             }
@@ -214,7 +214,7 @@ impl ModelRegistry {
     pub fn supports_reasoning(&self, qualified_id: &str) -> bool {
         self.models
             .get(qualified_id)
-            .map_or(false, |m| m.supports_reasoning)
+            .is_some_and(|m| m.supports_reasoning)
     }
 
     /// Route entries (for settings.rs compatibility during migration).

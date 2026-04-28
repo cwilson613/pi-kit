@@ -449,15 +449,14 @@ impl AgentSetup {
         // live at the repo root, which may differ from cwd when running
         // from a subdirectory like core/.
         let mut lifecycle_feature = features::lifecycle::LifecycleFeature::new(&project_root);
-        if let Some(ref vp) = codex_vault_path {
-            if codex_integration
+        if let Some(ref vp) = codex_vault_path
+            && codex_integration
                 .as_ref()
                 .is_some_and(|c| c.design_tree.enabled)
             {
                 lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
                 tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
             }
-        }
         let lifecycle_snapshot = LifecycleSnapshot::from_lifecycle_feature(&lifecycle_feature);
         let lifecycle_handle = lifecycle_feature.shared_provider();
         bus.register(Box::new(lifecycle_feature));
@@ -786,8 +785,8 @@ impl AgentSetup {
                         Ok(conv) => {
                             // Read the companion meta file to populate the resumption brief
                             let meta_path = path.with_extension("meta.json");
-                            if let Ok(json) = std::fs::read_to_string(&meta_path) {
-                                if let Ok(meta) =
+                            if let Ok(json) = std::fs::read_to_string(&meta_path)
+                                && let Ok(meta) =
                                     serde_json::from_str::<session::SessionMeta>(&json)
                                 {
                                     // ── Checkpoint consistency verification ──
@@ -820,7 +819,6 @@ impl AgentSetup {
                                         created_at: meta.created_at,
                                     });
                                 }
-                            }
                             conv
                         }
                         Err(e) => {
@@ -1152,8 +1150,8 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
         let mut i = 0;
         let bytes = s.as_bytes();
         while i < bytes.len() {
-            if bytes[i] == b'{' {
-                if let Some(end) = s[i + 1..].find('}') {
+            if bytes[i] == b'{'
+                && let Some(end) = s[i + 1..].find('}') {
                     let var = &s[i + 1..i + 1 + end];
                     if !var.is_empty()
                         && var.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
@@ -1163,7 +1161,6 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
                     i += end + 2;
                     continue;
                 }
-            }
             i += 1;
         }
     }
@@ -1207,14 +1204,13 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
 
     // 2. Project-level MCP config: {cwd}/.omegon/mcp.toml
     let mcp_toml = cwd.join(".omegon/mcp.toml");
-    if let Ok(content) = std::fs::read_to_string(&mcp_toml) {
-        if let Ok(servers) = toml::from_str::<
+    if let Ok(content) = std::fs::read_to_string(&mcp_toml)
+        && let Ok(servers) = toml::from_str::<
             std::collections::HashMap<String, crate::plugins::mcp::McpServerConfig>,
         >(&content)
         {
             scan_servers(&servers, &mut names);
         }
-    }
 
     // Deduplicate
     names.sort_unstable();

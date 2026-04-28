@@ -428,20 +428,18 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
             }
         }
         ProgressEvent::ChildTaskInventory { child, tasks, .. } => {
-            if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
-                if !tasks.is_empty() {
+            if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child)
+                && !tasks.is_empty() {
                     c.tasks = tasks.clone();
                     c.tasks_done = tasks.iter().filter(|t| t.done).count();
                 }
-            }
         }
         ProgressEvent::ChildTaskDone { child, task_index } => {
-            if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child) {
-                if *task_index > 0 && *task_index <= c.tasks.len() {
+            if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child)
+                && *task_index > 0 && *task_index <= c.tasks.len() {
                     c.tasks[task_index - 1].done = true;
                     c.tasks_done = c.tasks.iter().filter(|t| t.done).count();
                 }
-            }
         }
         ProgressEvent::ChildTokens {
             child,
@@ -554,11 +552,10 @@ impl CleaveFeature {
     /// is installed. Silently dropped otherwise — tests and headless runs
     /// don't have a runtime sink and shouldn't fail because of it.
     fn emit_decomposition_event(&self, event: AgentEvent) {
-        if let Ok(slot) = self.bus_request_sink.lock() {
-            if let Some(sink) = slot.as_ref() {
+        if let Ok(slot) = self.bus_request_sink.lock()
+            && let Some(sink) = slot.as_ref() {
                 sink.send(BusRequest::EmitAgentEvent { event });
             }
-        }
     }
 
     fn workspace_state_path(&self) -> PathBuf {

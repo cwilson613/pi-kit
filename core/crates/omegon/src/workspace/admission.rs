@@ -48,28 +48,25 @@ fn authority_denial_reason(
     request: &WorkspaceAdmissionRequest,
 ) -> Option<String> {
     match request.action {
-        WorkspaceActionKind::ReleaseCut => {
-            if request.requested_role != WorkspaceRole::Release {
+        WorkspaceActionKind::ReleaseCut
+            if request.requested_role != WorkspaceRole::Release => {
                 return Some("release cuts require a release workspace role".into());
             }
-        }
-        WorkspaceActionKind::BenchmarkRun => {
-            if request.requested_role != WorkspaceRole::Benchmark {
+        WorkspaceActionKind::BenchmarkRun
+            if request.requested_role != WorkspaceRole::Benchmark => {
                 return Some(
                     "release-evaluation benchmark runs require a benchmark workspace role".into(),
                 );
             }
-        }
         _ => {}
     }
 
-    if let Some(current) = current {
-        if current.workspace_kind == WorkspaceKind::Vault
+    if let Some(current) = current
+        && current.workspace_kind == WorkspaceKind::Vault
             && matches!(request.action, WorkspaceActionKind::ReleaseCut)
         {
             return Some("vault workspaces are not valid release-cut authority surfaces".into());
         }
-    }
 
     None
 }

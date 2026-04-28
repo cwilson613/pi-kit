@@ -47,7 +47,7 @@ pub fn list_summary() -> anyhow::Result<String> {
 
         let installed = skills_dir
             .as_ref()
-            .map_or(false, |d| d.join(name).join("SKILL.md").exists());
+            .is_some_and(|d| d.join(name).join("SKILL.md").exists());
         let status = if installed { "✓" } else { "○" };
         lines.push(format!("  {status} {name:<14} {description}"));
     }
@@ -161,11 +161,10 @@ fn extract_description(content: &str) -> Option<&str> {
             let rest = rest.trim();
             if let Some(rest) = rest.strip_prefix('=') {
                 let rest = rest.trim();
-                if rest.starts_with('"') && rest.len() > 1 {
-                    if let Some(end) = rest[1..].find('"') {
+                if rest.starts_with('"') && rest.len() > 1
+                    && let Some(end) = rest[1..].find('"') {
                         return Some(&rest[1..1 + end]);
                     }
-                }
             }
         }
     }

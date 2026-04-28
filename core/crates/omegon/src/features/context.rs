@@ -319,7 +319,7 @@ impl ContextProvider {
             }
         }
 
-        Self::select_pack("Decisions", query, reason, entries).map(|report| report)
+        Self::select_pack("Decisions", query, reason, entries)
     }
 
     fn summarize_specs(&self, query: &str, reason: &str, max_items: usize) -> Option<PackReport> {
@@ -397,7 +397,7 @@ impl ContextProvider {
             }
         }
 
-        Self::select_pack("Specs", query, reason, entries).map(|report| report)
+        Self::select_pack("Specs", query, reason, entries)
     }
 
     async fn summarize_memory(

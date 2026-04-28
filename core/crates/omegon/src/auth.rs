@@ -562,8 +562,8 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                 home.join(".config/gemini-cli/oauth_creds.json"),
             ];
             for path in &paths {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if let Ok(data) = serde_json::from_str::<Value>(&content) {
+                if let Ok(content) = std::fs::read_to_string(path)
+                    && let Ok(data) = serde_json::from_str::<Value>(&content) {
                         let access = data
                             .get("access_token")
                             .and_then(|v| v.as_str())
@@ -584,7 +584,6 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
                             expires,
                         });
                     }
-                }
             }
             None
         }

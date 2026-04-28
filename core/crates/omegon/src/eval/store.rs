@@ -424,9 +424,9 @@ fn read_burn_summary_between(ts_a: &str, ts_b: &str) -> Option<MutationBurnSumma
 
     for line in content.lines() {
         // Quick timestamp check without full deserialization.
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(ts) = entry.get("timestamp").and_then(|v| v.as_str()) {
-                if ts > ts_a && ts <= ts_b {
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(ts) = entry.get("timestamp").and_then(|v| v.as_str())
+                && ts > ts_a && ts <= ts_b {
                     sessions += 1;
                     total_burn_ratio += entry
                         .get("burn_ratio")
@@ -445,8 +445,6 @@ fn read_burn_summary_between(ts_a: &str, ts_b: &str) -> Option<MutationBurnSumma
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as usize;
                 }
-            }
-        }
     }
 
     if sessions == 0 {

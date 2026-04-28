@@ -27,6 +27,7 @@ pub mod core {
     pub const WHOAMI: &str = "whoami";
     pub const CHRONOS: &str = "chronos";
     pub const SERVE: &str = "serve";
+    pub const TRUST_DIRECTORY: &str = "trust_directory";
 }
 
 /// View tool — owned by `tools::view::ViewProvider`
@@ -162,7 +163,7 @@ pub mod mutation {
 /// **Maintenance rule**: every `pub const` above MUST appear here.
 /// The `registry_count_is_current` test will catch omissions.
 /// Number of statically registered tools (for splash screen display).
-pub const TOOL_COUNT: usize = 60;
+pub const TOOL_COUNT: usize = 61;
 
 pub fn all_static_names() -> Vec<&'static str> {
     vec![
@@ -176,6 +177,7 @@ pub fn all_static_names() -> Vec<&'static str> {
         core::WHOAMI,
         core::CHRONOS,
         core::SERVE,
+        core::TRUST_DIRECTORY,
         // view (1)
         view::VIEW,
         // render (1)

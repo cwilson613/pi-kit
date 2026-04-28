@@ -29,7 +29,7 @@ pub mod secret_tools;
 // pub mod remember;    // session scratchpad
 
 use async_trait::async_trait;
-use omegon_traits::{ToolDefinition, ToolProgressSink, ToolProvider, ToolResult};
+use omegon_traits::{ContentBlock, ToolDefinition, ToolProgressSink, ToolProvider, ToolResult};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
@@ -168,18 +168,21 @@ impl CoreTools {
             return Ok(resolved);
         }
 
-        // Outside workspace and not trusted — reject with actionable guidance.
-        // The error message is seen by both the model and the user. The model
-        // needs to know it should switch to bash; the user needs to know how
-        // to add trusted directories for future sessions.
+        // Outside workspace and not trusted — reject with guidance for the model.
+        // The model should ask the user for permission, not try to bypass via bash.
+        let parent_dir = canonical
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         anyhow::bail!(
-            "OUTSIDE WORKSPACE — this tool only operates within '{}'. \
-             Use bash to write to '{}' instead (e.g., mkdir -p <dir> && cat > <file> << 'EOF' ... EOF). \
-             The operator can add '{}' to trusted_directories in settings to allow \
-             direct read/write access in future sessions.",
-            cwd_canonical.display(),
+            "PERMISSION REQUIRED — '{}' is outside the workspace '{}'. \
+             Ask the user: \"I need to access files in {}. Should I proceed?\" \
+             If they approve, call the trust_directory tool with path \"{}\" \
+             and then retry this operation.",
             path_str,
-            canonical.parent().map(|p| p.display().to_string()).unwrap_or_default()
+            cwd_canonical.display(),
+            parent_dir,
+            parent_dir,
         )
     }
 }
@@ -237,10 +240,10 @@ impl ToolProvider for CoreTools {
             ToolDefinition {
                 name: reg::READ.into(),
                 label: reg::READ.into(),
-                description: "Read the contents of a file within the workspace. Supports \
-                    text files and images. Output is truncated to 2000 lines or 50KB. \
-                    Use offset/limit for large files. For files outside the workspace, \
-                    use bash (e.g., `cat ~/path/to/file`) instead."
+                description: "Read the contents of a file. Supports text files and images. \
+                    Output is truncated to 2000 lines or 50KB. Use offset/limit for \
+                    large files. Paths outside the workspace require user approval — \
+                    if rejected, ask the user to approve the directory."
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -264,11 +267,10 @@ impl ToolProvider for CoreTools {
             ToolDefinition {
                 name: reg::WRITE.into(),
                 label: reg::WRITE.into(),
-                description: "Write content to a file within the workspace or a trusted \
-                    directory. Creates the file if it doesn't exist, overwrites if it does. \
-                    Automatically creates parent directories. For files outside the \
-                    workspace (e.g., ~/Documents, Obsidian vaults), use bash with a \
-                    heredoc instead: `bash cat > ~/path/to/file << 'EOF'\n...\nEOF`"
+                description: "Write content to a file. Creates the file if it doesn't \
+                    exist, overwrites if it does. Automatically creates parent directories. \
+                    Paths outside the workspace require user approval — if rejected, \
+                    ask the user to approve the directory."
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -452,6 +454,25 @@ impl ToolProvider for CoreTools {
                         }
                     },
                     "required": ["action"]
+                }),
+            },
+            ToolDefinition {
+                name: reg::TRUST_DIRECTORY.into(),
+                label: reg::TRUST_DIRECTORY.into(),
+                description: "Grant read/write access to a directory outside the workspace \
+                    for this session. Call this ONLY after the user has explicitly approved \
+                    access. The approval lasts for the current session only — it is not \
+                    persisted across restarts."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute directory path to approve (e.g., ~/Documents/vault)"
+                        }
+                    },
+                    "required": ["path"]
                 }),
             },
             // NOTE: view, web_search, ask_local_model, list_local_models,
@@ -712,6 +733,27 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'action' argument"))?;
                 serve::execute(action, &args, &self.cwd).await
             }
+            reg::TRUST_DIRECTORY => {
+                let path_str = args["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing 'path' argument"))?;
+                let expanded = Self::expand_tilde(path_str);
+                let canonical = expanded.canonicalize().unwrap_or(expanded.clone());
+                self.approve_directory(canonical.clone());
+                Ok(ToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!(
+                            "✓ Directory approved for this session: {}\n\
+                             You can now read and write files in this directory.",
+                            canonical.display()
+                        ),
+                    }],
+                    details: serde_json::json!({
+                        "path": canonical.display().to_string(),
+                        "scope": "session",
+                    }),
+                })
+            }
             // view, web_search, local_inference tools are handled
             // by their dedicated providers registered in setup.rs.
             _ => anyhow::bail!("Unknown core tool: {tool_name}"),
@@ -774,7 +816,7 @@ mod tests {
         let result = tools.resolve_path("../../../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("OUTSIDE WORKSPACE"), "error: {err}");
+        assert!(err.contains("PERMISSION REQUIRED"), "error: {err}");
     }
 
     #[test]
@@ -798,7 +840,7 @@ mod tests {
         let result = tools.resolve_path("/etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("OUTSIDE WORKSPACE"), "error: {err}");
+        assert!(err.contains("PERMISSION REQUIRED"), "error: {err}");
     }
 
     #[test]
@@ -840,13 +882,25 @@ mod tests {
     }
 
     #[test]
-    fn error_message_guides_model_to_use_bash() {
+    fn error_message_guides_model_to_ask_user() {
         let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
         let result = tools.resolve_path("/home/user/obsidian/eval.md");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("OUTSIDE WORKSPACE"), "error should start with clear marker: {err}");
-        assert!(err.contains("bash"), "error should tell model to use bash: {err}");
-        assert!(err.contains("trusted_directories"), "error should mention trusted_directories for user: {err}");
+        assert!(err.contains("PERMISSION REQUIRED"), "error should start with clear marker: {err}");
+        assert!(err.contains("trust_directory"), "error should tell model to call trust_directory: {err}");
+        assert!(err.contains("Ask the user"), "error should instruct model to ask the user: {err}");
+    }
+
+    #[test]
+    fn trust_directory_enables_access() {
+        let tools = CoreTools::new(PathBuf::from("/tmp/workspace"));
+        // Rejected by default
+        assert!(tools.resolve_path("/home/user/vault/file.md").is_err());
+        // Approve the directory
+        tools.approve_directory(PathBuf::from("/home/user/vault"));
+        // Now allowed
+        let result = tools.resolve_path("/home/user/vault/file.md");
+        assert!(result.is_ok(), "approved directory should be allowed: {:?}", result.unwrap_err());
     }
 
     #[test]
@@ -890,12 +944,12 @@ mod tests {
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // Should have 9 core tools (bash, read, write, edit, change,
-        // commit, whoami, chronos, serve)
+        // Should have 10 core tools (bash, read, write, edit, change,
+        // commit, whoami, chronos, serve, trust_directory)
         assert_eq!(
             tool_names.len(),
-            9,
-            "Expected 9 core tools, got {}",
+            10,
+            "Expected 10 core tools, got {}",
             tool_names.len()
         );
     }

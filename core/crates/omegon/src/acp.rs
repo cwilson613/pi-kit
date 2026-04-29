@@ -177,8 +177,13 @@ impl OmegonAcpAgent {
 
     /// Send a request to the worker. Panics if worker not initialized.
     async fn send_to_worker(&self, req: WorkerRequest) {
-        if let Some(ref worker) = *self.worker.borrow() {
-            let _ = worker.request_tx.send(req).await;
+        let tx = self
+            .worker
+            .borrow()
+            .as_ref()
+            .map(|w| w.request_tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(req).await;
         }
     }
 }

@@ -901,8 +901,6 @@ impl InstrumentPanel {
         &mut self,
         context_pct: f32,
         context_window: usize,
-        _tool_name: Option<&str>,
-        _tool_error: bool,
         thinking_level: &str,
         memory_op: Option<(usize, WaveDirection)>,
         agent_active: bool,
@@ -2077,12 +2075,12 @@ mod tests {
     #[test]
     fn context_fill_uses_full_percent_range() {
         let mut panel = InstrumentPanel::default();
-        panel.update_telemetry(50.0, 200_000, None, false, "off", None, false, 0.016);
+        panel.update_telemetry(50.0, 200_000, "off", None, false, 0.016);
         assert!(
             (panel.context_fill - 0.5).abs() < 0.001,
             "context fill should track 50%"
         );
-        panel.update_telemetry(100.0, 200_000, None, false, "off", None, false, 0.016);
+        panel.update_telemetry(100.0, 200_000, "off", None, false, 0.016);
         assert!(
             (panel.context_fill - 1.0).abs() < 0.001,
             "context fill should track 100%"
@@ -2359,8 +2357,6 @@ mod tests {
         panel.update_telemetry(
             62.0,
             200_000,
-            Some("read"),
-            false,
             "medium",
             None,
             true,
@@ -2369,8 +2365,6 @@ mod tests {
         panel.update_telemetry(
             62.0,
             200_000,
-            Some("bash"),
-            false,
             "medium",
             None,
             true,
@@ -2677,7 +2671,7 @@ mod tests {
     fn split_inference_and_tools_do_not_bleed_across_shared_boundary() {
         let mut panel = InstrumentPanel::default();
         panel.tool_started("bash");
-        panel.update_telemetry(100.0, 200_000, Some("bash"), false, "off", None, false, 0.0);
+        panel.update_telemetry(100.0, 200_000, "off", None, false, 0.0);
         panel.tool_finished("bash", false);
         panel.tool_started("read");
         panel.tool_finished("read", false);
@@ -2878,7 +2872,7 @@ mod tests {
     fn tool_runtime_finishes_with_duration() {
         let mut panel = InstrumentPanel::default();
         panel.tool_started("bash");
-        panel.update_telemetry(0.0, 200_000, None, false, "off", None, false, 1.25);
+        panel.update_telemetry(0.0, 200_000, "off", None, false, 1.25);
         panel.tool_finished("bash", false);
         let tool = panel.tools.iter().find(|t| t.name == "bash").unwrap();
         assert!(!tool.running);
@@ -2968,8 +2962,6 @@ mod tests {
         panel.update_telemetry(
             62.0,
             200_000,
-            Some("read"),
-            false,
             "medium",
             None,
             true,
@@ -3023,7 +3015,7 @@ mod tests {
     #[test]
     fn configured_thinking_budget_does_not_imply_runtime_thinking_phase() {
         let mut panel = InstrumentPanel::default();
-        panel.update_telemetry(40.0, 200_000, None, false, "high", None, true, 0.016);
+        panel.update_telemetry(40.0, 200_000, "high", None, true, 0.016);
         assert_ne!(panel.activity_mode(), ActivityMode::Thinking);
     }
 
@@ -3031,7 +3023,7 @@ mod tests {
     fn runtime_thinking_phase_requires_actual_thinking_activity() {
         let mut panel = InstrumentPanel::default();
         panel.note_thinking_activity();
-        panel.update_telemetry(40.0, 200_000, None, false, "high", None, true, 0.016);
+        panel.update_telemetry(40.0, 200_000, "high", None, true, 0.016);
         assert_eq!(panel.activity_mode(), ActivityMode::Thinking);
     }
 
@@ -3043,8 +3035,6 @@ mod tests {
         panel.update_telemetry(
             40.0,
             200_000,
-            Some("bash"),
-            false,
             "high",
             None,
             true,
@@ -3056,7 +3046,7 @@ mod tests {
     #[test]
     fn waiting_activity_mode_appears_without_thinking_budget() {
         let mut panel = InstrumentPanel::default();
-        panel.update_telemetry(40.0, 200_000, None, false, "off", None, true, 0.5);
+        panel.update_telemetry(40.0, 200_000, "off", None, true, 0.5);
         assert_eq!(panel.activity_mode(), ActivityMode::Waiting);
     }
 
@@ -3154,12 +3144,12 @@ mod tests {
         let mut panel = InstrumentPanel::default();
         panel.update_mind_facts(10, 0, 0, 0.02);
         for _ in 0..4 {
-            panel.update_telemetry(0.0, 200_000, None, false, "off", None, false, 0.016);
+            panel.update_telemetry(0.0, 200_000, "off", None, false, 0.016);
         }
         let baseline = panel.minds[0].max_amplitude();
         panel.update_mind_facts(11, 0, 0, 0.02);
         for _ in 0..4 {
-            panel.update_telemetry(0.0, 200_000, None, false, "off", None, false, 0.016);
+            panel.update_telemetry(0.0, 200_000, "off", None, false, 0.016);
         }
         let after = panel.minds[0].max_amplitude();
         assert!(
@@ -3201,8 +3191,6 @@ mod tests {
         panel.update_telemetry(
             68.0,
             200_000,
-            Some("read"),
-            false,
             "high",
             None,
             true,
@@ -3272,8 +3260,6 @@ mod tests {
         panel.update_telemetry(
             68.0,
             200_000,
-            Some("read"),
-            false,
             "high",
             None,
             true,
@@ -3345,8 +3331,6 @@ mod tests {
         panel.update_telemetry(
             68.0,
             200_000,
-            Some("read"),
-            false,
             "high",
             None,
             true,
@@ -3408,7 +3392,7 @@ mod tests {
             },
             200_000,
         );
-        panel.update_telemetry(68.0, 200_000, None, false, "high", None, true, 0.016);
+        panel.update_telemetry(68.0, 200_000, "high", None, true, 0.016);
 
         let area = Rect::new(0, 0, 64, 10);
         let backend = ratatui::backend::TestBackend::new(64, 10);
@@ -3449,7 +3433,7 @@ mod tests {
             },
             272_000,
         );
-        panel.update_telemetry(39.0, 272_000, None, false, "medium", None, true, 0.016);
+        panel.update_telemetry(39.0, 272_000, "medium", None, true, 0.016);
 
         let inference_area = Rect::new(0, 0, 36, 10);
         let tools_area = Rect::new(36, 0, 28, 10);
@@ -3510,8 +3494,6 @@ mod tests {
         panel.update_telemetry(
             68.0,
             200_000,
-            Some("read"),
-            false,
             "high",
             None,
             true,

@@ -2812,8 +2812,6 @@ fn footer_instrument_layout_reserves_gutters_between_engine_inference_and_tools(
     app.instrument_panel.update_telemetry(
         39.0,
         272_000,
-        None,
-        false,
         "medium",
         Some((0, crate::tui::instruments::WaveDirection::Right)),
         true,
@@ -4067,7 +4065,7 @@ fn thinking_chunk_marks_runtime_phase_as_thinking() {
     });
 
     app.instrument_panel
-        .update_telemetry(40.0, 200_000, None, false, "high", None, true, 0.016);
+        .update_telemetry(40.0, 200_000, "high", None, true, 0.016);
 
     assert_eq!(app.instrument_panel.debug_activity_mode(), "think");
 }
@@ -4095,8 +4093,6 @@ fn active_tool_phase_beats_runtime_thinking_in_tui() {
     app.instrument_panel.update_telemetry(
         40.0,
         200_000,
-        Some("bash"),
-        false,
         "high",
         None,
         true,

@@ -3338,8 +3338,6 @@ impl App {
             self.instrument_panel.update_telemetry(
                 self.footer_data.context_percent,
                 self.footer_data.context_window,
-                tool_name.as_deref(),
-                false,
                 thinking,
                 mem_op,
                 self.agent_active,

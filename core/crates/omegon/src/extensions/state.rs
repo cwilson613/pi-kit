@@ -3,7 +3,7 @@
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Extension state persisted to .omegon/state.toml in the extension directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,7 +59,7 @@ impl ExtensionState {
 
     /// Load state from .omegon/state.toml in the extension directory.
     /// If file doesn't exist, returns default (enabled, no crashes).
-    pub fn load(ext_dir: &PathBuf) -> Result<Self> {
+    pub fn load(ext_dir: &Path) -> Result<Self> {
         let state_path = ext_dir.join(".omegon").join("state.toml");
 
         if !state_path.exists() {
@@ -73,7 +73,7 @@ impl ExtensionState {
     }
 
     /// Save state to .omegon/state.toml in the extension directory.
-    pub fn save(&self, ext_dir: &PathBuf) -> Result<()> {
+    pub fn save(&self, ext_dir: &Path) -> Result<()> {
         let state_dir = ext_dir.join(".omegon");
         std::fs::create_dir_all(&state_dir)?;
 

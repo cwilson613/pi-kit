@@ -14,6 +14,19 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.8] - 2026-04-29
+
+### Added
+
+- **Graduated network policy for Nex sandboxes** — replaces the binary `network_access` boolean with `NexNetworkPolicy`: `isolated` (no network stack), `egress` (outbound-only with optional domain/port/CIDR filtering), `bridge` (with port mappings), `host`, and `custom`. Filtered egress applies iptables rules via the OCI entrypoint — works in docker-compose, kubernetes, or any OCI runtime.
+- **Docker Compose export** — `omegon nex compose <profile>` generates a ready-to-use `docker-compose.yml` with all resource limits, network policy, volumes, and labels mapped 1:1. Nex profiles are not locked into our spawn path.
+- **Egress filter in OCI entrypoint** — `OMEGON_EGRESS_FILTER` env var (JSON) is handled by the container entrypoint with iptables: default DROP, allow DNS, resolve allowed hosts, block cloud metadata (169.254.169.254) and RFC1918 private ranges by default.
+- `iptables-nft` added to the shell foundation — available in all domain OCI images for filtered egress.
+
+### Fixed
+
+- **Bash tool timeout ignored** — the bus layer hardcoded a 120s timeout on all bash executions, silently killing commands before the model-requested timeout could fire. The model's `timeout` parameter was dead on arrival for anything over 120s. Now the bus respects the tool-requested timeout (clamped to 600s max), with 5s grace so the tool's own timeout fires first with a clean error.
+
 ## [0.17.7] - 2026-04-29
 
 ### Added

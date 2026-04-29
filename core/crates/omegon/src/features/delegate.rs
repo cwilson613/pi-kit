@@ -398,6 +398,7 @@ struct DelegateRuntimeRequest {
 pub struct DelegateRunner {
     cwd: PathBuf,
     result_store: Arc<DelegateResultStore>,
+    sandbox: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -637,8 +638,22 @@ fn format_delegate_child_failure(
 }
 
 impl DelegateRunner {
-    pub fn new(cwd: PathBuf, result_store: Arc<DelegateResultStore>) -> Self {
-        Self { cwd, result_store }
+    pub fn new(cwd: PathBuf, result_store: Arc<DelegateResultStore>, sandbox: bool) -> Self {
+        Self { cwd, result_store, sandbox }
+    }
+
+    fn spawn_sandboxed(
+        &self,
+        config: &ChildAgentSpawnConfig,
+        prompt_file: &std::path::Path,
+    ) -> anyhow::Result<(tokio::process::Child, u32)> {
+        let home = dirs::home_dir().unwrap_or_default().join(".omegon");
+        let registry = crate::nex::NexRegistry::load(&home, Some(&self.cwd))?;
+        let profile = registry
+            .resolve("coding")
+            .ok_or_else(|| anyhow::anyhow!("no nex profile available for delegate sandbox"))?
+            .clone();
+        crate::nex::spawn_containerized_child_agent(config, &profile, &self.cwd, prompt_file)
     }
 
     fn build_delegate_prompt(
@@ -749,7 +764,17 @@ If blocked, say the blocker plainly.\n",
                 mind,
             ),
         };
-        let (mut child, _pid) = spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?;
+        let (mut child, _pid) = if self.sandbox {
+            match self.spawn_sandboxed(&child_config, &prompt_path) {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!(error = %e, "delegate sandbox spawn failed, falling back to subprocess");
+                    spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?
+                }
+            }
+        } else {
+            spawn_headless_child_agent(&child_config, &self.cwd, &prompt_path)?
+        };
 
         // Stream stderr for live activity tracking.
         // Timeouts: delegate workers are short-lived (4–6 turns), so use
@@ -964,8 +989,9 @@ If blocked, say the blocker plainly.\n",
         let cwd = self.cwd.clone();
         let parent_model = session_model;
         let fail_counter = consecutive_failures;
+        let sandbox = self.sandbox;
         crate::task_spawn::spawn_best_effort_result("delegate-real-task", async move {
-            let runner = DelegateRunner::new(cwd, store.clone());
+            let runner = DelegateRunner::new(cwd, store.clone(), sandbox);
             match runner
                 .run_delegate_child(&task_id, &prompt, &runtime, mind.as_deref(), parent_model)
                 .await
@@ -1061,12 +1087,14 @@ pub struct DelegateFeature {
     /// Recent files the parent agent has read/edited — bounded LRU for
     /// auto-populating delegate scope. Capped at 30 entries.
     recent_parent_files: std::collections::VecDeque<String>,
+    /// Sandbox mode — spawn delegates in containers.
+    sandbox: bool,
 }
 
 impl DelegateFeature {
-    pub fn new(cwd: &Path, agents: Vec<AgentSpec>) -> Self {
+    pub fn new(cwd: &Path, agents: Vec<AgentSpec>, sandbox: bool) -> Self {
         let result_store = Arc::new(DelegateResultStore::new());
-        let runner = Arc::new(DelegateRunner::new(cwd.to_path_buf(), result_store.clone()));
+        let runner = Arc::new(DelegateRunner::new(cwd.to_path_buf(), result_store.clone(), sandbox));
 
         // Seed session model from env so delegates on the first turn
         // (before any TurnEnd fires) still inherit the operator's model.
@@ -1085,6 +1113,7 @@ impl DelegateFeature {
             provider_inventory: None,
             recent_user_prompts: std::collections::VecDeque::with_capacity(50),
             recent_parent_files: std::collections::VecDeque::with_capacity(30),
+            sandbox,
         }
     }
 
@@ -1899,6 +1928,7 @@ mod tests {
         let runner = DelegateRunner::new(
             temp_dir.path().to_path_buf(),
             std::sync::Arc::new(DelegateResultStore::new()),
+            false,
         );
         let prompt = runner.build_delegate_prompt(
             DelegateWorkerProfile::Patch,
@@ -1928,7 +1958,7 @@ mod tests {
     #[test]
     fn delegate_tool_schema_exposes_worker_profile() {
         let temp_dir = TempDir::new().unwrap();
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![]);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![], false);
         let delegate_tool = feature
             .tools()
             .into_iter()
@@ -1954,7 +1984,7 @@ mod tests {
             is_write_agent: true,
         }];
 
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents, false);
         let tools = feature.tools();
 
         assert_eq!(tools.len(), 3);
@@ -1968,7 +1998,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let agents = vec![];
 
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents, false);
 
         let args = json!({
             "task": "test task",
@@ -1985,7 +2015,7 @@ mod tests {
     #[tokio::test]
     async fn test_delegate_result_nonexistent() {
         let temp_dir = TempDir::new().unwrap();
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![]);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![], false);
 
         let args = json!({ "task_id": "nonexistent_task" });
 
@@ -2016,7 +2046,7 @@ mod tests {
             },
         ];
 
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), agents, false);
 
         let signals = ContextSignals {
             user_prompt: "test",
@@ -2092,7 +2122,7 @@ This agent runs in write mode and can modify files.
     #[tokio::test]
     async fn system_error_messages_rejected_as_delegate_tasks() {
         let temp_dir = TempDir::new().unwrap();
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![]);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![], false);
 
         let cases = [
             "[System: Your last several delegate calls returned errors]",
@@ -2186,7 +2216,7 @@ This agent runs in write mode and can modify files.
     #[tokio::test]
     async fn consecutive_failures_disable_delegate() {
         let temp_dir = TempDir::new().unwrap();
-        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![]);
+        let feature = DelegateFeature::new(&temp_dir.path().to_path_buf(), vec![], false);
 
         // Simulate 3 failures by directly setting the counter
         if let Ok(mut count) = feature.consecutive_failures.lock() {

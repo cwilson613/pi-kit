@@ -355,6 +355,11 @@ pub struct Settings {
     #[serde(default = "default_mouse")]
     pub mouse: bool,
 
+    /// Sandbox isolation — when true, delegate/cleave children run inside
+    /// OCI containers (podman/docker) with resource limits and network isolation.
+    #[serde(default)]
+    pub sandbox: bool,
+
     /// How long clipboard pastes are retained on disk before automatic
     /// deletion at session start, in hours. Default 24h. Set to 0 to
     /// disable automatic deletion entirely. The setting also feeds the
@@ -633,6 +638,7 @@ impl Default for Settings {
             trusted_directories: Vec::new(),
             provider_connected: true, // optimistic default — set false when NullBridge
             mouse: true,
+            sandbox: false,
             clipboard_retention_hours: default_clipboard_retention_hours(),
             posture_disabled_tools: Vec::new(),
             posture_enabled_tools: Vec::new(),
@@ -993,6 +999,11 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mouse: Option<bool>,
 
+    // ── Sandbox ──
+    /// Sandbox isolation for delegate/cleave children.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<bool>,
+
     // ── Persona / Tone ──
     /// Active persona name. Restored on next session start.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1089,6 +1100,9 @@ impl Profile {
         if let Some(m) = self.mouse {
             settings.mouse = m;
         }
+        if let Some(s) = self.sandbox {
+            settings.sandbox = s;
+        }
         // persona and tone are restored by the plugin system at session start,
         // not by Settings.apply_to — Profile stores the name for resumption.
     }
@@ -1148,6 +1162,9 @@ impl Profile {
         }
         if !settings.mouse {
             self.mouse = Some(false);
+        }
+        if settings.sandbox {
+            self.sandbox = Some(true);
         }
     }
 }

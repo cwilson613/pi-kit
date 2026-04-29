@@ -1,8 +1,8 @@
 {
   "crateCount": 7,
   "downloadMB": 13,
-  "releaseTag": "v0.17.6",
-  "providerCount": 13,
+  "releaseTag": "v0.17.7",
+  "providerCount": 14,
   "providerNames": [
     "Anthropic/Claude",
     "OpenAI API",
@@ -15,6 +15,7 @@
     "Google Gemini",
     "Google Antigravity",
     "OpenCode Go",
+    "Perplexity AI",
     "Ollama (Local)",
     "Ollama Cloud"
   ],
@@ -30,6 +31,7 @@
     "google",
     "google-antigravity",
     "opencode-go",
+    "perplexity",
     "ollama",
     "ollama-cloud"
   ],

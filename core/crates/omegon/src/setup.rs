@@ -461,8 +461,15 @@ impl AgentSetup {
         let lifecycle_handle = lifecycle_feature.shared_provider();
         bus.register(Box::new(lifecycle_feature));
 
+        // ─── Sandbox setting (read once, shared by cleave + delegate) ──
+        let sandbox = settings
+            .as_ref()
+            .and_then(|s| s.lock().ok())
+            .map(|s| s.sandbox)
+            .unwrap_or(false);
+
         // ─── Cleave (decomposition + dispatch) ─────────────────────────
-        let cleave_feature = features::cleave::CleaveFeature::new(&cwd, session_secret_env.clone());
+        let cleave_feature = features::cleave::CleaveFeature::new(&cwd, session_secret_env.clone(), sandbox);
         let cleave_handle = cleave_feature.shared_progress();
         // Capture the event-sender slot before bus.register consumes the
         // typed feature. main.rs writes the AgentEvent broadcast sender
@@ -481,7 +488,7 @@ impl AgentSetup {
 
         // ─── Delegate (subagent system) ─────────────────────────────────
         let agents = crate::features::delegate::scan_agents(&cwd);
-        let mut delegate_feature = features::delegate::DelegateFeature::new(&cwd, agents);
+        let mut delegate_feature = features::delegate::DelegateFeature::new(&cwd, agents, sandbox);
 
         // Probe provider inventory so the delegate catalog is available
         // for context injection (lets the orchestrator see available models).

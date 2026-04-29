@@ -14,6 +14,17 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.7] - 2026-04-29
+
+### Added
+
+- **Nex sandbox profiles** — deterministic OCI container isolation for delegate/cleave children. `/sandbox on` in the TUI enables containerized execution with read-only rootfs, no network, workspace mounted at `/work`. Profile registry with 7 built-in domain profiles (chat, coding, coding-python, coding-node, coding-rust, infra, full). TOML manifest format for custom profiles. CLI: `omegon nex init|list|inspect|status`. Footer badge shows "sandbox: isolated" when enabled. Graceful fallback to subprocess when no container runtime available.
+- **Perplexity AI provider** (#14) — search-augmented inference via `api.perplexity.ai`. Models: `perplexity/sonar`, plus third-party models (`anthropic/claude-sonnet-4-6`, `openai/gpt-5.4`, `openai/gpt-5.4-mini`). Usage: `omegon --model perplexity:perplexity/sonar` or `/login perplexity` in TUI.
+
+### Fixed
+
+- **CI release workflow** — attestation ran before `gh release create`, locking the tag and making the release immutable before artifacts were uploaded. Every stable release since v0.17.0 had no downloadable binaries. Fixed: release creation now happens first, attestation second. Workflow also handles pre-existing releases (created manually) by deleting and recreating with artifacts.
+
 ## [0.17.6] - 2026-04-28
 
 ### Changed

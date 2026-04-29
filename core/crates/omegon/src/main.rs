@@ -86,6 +86,8 @@ pub mod util;
 mod web;
 mod workflow;
 
+pub mod nex;
+
 use bridge::LlmBridge;
 use omegon_traits::AgentEvent;
 use tokio::sync::oneshot;
@@ -489,6 +491,27 @@ enum Commands {
         #[command(subcommand)]
         action: BenchAction,
     },
+
+    /// Manage Nex sandbox profiles — init, list, inspect.
+    Nex {
+        #[command(subcommand)]
+        action: NexAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum NexAction {
+    /// Generate a starter .omegon/nex/project.toml for this project.
+    Init,
+    /// List available sandbox profiles (built-in + custom).
+    List,
+    /// Show details of a specific profile.
+    Inspect {
+        /// Profile name or hash prefix.
+        name: String,
+    },
+    /// Check container runtime availability.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -954,6 +977,10 @@ async fn main() -> anyhow::Result<()> {
             SkillsAction::List => skills::cmd_list(),
             SkillsAction::Install => skills::cmd_install(),
         },
+        Some(Commands::Nex { ref action }) => {
+            nex_cli(action);
+            std::process::exit(0);
+        }
         Some(Commands::Bench { ref action }) => match action {
             BenchAction::RunTask {
                 prompt,
@@ -2174,6 +2201,7 @@ async fn run_cleave_command(
         child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
         progress_sink: cleave::progress::stdout_progress_sink(),
         workflow: workflow::discover_workflow(&cli.cwd),
+        sandbox: false, // CLI cleave — no settings context, sandbox opt-in via TUI only
     };
 
     let cancel = CancellationToken::new();
@@ -5747,6 +5775,139 @@ async fn run_bounded_task(
     }
 
     std::process::exit(exit_code);
+}
+
+fn nex_cli(action: &NexAction) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+
+    match action {
+        NexAction::Init => {
+            let nex_dir = cwd.join(".omegon").join("nex");
+            let profile_path = nex_dir.join("project.toml");
+            if profile_path.exists() {
+                eprintln!("  .omegon/nex/project.toml already exists");
+                std::process::exit(1);
+            }
+            let _ = std::fs::create_dir_all(&nex_dir);
+            let project_name = cwd
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project");
+            let template = format!(
+                r#"# Nex sandbox profile for {project_name}
+# Docs: https://omegon.styrene.io/docs/sandbox
+
+[profile]
+name = "{project_name}"
+base = "coding"
+# image = "ghcr.io/styrene-lab/omegon:latest"  # explicit image override
+
+# [overlays.custom]
+# packages = ["python312Packages.requests"]
+
+[resources]
+memory_mb = 2048
+# cpu_shares = 1024
+# pids_limit = 256
+network = "none"
+readonly_rootfs = true
+
+[capabilities]
+mount_cwd = true
+filesystem_write = true
+network_access = false
+# env_passthrough = ["DATABASE_URL"]
+# allowed_tools = ["bash", "read_file", "write_file", "edit_file"]
+# denied_tools = ["web_search"]
+"#
+            );
+            if let Err(e) = std::fs::write(&profile_path, template) {
+                eprintln!("  Failed to write {}: {e}", profile_path.display());
+                std::process::exit(1);
+            }
+            eprintln!("  Created .omegon/nex/project.toml");
+            eprintln!("  Enable with: /sandbox on (in TUI) or edit the profile to customize");
+        }
+        NexAction::List => {
+            let home = dirs::home_dir().unwrap_or_default().join(".omegon");
+            let registry = nex::NexRegistry::load(&home, Some(&cwd))
+                .unwrap_or_else(|e| {
+                    eprintln!("  Failed to load profiles: {e}");
+                    std::process::exit(1);
+                });
+            let profiles = registry.list();
+            if profiles.is_empty() {
+                eprintln!("  No profiles found.");
+                return;
+            }
+            eprintln!("  {} profile(s):\n", profiles.len());
+            for p in &profiles {
+                let hash_short = if p.profile_hash.len() > 12 {
+                    &p.profile_hash[..12]
+                } else {
+                    &p.profile_hash
+                };
+                let image = p.image_ref.as_deref().unwrap_or("(needs build)");
+                eprintln!("  {:<20} {:<14} {}", p.name, hash_short, image);
+            }
+        }
+        NexAction::Inspect { name } => {
+            let home = dirs::home_dir().unwrap_or_default().join(".omegon");
+            let registry = nex::NexRegistry::load(&home, Some(&cwd))
+                .unwrap_or_else(|e| {
+                    eprintln!("  Failed to load profiles: {e}");
+                    std::process::exit(1);
+                });
+            match registry.resolve(name) {
+                Some(p) => {
+                    eprintln!("  Profile: {}", p.name);
+                    eprintln!("  Hash:    {}", p.profile_hash);
+                    eprintln!("  Domain:  {}", p.base_domain);
+                    if let Some(ref img) = p.image_ref {
+                        eprintln!("  Image:   {img}");
+                    }
+                    eprintln!("\n  Resources:");
+                    if let Some(mem) = p.resource_limits.memory_mb {
+                        eprintln!("    memory:   {mem} MB");
+                    }
+                    eprintln!("    network:  {}", p.resource_limits.network_mode.as_flag());
+                    eprintln!("    readonly: {}", p.resource_limits.readonly_rootfs);
+                    eprintln!("\n  Capabilities:");
+                    eprintln!("    fs_write:  {}", p.capabilities.filesystem_write);
+                    eprintln!("    net:       {}", p.capabilities.network_access);
+                    eprintln!("    mount_cwd: {}", p.capabilities.mount_cwd);
+                    if !p.capabilities.allowed_tools.is_empty() {
+                        eprintln!("    allowed:   {}", p.capabilities.allowed_tools.join(", "));
+                    }
+                    if !p.capabilities.denied_tools.is_empty() {
+                        eprintln!("    denied:    {}", p.capabilities.denied_tools.join(", "));
+                    }
+                }
+                None => {
+                    eprintln!("  Profile '{}' not found.", name);
+                    eprintln!("  Run 'omegon nex list' to see available profiles.");
+                    std::process::exit(1);
+                }
+            }
+        }
+        NexAction::Status => {
+            let runtime = nex::spawn::detect_container_runtime_public();
+            match runtime {
+                Some(rt) => {
+                    eprintln!("  Container runtime: {rt}");
+                    eprintln!("  Sandbox ready.");
+                    eprintln!("\n  Enable with: /sandbox on (in TUI)");
+                }
+                None => {
+                    eprintln!("  No container runtime found.");
+                    eprintln!("\n  Install podman (recommended) or docker:");
+                    eprintln!("    macOS:  brew install podman");
+                    eprintln!("    Linux:  apt install podman");
+                    eprintln!("    NixOS:  nix-env -i podman");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3273,6 +3273,7 @@ impl App {
                 .to_string();
             self.footer_data.authorization = s.operating_profile().authorization.summary();
             self.footer_data.provider_connected = s.provider_connected;
+            self.footer_data.sandbox = s.sandbox;
             self.footer_data.is_oauth = crate::providers::resolve_api_key_sync(&s.provider())
                 .is_some_and(|(_, is_oauth)| is_oauth);
         }
@@ -4412,6 +4413,11 @@ impl App {
             "manage trusted directories (outside-workspace access)",
             &["add", "remove", "list"],
         ),
+        (
+            "sandbox",
+            "toggle agent sandbox isolation (OCI containers)",
+            &["on", "off", "status"],
+        ),
         ("version", "show build version and git sha", &[]),
         ("exit", "quit (or double Ctrl+C)", &[]),
     ];
@@ -5479,6 +5485,74 @@ impl App {
                     }
                     _ => SlashResult::Display(
                         "Usage: /trust list | /trust add <path> | /trust remove <path>".into(),
+                    ),
+                }
+            }
+            "sandbox" => {
+                let sub = args.split_whitespace().next().unwrap_or("");
+                match sub {
+                    "on" | "enable" => {
+                        // Check for container runtime before enabling
+                        let runtime = crate::nex::spawn::detect_container_runtime_public();
+                        if let Some(ref rt) = runtime {
+                            let cwd = self.cwd().to_path_buf();
+                            if let Ok(mut s) = self.settings.lock() {
+                                s.sandbox = true;
+                                let mut profile = crate::settings::Profile::load(&cwd);
+                                profile.capture_from(&s);
+                                let _ = profile.save(&cwd);
+                            }
+                            SlashResult::Display(format!(
+                                "Sandbox enabled ({rt})\n\n\
+                                 Delegate and cleave children will now run inside \
+                                 isolated containers with:\n\
+                                 - Read-only root filesystem\n\
+                                 - No network access\n\
+                                 - Workspace mounted at /work\n\n\
+                                 /sandbox off     disable\n\
+                                 /sandbox status  current state"
+                            ))
+                        } else {
+                            SlashResult::Display(
+                                "No container runtime found.\n\n\
+                                 Sandbox requires podman or docker:\n\
+                                 - macOS:  brew install podman\n\
+                                 - Linux:  apt install podman  (or docker)\n\
+                                 - NixOS:  nix-env -i podman\n\n\
+                                 Podman is preferred (rootless, daemonless)."
+                                    .into(),
+                            )
+                        }
+                    }
+                    "off" | "disable" => {
+                        let cwd = self.cwd().to_path_buf();
+                        if let Ok(mut s) = self.settings.lock() {
+                            s.sandbox = false;
+                            let mut profile = crate::settings::Profile::load(&cwd);
+                            profile.capture_from(&s);
+                            let _ = profile.save(&cwd);
+                        }
+                        SlashResult::Display("Sandbox disabled. Children run as local subprocesses.".into())
+                    }
+                    "" | "status" => {
+                        let enabled = self
+                            .settings
+                            .lock()
+                            .ok()
+                            .map(|s| s.sandbox)
+                            .unwrap_or(false);
+                        let runtime = crate::nex::spawn::detect_container_runtime_public();
+                        let rt_str = runtime.as_deref().unwrap_or("not found");
+                        let status = if enabled { "enabled" } else { "disabled" };
+                        SlashResult::Display(format!(
+                            "Sandbox: {status}\n\
+                             Runtime: {rt_str}\n\n\
+                             /sandbox on   enable container isolation\n\
+                             /sandbox off  disable (use local subprocesses)"
+                        ))
+                    }
+                    _ => SlashResult::Display(
+                        "Usage: /sandbox [on|off|status]".into(),
                     ),
                 }
             }

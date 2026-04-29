@@ -18,6 +18,10 @@ pub struct ChildAgentRuntimeProfile {
     /// Force slim mode on the child (compact schemas, lazy tool injection,
     /// reduced prompt surface). Delegate workers always set this.
     pub slim: bool,
+
+    /// Nex profile name — when set, the child spawns inside an OCI container
+    /// with sandbox isolation defined by the named profile.
+    pub nex_profile: Option<String>,
 }
 
 #[derive(Debug, Clone)]

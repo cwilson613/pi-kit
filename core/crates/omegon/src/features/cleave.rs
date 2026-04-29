@@ -526,10 +526,11 @@ pub struct CleaveFeature {
     /// runtime has constructed it. See [`CleaveEventSlot`] for the
     /// rationale.
     bus_request_sink: CleaveEventSlot,
+    sandbox: bool,
 }
 
 impl CleaveFeature {
-    pub fn new(repo_path: &std::path::Path, session_secret_env: Vec<(String, String)>) -> Self {
+    pub fn new(repo_path: &std::path::Path, session_secret_env: Vec<(String, String)>, sandbox: bool) -> Self {
         let progress = Arc::new(Mutex::new(CleaveProgress::default()));
         let feature = Self {
             repo_path: repo_path.to_path_buf(),
@@ -538,6 +539,7 @@ impl CleaveFeature {
             inventory: None,
             session_secret_env,
             bus_request_sink: Arc::new(Mutex::new(None)),
+            sandbox,
         };
         feature.refresh_progress_from_workspace_state();
         feature
@@ -933,6 +935,7 @@ impl CleaveFeature {
             child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
             progress_sink,
             workflow: crate::workflow::discover_workflow(&self.repo_path),
+            sandbox: self.sandbox,
         };
 
         let result = cleave::run_cleave(
@@ -1426,7 +1429,7 @@ mod tests {
     #[test]
     fn feature_provides_tools() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let tools = feature.tools();
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.name == "cleave_assess"));
@@ -1436,7 +1439,7 @@ mod tests {
     #[test]
     fn cleave_status_no_active_run() {
         let dir = tempfile::tempdir().unwrap();
-        let mut feature = CleaveFeature::new(dir.path(), vec![]);
+        let mut feature = CleaveFeature::new(dir.path(), vec![], false);
         let result = feature.handle_command("cleave", "status");
         assert!(matches!(result, CommandResult::Display(ref s) if s.contains("No active")));
     }
@@ -1447,7 +1450,7 @@ mod tests {
         // silent no-op (used in tests, headless runs, anywhere without an
         // event bus). Reaching this assertion at all proves we don't panic.
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         feature.emit_decomposition_event(AgentEvent::DecompositionStarted {
             children: vec!["a".into(), "b".into()],
         });
@@ -1564,7 +1567,7 @@ mod tests {
         // slot and assert that FamilyVitalSignsUpdated reaches a subscribed
         // receiver via the BusRequest::EmitAgentEvent pathway.
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let (sink, mut rx) = test_sink_with_receiver();
         *feature.event_sender_slot().lock().unwrap() = Some(sink);
 
@@ -1615,7 +1618,7 @@ mod tests {
         // manually since they require a real subprocess dispatch to
         // exercise end-to-end.
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let (sink, mut rx) = test_sink_with_receiver();
         *feature.event_sender_slot().lock().unwrap() = Some(sink);
 
@@ -1652,7 +1655,7 @@ mod tests {
     #[test]
     fn cancel_child_uses_registered_token() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let token = tokio_util::sync::CancellationToken::new();
         {
             let mut registry = feature.child_cancel_tokens.lock().unwrap();
@@ -1701,7 +1704,7 @@ mod tests {
         )
         .unwrap();
 
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let progress = feature.progress();
         assert!(progress.active);
         assert_eq!(progress.run_id, "run-1");
@@ -1752,7 +1755,7 @@ mod tests {
         )
         .unwrap();
 
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let progress = feature.progress();
         assert!(progress.active);
         assert_eq!(progress.children[0].status, "pending");
@@ -1800,7 +1803,7 @@ mod tests {
         )
         .unwrap();
 
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         assert!(feature.cancel_child("alpha"));
         let progress = feature.progress();
         assert!(!progress.active);
@@ -1855,7 +1858,7 @@ mod tests {
         )
         .unwrap();
 
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let progress = feature.progress();
         let child = &progress.children[0];
         assert_eq!(child.last_tool.as_deref(), Some("bash"));
@@ -1872,7 +1875,7 @@ mod tests {
     #[test]
     fn progress_default_inactive() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let prog = feature.progress();
         assert!(!prog.active);
         assert_eq!(prog.total_children, 0);
@@ -2111,7 +2114,7 @@ mod tests {
     #[tokio::test]
     async fn assess_tool_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let feature = CleaveFeature::new(dir.path(), vec![]);
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute(

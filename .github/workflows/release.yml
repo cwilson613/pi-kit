@@ -412,12 +412,6 @@ jobs:
             --output-signature THIRD_PARTY_NOTICES.md.sig \
             --output-certificate THIRD_PARTY_NOTICES.md.pem
 
-      - name: Attest build provenance
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: artifacts/omegon-*.tar.gz
-
       - name: Preflight release token
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
@@ -426,51 +420,59 @@ jobs:
           gh api repos/${{ github.repository }} >/dev/null
           gh api repos/${{ github.repository }}/releases >/dev/null
 
-      - name: Create nightly GitHub Release
-        if: ${{ contains(env.RELEASE_TAG, '-nightly.') }}
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          gh release create "${{ env.RELEASE_TAG }}" \
-            --title "${{ env.RELEASE_TAG }}" \
-            --generate-notes \
-            --draft \
-            --prerelease \
-            artifacts/omegon-*.tar.gz \
-            artifacts/omegon-*.tar.gz.sha256 \
-            artifacts/omegon-*.tar.gz.sig \
-            artifacts/omegon-*.tar.gz.pem \
-            artifacts/checksums.sha256 \
-            artifacts/release-manifest.json
 
-      - name: Create and publish stable/rc GitHub Release
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
-        run: |
-          set -euo pipefail
+          # Determine release flags
+          IS_NIGHTLY=false
+          IS_RC=false
           PRERELEASE_FLAG=""
-          if echo "${{ env.RELEASE_TAG }}" | grep -q "\-rc\."; then
+          DRAFT_FLAG=""
+          if echo "${{ env.RELEASE_TAG }}" | grep -q "\-nightly\."; then
+            IS_NIGHTLY=true
+            PRERELEASE_FLAG="--prerelease"
+            DRAFT_FLAG="--draft"
+          elif echo "${{ env.RELEASE_TAG }}" | grep -q "\-rc\."; then
+            IS_RC=true
             PRERELEASE_FLAG="--prerelease"
           fi
+
+          # Collect asset files
+          ASSET_FILES=(artifacts/omegon-*.tar.gz artifacts/omegon-*.tar.gz.sha256)
+          ASSET_FILES+=(artifacts/omegon-*.tar.gz.sig artifacts/omegon-*.tar.gz.pem)
+          ASSET_FILES+=(artifacts/checksums.sha256 artifacts/release-manifest.json)
+          if [ "$IS_NIGHTLY" = "false" ]; then
+            ASSET_FILES+=(artifacts/omegon-sbom.cdx.json artifacts/omegon-sbom.cdx.json.sig)
+            ASSET_FILES+=(artifacts/omegon-sbom.cdx.json.pem)
+            ASSET_FILES+=(artifacts/THIRD_PARTY_NOTICES.md artifacts/THIRD_PARTY_NOTICES.md.sig)
+            ASSET_FILES+=(artifacts/THIRD_PARTY_NOTICES.md.pem)
+          fi
+
+          # If a release already exists (e.g. created manually), delete it
+          # and recreate with artifacts. This avoids the "tag already used
+          # by immutable release" error from GitHub Attestations.
+          if gh release view "${{ env.RELEASE_TAG }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${{ env.RELEASE_TAG }} already exists — deleting to recreate with artifacts"
+            gh release delete "${{ env.RELEASE_TAG }}" --repo "${{ github.repository }}" --yes || true
+            # Brief pause to let GitHub propagate the deletion
+            sleep 3
+          fi
+
           gh release create "${{ env.RELEASE_TAG }}" \
             --repo "${{ github.repository }}" \
             --title "${{ env.RELEASE_TAG }}" \
             --generate-notes \
-            $PRERELEASE_FLAG \
-            artifacts/omegon-*.tar.gz \
-            artifacts/omegon-*.tar.gz.sha256 \
-            artifacts/omegon-*.tar.gz.sig \
-            artifacts/omegon-*.tar.gz.pem \
-            artifacts/checksums.sha256 \
-            artifacts/release-manifest.json \
-            artifacts/omegon-sbom.cdx.json \
-            artifacts/omegon-sbom.cdx.json.sig \
-            artifacts/omegon-sbom.cdx.json.pem \
-            artifacts/THIRD_PARTY_NOTICES.md \
-            artifacts/THIRD_PARTY_NOTICES.md.sig \
-            artifacts/THIRD_PARTY_NOTICES.md.pem
+            $PRERELEASE_FLAG $DRAFT_FLAG \
+            "${ASSET_FILES[@]}"
+
+      - name: Attest build provenance
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/omegon-*.tar.gz
 
       - name: Trigger Homebrew formula update
         if: ${{ !contains(env.RELEASE_TAG, '-rc.') && !contains(env.RELEASE_TAG, '-nightly.') }}

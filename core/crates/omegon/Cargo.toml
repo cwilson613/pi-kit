@@ -79,6 +79,10 @@ rpassword = "7"
 rpkl = "0.8"
 percent-encoding = "2"
 
+[features]
+default = []
+nex = []
+
 [dev-dependencies]
 insta = "1.46"
 tempfile = "3.27.0"

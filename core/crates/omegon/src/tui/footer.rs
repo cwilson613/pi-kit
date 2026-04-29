@@ -83,6 +83,8 @@ pub struct FooterData {
     pub provider_connected: bool,
     /// Available update version (if any).
     pub update_available: Option<String>,
+    /// Sandbox isolation enabled — delegates/cleave run in containers.
+    pub sandbox: bool,
     /// Inline operator-facing transient events shown under engine version info.
     pub operator_events: Vec<OperatorEventLine>,
     /// Current provider quota/headroom telemetry, if exposed by the upstream.
@@ -257,6 +259,18 @@ impl FooterData {
                 value_width,
                 t.border_dim(),
                 t.muted(),
+                false,
+            );
+        }
+
+        if self.sandbox {
+            push_row(
+                &mut lines,
+                "sandbox",
+                "isolated".to_string(),
+                value_width,
+                t.border_dim(),
+                t.accent(),
                 false,
             );
         }

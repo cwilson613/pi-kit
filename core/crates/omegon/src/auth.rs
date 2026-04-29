@@ -144,6 +144,14 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         description: "API key — DeepSeek, Kimi, Qwen, MiniMax via opencode.ai/go",
     },
     ProviderCredential {
+        id: "perplexity",
+        auth_key: "perplexity",
+        display_name: "Perplexity AI",
+        env_vars: &["PERPLEXITY_API_KEY"],
+        auth_method: AuthMethod::ApiKey,
+        description: "API key — Sonar models with built-in search via api.perplexity.ai",
+    },
+    ProviderCredential {
         id: "ollama",
         auth_key: "ollama",
         display_name: "Ollama (Local)",

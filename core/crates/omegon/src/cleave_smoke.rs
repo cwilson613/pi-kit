@@ -315,6 +315,7 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
         child_runtime: scenario.runtime_profile.clone().unwrap_or_default(),
         progress_sink: cleave::progress::stdout_progress_sink(),
         workflow: None,
+        sandbox: false,
     };
     if let Some(profile) = &scenario.runtime_profile {
         config.child_runtime = profile.clone();

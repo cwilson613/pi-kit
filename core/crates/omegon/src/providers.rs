@@ -244,6 +244,7 @@ fn is_known_provider_id(provider_id: &str) -> bool {
             | "openai-codex"
             | "openrouter"
             | "opencode-go"
+            | "perplexity"
             | "groq"
             | "xai"
             | "mistral"
@@ -379,6 +380,7 @@ fn fallback_order_for_model(model_spec: &str) -> Vec<&'static str> {
         "google-antigravity" => vec!["google-antigravity", "google"],
         "huggingface" => vec!["huggingface"],
         "opencode-go" => vec!["opencode-go"],
+        "perplexity" => vec!["perplexity"],
         "ollama" => vec!["ollama"],
         "ollama-cloud" => vec!["ollama-cloud"],
         _ => vec!["anthropic"],
@@ -480,7 +482,7 @@ pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
         }
         // OpenAI-compatible providers — all use the Chat Completions protocol
         "groq" | "xai" | "mistral" | "cerebras" | "google" | "huggingface" | "ollama"
-        | "opencode-go" => {
+        | "opencode-go" | "perplexity" => {
             OpenAICompatClient::from_env(provider_id).map(|c| Box::new(c) as Box<dyn LlmBridge>)
         }
         "ollama-cloud" => OllamaCloudClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
@@ -2306,6 +2308,7 @@ pub fn compat_base_url(provider_id: &str) -> Option<&'static str> {
         "mistral" => Some("https://api.mistral.ai"),
         "cerebras" => Some("https://api.cerebras.ai"),
         "opencode-go" => Some("https://opencode.ai/zen/go"),
+        "perplexity" => Some("https://api.perplexity.ai"),
         "google" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         // Antigravity OAuth tokens require the Cloud Code Assist internal API
         // (cloudcode-pa.googleapis.com/v1internal), not the public OpenAI-compatible
@@ -4044,6 +4047,7 @@ mod tests {
             "ollama",
             "ollama-cloud",
             "opencode-go",
+            "perplexity",
         ] {
             assert!(
                 crate::model_registry::ModelRegistry::global()
@@ -4577,9 +4581,9 @@ mod tests {
     async fn compat_endpoints_are_reachable_and_speak_openai_protocol() {
         // Probe every non-local OpenAI-compatible endpoint without auth.
         // This is a free validation that base URLs are correct.
-        // HuggingFace excluded: returns HTML on 401 (auth page), but
-        // works correctly with a valid token. Their router doesn't
-        // distinguish unauthenticated API calls from browser requests.
+        // HuggingFace excluded: returns HTML on 401 (auth page).
+        // Perplexity excluded: returns 404 on unauthenticated probe.
+        // Both work correctly with valid tokens.
         let providers = [
             "groq",
             "xai",

@@ -1519,8 +1519,14 @@ impl LlmBridge for OpenAIClient {
         for (k, v) in &options.extra_body {
             body[k] = v.clone();
         }
-        // Apply reasoning_effort for models that support it (o-series, gpt-5+)
-        if let Some(effort) = openai_reasoning_effort(options.reasoning.as_deref()) {
+        // Apply reasoning_effort for models that support it (o-series, gpt-5+).
+        // OpenAI's /v1/chat/completions rejects reasoning_effort when tools are
+        // present for gpt-5.4+. Strip it in that case — the model still reasons,
+        // it just ignores the effort hint.
+        let has_tools = body.get("tools").is_some_and(|t| t.is_array());
+        if let Some(effort) = openai_reasoning_effort(options.reasoning.as_deref())
+            && !has_tools
+        {
             body["reasoning_effort"] = json!(effort);
         }
 

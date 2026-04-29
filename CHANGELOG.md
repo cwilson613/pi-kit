@@ -14,6 +14,13 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.10] - 2026-04-29
+
+### Fixed
+
+- **"Always Allow" now persists trusted directories to project settings** — previously session-scoped only, so child/delegate agents spawned as separate processes never inherited approved directories. Skills running in delegates would silently fail on writes to paths outside the workspace (e.g. Obsidian vault) and the agent would declare "done" without completing the step. Now, pressing 'a' on a permission prompt persists the directory so all future child agents inherit it.
+- **Permission denial tells agent to use bash** — the error message now instructs the agent to use the bash tool as a fallback for out-of-workspace writes, and names the specific directory to `/trust add`. Previously it just said "Access denied" with no recovery path.
+
 ## [0.17.9] - 2026-04-29
 
 ### Fixed

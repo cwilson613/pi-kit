@@ -2113,10 +2113,14 @@ async fn dispatch_single_tool(
                             content: vec![ContentBlock::Text {
                                 text: format!(
                                     "Access denied — '{}' is outside the workspace and not \
-                                     in trusted_directories. Use the bash tool to write to \
-                                     this path instead (e.g. bash with cat/echo redirection), \
-                                     or ask the operator to run /trust add {} in the TUI.",
+                                     in trusted_directories. Do NOT attempt to bypass this \
+                                     restriction via bash. Instead, tell the operator that \
+                                     this step could not be completed because the directory \
+                                     '{}' is not trusted, and ask them to run:\n\n  \
+                                     /trust add {}\n\n\
+                                     Then re-run the task.",
                                     perm_err.requested_path,
+                                    perm_err.directory,
                                     perm_err.directory,
                                 ),
                             }],

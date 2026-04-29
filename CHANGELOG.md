@@ -14,6 +14,12 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.9] - 2026-04-29
+
+### Fixed
+
+- **Bash default timeout raised from 120s to 600s** — the 0.17.8 fix only helped when the model explicitly passed a timeout parameter. Most bash calls omit it. Confirmed via audit log: Chrome headless PDF rendering, builds, and test suites were being silently killed at 120s, producing ghost sessions with zeroed context that retried in a loop. 600s matches the tool schema maximum.
+
 ## [0.17.8] - 2026-04-29
 
 ### Added
@@ -25,7 +31,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
-- **Bash tool timeout ignored** — the bus layer hardcoded a 120s timeout on all bash executions, silently killing commands before the model-requested timeout could fire. The model's `timeout` parameter was dead on arrival for anything over 120s. Now the bus respects the tool-requested timeout (clamped to 600s max), with 5s grace so the tool's own timeout fires first with a clean error.
+- **Bash tool timeout override respected** — the bus layer now respects the model-requested timeout parameter (clamped to 600s max), with 5s grace so the tool's own timeout fires first with a clean error.
 
 ## [0.17.7] - 2026-04-29
 

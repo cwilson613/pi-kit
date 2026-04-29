@@ -50,19 +50,35 @@ pub fn materialize_container(
         cmd.arg("--tmpfs=/tmp:rw,nosuid,size=512m");
     }
 
-    // Network policy — capabilities.network_access takes precedence over
-    // resource_limits.network_mode when both are set (B1 fix)
-    let effective_network = if profile.capabilities.network_access {
-        // Capability grants network — use the specified mode or bridge as default
-        match &profile.resource_limits.network_mode {
-            super::profile::NexNetworkMode::None => "bridge",
-            other => other.as_flag(),
+    // Network policy — graduated isolation from the capabilities
+    let network_policy = &profile.capabilities.network;
+    cmd.arg(format!("--network={}", network_policy.network_flag()));
+
+    // Port mappings for bridge mode
+    if let super::profile::NexNetworkPolicy::Bridge { ports } = network_policy {
+        for mapping in ports {
+            let proto = match mapping.protocol {
+                super::profile::NexPortProtocol::Tcp => "tcp",
+                super::profile::NexPortProtocol::Udp => "udp",
+            };
+            cmd.arg(format!(
+                "--publish={}:{}/{}",
+                mapping.host, mapping.container, proto
+            ));
         }
-    } else {
-        // Capability denies network — force none regardless of resource_limits
-        "none"
-    };
-    cmd.arg(format!("--network={}", effective_network));
+    }
+
+    // Filtered egress — inject iptables rules via entrypoint wrapper.
+    // Requires NET_ADMIN capability inside the container (scoped to the
+    // container's own network namespace, not the host).
+    if let super::profile::NexNetworkPolicy::Egress { filter: Some(filter) } = network_policy {
+        cmd.arg("--cap-add=NET_ADMIN");
+        // The iptables init script is passed via OMEGON_EGRESS_FILTER env var
+        // and executed by the container entrypoint before starting the agent.
+        let filter_json = serde_json::to_string(filter).unwrap_or_default();
+        cmd.arg("-e");
+        cmd.arg(format!("OMEGON_EGRESS_FILTER={}", filter_json));
+    }
 
     // Mount policy — use canonical paths to prevent traversal (M2 fix)
     let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
@@ -168,12 +184,13 @@ image = "ghcr.io/styrene-lab/omegon:0.17.6"
 
 [resources]
 memory_mb = 1024
-network = "none"
+
+[network]
+policy = "isolated"
 
 [capabilities]
 mount_cwd = true
 filesystem_write = true
-network_access = false
 "#;
         let profile = NexManifest::from_toml(toml).unwrap().into_profile();
         let cwd = PathBuf::from("/tmp/test-project");
@@ -199,17 +216,14 @@ network_access = false
     }
 
     #[test]
-    fn network_access_capability_overrides_mode() {
+    fn egress_produces_bridge_network() {
         let toml = r#"
 [profile]
 name = "net-test"
 base = "coding"
 
-[resources]
-network = "none"
-
-[capabilities]
-network_access = true
+[network]
+policy = "egress"
 "#;
         let profile = NexManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
@@ -217,22 +231,75 @@ network_access = true
             &[], &[],
         );
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
-        // network_access=true should override network_mode=none → bridge
         assert!(args.contains(&"--network=bridge".to_string()));
+        // Unfiltered egress — no NET_ADMIN cap needed
+        assert!(!args.iter().any(|a| a.contains("NET_ADMIN")));
     }
 
     #[test]
-    fn network_denied_forces_none() {
+    fn filtered_egress_adds_cap_and_filter_env() {
+        let toml = r#"
+[profile]
+name = "filtered"
+base = "coding"
+
+[network]
+policy = "egress"
+
+[network.egress]
+allow_hosts = ["api.anthropic.com"]
+allow_ports = [443]
+"#;
+        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let cmd = materialize_container(
+            &profile, "podman", Path::new("/tmp"), Path::new("/tmp/p.md"),
+            &[], &[],
+        );
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert!(args.contains(&"--network=bridge".to_string()));
+        assert!(args.contains(&"--cap-add=NET_ADMIN".to_string()));
+        assert!(args.iter().any(|a| a.starts_with("OMEGON_EGRESS_FILTER=")));
+    }
+
+    #[test]
+    fn bridge_with_port_mappings() {
+        let toml = r#"
+[profile]
+name = "dev"
+base = "coding-node"
+
+[network]
+policy = "bridge"
+
+[[network.ports]]
+host = 3000
+container = 3000
+
+[[network.ports]]
+host = 8080
+container = 80
+protocol = "tcp"
+"#;
+        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let cmd = materialize_container(
+            &profile, "podman", Path::new("/tmp"), Path::new("/tmp/p.md"),
+            &[], &[],
+        );
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert!(args.contains(&"--network=bridge".to_string()));
+        assert!(args.contains(&"--publish=3000:3000/tcp".to_string()));
+        assert!(args.contains(&"--publish=8080:80/tcp".to_string()));
+    }
+
+    #[test]
+    fn isolated_forces_none() {
         let toml = r#"
 [profile]
 name = "locked"
 base = "coding"
 
-[resources]
-network = "host"
-
-[capabilities]
-network_access = false
+[network]
+policy = "isolated"
 "#;
         let profile = NexManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
@@ -240,8 +307,26 @@ network_access = false
             &[], &[],
         );
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
-        // network_access=false should force none even though mode says host
         assert!(args.contains(&"--network=none".to_string()));
+    }
+
+    #[test]
+    fn host_network() {
+        let toml = r#"
+[profile]
+name = "infra"
+base = "infra"
+
+[network]
+policy = "host"
+"#;
+        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let cmd = materialize_container(
+            &profile, "podman", Path::new("/tmp"), Path::new("/tmp/p.md"),
+            &[], &[],
+        );
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert!(args.contains(&"--network=host".to_string()));
     }
 
     #[test]

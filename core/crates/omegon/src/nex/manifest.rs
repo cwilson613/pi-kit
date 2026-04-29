@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::profile::{
-    NexCapabilities, NexDomain, NexOverlay, NexProfile, NexResourceLimits,
+    NexCapabilities, NexDomain, NexEgressFilter, NexNetworkPolicy, NexOverlay,
+    NexPortMapping, NexPortProtocol, NexProfile, NexResourceLimits,
 };
 
 /// On-disk TOML manifest. Parsed then converted to a [`NexProfile`].
@@ -21,6 +22,8 @@ pub struct NexManifest {
     pub overlays: BTreeMap<String, ManifestOverlay>,
     #[serde(default)]
     pub resources: ManifestResources,
+    #[serde(default)]
+    pub network: ManifestNetwork,
     #[serde(default)]
     pub capabilities: ManifestCapabilities,
 }
@@ -51,16 +54,69 @@ pub struct ManifestResources {
     pub pids_limit: Option<u32>,
     #[serde(default)]
     pub readonly_rootfs: Option<bool>,
+}
+
+/// Network isolation policy in TOML format.
+///
+/// ```toml
+/// [network]
+/// policy = "egress"
+///
+/// [network.egress]
+/// allow_hosts = ["api.anthropic.com"]
+/// allow_ports = [443]
+/// deny_metadata = true
+///
+/// # Or for bridge with port mappings:
+/// # [[network.ports]]
+/// # host = 3000
+/// # container = 3000
+/// ```
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ManifestNetwork {
+    /// Policy: "isolated" (default), "egress", "bridge", "host", or custom name.
     #[serde(default)]
-    pub network: Option<String>,
+    pub policy: Option<String>,
+
+    /// Egress filter rules (only used when policy = "egress").
+    #[serde(default)]
+    pub egress: Option<ManifestEgress>,
+
+    /// Port mappings (only used when policy = "bridge").
+    #[serde(default)]
+    pub ports: Vec<ManifestPortMapping>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ManifestEgress {
+    #[serde(default)]
+    pub allow_hosts: Vec<String>,
+    #[serde(default)]
+    pub allow_cidrs: Vec<String>,
+    #[serde(default)]
+    pub allow_ports: Vec<u16>,
+    #[serde(default = "default_true")]
+    pub deny_private: bool,
+    #[serde(default = "default_true")]
+    pub deny_metadata: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ManifestPortMapping {
+    pub host: u16,
+    pub container: u16,
+    #[serde(default)]
+    pub protocol: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ManifestCapabilities {
     #[serde(default)]
     pub filesystem_write: Option<bool>,
-    #[serde(default)]
-    pub network_access: Option<bool>,
     #[serde(default)]
     pub mount_cwd: Option<bool>,
     #[serde(default)]
@@ -103,25 +159,19 @@ impl NexManifest {
             })
             .collect();
 
-        let network_mode = self
-            .resources
-            .network
-            .as_deref()
-            .map(parse_network_mode)
-            .unwrap_or_default();
-
         let resource_limits = NexResourceLimits {
             memory_mb: self.resources.memory_mb,
             cpu_shares: self.resources.cpu_shares,
             pids_limit: self.resources.pids_limit,
             readonly_rootfs: self.resources.readonly_rootfs.unwrap_or(true),
-            network_mode,
         };
+
+        let network = parse_network_policy(&self.network);
 
         let defaults = NexCapabilities::default();
         let capabilities = NexCapabilities {
             filesystem_write: self.capabilities.filesystem_write.unwrap_or(defaults.filesystem_write),
-            network_access: self.capabilities.network_access.unwrap_or(defaults.network_access),
+            network,
             mount_cwd: self.capabilities.mount_cwd.unwrap_or(defaults.mount_cwd),
             mount_paths: self.capabilities.mount_paths,
             env_passthrough: self.capabilities.env_passthrough,
@@ -155,12 +205,38 @@ fn parse_domain(s: &str) -> NexDomain {
     }
 }
 
-fn parse_network_mode(s: &str) -> super::profile::NexNetworkMode {
-    match s {
-        "none" => super::profile::NexNetworkMode::None,
-        "host" => super::profile::NexNetworkMode::Host,
-        "bridge" => super::profile::NexNetworkMode::Bridge,
-        other => super::profile::NexNetworkMode::Custom(other.into()),
+fn parse_network_policy(manifest: &ManifestNetwork) -> NexNetworkPolicy {
+    let policy_str = manifest.policy.as_deref().unwrap_or("isolated");
+
+    match policy_str {
+        "isolated" | "none" => NexNetworkPolicy::Isolated,
+        "egress" => {
+            let filter = manifest.egress.as_ref().map(|e| NexEgressFilter {
+                allow_hosts: e.allow_hosts.clone(),
+                allow_cidrs: e.allow_cidrs.clone(),
+                allow_ports: e.allow_ports.clone(),
+                deny_private: e.deny_private,
+                deny_metadata: e.deny_metadata,
+            });
+            NexNetworkPolicy::Egress { filter }
+        }
+        "bridge" => {
+            let ports = manifest
+                .ports
+                .iter()
+                .map(|p| NexPortMapping {
+                    host: p.host,
+                    container: p.container,
+                    protocol: match p.protocol.as_deref() {
+                        Some("udp") => NexPortProtocol::Udp,
+                        _ => NexPortProtocol::Tcp,
+                    },
+                })
+                .collect();
+            NexNetworkPolicy::Bridge { ports }
+        }
+        "host" => NexNetworkPolicy::Host,
+        other => NexNetworkPolicy::Custom(other.into()),
     }
 }
 
@@ -206,16 +282,38 @@ fn compute_manifest_hash(manifest: &NexManifest) -> String {
     if let Some(ro) = manifest.resources.readonly_rootfs {
         hasher.update(format!("\nro:{ro}").as_bytes());
     }
-    if let Some(ref net) = manifest.resources.network {
-        hasher.update(format!("\nnet:{net}").as_bytes());
+
+    // Network policy — covers policy type + all filter/port fields
+    if let Some(ref policy) = manifest.network.policy {
+        hasher.update(format!("\nnet.policy:{policy}").as_bytes());
+    }
+    if let Some(ref egress) = manifest.network.egress {
+        for host in &egress.allow_hosts {
+            hasher.update(b"\nnet.egress.host:");
+            hasher.update(host.as_bytes());
+        }
+        for cidr in &egress.allow_cidrs {
+            hasher.update(b"\nnet.egress.cidr:");
+            hasher.update(cidr.as_bytes());
+        }
+        for port in &egress.allow_ports {
+            hasher.update(format!("\nnet.egress.port:{port}").as_bytes());
+        }
+        hasher.update(format!("\nnet.egress.deny_private:{}", egress.deny_private).as_bytes());
+        hasher.update(format!("\nnet.egress.deny_metadata:{}", egress.deny_metadata).as_bytes());
+    }
+    for port in &manifest.network.ports {
+        hasher.update(format!(
+            "\nnet.port:{}:{}:{}",
+            port.host,
+            port.container,
+            port.protocol.as_deref().unwrap_or("tcp")
+        ).as_bytes());
     }
 
     // Capabilities — every security-relevant field
     if let Some(fw) = manifest.capabilities.filesystem_write {
         hasher.update(format!("\ncap.fs_write:{fw}").as_bytes());
-    }
-    if let Some(na) = manifest.capabilities.network_access {
-        hasher.update(format!("\ncap.net:{na}").as_bytes());
     }
     if let Some(mc) = manifest.capabilities.mount_cwd {
         hasher.update(format!("\ncap.mount_cwd:{mc}").as_bytes());
@@ -254,13 +352,14 @@ packages = ["python312Packages.torch", "python312Packages.numpy"]
 
 [resources]
 memory_mb = 2048
-network = "none"
 readonly_rootfs = true
+
+[network]
+policy = "isolated"
 
 [capabilities]
 mount_cwd = true
 filesystem_write = true
-network_access = false
 allowed_tools = ["bash", "read_file", "write_file"]
 "#;
 
@@ -283,7 +382,7 @@ allowed_tools = ["bash", "read_file", "write_file"]
         assert_eq!(profile.overlays.len(), 1);
         assert_eq!(profile.resource_limits.memory_mb, Some(2048));
         assert!(profile.capabilities.filesystem_write);
-        assert!(!profile.capabilities.network_access);
+        assert_eq!(profile.capabilities.network, NexNetworkPolicy::Isolated);
         assert!(!profile.profile_hash.is_empty());
     }
 
@@ -316,8 +415,10 @@ base = "coding"
 name = "locked"
 base = "coding"
 
+[network]
+policy = "isolated"
+
 [capabilities]
-network_access = false
 filesystem_write = false
 "#;
         let open = r#"
@@ -325,14 +426,95 @@ filesystem_write = false
 name = "locked"
 base = "coding"
 
+[network]
+policy = "egress"
+
+[network.egress]
+allow_hosts = ["api.anthropic.com"]
+
 [capabilities]
-network_access = true
 filesystem_write = true
 "#;
         let p1 = NexManifest::from_toml(locked).unwrap().into_profile();
         let p2 = NexManifest::from_toml(open).unwrap().into_profile();
         assert_ne!(p1.profile_hash, p2.profile_hash,
             "profiles with different capabilities must have different hashes");
+    }
+
+    #[test]
+    fn egress_filter_parsed() {
+        let toml = r#"
+[profile]
+name = "api-only"
+base = "coding"
+
+[network]
+policy = "egress"
+
+[network.egress]
+allow_hosts = ["api.anthropic.com", "api.openai.com"]
+allow_ports = [443]
+deny_private = true
+deny_metadata = true
+"#;
+        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        match &profile.capabilities.network {
+            NexNetworkPolicy::Egress { filter: Some(f) } => {
+                assert_eq!(f.allow_hosts, vec!["api.anthropic.com", "api.openai.com"]);
+                assert_eq!(f.allow_ports, vec![443]);
+                assert!(f.deny_private);
+                assert!(f.deny_metadata);
+            }
+            other => panic!("expected Egress with filter, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bridge_ports_parsed() {
+        let toml = r#"
+[profile]
+name = "dev-server"
+base = "coding-node"
+
+[network]
+policy = "bridge"
+
+[[network.ports]]
+host = 3000
+container = 3000
+
+[[network.ports]]
+host = 5432
+container = 5432
+protocol = "tcp"
+"#;
+        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        match &profile.capabilities.network {
+            NexNetworkPolicy::Bridge { ports } => {
+                assert_eq!(ports.len(), 2);
+                assert_eq!(ports[0].host, 3000);
+                assert_eq!(ports[0].container, 3000);
+                assert_eq!(ports[1].host, 5432);
+            }
+            other => panic!("expected Bridge with ports, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unfiltered_egress_parsed() {
+        let toml = r#"
+[profile]
+name = "open-egress"
+base = "coding"
+
+[network]
+policy = "egress"
+"#;
+        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        match &profile.capabilities.network {
+            NexNetworkPolicy::Egress { filter: None } => {}
+            other => panic!("expected Egress without filter, got {:?}", other),
+        }
     }
 
     #[test]

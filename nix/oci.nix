@@ -34,10 +34,11 @@ let
     GROUP
   '';
 
-  # Entrypoint that bootstraps secrets from env vars, then runs omegon.
+  # Entrypoint that bootstraps secrets from env vars, applies network
+  # policy, then runs omegon.
   entrypoint = pkgs.writeShellApplication {
     name = "omegon-entrypoint";
-    runtimeInputs = [ pkgs.coreutils pkgs.bashInteractive ];
+    runtimeInputs = [ pkgs.coreutils pkgs.bashInteractive pkgs.jq ];
     text = ''
       OMEGON_HOME="''${OMEGON_HOME:-/data/omegon}"
       SECRETS_JSON="$OMEGON_HOME/secrets.json"
@@ -66,6 +67,83 @@ let
       RECIPES="$RECIPES }"
       echo "$RECIPES" > "$SECRETS_JSON"
       chmod 600 "$SECRETS_JSON"
+
+      # ── Egress filter ──────────────────────────────────────────────
+      # When OMEGON_EGRESS_FILTER is set (JSON), apply iptables rules
+      # to restrict outbound traffic. Works regardless of how the
+      # container was started (omegon spawn, docker-compose, k8s, etc).
+      # Requires NET_ADMIN capability on the container.
+      if [ -n "''${OMEGON_EGRESS_FILTER:-}" ]; then
+        if command -v iptables >/dev/null 2>&1; then
+          echo "[nex] applying egress filter policy" >&2
+
+          # Default: drop all outbound
+          iptables -P OUTPUT DROP 2>/dev/null || true
+
+          # Allow loopback
+          iptables -A OUTPUT -o lo -j ACCEPT
+
+          # Allow established/related (return traffic for allowed connections)
+          iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+          # Allow DNS resolution (required for host-based filtering)
+          iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+          iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+
+          # Block cloud metadata endpoints if deny_metadata is true
+          DENY_META="$(echo "$OMEGON_EGRESS_FILTER" | jq -r '.deny_metadata // true')"
+          if [ "$DENY_META" = "true" ]; then
+            iptables -A OUTPUT -d 169.254.169.254 -j DROP
+            iptables -A OUTPUT -d fd00:ec2::254 -j DROP 2>/dev/null || true
+          fi
+
+          # Block RFC1918 private ranges if deny_private is true
+          DENY_PRIV="$(echo "$OMEGON_EGRESS_FILTER" | jq -r '.deny_private // true')"
+          if [ "$DENY_PRIV" = "true" ]; then
+            iptables -A OUTPUT -d 10.0.0.0/8 -j DROP
+            iptables -A OUTPUT -d 172.16.0.0/12 -j DROP
+            iptables -A OUTPUT -d 192.168.0.0/16 -j DROP
+          fi
+
+          # Allow specific CIDRs
+          for CIDR in $(echo "$OMEGON_EGRESS_FILTER" | jq -r '.allow_cidrs[]? // empty'); do
+            PORTS="$(echo "$OMEGON_EGRESS_FILTER" | jq -r '.allow_ports[]? // empty')"
+            if [ -z "$PORTS" ]; then
+              iptables -A OUTPUT -d "$CIDR" -j ACCEPT
+            else
+              for PORT in $PORTS; do
+                iptables -A OUTPUT -d "$CIDR" -p tcp --dport "$PORT" -j ACCEPT
+                iptables -A OUTPUT -d "$CIDR" -p udp --dport "$PORT" -j ACCEPT
+              done
+            fi
+          done
+
+          # Resolve allowed hosts to IPs and add rules
+          for HOST in $(echo "$OMEGON_EGRESS_FILTER" | jq -r '.allow_hosts[]? // empty'); do
+            # Resolve hostname — may return multiple IPs
+            IPS="$(getent hosts "$HOST" 2>/dev/null | awk '{print $1}' || true)"
+            if [ -z "$IPS" ]; then
+              echo "[nex] warning: could not resolve $HOST — skipping" >&2
+              continue
+            fi
+            PORTS="$(echo "$OMEGON_EGRESS_FILTER" | jq -r '.allow_ports[]? // empty')"
+            for IP in $IPS; do
+              if [ -z "$PORTS" ]; then
+                iptables -A OUTPUT -d "$IP" -j ACCEPT
+              else
+                for PORT in $PORTS; do
+                  iptables -A OUTPUT -d "$IP" -p tcp --dport "$PORT" -j ACCEPT
+                  iptables -A OUTPUT -d "$IP" -p udp --dport "$PORT" -j ACCEPT
+                done
+              fi
+            done
+          done
+
+          echo "[nex] egress filter applied" >&2
+        else
+          echo "[nex] warning: iptables not found — egress filter not applied" >&2
+        fi
+      fi
 
       exec omegon "$@"
     '';

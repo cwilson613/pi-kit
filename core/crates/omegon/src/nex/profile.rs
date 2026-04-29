@@ -119,10 +119,6 @@ pub struct NexResourceLimits {
     /// Mount the root filesystem read-only. Mounted volumes remain writable.
     #[serde(default = "default_true")]
     pub readonly_rootfs: bool,
-
-    /// Container network mode.
-    #[serde(default)]
-    pub network_mode: NexNetworkMode,
 }
 
 impl Default for NexResourceLimits {
@@ -132,36 +128,144 @@ impl Default for NexResourceLimits {
             cpu_shares: None,
             pids_limit: None,
             readonly_rootfs: true,
-            network_mode: NexNetworkMode::None,
         }
     }
 }
 
-/// Container network isolation mode.
+/// Network isolation policy — graduated from total isolation to full host access.
+///
+/// Replaces the old binary `network_access` capability + `NexNetworkMode` pair
+/// with a single coherent policy that supports filtered egress.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NexNetworkMode {
-    /// No network access (default — safest for agent sandboxing).
+#[serde(tag = "policy", rename_all = "lowercase")]
+pub enum NexNetworkPolicy {
+    /// No network stack at all (default — safest for agent sandboxing).
+    /// Maps to `--network=none`.
     #[default]
-    None,
-    /// Share the host network namespace.
+    Isolated,
+
+    /// Outbound-only bridge network with optional domain/port filtering.
+    /// No inbound connections. Unfiltered egress if `filter` is None.
+    /// Maps to `--network=bridge` + optional iptables rules.
+    Egress {
+        #[serde(default)]
+        filter: Option<NexEgressFilter>,
+    },
+
+    /// Standard bridge network with optional inbound port mappings.
+    /// Full outbound + selective inbound.
+    /// Maps to `--network=bridge` + `--publish` per port.
+    Bridge {
+        #[serde(default)]
+        ports: Vec<NexPortMapping>,
+    },
+
+    /// Host network namespace — maximum access, minimum isolation.
+    /// Maps to `--network=host`. Use only when bridge is insufficient.
     Host,
-    /// Bridge network with outbound access.
-    Bridge,
-    /// Custom network name or config.
+
+    /// Named custom podman/docker network.
     Custom(String),
 }
 
-impl NexNetworkMode {
-    /// Container CLI flag value.
-    pub fn as_flag(&self) -> &str {
+impl NexNetworkPolicy {
+    /// Container `--network=` flag value.
+    pub fn network_flag(&self) -> &str {
         match self {
-            Self::None => "none",
+            Self::Isolated => "none",
+            Self::Egress { .. } => "bridge",
+            Self::Bridge { .. } => "bridge",
             Self::Host => "host",
-            Self::Bridge => "bridge",
             Self::Custom(name) => name.as_str(),
         }
     }
+
+    /// Whether this policy grants any outbound network access.
+    pub fn has_network_access(&self) -> bool {
+        !matches!(self, Self::Isolated)
+    }
+
+    /// Human-readable label for status display.
+    pub fn display_label(&self) -> &str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::Egress { filter: Some(_) } => "egress (filtered)",
+            Self::Egress { filter: None } => "egress",
+            Self::Bridge { .. } => "bridge",
+            Self::Host => "host",
+            Self::Custom(_) => "custom",
+        }
+    }
+}
+
+impl std::fmt::Display for NexNetworkPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_label())
+    }
+}
+
+/// Egress filter — restrict outbound connections to specific destinations.
+///
+/// When attached to an `Egress` policy, only traffic matching at least one
+/// allow rule is permitted. Everything else is dropped via iptables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexEgressFilter {
+    /// Allowed destination hostnames/domains.
+    /// Supports leading wildcard: `*.example.com` matches `api.example.com`.
+    /// Resolved to IPs at container start via DNS.
+    #[serde(default)]
+    pub allow_hosts: Vec<String>,
+
+    /// Allowed destination CIDRs (e.g., `10.0.0.0/8`, `203.0.113.0/24`).
+    #[serde(default)]
+    pub allow_cidrs: Vec<String>,
+
+    /// Allowed destination ports. Empty = all ports allowed.
+    #[serde(default)]
+    pub allow_ports: Vec<u16>,
+
+    /// Block RFC1918 private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+    /// Applied after allow rules — an explicit allow_cidrs entry can override.
+    #[serde(default = "default_true")]
+    pub deny_private: bool,
+
+    /// Block cloud metadata endpoints (169.254.169.254, fd00:ec2::254).
+    /// Prevents SSRF-style credential theft from cloud instances.
+    #[serde(default = "default_true")]
+    pub deny_metadata: bool,
+}
+
+impl Default for NexEgressFilter {
+    fn default() -> Self {
+        Self {
+            allow_hosts: Vec::new(),
+            allow_cidrs: Vec::new(),
+            allow_ports: Vec::new(),
+            deny_private: true,
+            deny_metadata: true,
+        }
+    }
+}
+
+/// Port mapping for bridge network mode — exposes container ports to host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexPortMapping {
+    /// Port on the host.
+    pub host: u16,
+    /// Port inside the container.
+    pub container: u16,
+    /// Protocol (defaults to TCP).
+    #[serde(default)]
+    pub protocol: NexPortProtocol,
+}
+
+/// Port mapping protocol.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NexPortProtocol {
+    #[default]
+    Tcp,
+    Udp,
 }
 
 /// Capability grants scoping what the sandboxed agent can do.
@@ -171,10 +275,10 @@ pub struct NexCapabilities {
     #[serde(default = "default_true")]
     pub filesystem_write: bool,
 
-    /// Allow outbound network access (overrides resource_limits.network_mode
-    /// if both are set — capabilities take precedence).
+    /// Network isolation policy — graduated from total isolation to full host access.
+    /// Defaults to `Isolated` (no network stack).
     #[serde(default)]
-    pub network_access: bool,
+    pub network: NexNetworkPolicy,
 
     /// Mount the operator's current working directory into the container.
     #[serde(default = "default_true")]
@@ -201,7 +305,7 @@ impl Default for NexCapabilities {
     fn default() -> Self {
         Self {
             filesystem_write: true,
-            network_access: false,
+            network: NexNetworkPolicy::Isolated,
             mount_cwd: true,
             mount_paths: Vec::new(),
             env_passthrough: Vec::new(),
@@ -248,8 +352,23 @@ impl NexProfile {
         if self.capabilities.filesystem_write {
             caps.push("fs:write".into());
         }
-        if self.capabilities.network_access {
-            caps.push("net:access".into());
+        match &self.capabilities.network {
+            NexNetworkPolicy::Isolated => {}
+            NexNetworkPolicy::Egress { filter: Some(_) } => {
+                caps.push("net:egress-filtered".into());
+            }
+            NexNetworkPolicy::Egress { filter: None } => {
+                caps.push("net:egress".into());
+            }
+            NexNetworkPolicy::Bridge { .. } => {
+                caps.push("net:bridge".into());
+            }
+            NexNetworkPolicy::Host => {
+                caps.push("net:host".into());
+            }
+            NexNetworkPolicy::Custom(name) => {
+                caps.push(format!("net:custom:{name}"));
+            }
         }
         if self.capabilities.mount_cwd {
             caps.push("fs:mount-cwd".into());
@@ -286,21 +405,54 @@ mod tests {
     fn default_resource_limits_are_restrictive() {
         let limits = NexResourceLimits::default();
         assert!(limits.readonly_rootfs);
-        assert_eq!(limits.network_mode, NexNetworkMode::None);
     }
 
     #[test]
-    fn default_capabilities_allow_fs_deny_network() {
+    fn default_capabilities_isolate_network() {
         let caps = NexCapabilities::default();
         assert!(caps.filesystem_write);
-        assert!(!caps.network_access);
+        assert_eq!(caps.network, NexNetworkPolicy::Isolated);
+        assert!(!caps.network.has_network_access());
         assert!(caps.mount_cwd);
     }
 
     #[test]
-    fn network_mode_flags() {
-        assert_eq!(NexNetworkMode::None.as_flag(), "none");
-        assert_eq!(NexNetworkMode::Host.as_flag(), "host");
-        assert_eq!(NexNetworkMode::Custom("mynet".into()).as_flag(), "mynet");
+    fn network_policy_flags() {
+        assert_eq!(NexNetworkPolicy::Isolated.network_flag(), "none");
+        assert_eq!(NexNetworkPolicy::Egress { filter: None }.network_flag(), "bridge");
+        assert_eq!(NexNetworkPolicy::Host.network_flag(), "host");
+        assert_eq!(NexNetworkPolicy::Bridge { ports: vec![] }.network_flag(), "bridge");
+        assert_eq!(NexNetworkPolicy::Custom("mynet".into()).network_flag(), "mynet");
+    }
+
+    #[test]
+    fn network_policy_access() {
+        assert!(!NexNetworkPolicy::Isolated.has_network_access());
+        assert!(NexNetworkPolicy::Egress { filter: None }.has_network_access());
+        assert!(NexNetworkPolicy::Egress {
+            filter: Some(NexEgressFilter::default()),
+        }.has_network_access());
+        assert!(NexNetworkPolicy::Bridge { ports: vec![] }.has_network_access());
+        assert!(NexNetworkPolicy::Host.has_network_access());
+    }
+
+    #[test]
+    fn network_policy_display() {
+        assert_eq!(NexNetworkPolicy::Isolated.display_label(), "isolated");
+        assert_eq!(NexNetworkPolicy::Egress { filter: None }.display_label(), "egress");
+        assert_eq!(
+            NexNetworkPolicy::Egress { filter: Some(NexEgressFilter::default()) }.display_label(),
+            "egress (filtered)"
+        );
+        assert_eq!(NexNetworkPolicy::Host.display_label(), "host");
+    }
+
+    #[test]
+    fn egress_filter_defaults_deny_private_and_metadata() {
+        let filter = NexEgressFilter::default();
+        assert!(filter.deny_private);
+        assert!(filter.deny_metadata);
+        assert!(filter.allow_hosts.is_empty());
+        assert!(filter.allow_ports.is_empty());
     }
 }

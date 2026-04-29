@@ -19,6 +19,7 @@
 //! same OCI image. Identity binding links a profile to its creator via
 //! Styrene Identity (when available) or local-operator placeholders.
 
+pub mod compose;
 mod container;
 mod manifest;
 mod profile;
@@ -28,8 +29,8 @@ pub mod spawn;
 pub use container::materialize_container;
 pub use manifest::NexManifest;
 pub use profile::{
-    NexCapabilities, NexDomain, NexIdentityBinding, NexNetworkMode, NexOverlay, NexProfile,
-    NexResourceLimits,
+    NexCapabilities, NexDomain, NexEgressFilter, NexIdentityBinding, NexNetworkPolicy,
+    NexOverlay, NexPortMapping, NexPortProtocol, NexProfile, NexResourceLimits,
 };
 pub use registry::NexRegistry;
 pub use spawn::{detect_container_runtime_public, spawn_containerized_child_agent};

@@ -510,6 +510,14 @@ enum NexAction {
         /// Profile name or hash prefix.
         name: String,
     },
+    /// Export a profile as a docker-compose.yml service definition.
+    Compose {
+        /// Profile name or hash prefix.
+        name: String,
+        /// Service name in the compose file (defaults to profile name).
+        #[arg(long)]
+        service: Option<String>,
+    },
     /// Check container runtime availability.
     Status,
 }
@@ -5809,13 +5817,31 @@ base = "coding"
 memory_mb = 2048
 # cpu_shares = 1024
 # pids_limit = 256
-network = "none"
 readonly_rootfs = true
+
+# Network isolation policy: isolated | egress | bridge | host
+[network]
+policy = "isolated"
+
+# Filtered egress — uncomment to allow specific API endpoints only:
+# [network]
+# policy = "egress"
+# [network.egress]
+# allow_hosts = ["api.anthropic.com", "api.openai.com"]
+# allow_ports = [443]
+# deny_private = true
+# deny_metadata = true
+
+# Bridge with port mappings — uncomment for dev servers:
+# [network]
+# policy = "bridge"
+# [[network.ports]]
+# host = 3000
+# container = 3000
 
 [capabilities]
 mount_cwd = true
 filesystem_write = true
-network_access = false
 # env_passthrough = ["DATABASE_URL"]
 # allowed_tools = ["bash", "read_file", "write_file", "edit_file"]
 # denied_tools = ["web_search"]
@@ -5870,11 +5896,30 @@ network_access = false
                     if let Some(mem) = p.resource_limits.memory_mb {
                         eprintln!("    memory:   {mem} MB");
                     }
-                    eprintln!("    network:  {}", p.resource_limits.network_mode.as_flag());
                     eprintln!("    readonly: {}", p.resource_limits.readonly_rootfs);
+                    eprintln!("\n  Network:");
+                    eprintln!("    policy:  {}", p.capabilities.network.display_label());
+                    if let nex::NexNetworkPolicy::Egress { filter: Some(ref f) } = p.capabilities.network {
+                        if !f.allow_hosts.is_empty() {
+                            eprintln!("    hosts:   {}", f.allow_hosts.join(", "));
+                        }
+                        if !f.allow_cidrs.is_empty() {
+                            eprintln!("    cidrs:   {}", f.allow_cidrs.join(", "));
+                        }
+                        if !f.allow_ports.is_empty() {
+                            let ports: Vec<String> = f.allow_ports.iter().map(|p| p.to_string()).collect();
+                            eprintln!("    ports:   {}", ports.join(", "));
+                        }
+                        eprintln!("    deny_private:  {}", f.deny_private);
+                        eprintln!("    deny_metadata: {}", f.deny_metadata);
+                    }
+                    if let nex::NexNetworkPolicy::Bridge { ref ports } = p.capabilities.network {
+                        for pm in ports {
+                            eprintln!("    publish: {}:{}", pm.host, pm.container);
+                        }
+                    }
                     eprintln!("\n  Capabilities:");
                     eprintln!("    fs_write:  {}", p.capabilities.filesystem_write);
-                    eprintln!("    net:       {}", p.capabilities.network_access);
                     eprintln!("    mount_cwd: {}", p.capabilities.mount_cwd);
                     if !p.capabilities.allowed_tools.is_empty() {
                         eprintln!("    allowed:   {}", p.capabilities.allowed_tools.join(", "));
@@ -5882,6 +5927,29 @@ network_access = false
                     if !p.capabilities.denied_tools.is_empty() {
                         eprintln!("    denied:    {}", p.capabilities.denied_tools.join(", "));
                     }
+                }
+                None => {
+                    eprintln!("  Profile '{}' not found.", name);
+                    eprintln!("  Run 'omegon nex list' to see available profiles.");
+                    std::process::exit(1);
+                }
+            }
+        }
+        NexAction::Compose { name, service } => {
+            let home = dirs::home_dir().unwrap_or_default().join(".omegon");
+            let registry = nex::NexRegistry::load(&home, Some(&cwd))
+                .unwrap_or_else(|e| {
+                    eprintln!("  Failed to load profiles: {e}");
+                    std::process::exit(1);
+                });
+            match registry.resolve(name) {
+                Some(p) => {
+                    let output = nex::compose::to_compose_file(
+                        p,
+                        service.as_deref(),
+                    );
+                    // Write to stdout (not stderr) so it can be piped/redirected
+                    print!("{output}");
                 }
                 None => {
                     eprintln!("  Profile '{}' not found.", name);

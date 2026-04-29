@@ -30,6 +30,7 @@ let
       gawk
       less
       which
+      iptables-nft  # required for filtered egress network policy
     ];
   };
 

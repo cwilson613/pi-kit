@@ -117,7 +117,7 @@ impl EventBus {
             disabled_tools: None,
             internal_tool_owners: HashMap::new(),
             tool_timeouts: HashMap::from([
-                ("bash".into(), Duration::from_secs(120)),
+                ("bash".into(), Duration::from_secs(600)),
                 ("web_search".into(), Duration::from_secs(30)),
                 ("web_fetch".into(), Duration::from_secs(60)),
             ]),

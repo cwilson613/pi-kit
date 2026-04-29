@@ -873,30 +873,18 @@ impl Feature for SessionLog {
                     );
                 }
             }
-            BusEvent::TurnEnd {
-                turn,
-                model,
-                provider,
-                estimated_tokens,
-                context_window,
-                context_composition,
-                actual_input_tokens,
-                actual_output_tokens,
-                cache_read_tokens,
-                provider_telemetry,
-                ..
-            } => {
+            BusEvent::TurnEnd(te) => {
                 self.turn_summaries.push(TurnSummary {
-                    turn: *turn,
-                    model: model.clone(),
-                    provider: provider.clone(),
-                    estimated_tokens: *estimated_tokens,
-                    context_window: *context_window,
-                    context_composition: context_composition.clone(),
-                    actual_input_tokens: *actual_input_tokens,
-                    actual_output_tokens: *actual_output_tokens,
-                    cache_read_tokens: *cache_read_tokens,
-                    provider_telemetry: provider_telemetry.clone(),
+                    turn: te.turn,
+                    model: te.model.clone(),
+                    provider: te.provider.clone(),
+                    estimated_tokens: te.estimated_tokens,
+                    context_window: te.context_window,
+                    context_composition: te.context_composition.clone(),
+                    actual_input_tokens: te.actual_input_tokens,
+                    actual_output_tokens: te.actual_output_tokens,
+                    cache_read_tokens: te.cache_read_tokens,
+                    provider_telemetry: te.provider_telemetry.clone(),
                 });
             }
             BusEvent::SessionEnd {
@@ -1058,35 +1046,37 @@ mod tests {
     fn session_end_event_writes_entry() {
         let dir = tempfile::tempdir().unwrap();
         let mut feature = SessionLog::new(dir.path());
-        feature.on_event(&BusEvent::TurnEnd {
-            turn: 7,
-            model: Some("anthropic:claude-sonnet-4-6".into()),
-            provider: Some("anthropic".into()),
-            estimated_tokens: 12_000,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition {
-                system_tokens: 1000,
-                tool_schema_tokens: 500,
-                conversation_tokens: 3000,
-                memory_tokens: 250,
-                tool_history_tokens: 1200,
-                thinking_tokens: 700,
-                free_tokens: 193_350,
-                ..Default::default()
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 7,
+                model: Some("anthropic:claude-sonnet-4-6".into()),
+                provider: Some("anthropic".into()),
+                estimated_tokens: 12_000,
+                context_window: 200_000,
+                context_composition: omegon_traits::ContextComposition {
+                    system_tokens: 1000,
+                    tool_schema_tokens: 500,
+                    conversation_tokens: 3000,
+                    memory_tokens: 250,
+                    tool_history_tokens: 1200,
+                    thinking_tokens: 700,
+                    free_tokens: 193_350,
+                    ..Default::default()
+                },
+                actual_input_tokens: 1200,
+                actual_output_tokens: 300,
+                cache_read_tokens: 40,
+                provider_telemetry: Some(omegon_traits::ProviderTelemetrySnapshot {
+                    provider: "anthropic".into(),
+                    source: "response_headers".into(),
+                    unified_5h_utilization_pct: Some(42.0),
+                    ..Default::default()
+                }),
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
             },
-            actual_input_tokens: 1200,
-            actual_output_tokens: 300,
-            cache_read_tokens: 40,
-            provider_telemetry: Some(omegon_traits::ProviderTelemetrySnapshot {
-                provider: "anthropic".into(),
-                source: "response_headers".into(),
-                unified_5h_utilization_pct: Some(42.0),
-                ..Default::default()
-            }),
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
+        )));
 
         feature.on_event(&BusEvent::SessionEnd {
             turns: 7,

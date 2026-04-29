@@ -652,7 +652,7 @@ struct ExtensionSummary {
 
 fn load_extension_summary(dir: &Path) -> anyhow::Result<ExtensionSummary> {
     let manifest = ExtensionManifest::from_extension_dir(dir)?;
-    let state = ExtensionState::load(&dir.to_path_buf())?;
+    let state = ExtensionState::load(dir)?;
 
     let runtime = if manifest.is_native() {
         "native"

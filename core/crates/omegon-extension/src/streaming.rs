@@ -15,8 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::HostProxy;
 
@@ -93,7 +93,10 @@ impl ProgressReporter {
             content,
         };
         self.host
-            .notify("notifications/tools/progress", serde_json::to_value(&params)?)
+            .notify(
+                "notifications/tools/progress",
+                serde_json::to_value(&params)?,
+            )
             .await
     }
 
@@ -171,7 +174,7 @@ fn default_reason() -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use tokio::sync::{mpsc, Mutex};
+    use tokio::sync::{Mutex, mpsc};
 
     fn make_host_proxy() -> (HostProxy, mpsc::Receiver<String>) {
         let (tx, rx) = mpsc::channel(16);

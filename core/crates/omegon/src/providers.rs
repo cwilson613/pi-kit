@@ -409,9 +409,10 @@ pub async fn delegate_default_model() -> String {
 
     // 1. Explicit operator override via env var.
     if let Ok(env_model) = std::env::var("OMEGON_MODEL")
-        && !env_model.is_empty() {
-            return env_model;
-        }
+        && !env_model.is_empty()
+    {
+        return env_model;
+    }
 
     // 2. Automation-safe providers (API-key-based, not consumer subscriptions).
     if let Some(model) = automation_safe_model() {
@@ -907,11 +908,12 @@ impl AnthropicClient {
                 } => {
                     if let Some(raw_val) = raw
                         && let Some(raw_content) = raw_val.get("content").and_then(|c| c.as_array())
-                            && !raw_content.is_empty() {
-                                wire.push(json!({"role": "assistant", "content": raw_content}));
-                                idx += 1;
-                                continue;
-                            }
+                        && !raw_content.is_empty()
+                    {
+                        wire.push(json!({"role": "assistant", "content": raw_content}));
+                        idx += 1;
+                        continue;
+                    }
                     let mut content = Vec::new();
                     for t in text {
                         content.push(json!({"type": "text", "text": t}));
@@ -1705,9 +1707,10 @@ impl LlmBridge for OpenRouterClient {
         }
         // Rewrite model prefix: strip "openrouter:" for the wire request
         if let Some(ref mut m) = opts.model
-            && let Some(stripped) = m.strip_prefix("openrouter:") {
-                *m = stripped.to_string();
-            }
+            && let Some(stripped) = m.strip_prefix("openrouter:")
+        {
+            *m = stripped.to_string();
+        }
         self.inner
             .stream(system_prompt, messages, tools, &opts)
             .await
@@ -2102,9 +2105,10 @@ async fn parse_codex_stream(
             }
             "response.function_call_arguments.done" => {
                 if let Some(tc) = tool_calls.last_mut()
-                    && let Some(args) = event["arguments"].as_str() {
-                        tc.args_json = args.into();
-                    }
+                    && let Some(args) = event["arguments"].as_str()
+                {
+                    tc.args_json = args.into();
+                }
             }
             "response.output_item.done" => {
                 let item = &event["item"];
@@ -2616,9 +2620,10 @@ impl LlmBridge for OpenAICompatClient {
 
         // Apply default model if none specified
         if (opts.model.is_none() || opts.model.as_deref() == Some(""))
-            && let Some(ref default) = self.default_model {
-                opts.model = Some(default.clone());
-            }
+            && let Some(ref default) = self.default_model
+        {
+            opts.model = Some(default.clone());
+        }
 
         // For Ollama: inject num_ctx and keep_alive so the model doesn't
         // silently truncate the prompt at Ollama's default 2048-token KV cache.
@@ -2741,9 +2746,8 @@ async fn parse_ollama_ndjson_stream(
     let mut final_message = json!({});
 
     let byte_stream = response.bytes_stream();
-    let reader = tokio_util::io::StreamReader::new(
-        byte_stream.map(|r| r.map_err(std::io::Error::other)),
-    );
+    let reader =
+        tokio_util::io::StreamReader::new(byte_stream.map(|r| r.map_err(std::io::Error::other)));
     let mut lines = tokio::io::BufReader::new(reader).lines();
 
     while let Some(line) = lines.next_line().await? {

@@ -167,10 +167,11 @@ impl SessionRouter {
         sessions.retain(|key, handle| {
             // Try-lock: if the session is busy, keep it regardless of age.
             if let Ok(session) = handle.try_lock()
-                && now.duration_since(session.last_activity) >= self.idle_timeout {
-                    parked.push(key.clone());
-                    return false;
-                }
+                && now.duration_since(session.last_activity) >= self.idle_timeout
+            {
+                parked.push(key.clone());
+                return false;
+            }
             true
         });
 

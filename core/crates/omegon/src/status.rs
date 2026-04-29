@@ -481,9 +481,10 @@ impl HarnessStatus {
         if let Ok(home) = crate::paths::omegon_home() {
             let config_path = home.join("mutation/impact.toml");
             if config_path.exists()
-                && let Ok(content) = std::fs::read_to_string(&config_path) {
-                    self.mutation_artifacts_enabled = content.contains("generate_artifacts = true");
-                }
+                && let Ok(content) = std::fs::read_to_string(&config_path)
+            {
+                self.mutation_artifacts_enabled = content.contains("generate_artifacts = true");
+            }
             let skills_dir = home.join("skills/learned");
             self.mutation_learned_skills = std::fs::read_dir(&skills_dir)
                 .ok()
@@ -535,6 +536,7 @@ impl HarnessStatus {
     }
 
     /// Update routing state from the settings/profile.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_routing(
         &mut self,
         context_class: &str,

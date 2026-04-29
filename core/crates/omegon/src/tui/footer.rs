@@ -1129,8 +1129,6 @@ fn format_cost_usd(cost_usd: f64) -> String {
     }
     if cost_usd < 0.01 {
         format!("~${cost_usd:.3}")
-    } else if cost_usd < 1.0 {
-        format!("~${cost_usd:.2}")
     } else {
         format!("~${cost_usd:.2}")
     }

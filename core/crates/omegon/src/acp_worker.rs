@@ -241,9 +241,10 @@ async fn worker_loop(
 
             WorkerRequest::SetThinking(level) => {
                 if let Some(l) = crate::settings::ThinkingLevel::parse(&level)
-                    && let Ok(mut s) = shared_settings.lock() {
-                        s.thinking = l;
-                    }
+                    && let Ok(mut s) = shared_settings.lock()
+                {
+                    s.thinking = l;
+                }
             }
 
             WorkerRequest::SetPosture(name) => {
@@ -255,9 +256,10 @@ async fn worker_loop(
                     _ => None,
                 };
                 if let Some(p) = posture
-                    && let Ok(mut s) = shared_settings.lock() {
-                        s.set_posture(p);
-                    }
+                    && let Ok(mut s) = shared_settings.lock()
+                {
+                    s.set_posture(p);
+                }
             }
 
             WorkerRequest::Shutdown => break,

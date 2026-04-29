@@ -62,7 +62,11 @@ fn keyring_suppressed() -> bool {
         if suppressed {
             tracing::info!(
                 "keyring access suppressed ({})",
-                if explicit { "OMEGON_NO_KEYRING=1" } else { "test/child environment detected" }
+                if explicit {
+                    "OMEGON_NO_KEYRING=1"
+                } else {
+                    "test/child environment detected"
+                }
             );
         }
         suppressed
@@ -173,8 +177,7 @@ pub async fn resolve_secret_async(
     // 2. Fallback: check environment variable (only if no recipe matched)
     if let Ok(val) = std::env::var(name)
         && !val.is_empty()
-    {
-    }
+    {}
 
     None
 }

@@ -98,13 +98,14 @@ pub async fn resolve_bridge_or_bail(model: &str) -> anyhow::Result<Box<dyn LlmBr
         None => {
             // Try auto-detecting any available provider before giving up.
             if let Some(safe_model) = providers::automation_safe_model()
-                && let Some(bridge) = providers::auto_detect_bridge(&safe_model).await {
-                    tracing::info!(
-                        requested = model, resolved = %safe_model,
-                        "requested model unavailable — falling back to detected provider"
-                    );
-                    return Ok(bridge);
-                }
+                && let Some(bridge) = providers::auto_detect_bridge(&safe_model).await
+            {
+                tracing::info!(
+                    requested = model, resolved = %safe_model,
+                    "requested model unavailable — falling back to detected provider"
+                );
+                return Ok(bridge);
+            }
             anyhow::bail!(
                 "No LLM provider available.\n\n\
                  To get started:\n  \
@@ -185,7 +186,6 @@ pub struct LoopConfigOverrides {
     /// Ollama manager (created at startup for interactive mode).
     pub ollama_manager: Option<crate::ollama::OllamaManager>,
 }
-
 
 /// Build a LoopConfig reading model/max_turns from shared settings, with the
 /// given working directory and overrides.

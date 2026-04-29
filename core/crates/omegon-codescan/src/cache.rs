@@ -365,7 +365,7 @@ mod tests {
                     item_name: "keep".into(),
                     item_kind: "fn".into(),
                     text: "fn keep() {}".into(),
-            parent_scope: None,
+                    parent_scope: None,
                 }],
             )
             .unwrap();
@@ -380,7 +380,7 @@ mod tests {
                     item_name: "stale".into(),
                     item_kind: "fn".into(),
                     text: "fn stale() {}".into(),
-            parent_scope: None,
+                    parent_scope: None,
                 }],
             )
             .unwrap();

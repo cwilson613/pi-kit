@@ -96,7 +96,7 @@ pub struct WidgetConfig {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MindConfig {
     /// Whether this extension has a persistent mind
     #[serde(default)]
@@ -113,17 +113,6 @@ pub struct MindConfig {
     /// Retention policy: delete facts older than this many days
     #[serde(default)]
     pub retention_days: Option<u32>,
-}
-
-impl Default for MindConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            description: String::new(),
-            max_facts: None,
-            retention_days: None,
-        }
-    }
 }
 
 impl ExtensionManifest {

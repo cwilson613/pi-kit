@@ -40,12 +40,13 @@ impl Feature for VersionCheck {
         // Check for pending notification from the async task.
         // This fires on any subsequent event after the task completes.
         if let Ok(mut slot) = self.pending_notification.lock()
-            && let Some(msg) = slot.take() {
-                return vec![BusRequest::Notify {
-                    message: msg,
-                    level: NotifyLevel::Info,
-                }];
-            }
+            && let Some(msg) = slot.take()
+        {
+            return vec![BusRequest::Notify {
+                message: msg,
+                level: NotifyLevel::Info,
+            }];
+        }
 
         if let BusEvent::SessionStart { .. } = event {
             if self.checked {
@@ -175,21 +176,23 @@ mod tests {
             Some("Update available: v0.12.0 → v0.13.0. Run /update to install.".to_string());
 
         // Next event should drain the slot and return a Notify request
-        let requests = vc.on_event(&BusEvent::TurnEnd {
-            turn: 1,
-            model: None,
-            provider: None,
-            estimated_tokens: 0,
-            context_window: 200_000,
-            context_composition: Default::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
+        let requests = vc.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: None,
+                provider: None,
+                estimated_tokens: 0,
+                context_window: 200_000,
+                context_composition: Default::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+            },
+        )));
         assert_eq!(requests.len(), 1);
         assert!(
             matches!(&requests[0], BusRequest::Notify { message, .. } if message.contains("v0.13.0")),
@@ -197,21 +200,23 @@ mod tests {
         );
 
         // Slot is now empty — next event returns nothing
-        let requests = vc.on_event(&BusEvent::TurnEnd {
-            turn: 2,
-            model: None,
-            provider: None,
-            estimated_tokens: 0,
-            context_window: 200_000,
-            context_composition: Default::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
+        let requests = vc.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 2,
+                model: None,
+                provider: None,
+                estimated_tokens: 0,
+                context_window: 200_000,
+                context_composition: Default::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+            },
+        )));
         assert!(
             requests.is_empty(),
             "slot should be drained after first read"

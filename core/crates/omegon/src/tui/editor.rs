@@ -363,9 +363,7 @@ impl Editor {
 
     fn expand_collapsed_paste_at_cursor(&mut self) -> Option<usize> {
         let projected_idx = self.projected_cursor();
-        let Some(span) = self.token_span_for_edit_cursor(projected_idx) else {
-            return None;
-        };
+        let span = self.token_span_for_edit_cursor(projected_idx)?;
         let projection = self.projection();
         let is_sole_token = span.start == 0 && span.end == projection.text.chars().count();
         let should_expand = projected_idx < span.end || is_sole_token;
@@ -994,7 +992,7 @@ impl Editor {
             .map(|span| span.start)
             .unwrap_or_else(|| {
                 self.textarea.delete_word();
-                
+
                 self.projected_cursor()
             });
         if start < end {

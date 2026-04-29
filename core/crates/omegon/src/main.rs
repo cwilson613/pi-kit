@@ -626,7 +626,7 @@ fn build_runtime_bus_request_sink(
 ) -> omegon_traits::BusRequestSink {
     omegon_traits::BusRequestSink::from_fn(move |request| {
         if let omegon_traits::BusRequest::EmitAgentEvent { event } = request {
-            let _ = events_tx.send(event);
+            let _ = events_tx.send(*event);
         }
     })
 }
@@ -677,10 +677,11 @@ async fn main() -> anyhow::Result<()> {
     // When launched via `ollama launch omegon`, the --ollama-model flag
     // (set by Ollama) should override the --model CLI flag.
     if cli.ollama_integration
-        && let Some(ref model) = cli.ollama_model {
-            cli.model = model.clone();
-            tracing::info!(model = %model, "using Ollama-provided model");
-        }
+        && let Some(ref model) = cli.ollama_model
+    {
+        cli.model = model.clone();
+        tracing::info!(model = %model, "using Ollama-provided model");
+    }
 
     // ─── Logging setup ──────────────────────────────────────────────────
     // Priority: RUST_LOG env > --log-level flag > "info" default
@@ -1145,18 +1146,20 @@ fn apply_agent_manifest_pre_setup(
 
     // ── Apply settings ───────────────────────────────────────────────
     if let Some(ref s) = resolved.manifest.settings
-        && let Ok(mut settings) = shared_settings.lock() {
-            if let Some(ref m) = s.model {
-                settings.model = m.clone();
-            }
-            if let Some(ref tl) = s.thinking_level
-                && let Some(level) = settings::ThinkingLevel::parse(tl) {
-                    settings.thinking = level;
-                }
-            if let Some(mt) = s.max_turns {
-                settings.max_turns = mt;
-            }
+        && let Ok(mut settings) = shared_settings.lock()
+    {
+        if let Some(ref m) = s.model {
+            settings.model = m.clone();
         }
+        if let Some(ref tl) = s.thinking_level
+            && let Some(level) = settings::ThinkingLevel::parse(tl)
+        {
+            settings.thinking = level;
+        }
+        if let Some(mt) = s.max_turns {
+            settings.max_turns = mt;
+        }
+    }
 
     // ── Materialize persona as plugin for setup discovery ────────────
     if resolved.persona_directive.is_some() {
@@ -1282,13 +1285,14 @@ fn apply_agent_manifest_pre_setup(
 
     // ── Secret pre-flight ────────────────────────────────────────────
     if let Some(ref secrets) = resolved.manifest.secrets
-        && let Some(ref required) = secrets.required {
-            for s in required {
-                if std::env::var(s).is_err() {
-                    tracing::warn!(secret = %s, "required secret not found in environment");
-                }
+        && let Some(ref required) = secrets.required
+    {
+        for s in required {
+            if std::env::var(s).is_err() {
+                tracing::warn!(secret = %s, "required secret not found in environment");
             }
         }
+    }
 
     Ok(resolved)
 }
@@ -1333,23 +1337,24 @@ async fn run_embedded_command(
 
     // ─── Extension/plugin pre-flight reconciliation ──────────────────────
     if let Some(ref resolved) = agent_manifest_resolved
-        && let Some(ref exts) = resolved.manifest.extensions {
-            let omegon_home = paths::omegon_home().unwrap_or_else(|_| cwd.join(".omegon"));
-            let ext_dir = omegon_home.join("extensions");
-            for ext in exts {
-                let installed = ext_dir.join(&ext.name).join("manifest.toml").exists();
-                if installed {
-                    tracing::info!(extension = %ext.name, version = %ext.version, "extension installed");
-                } else {
-                    tracing::error!(
-                        extension = %ext.name,
-                        version = %ext.version,
-                        expected_path = %ext_dir.join(&ext.name).display(),
-                        "required extension not installed. Run: omegon extension install <source>"
-                    );
-                }
+        && let Some(ref exts) = resolved.manifest.extensions
+    {
+        let omegon_home = paths::omegon_home().unwrap_or_else(|_| cwd.join(".omegon"));
+        let ext_dir = omegon_home.join("extensions");
+        for ext in exts {
+            let installed = ext_dir.join(&ext.name).join("manifest.toml").exists();
+            if installed {
+                tracing::info!(extension = %ext.name, version = %ext.version, "extension installed");
+            } else {
+                tracing::error!(
+                    extension = %ext.name,
+                    version = %ext.version,
+                    expected_path = %ext_dir.join(&ext.name).display(),
+                    "required extension not installed. Run: omegon extension install <source>"
+                );
             }
         }
+    }
 
     // ─── LLM model (bridge resolved per-turn for credential freshness) ───
     let mut model = shared_settings
@@ -1358,16 +1363,17 @@ async fn run_embedded_command(
         .unwrap_or_else(|_| "anthropic:claude-sonnet-4-6".into());
     // If the configured model's provider isn't available, try auto-detection.
     if providers::auto_detect_bridge(&model).await.is_none()
-        && let Some(safe) = providers::automation_safe_model() {
-            tracing::info!(
-                configured = %model, resolved = %safe,
-                "configured model unavailable — switching to detected provider"
-            );
-            model = safe.clone();
-            if let Ok(mut s) = shared_settings.lock() {
-                s.set_model(&safe);
-            }
+        && let Some(safe) = providers::automation_safe_model()
+    {
+        tracing::info!(
+            configured = %model, resolved = %safe,
+            "configured model unavailable — switching to detected provider"
+        );
+        model = safe.clone();
+        if let Ok(mut s) = shared_settings.lock() {
+            s.set_model(&safe);
         }
+    }
     // Validate provider availability at startup (fail-fast).
     if providers::auto_detect_bridge(&model).await.is_none() {
         tracing::warn!(
@@ -2516,10 +2522,11 @@ async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
                     .args(["log", "--no-graph", "-r", "@", "-T", "change_id.short()"])
                     .current_dir(&project_root)
                     .output()
-                    && out.status.success() {
-                        let id = String::from_utf8_lossy(&out.stdout);
-                        println!("               working copy: {}", id.trim());
-                    }
+                    && out.status.success()
+                {
+                    let id = String::from_utf8_lossy(&out.stdout);
+                    println!("               working copy: {}", id.trim());
+                }
             }
         }
         _ => {
@@ -3226,7 +3233,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         ctx_window,
                                         Some(&prompt_telemetry),
                                     );
-                                    let _ = events_tx.send(AgentEvent::TurnEnd {
+                                    let _ = events_tx.send(AgentEvent::TurnEnd(Box::new(omegon_traits::AgentEventTurnEnd {
                                         turn: runtime_state.conversation.intent.stats.turns,
                                         turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
                                         model: None,
@@ -3252,7 +3259,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                                         // surface zeros and let consumers tell the difference between
                                         // "no streaks" and "no controller" via the loop's own emissions.
                                         streaks: omegon_traits::ControllerStreaks::default(),
-                                    });
+                                    })));
                                 }
                             }
                             let _ = events_tx.send(AgentEvent::SystemNotification {
@@ -3919,7 +3926,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                             }
                         }
                         omegon_traits::BusRequest::EmitAgentEvent { event } => {
-                            let _ = events_tx.send(event);
+                            let _ = events_tx.send(*event);
                         }
                     }
                 }
@@ -4293,15 +4300,13 @@ enum ControlSurface {
     Internal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum QueueMode {
     #[default]
     InterruptAfterTurn,
     UntilReady,
     Immediate,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PromptEnvelope {
@@ -4373,7 +4378,9 @@ pub(crate) struct CliRuntimeView<'a> {
 fn interactive_resume_mode(cli: &Cli) -> Option<Option<&str>> {
     if cli.fresh {
         None
-    } else { cli.resume.as_ref().map(|r| r.as_deref()) }
+    } else {
+        cli.resume.as_ref().map(|r| r.as_deref())
+    }
 }
 
 fn split_interactive_agent(
@@ -4435,6 +4442,7 @@ fn build_interactive_loop_config(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_interactive_active_turn(
     mut runtime_state: InteractiveAgentState,
     runtime: InteractiveRuntimeResources,
@@ -4710,6 +4718,7 @@ impl BenchmarkUsageSummary {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn observe_turn(
         &mut self,
         model: Option<String>,
@@ -4990,40 +4999,23 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                         .unwrap_or_default();
                     tracing::info!("  {status} {text}");
                 }
-                AgentEvent::TurnEnd {
-                    turn,
-                    turn_end_reason,
-                    model,
-                    provider,
-                    estimated_tokens,
-                    dominant_phase,
-                    drift_kind,
-                    progress_nudge_reason,
-                    context_window,
-                    context_composition,
-                    actual_input_tokens,
-                    actual_output_tokens,
-                    cache_read_tokens,
-                    cache_creation_tokens,
-                    provider_telemetry,
-                    ..
-                } => {
+                AgentEvent::TurnEnd(te) => {
                     if let Ok(mut summary) = benchmark_summary_task.lock() {
                         summary.observe_turn(
-                            model,
-                            provider,
-                            turn_end_reason,
-                            estimated_tokens,
-                            dominant_phase,
-                            drift_kind,
-                            progress_nudge_reason,
-                            context_window,
-                            context_composition,
-                            actual_input_tokens,
-                            actual_output_tokens,
-                            cache_read_tokens,
-                            cache_creation_tokens,
-                            provider_telemetry,
+                            te.model,
+                            te.provider,
+                            te.turn_end_reason,
+                            te.estimated_tokens,
+                            te.dominant_phase,
+                            te.drift_kind,
+                            te.progress_nudge_reason,
+                            te.context_window,
+                            te.context_composition,
+                            te.actual_input_tokens,
+                            te.actual_output_tokens,
+                            te.cache_read_tokens,
+                            te.cache_creation_tokens,
+                            te.provider_telemetry,
                         );
                         if let Some(path) = usage_json_task.as_ref()
                             && let Err(err) =
@@ -5032,18 +5024,21 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                             tracing::warn!(path = %path.display(), error = %err, "failed to checkpoint benchmark usage json at turn boundary");
                         }
                     }
-                    if actual_input_tokens > 0 || actual_output_tokens > 0 {
+                    if te.actual_input_tokens > 0 || te.actual_output_tokens > 0 {
                         tracing::info!(
-                            "── Turn {turn} complete — in:{actual_input_tokens} out:{actual_output_tokens} ──"
+                            "── Turn {} complete — in:{} out:{} ──",
+                            te.turn,
+                            te.actual_input_tokens,
+                            te.actual_output_tokens
                         );
                     } else {
-                        tracing::info!("── Turn {turn} complete ──");
+                        tracing::info!("── Turn {} complete ──", te.turn);
                     }
                     // Emit explicit task-done marker so the parent can
                     // track per-task progress without relying solely on
                     // the turn-based heuristic.
-                    if turn > 0 {
-                        tracing::info!("TASK_DONE: {turn}");
+                    if te.turn > 0 {
+                        tracing::info!("TASK_DONE: {}", te.turn);
                     }
                 }
                 AgentEvent::AgentEnd => {
@@ -5287,7 +5282,6 @@ async fn run_auth_command(action: &AuthAction) -> anyhow::Result<()> {
 
 /// Direct API key login — for providers without OAuth (OpenRouter, etc.)
 /// Prompts for the key on stdin, stores in auth.json.
-
 async fn login_api_key(
     provider: &str,
     env_var: &str,
@@ -5349,6 +5343,7 @@ fn list_sessions_message(cwd: &Path) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_remote_slash_command(
     runtime_state: &mut InteractiveAgentState,
     agent: &mut InteractiveAgentHost,
@@ -5629,14 +5624,13 @@ async fn run_bounded_task(
                 AgentEvent::ToolStart { name, .. } => {
                     tracing::info!("→ {name}");
                 }
-                AgentEvent::TurnEnd {
-                    actual_input_tokens,
-                    actual_output_tokens,
-                    ..
-                } => {
-                    total_in_t.fetch_add(actual_input_tokens, std::sync::atomic::Ordering::Relaxed);
-                    total_out_t
-                        .fetch_add(actual_output_tokens, std::sync::atomic::Ordering::Relaxed);
+                AgentEvent::TurnEnd(te) => {
+                    total_in_t
+                        .fetch_add(te.actual_input_tokens, std::sync::atomic::Ordering::Relaxed);
+                    total_out_t.fetch_add(
+                        te.actual_output_tokens,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
                 AgentEvent::AgentEnd => break,
                 _ => {}
@@ -5676,14 +5670,15 @@ async fn run_bounded_task(
 
     // Check token budget
     if let Some(budget) = token_budget
-        && in_tokens + out_tokens > budget {
-            tracing::warn!(
-                "Token budget exceeded: {}+{} = {} > {budget}",
-                in_tokens,
-                out_tokens,
-                in_tokens + out_tokens
-            );
-        }
+        && in_tokens + out_tokens > budget
+    {
+        tracing::warn!(
+            "Token budget exceeded: {}+{} = {} > {budget}",
+            in_tokens,
+            out_tokens,
+            in_tokens + out_tokens
+        );
+    }
 
     let summary = agent
         .conversation

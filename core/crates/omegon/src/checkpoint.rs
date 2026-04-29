@@ -99,22 +99,7 @@ pub fn spawn_checkpoint_subscriber(
     let mut rx = events_tx.subscribe();
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
-            if let omegon_traits::AgentEvent::TurnEnd {
-                turn,
-                model,
-                provider,
-                estimated_tokens,
-                context_window,
-                actual_input_tokens,
-                actual_output_tokens,
-                intent_task,
-                intent_phase,
-                files_read_count,
-                files_modified_count,
-                stats_tool_calls,
-                ..
-            } = event
-            {
+            if let omegon_traits::AgentEvent::TurnEnd(te) = event {
                 let metrics = context_metrics
                     .lock()
                     .map(|m| MetricsSnapshot {
@@ -136,20 +121,20 @@ pub fn spawn_checkpoint_subscriber(
                         .unwrap_or_default()
                         .as_millis() as u64,
                     session_id: session_id.clone(),
-                    turn,
-                    model,
-                    provider,
-                    estimated_tokens,
-                    context_window,
-                    actual_input_tokens,
-                    actual_output_tokens,
+                    turn: te.turn,
+                    model: te.model,
+                    provider: te.provider,
+                    estimated_tokens: te.estimated_tokens,
+                    context_window: te.context_window,
+                    actual_input_tokens: te.actual_input_tokens,
+                    actual_output_tokens: te.actual_output_tokens,
                     intent: IntentSnapshot {
-                        current_task: intent_task,
-                        lifecycle_phase: intent_phase.unwrap_or_else(|| "unknown".into()),
-                        files_read_count,
-                        files_modified_count,
-                        stats_turns: turn,
-                        stats_tool_calls,
+                        current_task: te.intent_task,
+                        lifecycle_phase: te.intent_phase.unwrap_or_else(|| "unknown".into()),
+                        files_read_count: te.files_read_count,
+                        files_modified_count: te.files_modified_count,
+                        stats_turns: te.turn,
+                        stats_tool_calls: te.stats_tool_calls,
                     },
                     metrics,
                 };

@@ -99,15 +99,16 @@ impl StatusLine {
 
         // Git branch (≥65)
         if w >= 65
-            && let Some(ref branch) = self.git_branch {
-                let field = Span::styled(branch.clone(), Style::default().fg(t.muted()));
-                let cost = sep.width() + field.width();
-                if used + cost < w {
-                    spans.push(sep.clone());
-                    spans.push(field);
-                    used += cost;
-                }
+            && let Some(ref branch) = self.git_branch
+        {
+            let field = Span::styled(branch.clone(), Style::default().fg(t.muted()));
+            let cost = sep.width() + field.width();
+            if used + cost < w {
+                spans.push(sep.clone());
+                spans.push(field);
+                used += cost;
             }
+        }
 
         // Files r/w (≥75)
         if w >= 75 && (self.files_read > 0 || self.files_modified > 0) {
@@ -125,51 +126,53 @@ impl StatusLine {
 
         // OODA phase (≥85)
         if w >= 85
-            && let Some(phase) = &self.phase {
-                let (label, color) = match phase {
-                    OodaPhase::Act => ("Act", t.accent()),
-                    OodaPhase::Observe => ("Observe", t.muted()),
-                    OodaPhase::Orient => ("Orient", t.muted()),
-                    OodaPhase::Decide => ("Decide", t.muted()),
-                };
-                let field = Span::styled(label, Style::default().fg(color));
-                let cost = sep.width() + field.width();
-                if used + cost < w {
-                    spans.push(sep.clone());
-                    spans.push(field);
-                    used += cost;
-                }
+            && let Some(phase) = &self.phase
+        {
+            let (label, color) = match phase {
+                OodaPhase::Act => ("Act", t.accent()),
+                OodaPhase::Observe => ("Observe", t.muted()),
+                OodaPhase::Orient => ("Orient", t.muted()),
+                OodaPhase::Decide => ("Decide", t.muted()),
+            };
+            let field = Span::styled(label, Style::default().fg(color));
+            let cost = sep.width() + field.width();
+            if used + cost < w {
+                spans.push(sep.clone());
+                spans.push(field);
+                used += cost;
             }
+        }
 
         // Drift warning (≥90)
         if w >= 90
-            && let Some(drift) = &self.drift {
-                let label = match drift {
-                    DriftKind::OrientationChurn => "⚠ churn",
-                    DriftKind::RepeatedActionFailure => "⚠ retry",
-                    DriftKind::ValidationThrash => "⚠ thrash",
-                    DriftKind::ClosureStall => "⚠ stall",
-                };
-                let field = Span::styled(label, Style::default().fg(t.warning()));
-                let cost = sep.width() + field.width();
-                if used + cost < w {
-                    spans.push(sep.clone());
-                    spans.push(field);
-                    used += cost;
-                }
+            && let Some(drift) = &self.drift
+        {
+            let label = match drift {
+                DriftKind::OrientationChurn => "⚠ churn",
+                DriftKind::RepeatedActionFailure => "⚠ retry",
+                DriftKind::ValidationThrash => "⚠ thrash",
+                DriftKind::ClosureStall => "⚠ stall",
+            };
+            let field = Span::styled(label, Style::default().fg(t.warning()));
+            let cost = sep.width() + field.width();
+            if used + cost < w {
+                spans.push(sep.clone());
+                spans.push(field);
+                used += cost;
             }
+        }
 
         // Persona (≥100)
         if w >= 100
-            && let Some(ref persona) = self.persona {
-                let field =
-                    Span::styled(format!("@{persona}"), Style::default().fg(t.accent_muted()));
-                let cost = sep.width() + field.width();
-                if used + cost < w {
-                    spans.push(sep.clone());
-                    spans.push(field);
-                }
+            && let Some(ref persona) = self.persona
+        {
+            let field = Span::styled(format!("@{persona}"), Style::default().fg(t.accent_muted()));
+            let cost = sep.width() + field.width();
+            if used + cost < w {
+                spans.push(sep.clone());
+                spans.push(field);
             }
+        }
 
         // Right-align version string
         let version = concat!("v", env!("CARGO_PKG_VERSION"));

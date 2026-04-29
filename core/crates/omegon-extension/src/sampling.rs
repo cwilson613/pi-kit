@@ -70,19 +70,15 @@ pub struct ModelHint {
 /// Omegon-specific; dropped by MCP shim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SamplingRoute {
     /// Use cloud provider (default).
+    #[default]
     Cloud,
     /// Try local inference first, fall back to cloud.
     LocalPreferred,
     /// Fail if no local model available.
     LocalOnly,
-}
-
-impl Default for SamplingRoute {
-    fn default() -> Self {
-        Self::Cloud
-    }
 }
 
 /// Parameters for `sampling/create_message` request (ext → host).
@@ -112,7 +108,6 @@ pub struct CreateMessageParams {
     pub stop_sequences: Vec<String>,
 
     // ─── Omegon-specific (lost in MCP shim) ───
-
     /// Where to route the completion.
     #[serde(default)]
     pub route: SamplingRoute,
@@ -136,7 +131,6 @@ pub struct CreateMessageResult {
     pub stop_reason: Option<String>,
 
     // ─── Omegon-specific ───
-
     /// Token usage (Omegon-specific; MCP doesn't report this).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,

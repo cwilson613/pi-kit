@@ -488,9 +488,10 @@ impl Tutorial {
             return;
         }
         if self.auto_prompt_sent
-            && let Trigger::AutoPrompt(_) = &self.step().trigger {
-                self.advance();
-            }
+            && let Trigger::AutoPrompt(_) = &self.step().trigger
+        {
+            self.advance();
+        }
     }
 
     /// Dismiss the tutorial.
@@ -504,10 +505,11 @@ impl Tutorial {
             return false;
         }
         if let Trigger::Command(expected) = &self.step().trigger
-            && cmd == *expected {
-                self.advance();
-                return true;
-            }
+            && cmd == *expected
+        {
+            self.advance();
+            return true;
+        }
         false
     }
 
@@ -724,9 +726,10 @@ impl Tutorial {
         if let Some(y) = cta_y {
             for x in inner.x..inner.right() {
                 if let Some(cell) = buf.cell_mut(ratatui::prelude::Position::new(x, y))
-                    && cell.symbol() != " " {
-                        cell.set_fg(theme.accent_bright());
-                    }
+                    && cell.symbol() != " "
+                {
+                    cell.set_fg(theme.accent_bright());
+                }
             }
         }
     }
@@ -808,6 +811,7 @@ impl Tutorial {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_choice_option(
         &self,
         area: Rect,

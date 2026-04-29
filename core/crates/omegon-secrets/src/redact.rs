@@ -32,7 +32,7 @@ impl Redactor {
             .collect();
 
         // Sort by pattern length descending — longest match wins
-        patterns.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        patterns.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
 
         if patterns.is_empty() {
             return Self {
@@ -85,7 +85,7 @@ impl Redactor {
     /// Only available with the `agent` feature. For standalone use,
     /// iterate your container and call `redact_in_place` per string.
     #[cfg(feature = "agent")]
-    pub fn redact_content_blocks(&self, content: &mut Vec<omegon_traits::ContentBlock>) {
+    pub fn redact_content_blocks(&self, content: &mut [omegon_traits::ContentBlock]) {
         if self.automaton.is_none() {
             return;
         }

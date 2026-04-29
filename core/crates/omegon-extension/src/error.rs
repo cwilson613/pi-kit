@@ -106,19 +106,23 @@ impl std::error::Error for ErrorCode {}
 // Serialize as the string label for backward compat in v1 mode.
 // The RpcError struct handles the numeric/label split for v2.
 impl Serialize for ErrorCode {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str(self.label())
     }
 }
 
 impl<'de> Deserialize<'de> for ErrorCode {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         // Accept either a string label or numeric code.
         let value = serde_json::Value::deserialize(deserializer)?;
         match &value {
-            serde_json::Value::String(s) => Self::from_label(s).ok_or_else(|| {
-                serde::de::Error::custom(format!("unknown error code label: {s}"))
-            }),
+            serde_json::Value::String(s) => Self::from_label(s)
+                .ok_or_else(|| serde::de::Error::custom(format!("unknown error code label: {s}"))),
             serde_json::Value::Number(n) => {
                 let code = n
                     .as_i64()

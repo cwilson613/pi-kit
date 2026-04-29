@@ -41,12 +41,13 @@ pub fn truncate_output(s: &str, max_chars: usize) -> String {
 
 /// Cap all Text blocks in a ToolResult content vec to `max_chars` each.
 /// Non-text blocks (images, tool_use, etc.) are passed through unchanged.
-pub fn truncate_content_blocks(blocks: &mut Vec<ContentBlock>, max_chars: usize) {
+pub fn truncate_content_blocks(blocks: &mut [ContentBlock], max_chars: usize) {
     for block in blocks.iter_mut() {
         if let ContentBlock::Text { text } = block
-            && text.chars().count() > max_chars {
-                *text = truncate_output(text, max_chars);
-            }
+            && text.chars().count() > max_chars
+        {
+            *text = truncate_output(text, max_chars);
+        }
     }
 }
 

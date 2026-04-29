@@ -741,7 +741,6 @@ impl Settings {
     }
 
     pub fn provider(&self) -> String {
-        
         crate::providers::infer_provider_id(&self.model)
     }
 }
@@ -1252,13 +1251,15 @@ impl ResolvedCustomPosture {
 
         // Override with custom values
         if let Some(ref t) = self.def.posture.thinking
-            && let Some(level) = ThinkingLevel::parse(t) {
-                settings.thinking = level;
-            }
+            && let Some(level) = ThinkingLevel::parse(t)
+        {
+            settings.thinking = level;
+        }
         if let Some(ref cc) = self.def.posture.context_class
-            && let Some(class) = ContextClass::parse(cc) {
-                settings.requested_context_class = Some(class);
-            }
+            && let Some(class) = ContextClass::parse(cc)
+        {
+            settings.requested_context_class = Some(class);
+        }
         if let Some(true) = self.def.posture.slim {
             settings.set_posture(PosturePreset::Explorator);
         }
@@ -1313,6 +1314,7 @@ pub fn resolve_posture_by_name(
 
 /// The result of posture resolution.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // singleton lifetime — created once, never cloned
 pub enum ResolvedPosture {
     BuiltIn(PosturePreset),
     Custom(ResolvedCustomPosture),
@@ -1385,16 +1387,17 @@ pub fn list_available_postures(cwd: &std::path::Path) -> Vec<(String, String, bo
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "pkl")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        // Skip if same name as built-in
-                        if !postures.iter().any(|(n, _, _)| n == stem) {
-                            let desc = rpkl::from_config::<PostureFile>(&path)
-                                .ok()
-                                .map(|f| f.posture.description)
-                                .unwrap_or_default();
-                            postures.push((stem.to_string(), desc, false));
-                        }
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    // Skip if same name as built-in
+                    if !postures.iter().any(|(n, _, _)| n == stem) {
+                        let desc = rpkl::from_config::<PostureFile>(&path)
+                            .ok()
+                            .map(|f| f.posture.description)
+                            .unwrap_or_default();
+                        postures.push((stem.to_string(), desc, false));
                     }
+                }
             }
         }
     }

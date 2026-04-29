@@ -110,16 +110,10 @@ impl Feature for UsageFeature {
     }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
-        if let BusEvent::TurnEnd {
-            model,
-            provider,
-            provider_telemetry,
-            ..
-        } = event
-        {
-            self.latest.model = model.clone();
-            self.latest.provider = provider.clone();
-            self.latest.telemetry = provider_telemetry.clone();
+        if let BusEvent::TurnEnd(te) = event {
+            self.latest.model = te.model.clone();
+            self.latest.provider = te.provider.clone();
+            self.latest.telemetry = te.provider_telemetry.clone();
         }
         vec![]
     }
@@ -132,27 +126,29 @@ mod tests {
     #[test]
     fn usage_command_formats_anthropic_with_authority_link() {
         let mut feature = UsageFeature::new();
-        feature.on_event(&BusEvent::TurnEnd {
-            turn: 1,
-            model: Some("anthropic:claude-sonnet-4-6".into()),
-            provider: Some("anthropic".into()),
-            estimated_tokens: 0,
-            context_window: 0,
-            context_composition: Default::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-            provider_telemetry: Some(ProviderTelemetrySnapshot {
-                provider: "anthropic".into(),
-                source: "response_headers".into(),
-                unified_5h_utilization_pct: Some(42.0),
-                unified_7d_utilization_pct: Some(64.0),
-                ..Default::default()
-            }),
-        });
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: Some("anthropic:claude-sonnet-4-6".into()),
+                provider: Some("anthropic".into()),
+                estimated_tokens: 0,
+                context_window: 0,
+                context_composition: Default::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+                provider_telemetry: Some(ProviderTelemetrySnapshot {
+                    provider: "anthropic".into(),
+                    source: "response_headers".into(),
+                    unified_5h_utilization_pct: Some(42.0),
+                    unified_7d_utilization_pct: Some(64.0),
+                    ..Default::default()
+                }),
+            },
+        )));
 
         let CommandResult::Display(text) = feature.handle_command("usage", "") else {
             panic!("expected display result");
@@ -175,29 +171,31 @@ mod tests {
     #[test]
     fn usage_command_formats_codex_with_help_links() {
         let mut feature = UsageFeature::new();
-        feature.on_event(&BusEvent::TurnEnd {
-            turn: 1,
-            model: Some("openai-codex:gpt-5.4".into()),
-            provider: Some("openai-codex".into()),
-            estimated_tokens: 0,
-            context_window: 0,
-            context_composition: Default::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-            provider_telemetry: Some(ProviderTelemetrySnapshot {
-                provider: "openai-codex".into(),
-                source: "response_headers".into(),
-                codex_active_limit: Some("codex".into()),
-                codex_primary_used_pct: Some(99.0),
-                codex_primary_reset_secs: Some(13648),
-                codex_limit_name: Some("GPT-5.3-Codex-Spark".into()),
-                ..Default::default()
-            }),
-        });
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: Some("openai-codex:gpt-5.4".into()),
+                provider: Some("openai-codex".into()),
+                estimated_tokens: 0,
+                context_window: 0,
+                context_composition: Default::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+                provider_telemetry: Some(ProviderTelemetrySnapshot {
+                    provider: "openai-codex".into(),
+                    source: "response_headers".into(),
+                    codex_active_limit: Some("codex".into()),
+                    codex_primary_used_pct: Some(99.0),
+                    codex_primary_reset_secs: Some(13648),
+                    codex_limit_name: Some("GPT-5.3-Codex-Spark".into()),
+                    ..Default::default()
+                }),
+            },
+        )));
 
         let CommandResult::Display(text) = feature.handle_command("usage", "") else {
             panic!("expected display result");

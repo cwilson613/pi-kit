@@ -162,10 +162,7 @@ impl LocalInferenceProvider {
             // Process every complete SSE event in the buffer. Events are
             // delimited by `\n\n`. Anything left over stays in the buffer
             // for the next chunk.
-            loop {
-                let Some(end) = sse_buffer.find("\n\n") else {
-                    break;
-                };
+            while let Some(end) = sse_buffer.find("\n\n") {
                 let event = sse_buffer[..end].to_string();
                 sse_buffer.drain(..end + 2);
 
@@ -187,10 +184,11 @@ impl LocalInferenceProvider {
                     };
                     if let Some(choice) = chunk_obj.choices.first()
                         && let Some(content) = choice.delta.content.as_deref()
-                            && !content.is_empty() {
-                                accumulated.push_str(content);
-                                deltas_seen += 1;
-                            }
+                        && !content.is_empty()
+                    {
+                        accumulated.push_str(content);
+                        deltas_seen += 1;
+                    }
                 }
             }
 
@@ -302,9 +300,10 @@ impl LocalInferenceProvider {
                 .arg("tell application \"Ollama\" to quit")
                 .output();
             if let Ok(output) = quit_result
-                && output.status.success() {
-                    return "Ollama stopped (macOS app).".into();
-                }
+                && output.status.success()
+            {
+                return "Ollama stopped (macOS app).".into();
+            }
         }
 
         // Fall back to exact process name match (not -f substring match)
@@ -357,23 +356,25 @@ impl LocalInferenceProvider {
                 last_status = status.to_string();
 
                 if let Some(sink) = sink
-                    && sink.is_active() && total > 0 {
-                        sink.send(PartialToolResult {
-                            tail: format!("{status}: {completed}/{total}"),
-                            progress: ToolProgress {
-                                elapsed_ms: started.elapsed().as_millis() as u64,
-                                heartbeat: false,
-                                phase: Some(format!("pulling {model}")),
-                                units: Some(ProgressUnits {
-                                    current: completed,
-                                    total: Some(total),
-                                    unit: "bytes".to_string(),
-                                }),
-                                tally: None,
-                            },
-                            details: json!({"model": model, "status": status}),
-                        });
-                    }
+                    && sink.is_active()
+                    && total > 0
+                {
+                    sink.send(PartialToolResult {
+                        tail: format!("{status}: {completed}/{total}"),
+                        progress: ToolProgress {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            heartbeat: false,
+                            phase: Some(format!("pulling {model}")),
+                            units: Some(ProgressUnits {
+                                current: completed,
+                                total: Some(total),
+                                unit: "bytes".to_string(),
+                            }),
+                            tally: None,
+                        },
+                        details: json!({"model": model, "status": status}),
+                    });
+                }
             }
         }
 

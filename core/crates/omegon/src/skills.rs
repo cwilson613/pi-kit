@@ -161,10 +161,12 @@ fn extract_description(content: &str) -> Option<&str> {
             let rest = rest.trim();
             if let Some(rest) = rest.strip_prefix('=') {
                 let rest = rest.trim();
-                if rest.starts_with('"') && rest.len() > 1
-                    && let Some(end) = rest[1..].find('"') {
-                        return Some(&rest[1..1 + end]);
-                    }
+                if rest.starts_with('"')
+                    && rest.len() > 1
+                    && let Some(end) = rest[1..].find('"')
+                {
+                    return Some(&rest[1..1 + end]);
+                }
             }
         }
     }

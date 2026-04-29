@@ -158,9 +158,10 @@ impl IpcConnection {
                             if subs.contains(name) {
                                 drop(subs);
                                 if let Ok(raw) = build_event_frame(&ipc_ev)
-                                    && event_out_tx.send(raw).await.is_err() {
-                                        break;
-                                    }
+                                    && event_out_tx.send(raw).await.is_err()
+                                {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -825,23 +826,14 @@ fn build_event_frame(ev: &IpcEventPayload) -> anyhow::Result<Vec<u8>> {
 fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
     match ev {
         AgentEvent::TurnStart { turn } => Some(IpcEventPayload::TurnStarted { turn: *turn }),
-        AgentEvent::TurnEnd {
-            turn,
-            estimated_tokens,
-            actual_input_tokens,
-            actual_output_tokens,
-            cache_read_tokens,
-            provider_telemetry,
-            streaks,
-            ..
-        } => Some(IpcEventPayload::TurnEnded {
-            turn: *turn,
-            estimated_tokens: *estimated_tokens,
-            actual_input_tokens: *actual_input_tokens,
-            actual_output_tokens: *actual_output_tokens,
-            cache_read_tokens: *cache_read_tokens,
-            provider_telemetry: provider_telemetry.clone(),
-            streaks: *streaks,
+        AgentEvent::TurnEnd(te) => Some(IpcEventPayload::TurnEnded {
+            turn: te.turn,
+            estimated_tokens: te.estimated_tokens,
+            actual_input_tokens: te.actual_input_tokens,
+            actual_output_tokens: te.actual_output_tokens,
+            cache_read_tokens: te.cache_read_tokens,
+            provider_telemetry: te.provider_telemetry.clone(),
+            streaks: te.streaks,
         }),
         AgentEvent::MessageChunk { text } => {
             Some(IpcEventPayload::MessageDelta { text: text.clone() })

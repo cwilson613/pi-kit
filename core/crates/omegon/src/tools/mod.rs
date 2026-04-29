@@ -102,9 +102,10 @@ impl CoreTools {
     /// Expand `~` to the home directory in a path string.
     fn expand_tilde(path_str: &str) -> PathBuf {
         if let Some(rest) = path_str.strip_prefix("~/")
-            && let Some(home) = dirs::home_dir() {
-                return home.join(rest);
-            }
+            && let Some(home) = dirs::home_dir()
+        {
+            return home.join(rest);
+        }
         PathBuf::from(path_str)
     }
 
@@ -138,25 +139,27 @@ impl CoreTools {
 
         // Check settings-level trusted directories
         if let Some(ref settings) = self.settings
-            && let Ok(s) = settings.lock() {
-                for trusted in &s.trusted_directories {
-                    let expanded = Self::expand_tilde(trusted);
-                    let canonical = expanded.canonicalize().unwrap_or(expanded);
-                    if path.starts_with(&canonical) {
-                        return true;
-                    }
+            && let Ok(s) = settings.lock()
+        {
+            for trusted in &s.trusted_directories {
+                let expanded = Self::expand_tilde(trusted);
+                let canonical = expanded.canonicalize().unwrap_or(expanded);
+                if path.starts_with(&canonical) {
+                    return true;
                 }
             }
+        }
         false
     }
 
     /// Record a directory as approved for this session.
     pub fn approve_directory(&self, dir: PathBuf) {
         if let Ok(mut approved) = self.session_approved.lock()
-            && !approved.iter().any(|d| d == &dir) {
-                tracing::info!(dir = %dir.display(), count = approved.len() + 1, "session directory approved");
-                approved.push(dir);
-            }
+            && !approved.iter().any(|d| d == &dir)
+        {
+            tracing::info!(dir = %dir.display(), count = approved.len() + 1, "session directory approved");
+            approved.push(dir);
+        }
     }
 
     /// Resolve a user-provided path against cwd. Absolute paths and paths

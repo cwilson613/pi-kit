@@ -46,9 +46,7 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
         all_paths.extend(options.lifecycle_paths.iter().cloned());
     }
 
-    let files_staged;
-
-    if all_paths.is_empty() {
+    let files_staged = if all_paths.is_empty() {
         // Stage everything — like `git add -A`
         // Use "." pathspec which respects .gitignore (unlike bare "*" which
         // can behave inconsistently across git2 versions).
@@ -64,7 +62,7 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
                 }),
             )
             .context("git add -A failed")?;
-        files_staged = staged_count;
+        staged_count
     } else {
         // Stage specific paths
         for path_str in &all_paths {
@@ -80,8 +78,8 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
                     .with_context(|| format!("failed to remove from index: {}", path_str))?;
             }
         }
-        files_staged = all_paths.len();
-    }
+        all_paths.len()
+    };
 
     index.write().context("failed to write index")?;
 

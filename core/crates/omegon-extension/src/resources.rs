@@ -36,7 +36,6 @@ pub struct Resource {
     pub mime_type: Option<String>,
 
     // ─── Omegon-specific (lost in MCP shim) ───
-
     /// Preferred widget renderer for this resource's content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widget_renderer: Option<String>,

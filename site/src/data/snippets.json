@@ -132,7 +132,7 @@
     "desc": "Install latest nightly"
   },
   "install.install_version": {
-    "cmd": "VERSION=0.17.1 curl -fsSL https://omegon.styrene.io/install.sh | sh",
+    "cmd": "VERSION=0.17.6 curl -fsSL https://omegon.styrene.io/install.sh | sh",
     "desc": "Install a specific version (stable, RC, or nightly)"
   },
   "install.install_ci": {

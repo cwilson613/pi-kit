@@ -403,14 +403,15 @@ Also use it when you notice a gap — if you're unsure whether something was alr
 
                 // Auto-embed newly stored facts (fire-and-forget)
                 if matches!(result.action, StoreAction::Stored)
-                    && let Some(ref embed_svc) = self.embed_service {
-                        spawn_auto_embed(
-                            embed_svc,
-                            &self.backend,
-                            result.fact.id.clone(),
-                            content.clone(),
-                        );
-                    }
+                    && let Some(ref embed_svc) = self.embed_service
+                {
+                    spawn_auto_embed(
+                        embed_svc,
+                        &self.backend,
+                        result.fact.id.clone(),
+                        content.clone(),
+                    );
+                }
 
                 let msg = match result.action {
                     StoreAction::Stored => format!("Stored in {}: {}", section_str, content),
@@ -774,14 +775,15 @@ Also use it when you notice a gap — if you're unsure whether something was alr
 
                 // Auto-embed newly ingested lifecycle facts
                 if matches!(result.action, StoreAction::Stored)
-                    && let Some(ref embed_svc) = self.embed_service {
-                        spawn_auto_embed(
-                            embed_svc,
-                            &self.backend,
-                            result.fact.id.clone(),
-                            content.clone(),
-                        );
-                    }
+                    && let Some(ref embed_svc) = self.embed_service
+                {
+                    spawn_auto_embed(
+                        embed_svc,
+                        &self.backend,
+                        result.fact.id.clone(),
+                        content.clone(),
+                    );
+                }
 
                 let msg = match result.action {
                     StoreAction::Stored => format!(

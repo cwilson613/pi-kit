@@ -777,11 +777,9 @@ pub struct MilestoneStatus {
 
 impl MilestoneStatus {
     pub fn progress_pct(&self) -> usize {
-        if self.total == 0 {
-            0
-        } else {
-            self.implemented * 100 / self.total
-        }
+        (self.implemented * 100)
+            .checked_div(self.total)
+            .unwrap_or(0)
     }
 }
 

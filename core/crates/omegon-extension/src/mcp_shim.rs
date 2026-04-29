@@ -108,10 +108,7 @@ pub async fn serve_mcp<E: Extension>(ext: E) -> crate::Result<()> {
 
 // ─── MCP method handlers ─────────────────────────────────────────────────
 
-fn handle_mcp_initialize<E: Extension>(
-    ext: &E,
-    _params: &Value,
-) -> Result<Value, (i32, String)> {
+fn handle_mcp_initialize<E: Extension>(ext: &E, _params: &Value) -> Result<Value, (i32, String)> {
     // Build MCP capabilities based on what the extension supports.
     // We always advertise tools; resources and prompts depend on
     // whether the extension handles those methods.
@@ -129,10 +126,7 @@ fn handle_mcp_initialize<E: Extension>(
     }))
 }
 
-async fn handle_tools_list<E: Extension>(
-    ext: &E,
-    params: &Value,
-) -> Result<Value, (i32, String)> {
+async fn handle_tools_list<E: Extension>(ext: &E, params: &Value) -> Result<Value, (i32, String)> {
     // Try tools/list first (v2), fall back to get_tools (v1).
     let tools = match ext.handle_rpc("tools/list", params.clone()).await {
         Ok(v) => v,
@@ -146,25 +140,16 @@ async fn handle_tools_list<E: Extension>(
     // Omegon: { name, label, description, parameters }
     // MCP:    { name, title, description, inputSchema }
     let mcp_tools: Vec<Value> = match tools.as_array() {
-        Some(arr) => arr.iter().map(|t| omegon_tool_to_mcp(t)).collect(),
+        Some(arr) => arr.iter().map(omegon_tool_to_mcp).collect(),
         None => vec![],
     };
 
     Ok(json!({ "tools": mcp_tools }))
 }
 
-async fn handle_tools_call<E: Extension>(
-    ext: &E,
-    params: &Value,
-) -> Result<Value, (i32, String)> {
-    let name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let arguments = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or(json!({}));
+async fn handle_tools_call<E: Extension>(ext: &E, params: &Value) -> Result<Value, (i32, String)> {
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     // Try tools/call first (v2), fall back to execute_tool (v1).
     let result = match ext
@@ -194,7 +179,7 @@ async fn handle_resources_list<E: Extension>(
 
     // Strip Omegon-specific fields from each resource.
     if let Some(resources) = result.get("resources").and_then(|v| v.as_array()) {
-        let stripped: Vec<Value> = resources.iter().map(|r| strip_omegon_resource(r)).collect();
+        let stripped: Vec<Value> = resources.iter().map(strip_omegon_resource).collect();
         let mut out = json!({ "resources": stripped });
         if let Some(cursor) = result.get("next_cursor") {
             out["nextCursor"] = cursor.clone();
@@ -243,7 +228,7 @@ async fn handle_prompts_list<E: Extension>(
 
     // Strip Omegon-specific fields from each prompt.
     if let Some(prompts) = result.get("prompts").and_then(|v| v.as_array()) {
-        let stripped: Vec<Value> = prompts.iter().map(|p| strip_omegon_prompt(p)).collect();
+        let stripped: Vec<Value> = prompts.iter().map(strip_omegon_prompt).collect();
         let mut out = json!({ "prompts": stripped });
         if let Some(cursor) = result.get("next_cursor") {
             out["nextCursor"] = cursor.clone();
@@ -254,10 +239,7 @@ async fn handle_prompts_list<E: Extension>(
     }
 }
 
-async fn handle_prompts_get<E: Extension>(
-    ext: &E,
-    params: &Value,
-) -> Result<Value, (i32, String)> {
+async fn handle_prompts_get<E: Extension>(ext: &E, params: &Value) -> Result<Value, (i32, String)> {
     let result = ext
         .handle_rpc("prompts/get", params.clone())
         .await
@@ -398,11 +380,11 @@ mod tests {
         let mcp_tool = omegon_tool_to_mcp(&omegon_tool);
 
         assert_eq!(mcp_tool["name"], "list_issues");
-        assert_eq!(mcp_tool["title"], "List Issues");      // label → title
+        assert_eq!(mcp_tool["title"], "List Issues"); // label → title
         assert_eq!(mcp_tool["description"], "List all issues for an engagement");
         assert!(mcp_tool["inputSchema"]["properties"]["engagement"].is_object()); // parameters → inputSchema
-        assert!(mcp_tool.get("label").is_none());           // label removed
-        assert!(mcp_tool.get("parameters").is_none());      // parameters renamed
+        assert!(mcp_tool.get("label").is_none()); // label removed
+        assert!(mcp_tool.get("parameters").is_none()); // parameters renamed
     }
 
     #[test]
@@ -436,7 +418,7 @@ mod tests {
         assert!(stripped.get("widget_renderer").is_none());
         assert!(stripped.get("mind_section").is_none());
         assert!(stripped.get("trust_level").is_none());
-        assert!(stripped.get("mime_type").is_none());          // renamed, not duplicated
+        assert!(stripped.get("mime_type").is_none()); // renamed, not duplicated
     }
 
     #[test]
@@ -557,8 +539,12 @@ mod tests {
 
         #[async_trait]
         impl Extension for TestExt {
-            fn name(&self) -> &str { "test-ext" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "test-ext"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             async fn handle_rpc(&self, _m: &str, _p: Value) -> crate::Result<Value> {
                 Ok(json!([]))
             }
@@ -586,8 +572,12 @@ mod tests {
 
         #[async_trait]
         impl Extension for ToolExt {
-            fn name(&self) -> &str { "tool-ext" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "tool-ext"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             async fn handle_rpc(&self, method: &str, _p: Value) -> crate::Result<Value> {
                 match method {
                     "tools/list" | "get_tools" => Ok(json!([
@@ -613,7 +603,7 @@ mod tests {
         let tools = result["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "search");
-        assert_eq!(tools[0]["title"], "Search Docs");          // label → title
+        assert_eq!(tools[0]["title"], "Search Docs"); // label → title
         assert!(tools[0]["inputSchema"]["properties"].is_object()); // parameters → inputSchema
         assert!(tools[0].get("label").is_none());
         assert!(tools[0].get("parameters").is_none());
@@ -630,8 +620,12 @@ mod tests {
 
         #[async_trait]
         impl Extension for ToolExt {
-            fn name(&self) -> &str { "tool-ext" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "tool-ext"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             async fn handle_rpc(&self, method: &str, params: Value) -> crate::Result<Value> {
                 match method {
                     "tools/call" => {
@@ -668,8 +662,12 @@ mod tests {
 
         #[async_trait]
         impl Extension for ResExt {
-            fn name(&self) -> &str { "res-ext" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "res-ext"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             async fn handle_rpc(&self, method: &str, _p: Value) -> crate::Result<Value> {
                 match method {
                     "resources/list" => Ok(json!({
@@ -709,8 +707,12 @@ mod tests {
 
         #[async_trait]
         impl Extension for PromptExt {
-            fn name(&self) -> &str { "prompt-ext" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "prompt-ext"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             async fn handle_rpc(&self, method: &str, _p: Value) -> crate::Result<Value> {
                 match method {
                     "prompts/get" => Ok(json!({

@@ -142,50 +142,54 @@ fn build_component_matrix(agent_id: &str) -> ComponentMatrix {
         }
 
         if let Some(ref persona_cfg) = m.persona
-            && let Some(ref skills) = persona_cfg.activated_skills {
-                matrix.skills = skills.clone();
-            }
+            && let Some(ref skills) = persona_cfg.activated_skills
+        {
+            matrix.skills = skills.clone();
+        }
     }
 
     // Scan installed plugins for additional context.
     let plugin_dir = omegon_home.join("plugins");
     if plugin_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&plugin_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.join("plugin.toml").exists() {
-                    let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    matrix.plugins.push(ComponentVersion {
-                        name,
-                        version: "installed".into(),
-                    });
-                }
+        && let Ok(entries) = std::fs::read_dir(&plugin_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.join("plugin.toml").exists() {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                matrix.plugins.push(ComponentVersion {
+                    name,
+                    version: "installed".into(),
+                });
             }
         }
+    }
 
     // Scan installed extensions.
     let ext_dir = omegon_home.join("extensions");
-    if ext_dir.is_dir() && matrix.extensions.is_empty()
-        && let Ok(entries) = std::fs::read_dir(&ext_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.join("manifest.toml").exists() {
-                    let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    matrix.extensions.push(ComponentVersion {
-                        name,
-                        version: "installed".into(),
-                    });
-                }
+    if ext_dir.is_dir()
+        && matrix.extensions.is_empty()
+        && let Ok(entries) = std::fs::read_dir(&ext_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.join("manifest.toml").exists() {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                matrix.extensions.push(ComponentVersion {
+                    name,
+                    version: "installed".into(),
+                });
             }
         }
+    }
 
     matrix
 }

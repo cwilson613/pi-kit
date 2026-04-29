@@ -65,36 +65,36 @@ impl OmegonAcpAgent {
             std::time::Duration::from_millis(100),
         )
         .is_ok();
-        if ollama_ok
-            && let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:11434") {
-                use std::io::{Read, Write};
-                let mut s = stream;
-                let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                let _ = s.write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n");
-                let mut buf = vec![0u8; 65536];
-                let mut total = 0;
-                while let Ok(n) = s.read(&mut buf[total..]) {
-                    if n == 0 {
-                        break;
-                    }
-                    total += n;
+        if ollama_ok && let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:11434") {
+            use std::io::{Read, Write};
+            let mut s = stream;
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let _ = s.write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n");
+            let mut buf = vec![0u8; 65536];
+            let mut total = 0;
+            while let Ok(n) = s.read(&mut buf[total..]) {
+                if n == 0 {
+                    break;
                 }
-                let body = String::from_utf8_lossy(&buf[..total]);
-                if let Some(start) = body.find('{')
-                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&body[start..])
-                        && let Some(models) = v["models"].as_array() {
-                            for m in models {
-                                if let Some(name) = m["name"].as_str() {
-                                    let size = m["size"].as_u64().unwrap_or(0);
-                                    let gb = size as f64 / 1_000_000_000.0;
-                                    model_options.push(SessionConfigSelectOption::new(
-                                        format!("ollama:{name}"),
-                                        format!("{name} ({gb:.0}GB local)"),
-                                    ));
-                                }
-                            }
-                        }
+                total += n;
             }
+            let body = String::from_utf8_lossy(&buf[..total]);
+            if let Some(start) = body.find('{')
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&body[start..])
+                && let Some(models) = v["models"].as_array()
+            {
+                for m in models {
+                    if let Some(name) = m["name"].as_str() {
+                        let size = m["size"].as_u64().unwrap_or(0);
+                        let gb = size as f64 / 1_000_000_000.0;
+                        model_options.push(SessionConfigSelectOption::new(
+                            format!("ollama:{name}"),
+                            format!("{name} ({gb:.0}GB local)"),
+                        ));
+                    }
+                }
+            }
+        }
 
         for (id, name) in [
             ("anthropic:claude-opus-4-7", "Claude Opus 4.7"),
@@ -177,11 +177,7 @@ impl OmegonAcpAgent {
 
     /// Send a request to the worker. Panics if worker not initialized.
     async fn send_to_worker(&self, req: WorkerRequest) {
-        let tx = self
-            .worker
-            .borrow()
-            .as_ref()
-            .map(|w| w.request_tx.clone());
+        let tx = self.worker.borrow().as_ref().map(|w| w.request_tx.clone());
         if let Some(tx) = tx {
             let _ = tx.send(req).await;
         }

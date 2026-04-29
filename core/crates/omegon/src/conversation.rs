@@ -95,8 +95,8 @@ pub enum AgentMessage {
         images: Vec<crate::bridge::ImageAttachment>,
         turn: u32,
     },
-    Assistant(AssistantMessage, u32), // (msg, turn)
-    ToolResult(ToolResultEntry, u32), // (result, turn)
+    Assistant(Box<AssistantMessage>, u32), // (msg, turn)
+    ToolResult(ToolResultEntry, u32),      // (result, turn)
 }
 
 impl AgentMessage {
@@ -249,7 +249,6 @@ struct SessionSnapshot {
     compaction_summary: Option<String>,
 }
 
-
 /// The full conversation state.
 pub struct ConversationState {
     /// Canonical, unmodified history. Source of truth for persistence.
@@ -302,9 +301,10 @@ impl ConversationState {
     pub fn estimate_tokens(&self) -> usize {
         let msg_count = self.canonical.len();
         if let Some((cached_count, cached_tokens)) = self.token_cache.get()
-            && cached_count == msg_count {
-                return cached_tokens;
-            }
+            && cached_count == msg_count
+        {
+            return cached_tokens;
+        }
         let view = self.build_llm_view();
         let chars: usize = view.iter().map(|m| m.char_count()).sum();
         let tokens = chars / 4;
@@ -407,9 +407,10 @@ impl ConversationState {
         for msg in &mut self.canonical {
             if current_turn.saturating_sub(msg.turn()) > 2
                 && let AgentMessage::Assistant(assistant, _) = msg
-                    && assistant.thinking.as_ref().is_some_and(|t| !t.is_empty()) {
-                        assistant.thinking = None;
-                    }
+                && assistant.thinking.as_ref().is_some_and(|t| !t.is_empty())
+            {
+                assistant.thinking = None;
+            }
         }
 
         // Decay messages beyond the tight window
@@ -509,7 +510,8 @@ impl ConversationState {
         // Reference tracking: scan the assistant's text for paths and identifiers
         // that appear in recent tool results. Referenced results decay slower.
         self.track_references(&msg.text);
-        self.canonical.push(AgentMessage::Assistant(msg, turn));
+        self.canonical
+            .push(AgentMessage::Assistant(Box::new(msg), turn));
         self.invalidate_token_cache();
     }
 
@@ -969,7 +971,7 @@ impl ConversationState {
                         tool_calls,
                         raw,
                     } => AgentMessage::Assistant(
-                        AssistantMessage {
+                        Box::new(AssistantMessage {
                             text: text.join("\n"),
                             thinking: if thinking.is_empty() {
                                 None
@@ -987,7 +989,7 @@ impl ConversationState {
                             raw: raw.unwrap_or(Value::Null),
                             provider_tokens: (0, 0, 0, 0),
                             provider_telemetry: None,
-                        },
+                        }),
                         turn,
                     ),
                     LlmMessage::ToolResult {
@@ -1041,7 +1043,7 @@ impl ConversationState {
 
         let error_limit = if self.slim_mode { 180 } else { 300 };
         let generic_limit = if self.slim_mode { 80 } else { 120 };
-        let bash_tail_lines = if self.slim_mode { 3 } else { 3 };
+        let bash_tail_lines = 3;
 
         if result.is_error {
             let error_preview = if text.len() > error_limit {
@@ -1235,14 +1237,14 @@ fn enforce_role_alternation(messages: &mut Vec<LlmMessage>) {
 ///
 /// We keep the assistant message, but clear its tool_calls so the textual reply
 /// still participates in continuity without violating provider structure.
-fn strip_orphaned_tool_uses(messages: &mut Vec<LlmMessage>) {
+fn strip_orphaned_tool_uses(messages: &mut [LlmMessage]) {
     for idx in 0..messages.len() {
         // Scan forward from idx+1 collecting ALL consecutive ToolResult IDs.
         // An assistant with N tool calls will be followed by N ToolResult
         // messages — we must collect all of them before comparing.
         let mut next_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for j in (idx + 1)..messages.len() {
-            match &messages[j] {
+        for msg in &messages[(idx + 1)..] {
+            match msg {
                 LlmMessage::ToolResult { call_id, .. } => {
                     next_ids.insert(sanitize_tool_like_id(call_id));
                 }
@@ -2420,7 +2422,7 @@ mod tests {
     fn last_provider_telemetry_returns_latest_matching_snapshot() {
         let mut conv = ConversationState::new();
         conv.canonical.push(AgentMessage::Assistant(
-            AssistantMessage {
+            Box::new(AssistantMessage {
                 text: "first".into(),
                 provider_telemetry: Some(omegon_traits::ProviderTelemetrySnapshot {
                     provider: "anthropic".into(),
@@ -2429,11 +2431,11 @@ mod tests {
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }),
             1,
         ));
         conv.canonical.push(AgentMessage::Assistant(
-            AssistantMessage {
+            Box::new(AssistantMessage {
                 text: "second".into(),
                 provider_telemetry: Some(omegon_traits::ProviderTelemetrySnapshot {
                     provider: "anthropic".into(),
@@ -2442,7 +2444,7 @@ mod tests {
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }),
             2,
         ));
 
@@ -2468,14 +2470,14 @@ mod tests {
         let mut conv = ConversationState::new();
         conv.intent.current_task = Some("Recover provider-compatible history".into());
         conv.canonical.push(AgentMessage::Assistant(
-            AssistantMessage {
+            Box::new(AssistantMessage {
                 tool_calls: vec![ToolCall {
                     id: "t1".into(),
                     name: "read".into(),
                     arguments: Value::Null,
                 }],
                 ..Default::default()
-            },
+            }),
             0,
         ));
         conv.canonical.push(AgentMessage::ToolResult(

@@ -237,7 +237,7 @@ impl VersionSwitcher {
         let platform = detect_platform()?;
         // Try multiple artifact naming conventions — the format has changed
         // across releases (omegon-agent-*, omegon-*, omegon-VERSION-TRIPLE.*)
-        let candidates = vec![
+        let candidates = [
             format!("omegon-{}.tar.gz", platform.target), // current: omegon-darwin-arm64.tar.gz
             format!("omegon-agent-{}.tar.gz", platform.target), // v0.12.x: omegon-agent-darwin-arm64.tar.gz
             format!("omegon-{}-{}.tar.gz", version_bare, platform.rust_triple()), // CI raw: omegon-0.14.0-aarch64-apple-darwin.tar.gz
@@ -497,10 +497,9 @@ impl VersionSwitcher {
                     KeyCode::Up => {
                         selected = selected.saturating_sub(1);
                     }
-                    KeyCode::Down
-                        if selected < all_options.len() - 1 => {
-                            selected += 1;
-                        }
+                    KeyCode::Down if selected < all_options.len() - 1 => {
+                        selected += 1;
+                    }
                     KeyCode::Enter => {
                         let chosen_version = &all_options[selected].0;
                         break Some(chosen_version.raw.clone());

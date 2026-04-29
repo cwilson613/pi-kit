@@ -35,9 +35,10 @@ impl WebSearchProvider {
     /// the secrets manager (keyring/recipe).
     fn resolve_key(&self, env_name: &str) -> Option<String> {
         if let Ok(v) = env::var(env_name)
-            && !v.is_empty() {
-                return Some(v);
-            }
+            && !v.is_empty()
+        {
+            return Some(v);
+        }
         let secrets = self.secrets.as_ref()?;
         secrets.resolve(env_name)
     }

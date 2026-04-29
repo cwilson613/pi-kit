@@ -263,7 +263,7 @@ impl Feature for HarnessSettings {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::TurnEnd { .. } => {
+            BusEvent::TurnEnd(_) => {
                 self.turns += 1;
                 if self.refresh_status_pending.load(Ordering::Relaxed) {
                     self.refresh_status_pending.store(false, Ordering::Relaxed);
@@ -396,36 +396,40 @@ mod tests {
     #[test]
     fn on_event_counts_turns() {
         let mut feature = HarnessSettings::new(test_settings());
-        feature.on_event(&BusEvent::TurnEnd {
-            turn: 1,
-            model: None,
-            provider: None,
-            estimated_tokens: 0,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
-        feature.on_event(&BusEvent::TurnEnd {
-            turn: 2,
-            model: None,
-            provider: None,
-            estimated_tokens: 0,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: None,
+                provider: None,
+                estimated_tokens: 0,
+                context_window: 200_000,
+                context_composition: omegon_traits::ContextComposition::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+            },
+        )));
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 2,
+                model: None,
+                provider: None,
+                estimated_tokens: 0,
+                context_window: 200_000,
+                context_composition: omegon_traits::ContextComposition::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+            },
+        )));
         feature.on_event(&BusEvent::ToolEnd {
             id: "x".into(),
             name: "bash".into(),

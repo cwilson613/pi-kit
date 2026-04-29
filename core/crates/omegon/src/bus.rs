@@ -665,21 +665,23 @@ mod tests {
         bus.finalize();
 
         bus.emit(&BusEvent::TurnStart { turn: 1 });
-        bus.emit(&BusEvent::TurnEnd {
-            turn: 1,
-            model: None,
-            provider: None,
-            estimated_tokens: 0,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 0,
-            actual_output_tokens: 0,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: None,
-            drift_kind: None,
-            progress_signal: omegon_traits::ProgressSignal::None,
-        });
+        bus.emit(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: None,
+                provider: None,
+                estimated_tokens: 0,
+                context_window: 200_000,
+                context_composition: omegon_traits::ContextComposition::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+            },
+        )));
 
         // Both features should have received both events
         // (Can't inspect directly, but drain_requests would show nothing)

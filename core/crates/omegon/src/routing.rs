@@ -180,13 +180,12 @@ impl ProviderInventory {
     /// Lists available providers and models so the orchestrator can route
     /// delegate tasks to the right model.
     pub fn format_delegation_catalog(&self, session_model: Option<&str>) -> String {
-        let mut lines = Vec::new();
-        lines.push("## Delegation Model Catalog".to_string());
-        lines.push(String::new());
-        lines.push(
+        let mut lines = vec![
+            "## Delegation Model Catalog".to_string(),
+            String::new(),
             "Use `delegate` with `model` to route tasks to the appropriate model.".to_string(),
-        );
-        lines.push(String::new());
+            String::new(),
+        ];
 
         // Local Ollama models (free, always preferred for rote work)
         if !self.ollama_models.is_empty() {
@@ -424,13 +423,14 @@ fn infer_local_model_tier(model_name: &str) -> CapabilityTier {
     // Look for patterns like "70b", "72b", "120b", "405b"
     for part in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
         if let Some(num_str) = part.strip_suffix('b')
-            && let Ok(params) = num_str.parse::<u32>() {
-                return match params {
-                    70.. => CapabilityTier::Frontier,
-                    14..=69 => CapabilityTier::Mid,
-                    _ => CapabilityTier::Leaf,
-                };
-            }
+            && let Ok(params) = num_str.parse::<u32>()
+        {
+            return match params {
+                70.. => CapabilityTier::Frontier,
+                14..=69 => CapabilityTier::Mid,
+                _ => CapabilityTier::Leaf,
+            };
+        }
     }
     // Also check for "scout" pattern (llama4:scout = large model)
     if lower.contains("scout") || lower.contains("maverick") {

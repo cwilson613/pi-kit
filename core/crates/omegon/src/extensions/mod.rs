@@ -15,7 +15,7 @@
 use anyhow::{Result, anyhow};
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -367,7 +367,7 @@ pub struct SpawnedExtension {
 /// declared in `manifest.secrets`. These are delivered via `bootstrap_secrets`
 /// RPC — never via subprocess environment variables.
 pub async fn spawn_from_manifest(
-    ext_dir: &PathBuf,
+    ext_dir: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let manifest = ExtensionManifest::from_extension_dir(ext_dir)?;

@@ -296,7 +296,7 @@ pub enum SegmentContent {
         /// rendered inside the card body until `ToolEnd` flips
         /// `complete` to true. `None` for tools that don't stream or
         /// before the first partial arrives.
-        live_partial: Option<omegon_traits::PartialToolResult>,
+        live_partial: Option<Box<omegon_traits::PartialToolResult>>,
         /// Wall-clock instant captured when the tool card was created
         /// (i.e. when `ToolStart` arrived). The renderer prefers this
         /// over `live_partial.progress.elapsed_ms` for the displayed
@@ -596,7 +596,7 @@ impl Segment {
                     *is_error,
                     *complete,
                     *expanded,
-                    live_partial.as_ref(),
+                    live_partial.as_deref(),
                     *started_at,
                     &self.meta,
                     presentation.tool_visual,
@@ -892,9 +892,10 @@ pub fn build_meta_tag(meta: &SegmentMeta) -> String {
         parts.push(tier.clone());
     }
     if let Some(ref tl) = meta.thinking_level
-        && tl != "off" {
-            parts.push(format!("think:{tl}"));
-        }
+        && tl != "off"
+    {
+        parts.push(format!("think:{tl}"));
+    }
     if let Some(ref persona) = meta.persona {
         parts.push(format!("⌘ {persona}"));
     }
@@ -997,6 +998,7 @@ fn tool_title_line(
     ])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_assistant_text(
     text: &str,
     thinking: &str,
@@ -1188,6 +1190,7 @@ fn render_assistant_text(
         .render(inner, buf);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_tool_card(
     name: &str,
     detail_args: Option<&str>,
@@ -1351,10 +1354,9 @@ fn render_tool_card(
         let sep = Span::styled(" · ", dim_style);
         let mut spans: Vec<Span<'_>> = Vec::new();
         // Execution duration for completed tools
-        if complete
-            && let Some(ms) = meta.duration_ms {
-                spans.push(Span::styled(format_duration_compact(ms), dim_style));
-            }
+        if complete && let Some(ms) = meta.duration_ms {
+            spans.push(Span::styled(format_duration_compact(ms), dim_style));
+        }
         if let Some(tokens) = meta.actual_tokens {
             if !spans.is_empty() {
                 spans.push(sep.clone());
@@ -1445,42 +1447,43 @@ fn render_tool_card(
 
     // ── Args section ────────────────────────────────────────────
     if args_budget > 0
-        && let Some(args) = detail_args {
-            match name {
-                "bash" => {
-                    for (i, line) in args.lines().take(args_budget).enumerate().skip(1) {
-                        let prefix = if i == 0 { "$ " } else { "  " };
-                        lines.push(Line::from(vec![
-                            Span::styled(prefix, Style::default().fg(t.dim()).bg(bg)),
-                            Span::styled(line.to_string(), Style::default().fg(t.fg()).bg(bg)),
-                        ]));
-                    }
-                }
-                "edit" | "change" => {
-                    // Summary line already rendered above; don't dump raw JSON payloads.
-                }
-                "read" | "write" | "view" => {
-                    // Summary line already rendered above; body/result carries the useful payload.
-                }
-                _ => {
-                    // Pretty-print JSON args if applicable
-                    let display_args = if args.starts_with('{') || args.starts_with('[') {
-                        serde_json::from_str::<serde_json::Value>(args)
-                            .ok()
-                            .and_then(|v| serde_json::to_string_pretty(&v).ok())
-                            .unwrap_or_else(|| args.to_string())
-                    } else {
-                        args.to_string()
-                    };
-                    for line in display_args.lines().take(args_budget) {
-                        lines.push(Line::from(Span::styled(
-                            line.to_string(),
-                            Style::default().fg(t.dim()).bg(bg),
-                        )));
-                    }
+        && let Some(args) = detail_args
+    {
+        match name {
+            "bash" => {
+                for (i, line) in args.lines().take(args_budget).enumerate().skip(1) {
+                    let prefix = if i == 0 { "$ " } else { "  " };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(t.dim()).bg(bg)),
+                        Span::styled(line.to_string(), Style::default().fg(t.fg()).bg(bg)),
+                    ]));
                 }
             }
-        } // args_budget > 0
+            "edit" | "change" => {
+                // Summary line already rendered above; don't dump raw JSON payloads.
+            }
+            "read" | "write" | "view" => {
+                // Summary line already rendered above; body/result carries the useful payload.
+            }
+            _ => {
+                // Pretty-print JSON args if applicable
+                let display_args = if args.starts_with('{') || args.starts_with('[') {
+                    serde_json::from_str::<serde_json::Value>(args)
+                        .ok()
+                        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                        .unwrap_or_else(|| args.to_string())
+                } else {
+                    args.to_string()
+                };
+                for line in display_args.lines().take(args_budget) {
+                    lines.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(t.dim()).bg(bg),
+                    )));
+                }
+            }
+        }
+    } // args_budget > 0
 
     // ── Live progress section (in-flight tools only) ────────────
     // While the tool is still running and we don't yet have a final
@@ -1514,13 +1517,14 @@ fn render_tool_card(
             .unwrap_or("running");
         status_parts.push(phase_label.to_string());
         if let Some(partial) = live_partial
-            && let Some(units) = &partial.progress.units {
-                let label = match units.total {
-                    Some(total) => format!("{}/{} {}", units.current, total, units.unit),
-                    None => format!("{} {}", units.current, units.unit),
-                };
-                status_parts.push(label);
-            }
+            && let Some(units) = &partial.progress.units
+        {
+            let label = match units.total {
+                Some(total) => format!("{}/{} {}", units.current, total, units.unit),
+                None => format!("{} {}", units.current, units.unit),
+            };
+            status_parts.push(label);
+        }
         // Elapsed time: prefer the live wall-clock from `started_at` so
         // the displayed timer ticks with every frame draw. Fall back to
         // the partial's `elapsed_ms` (captured at flush time, freezes
@@ -1540,9 +1544,10 @@ fn render_tool_card(
             }
         }
         if let Some(partial) = live_partial
-            && partial.progress.heartbeat {
-                status_parts.push("idle".to_string());
-            }
+            && partial.progress.heartbeat
+        {
+            status_parts.push("idle".to_string());
+        }
         let status_text = format!("▶ {}", status_parts.join(" · "));
         lines.push(Line::from(vec![Span::styled(
             status_text,
@@ -1567,56 +1572,56 @@ fn render_tool_card(
         // sequences, swallowing nearby cells. (Same root cause as the
         // instruments-panel ANSI fragment leakage.)
         if let Some(partial) = live_partial
-            && !partial.tail.is_empty() {
-                let tail_lines: Vec<&str> = partial.tail.lines().collect();
-                let max_tail_lines = tail_budget;
-                let take = tail_lines.len().min(max_tail_lines);
-                // Show the LAST N lines, not the first N — for streaming
-                // output the latest content is what the operator wants.
-                let start = tail_lines.len().saturating_sub(take);
-                let visible_tail: String = tail_lines[start..].join("\n");
-                let has_ansi = visible_tail.contains('\x1b');
-                let tail_style = Style::default().fg(t.muted()).bg(bg);
+            && !partial.tail.is_empty()
+        {
+            let tail_lines: Vec<&str> = partial.tail.lines().collect();
+            let max_tail_lines = tail_budget;
+            let take = tail_lines.len().min(max_tail_lines);
+            // Show the LAST N lines, not the first N — for streaming
+            // output the latest content is what the operator wants.
+            let start = tail_lines.len().saturating_sub(take);
+            let visible_tail: String = tail_lines[start..].join("\n");
+            let has_ansi = visible_tail.contains('\x1b');
+            let tail_style = Style::default().fg(t.muted()).bg(bg);
 
-                if has_ansi {
-                    use ansi_to_tui::IntoText as _;
-                    if let Ok(text) = visible_tail.into_text() {
-                        for line in text.lines {
-                            let spans: Vec<Span<'_>> = line
-                                .spans
-                                .into_iter()
-                                .map(|mut s| {
-                                    s.style = s.style.bg(bg);
-                                    if s.style.fg.is_none() {
-                                        s.style = s.style.fg(t.muted());
-                                    }
-                                    s
-                                })
-                                .collect();
-                            lines.push(Line::from(spans));
-                            live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-                        }
-                    } else {
-                        // ANSI parse failed — strip raw ESC bytes
-                        // defensively rather than letting them write
-                        // into cell symbols.
-                        for line in &tail_lines[start..] {
-                            let stripped: String =
-                                line.chars().filter(|c| !c.is_control()).collect();
-                            lines.push(Line::from(Span::styled(stripped, tail_style)));
-                            live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-                        }
+            if has_ansi {
+                use ansi_to_tui::IntoText as _;
+                if let Ok(text) = visible_tail.into_text() {
+                    for line in text.lines {
+                        let spans: Vec<Span<'_>> = line
+                            .spans
+                            .into_iter()
+                            .map(|mut s| {
+                                s.style = s.style.bg(bg);
+                                if s.style.fg.is_none() {
+                                    s.style = s.style.fg(t.muted());
+                                }
+                                s
+                            })
+                            .collect();
+                        lines.push(Line::from(spans));
+                        live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
                     }
                 } else {
+                    // ANSI parse failed — strip raw ESC bytes
+                    // defensively rather than letting them write
+                    // into cell symbols.
                     for line in &tail_lines[start..] {
-                        // Even on the no-ANSI path, drop any stray
-                        // control bytes — defense in depth.
                         let stripped: String = line.chars().filter(|c| !c.is_control()).collect();
                         lines.push(Line::from(Span::styled(stripped, tail_style)));
                         live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
                     }
                 }
+            } else {
+                for line in &tail_lines[start..] {
+                    // Even on the no-ANSI path, drop any stray
+                    // control bytes — defense in depth.
+                    let stripped: String = line.chars().filter(|c| !c.is_control()).collect();
+                    lines.push(Line::from(Span::styled(stripped, tail_style)));
+                    live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
+                }
             }
+        }
     }
 
     // ── Edit/change diff section ────────────────────────────────
@@ -1742,14 +1747,13 @@ fn render_tool_card(
 
         // If the tool actually erred, surface the error result text
         // below the diff so the operator sees both intent and outcome.
-        if is_error
-            && let Some(err_text) = detail_result {
-                lines.push(Line::from(Span::styled(
-                    err_text.lines().next().unwrap_or(err_text).to_string(),
-                    Style::default().fg(t.error()).bg(bg),
-                )));
-                result_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-            }
+        if is_error && let Some(err_text) = detail_result {
+            lines.push(Line::from(Span::styled(
+                err_text.lines().next().unwrap_or(err_text).to_string(),
+                Style::default().fg(t.error()).bg(bg),
+            )));
+            result_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
+        }
     } else if let Some(result) = detail_result {
         let pre_result_line_count = lines.len();
         if !lines.is_empty() {
@@ -2259,8 +2263,8 @@ fn compute_table_widths(lines: &[&str], available_width: usize) -> Vec<Option<Ve
         }
 
         // Apply the same widths to every line in the block.
-        for idx in start..end {
-            result[idx] = Some(col_widths.clone());
+        for slot in &mut result[start..end] {
+            *slot = Some(col_widths.clone());
         }
         i = end;
     }
@@ -3672,7 +3676,7 @@ mod tests {
                 is_error: false,
                 complete: false,
                 expanded: false,
-                live_partial: Some(partial),
+                live_partial: Some(Box::new(partial)),
                 started_at: None,
             },
         };
@@ -3782,7 +3786,7 @@ mod tests {
                 is_error: false,
                 complete: false,
                 expanded: false,
-                live_partial: Some(partial),
+                live_partial: Some(Box::new(partial)),
                 started_at: None,
             },
         };
@@ -3864,7 +3868,7 @@ mod tests {
                 is_error: false,
                 complete: false,
                 expanded: false,
-                live_partial: Some(stale_partial),
+                live_partial: Some(Box::new(stale_partial)),
                 started_at: Some(started_in_past),
             },
         };
@@ -3916,7 +3920,7 @@ mod tests {
                 is_error: false,
                 complete: false,
                 expanded: false,
-                live_partial: Some(partial),
+                live_partial: Some(Box::new(partial)),
                 started_at: None,
             },
         };

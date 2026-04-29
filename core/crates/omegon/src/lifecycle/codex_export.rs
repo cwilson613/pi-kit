@@ -40,11 +40,7 @@ pub fn export_node_to_codex_markdown(node: &DesignNode, sections: &DocumentSecti
         tags.push(format!("issue:{label}"));
     }
     for t in &node.tags {
-        let prefixed = if t.contains(':') {
-            t.clone()
-        } else {
-            t.clone()
-        };
+        let prefixed = t.clone();
         if !tags.contains(&prefixed) {
             tags.push(prefixed);
         }

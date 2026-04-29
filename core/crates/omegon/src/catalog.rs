@@ -107,9 +107,10 @@ pub fn resolve(omegon_home: &Path, agent_id: &str) -> anyhow::Result<ResolvedMan
         }
 
         if let Ok(resolved) = agent_manifest::load(&bundle_dir)
-            && resolved.manifest.agent.id == agent_id {
-                return Ok(resolved);
-            }
+            && resolved.manifest.agent.id == agent_id
+        {
+            return Ok(resolved);
+        }
     }
 
     anyhow::bail!(

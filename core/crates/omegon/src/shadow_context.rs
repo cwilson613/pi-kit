@@ -495,11 +495,13 @@ impl ShadowContext {
                 // Insert cache boundary between stable base prompt and first
                 // dynamic entry. Providers that support prompt caching (e.g.
                 // Anthropic) split on this to place cache_control breakpoints.
-                if !sentinel_inserted && entry.kind != ContextKind::BaseSystemPrompt
-                    && !ordered.is_empty() {
-                        ordered.push(crate::bridge::CACHE_BOUNDARY.to_string());
-                        sentinel_inserted = true;
-                    }
+                if !sentinel_inserted
+                    && entry.kind != ContextKind::BaseSystemPrompt
+                    && !ordered.is_empty()
+                {
+                    ordered.push(crate::bridge::CACHE_BOUNDARY.to_string());
+                    sentinel_inserted = true;
+                }
                 ordered.push(entry.body.materialize());
             }
         }

@@ -34,18 +34,19 @@ pub fn init(seed_value: usize, extras_path: Option<&Path>) {
     let mut combined: Vec<&'static str> = BUILTIN_VERBS.to_vec();
 
     if let Some(path) = extras_path
-        && let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    continue;
-                }
-                // Leak the string so it lives for the program's lifetime,
-                // keeping the return type of next_verb() as &'static str.
-                let leaked: &'static str = Box::leak(trimmed.to_string().into_boxed_str());
-                combined.push(leaked);
+        && let Ok(content) = std::fs::read_to_string(path)
+    {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
             }
+            // Leak the string so it lives for the program's lifetime,
+            // keeping the return type of next_verb() as &'static str.
+            let leaked: &'static str = Box::leak(trimmed.to_string().into_boxed_str());
+            combined.push(leaked);
         }
+    }
 
     // Fisher-Yates shuffle so consecutive verbs don't cluster by category.
     // Uses a simple xorshift PRNG seeded from the same process-start value

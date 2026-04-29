@@ -450,7 +450,7 @@ impl McpFeature {
     /// Requires HTTPS scheme, except http://localhost is allowed for development.
     fn validate_url(url: &str) -> anyhow::Result<()> {
         if url.starts_with("https://") {
-            if url.len() > 8 && !url[8..].is_empty() {
+            if url.len() > 8 {
                 Ok(())
             } else {
                 Err(anyhow::anyhow!(

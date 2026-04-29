@@ -153,9 +153,7 @@ pub fn create(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<Wo
     // Create the worktree with a new branch from HEAD.
     // git2's worktree() creates both the branch and the worktree atomically.
     let head = repo.head().context("failed to read HEAD")?;
-    let head_ref = head
-        .resolve()
-        .context("failed to resolve HEAD")?;
+    let head_ref = head.resolve().context("failed to resolve HEAD")?;
     let mut opts = git2::WorktreeAddOptions::new();
     opts.reference(Some(&head_ref));
 

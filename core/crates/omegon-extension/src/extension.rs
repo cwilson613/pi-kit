@@ -7,10 +7,10 @@ use crate::rpc::{RpcIncoming, RpcMessage, RpcNotification, RpcRequest, RpcRespon
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 // ─── Extension Trait ──────────────────────────────────────────────────────
 
@@ -217,11 +217,8 @@ impl<E: Extension + 'static> MessageRouter<E> {
                 Ok(Some(line)) => line,
                 Ok(None) => return Ok(()), // EOF
                 Err(msg) => {
-                    let error_response = RpcResponse::error(
-                        None,
-                        crate::ErrorCode::ParseError,
-                        msg,
-                    );
+                    let error_response =
+                        RpcResponse::error(None, crate::ErrorCode::ParseError, msg);
                     let json = serde_json::to_string(&error_response)?;
                     let _ = writer_tx.send(json).await;
                     continue;
@@ -302,8 +299,7 @@ async fn read_bounded_line<'a, R: tokio::io::AsyncBufRead + Unpin>(
                 Ok(None)
             } else {
                 // Partial line at EOF — process it.
-                let line =
-                    std::str::from_utf8(buf).map_err(|e| format!("invalid UTF-8: {e}"))?;
+                let line = std::str::from_utf8(buf).map_err(|e| format!("invalid UTF-8: {e}"))?;
                 Ok(Some(line))
             };
         }
@@ -335,8 +331,7 @@ async fn read_bounded_line<'a, R: tokio::io::AsyncBufRead + Unpin>(
         reader.consume(chunk_len);
 
         if found_newline {
-            let line =
-                std::str::from_utf8(buf).map_err(|e| format!("invalid UTF-8: {e}"))?;
+            let line = std::str::from_utf8(buf).map_err(|e| format!("invalid UTF-8: {e}"))?;
             return Ok(Some(line));
         }
     }
@@ -384,11 +379,8 @@ impl<E: Extension> ExtensionServe<E> {
                 Ok(Some(line)) => line,
                 Ok(None) => return Ok(()), // EOF
                 Err(msg) => {
-                    let error_response = RpcResponse::error(
-                        None,
-                        crate::ErrorCode::ParseError,
-                        msg,
-                    );
+                    let error_response =
+                        RpcResponse::error(None, crate::ErrorCode::ParseError, msg);
                     let response_json = serde_json::to_string(&error_response)?;
                     writer.write_all(response_json.as_bytes()).await?;
                     writer.write_all(b"\n").await?;
@@ -518,10 +510,7 @@ mod tests {
 
         let msg = rx.recv().await.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        assert_eq!(
-            parsed["method"],
-            "notifications/tools/list_changed"
-        );
+        assert_eq!(parsed["method"], "notifications/tools/list_changed");
         assert!(parsed.get("id").is_none());
     }
 

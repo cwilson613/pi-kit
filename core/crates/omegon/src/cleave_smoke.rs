@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 ///   fail                — exits 1 (logic failure)
 ///   success-noop        — exits 0, no file writes
 ///   success-dirty       — exits 0, writes OMEGON_CLEAVE_SMOKE_WRITE_FILE
+#[allow(clippy::type_complexity)] // assertion closure signature is inherently complex
 struct SmokeScenario {
     name: &'static str,
     child_mode: &'static str,
@@ -32,6 +33,7 @@ struct SmokeScenario {
     assert_runtime: Option<Box<dyn Fn(&serde_json::Value) -> anyhow::Result<()> + Send + Sync>>,
 }
 
+#[allow(clippy::type_complexity)]
 fn runtime_matrix_assert(
     expected_model: &'static str,
     expected_provider: &'static str,

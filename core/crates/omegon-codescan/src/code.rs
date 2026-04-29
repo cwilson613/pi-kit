@@ -323,6 +323,7 @@ fn scan_with_ts(
 
     let mut chunks = Vec::new();
 
+    #[allow(clippy::too_many_arguments)] // recursive tree visitor — all params are context
     fn visit(
         node: &Node,
         path: &Path,

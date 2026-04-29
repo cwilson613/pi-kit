@@ -514,18 +514,20 @@ pub async fn execute_daemon_control(
     };
     // Emit HarnessStatusChanged for mutations so WebSocket/IPC clients see
     // updated state without polling.
-    if resp.accepted && is_settings_mutation
+    if resp.accepted
+        && is_settings_mutation
         && let Some(ref harness_handle) = handles.harness
-            && let Ok(mut status) = harness_handle.lock() {
-                // Refresh settings-derived fields in the live harness status.
-                if let Ok(s) = shared_settings.lock() {
-                    status.context_class = s.effective_requested_class().label().to_string();
-                    status.thinking_level = s.thinking.as_str().to_string();
-                }
-                if let Ok(json) = serde_json::to_value(&*status) {
-                    let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json: json });
-                }
-            }
+        && let Ok(mut status) = harness_handle.lock()
+    {
+        // Refresh settings-derived fields in the live harness status.
+        if let Ok(s) = shared_settings.lock() {
+            status.context_class = s.effective_requested_class().label().to_string();
+            status.thinking_level = s.thinking.as_str().to_string();
+        }
+        if let Ok(json) = serde_json::to_value(&*status) {
+            let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json: json });
+        }
+    }
     omegon_traits::ControlOutputResponse {
         accepted: resp.accepted,
         output: resp.output,

@@ -14,6 +14,18 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.17.6] - 2026-04-28
+
+### Changed
+
+- **Clippy zero warnings** — 327 → 0 across the entire workspace. Structural fixes include boxing large enum variants (`BusEvent::TurnEnd`, `AgentEvent::TurnEnd`, `BusRequest::EmitAgentEvent`, `AgentMessage::Assistant`, `SegmentContent::ToolCard`), `&PathBuf` → `&Path` signatures, `&mut Vec` → `&mut [_]`, manual loop indexing → iterators, late initialization → `let x = if {}`, and dozens of smaller idiomatic improvements. Justified suppressions documented with `#[allow]` and rationale.
+
+### Fixed
+
+- **`bus.execute_internal()` for internal tools** — trust_directory and other harness-only tools now route through a separate `internal_tool_owners` map, preventing "no feature provides tool" errors when the dispatch layer calls them.
+- **Dead-mouse detection fires for all model tiers** — previously gated behind `behavioral_tier == Constrained`, allowing frontier models to dump file content as text without nudge.
+- **Trust directory permission approval was silently failing** — `let _ =` discarded the error from `bus.execute_tool()`. Now uses `execute_internal()` with proper error propagation.
+
 ## [0.17.5] - 2026-04-28
 
 ### Fixed

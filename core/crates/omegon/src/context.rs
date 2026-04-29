@@ -252,9 +252,10 @@ impl ContextManager {
         for call in tool_calls {
             match call.name.as_str() {
                 "change" | "write" | "edit"
-                    if !matches!(self.phase, LifecyclePhase::Implementing { .. }) => {
-                        self.phase = LifecyclePhase::Implementing { change_id: None };
-                    }
+                    if !matches!(self.phase, LifecyclePhase::Implementing { .. }) =>
+                {
+                    self.phase = LifecyclePhase::Implementing { change_id: None };
+                }
                 "understand" | "read" => {
                     if matches!(self.phase, LifecyclePhase::Idle) {
                         self.phase = LifecyclePhase::Exploring { node_id: None };

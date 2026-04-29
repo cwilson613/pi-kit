@@ -1217,6 +1217,27 @@ pub struct ContextComposition {
     pub file_guidance_tokens: usize,
 }
 
+/// Turn-end telemetry for BusEvent::TurnEnd (boxed to reduce enum size).
+#[derive(Debug, Clone)]
+pub struct BusEventTurnEnd {
+    pub turn: u32,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub estimated_tokens: usize,
+    pub context_window: usize,
+    pub context_composition: ContextComposition,
+    pub actual_input_tokens: u64,
+    pub actual_output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub provider_telemetry: Option<ProviderTelemetrySnapshot>,
+    /// Controller-classified dominant OODA phase for the turn.
+    pub dominant_phase: Option<OodaPhase>,
+    /// Controller-detected drift kind over the recent turn window.
+    pub drift_kind: Option<DriftKind>,
+    /// Progress signal classification for the turn.
+    pub progress_signal: ProgressSignal,
+}
+
 /// Events emitted by the agent loop and delivered to features.
 ///
 /// These are the typed replacement for pi's `pi.on("event_name")` strings.
@@ -1243,24 +1264,7 @@ pub enum BusEvent {
     TurnStart {
         turn: u32,
     },
-    TurnEnd {
-        turn: u32,
-        model: Option<String>,
-        provider: Option<String>,
-        estimated_tokens: usize,
-        context_window: usize,
-        context_composition: ContextComposition,
-        actual_input_tokens: u64,
-        actual_output_tokens: u64,
-        cache_read_tokens: u64,
-        provider_telemetry: Option<ProviderTelemetrySnapshot>,
-        /// Controller-classified dominant OODA phase for the turn.
-        dominant_phase: Option<OodaPhase>,
-        /// Controller-detected drift kind over the recent turn window.
-        drift_kind: Option<DriftKind>,
-        /// Progress signal classification for the turn.
-        progress_signal: ProgressSignal,
-    },
+    TurnEnd(Box<BusEventTurnEnd>),
 
     // ── Message streaming ───────────────────────────────────────────
     MessageChunk {
@@ -1388,7 +1392,7 @@ pub enum BusRequest {
     /// runtime — they never touch the broadcast channel directly. Keeps
     /// features decoupled from the transport layer while still letting
     /// them communicate state changes mid-execution.
-    EmitAgentEvent { event: AgentEvent },
+    EmitAgentEvent { event: Box<AgentEvent> },
 }
 
 /// A sink for features to push [`BusRequest`]s mid-execution.
@@ -1841,6 +1845,33 @@ impl ControllerStreaks {
     }
 }
 
+/// Turn-end telemetry for AgentEvent::TurnEnd (boxed to reduce enum size).
+#[derive(Debug, Clone)]
+pub struct AgentEventTurnEnd {
+    pub turn: u32,
+    /// Why the loop ended or continued after this turn.
+    pub turn_end_reason: TurnEndReason,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub estimated_tokens: usize,
+    pub context_window: usize,
+    pub context_composition: ContextComposition,
+    pub actual_input_tokens: u64,
+    pub actual_output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub provider_telemetry: Option<ProviderTelemetrySnapshot>,
+    pub dominant_phase: Option<OodaPhase>,
+    pub drift_kind: Option<DriftKind>,
+    pub progress_nudge_reason: Option<ProgressNudgeReason>,
+    pub intent_task: Option<String>,
+    pub intent_phase: Option<String>,
+    pub files_read_count: usize,
+    pub files_modified_count: usize,
+    pub stats_tool_calls: u32,
+    pub streaks: ControllerStreaks,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     TurnStart {
@@ -1883,53 +1914,7 @@ pub enum AgentEvent {
         respond:
             std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<PermissionResponse>>>>,
     },
-    TurnEnd {
-        turn: u32,
-        /// Why the loop ended or continued after this turn.
-        turn_end_reason: TurnEndReason,
-        /// Model that produced this turn's usage. Optional on legacy/early-exit paths.
-        model: Option<String>,
-        /// Provider that produced this turn's usage. Optional on legacy/early-exit paths.
-        provider: Option<String>,
-        /// Real token estimate from conversation history. Zero on early-exit paths.
-        estimated_tokens: usize,
-        /// Context window used for the turn.
-        context_window: usize,
-        /// Composition breakdown within Omegon's chars/4 accounting model.
-        context_composition: ContextComposition,
-        /// Actual input tokens reported by the provider. 0 = not available.
-        actual_input_tokens: u64,
-        /// Actual output tokens reported by the provider. 0 = not available.
-        actual_output_tokens: u64,
-        /// Cache-read tokens (Anthropic). 0 if not applicable.
-        cache_read_tokens: u64,
-        /// Cache-write / cache-creation tokens (Anthropic). 0 if not applicable.
-        cache_creation_tokens: u64,
-        /// Parsed provider quota/headroom telemetry from response headers or status endpoints.
-        provider_telemetry: Option<ProviderTelemetrySnapshot>,
-        /// Controller-classified dominant OODA phase for the turn.
-        dominant_phase: Option<OodaPhase>,
-        /// Optional controller-detected drift kind over the recent turn window.
-        drift_kind: Option<DriftKind>,
-        /// If the harness injected a progress nudge, the reason subtype.
-        progress_nudge_reason: Option<ProgressNudgeReason>,
-        /// Snapshot of current task for checkpoint persistence.
-        intent_task: Option<String>,
-        /// Snapshot of lifecycle phase name for checkpoint persistence.
-        intent_phase: Option<String>,
-        /// Number of files read in this session so far.
-        files_read_count: usize,
-        /// Number of files modified in this session so far.
-        files_modified_count: usize,
-        /// Cumulative tool calls for checkpoint persistence.
-        stats_tool_calls: u32,
-        /// Multi-turn drift / progress streak counts from the agent loop's
-        /// controller. Lets consumers see "this pod has been in
-        /// OrientationChurn for 4 turns" without reconstructing the signal
-        /// from the per-turn `drift_kind` history. See [`ControllerStreaks`]
-        /// for the meaning of each counter.
-        streaks: ControllerStreaks,
-    },
+    TurnEnd(Box<AgentEventTurnEnd>),
     AgentEnd,
     PhaseChanged {
         phase: LifecyclePhase,

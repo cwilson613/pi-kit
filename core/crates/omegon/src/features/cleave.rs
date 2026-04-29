@@ -429,17 +429,20 @@ fn apply_progress_event(shared: &Arc<Mutex<CleaveProgress>>, event: &ProgressEve
         }
         ProgressEvent::ChildTaskInventory { child, tasks, .. } => {
             if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child)
-                && !tasks.is_empty() {
-                    c.tasks = tasks.clone();
-                    c.tasks_done = tasks.iter().filter(|t| t.done).count();
-                }
+                && !tasks.is_empty()
+            {
+                c.tasks = tasks.clone();
+                c.tasks_done = tasks.iter().filter(|t| t.done).count();
+            }
         }
         ProgressEvent::ChildTaskDone { child, task_index } => {
             if let Some(c) = progress.children.iter_mut().find(|c| c.label == *child)
-                && *task_index > 0 && *task_index <= c.tasks.len() {
-                    c.tasks[task_index - 1].done = true;
-                    c.tasks_done = c.tasks.iter().filter(|t| t.done).count();
-                }
+                && *task_index > 0
+                && *task_index <= c.tasks.len()
+            {
+                c.tasks[task_index - 1].done = true;
+                c.tasks_done = c.tasks.iter().filter(|t| t.done).count();
+            }
         }
         ProgressEvent::ChildTokens {
             child,
@@ -553,9 +556,12 @@ impl CleaveFeature {
     /// don't have a runtime sink and shouldn't fail because of it.
     fn emit_decomposition_event(&self, event: AgentEvent) {
         if let Ok(slot) = self.bus_request_sink.lock()
-            && let Some(sink) = slot.as_ref() {
-                sink.send(BusRequest::EmitAgentEvent { event });
-            }
+            && let Some(sink) = slot.as_ref()
+        {
+            sink.send(BusRequest::EmitAgentEvent {
+                event: Box::new(event),
+            });
+        }
     }
 
     fn workspace_state_path(&self) -> PathBuf {
@@ -879,10 +885,10 @@ impl CleaveFeature {
                         ChildProgressStatus::Completed | ChildProgressStatus::MergedAfterFailure
                     );
                     sink.send(BusRequest::EmitAgentEvent {
-                        event: AgentEvent::DecompositionChildCompleted {
+                        event: Box::new(AgentEvent::DecompositionChildCompleted {
                             label: child.clone(),
                             success,
-                        },
+                        }),
                     });
                 }
 
@@ -896,7 +902,7 @@ impl CleaveFeature {
                 if let Ok(progress_guard) = shared.lock() {
                     let signs = build_family_vital_signs(&progress_guard);
                     sink.send(BusRequest::EmitAgentEvent {
-                        event: AgentEvent::FamilyVitalSignsUpdated { signs },
+                        event: Box::new(AgentEvent::FamilyVitalSignsUpdated { signs }),
                     });
                 }
             })
@@ -1546,7 +1552,7 @@ mod tests {
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(8);
         let sink = BusRequestSink::from_fn(move |request| {
             if let BusRequest::EmitAgentEvent { event } = request {
-                let _ = tx.send(event);
+                let _ = tx.send(*event);
             }
         });
         (sink, rx)

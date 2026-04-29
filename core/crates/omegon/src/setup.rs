@@ -453,10 +453,10 @@ impl AgentSetup {
             && codex_integration
                 .as_ref()
                 .is_some_and(|c| c.design_tree.enabled)
-            {
-                lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
-                tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
-            }
+        {
+            lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
+            tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
+        }
         let lifecycle_snapshot = LifecycleSnapshot::from_lifecycle_feature(&lifecycle_feature);
         let lifecycle_handle = lifecycle_feature.shared_provider();
         bus.register(Box::new(lifecycle_feature));
@@ -788,37 +788,37 @@ impl AgentSetup {
                             if let Ok(json) = std::fs::read_to_string(&meta_path)
                                 && let Ok(meta) =
                                     serde_json::from_str::<session::SessionMeta>(&json)
+                            {
+                                // ── Checkpoint consistency verification ──
+                                if let Some(latest_cp) =
+                                    crate::checkpoint::read_last_checkpoint(&meta.session_id)
                                 {
-                                    // ── Checkpoint consistency verification ──
-                                    if let Some(latest_cp) =
-                                        crate::checkpoint::read_last_checkpoint(&meta.session_id)
-                                    {
-                                        let cp_turns = latest_cp.intent.stats_turns;
-                                        let session_turns = meta.turns;
-                                        if cp_turns > session_turns {
-                                            tracing::warn!(
-                                                session_turns,
-                                                checkpoint_turns = cp_turns,
-                                                session_id = %meta.session_id,
-                                                "checkpoint is ahead of session file — \
-                                                 session may be stale (crash during prior run?)"
-                                            );
-                                        } else {
-                                            tracing::debug!(
-                                                session_turns,
-                                                checkpoint_turns = cp_turns,
-                                                "checkpoint consistent with session"
-                                            );
-                                        }
+                                    let cp_turns = latest_cp.intent.stats_turns;
+                                    let session_turns = meta.turns;
+                                    if cp_turns > session_turns {
+                                        tracing::warn!(
+                                            session_turns,
+                                            checkpoint_turns = cp_turns,
+                                            session_id = %meta.session_id,
+                                            "checkpoint is ahead of session file — \
+                                             session may be stale (crash during prior run?)"
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            session_turns,
+                                            checkpoint_turns = cp_turns,
+                                            "checkpoint consistent with session"
+                                        );
                                     }
-
-                                    resume_info = Some(ResumeInfo {
-                                        session_id: meta.session_id,
-                                        turns: meta.turns,
-                                        last_prompt_snippet: meta.last_prompt_snippet,
-                                        created_at: meta.created_at,
-                                    });
                                 }
+
+                                resume_info = Some(ResumeInfo {
+                                    session_id: meta.session_id,
+                                    turns: meta.turns,
+                                    last_prompt_snippet: meta.last_prompt_snippet,
+                                    created_at: meta.created_at,
+                                });
+                            }
                             conv
                         }
                         Err(e) => {
@@ -1151,16 +1151,15 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
         let bytes = s.as_bytes();
         while i < bytes.len() {
             if bytes[i] == b'{'
-                && let Some(end) = s[i + 1..].find('}') {
-                    let var = &s[i + 1..i + 1 + end];
-                    if !var.is_empty()
-                        && var.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-                    {
-                        out.push(var.to_string());
-                    }
-                    i += end + 2;
-                    continue;
+                && let Some(end) = s[i + 1..].find('}')
+            {
+                let var = &s[i + 1..i + 1 + end];
+                if !var.is_empty() && var.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+                    out.push(var.to_string());
                 }
+                i += end + 2;
+                continue;
+            }
             i += 1;
         }
     }
@@ -1208,9 +1207,9 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
         && let Ok(servers) = toml::from_str::<
             std::collections::HashMap<String, crate::plugins::mcp::McpServerConfig>,
         >(&content)
-        {
-            scan_servers(&servers, &mut names);
-        }
+    {
+        scan_servers(&servers, &mut names);
+    }
 
     // Deduplicate
     names.sort_unstable();

@@ -36,7 +36,6 @@ pub struct ElicitationParams {
     pub default: Option<Value>,
 
     // ─── Omegon-specific (lost in MCP shim) ───
-
     /// If true, in headless/daemon mode the elicitation can be routed
     /// through a vox bridge connector instead of blocking on a TUI.
     #[serde(default)]
@@ -80,7 +79,6 @@ pub struct ElicitationResult {
     pub content: Option<Value>,
 
     // ─── Omegon-specific ───
-
     /// Where the answer came from (Omegon-specific; MCP doesn't report this).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ElicitationSource>,
@@ -91,10 +89,7 @@ impl crate::HostProxy {
     /// Request user input from the host.
     ///
     /// Returns the user's response. Requires `elicitation` capability.
-    pub async fn elicit(
-        &self,
-        params: ElicitationParams,
-    ) -> crate::Result<ElicitationResult> {
+    pub async fn elicit(&self, params: ElicitationParams) -> crate::Result<ElicitationResult> {
         let value = self
             .request("elicitation/request", serde_json::to_value(&params)?)
             .await?;

@@ -201,7 +201,9 @@ pub struct RpcError {
 }
 
 /// Deserialize error code from either a numeric value (v2) or string label (v1).
-fn deserialize_error_code<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i32, D::Error> {
+fn deserialize_error_code<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<i32, D::Error> {
     let value = Value::deserialize(deserializer)?;
     match &value {
         Value::Number(n) => n
@@ -212,9 +214,7 @@ fn deserialize_error_code<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
             // v1 backward compat: string label → numeric code
             ErrorCode::from_label(s)
                 .map(|c| c.numeric())
-                .ok_or_else(|| {
-                    serde::de::Error::custom(format!("unknown error code label: {s}"))
-                })
+                .ok_or_else(|| serde::de::Error::custom(format!("unknown error code label: {s}")))
         }
         _ => Err(serde::de::Error::custom(
             "error code must be a number or string",
@@ -323,8 +323,7 @@ mod tests {
 
     #[test]
     fn test_incoming_parse_error_response() {
-        let line =
-            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"not found"}}"#;
+        let line = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"not found"}}"#;
         let msg = RpcIncoming::parse(line).unwrap();
         assert!(matches!(msg, RpcIncoming::Response(_)));
     }
@@ -338,10 +337,7 @@ mod tests {
 
     #[test]
     fn test_notification_creation() {
-        let notif = RpcNotification::new(
-            "notifications/tools/list_changed",
-            serde_json::json!({}),
-        );
+        let notif = RpcNotification::new("notifications/tools/list_changed", serde_json::json!({}));
         assert_eq!(notif.method, "notifications/tools/list_changed");
         assert_eq!(notif.jsonrpc, "2.0");
     }

@@ -150,8 +150,10 @@ pub fn run_interactive(_cwd: &Path, shared_settings: &settings::SharedSettings) 
     }
 
     // Write the global profile
-    let mut profile = Profile::default();
-    profile.default_posture = Some(posture_name.to_string());
+    let profile = Profile {
+        default_posture: Some(posture_name.to_string()),
+        ..Profile::default()
+    };
     if let Err(e) = profile.save_global() {
         tracing::warn!("failed to save global profile: {e}");
     }

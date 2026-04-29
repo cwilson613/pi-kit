@@ -14,7 +14,8 @@ use crate::upstream_errors::{
     classify_upstream_error_for_provider, is_context_overflow, is_malformed_history,
 };
 use omegon_traits::{
-    AgentEvent, ContentBlock, ContextComposition, DriftKind, ProgressNudgeReason, TurnEndReason,
+    AgentEvent, AgentEventTurnEnd, BusEventTurnEnd, ContentBlock, ContextComposition, DriftKind,
+    ProgressNudgeReason, TurnEndReason,
 };
 
 use futures_util::stream::{self, StreamExt};
@@ -289,22 +290,24 @@ pub async fn run(
             );
             let _ = events.send(AgentEvent::TurnStart { turn });
             let context_composition = default_context_composition(context_window);
-            bus.emit(&omegon_traits::BusEvent::TurnEnd {
-                turn,
-                model: None,
-                provider: None,
-                estimated_tokens: conversation.estimate_tokens(),
-                context_window,
-                context_composition: context_composition.clone(),
-                actual_input_tokens: 0,
-                actual_output_tokens: 0,
-                cache_read_tokens: 0,
-                provider_telemetry: None,
-                dominant_phase: None,
-                drift_kind: None,
-                progress_signal: omegon_traits::ProgressSignal::None,
-            });
-            let _ = events.send(AgentEvent::TurnEnd {
+            bus.emit(&omegon_traits::BusEvent::TurnEnd(Box::new(
+                BusEventTurnEnd {
+                    turn,
+                    model: None,
+                    provider: None,
+                    estimated_tokens: conversation.estimate_tokens(),
+                    context_window,
+                    context_composition: context_composition.clone(),
+                    actual_input_tokens: 0,
+                    actual_output_tokens: 0,
+                    cache_read_tokens: 0,
+                    provider_telemetry: None,
+                    dominant_phase: None,
+                    drift_kind: None,
+                    progress_signal: omegon_traits::ProgressSignal::None,
+                },
+            )));
+            let _ = events.send(AgentEvent::TurnEnd(Box::new(AgentEventTurnEnd {
                 turn,
                 turn_end_reason: TurnEndReason::AssistantCompleted,
                 model: Some(active_model.clone()),
@@ -326,7 +329,7 @@ pub async fn run(
                 files_modified_count: conversation.intent.files_modified.len(),
                 stats_tool_calls: conversation.intent.stats.tool_calls,
                 streaks: controller.streaks(),
-            });
+            })));
             break;
         }
 
@@ -502,12 +505,13 @@ pub async fn run(
         // on a cold start. We pre-flight the model load here and surface
         // progress in the TUI via toast notifications.
         if let Some(model_spec) = stream_options.model.as_deref()
-            && crate::providers::infer_provider_id(model_spec) == "ollama" {
-                let bare = model_spec
-                    .trim_start_matches("ollama:")
-                    .trim_start_matches("local:");
-                maybe_warmup_ollama(bare, events, config.ollama_manager.as_ref()).await;
-            }
+            && crate::providers::infer_provider_id(model_spec) == "ollama"
+        {
+            let bare = model_spec
+                .trim_start_matches("ollama:")
+                .trim_start_matches("local:");
+            maybe_warmup_ollama(bare, events, config.ollama_manager.as_ref()).await;
+        }
 
         let assistant_msg = tokio::select! {
             result = stream_with_retry(
@@ -572,7 +576,7 @@ pub async fn run(
             },
             _ = cancel.cancelled() => {
                 tracing::info!("Agent loop cancelled during LLM streaming");
-                bus.emit(&omegon_traits::BusEvent::TurnEnd {
+                bus.emit(&omegon_traits::BusEvent::TurnEnd(Box::new(BusEventTurnEnd {
                     turn,
                     model: None,
                     provider: None,
@@ -586,8 +590,8 @@ pub async fn run(
                     dominant_phase: None,
                     drift_kind: None,
                     progress_signal: omegon_traits::ProgressSignal::None,
-                });
-                let _ = events.send(AgentEvent::TurnEnd {
+                })));
+                let _ = events.send(AgentEvent::TurnEnd(Box::new(AgentEventTurnEnd {
                     turn,
                     turn_end_reason: TurnEndReason::Cancelled,
                     model: Some(active_model.clone()),
@@ -609,7 +613,7 @@ pub async fn run(
                     files_modified_count: conversation.intent.files_modified.len(),
                     stats_tool_calls: conversation.intent.stats.tool_calls,
                     streaks: controller.streaks(),
-                });
+                })));
                 break;
             }
         };
@@ -657,22 +661,26 @@ pub async fn run(
                     context_window,
                     Some(&nudge_prompt_telemetry),
                 );
-                bus.emit(&omegon_traits::BusEvent::TurnEnd {
-                    turn,
-                    model: Some(active_model.clone()),
-                    provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
-                    estimated_tokens: conversation.estimate_tokens(),
-                    context_window,
-                    context_composition: nudge_context_composition.clone(),
-                    actual_input_tokens: act_in,
-                    actual_output_tokens: act_out,
-                    cache_read_tokens: act_cr,
-                    provider_telemetry: provider_telemetry.clone(),
-                    dominant_phase: None,
-                    drift_kind: Some(DriftKind::ClosureStall),
-                    progress_signal: omegon_traits::ProgressSignal::None,
-                });
-                let _ = events.send(AgentEvent::TurnEnd {
+                bus.emit(&omegon_traits::BusEvent::TurnEnd(Box::new(
+                    BusEventTurnEnd {
+                        turn,
+                        model: Some(active_model.clone()),
+                        provider: Some(
+                            crate::providers::infer_provider_id(&active_model).to_string(),
+                        ),
+                        estimated_tokens: conversation.estimate_tokens(),
+                        context_window,
+                        context_composition: nudge_context_composition.clone(),
+                        actual_input_tokens: act_in,
+                        actual_output_tokens: act_out,
+                        cache_read_tokens: act_cr,
+                        provider_telemetry: provider_telemetry.clone(),
+                        dominant_phase: None,
+                        drift_kind: Some(DriftKind::ClosureStall),
+                        progress_signal: omegon_traits::ProgressSignal::None,
+                    },
+                )));
+                let _ = events.send(AgentEvent::TurnEnd(Box::new(AgentEventTurnEnd {
                     turn,
                     turn_end_reason: TurnEndReason::ProgressNudge,
                     model: Some(active_model.clone()),
@@ -694,7 +702,7 @@ pub async fn run(
                     files_modified_count: conversation.intent.files_modified.len(),
                     stats_tool_calls: conversation.intent.stats.tool_calls,
                     streaks: controller.streaks(),
-                });
+                })));
                 continue; // give it one more turn to commit
             }
 
@@ -771,22 +779,24 @@ pub async fn run(
                 context_window,
                 Some(&prompt_telemetry),
             );
-            bus.emit(&omegon_traits::BusEvent::TurnEnd {
-                turn,
-                model: Some(active_model.clone()),
-                provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
-                estimated_tokens: conversation.estimate_tokens(),
-                context_window,
-                context_composition: turn_context_composition.clone(),
-                actual_input_tokens: act_in,
-                actual_output_tokens: act_out,
-                cache_read_tokens: act_cr,
-                provider_telemetry: provider_telemetry.clone(),
-                dominant_phase: None,
-                drift_kind: None,
-                progress_signal: omegon_traits::ProgressSignal::None,
-            });
-            let _ = events.send(AgentEvent::TurnEnd {
+            bus.emit(&omegon_traits::BusEvent::TurnEnd(Box::new(
+                BusEventTurnEnd {
+                    turn,
+                    model: Some(active_model.clone()),
+                    provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
+                    estimated_tokens: conversation.estimate_tokens(),
+                    context_window,
+                    context_composition: turn_context_composition.clone(),
+                    actual_input_tokens: act_in,
+                    actual_output_tokens: act_out,
+                    cache_read_tokens: act_cr,
+                    provider_telemetry: provider_telemetry.clone(),
+                    dominant_phase: None,
+                    drift_kind: None,
+                    progress_signal: omegon_traits::ProgressSignal::None,
+                },
+            )));
+            let _ = events.send(AgentEvent::TurnEnd(Box::new(AgentEventTurnEnd {
                 turn,
                 turn_end_reason: TurnEndReason::AssistantCompleted,
                 model: Some(active_model.clone()),
@@ -808,7 +818,7 @@ pub async fn run(
                 files_modified_count: conversation.intent.files_modified.len(),
                 stats_tool_calls: conversation.intent.stats.tool_calls,
                 streaks: controller.streaks(),
-            });
+            })));
             break;
         }
 
@@ -1010,21 +1020,23 @@ pub async fn run(
             context_window,
             Some(&prompt_telemetry),
         );
-        bus.emit(&omegon_traits::BusEvent::TurnEnd {
-            turn,
-            model: Some(active_model.clone()),
-            provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
-            estimated_tokens: conversation.estimate_tokens(),
-            context_window,
-            context_composition: turn_context_composition.clone(),
-            actual_input_tokens: act_in,
-            actual_output_tokens: act_out,
-            cache_read_tokens: act_cr,
-            provider_telemetry: provider_telemetry.clone(),
-            dominant_phase,
-            drift_kind,
-            progress_signal,
-        });
+        bus.emit(&omegon_traits::BusEvent::TurnEnd(Box::new(
+            BusEventTurnEnd {
+                turn,
+                model: Some(active_model.clone()),
+                provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
+                estimated_tokens: conversation.estimate_tokens(),
+                context_window,
+                context_composition: turn_context_composition.clone(),
+                actual_input_tokens: act_in,
+                actual_output_tokens: act_out,
+                cache_read_tokens: act_cr,
+                provider_telemetry: provider_telemetry.clone(),
+                dominant_phase,
+                drift_kind,
+                progress_signal,
+            },
+        )));
 
         // ─── Handle bus requests from features ──────────────────────
         let turn_requests = bus.drain_requests();
@@ -1080,7 +1092,7 @@ pub async fn run(
                     }
                 }
                 omegon_traits::BusRequest::EmitAgentEvent { event } => {
-                    let _ = events.send(event);
+                    let _ = events.send(*event);
                 }
             }
         }
@@ -1104,7 +1116,7 @@ pub async fn run(
                 .and_then(|s| s.lock().ok().map(|g| g.thinking.as_str().to_string()))
                 .unwrap_or_else(|| "off".to_string()),
         });
-        let _ = events.send(AgentEvent::TurnEnd {
+        let _ = events.send(AgentEvent::TurnEnd(Box::new(AgentEventTurnEnd {
             turn,
             turn_end_reason: TurnEndReason::ToolContinuation,
             model: Some(active_model.clone()),
@@ -1126,7 +1138,7 @@ pub async fn run(
             files_modified_count: conversation.intent.files_modified.len(),
             stats_tool_calls: conversation.intent.stats.tool_calls,
             streaks: controller.streaks(),
-        });
+        })));
     }
 
     let elapsed = session_start.elapsed();
@@ -1195,7 +1207,7 @@ pub async fn run(
                 }
             }
             omegon_traits::BusRequest::EmitAgentEvent { event } => {
-                let _ = events.send(event);
+                let _ = events.send(*event);
             }
         }
     }
@@ -2232,12 +2244,13 @@ impl StuckDetector {
                 self.recent_file_accesses.retain(|p| p != path);
             }
         } else if is_repo_inspection_tool(&call.name)
-            && let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
-                self.recent_file_accesses.push(path.to_string());
-                if self.recent_file_accesses.len() > self.window * 2 {
-                    self.recent_file_accesses.drain(..self.window);
-                }
+            && let Some(path) = call.arguments.get("path").and_then(|v| v.as_str())
+        {
+            self.recent_file_accesses.push(path.to_string());
+            if self.recent_file_accesses.len() > self.window * 2 {
+                self.recent_file_accesses.drain(..self.window);
             }
+        }
     }
 
     /// Check for stuck patterns. Returns a warning with escalation level if detected.

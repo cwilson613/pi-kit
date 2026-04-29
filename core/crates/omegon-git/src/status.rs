@@ -97,10 +97,10 @@ pub fn query_status(repo_path: &Path) -> Result<RepoStatus> {
         let is_submodule =
             s.intersects(git2::Status::WT_TYPECHANGE | git2::Status::INDEX_TYPECHANGE) || {
                 // Check if old file mode indicates a submodule (commit mode = 0o160000)
-                entry.index_to_workdir().map_or(false, |d| {
+                entry.index_to_workdir().is_some_and(|d| {
                     matches!(d.old_file().mode(), git2::FileMode::Commit)
                         || matches!(d.new_file().mode(), git2::FileMode::Commit)
-                }) || entry.head_to_index().map_or(false, |d| {
+                }) || entry.head_to_index().is_some_and(|d| {
                     matches!(d.old_file().mode(), git2::FileMode::Commit)
                         || matches!(d.new_file().mode(), git2::FileMode::Commit)
                 })

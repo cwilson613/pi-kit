@@ -220,13 +220,15 @@ impl EventTriggers {
         for t in &self.triggers {
             let filter = t.filter.as_ref()?;
             if let Some(ref s) = filter.source
-                && s != source {
-                    continue;
-                }
+                && s != source
+            {
+                continue;
+            }
             if let Some(ref k) = filter.trigger_kind
-                && k != trigger_kind {
-                    continue;
-                }
+                && k != trigger_kind
+            {
+                continue;
+            }
             // Filter matched — render the prompt template.
             let prompt = render_template(&t.prompt.template, payload);
             let caller_key = t

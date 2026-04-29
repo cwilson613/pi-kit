@@ -1111,6 +1111,7 @@ fn auto_commit_worktree(wt_path: &Path, label: &str, scope: &[String]) -> usize 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_task_file(
     child_idx: usize,
     label: &str,

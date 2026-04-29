@@ -114,6 +114,7 @@ pub struct WireToolCall {
 /// Events streamed from the bridge during an LLM call.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // Done variant consumed immediately, never cloned
 pub enum LlmEvent {
     /// Initial event with partial message — we ignore the content but must accept the variant.
     #[serde(rename = "start")]

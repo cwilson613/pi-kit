@@ -217,6 +217,7 @@ fn filter_progress_bars(lines: &[&str]) -> Option<String> {
         return None;
     }
 
+    #[allow(clippy::nonminimal_bool)] // negated conditions read clearer as explicit &&-chain
     let filtered: Vec<&str> = lines
         .iter()
         .filter(|l| {

@@ -68,7 +68,7 @@ impl RepoModel {
 
         // Read jj change ID if co-located
         let jj_change_id = if jj_colocated {
-            let id = std::process::Command::new("jj")
+            std::process::Command::new("jj")
                 .args(["log", "-r", "@", "--no-graph", "-T", "change_id"])
                 .current_dir(&repo_path)
                 .output()
@@ -80,8 +80,7 @@ impl RepoModel {
                     } else {
                         None
                     }
-                });
-            id
+                })
         } else {
             None
         };

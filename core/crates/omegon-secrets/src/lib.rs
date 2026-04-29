@@ -500,7 +500,7 @@ impl SecretsManager {
     /// Redact secrets from tool result content blocks.
     /// Only available with the `agent` feature (requires omegon-traits).
     #[cfg(feature = "agent")]
-    pub fn redact_content(&self, content: &mut Vec<omegon_traits::ContentBlock>) {
+    pub fn redact_content(&self, content: &mut [omegon_traits::ContentBlock]) {
         let redactor = self.redactor.read().unwrap();
         redactor.redact_content_blocks(content);
     }
@@ -546,7 +546,7 @@ impl SecretsManager {
     /// multiple times during preflight (which can interfere with Keychain prompts).
     fn rebuild_redactor(&self) {
         let set = self.redaction_set.read().unwrap();
-        let new_redactor = Redactor::build(&*set);
+        let new_redactor = Redactor::build(&set);
         let mut redactor = self.redactor.write().unwrap();
         *redactor = new_redactor;
     }

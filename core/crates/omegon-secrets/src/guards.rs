@@ -148,6 +148,12 @@ const SENSITIVE_PATTERNS: &[SensitivePattern] = &[
 /// Path guard — checks tool arguments for sensitive file paths.
 pub struct PathGuard;
 
+impl Default for PathGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PathGuard {
     pub fn new() -> Self {
         Self

@@ -563,27 +563,28 @@ pub fn read_external_credentials(provider: &str) -> Option<OAuthCredentials> {
             ];
             for path in &paths {
                 if let Ok(content) = std::fs::read_to_string(path)
-                    && let Ok(data) = serde_json::from_str::<Value>(&content) {
-                        let access = data
-                            .get("access_token")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())?;
-                        let refresh = data
-                            .get("refresh_token")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let expires = data
-                            .get("expiry")
-                            .and_then(|v| v.as_i64())
-                            .or_else(|| data.get("token_expiry").and_then(|v| v.as_i64()))
-                            .unwrap_or(0) as u64;
-                        return Some(OAuthCredentials {
-                            cred_type: "oauth".into(),
-                            access: access.into(),
-                            refresh: refresh.into(),
-                            expires,
-                        });
-                    }
+                    && let Ok(data) = serde_json::from_str::<Value>(&content)
+                {
+                    let access = data
+                        .get("access_token")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())?;
+                    let refresh = data
+                        .get("refresh_token")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let expires = data
+                        .get("expiry")
+                        .and_then(|v| v.as_i64())
+                        .or_else(|| data.get("token_expiry").and_then(|v| v.as_i64()))
+                        .unwrap_or(0) as u64;
+                    return Some(OAuthCredentials {
+                        cred_type: "oauth".into(),
+                        access: access.into(),
+                        refresh: refresh.into(),
+                        expires,
+                    });
+                }
             }
             None
         }

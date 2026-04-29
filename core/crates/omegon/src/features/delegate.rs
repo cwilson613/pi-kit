@@ -9,7 +9,7 @@
 //! when background tasks complete.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub type DelegateEventSlot = Arc<Mutex<Option<BusRequestSink>>>;
@@ -179,9 +179,11 @@ impl DelegateResultStore {
     pub fn mark_task_done(&self, task_id: &str, task_index: usize) {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(task_id)
-            && task_index > 0 && task_index <= task.tasks.len() {
-                task.tasks[task_index - 1].done = true;
-            }
+            && task_index > 0
+            && task_index <= task.tasks.len()
+        {
+            task.tasks[task_index - 1].done = true;
+        }
     }
 
     pub fn find_completed_by_description(&self, description: &str) -> Option<String> {
@@ -832,12 +834,14 @@ If blocked, say the blocker plainly.\n",
         // If the child writes more than the OS pipe buffer (16KB on macOS,
         // 64KB on Linux), it blocks waiting for the parent to read. If
         // the parent is waiting for the child to exit, that's a deadlock.
-        let stdout_handle = child.stdout.take().map(|mut stdout| tokio::spawn(async move {
+        let stdout_handle = child.stdout.take().map(|mut stdout| {
+            tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
                 let mut buf = String::new();
                 let _ = stdout.read_to_string(&mut buf).await;
                 buf
-            }));
+            })
+        });
 
         let status = child
             .wait()
@@ -876,6 +880,7 @@ If blocked, say the blocker plainly.\n",
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_delegate(
         &self,
         task_id: String,
@@ -1059,9 +1064,9 @@ pub struct DelegateFeature {
 }
 
 impl DelegateFeature {
-    pub fn new(cwd: &PathBuf, agents: Vec<AgentSpec>) -> Self {
+    pub fn new(cwd: &Path, agents: Vec<AgentSpec>) -> Self {
         let result_store = Arc::new(DelegateResultStore::new());
-        let runner = Arc::new(DelegateRunner::new(cwd.clone(), result_store.clone()));
+        let runner = Arc::new(DelegateRunner::new(cwd.to_path_buf(), result_store.clone()));
 
         // Seed session model from env so delegates on the first turn
         // (before any TurnEnd fires) still inherit the operator's model.
@@ -1159,7 +1164,9 @@ impl DelegateFeature {
         if let Ok(slot) = self.event_slot.lock()
             && let Some(ref sink) = *slot
         {
-            sink.send(BusRequest::EmitAgentEvent { event });
+            sink.send(BusRequest::EmitAgentEvent {
+                event: Box::new(event),
+            });
         }
     }
 
@@ -1648,25 +1655,23 @@ impl Feature for DelegateFeature {
 
         // Model catalog from provider inventory
         if let Some(ref inventory_lock) = self.provider_inventory
-            && let Ok(inventory) = inventory_lock.try_read() {
-                // Trigger background re-probe if inventory is stale (>60s)
-                if inventory.probed_at.elapsed().as_secs() > 60 {
-                    let inv = inventory_lock.clone();
-                    crate::task_spawn::spawn_best_effort(
-                        "delegate-inventory-refresh",
-                        async move {
-                            let mut inv = inv.write().await;
-                            inv.probe_ollama().await;
-                        },
-                    );
-                }
-
-                let session_model = self.session_model.lock().ok().and_then(|g| g.clone());
-                let catalog = inventory.format_delegation_catalog(session_model.as_deref());
-                if !catalog.is_empty() {
-                    sections.push(catalog);
-                }
+            && let Ok(inventory) = inventory_lock.try_read()
+        {
+            // Trigger background re-probe if inventory is stale (>60s)
+            if inventory.probed_at.elapsed().as_secs() > 60 {
+                let inv = inventory_lock.clone();
+                crate::task_spawn::spawn_best_effort("delegate-inventory-refresh", async move {
+                    let mut inv = inv.write().await;
+                    inv.probe_ollama().await;
+                });
             }
+
+            let session_model = self.session_model.lock().ok().and_then(|g| g.clone());
+            let catalog = inventory.format_delegation_catalog(session_model.as_deref());
+            if !catalog.is_empty() {
+                sections.push(catalog);
+            }
+        }
 
         // Available agents
         if !self.available_agents.is_empty() {
@@ -1724,13 +1729,14 @@ impl Feature for DelegateFeature {
                 }
                 vec![]
             }
-            BusEvent::TurnEnd { model, .. } => {
+            BusEvent::TurnEnd(te) => {
                 // Capture the parent session's model so delegate children
                 // inherit it instead of falling back to hardcoded defaults.
-                if let Some(m) = model
-                    && let Ok(mut slot) = self.session_model.lock() {
-                        *slot = Some(m.clone());
-                    }
+                if let Some(m) = &te.model
+                    && let Ok(mut slot) = self.session_model.lock()
+                {
+                    *slot = Some(m.clone());
+                }
                 if let Ok(mut handle) = self.progress_handle.lock() {
                     *handle = self.result_store.progress_snapshot();
                 }
@@ -1781,7 +1787,7 @@ impl Feature for DelegateFeature {
 }
 
 /// Agent loader - scans .omegon/agents/*.md files for agent specifications
-pub fn scan_agents(cwd: &PathBuf) -> Vec<AgentSpec> {
+pub fn scan_agents(cwd: &Path) -> Vec<AgentSpec> {
     let agents_dir = cwd.join(".omegon").join("agents");
     let mut agents = Vec::new();
 

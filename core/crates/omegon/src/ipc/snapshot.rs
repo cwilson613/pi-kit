@@ -112,8 +112,10 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
     use crate::lifecycle::types::NodeStatus;
 
     let all = lp.all_nodes();
-    let mut counts = IpcDesignCounts::default();
-    counts.total = all.len();
+    let mut counts = IpcDesignCounts {
+        total: all.len(),
+        ..IpcDesignCounts::default()
+    };
 
     let mut nodes = Vec::with_capacity(all.len());
     let mut implementing = vec![];

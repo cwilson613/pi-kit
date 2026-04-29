@@ -199,11 +199,11 @@ impl Feature for HttpPluginFeature {
         };
 
         match event {
-            BusEvent::TurnEnd { turn, .. } => {
+            BusEvent::TurnEnd(te) => {
                 if let Some(ref endpoint) = events.turn_end {
                     let client = self.client.clone();
                     let url = resolve_template(endpoint, &HashMap::new());
-                    let payload = serde_json::json!({ "event": "turn_end", "turn": turn });
+                    let payload = serde_json::json!({ "event": "turn_end", "turn": te.turn });
                     // Best-effort plugin telemetry hook — delivery is not guaranteed.
                     crate::task_spawn::spawn_best_effort_result(
                         "http-plugin-turn-end",

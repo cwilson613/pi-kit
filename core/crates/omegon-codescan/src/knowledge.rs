@@ -41,10 +41,10 @@ impl KnowledgeScanner {
 
         for (i, line) in lines.iter().enumerate().skip(body_start) {
             let t = line.trim();
-            if t.starts_with("## ") {
-                heading_positions.push((i, t[3..].trim().to_string()));
-            } else if t.starts_with("### ") {
-                heading_positions.push((i, t[4..].trim().to_string()));
+            if let Some(rest) = t.strip_prefix("## ") {
+                heading_positions.push((i, rest.trim().to_string()));
+            } else if let Some(rest) = t.strip_prefix("### ") {
+                heading_positions.push((i, rest.trim().to_string()));
             }
         }
 
@@ -149,7 +149,7 @@ impl KnowledgeScanner {
             .lines()
             .enumerate()
             .filter(|(_, l)| !l.trim().is_empty())
-            .filter_map(|(i, line)| {
+            .map(|(i, line)| {
                 let heading = if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                     v.get("section")
                         .or_else(|| v.get("heading"))
@@ -160,14 +160,14 @@ impl KnowledgeScanner {
                 } else {
                     format!("{} line {}", base, i + 1)
                 };
-                Some(KnowledgeChunk {
+                KnowledgeChunk {
                     path: path.to_path_buf(),
                     heading,
                     start_line: i + 1,
                     end_line: i + 1,
                     tags: vec![],
                     text: line.to_string(),
-                })
+                }
             })
             .collect()
     }

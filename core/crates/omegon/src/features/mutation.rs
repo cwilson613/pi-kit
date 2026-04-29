@@ -114,7 +114,6 @@ pub struct TelemetryConfig {
     pub share_impact_data: bool,
 }
 
-
 impl Default for ImpactWeights {
     fn default() -> Self {
         Self {
@@ -175,7 +174,6 @@ impl Default for EscalationConfig {
         }
     }
 }
-
 
 impl Default for BehaviorConfig {
     fn default() -> Self {
@@ -548,6 +546,7 @@ impl MutationFeature {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_turn_end(
         &mut self,
         turn: u32,
@@ -726,7 +725,9 @@ impl MutationFeature {
                 if path_changed {
                     PatternClass::DomainPattern {
                         confidence: 0.6,
-                        description: "Agent targeted wrong file initially, recovered to correct target".to_string(),
+                        description:
+                            "Agent targeted wrong file initially, recovered to correct target"
+                                .to_string(),
                     }
                 } else {
                     PatternClass::InternalDeficiency {
@@ -1369,20 +1370,21 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                         confidence,
                     } => {
                         if confidence >= 0.6
-                            && let Some((name, content)) = self.generate_skill(seq, &description) {
-                                let dir = self.skills_dir.join(&name);
-                                let _ = std::fs::create_dir_all(&dir);
-                                let path = dir.join("SKILL.md");
-                                if !path.exists() {
-                                    let _ = std::fs::write(&path, &content);
-                                    skills_created += 1;
-                                    requests.push(BusRequest::AutoStoreFact {
-                                        section: "patterns_conventions".into(),
-                                        content: format!("Learned skill: {name} — {description}"),
-                                        source: "mutation".into(),
-                                    });
-                                }
+                            && let Some((name, content)) = self.generate_skill(seq, &description)
+                        {
+                            let dir = self.skills_dir.join(&name);
+                            let _ = std::fs::create_dir_all(&dir);
+                            let path = dir.join("SKILL.md");
+                            if !path.exists() {
+                                let _ = std::fs::write(&path, &content);
+                                skills_created += 1;
+                                requests.push(BusRequest::AutoStoreFact {
+                                    section: "patterns_conventions".into(),
+                                    content: format!("Learned skill: {name} — {description}"),
+                                    source: "mutation".into(),
+                                });
                             }
+                        }
                     }
                     PatternClass::InternalDeficiency {
                         owning_crate: crate_name,
@@ -1392,22 +1394,22 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                         if confidence >= 0.7
                             && let Some((filename, content)) =
                                 self.generate_diagnostic(seq, crate_name, &burn)
-                            {
-                                let _ = std::fs::create_dir_all(&self.diagnostics_dir);
-                                let path = self.diagnostics_dir.join(format!("{filename}.md"));
-                                if !path.exists() {
-                                    let _ = std::fs::write(&path, &content);
-                                    diagnostics_created += 1;
-                                    requests.push(BusRequest::AutoStoreFact {
-                                        section: "known_issues".into(),
-                                        content: format!(
-                                            "Tool deficiency: {tool_name} ({crate_name}) — {}",
-                                            recovery_description(&seq.kind)
-                                        ),
-                                        source: "mutation".into(),
-                                    });
-                                }
+                        {
+                            let _ = std::fs::create_dir_all(&self.diagnostics_dir);
+                            let path = self.diagnostics_dir.join(format!("{filename}.md"));
+                            if !path.exists() {
+                                let _ = std::fs::write(&path, &content);
+                                diagnostics_created += 1;
+                                requests.push(BusRequest::AutoStoreFact {
+                                    section: "known_issues".into(),
+                                    content: format!(
+                                        "Tool deficiency: {tool_name} ({crate_name}) — {}",
+                                        recovery_description(&seq.kind)
+                                    ),
+                                    source: "mutation".into(),
+                                });
                             }
+                        }
                     }
                 }
             }
@@ -1491,19 +1493,20 @@ This pattern applies when working with `{tool}` on files matching the recovery c
                 for entry in entries.flatten() {
                     let skill_path = entry.path().join("SKILL.md");
                     if skill_path.exists()
-                        && let Ok(content) = std::fs::read_to_string(&skill_path) {
-                            let desc = extract_frontmatter_field(&content, "description")
-                                .unwrap_or_else(|| entry.file_name().to_string_lossy().into());
-                            let conf = extract_frontmatter_field(&content, "confidence")
-                                .unwrap_or_else(|| "?".into());
-                            lines.push(format!(
-                                "- **{}** (confidence: {}) — {}",
-                                entry.file_name().to_string_lossy(),
-                                conf,
-                                desc
-                            ));
-                            found = true;
-                        }
+                        && let Ok(content) = std::fs::read_to_string(&skill_path)
+                    {
+                        let desc = extract_frontmatter_field(&content, "description")
+                            .unwrap_or_else(|| entry.file_name().to_string_lossy().into());
+                        let conf = extract_frontmatter_field(&content, "confidence")
+                            .unwrap_or_else(|| "?".into());
+                        lines.push(format!(
+                            "- **{}** (confidence: {}) — {}",
+                            entry.file_name().to_string_lossy(),
+                            conf,
+                            desc
+                        ));
+                        found = true;
+                    }
                 }
                 if !found {
                     lines.push("(none)".to_string());
@@ -1923,9 +1926,10 @@ impl Feature for MutationFeature {
                     injections.push(line);
                     // Track that this skill was loaded for burn-history enrichment.
                     if let Ok(mut loaded) = self.trajectory.skills_loaded.lock()
-                        && !loaded.contains(&name) {
-                            loaded.push(name);
-                        }
+                        && !loaded.contains(&name)
+                    {
+                        loaded.push(name);
+                    }
                 }
             }
 
@@ -1966,26 +1970,16 @@ impl Feature for MutationFeature {
                 self.on_tool_end(id, *is_error);
                 vec![]
             }
-            BusEvent::TurnEnd {
-                turn,
-                dominant_phase,
-                drift_kind,
-                progress_signal,
-                actual_input_tokens,
-                actual_output_tokens,
-                model,
-                provider,
-                ..
-            } => {
+            BusEvent::TurnEnd(te) => {
                 self.on_turn_end(
-                    *turn,
-                    *dominant_phase,
-                    *drift_kind,
-                    *progress_signal,
-                    *actual_input_tokens,
-                    *actual_output_tokens,
-                    model.as_deref(),
-                    provider.as_deref(),
+                    te.turn,
+                    te.dominant_phase,
+                    te.drift_kind,
+                    te.progress_signal,
+                    te.actual_input_tokens,
+                    te.actual_output_tokens,
+                    te.model.as_deref(),
+                    te.provider.as_deref(),
                 );
                 vec![]
             }
@@ -2172,9 +2166,9 @@ fn derive_tags(seq: &RecoverySequence) -> Vec<String> {
         && let Some(ext) = std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
-        {
-            tags.push(ext.to_string());
-        }
+    {
+        tags.push(ext.to_string());
+    }
     tags
 }
 
@@ -2198,11 +2192,12 @@ fn bump_confidence(content: &str) -> String {
     for line in content.lines() {
         if line.trim().starts_with("confidence = ")
             && let Some(val_str) = line.trim().strip_prefix("confidence = ")
-                && let Ok(val) = val_str.parse::<f32>() {
-                    let new_val = (val + 0.1).min(1.0);
-                    result.push_str(&format!("confidence = {new_val:.1}\n"));
-                    continue;
-                }
+            && let Ok(val) = val_str.parse::<f32>()
+        {
+            let new_val = (val + 0.1).min(1.0);
+            result.push_str(&format!("confidence = {new_val:.1}\n"));
+            continue;
+        }
         result.push_str(line);
         result.push('\n');
     }
@@ -2693,21 +2688,23 @@ mod tests {
             },
             is_error: false,
         });
-        feature.on_event(&BusEvent::TurnEnd {
-            turn: 1,
-            model: Some("anthropic:claude-sonnet-4-6".into()),
-            provider: Some("anthropic".into()),
-            estimated_tokens: 5000,
-            context_window: 200_000,
-            context_composition: omegon_traits::ContextComposition::default(),
-            actual_input_tokens: 1200,
-            actual_output_tokens: 300,
-            cache_read_tokens: 0,
-            provider_telemetry: None,
-            dominant_phase: Some(OodaPhase::Observe),
-            drift_kind: None,
-            progress_signal: ProgressSignal::None,
-        });
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: Some("anthropic:claude-sonnet-4-6".into()),
+                provider: Some("anthropic".into()),
+                estimated_tokens: 5000,
+                context_window: 200_000,
+                context_composition: omegon_traits::ContextComposition::default(),
+                actual_input_tokens: 1200,
+                actual_output_tokens: 300,
+                cache_read_tokens: 0,
+                provider_telemetry: None,
+                dominant_phase: Some(OodaPhase::Observe),
+                drift_kind: None,
+                progress_signal: ProgressSignal::None,
+            },
+        )));
 
         assert_eq!(feature.trajectory.session_id, "test-accum");
         assert_eq!(feature.trajectory.turns.len(), 1);

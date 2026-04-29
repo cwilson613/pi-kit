@@ -63,7 +63,7 @@ impl CodescanProvider {
             })
             .unwrap_or_default();
 
-        let scope = SearchScope::from_str(scope_str);
+        let scope = SearchScope::parse(scope_str);
 
         let (code_chunks, mut knowledge_chunks) = self.with_cache(|cache| {
             Indexer::run(&self.repo_path, cache)?;
@@ -197,9 +197,10 @@ impl CodescanProvider {
                 Err(_) => return,
             };
             if let Some(t) = *last
-                && t.elapsed() < Duration::from_secs(HEAD_CHECK_INTERVAL_SECS) {
-                    return; // still within cooldown — skip
-                }
+                && t.elapsed() < Duration::from_secs(HEAD_CHECK_INTERVAL_SECS)
+            {
+                return; // still within cooldown — skip
+            }
             *last = Some(Instant::now());
         }
 

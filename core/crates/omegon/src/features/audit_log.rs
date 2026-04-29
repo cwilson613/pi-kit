@@ -205,47 +205,32 @@ impl Feature for AuditLog {
                 });
             }
 
-            BusEvent::TurnEnd {
-                turn,
-                model,
-                provider,
-                estimated_tokens,
-                context_window,
-                context_composition,
-                actual_input_tokens,
-                actual_output_tokens,
-                cache_read_tokens,
-                dominant_phase,
-                drift_kind,
-                progress_signal,
-                provider_telemetry,
-                ..
-            } => {
+            BusEvent::TurnEnd(te) => {
                 self.append(&AuditEntry {
                     ts,
                     session,
                     kind: "turn".into(),
                     data: serde_json::json!({
-                        "turn": turn,
-                        "model": model,
-                        "provider": provider,
-                        "est_tokens": estimated_tokens,
-                        "ctx_window": context_window,
-                        "in": actual_input_tokens,
-                        "out": actual_output_tokens,
-                        "cache": cache_read_tokens,
-                        "phase": dominant_phase.map(|p| format!("{p:?}")),
-                        "drift": drift_kind.map(|d| format!("{d:?}")),
-                        "progress": format!("{progress_signal:?}"),
+                        "turn": te.turn,
+                        "model": te.model,
+                        "provider": te.provider,
+                        "est_tokens": te.estimated_tokens,
+                        "ctx_window": te.context_window,
+                        "in": te.actual_input_tokens,
+                        "out": te.actual_output_tokens,
+                        "cache": te.cache_read_tokens,
+                        "phase": te.dominant_phase.map(|p| format!("{p:?}")),
+                        "drift": te.drift_kind.map(|d| format!("{d:?}")),
+                        "progress": format!("{:?}", te.progress_signal),
                         "ctx": {
-                            "sys": context_composition.system_tokens,
-                            "tools": context_composition.tool_schema_tokens,
-                            "conv": context_composition.conversation_tokens,
-                            "mem": context_composition.memory_tokens,
-                            "think": context_composition.thinking_tokens,
-                            "free": context_composition.free_tokens,
+                            "sys": te.context_composition.system_tokens,
+                            "tools": te.context_composition.tool_schema_tokens,
+                            "conv": te.context_composition.conversation_tokens,
+                            "mem": te.context_composition.memory_tokens,
+                            "think": te.context_composition.thinking_tokens,
+                            "free": te.context_composition.free_tokens,
                         },
-                        "quota": provider_telemetry.as_ref().map(|t| serde_json::to_value(t).unwrap_or_default()),
+                        "quota": te.provider_telemetry.as_ref().map(|t| serde_json::to_value(t).unwrap_or_default()),
                     }),
                 });
             }

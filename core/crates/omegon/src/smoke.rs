@@ -146,9 +146,9 @@ async fn run_single(
                                 })
                                 .and_then(|b| b.get("text"))
                                 .and_then(|t| t.as_str())
-                            {
-                                response_text.push_str(text);
-                            }
+                        {
+                            response_text.push_str(text);
+                        }
                         break;
                     }
                     LlmEvent::Error { message } => anyhow::bail!("LLM error: {message}"),

@@ -85,12 +85,14 @@ where
             cell.set_bg(bg);
         }
         // Blank the overflow cell for wide characters so we don't draw into it.
-        if w == 2 && cur_x + 1 < max_x
-            && let Some(cell) = buf.cell_mut(Position::new(cur_x + 1, y)) {
-                cell.set_char(' ');
-                cell.set_fg(bg);
-                cell.set_bg(bg);
-            }
+        if w == 2
+            && cur_x + 1 < max_x
+            && let Some(cell) = buf.cell_mut(Position::new(cur_x + 1, y))
+        {
+            cell.set_char(' ');
+            cell.set_fg(bg);
+            cell.set_bg(bg);
+        }
         cur_x = cur_x.saturating_add(w);
     }
     cur_x
@@ -379,11 +381,12 @@ impl MindState {
         }
         let c2 = 0.3;
         let mut accel = vec![0.0; w];
+        #[allow(clippy::needless_range_loop)] // multi-array stencil — index needed for wave[i±1]
         for i in 1..w - 1 {
             accel[i] = c2 * (self.wave[i - 1] + self.wave[i + 1] - 2.0 * self.wave[i]);
         }
-        for i in 0..w {
-            self.velocity[i] = (self.velocity[i] + accel[i]) * self.damping;
+        for (i, a) in accel.iter().enumerate() {
+            self.velocity[i] = (self.velocity[i] + a) * self.damping;
             self.wave[i] = (self.wave[i] + self.velocity[i]) * 0.999; // slight position damping too
         }
         self.wave[0] = 0.0;
@@ -624,19 +627,21 @@ impl InstrumentPanel {
         // Guard on active only — total_children persists after the run ends and
         // would keep the cleave panel showing forever.
         if let Some(ref cp) = self.cleave_progress
-            && cp.active {
-                let border = t.border_dim();
-                let label = t.dim();
-                self.render_cleave_panel(area, frame, border, label, t, cp);
-                return;
-            }
+            && cp.active
+        {
+            let border = t.border_dim();
+            let label = t.dim();
+            self.render_cleave_panel(area, frame, border, label, t, cp);
+            return;
+        }
         if let Some(ref dp) = self.delegate_progress
-            && dp.active {
-                let border = t.border_dim();
-                let label = t.dim();
-                self.render_delegate_panel(area, frame, border, label, t, dp);
-                return;
-            }
+            && dp.active
+        {
+            let border = t.border_dim();
+            let label = t.dim();
+            self.render_delegate_panel(area, frame, border, label, t, dp);
+            return;
+        }
         // Border warms with tool activity
         let cold = if self.has_ever_fired {
             t.border_dim()
@@ -971,14 +976,15 @@ impl InstrumentPanel {
 
         // Memory: pluck the string
         if let Some((mind_idx, direction)) = memory_op
-            && mind_idx < self.minds.len() {
-                if !self.minds[mind_idx].active {
-                    self.minds[mind_idx].active = true;
-                    self.minds[mind_idx].wave = vec![0.0; 80];
-                    self.minds[mind_idx].velocity = vec![0.0; 80];
-                }
-                self.minds[mind_idx].pluck(direction);
+            && mind_idx < self.minds.len()
+        {
+            if !self.minds[mind_idx].active {
+                self.minds[mind_idx].active = true;
+                self.minds[mind_idx].wave = vec![0.0; 80];
+                self.minds[mind_idx].velocity = vec![0.0; 80];
             }
+            self.minds[mind_idx].pluck(direction);
+        }
 
         // Update wave physics
         for mind in &mut self.minds {
@@ -1271,10 +1277,12 @@ impl InstrumentPanel {
             for prev in 0..row_idx {
                 let py = area.y + prev as u16;
                 if let Some(cell) = buf.cell_mut(Position::new(area.x, py))
-                    && cell.symbol() != "├" && cell.symbol() != "└" {
-                        cell.set_char('│');
-                        cell.set_fg(Color::Rgb(32, 72, 96));
-                    }
+                    && cell.symbol() != "├"
+                    && cell.symbol() != "└"
+                {
+                    cell.set_char('│');
+                    cell.set_fg(Color::Rgb(32, 72, 96));
+                }
             }
 
             // Mind name + fact count
@@ -2354,22 +2362,8 @@ mod tests {
         let mut panel = InstrumentPanel::default();
         let base = panel.preferred_height();
         panel.update_mind_facts(18, 3, 2, 0.08);
-        panel.update_telemetry(
-            62.0,
-            200_000,
-            "medium",
-            None,
-            true,
-            0.016,
-        );
-        panel.update_telemetry(
-            62.0,
-            200_000,
-            "medium",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(62.0, 200_000, "medium", None, true, 0.016);
+        panel.update_telemetry(62.0, 200_000, "medium", None, true, 0.016);
         let grown = panel.preferred_height();
         assert!(
             grown >= base,
@@ -2959,14 +2953,7 @@ mod tests {
             },
             200_000,
         );
-        panel.update_telemetry(
-            62.0,
-            200_000,
-            "medium",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(62.0, 200_000, "medium", None, true, 0.016);
         let breakdown = panel.context_breakdown();
         let total: f64 = breakdown.iter().map(|(_, frac)| frac).sum();
         assert!(
@@ -3032,14 +3019,7 @@ mod tests {
         let mut panel = InstrumentPanel::default();
         panel.note_thinking_activity();
         panel.tool_started("bash");
-        panel.update_telemetry(
-            40.0,
-            200_000,
-            "high",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(40.0, 200_000, "high", None, true, 0.016);
         assert_eq!(panel.activity_mode(), ActivityMode::ToolChurn);
     }
 
@@ -3188,14 +3168,7 @@ mod tests {
             },
             200_000,
         );
-        panel.update_telemetry(
-            68.0,
-            200_000,
-            "high",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(68.0, 200_000, "high", None, true, 0.016);
 
         let area = Rect::new(0, 0, 64, 10);
         let backend = ratatui::backend::TestBackend::new(64, 10);
@@ -3257,14 +3230,7 @@ mod tests {
             200_000,
         );
         panel.note_thinking_activity();
-        panel.update_telemetry(
-            68.0,
-            200_000,
-            "high",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(68.0, 200_000, "high", None, true, 0.016);
 
         let area = Rect::new(0, 0, 64, 10);
         let backend = ratatui::backend::TestBackend::new(64, 10);
@@ -3328,14 +3294,7 @@ mod tests {
             },
             200_000,
         );
-        panel.update_telemetry(
-            68.0,
-            200_000,
-            "high",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(68.0, 200_000, "high", None, true, 0.016);
 
         let area = Rect::new(0, 0, 28, 10);
         let backend = ratatui::backend::TestBackend::new(28, 10);
@@ -3491,14 +3450,7 @@ mod tests {
             },
             200_000,
         );
-        panel.update_telemetry(
-            68.0,
-            200_000,
-            "high",
-            None,
-            true,
-            0.016,
-        );
+        panel.update_telemetry(68.0, 200_000, "high", None, true, 0.016);
 
         let breakdown = panel.context_breakdown();
         let tool_schema = breakdown

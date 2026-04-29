@@ -311,7 +311,7 @@ impl Feature for PersonaFeature {
                 requests
             }
             // Check for refresh flag on turn boundaries
-            BusEvent::TurnEnd { .. } => {
+            BusEvent::TurnEnd(_) => {
                 if self.refresh_status_pending.load(Ordering::Relaxed) {
                     self.refresh_status_pending.store(false, Ordering::Relaxed);
                     vec![BusRequest::RefreshHarnessStatus]

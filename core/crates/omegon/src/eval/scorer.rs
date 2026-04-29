@@ -161,13 +161,15 @@ pub fn evaluate(
             };
             let mut score = 1.0;
             if let Some(expected) = contains
-                && !content.contains(expected.as_str()) {
-                    score = 0.0;
-                }
+                && !content.contains(expected.as_str())
+            {
+                score = 0.0;
+            }
             if let Some(forbidden) = not_contains
-                && content.contains(forbidden.as_str()) {
-                    score = 0.0;
-                }
+                && content.contains(forbidden.as_str())
+            {
+                score = 0.0;
+            }
             score
         }
 

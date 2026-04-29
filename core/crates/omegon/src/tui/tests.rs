@@ -450,38 +450,40 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
         "expected ~53%, got {before}"
     );
 
-    app.handle_agent_event(AgentEvent::TurnEnd {
-        turn: 3,
-        turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
-        model: Some("anthropic:claude-sonnet-4-6".into()),
-        provider: Some("anthropic".into()),
-        estimated_tokens: 144_000,
-        context_window: 272_000,
-        context_composition: omegon_traits::ContextComposition {
-            conversation_tokens: 120_000,
-            system_tokens: 8_000,
-            memory_tokens: 6_000,
-            tool_schema_tokens: 2_000,
-            tool_history_tokens: 2_000,
-            thinking_tokens: 6_000,
-            free_tokens: 128_000,
-            ..Default::default()
+    app.handle_agent_event(AgentEvent::TurnEnd(Box::new(
+        omegon_traits::AgentEventTurnEnd {
+            turn: 3,
+            turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
+            model: Some("anthropic:claude-sonnet-4-6".into()),
+            provider: Some("anthropic".into()),
+            estimated_tokens: 144_000,
+            context_window: 272_000,
+            context_composition: omegon_traits::ContextComposition {
+                conversation_tokens: 120_000,
+                system_tokens: 8_000,
+                memory_tokens: 6_000,
+                tool_schema_tokens: 2_000,
+                tool_history_tokens: 2_000,
+                thinking_tokens: 6_000,
+                free_tokens: 128_000,
+                ..Default::default()
+            },
+            actual_input_tokens: 12_345,
+            actual_output_tokens: 413,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_nudge_reason: None,
+            intent_task: None,
+            intent_phase: None,
+            files_read_count: 0,
+            files_modified_count: 0,
+            stats_tool_calls: 0,
+            streaks: omegon_traits::ControllerStreaks::default(),
         },
-        actual_input_tokens: 12_345,
-        actual_output_tokens: 413,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        provider_telemetry: None,
-        dominant_phase: None,
-        drift_kind: None,
-        progress_nudge_reason: None,
-        intent_task: None,
-        intent_phase: None,
-        files_read_count: 0,
-        files_modified_count: 0,
-        stats_tool_calls: 0,
-        streaks: omegon_traits::ControllerStreaks::default(),
-    });
+    )));
 
     let after = app.footer_data.context_percent;
     assert!(
@@ -495,52 +497,56 @@ fn turn_end_does_not_overwrite_footer_context_with_last_request_input_tokens() {
 fn turn_end_tracks_session_usage_by_model_attribution() {
     let mut app = test_app();
 
-    app.handle_agent_event(AgentEvent::TurnEnd {
-        turn: 1,
-        turn_end_reason: omegon_traits::TurnEndReason::ToolContinuation,
-        model: Some("openai:gpt-5.4".into()),
-        provider: Some("openai".into()),
-        estimated_tokens: 50_000,
-        context_window: 272_000,
-        context_composition: omegon_traits::ContextComposition::default(),
-        actual_input_tokens: 100_000,
-        actual_output_tokens: 20_000,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        provider_telemetry: None,
-        dominant_phase: None,
-        drift_kind: None,
-        progress_nudge_reason: None,
-        intent_task: None,
-        intent_phase: None,
-        files_read_count: 0,
-        files_modified_count: 0,
-        stats_tool_calls: 0,
-        streaks: omegon_traits::ControllerStreaks::default(),
-    });
-    app.handle_agent_event(AgentEvent::TurnEnd {
-        turn: 2,
-        turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
-        model: Some("openrouter:qwen/qwen-qwq-32b".into()),
-        provider: Some("openrouter".into()),
-        estimated_tokens: 60_000,
-        context_window: 272_000,
-        context_composition: omegon_traits::ContextComposition::default(),
-        actual_input_tokens: 12_000,
-        actual_output_tokens: 3_000,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        provider_telemetry: None,
-        dominant_phase: None,
-        drift_kind: None,
-        progress_nudge_reason: None,
-        intent_task: None,
-        intent_phase: None,
-        files_read_count: 0,
-        files_modified_count: 0,
-        stats_tool_calls: 0,
-        streaks: omegon_traits::ControllerStreaks::default(),
-    });
+    app.handle_agent_event(AgentEvent::TurnEnd(Box::new(
+        omegon_traits::AgentEventTurnEnd {
+            turn: 1,
+            turn_end_reason: omegon_traits::TurnEndReason::ToolContinuation,
+            model: Some("openai:gpt-5.4".into()),
+            provider: Some("openai".into()),
+            estimated_tokens: 50_000,
+            context_window: 272_000,
+            context_composition: omegon_traits::ContextComposition::default(),
+            actual_input_tokens: 100_000,
+            actual_output_tokens: 20_000,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_nudge_reason: None,
+            intent_task: None,
+            intent_phase: None,
+            files_read_count: 0,
+            files_modified_count: 0,
+            stats_tool_calls: 0,
+            streaks: omegon_traits::ControllerStreaks::default(),
+        },
+    )));
+    app.handle_agent_event(AgentEvent::TurnEnd(Box::new(
+        omegon_traits::AgentEventTurnEnd {
+            turn: 2,
+            turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
+            model: Some("openrouter:qwen/qwen-qwq-32b".into()),
+            provider: Some("openrouter".into()),
+            estimated_tokens: 60_000,
+            context_window: 272_000,
+            context_composition: omegon_traits::ContextComposition::default(),
+            actual_input_tokens: 12_000,
+            actual_output_tokens: 3_000,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            provider_telemetry: None,
+            dominant_phase: None,
+            drift_kind: None,
+            progress_nudge_reason: None,
+            intent_task: None,
+            intent_phase: None,
+            files_read_count: 0,
+            files_modified_count: 0,
+            stats_tool_calls: 0,
+            streaks: omegon_traits::ControllerStreaks::default(),
+        },
+    )));
 
     assert_eq!(app.footer_data.session_input_tokens, 112_000);
     assert_eq!(app.footer_data.session_output_tokens, 23_000);
@@ -4090,14 +4096,8 @@ fn active_tool_phase_beats_runtime_thinking_in_tui() {
         args: serde_json::json!({"command": "pwd"}),
     });
 
-    app.instrument_panel.update_telemetry(
-        40.0,
-        200_000,
-        "high",
-        None,
-        true,
-        0.016,
-    );
+    app.instrument_panel
+        .update_telemetry(40.0, 200_000, "high", None, true, 0.016);
 
     assert_eq!(app.instrument_panel.debug_activity_mode(), "tool");
 }

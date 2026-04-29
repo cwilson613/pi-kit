@@ -426,25 +426,27 @@ fn read_burn_summary_between(ts_a: &str, ts_b: &str) -> Option<MutationBurnSumma
         // Quick timestamp check without full deserialization.
         if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
             && let Some(ts) = entry.get("timestamp").and_then(|v| v.as_str())
-                && ts > ts_a && ts <= ts_b {
-                    sessions += 1;
-                    total_burn_ratio += entry
-                        .get("burn_ratio")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    total_recoveries += entry
-                        .get("recoveries")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as usize;
-                    total_skills += entry
-                        .get("skills_created")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as usize;
-                    total_diagnostics += entry
-                        .get("diagnostics_created")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as usize;
-                }
+            && ts > ts_a
+            && ts <= ts_b
+        {
+            sessions += 1;
+            total_burn_ratio += entry
+                .get("burn_ratio")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            total_recoveries += entry
+                .get("recoveries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            total_skills += entry
+                .get("skills_created")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            total_diagnostics += entry
+                .get("diagnostics_created")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+        }
     }
 
     if sessions == 0 {

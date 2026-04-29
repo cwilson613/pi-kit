@@ -395,14 +395,11 @@ impl LifecycleFeature {
                     // If a non-seed status was requested, transition to it
                     if let Some(status_str) = status
                         && let Some(target) = OpsxNodeState::parse(status_str)
-                            && target != OpsxNodeState::Seed {
-                                // Use force_transition for bootstrap — the node was just created
-                                let _ = opsx.force_transition_node(
-                                    id,
-                                    target,
-                                    "initial status on create",
-                                );
-                            }
+                        && target != OpsxNodeState::Seed
+                    {
+                        // Use force_transition for bootstrap — the node was just created
+                        let _ = opsx.force_transition_node(id, target, "initial status on create");
+                    }
                 }
 
                 let node =
@@ -1209,7 +1206,7 @@ impl Feature for LifecycleFeature {
                 }
                 requests
             }
-            BusEvent::TurnEnd { .. } => {
+            BusEvent::TurnEnd(_) => {
                 self.turn_counter += 1;
                 // Refresh every 5 turns to pick up external changes
                 if self.turn_counter.is_multiple_of(5) {

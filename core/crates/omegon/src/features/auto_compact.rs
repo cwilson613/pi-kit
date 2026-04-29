@@ -92,12 +92,10 @@ impl Feature for AutoCompact {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::TurnEnd {
-                turn,
-                estimated_tokens,
-                context_window,
-                ..
-            } => {
+            BusEvent::TurnEnd(te) => {
+                let turn = &te.turn;
+                let estimated_tokens = &te.estimated_tokens;
+                let context_window = &te.context_window;
                 // Watchdog: if compaction was requested >120s ago and no
                 // Compacted event arrived, assume it failed and reset.
                 if self.compacting {
@@ -194,7 +192,7 @@ mod tests {
     use super::*;
 
     fn turn_end(tokens: usize, window: usize) -> BusEvent {
-        BusEvent::TurnEnd {
+        BusEvent::TurnEnd(Box::new(omegon_traits::BusEventTurnEnd {
             turn: 1,
             model: None,
             provider: None,
@@ -208,7 +206,7 @@ mod tests {
             dominant_phase: None,
             drift_kind: None,
             progress_signal: omegon_traits::ProgressSignal::None,
-        }
+        }))
     }
 
     #[test]

@@ -1887,7 +1887,7 @@ fn state_changed_message(sections: &[&str]) -> Value {
 
 fn refresh_sections(event: &AgentEvent) -> Option<&'static [&'static str]> {
     match event {
-        AgentEvent::TurnEnd { .. } => Some(&["session", "design", "openspec", "cleave"]),
+        AgentEvent::TurnEnd(_) => Some(&["session", "design", "openspec", "cleave"]),
         AgentEvent::HarnessStatusChanged { .. } => Some(&["harness"]),
         AgentEvent::SessionReset => Some(&["session", "design", "openspec", "cleave", "harness"]),
         _ => None,
@@ -1915,43 +1915,28 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "event_name": "turn.started",
             "turn": turn,
         }),
-        AgentEvent::TurnEnd {
-            turn,
-            model,
-            provider,
-            turn_end_reason,
-            estimated_tokens,
-            actual_input_tokens,
-            actual_output_tokens,
-            cache_read_tokens,
-            provider_telemetry,
-            dominant_phase,
-            drift_kind,
-            progress_nudge_reason,
-            streaks,
-            ..
-        } => json!({
+        AgentEvent::TurnEnd(te) => json!({
             "type": "turn_end",
             "event_name": "turn.ended",
-            "turn": turn,
-            "estimated_tokens": estimated_tokens,
-            "model": model,
-            "provider": provider,
-            "turn_end_reason": turn_end_reason,
-            "actual_input_tokens": actual_input_tokens,
-            "actual_output_tokens": actual_output_tokens,
-            "cache_read_tokens": cache_read_tokens,
-            "provider_telemetry": provider_telemetry,
-            "dominant_phase": dominant_phase,
-            "drift_kind": drift_kind,
-            "progress_nudge_reason": progress_nudge_reason,
+            "turn": te.turn,
+            "estimated_tokens": te.estimated_tokens,
+            "model": te.model,
+            "provider": te.provider,
+            "turn_end_reason": te.turn_end_reason,
+            "actual_input_tokens": te.actual_input_tokens,
+            "actual_output_tokens": te.actual_output_tokens,
+            "cache_read_tokens": te.cache_read_tokens,
+            "provider_telemetry": te.provider_telemetry,
+            "dominant_phase": te.dominant_phase,
+            "drift_kind": te.drift_kind,
+            "progress_nudge_reason": te.progress_nudge_reason,
             "streaks": {
-                "orientation_churn": streaks.orientation_churn,
-                "repeated_action_failure": streaks.repeated_action_failure,
-                "validation_thrash": streaks.validation_thrash,
-                "closure_stall": streaks.closure_stall,
-                "constraint_discovery": streaks.constraint_discovery,
-                "evidence_sufficient": streaks.evidence_sufficient,
+                "orientation_churn": te.streaks.orientation_churn,
+                "repeated_action_failure": te.streaks.repeated_action_failure,
+                "validation_thrash": te.streaks.validation_thrash,
+                "closure_stall": te.streaks.closure_stall,
+                "constraint_discovery": te.streaks.constraint_discovery,
+                "evidence_sufficient": te.streaks.evidence_sufficient,
             },
         }),
         AgentEvent::MessageStart { role } => json!({
@@ -2520,7 +2505,7 @@ mod tests {
 
     #[test]
     fn serialize_turn_end_includes_usage_and_refresh_hint() {
-        let event = AgentEvent::TurnEnd {
+        let event = AgentEvent::TurnEnd(Box::new(omegon_traits::AgentEventTurnEnd {
             turn: 2,
             turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
             model: Some("anthropic:claude-sonnet-4-6".into()),
@@ -2549,7 +2534,7 @@ mod tests {
                 closure_stall: 4,
                 ..Default::default()
             },
-        };
+        }));
         let messages = serialize_ws_messages(&event);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["type"], "turn_end");
@@ -2623,7 +2608,7 @@ mod tests {
     fn _exhaustive_agent_event_serialization_coverage(ev: &AgentEvent) {
         match ev {
             AgentEvent::TurnStart { .. } => {}
-            AgentEvent::TurnEnd { .. } => {}
+            AgentEvent::TurnEnd(_) => {}
             AgentEvent::MessageStart { .. } => {}
             AgentEvent::MessageChunk { .. } => {}
             AgentEvent::ThinkingChunk { .. } => {}
@@ -2651,7 +2636,7 @@ mod tests {
     fn serialize_all_event_types() {
         let events = vec![
             AgentEvent::TurnStart { turn: 1 },
-            AgentEvent::TurnEnd {
+            AgentEvent::TurnEnd(Box::new(omegon_traits::AgentEventTurnEnd {
                 turn: 1,
                 turn_end_reason: omegon_traits::TurnEndReason::ToolContinuation,
                 model: None,
@@ -2673,7 +2658,7 @@ mod tests {
                 files_modified_count: 0,
                 stats_tool_calls: 0,
                 streaks: omegon_traits::ControllerStreaks::default(),
-            },
+            })),
             AgentEvent::MessageStart {
                 role: "assistant".into(),
             },

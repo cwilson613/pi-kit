@@ -27,7 +27,6 @@ pub struct Prompt {
     pub arguments: Vec<PromptArgument>,
 
     // ─── Omegon-specific (lost in MCP shim) ───
-
     /// When true, host injects relevant mind facts into the expanded prompt.
     #[serde(default)]
     pub mind_context: bool,

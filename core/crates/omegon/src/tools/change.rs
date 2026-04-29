@@ -149,7 +149,7 @@ pub async fn execute(
     }
 
     for (path, mut file_edits) in edits_by_file {
-        file_edits.sort_by(|a, b| b.offset.cmp(&a.offset));
+        file_edits.sort_by_key(|e| std::cmp::Reverse(e.offset));
 
         let mut content = snapshots
             .get(&path)

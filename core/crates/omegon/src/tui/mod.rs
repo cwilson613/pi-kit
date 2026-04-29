@@ -918,7 +918,7 @@ fn detect_auspex_target() -> Option<AuspexProbe> {
 fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
     let content_width = main_area.width.saturating_sub(2).max(1);
     let editor_rows = editor.visual_line_count(content_width) as u16;
-    let max_editor = (main_area.height * 40 / 100).max(5).min(20);
+    let max_editor = (main_area.height * 40 / 100).clamp(5, 20);
     (editor_rows + 2).clamp(3, max_editor) // +2 for border
 }
 
@@ -1753,13 +1753,12 @@ impl App {
         // Check for persona changes
         if prev.active_persona != current.active_persona {
             match (&prev.active_persona, &current.active_persona) {
-                (Some(old), Some(new))
-                    if old.id != new.id => {
-                        self.show_toast(
-                            &format!("Persona → {} {}", new.badge, new.name),
-                            ratatui_toaster::ToastType::Info,
-                        );
-                    }
+                (Some(old), Some(new)) if old.id != new.id => {
+                    self.show_toast(
+                        &format!("Persona → {} {}", new.badge, new.name),
+                        ratatui_toaster::ToastType::Info,
+                    );
+                }
                 (Some(old), None) => {
                     self.show_toast(
                         &format!("Persona deactivated: {} {}", old.badge, old.name),
@@ -1779,13 +1778,12 @@ impl App {
         // Check for tone changes
         if prev.active_tone != current.active_tone {
             match (&prev.active_tone, &current.active_tone) {
-                (Some(old), Some(new))
-                    if old.id != new.id => {
-                        self.show_toast(
-                            &format!("Tone → {}", new.name),
-                            ratatui_toaster::ToastType::Info,
-                        );
-                    }
+                (Some(old), Some(new)) if old.id != new.id => {
+                    self.show_toast(
+                        &format!("Tone → {}", new.name),
+                        ratatui_toaster::ToastType::Info,
+                    );
+                }
                 (Some(old), None) => {
                     self.show_toast(
                         &format!("Tone deactivated: {}", old.name),
@@ -2349,13 +2347,14 @@ impl App {
             "demo" => {
                 // Resume existing overlay if still active
                 if let Some(ref overlay) = self.tutorial_overlay
-                    && overlay.active {
-                        return SlashResult::Display(format!(
-                            "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.",
-                            overlay.step_index() + 1,
-                            overlay.total_steps(),
-                        ));
-                    }
+                    && overlay.active
+                {
+                    return SlashResult::Display(format!(
+                        "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.",
+                        overlay.step_index() + 1,
+                        overlay.total_steps(),
+                    ));
+                }
                 // Start demo overlay
                 let has_design = self.dashboard.status_counts.total > 0;
                 self.tutorial_overlay = Some(tutorial::Tutorial::new_demo(has_design));
@@ -2367,15 +2366,16 @@ impl App {
                 // Explicit opt-in to legacy lesson-based tutorial (if project has lesson files)
                 let tutorial_dir = self.cwd().join(".omegon").join("tutorial");
                 if tutorial_dir.is_dir()
-                    && let Some(tut) = TutorialState::load(&tutorial_dir) {
-                        let lesson = tut.current_lesson().clone();
-                        let status = tut.status_line();
-                        self.tutorial = Some(tut);
-                        self.queue_prompt(lesson.content, Vec::new());
-                        return SlashResult::Display(format!(
-                            "{status}\n\nLesson queued. The agent will begin when ready."
-                        ));
-                    }
+                    && let Some(tut) = TutorialState::load(&tutorial_dir)
+                {
+                    let lesson = tut.current_lesson().clone();
+                    let status = tut.status_line();
+                    self.tutorial = Some(tut);
+                    self.queue_prompt(lesson.content, Vec::new());
+                    return SlashResult::Display(format!(
+                        "{status}\n\nLesson queued. The agent will begin when ready."
+                    ));
+                }
                 SlashResult::Display("No lesson files found in .omegon/tutorial/".into())
             }
             "consent" => {
@@ -2398,23 +2398,24 @@ impl App {
             _ => {
                 // Resume existing overlay if still active
                 if let Some(ref overlay) = self.tutorial_overlay
-                    && overlay.active {
-                        let mode_note = match overlay.mode {
-                            tutorial::TutorialMode::ConsentRequired => {
-                                "\n\nℹ Anthropic subscription detected. Type /tutorial consent\nto enable interactive agent steps (uses subscription quota)."
-                            }
-                            tutorial::TutorialMode::OrientationOnly => {
-                                "\n\nℹ No Victory-tier cloud model found. Add an API key or\n/login openai-codex for the full interactive tutorial."
-                            }
-                            tutorial::TutorialMode::Interactive => "",
-                        };
-                        return SlashResult::Display(format!(
-                            "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.{}",
-                            overlay.step_index() + 1,
-                            overlay.total_steps(),
-                            mode_note,
-                        ));
-                    }
+                    && overlay.active
+                {
+                    let mode_note = match overlay.mode {
+                        tutorial::TutorialMode::ConsentRequired => {
+                            "\n\nℹ Anthropic subscription detected. Type /tutorial consent\nto enable interactive agent steps (uses subscription quota)."
+                        }
+                        tutorial::TutorialMode::OrientationOnly => {
+                            "\n\nℹ No Victory-tier cloud model found. Add an API key or\n/login openai-codex for the full interactive tutorial."
+                        }
+                        tutorial::TutorialMode::Interactive => "",
+                    };
+                    return SlashResult::Display(format!(
+                        "Tutorial overlay active (step {}/{}). Press Tab to advance, Esc to dismiss.{}",
+                        overlay.step_index() + 1,
+                        overlay.total_steps(),
+                        mode_note,
+                    ));
+                }
                 // Gate: detect what the operator has available
                 let has_design = self.dashboard.status_counts.total > 0;
                 let mode = tutorial::tutorial_gate();
@@ -2448,14 +2449,15 @@ impl App {
     /// Advance to the next tutorial step/lesson.
     fn handle_tutorial_next(&mut self) -> SlashResult {
         if let Some(ref mut overlay) = self.tutorial_overlay
-            && overlay.active {
-                overlay.advance();
-                return SlashResult::Display(format!(
-                    "Tutorial step {}/{}",
-                    overlay.step_index() + 1,
-                    overlay.total_steps()
-                ));
-            }
+            && overlay.active
+        {
+            overlay.advance();
+            return SlashResult::Display(format!(
+                "Tutorial step {}/{}",
+                overlay.step_index() + 1,
+                overlay.total_steps()
+            ));
+        }
         if let Some(ref mut tut) = self.tutorial {
             if tut.advance() {
                 let lesson = tut.current_lesson().clone();
@@ -2475,14 +2477,15 @@ impl App {
     /// Go back to the previous tutorial step/lesson.
     fn handle_tutorial_prev(&mut self) -> SlashResult {
         if let Some(ref mut overlay) = self.tutorial_overlay
-            && overlay.active {
-                overlay.go_back();
-                return SlashResult::Display(format!(
-                    "Tutorial step {}/{}",
-                    overlay.step_index() + 1,
-                    overlay.total_steps()
-                ));
-            }
+            && overlay.active
+        {
+            overlay.go_back();
+            return SlashResult::Display(format!(
+                "Tutorial step {}/{}",
+                overlay.step_index() + 1,
+                overlay.total_steps()
+            ));
+        }
         if let Some(ref mut tut) = self.tutorial {
             if tut.go_back() {
                 let lesson = tut.current_lesson().clone();
@@ -2679,10 +2682,10 @@ impl App {
                 let milestones = load_milestones(&milestone_file);
                 if let Some(ms) = milestones.get(*version) {
                     let total = ms.nodes.len();
-                    let mut implemented = 0;
-                    let mut decided = 0;
-                    let mut exploring = 0;
-                    let mut seed = 0;
+                    let mut implemented: usize = 0;
+                    let mut decided: usize = 0;
+                    let mut exploring: usize = 0;
+                    let mut seed: usize = 0;
                     for node_id in &ms.nodes {
                         if let Some(node) = self.dashboard.all_nodes.iter().find(|n| n.id == *node_id) {
                             match node.status {
@@ -2696,7 +2699,7 @@ impl App {
                         }
                     }
                     let frozen = if ms.frozen { "🔒 FROZEN" } else { "open" };
-                    let progress = if total > 0 { implemented * 100 / total } else { 0 };
+                    let progress = (implemented * 100).checked_div(total).unwrap_or(0);
                     SlashResult::Display(format!(
                         "{} — {}\n\n  {} nodes total\n  {} implemented ({}%)\n  {} decided\n  {} exploring\n  {} seed/unknown",
                         version, frozen, total, implemented, progress, decided, exploring, seed
@@ -3190,15 +3193,16 @@ impl App {
         } else {
             // Render extension widget with schema-aware formatting
             if let Tab::Extension { widget_id, .. } = self.conversation.tabs.active()
-                && let Some(widget) = self.extension_widgets.get(widget_id) {
-                    widget_renderer::render_widget(
-                        frame,
-                        content_area,
-                        &widget.renderer,
-                        &widget.current_data,
-                        &widget.label,
-                    );
-                }
+                && let Some(widget) = self.extension_widgets.get(widget_id)
+            {
+                widget_renderer::render_widget(
+                    frame,
+                    content_area,
+                    &widget.renderer,
+                    &widget.current_data,
+                    &widget.label,
+                );
+            }
         }
 
         self.conversation_area = Some(conversation_area);
@@ -3347,23 +3351,24 @@ impl App {
             // Push live cleave progress into the instrument panel each render tick
             // so the tools→cleave swap happens without turn-boundary latency.
             if let Some(ref cp_lock) = self.dashboard_handles.cleave
-                && let Ok(cp) = cp_lock.lock() {
-                    let snapshot = if cp.active { Some(cp.clone()) } else { None };
-                    self.instrument_panel.set_cleave_progress(snapshot);
-                    // Roll new child tokens into session totals (delta only).
-                    let new_in = cp
-                        .total_tokens_in
-                        .saturating_sub(self.cleave_tokens_accounted_in);
-                    let new_out = cp
-                        .total_tokens_out
-                        .saturating_sub(self.cleave_tokens_accounted_out);
-                    if new_in > 0 || new_out > 0 {
-                        self.footer_data.session_input_tokens += new_in;
-                        self.footer_data.session_output_tokens += new_out;
-                        self.cleave_tokens_accounted_in += new_in;
-                        self.cleave_tokens_accounted_out += new_out;
-                    }
+                && let Ok(cp) = cp_lock.lock()
+            {
+                let snapshot = if cp.active { Some(cp.clone()) } else { None };
+                self.instrument_panel.set_cleave_progress(snapshot);
+                // Roll new child tokens into session totals (delta only).
+                let new_in = cp
+                    .total_tokens_in
+                    .saturating_sub(self.cleave_tokens_accounted_in);
+                let new_out = cp
+                    .total_tokens_out
+                    .saturating_sub(self.cleave_tokens_accounted_out);
+                if new_in > 0 || new_out > 0 {
+                    self.footer_data.session_input_tokens += new_in;
+                    self.footer_data.session_output_tokens += new_out;
+                    self.cleave_tokens_accounted_in += new_in;
+                    self.cleave_tokens_accounted_out += new_out;
                 }
+            }
         }
 
         // ── Unified footer console: engine | inference | tools ──────
@@ -3721,33 +3726,34 @@ impl App {
 
             // ── Turn boundary header ────────────────────────────────
             if let Some(turn) = segment.meta.turn
-                && last_turn != Some(turn) {
-                    last_turn = Some(turn);
-                    if !lines.is_empty() {
-                        let mut turn_spans: Vec<Span<'static>> = vec![
-                            Span::styled("─── ", Style::default().fg(self.theme.border_dim())),
-                            Span::styled(
-                                format!("turn {turn}"),
-                                Style::default()
-                                    .fg(self.theme.accent_muted())
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ];
-                        if let Some(ctx) = segment.meta.context_percent.filter(|p| *p > 5.0) {
-                            let ctx_color = widgets::percent_color(ctx, self.theme.as_ref());
-                            turn_spans.push(Span::styled(
-                                format!(" · ctx:{ctx:.0}%"),
-                                Style::default().fg(ctx_color),
-                            ));
-                        }
-                        let fill_width = area.width.saturating_sub(40) as usize;
+                && last_turn != Some(turn)
+            {
+                last_turn = Some(turn);
+                if !lines.is_empty() {
+                    let mut turn_spans: Vec<Span<'static>> = vec![
+                        Span::styled("─── ", Style::default().fg(self.theme.border_dim())),
+                        Span::styled(
+                            format!("turn {turn}"),
+                            Style::default()
+                                .fg(self.theme.accent_muted())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    if let Some(ctx) = segment.meta.context_percent.filter(|p| *p > 5.0) {
+                        let ctx_color = widgets::percent_color(ctx, self.theme.as_ref());
                         turn_spans.push(Span::styled(
-                            format!(" {}", "─".repeat(fill_width)),
-                            Style::default().fg(self.theme.border_dim()),
+                            format!(" · ctx:{ctx:.0}%"),
+                            Style::default().fg(ctx_color),
                         ));
-                        lines.push(Line::from(turn_spans));
                     }
+                    let fill_width = area.width.saturating_sub(40) as usize;
+                    turn_spans.push(Span::styled(
+                        format!(" {}", "─".repeat(fill_width)),
+                        Style::default().fg(self.theme.border_dim()),
+                    ));
+                    lines.push(Line::from(turn_spans));
                 }
+            }
 
             let is_selected = selected == Some(idx);
             let presentation = segment.presentation();
@@ -5840,61 +5846,45 @@ impl App {
                 self.effects.start_spinner_glow();
                 self.effects.start_border_pulse();
             }
-            AgentEvent::TurnEnd {
-                turn,
-                model,
-                provider,
-                estimated_tokens,
-                context_window,
-                context_composition,
-                actual_input_tokens,
-                actual_output_tokens,
-                cache_read_tokens,
-                provider_telemetry,
-                dominant_phase,
-                drift_kind,
-                files_read_count,
-                files_modified_count,
-                ..
-            } => {
-                self.turn = turn;
+            AgentEvent::TurnEnd(te) => {
+                self.turn = te.turn;
                 // Update status line with behavioral signals
-                self.status_line.phase = dominant_phase;
-                self.status_line.drift = drift_kind;
-                self.status_line.files_read = files_read_count;
-                self.status_line.files_modified = files_modified_count;
+                self.status_line.phase = te.dominant_phase;
+                self.status_line.drift = te.drift_kind;
+                self.status_line.files_read = te.files_read_count;
+                self.status_line.files_modified = te.files_modified_count;
                 // Accumulate session-long token counts
-                self.footer_data.session_input_tokens += actual_input_tokens;
-                self.footer_data.session_output_tokens += actual_output_tokens;
-                self.footer_data.last_turn_input_tokens = actual_input_tokens;
-                self.footer_data.last_turn_output_tokens = actual_output_tokens;
-                if (actual_input_tokens > 0 || actual_output_tokens > 0)
-                    && let Some(model_id) = model
+                self.footer_data.session_input_tokens += te.actual_input_tokens;
+                self.footer_data.session_output_tokens += te.actual_output_tokens;
+                self.footer_data.last_turn_input_tokens = te.actual_input_tokens;
+                self.footer_data.last_turn_output_tokens = te.actual_output_tokens;
+                if (te.actual_input_tokens > 0 || te.actual_output_tokens > 0)
+                    && let Some(model_id) = te.model
                 {
                     self.footer_data
                         .session_usage_slices
                         .push(SessionUsageSlice {
                             model_id,
-                            provider: provider.unwrap_or_default(),
-                            input_tokens: actual_input_tokens,
-                            output_tokens: actual_output_tokens,
+                            provider: te.provider.unwrap_or_default(),
+                            input_tokens: te.actual_input_tokens,
+                            output_tokens: te.actual_output_tokens,
                         });
                 }
                 // Forward raw token counts to the instrument panel
                 self.instrument_panel.update_turn_tokens(
-                    actual_input_tokens as u32,
-                    actual_output_tokens as u32,
-                    cache_read_tokens as u32,
-                    context_composition,
-                    context_window,
+                    te.actual_input_tokens as u32,
+                    te.actual_output_tokens as u32,
+                    te.cache_read_tokens as u32,
+                    te.context_composition.clone(),
+                    te.context_window,
                 );
                 let ctx_window = self.footer_data.context_window;
                 if ctx_window > 0 {
                     // Footer context posture is total live-context usage, not the last request's
                     // provider-reported input tokens. ContextUpdated is the authoritative source;
                     // TurnEnd may fill gaps when no prior context snapshot was emitted.
-                    let tokens = if estimated_tokens > 0 {
-                        estimated_tokens
+                    let tokens = if te.estimated_tokens > 0 {
+                        te.estimated_tokens
                     } else {
                         self.footer_data.estimated_tokens
                     };
@@ -5911,7 +5901,7 @@ impl App {
                     // Context pressure gradient on conversation zone
                     self.effects.set_context_pressure(pct);
                 }
-                self.footer_data.provider_telemetry = provider_telemetry;
+                self.footer_data.provider_telemetry = te.provider_telemetry;
 
                 // Stamp the provider-reported actual tokens onto every
                 // segment that belongs to this turn so the title-bar
@@ -5920,12 +5910,12 @@ impl App {
                 // assistant text, and any other segment created during
                 // the turn share the same `meta.turn` from
                 // `current_meta()` and pick up the stamp here.
-                if actual_input_tokens > 0 || actual_output_tokens > 0 {
+                if te.actual_input_tokens > 0 || te.actual_output_tokens > 0 {
                     self.conversation.stamp_turn_tokens(
-                        turn,
+                        te.turn,
                         segments::TokenUsage {
-                            input: actual_input_tokens,
-                            output: actual_output_tokens,
+                            input: te.actual_input_tokens,
+                            output: te.actual_output_tokens,
                         },
                     );
                 }
@@ -6867,10 +6857,13 @@ fn handle_editor_command(args: &str) -> String {
             // Try to launch Zed — check CLI first, then macOS app bundle
             let launched = if std::process::Command::new("zed").arg(".").spawn().is_ok() {
                 true
-            } else { cfg!(target_os = "macos") && std::process::Command::new("open")
-                    .args(["-a", "Zed", "."])
-                    .spawn()
-                    .is_ok() };
+            } else {
+                cfg!(target_os = "macos")
+                    && std::process::Command::new("open")
+                        .args(["-a", "Zed", "."])
+                        .spawn()
+                        .is_ok()
+            };
 
             if launched {
                 result_lines.push("✓ Launching Zed...".to_string());
@@ -7093,9 +7086,10 @@ pub async fn run_tui(
     // to the full harness via /ui full, /unshackle, or /warp.
     app.apply_ui_preset(UiSurfaces::lean());
     if !app.settings().is_slim()
-        && let Ok(mut s) = app.settings.lock() {
-            s.set_posture(crate::settings::PosturePreset::Explorator);
-        }
+        && let Ok(mut s) = app.settings.lock()
+    {
+        s.set_posture(crate::settings::PosturePreset::Explorator);
+    }
 
     // Pre-populate from initial state so first frame isn't empty
     app.footer_data.total_facts = config.initial.total_facts;
@@ -7274,9 +7268,9 @@ pub async fn run_tui(
                     if let AgentEvent::HarnessStatusChanged { status_json } = ev
                         && let Ok(status) =
                             serde_json::from_value::<crate::status::HarnessStatus>(status_json)
-                        {
-                            app.footer_data.update_harness(status);
-                        }
+                    {
+                        app.footer_data.update_harness(status);
+                    }
                 }
 
                 // Safety timeout
@@ -7522,9 +7516,10 @@ pub async fn run_tui(
                         if let Some(resp) = response {
                             if let Some(respond) = app.pending_permission.take()
                                 && let Ok(mut slot) = respond.lock()
-                                    && let Some(tx) = slot.take() {
-                                        let _ = tx.send(resp);
-                                    }
+                                && let Some(tx) = slot.take()
+                            {
+                                let _ = tx.send(resp);
+                            }
                             let label = match resp {
                                 omegon_traits::PermissionResponse::Allow => {
                                     "allowed (this session)"
@@ -7652,140 +7647,135 @@ pub async fn run_tui(
 
                     // ── Tutorial overlay intercepts keys when active ────
                     if let Some(ref mut overlay) = app.tutorial_overlay
-                        && overlay.active {
-                            let step_trigger = overlay.step().trigger.clone();
-                            match key.code {
-                                KeyCode::Esc => {
-                                    overlay.dismiss();
-                                    continue;
-                                }
-                                KeyCode::BackTab => {
-                                    overlay.go_back();
-                                    continue;
-                                }
-                                KeyCode::Tab => {
-                                    match &step_trigger {
-                                        tutorial::Trigger::Tab => {
-                                            // Check BEFORE advance — fire side-effects for the step being dismissed
-                                            let leaving_step_title = overlay.step().title;
-                                            let should_open_dash =
-                                                leaving_step_title == "Auspex Browser View";
-                                            overlay.advance();
-                                            let auto_prompt = overlay
-                                                .pending_auto_prompt()
-                                                .map(|s| s.to_string());
-                                            if auto_prompt.is_some() {
-                                                overlay.mark_auto_prompt_sent();
-                                            }
-                                            // Drop overlay borrow before touching app
-                                            drop(step_trigger);
-                                            if let Some(prompt) = auto_prompt {
-                                                if !app.agent_active {
-                                                    app.conversation.push_system("▸ tutorial step");
-                                                    app.agent_active = true;
-                                                    if let Ok(mut ss) =
-                                                        app.dashboard_handles.session.lock()
-                                                    {
-                                                        ss.busy = true;
-                                                    }
-                                                    let _ = command_tx
-                                                        .send(TuiCommand::SubmitPrompt(
-                                                            PromptSubmission {
-                                                                text: prompt,
-                                                                image_paths: Vec::new(),
-                                                                submitted_by: "local-tui"
-                                                                    .to_string(),
-                                                                via: "tui",
-                                                                queue_mode: app.queue_mode,
-                                                            },
-                                                        ))
-                                                        .await;
-                                                } else {
-                                                    app.queue_prompt(prompt, Vec::new());
-                                                }
-                                            }
-                                            if should_open_dash {
-                                                let _ = command_tx
-                                                    .send(TuiCommand::StartWebDashboard)
-                                                    .await;
-                                            }
-                                            continue;
-                                        }
-                                        tutorial::Trigger::AutoPrompt(prompt) => {
-                                            if !overlay.auto_prompt_sent {
-                                                // Tab starts the auto-prompt
-                                                let prompt = prompt.to_string();
-                                                overlay.mark_auto_prompt_sent();
-                                                if !app.agent_active {
-                                                    app.conversation.push_system("▸ tutorial step");
-                                                    app.agent_active = true;
-                                                    if let Ok(mut ss) =
-                                                        app.dashboard_handles.session.lock()
-                                                    {
-                                                        ss.busy = true;
-                                                    }
-                                                    let _ = command_tx
-                                                        .send(TuiCommand::SubmitPrompt(
-                                                            PromptSubmission {
-                                                                text: prompt,
-                                                                image_paths: Vec::new(),
-                                                                submitted_by: "local-tui"
-                                                                    .to_string(),
-                                                                via: "tui",
-                                                                queue_mode: app.queue_mode,
-                                                            },
-                                                        ))
-                                                        .await;
-                                                } else {
-                                                    app.queue_prompt(prompt, Vec::new());
-                                                }
-                                            }
-                                            // If already sent, Tab does nothing — wait for agent
-                                            continue;
-                                        }
-                                        tutorial::Trigger::Command(_)
-                                        | tutorial::Trigger::AnyInput => {
-                                            // Tab passes through to normal key handling (e.g., command completion)
-                                        }
-                                    }
-                                }
-                                KeyCode::Left | KeyCode::Right if overlay.showing_choice() => {
-                                    overlay.toggle_choice();
-                                    continue;
-                                }
-                                KeyCode::Enter if overlay.showing_choice() => {
-                                    overlay.confirm_choice();
-                                    if overlay.choice == tutorial::TutorialChoice::Demo {
-                                        // Demo mode needs the demo project — dismiss overlay
-                                        // and launch the clone+exec flow
-                                        overlay.dismiss();
-                                        let result = app.launch_tutorial_project();
-                                        if let SlashResult::Display(msg) = result {
-                                            app.conversation.push_system(&msg);
-                                        }
-                                    } else {
-                                        // MyProject: advance past the choice step to the welcome
+                        && overlay.active
+                    {
+                        let step_trigger = overlay.step().trigger.clone();
+                        match key.code {
+                            KeyCode::Esc => {
+                                overlay.dismiss();
+                                continue;
+                            }
+                            KeyCode::BackTab => {
+                                overlay.go_back();
+                                continue;
+                            }
+                            KeyCode::Tab => {
+                                match &step_trigger {
+                                    tutorial::Trigger::Tab => {
+                                        // Check BEFORE advance — fire side-effects for the step being dismissed
+                                        let leaving_step_title = overlay.step().title;
+                                        let should_open_dash =
+                                            leaving_step_title == "Auspex Browser View";
                                         overlay.advance();
+                                        let auto_prompt =
+                                            overlay.pending_auto_prompt().map(|s| s.to_string());
+                                        if auto_prompt.is_some() {
+                                            overlay.mark_auto_prompt_sent();
+                                        }
+                                        // overlay borrow is released before touching app
+                                        if let Some(prompt) = auto_prompt {
+                                            if !app.agent_active {
+                                                app.conversation.push_system("▸ tutorial step");
+                                                app.agent_active = true;
+                                                if let Ok(mut ss) =
+                                                    app.dashboard_handles.session.lock()
+                                                {
+                                                    ss.busy = true;
+                                                }
+                                                let _ = command_tx
+                                                    .send(TuiCommand::SubmitPrompt(
+                                                        PromptSubmission {
+                                                            text: prompt,
+                                                            image_paths: Vec::new(),
+                                                            submitted_by: "local-tui".to_string(),
+                                                            via: "tui",
+                                                            queue_mode: app.queue_mode,
+                                                        },
+                                                    ))
+                                                    .await;
+                                            } else {
+                                                app.queue_prompt(prompt, Vec::new());
+                                            }
+                                        }
+                                        if should_open_dash {
+                                            let _ = command_tx
+                                                .send(TuiCommand::StartWebDashboard)
+                                                .await;
+                                        }
+                                        continue;
                                     }
-                                    continue;
+                                    tutorial::Trigger::AutoPrompt(prompt) => {
+                                        if !overlay.auto_prompt_sent {
+                                            // Tab starts the auto-prompt
+                                            let prompt = prompt.to_string();
+                                            overlay.mark_auto_prompt_sent();
+                                            if !app.agent_active {
+                                                app.conversation.push_system("▸ tutorial step");
+                                                app.agent_active = true;
+                                                if let Ok(mut ss) =
+                                                    app.dashboard_handles.session.lock()
+                                                {
+                                                    ss.busy = true;
+                                                }
+                                                let _ = command_tx
+                                                    .send(TuiCommand::SubmitPrompt(
+                                                        PromptSubmission {
+                                                            text: prompt,
+                                                            image_paths: Vec::new(),
+                                                            submitted_by: "local-tui".to_string(),
+                                                            via: "tui",
+                                                            queue_mode: app.queue_mode,
+                                                        },
+                                                    ))
+                                                    .await;
+                                            } else {
+                                                app.queue_prompt(prompt, Vec::new());
+                                            }
+                                        }
+                                        // If already sent, Tab does nothing — wait for agent
+                                        continue;
+                                    }
+                                    tutorial::Trigger::Command(_) | tutorial::Trigger::AnyInput => {
+                                        // Tab passes through to normal key handling (e.g., command completion)
+                                    }
                                 }
-                                _ => {
-                                    // For Command and AnyInput steps, let keys pass through
-                                    // to the editor so the user can type.
-                                    // For Enter and AutoPrompt steps, consume the key (overlay blocks).
-                                    match &step_trigger {
-                                        tutorial::Trigger::Command(_)
-                                        | tutorial::Trigger::AnyInput => {
-                                            // Fall through to normal key handling
-                                        }
-                                        _ => {
-                                            // Consume — overlay blocks input
-                                            continue;
-                                        }
+                            }
+                            KeyCode::Left | KeyCode::Right if overlay.showing_choice() => {
+                                overlay.toggle_choice();
+                                continue;
+                            }
+                            KeyCode::Enter if overlay.showing_choice() => {
+                                overlay.confirm_choice();
+                                if overlay.choice == tutorial::TutorialChoice::Demo {
+                                    // Demo mode needs the demo project — dismiss overlay
+                                    // and launch the clone+exec flow
+                                    overlay.dismiss();
+                                    let result = app.launch_tutorial_project();
+                                    if let SlashResult::Display(msg) = result {
+                                        app.conversation.push_system(&msg);
+                                    }
+                                } else {
+                                    // MyProject: advance past the choice step to the welcome
+                                    overlay.advance();
+                                }
+                                continue;
+                            }
+                            _ => {
+                                // For Command and AnyInput steps, let keys pass through
+                                // to the editor so the user can type.
+                                // For Enter and AutoPrompt steps, consume the key (overlay blocks).
+                                match &step_trigger {
+                                    tutorial::Trigger::Command(_) | tutorial::Trigger::AnyInput => {
+                                        // Fall through to normal key handling
+                                    }
+                                    _ => {
+                                        // Consume — overlay blocks input
+                                        continue;
                                     }
                                 }
                             }
                         }
+                    }
 
                     // ── Sidebar navigation mode ──────────────────────
                     // When dashboard sidebar is active, route keys to the tree.
@@ -7813,22 +7803,23 @@ pub async fn run_tui(
                     // Handle action prompt input (1-9 keys) before other keys
                     if let Some((widget_id, actions)) = &app.active_action_prompt
                         && let KeyCode::Char(c) = key.code
-                            && let Some(digit) = c.to_digit(10) {
-                                let idx = (digit - 1) as usize;
-                                if idx < actions.len() {
-                                    let action = actions[idx].clone();
-                                    // Log the action selection. The response
-                                    // path to the extension is not yet wired —
-                                    // when an extension needs bidirectional action
-                                    // handling, add a TuiCommand::WidgetAction
-                                    // variant that routes through the bus to the
-                                    // owning ExtensionFeature's rpc_call.
-                                    app.conversation
-                                        .push_system(&format!("✓ {}: {}", widget_id, action));
-                                    app.active_action_prompt = None;
-                                    continue;
-                                }
-                            }
+                        && let Some(digit) = c.to_digit(10)
+                    {
+                        let idx = (digit - 1) as usize;
+                        if idx < actions.len() {
+                            let action = actions[idx].clone();
+                            // Log the action selection. The response
+                            // path to the extension is not yet wired —
+                            // when an extension needs bidirectional action
+                            // handling, add a TuiCommand::WidgetAction
+                            // variant that routes through the bus to the
+                            // owning ExtensionFeature's rpc_call.
+                            app.conversation
+                                .push_system(&format!("✓ {}: {}", widget_id, action));
+                            app.active_action_prompt = None;
+                            continue;
+                        }
+                    }
 
                     if app.focus_mode {
                         match (key.code, key.modifiers) {
@@ -8005,29 +7996,34 @@ pub async fn run_tui(
                                     app.editor.set_text(&cmd);
                                 }
                             } else if text.is_empty()
-                                && let Some(idx) = app.conversation.focused_tool_card() {
-                                    app.conversation.toggle_expand(idx);
-                                }
+                                && let Some(idx) = app.conversation.focused_tool_card()
+                            {
+                                app.conversation.toggle_expand(idx);
+                            }
                         }
 
                         // Alt+N: next conversation tab
                         (KeyCode::Char('n'), KeyModifiers::ALT)
-                            if app.conversation.tabs.tabs.len() > 1 => {
-                                app.conversation.tabs.next_tab();
-                            }
+                            if app.conversation.tabs.tabs.len() > 1 =>
+                        {
+                            app.conversation.tabs.next_tab();
+                        }
 
                         // Alt+P: previous conversation tab
                         (KeyCode::Char('p'), KeyModifiers::ALT)
-                            if app.conversation.tabs.tabs.len() > 1 => {
-                                app.conversation.tabs.prev_tab();
-                            }
+                            if app.conversation.tabs.tabs.len() > 1 =>
+                        {
+                            app.conversation.tabs.prev_tab();
+                        }
 
                         // Shift+Enter or Alt+Enter: insert newline (multiline input)
                         (KeyCode::Enter, m)
-                            if (m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT))
-                            && !app.agent_active => {
-                                app.editor.insert_newline();
-                            }
+                            if (m.contains(KeyModifiers::SHIFT)
+                                || m.contains(KeyModifiers::ALT))
+                                && !app.agent_active =>
+                        {
+                            app.editor.insert_newline();
+                        }
 
                         // Enter in focus mode toggles expansion for the focused segment.
                         (KeyCode::Enter, _) if app.focus_mode => {

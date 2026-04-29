@@ -2112,8 +2112,12 @@ async fn dispatch_single_tool(
                         omegon_traits::ToolResult {
                             content: vec![ContentBlock::Text {
                                 text: format!(
-                                    "Access denied by user. Cannot read/write '{}'.",
-                                    perm_err.requested_path
+                                    "Access denied — '{}' is outside the workspace and not \
+                                     in trusted_directories. Use the bash tool to write to \
+                                     this path instead (e.g. bash with cat/echo redirection), \
+                                     or ask the operator to run /trust add {} in the TUI.",
+                                    perm_err.requested_path,
+                                    perm_err.directory,
                                 ),
                             }],
                             details: Value::Null,

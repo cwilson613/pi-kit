@@ -380,6 +380,9 @@ pub struct App {
             std::sync::Mutex<Option<std::sync::mpsc::Sender<omegon_traits::PermissionResponse>>>,
         >,
     >,
+    /// Path from the pending permission request — used to persist trusted
+    /// directories on AlwaysAllow so child agents inherit them.
+    pending_permission_path: Option<String>,
     /// Update checker — receives notification when a newer version is available.
     update_rx: Option<crate::update::UpdateReceiver>,
     /// Update checker sender — allows re-checking when channel changes.
@@ -1120,6 +1123,7 @@ impl App {
             tutorial: None,
             tutorial_overlay: None,
             pending_permission: None,
+            pending_permission_path: None,
             update_rx: None,
             update_tx: None,
             awaiting_continuation: false,
@@ -6106,6 +6110,7 @@ impl App {
                 // Store the responder — the next key event (y/a/n) will
                 // resolve it. See handle_permission_key below.
                 self.pending_permission = Some(respond.clone());
+                self.pending_permission_path = Some(path.clone());
             }
             AgentEvent::ToolEnd {
                 id,
@@ -7588,6 +7593,26 @@ pub async fn run_tui(
                             _ => None, // ignore other keys
                         };
                         if let Some(resp) = response {
+                            // For AlwaysAllow, persist the directory to settings
+                            // so child/delegate agents inherit it automatically.
+                            if resp == omegon_traits::PermissionResponse::AlwaysAllow
+                                && let Some(ref perm_path) = app.pending_permission_path
+                                && let Some(dir) = std::path::Path::new(perm_path).parent()
+                            {
+                                let dir_str = dir.to_string_lossy().to_string();
+                                if let Ok(mut s) = app.settings.lock()
+                                    && !s.trusted_directories.contains(&dir_str)
+                                {
+                                    s.trusted_directories.push(dir_str.clone());
+                                    let cwd = app.cwd().to_path_buf();
+                                    let mut profile = crate::settings::Profile::load(&cwd);
+                                    profile.capture_from(&s);
+                                    let _ = profile.save(&cwd);
+                                    tracing::info!(dir = %dir_str, "persisted trusted directory from AlwaysAllow");
+                                }
+                            }
+                            app.pending_permission_path = None;
+
                             if let Some(respond) = app.pending_permission.take()
                                 && let Ok(mut slot) = respond.lock()
                                 && let Some(tx) = slot.take()
@@ -7599,7 +7624,7 @@ pub async fn run_tui(
                                     "allowed (this session)"
                                 }
                                 omegon_traits::PermissionResponse::AlwaysAllow => {
-                                    "allowed (this session). Use /trust add <path> to persist."
+                                    "always allowed — persisted to project settings"
                                 }
                                 omegon_traits::PermissionResponse::Deny => "denied",
                             };

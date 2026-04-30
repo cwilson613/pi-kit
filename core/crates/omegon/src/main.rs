@@ -6050,18 +6050,53 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
     cmd.arg("--read-only");
     cmd.arg("--tmpfs=/tmp:rw,nosuid,size=512m");
 
-    // Drop all capabilities — coding agents don't need CHOWN, SETUID, etc.
+    // Drop all capabilities, then add back only NET_ADMIN for iptables egress filtering
     cmd.arg("--cap-drop=ALL");
+    cmd.arg("--cap-add=NET_ADMIN");
 
     // Resource limits — prevent fork bombs and memory exhaustion
     cmd.arg("--pids-limit=512");
     cmd.arg("--memory=4g");
 
-    // Run as non-root inside the container
-    cmd.arg("--user=1000:1000");
+    // NOTE: no --user flag. The entrypoint needs root (within the
+    // container namespace) to apply iptables egress filter rules.
+    // With rootless podman, container root maps to the host user —
+    // no privilege escalation. With docker, --cap-drop=ALL limits
+    // the effective capabilities to NET_ADMIN only.
 
-    // Network — bridge (agent needs API access for LLM providers)
+    // Network — bridge with filtered egress. Only known LLM API
+    // endpoints are reachable. Blocks exfiltration to arbitrary hosts.
+    // The entrypoint applies iptables rules from OMEGON_EGRESS_FILTER.
     cmd.arg("--network=bridge");
+
+    let egress_filter = serde_json::json!({
+        "allow_hosts": [
+            "api.anthropic.com",
+            "api.openai.com",
+            "openrouter.ai",
+            "api.groq.com",
+            "api.x.ai",
+            "api.mistral.ai",
+            "api.cerebras.ai",
+            "api.perplexity.ai",
+            "generativelanguage.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+            "router.huggingface.co",
+            "ollama.com",
+            "opencode.ai",
+            // GitHub (for git operations, release checks)
+            "github.com",
+            "api.github.com",
+            // Container image registry (for pulling images)
+            "ghcr.io",
+        ],
+        "allow_ports": [443],
+        "deny_private": true,
+        "deny_metadata": true,
+    });
+    cmd.arg("-e");
+    cmd.arg(format!("OMEGON_EGRESS_FILTER={}", egress_filter));
+    eprintln!("   Network:   filtered egress (LLM APIs + GitHub only)");
 
     // ─── Secrets: mount vault instead of forwarding raw env vars ─────
     // The host's ~/.omegon/ contains the encrypted secrets vault.
@@ -6076,12 +6111,17 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
         let vault = vault_path.as_ref().unwrap();
         // Mount only the secrets vault file — not the entire ~/.omegon/
         // directory (which contains session history, skills, plugins, etc.)
+        // Use a tmpfs overlay for /data/omegon so the entrypoint can mkdir/write,
+        // then bind-mount the vault file on top.
+        cmd.arg("--tmpfs=/data/omegon:rw,size=1m");
         cmd.arg(format!("-v={}:/data/omegon/secrets.json:ro", vault.display()));
         eprintln!("   Secrets:   {} → /data/omegon/secrets.json (vault, read-only)", vault.display());
     } else {
         // No vault — fall back to env var forwarding with a warning.
         // This is less secure (secrets visible in env/podman inspect)
         // but necessary for users who haven't set up the vault yet.
+        // tmpfs for /data/omegon so the entrypoint can bootstrap secrets.json
+        cmd.arg("--tmpfs=/data/omegon:rw,size=1m");
         eprintln!(
             "   Secrets:   no vault found — falling back to env var forwarding\n   \
              Run `omegon auth login` to set up the encrypted secrets vault."

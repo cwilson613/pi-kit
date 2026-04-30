@@ -264,6 +264,20 @@ struct Cli {
     /// Auto-confirm prompts (set by `ollama launch omegon --yes`).
     #[arg(short = 'y', long, global = true)]
     yes: bool,
+
+    /// Disable all filesystem boundary checks. The agent can read/write
+    /// anywhere on the host filesystem without permission prompts.
+    /// Use for quick untethered work when you trust the model and want
+    /// zero friction. Incompatible with --sandboxed.
+    #[arg(long, conflicts_with = "sandboxed")]
+    dangerously_bypass_permissions: bool,
+
+    /// Run the entire omegon session inside an OCI container. The current
+    /// directory is mounted at /work, everything else is kernel-isolated.
+    /// Use for adversarial testing or when you want hard enforcement even
+    /// in interactive mode. Requires podman or docker.
+    #[arg(long, conflicts_with = "dangerously_bypass_permissions")]
+    sandboxed: bool,
 }
 
 #[derive(Subcommand)]
@@ -704,6 +718,23 @@ async fn main() -> anyhow::Result<()> {
     let _ = STARTUP_INSTANT.set(std::time::Instant::now());
     let mut cli = Cli::parse();
 
+    // ─── Permission bypass ───────────────────────────────────────────────
+    if cli.dangerously_bypass_permissions {
+        // SAFETY: called before spawning any threads that read this var.
+        unsafe { std::env::set_var("OMEGON_BYPASS_PERMISSIONS", "1") };
+        eprintln!(
+            "⚠ --dangerously-bypass-permissions: all filesystem boundary \
+             checks disabled. The agent can read/write anywhere."
+        );
+    }
+
+    // ─── Sandboxed re-exec ──────────────────────────────────────────────
+    // If --sandboxed is set and we're NOT already inside a container,
+    // re-exec the entire omegon session inside an OCI container.
+    if cli.sandboxed && std::env::var("OMEGON_INSIDE_SANDBOX").is_err() {
+        return run_sandboxed(&cli).await;
+    }
+
     // ─── Ollama integration detection ────────────────────────────────────
     // When launched via `ollama launch omegon`, the --ollama-model flag
     // (set by Ollama) should override the --model CLI flag.
@@ -1026,6 +1057,8 @@ async fn main() -> anyhow::Result<()> {
                     fabricator: false,
                     explorator: false,
                     devastator: false,
+                    dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+                    sandboxed: false,
                 };
                 bench_cli.prompt_file = None;
                 run_agent_command(&bench_cli, Some(usage_json.clone())).await
@@ -5977,6 +6010,110 @@ filesystem_write = true
             }
         }
     }
+}
+
+// ── Sandboxed re-exec ────────────────────────────────────────────────────
+//
+// When `--sandboxed` is passed, re-exec the entire omegon session inside
+// an OCI container. The current directory is mounted at /work, env vars
+// are forwarded, and all remaining CLI args are passed through.
+// The user gets the same TUI/headless experience but with kernel-enforced
+// filesystem isolation.
+
+async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
+    let runtime = nex::spawn::detect_container_runtime_public()
+        .ok_or_else(|| anyhow::anyhow!(
+            "--sandboxed requires a container runtime.\n\
+             Install podman (recommended) or docker:\n  \
+             macOS:  brew install podman\n  \
+             Linux:  apt install podman\n  \
+             NixOS:  nix-env -i podman"
+        ))?;
+
+    let version = env!("CARGO_PKG_VERSION");
+    let image = format!("ghcr.io/styrene-lab/omegon:{version}");
+    let cwd = std::fs::canonicalize(&cli.cwd)?;
+
+    eprintln!("🔒 Running in sandboxed mode ({runtime} → {image})");
+    eprintln!("   Workspace: {} → /work", cwd.display());
+
+    let mut cmd = std::process::Command::new(&runtime);
+    cmd.arg("run");
+    cmd.arg("--rm");
+    cmd.arg("-it"); // interactive + TTY for TUI
+
+    // Mount cwd at /work
+    cmd.arg(format!("-v={}:/work", cwd.display()));
+    cmd.arg("--workdir=/work");
+
+    // Network — bridge (agent needs API access)
+    cmd.arg("--network=bridge");
+
+    // Forward well-known API key env vars
+    for key in &[
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "CEREBRAS_API_KEY",
+        "GOOGLE_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "GITHUB_TOKEN",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            cmd.arg("-e");
+            cmd.arg(format!("{key}={val}"));
+        }
+    }
+
+    // Mark that we're inside the sandbox (prevents infinite re-exec)
+    cmd.arg("-e");
+    cmd.arg("OMEGON_INSIDE_SANDBOX=1");
+
+    // Labels
+    cmd.arg("--label=sh.styrene.omegon.sandboxed=true");
+
+    // Image
+    cmd.arg(&image);
+
+    // Rebuild CLI args for the containerized omegon, stripping --sandboxed
+    // and --cwd (cwd is always /work inside the container)
+    let mut inner_args: Vec<String> = Vec::new();
+    if let Some(ref prompt) = cli.prompt {
+        inner_args.extend(["--prompt".into(), prompt.clone()]);
+    }
+    if let Some(ref pf) = cli.prompt_file {
+        // Prompt file must be inside cwd to be accessible in the container
+        let pf_rel = pf.strip_prefix(&cwd).unwrap_or(pf);
+        inner_args.extend(["--prompt-file".into(), format!("/work/{}", pf_rel.display())]);
+    }
+    inner_args.extend(["--model".into(), cli.model.clone()]);
+    inner_args.extend(["--max-turns".into(), cli.max_turns.to_string()]);
+    if cli.slim {
+        inner_args.push("--slim".into());
+    }
+    if cli.fresh {
+        inner_args.push("--fresh".into());
+    }
+    if let Some(ref posture) = cli.posture {
+        inner_args.extend(["--posture".into(), posture.clone()]);
+    }
+    if let Some(ref persona) = cli.persona {
+        inner_args.extend(["--persona".into(), persona.clone()]);
+    }
+    if let Some(ref ctx) = cli.context_class {
+        inner_args.extend(["--context-class".into(), ctx.clone()]);
+    }
+
+    for arg in &inner_args {
+        cmd.arg(arg);
+    }
+
+    // Exec — replace this process with the container
+    let status = cmd.status()?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 #[cfg(test)]

@@ -99,6 +99,9 @@ impl WorkspaceBoundary {
 
     /// Check whether a path is inside the workspace or a trusted directory.
     /// Returns the resolved path on success, or `PathPermissionError` on violation.
+    ///
+    /// When `OMEGON_BYPASS_PERMISSIONS=1` is set (via `--dangerously-bypass-permissions`),
+    /// all paths are allowed without checking.
     pub fn check_path(&self, path_str: &str) -> anyhow::Result<PathBuf> {
         let is_absolute = path_str.starts_with('/') || path_str.starts_with('~');
         let resolved = if is_absolute {
@@ -106,6 +109,11 @@ impl WorkspaceBoundary {
         } else {
             self.cwd.join(path_str)
         };
+
+        // Bypass mode — all paths allowed
+        if std::env::var("OMEGON_BYPASS_PERMISSIONS").is_ok() {
+            return Ok(resolved);
+        }
 
         // Canonicalize to resolve symlinks and `..` — but the file may not
         // exist yet (write/edit creating new files). In that case, canonicalize
@@ -152,6 +160,10 @@ impl WorkspaceBoundary {
     /// Pure predicate — returns true if the path is inside the workspace
     /// or a trusted directory. Does not return error details.
     pub fn is_inside_boundary(&self, path: &Path) -> bool {
+        if std::env::var("OMEGON_BYPASS_PERMISSIONS").is_ok() {
+            return true;
+        }
+
         let cwd_canonical = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 

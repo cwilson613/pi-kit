@@ -2112,19 +2112,20 @@ async fn dispatch_single_tool(
                         omegon_traits::ToolResult {
                             content: vec![ContentBlock::Text {
                                 text: format!(
-                                    "Access denied — '{}' is outside the workspace and not \
-                                     in trusted_directories. Do NOT attempt to bypass this \
-                                     restriction via bash. Instead, tell the operator that \
-                                     this step could not be completed because the directory \
-                                     '{}' is not trusted, and ask them to run:\n\n  \
-                                     /trust add {}\n\n\
-                                     Then re-run the task.",
+                                    "BLOCKED: '{}' is outside the workspace. \
+                                     This operation was denied by the permission system. \
+                                     The operator must run /trust add {} to allow \
+                                     access to this directory, then re-run the task.",
                                     perm_err.requested_path,
-                                    perm_err.directory,
                                     perm_err.directory,
                                 ),
                             }],
-                            details: Value::Null,
+                            details: serde_json::json!({
+                                "is_error": true,
+                                "blocked": true,
+                                "reason": "path_outside_workspace",
+                                "directory": perm_err.directory,
+                            }),
                         },
                         true,
                     )

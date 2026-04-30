@@ -66,9 +66,15 @@ const valueCards = [
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Omegon — Terminal-Native AI Agent Harness</title>
   <meta name="description" content="Single Rust binary. Interactive, headless, or daemon. Persistent memory. Parallel worktrees. Multiple LLM providers. An AI agent harness for operators who build." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Tomorrow:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  {import.meta.env.PUBLIC_I2P_BUILD ? (
+    <link href="/fonts/fonts.css" rel="stylesheet" />
+  ) : (
+    <>
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+      <link href="https://fonts.googleapis.com/css2?family=Tomorrow:wght@400;600;700;800&display=swap" rel="stylesheet" />
+    </>
+  )}
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 </head>
 <body>

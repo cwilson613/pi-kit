@@ -6046,6 +6046,20 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
     cmd.arg(format!("-v={}:/work", cwd.display()));
     cmd.arg("--workdir=/work");
 
+    // Read-only rootfs — prevent writes outside /work and /tmp
+    cmd.arg("--read-only");
+    cmd.arg("--tmpfs=/tmp:rw,nosuid,size=512m");
+
+    // Drop all capabilities — coding agents don't need CHOWN, SETUID, etc.
+    cmd.arg("--cap-drop=ALL");
+
+    // Resource limits — prevent fork bombs and memory exhaustion
+    cmd.arg("--pids-limit=512");
+    cmd.arg("--memory=4g");
+
+    // Run as non-root inside the container
+    cmd.arg("--user=1000:1000");
+
     // Network — bridge (agent needs API access for LLM providers)
     cmd.arg("--network=bridge");
 
@@ -6055,14 +6069,15 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
     // omegon-secrets decrypts in memory at runtime — no plaintext on
     // disk, no API keys in env vars, no secrets in `podman inspect`.
     let omegon_home = crate::paths::omegon_home().ok();
-    let vault_exists = omegon_home
-        .as_ref()
-        .is_some_and(|h| h.join("secrets.json").exists());
+    let vault_path = omegon_home.as_ref().map(|h| h.join("secrets.json"));
+    let vault_exists = vault_path.as_ref().is_some_and(|p| p.exists());
 
     if vault_exists {
-        let home = omegon_home.as_ref().unwrap();
-        cmd.arg(format!("-v={}:/data/omegon:ro", home.display()));
-        eprintln!("   Secrets:   {} → /data/omegon (vault, read-only)", home.display());
+        let vault = vault_path.as_ref().unwrap();
+        // Mount only the secrets vault file — not the entire ~/.omegon/
+        // directory (which contains session history, skills, plugins, etc.)
+        cmd.arg(format!("-v={}:/data/omegon/secrets.json:ro", vault.display()));
+        eprintln!("   Secrets:   {} → /data/omegon/secrets.json (vault, read-only)", vault.display());
     } else {
         // No vault — fall back to env var forwarding with a warning.
         // This is less secure (secrets visible in env/podman inspect)

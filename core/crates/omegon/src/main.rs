@@ -6182,6 +6182,9 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
     cmd.arg("--pids-limit=512");
     cmd.arg("--memory=4g");
 
+    // Prevent privilege escalation via setuid/setgid binaries
+    cmd.arg("--security-opt=no-new-privileges");
+
     // NOTE: no --user flag. The entrypoint needs root (within the
     // container namespace) to apply iptables egress filter rules.
     // With rootless podman, container root maps to the host user —

@@ -74,15 +74,25 @@ pub struct WorkspaceBoundary {
     cwd: PathBuf,
     settings: Option<crate::settings::SharedSettings>,
     session_approved: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    /// When true, all boundary checks are bypassed (--dangerously-bypass-permissions).
+    /// Stored as a struct field, not read from env vars, so the model cannot
+    /// influence it at runtime.
+    bypass: bool,
 }
 
 impl WorkspaceBoundary {
     /// Create a boundary anchored at the given workspace directory.
     pub fn new(cwd: PathBuf) -> Self {
+        // Read bypass from env only once at construction time — not on
+        // every check_path call. The model cannot set env vars in the
+        // parent Rust process, so this is safe. But reading a struct
+        // field is more explicit than re-checking the env on every call.
+        let bypass = std::env::var("OMEGON_BYPASS_PERMISSIONS").is_ok();
         Self {
             cwd,
             settings: None,
             session_approved: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            bypass,
         }
     }
 
@@ -110,8 +120,8 @@ impl WorkspaceBoundary {
             self.cwd.join(path_str)
         };
 
-        // Bypass mode — all paths allowed
-        if std::env::var("OMEGON_BYPASS_PERMISSIONS").is_ok() {
+        // Bypass mode — all paths allowed (--dangerously-bypass-permissions)
+        if self.bypass {
             return Ok(resolved);
         }
 
@@ -160,7 +170,7 @@ impl WorkspaceBoundary {
     /// Pure predicate — returns true if the path is inside the workspace
     /// or a trusted directory. Does not return error details.
     pub fn is_inside_boundary(&self, path: &Path) -> bool {
-        if std::env::var("OMEGON_BYPASS_PERMISSIONS").is_ok() {
+        if self.bypass {
             return true;
         }
 

@@ -14,6 +14,19 @@ visibility = "private"
 All notable changes to Omegon are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-04-29
+
+### Changed (BREAKING)
+
+- **Fail-closed filesystem boundary enforcement on all tools** — every tool that touches the filesystem now checks workspace boundaries. Previously `bash`, `view`, and all native commands (cat, cp, mv, mkdir, touch, rm, etc.) were completely unrestricted. Three-tier architecture: (1) `WorkspaceBoundary` struct enforces on structured tools + native commands, (2) bash heuristic pre-scanner catches redirect/write patterns before shell execution, (3) Nex container sandbox provides kernel-level enforcement. 26 new boundary enforcement tests. Agents can no longer bypass the permission system by routing filesystem operations through bash.
+
+### Added
+
+- **WorkspaceBoundary type** — extracted from CoreTools and shared across all tool providers. `check_path()` for full enforcement, `is_inside_boundary()` as a predicate, `approve_directory()` for session-level grants. `Clone` via `Arc` for sharing.
+- **Bash heuristic pre-scanner** — `scan_boundary_violations()` detects output redirects, tee, cp/mv/install destinations, mkdir, and rm targeting absolute paths outside the workspace. Blocked before shell execution. Documented as best-effort guardrail, not a security boundary.
+- **Native command boundary checks** — `resolve_checked()` helper in native_cmd.rs. All 14 filesystem-touching commands (cat, head, tail, wc, ls, find, grep, mkdir, touch, rm, cp, mv, sort, realpath) check workspace boundaries before any filesystem operation.
+- **ViewProvider boundary enforcement** — `view` tool now routes through `WorkspaceBoundary::check_path()` instead of its own unchecked path resolution.
+
 ## [0.17.10] - 2026-04-29
 
 ### Fixed

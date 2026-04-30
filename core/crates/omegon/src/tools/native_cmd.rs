@@ -25,7 +25,15 @@ const SHELL_META: &[char] = &[
 
 /// Try to execute a command natively. Returns `None` if the command should
 /// fall through to bash (unrecognized command, shell syntax, unsupported flags).
-pub fn try_dispatch(command: &str, cwd: &Path) -> Option<NativeResult> {
+///
+/// When `boundary` is `Some`, all file arguments are checked against the
+/// workspace boundary before any filesystem operation. Violations produce
+/// a `NativeResult` with exit_code=1 and a BLOCKED message.
+pub fn try_dispatch(
+    command: &str,
+    cwd: &Path,
+    boundary: Option<&super::WorkspaceBoundary>,
+) -> Option<NativeResult> {
     let trimmed = command.trim();
 
     // Bail on empty commands
@@ -52,19 +60,19 @@ pub fn try_dispatch(command: &str, cwd: &Path) -> Option<NativeResult> {
     let args = &argv[1..];
 
     match cmd {
-        "cat" => cmd_cat(args, cwd),
-        "head" => cmd_head(args, cwd),
-        "tail" => cmd_tail(args, cwd),
-        "wc" => cmd_wc(args, cwd),
-        "ls" => cmd_ls(args, cwd),
-        "find" => cmd_find(args, cwd),
-        "grep" => cmd_grep(args, cwd),
-        "mkdir" => cmd_mkdir(args, cwd),
-        "touch" => cmd_touch(args, cwd),
-        "rm" => cmd_rm(args, cwd),
-        "cp" => cmd_cp(args, cwd),
-        "mv" => cmd_mv(args, cwd),
-        "sort" => cmd_sort(args, cwd),
+        "cat" => cmd_cat(args, cwd, boundary),
+        "head" => cmd_head(args, cwd, boundary),
+        "tail" => cmd_tail(args, cwd, boundary),
+        "wc" => cmd_wc(args, cwd, boundary),
+        "ls" => cmd_ls(args, cwd, boundary),
+        "find" => cmd_find(args, cwd, boundary),
+        "grep" => cmd_grep(args, cwd, boundary),
+        "mkdir" => cmd_mkdir(args, cwd, boundary),
+        "touch" => cmd_touch(args, cwd, boundary),
+        "rm" => cmd_rm(args, cwd, boundary),
+        "cp" => cmd_cp(args, cwd, boundary),
+        "mv" => cmd_mv(args, cwd, boundary),
+        "sort" => cmd_sort(args, cwd, boundary),
         "basename" => cmd_basename(args),
         "dirname" => cmd_dirname(args),
         "realpath" => cmd_realpath(args, cwd),
@@ -83,6 +91,32 @@ pub fn try_dispatch(command: &str, cwd: &Path) -> Option<NativeResult> {
         }),
         _ => None,
     }
+}
+
+// ── Boundary enforcement ──────────────────────────────────────────────
+
+/// Resolve a path relative to cwd and check workspace boundary.
+/// Returns `Err(NativeResult)` with a BLOCKED message on violation,
+/// or `Ok(PathBuf)` if allowed.
+fn resolve_checked(
+    arg: &str,
+    cwd: &Path,
+    cmd: &str,
+    boundary: Option<&super::WorkspaceBoundary>,
+) -> Result<PathBuf, NativeResult> {
+    let path = cwd.join(arg);
+    if let Some(b) = boundary
+        && !b.is_inside_boundary(&path)
+    {
+        return Err(NativeResult {
+            stdout: format!(
+                "BLOCKED: {cmd}: '{}' is outside the workspace boundary",
+                arg,
+            ),
+            exit_code: 1,
+        });
+    }
+    Ok(path)
 }
 
 // ── Shell metacharacter detection ──────────────────────────────────────
@@ -133,7 +167,7 @@ fn has_shell_metachar(s: &str) -> bool {
 
 // ── cat ────────────────────────────────────────────────────────────────
 
-fn cmd_cat(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_cat(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     // Skip flags we don't handle
     if args.iter().any(|a| a.starts_with('-') && a != "-") {
         return None;
@@ -146,7 +180,10 @@ fn cmd_cat(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     let mut output = String::new();
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "cat", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         match std::fs::read_to_string(&path) {
             Ok(content) => output.push_str(&content),
             Err(e) => {
@@ -166,7 +203,7 @@ fn cmd_cat(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── head ───────────────────────────────────────────────────────────────
 
-fn cmd_head(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_head(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut n: usize = 10; // default
     let mut files: Vec<&str> = Vec::new();
     let mut iter = args.iter();
@@ -192,7 +229,10 @@ fn cmd_head(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     let mut output = String::new();
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "head", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         match std::fs::File::open(&path) {
             Ok(f) => {
                 let reader = std::io::BufReader::new(f);
@@ -223,7 +263,7 @@ fn cmd_head(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── tail ───────────────────────────────────────────────────────────────
 
-fn cmd_tail(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_tail(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut n: usize = 10;
     let mut files: Vec<&str> = Vec::new();
     let mut iter = args.iter();
@@ -248,7 +288,10 @@ fn cmd_tail(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     let mut output = String::new();
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "tail", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
@@ -275,7 +318,7 @@ fn cmd_tail(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── wc ─────────────────────────────────────────────────────────────────
 
-fn cmd_wc(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_wc(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut count_lines = false;
     let mut count_words = false;
     let mut count_bytes = false;
@@ -309,7 +352,10 @@ fn cmd_wc(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     let mut output = String::new();
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "wc", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         match std::fs::read(&path) {
             Ok(content) => {
                 let mut parts = Vec::new();
@@ -347,7 +393,7 @@ fn cmd_wc(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── ls ─────────────────────────────────────────────────────────────────
 
-fn cmd_ls(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_ls(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut show_hidden = false;
     let mut long_format = false;
     let mut paths: Vec<&str> = Vec::new();
@@ -373,7 +419,10 @@ fn cmd_ls(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     let mut output = String::new();
     for dir_path in &paths {
-        let target = cwd.join(dir_path);
+        let target = match resolve_checked(dir_path, cwd, "ls", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
 
         if target.is_file() {
             // ls <file> just prints the filename
@@ -428,7 +477,7 @@ fn cmd_ls(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── find ───────────────────────────────────────────────────────────────
 
-fn cmd_find(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_find(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     // Support: find [path] -name <pattern> [-type f|d]
     // Anything else → bash fallback
     let mut search_path: Option<&str> = None;
@@ -452,7 +501,11 @@ fn cmd_find(args: &[String], cwd: &Path) -> Option<NativeResult> {
         }
     }
 
-    let root = cwd.join(search_path.unwrap_or("."));
+    let search_arg = search_path.unwrap_or(".");
+    let root = match resolve_checked(search_arg, cwd, "find", boundary) {
+        Ok(p) => p,
+        Err(blocked) => return Some(blocked),
+    };
     let mut output = String::new();
     let mut count = 0;
 
@@ -544,7 +597,7 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 
 // ── mkdir ──────────────────────────────────────────────────────────────
 
-fn cmd_mkdir(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_mkdir(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut parents = false;
     let mut dirs: Vec<&str> = Vec::new();
 
@@ -564,7 +617,10 @@ fn cmd_mkdir(args: &[String], cwd: &Path) -> Option<NativeResult> {
     }
 
     for dir in &dirs {
-        let path = cwd.join(dir);
+        let path = match resolve_checked(dir, cwd, "mkdir", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         let result = if parents {
             std::fs::create_dir_all(&path)
         } else {
@@ -586,7 +642,7 @@ fn cmd_mkdir(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── grep ───────────────────────────────────────────────────────────────
 
-fn cmd_grep(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_grep(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut recursive = false;
     let mut line_numbers = false;
     let mut case_insensitive = false;
@@ -662,7 +718,10 @@ fn cmd_grep(args: &[String], cwd: &Path) -> Option<NativeResult> {
     // Collect files to search
     let mut search_files: Vec<PathBuf> = Vec::new();
     for p in &paths {
-        let target = cwd.join(p);
+        let target = match resolve_checked(p, cwd, "grep", boundary) {
+            Ok(t) => t,
+            Err(blocked) => return Some(blocked),
+        };
         if target.is_file() {
             search_files.push(target);
         } else if target.is_dir() && recursive {
@@ -761,7 +820,7 @@ fn cmd_grep(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── touch ──────────────────────────────────────────────────────────────
 
-fn cmd_touch(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_touch(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut files: Vec<&str> = Vec::new();
     for arg in args {
         if arg.starts_with('-') {
@@ -776,7 +835,10 @@ fn cmd_touch(args: &[String], cwd: &Path) -> Option<NativeResult> {
         });
     }
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "touch", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         if path.exists() {
             // Update mtime to now
             let now = std::time::SystemTime::now();
@@ -800,7 +862,7 @@ fn cmd_touch(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── rm ─────────────────────────────────────────────────────────────────
 
-fn cmd_rm(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_rm(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut recursive = false;
     let mut force = false;
     let mut files: Vec<&str> = Vec::new();
@@ -825,7 +887,10 @@ fn cmd_rm(args: &[String], cwd: &Path) -> Option<NativeResult> {
         });
     }
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "rm", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
 
         // Safety: refuse to remove dangerous paths
         if is_dangerous_rm_target(&path) {
@@ -904,7 +969,7 @@ fn is_dangerous_rm_target(path: &Path) -> bool {
 
 // ── cp ─────────────────────────────────────────────────────────────────
 
-fn cmd_cp(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_cp(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut recursive = false;
     let mut paths: Vec<&str> = Vec::new();
 
@@ -926,7 +991,10 @@ fn cmd_cp(args: &[String], cwd: &Path) -> Option<NativeResult> {
             exit_code: 1,
         });
     }
-    let dest = cwd.join(paths.last().unwrap());
+    let dest = match resolve_checked(paths.last().unwrap(), cwd, "cp", boundary) {
+        Ok(p) => p,
+        Err(blocked) => return Some(blocked),
+    };
     let sources = &paths[..paths.len() - 1];
 
     if sources.len() > 1 && !dest.is_dir() {
@@ -937,7 +1005,10 @@ fn cmd_cp(args: &[String], cwd: &Path) -> Option<NativeResult> {
     }
 
     for src_str in sources {
-        let src = cwd.join(src_str);
+        let src = match resolve_checked(src_str, cwd, "cp", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         if !src.exists() {
             return Some(NativeResult {
                 stdout: format!("cp: cannot stat '{}': No such file or directory", src_str),
@@ -1015,7 +1086,7 @@ fn copy_dir_recursive_depth(src: &Path, dest: &Path, depth: usize) -> std::io::R
 
 // ── mv ─────────────────────────────────────────────────────────────────
 
-fn cmd_mv(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_mv(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut paths: Vec<&str> = Vec::new();
     for arg in args {
         if arg.starts_with('-') {
@@ -1029,7 +1100,10 @@ fn cmd_mv(args: &[String], cwd: &Path) -> Option<NativeResult> {
             exit_code: 1,
         });
     }
-    let dest = cwd.join(paths.last().unwrap());
+    let dest = match resolve_checked(paths.last().unwrap(), cwd, "mv", boundary) {
+        Ok(p) => p,
+        Err(blocked) => return Some(blocked),
+    };
     let sources = &paths[..paths.len() - 1];
 
     if sources.len() > 1 && !dest.is_dir() {
@@ -1040,7 +1114,10 @@ fn cmd_mv(args: &[String], cwd: &Path) -> Option<NativeResult> {
     }
 
     for src_str in sources {
-        let src = cwd.join(src_str);
+        let src = match resolve_checked(src_str, cwd, "mv", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         let target = if dest.is_dir() {
             dest.join(src.file_name().unwrap_or_default())
         } else {
@@ -1075,7 +1152,7 @@ fn cmd_mv(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
 // ── sort ───────────────────────────────────────────────────────────────
 
-fn cmd_sort(args: &[String], cwd: &Path) -> Option<NativeResult> {
+fn cmd_sort(args: &[String], cwd: &Path, boundary: Option<&super::WorkspaceBoundary>) -> Option<NativeResult> {
     let mut reverse = false;
     let mut unique = false;
     let mut numeric = false;
@@ -1101,7 +1178,10 @@ fn cmd_sort(args: &[String], cwd: &Path) -> Option<NativeResult> {
 
     let mut all_lines: Vec<String> = Vec::new();
     for file in &files {
-        let path = cwd.join(file);
+        let path = match resolve_checked(file, cwd, "sort", boundary) {
+            Ok(p) => p,
+            Err(blocked) => return Some(blocked),
+        };
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 all_lines.extend(content.lines().map(|l| l.to_string()));
@@ -1229,19 +1309,19 @@ mod tests {
 
     #[test]
     fn dispatch_unknown_command() {
-        assert!(try_dispatch("cargo test", Path::new("/tmp")).is_none());
-        assert!(try_dispatch("npm install", Path::new("/tmp")).is_none());
+        assert!(try_dispatch("cargo test", Path::new("/tmp"), None).is_none());
+        assert!(try_dispatch("npm install", Path::new("/tmp"), None).is_none());
     }
 
     #[test]
     fn dispatch_with_pipes_falls_through() {
-        assert!(try_dispatch("ls | head", Path::new("/tmp")).is_none());
-        assert!(try_dispatch("cat file | grep foo", Path::new("/tmp")).is_none());
+        assert!(try_dispatch("ls | head", Path::new("/tmp"), None).is_none());
+        assert!(try_dispatch("cat file | grep foo", Path::new("/tmp"), None).is_none());
     }
 
     #[test]
     fn pwd_returns_cwd() {
-        let result = try_dispatch("pwd", Path::new("/tmp")).unwrap();
+        let result = try_dispatch("pwd", Path::new("/tmp"), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "/tmp");
     }
@@ -1250,14 +1330,14 @@ mod tests {
     fn cat_reads_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("test.txt"), "hello\nworld\n").unwrap();
-        let result = try_dispatch("cat test.txt", dir.path()).unwrap();
+        let result = try_dispatch("cat test.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "hello\nworld\n");
     }
 
     #[test]
     fn cat_missing_file() {
-        let result = try_dispatch("cat nonexistent.txt", Path::new("/tmp")).unwrap();
+        let result = try_dispatch("cat nonexistent.txt", Path::new("/tmp"), None).unwrap();
         assert_eq!(result.exit_code, 1);
         assert!(result.stdout.contains("nonexistent.txt"));
     }
@@ -1267,7 +1347,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let content: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         std::fs::write(dir.path().join("test.txt"), &content).unwrap();
-        let result = try_dispatch("head test.txt", dir.path()).unwrap();
+        let result = try_dispatch("head test.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout.lines().count(), 10);
         assert!(result.stdout.starts_with("line 1\n"));
@@ -1278,7 +1358,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let content: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         std::fs::write(dir.path().join("test.txt"), &content).unwrap();
-        let result = try_dispatch("head -n 3 test.txt", dir.path()).unwrap();
+        let result = try_dispatch("head -n 3 test.txt", dir.path(), None).unwrap();
         assert_eq!(result.stdout.lines().count(), 3);
     }
 
@@ -1286,7 +1366,7 @@ mod tests {
     fn wc_line_count() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("test.txt"), "a\nb\nc\n").unwrap();
-        let result = try_dispatch("wc -l test.txt", dir.path()).unwrap();
+        let result = try_dispatch("wc -l test.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("3"));
         assert!(result.stdout.contains("test.txt"));
@@ -1297,7 +1377,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("alpha.txt"), "").unwrap();
         std::fs::write(dir.path().join("beta.txt"), "").unwrap();
-        let result = try_dispatch("ls", dir.path()).unwrap();
+        let result = try_dispatch("ls", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("alpha.txt"));
         assert!(result.stdout.contains("beta.txt"));
@@ -1308,7 +1388,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".hidden"), "").unwrap();
         std::fs::write(dir.path().join("visible"), "").unwrap();
-        let result = try_dispatch("ls", dir.path()).unwrap();
+        let result = try_dispatch("ls", dir.path(), None).unwrap();
         assert!(!result.stdout.contains(".hidden"));
         assert!(result.stdout.contains("visible"));
     }
@@ -1317,14 +1397,14 @@ mod tests {
     fn ls_shows_dotfiles_with_a() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".hidden"), "").unwrap();
-        let result = try_dispatch("ls -a", dir.path()).unwrap();
+        let result = try_dispatch("ls -a", dir.path(), None).unwrap();
         assert!(result.stdout.contains(".hidden"));
     }
 
     #[test]
     fn mkdir_creates_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let result = try_dispatch("mkdir newdir", dir.path()).unwrap();
+        let result = try_dispatch("mkdir newdir", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(dir.path().join("newdir").is_dir());
     }
@@ -1332,7 +1412,7 @@ mod tests {
     #[test]
     fn mkdir_p_creates_nested() {
         let dir = tempfile::tempdir().unwrap();
-        let result = try_dispatch("mkdir -p a/b/c", dir.path()).unwrap();
+        let result = try_dispatch("mkdir -p a/b/c", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(dir.path().join("a/b/c").is_dir());
     }
@@ -1357,7 +1437,7 @@ mod tests {
             "hello world\nfoo bar\nhello again\n",
         )
         .unwrap();
-        let result = try_dispatch("grep hello a.txt", dir.path()).unwrap();
+        let result = try_dispatch("grep hello a.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout.lines().count(), 2);
         assert!(result.stdout.contains("hello world"));
@@ -1368,7 +1448,7 @@ mod tests {
     fn grep_no_match_exit_1() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "foo\nbar\n").unwrap();
-        let result = try_dispatch("grep zzz a.txt", dir.path()).unwrap();
+        let result = try_dispatch("grep zzz a.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 1);
         assert!(result.stdout.is_empty());
     }
@@ -1377,7 +1457,7 @@ mod tests {
     fn grep_line_numbers() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "aaa\nbbb\naaa\n").unwrap();
-        let result = try_dispatch("grep -n aaa a.txt", dir.path()).unwrap();
+        let result = try_dispatch("grep -n aaa a.txt", dir.path(), None).unwrap();
         assert!(result.stdout.contains("1:aaa"));
         assert!(result.stdout.contains("3:aaa"));
     }
@@ -1386,7 +1466,7 @@ mod tests {
     fn grep_case_insensitive() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "Hello\nworld\n").unwrap();
-        let result = try_dispatch("grep -i hello a.txt", dir.path()).unwrap();
+        let result = try_dispatch("grep -i hello a.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("Hello"));
     }
@@ -1397,7 +1477,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub/a.txt"), "match here\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "no match\n").unwrap();
-        let result = try_dispatch("grep -r match .", dir.path()).unwrap();
+        let result = try_dispatch("grep -r match .", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("match here"));
     }
@@ -1407,7 +1487,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "match\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "nope\n").unwrap();
-        let result = try_dispatch("grep -rl match .", dir.path()).unwrap();
+        let result = try_dispatch("grep -rl match .", dir.path(), None).unwrap();
         assert!(result.stdout.contains("a.txt"));
         assert!(!result.stdout.contains("b.txt"));
     }
@@ -1415,7 +1495,7 @@ mod tests {
     #[test]
     fn touch_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        let result = try_dispatch("touch newfile.txt", dir.path()).unwrap();
+        let result = try_dispatch("touch newfile.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(dir.path().join("newfile.txt").exists());
     }
@@ -1424,7 +1504,7 @@ mod tests {
     fn rm_removes_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("doomed.txt"), "bye").unwrap();
-        let result = try_dispatch("rm doomed.txt", dir.path()).unwrap();
+        let result = try_dispatch("rm doomed.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(!dir.path().join("doomed.txt").exists());
     }
@@ -1434,7 +1514,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("deep/nested")).unwrap();
         std::fs::write(dir.path().join("deep/nested/file.txt"), "x").unwrap();
-        let result = try_dispatch("rm -rf deep", dir.path()).unwrap();
+        let result = try_dispatch("rm -rf deep", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(!dir.path().join("deep").exists());
     }
@@ -1443,7 +1523,7 @@ mod tests {
     fn cp_copies_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("src.txt"), "content").unwrap();
-        let result = try_dispatch("cp src.txt dst.txt", dir.path()).unwrap();
+        let result = try_dispatch("cp src.txt dst.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("dst.txt")).unwrap(),
@@ -1455,7 +1535,7 @@ mod tests {
     fn mv_moves_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("old.txt"), "data").unwrap();
-        let result = try_dispatch("mv old.txt new.txt", dir.path()).unwrap();
+        let result = try_dispatch("mv old.txt new.txt", dir.path(), None).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(!dir.path().join("old.txt").exists());
         assert_eq!(
@@ -1468,7 +1548,7 @@ mod tests {
     fn sort_sorts_lines() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("data.txt"), "cherry\napple\nbanana\n").unwrap();
-        let result = try_dispatch("sort data.txt", dir.path()).unwrap();
+        let result = try_dispatch("sort data.txt", dir.path(), None).unwrap();
         assert_eq!(result.stdout, "apple\nbanana\ncherry\n");
     }
 
@@ -1476,38 +1556,152 @@ mod tests {
     fn sort_reverse() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("data.txt"), "a\nb\nc\n").unwrap();
-        let result = try_dispatch("sort -r data.txt", dir.path()).unwrap();
+        let result = try_dispatch("sort -r data.txt", dir.path(), None).unwrap();
         assert_eq!(result.stdout, "c\nb\na\n");
     }
 
     #[test]
     fn basename_extracts_filename() {
-        let result = try_dispatch("basename /usr/local/bin/omegon", Path::new("/tmp")).unwrap();
+        let result = try_dispatch("basename /usr/local/bin/omegon", Path::new("/tmp"), None).unwrap();
         assert_eq!(result.stdout.trim(), "omegon");
     }
 
     #[test]
     fn dirname_extracts_parent() {
-        let result = try_dispatch("dirname /usr/local/bin/omegon", Path::new("/tmp")).unwrap();
+        let result = try_dispatch("dirname /usr/local/bin/omegon", Path::new("/tmp"), None).unwrap();
         assert_eq!(result.stdout.trim(), "/usr/local/bin");
     }
 
     #[test]
     fn echo_outputs_args() {
-        let result = try_dispatch("echo hello world", Path::new("/tmp")).unwrap();
+        let result = try_dispatch("echo hello world", Path::new("/tmp"), None).unwrap();
         assert_eq!(result.stdout, "hello world\n");
     }
 
     #[test]
     fn echo_with_flags_falls_through() {
-        assert!(try_dispatch("echo -n hello", Path::new("/tmp")).is_none());
+        assert!(try_dispatch("echo -n hello", Path::new("/tmp"), None).is_none());
     }
 
     #[test]
     fn true_and_false_exit_codes() {
-        let t = try_dispatch("true", Path::new("/tmp")).unwrap();
+        let t = try_dispatch("true", Path::new("/tmp"), None).unwrap();
         assert_eq!(t.exit_code, 0);
-        let f = try_dispatch("false", Path::new("/tmp")).unwrap();
+        let f = try_dispatch("false", Path::new("/tmp"), None).unwrap();
         assert_eq!(f.exit_code, 1);
+    }
+
+    // ── Boundary enforcement tests ────────────────────────────────────
+
+    fn test_boundary(workspace: &str) -> crate::tools::WorkspaceBoundary {
+        crate::tools::WorkspaceBoundary::new(PathBuf::from(workspace))
+    }
+
+    #[test]
+    fn boundary_blocks_cat_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("cat /etc/passwd", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"), "got: {}", result.stdout);
+    }
+
+    #[test]
+    fn boundary_allows_cat_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("test.txt"), "hello").unwrap();
+        let b = crate::tools::WorkspaceBoundary::new(cwd.clone());
+        let result = try_dispatch("cat test.txt", &cwd, Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn boundary_blocks_mkdir_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("mkdir /outside/dir", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_cp_dest_outside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("src.txt"), "data").unwrap();
+        let b = crate::tools::WorkspaceBoundary::new(cwd.clone());
+        let result = try_dispatch("cp src.txt /etc/evil.txt", &cwd, Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_mv_dest_outside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("src.txt"), "data").unwrap();
+        let b = crate::tools::WorkspaceBoundary::new(cwd.clone());
+        let result = try_dispatch("mv src.txt /etc/evil.txt", &cwd, Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_rm_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("rm /etc/passwd", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_touch_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("touch /etc/evil.txt", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_ls_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("ls /etc", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_head_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("head /etc/passwd", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_blocks_find_outside_workspace() {
+        let b = test_boundary("/tmp/workspace");
+        let result = try_dispatch("find /etc -name passwd", Path::new("/tmp/workspace"), Some(&b)).unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn boundary_allows_trusted_directory() {
+        let b = test_boundary("/tmp/workspace");
+        b.approve_directory(PathBuf::from("/etc"));
+        let result = try_dispatch("ls /etc", Path::new("/tmp/workspace"), Some(&b));
+        // Should not be blocked (though /etc may not have the expected format,
+        // the point is it's not BLOCKED)
+        if let Some(r) = result {
+            assert!(!r.stdout.contains("BLOCKED"), "trusted dir should not be blocked: {}", r.stdout);
+        }
+    }
+
+    #[test]
+    fn no_boundary_allows_everything() {
+        // With None boundary, commands are unrestricted (backward compat)
+        let result = try_dispatch("ls /etc", Path::new("/tmp"), None).unwrap();
+        assert!(!result.stdout.contains("BLOCKED"));
     }
 }

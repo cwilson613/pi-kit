@@ -31,7 +31,7 @@ pub async fn execute(
     timeout_secs: Option<u64>,
     cancel: CancellationToken,
 ) -> Result<ToolResult> {
-    execute_streaming(command, cwd, timeout_secs, cancel, ToolProgressSink::noop()).await
+    execute_streaming(command, cwd, timeout_secs, cancel, ToolProgressSink::noop(), None).await
 }
 
 /// Like [`execute`] but streams partial output through `sink` while the
@@ -50,6 +50,7 @@ pub async fn execute_streaming(
     timeout_secs: Option<u64>,
     cancel: CancellationToken,
     sink: ToolProgressSink,
+    boundary: Option<super::WorkspaceBoundary>,
 ) -> Result<ToolResult> {
     let start = Instant::now();
 
@@ -82,11 +83,38 @@ pub async fn execute_streaming(
         }
     }
 
+    // ─── Workspace boundary heuristic scan ─────────────────────────
+    // Best-effort scan for filesystem write patterns targeting paths
+    // outside the workspace boundary. This is NOT a security boundary —
+    // shell variable expansion, subshells, and programmatic I/O bypass
+    // it trivially. It exists to catch the common accidental case.
+    // The Nex container sandbox is the real enforcement layer.
+    if let Some(ref boundary) = boundary {
+        let violations = scan_boundary_violations(trimmed, boundary, cwd);
+        if !violations.is_empty() {
+            return Ok(ToolResult {
+                content: vec![ContentBlock::Text {
+                    text: format!(
+                        "BLOCKED: command targets paths outside the workspace boundary:\n{}",
+                        violations.iter().map(|v| format!("  - {v}")).collect::<Vec<_>>().join("\n"),
+                    ),
+                }],
+                details: serde_json::json!({
+                    "exitCode": -1,
+                    "durationMs": 0,
+                    "blocked": true,
+                    "reason": "workspace_boundary_violation",
+                    "paths": violations,
+                }),
+            });
+        }
+    }
+
     // ─── Native command dispatch ───────────────────────────────────
     // Intercept common single-command invocations (cat, head, ls, etc.)
     // and execute in-process without forking bash. Falls through for
     // pipes, redirects, variable expansion, and unknown commands.
-    if let Some(native) = super::native_cmd::try_dispatch(command, cwd) {
+    if let Some(native) = super::native_cmd::try_dispatch(command, cwd, boundary.as_ref()) {
         let duration_ms = start.elapsed().as_millis() as u64;
         let truncated = truncate_tail(&native.stdout);
         let mut text = truncated.content;
@@ -422,6 +450,102 @@ fn truncate_tail(output: &str) -> Truncated {
     }
 }
 
+// ── Workspace boundary heuristic scanner ──────────────────────────────
+//
+// Best-effort detection of filesystem write patterns in bash commands.
+// Scans for redirects, copy/move commands, and mkdir targeting absolute
+// paths outside the workspace.
+//
+// EXPLICITLY NOT A SECURITY BOUNDARY:
+// - Does not analyze shell variables, subshells, heredocs, or command substitution
+// - Does not catch programmatic I/O (python -c "open('/x','w')")
+// - Trivially bypassable via indirection
+// - The Nex container sandbox is the security boundary
+
+/// Paths that are always allowed regardless of workspace boundary.
+const ALLOWED_PATHS: &[&str] = &["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin"];
+
+/// Scan a bash command for filesystem write patterns targeting paths
+/// outside the workspace boundary. Returns a list of violating paths.
+fn scan_boundary_violations(
+    command: &str,
+    boundary: &super::WorkspaceBoundary,
+    cwd: &Path,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    // Pattern 1: Output redirects — > /path, >> /path, 2> /path
+    for cap in regex_lite::Regex::new(r"[012]?>>?\s*(/[^\s;|&]+)")
+        .unwrap()
+        .captures_iter(command)
+    {
+        if let Some(path_match) = cap.get(1) {
+            check_path_violation(path_match.as_str(), boundary, cwd, &mut violations);
+        }
+    }
+
+    // Pattern 2: tee to absolute path — tee /path, tee -a /path
+    for cap in regex_lite::Regex::new(r"\btee\s+(?:-a\s+)?(/[^\s;|&]+)")
+        .unwrap()
+        .captures_iter(command)
+    {
+        if let Some(path_match) = cap.get(1) {
+            check_path_violation(path_match.as_str(), boundary, cwd, &mut violations);
+        }
+    }
+
+    // Pattern 3: cp/mv/install destination — last arg if absolute
+    for cap in regex_lite::Regex::new(r"\b(?:cp|mv|install)\s+(?:[^\s]+\s+)+(/[^\s;|&]+)")
+        .unwrap()
+        .captures_iter(command)
+    {
+        if let Some(path_match) = cap.get(1) {
+            check_path_violation(path_match.as_str(), boundary, cwd, &mut violations);
+        }
+    }
+
+    // Pattern 4: mkdir on absolute path
+    for cap in regex_lite::Regex::new(r"\bmkdir\s+(?:-p\s+)?(/[^\s;|&]+)")
+        .unwrap()
+        .captures_iter(command)
+    {
+        if let Some(path_match) = cap.get(1) {
+            check_path_violation(path_match.as_str(), boundary, cwd, &mut violations);
+        }
+    }
+
+    // Pattern 5: rm on absolute path
+    for cap in regex_lite::Regex::new(r"\brm\s+(?:-[rRf]+\s+)*(/[^\s;|&]+)")
+        .unwrap()
+        .captures_iter(command)
+    {
+        if let Some(path_match) = cap.get(1) {
+            check_path_violation(path_match.as_str(), boundary, cwd, &mut violations);
+        }
+    }
+
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
+fn check_path_violation(
+    path_str: &str,
+    boundary: &super::WorkspaceBoundary,
+    cwd: &Path,
+    violations: &mut Vec<String>,
+) {
+    // Always-allowed paths (device files, etc.)
+    if ALLOWED_PATHS.contains(&path_str) {
+        return;
+    }
+
+    let path = cwd.join(path_str);
+    if !boundary.is_inside_boundary(&path) {
+        violations.push(path_str.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,6 +774,7 @@ mod tests {
             Some(10),
             cancel,
             sink,
+            None,
         )
         .await
         .unwrap();
@@ -728,6 +853,7 @@ mod tests {
             Some(15),
             cancel,
             sink,
+            None,
         )
         .await
         .unwrap();
@@ -761,6 +887,7 @@ mod tests {
             None,
             cancel,
             ToolProgressSink::noop(),
+            None,
         )
         .await
         .unwrap();
@@ -769,4 +896,78 @@ mod tests {
     }
 
     // Output filter tests moved to tools/output_filter.rs
+
+    // ── Boundary scanner tests ────────────────────────────────────────
+
+    fn test_boundary(workspace: &str) -> crate::tools::WorkspaceBoundary {
+        crate::tools::WorkspaceBoundary::new(std::path::PathBuf::from(workspace))
+    }
+
+    #[test]
+    fn scanner_catches_redirect_to_absolute_path() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("echo secret > /etc/evil.txt", &b, Path::new("/tmp/workspace"));
+        assert!(!v.is_empty(), "should catch redirect to /etc/evil.txt");
+        assert!(v.iter().any(|p| p.contains("/etc/evil.txt")));
+    }
+
+    #[test]
+    fn scanner_allows_redirect_to_devnull() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("command 2> /dev/null", &b, Path::new("/tmp/workspace"));
+        assert!(v.is_empty(), "should allow /dev/null: {:?}", v);
+    }
+
+    #[test]
+    fn scanner_catches_tee_to_absolute_path() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("echo data | tee /etc/config.yml", &b, Path::new("/tmp/workspace"));
+        assert!(!v.is_empty(), "should catch tee to /etc/config.yml");
+    }
+
+    #[test]
+    fn scanner_catches_cp_to_absolute_path() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("cp important.txt /etc/stolen.txt", &b, Path::new("/tmp/workspace"));
+        assert!(!v.is_empty(), "should catch cp dest /etc/stolen.txt");
+    }
+
+    #[test]
+    fn scanner_catches_mkdir_absolute_path() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("mkdir -p /opt/evil/dir", &b, Path::new("/tmp/workspace"));
+        assert!(!v.is_empty(), "should catch mkdir /opt/evil/dir");
+    }
+
+    #[test]
+    fn scanner_allows_relative_redirect() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("echo data > output.txt", &b, Path::new("/tmp/workspace"));
+        assert!(v.is_empty(), "relative paths should be allowed: {:?}", v);
+    }
+
+    #[test]
+    fn scanner_allows_workspace_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let b = crate::tools::WorkspaceBoundary::new(cwd.clone());
+        let cmd = format!("echo data > {}/output.txt", cwd.display());
+        let v = scan_boundary_violations(&cmd, &b, &cwd);
+        assert!(v.is_empty(), "workspace-internal absolute paths should be allowed: {:?}", v);
+    }
+
+    #[test]
+    fn scanner_catches_rm_absolute_path() {
+        let b = test_boundary("/tmp/workspace");
+        let v = scan_boundary_violations("rm -rf /var/important", &b, Path::new("/tmp/workspace"));
+        assert!(!v.is_empty(), "should catch rm /var/important");
+    }
+
+    #[test]
+    fn scanner_allows_trusted_directory() {
+        let b = test_boundary("/tmp/workspace");
+        b.approve_directory(std::path::PathBuf::from("/opt/allowed"));
+        let v = scan_boundary_violations("echo x > /opt/allowed/file.txt", &b, Path::new("/tmp/workspace"));
+        assert!(v.is_empty(), "trusted directory should be allowed: {:?}", v);
+    }
 }

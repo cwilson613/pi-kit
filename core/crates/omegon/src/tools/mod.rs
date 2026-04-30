@@ -36,9 +36,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::tool_registry::core as reg;
 
-/// Error returned by `resolve_path` when a path is outside the workspace
-/// and not in any trusted directory. The dispatch layer intercepts this
-/// to show an interactive permission prompt in the TUI.
+/// Error returned by `WorkspaceBoundary::check_path` when a path is outside
+/// the workspace and not in any trusted directory. The dispatch layer
+/// intercepts this to show an interactive permission prompt in the TUI.
 #[derive(Debug)]
 pub struct PathPermissionError {
     pub requested_path: String,
@@ -58,55 +58,118 @@ impl std::fmt::Display for PathPermissionError {
 
 impl std::error::Error for PathPermissionError {}
 
-/// Core tool provider — registers the primitive tools.
-pub struct CoreTools {
+// ── Workspace boundary ──────────────────────────────────────────────────
+
+/// Filesystem boundary enforcer — shared by all tools that touch the filesystem.
+///
+/// Checks whether a path is inside the workspace or a trusted directory.
+/// If not, returns a `PathPermissionError`. This is Tier 1 enforcement:
+/// defense-in-depth for non-sandboxed operation. The Nex container sandbox
+/// (Tier 3) provides the hard kernel-level boundary.
+///
+/// `Clone` via `Arc` so it can be passed to CoreTools, ViewProvider,
+/// native_cmd dispatch, and the bash heuristic scanner.
+#[derive(Clone)]
+pub struct WorkspaceBoundary {
     cwd: PathBuf,
-    /// Repository model — tracks branch, dirty files, submodules.
-    /// None if not inside a git repo.
-    repo_model: Option<std::sync::Arc<omegon_git::RepoModel>>,
-    /// Shared settings — used for trusted_directories check.
     settings: Option<crate::settings::SharedSettings>,
-    /// Session-level approved directories (cleared on restart).
-    session_approved: std::sync::Mutex<Vec<PathBuf>>,
+    session_approved: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
 }
 
-impl CoreTools {
+impl WorkspaceBoundary {
+    /// Create a boundary anchored at the given workspace directory.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
-            repo_model: None,
             settings: None,
-            session_approved: std::sync::Mutex::new(Vec::new()),
+            session_approved: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
-    /// Create with a RepoModel for git-aware operations.
-    pub fn with_repo_model(
-        cwd: PathBuf,
-        repo_model: std::sync::Arc<omegon_git::RepoModel>,
-    ) -> Self {
-        Self {
-            cwd,
-            repo_model: Some(repo_model),
-            settings: None,
-            session_approved: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Attach shared settings for trusted directory resolution.
+    /// Attach shared settings for trusted_directories resolution.
     pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
         self.settings = Some(settings);
         self
     }
 
-    /// Expand `~` to the home directory in a path string.
-    fn expand_tilde(path_str: &str) -> PathBuf {
-        if let Some(rest) = path_str.strip_prefix("~/")
-            && let Some(home) = dirs::home_dir()
-        {
-            return home.join(rest);
+    /// The workspace root directory.
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    /// Check whether a path is inside the workspace or a trusted directory.
+    /// Returns the resolved path on success, or `PathPermissionError` on violation.
+    pub fn check_path(&self, path_str: &str) -> anyhow::Result<PathBuf> {
+        let is_absolute = path_str.starts_with('/') || path_str.starts_with('~');
+        let resolved = if is_absolute {
+            expand_tilde(path_str)
+        } else {
+            self.cwd.join(path_str)
+        };
+
+        // Canonicalize to resolve symlinks and `..` — but the file may not
+        // exist yet (write/edit creating new files). In that case, canonicalize
+        // the parent directory and append the filename.
+        let canonical = if resolved.exists() {
+            resolved.canonicalize()?
+        } else if let Some(parent) = resolved.parent() {
+            if parent.exists() {
+                parent
+                    .canonicalize()?
+                    .join(resolved.file_name().unwrap_or_default())
+            } else {
+                lexical_normalize(&resolved)
+            }
+        } else {
+            resolved.clone()
+        };
+
+        let cwd_canonical = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+
+        // Inside workspace — always allowed
+        if canonical.starts_with(&cwd_canonical) {
+            return Ok(resolved);
         }
-        PathBuf::from(path_str)
+
+        // Outside workspace — check trusted directories
+        if self.is_trusted_path(&canonical) {
+            return Ok(resolved);
+        }
+
+        // Outside workspace and not trusted — hard block.
+        let parent_dir = canonical
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        Err(PathPermissionError {
+            requested_path: path_str.to_string(),
+            directory: parent_dir,
+            workspace: cwd_canonical.display().to_string(),
+        }
+        .into())
+    }
+
+    /// Pure predicate — returns true if the path is inside the workspace
+    /// or a trusted directory. Does not return error details.
+    pub fn is_inside_boundary(&self, path: &Path) -> bool {
+        let cwd_canonical = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        if canonical.starts_with(&cwd_canonical) {
+            return true;
+        }
+
+        self.is_trusted_path(&canonical)
+    }
+
+    /// Record a directory as approved for this session.
+    pub fn approve_directory(&self, dir: PathBuf) {
+        if let Ok(mut approved) = self.session_approved.lock()
+            && !approved.iter().any(|d| d == &dir)
+        {
+            tracing::info!(dir = %dir.display(), count = approved.len() + 1, "session directory approved");
+            approved.push(dir);
+        }
     }
 
     /// Check if a path is within a trusted directory (from settings or
@@ -142,7 +205,7 @@ impl CoreTools {
             && let Ok(s) = settings.lock()
         {
             for trusted in &s.trusted_directories {
-                let expanded = Self::expand_tilde(trusted);
+                let expanded = expand_tilde(trusted);
                 let canonical = expanded.canonicalize().unwrap_or(expanded);
                 if path.starts_with(&canonical) {
                     return true;
@@ -151,73 +214,72 @@ impl CoreTools {
         }
         false
     }
+}
 
-    /// Record a directory as approved for this session.
-    pub fn approve_directory(&self, dir: PathBuf) {
-        if let Ok(mut approved) = self.session_approved.lock()
-            && !approved.iter().any(|d| d == &dir)
-        {
-            tracing::info!(dir = %dir.display(), count = approved.len() + 1, "session directory approved");
-            approved.push(dir);
+/// Expand `~` to the home directory in a path string.
+fn expand_tilde(path_str: &str) -> PathBuf {
+    if let Some(rest) = path_str.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(path_str)
+}
+
+// ── Core tool provider ──────────────────────────────────────────────────
+
+/// Core tool provider — registers the primitive tools.
+pub struct CoreTools {
+    cwd: PathBuf,
+    /// Repository model — tracks branch, dirty files, submodules.
+    /// None if not inside a git repo.
+    repo_model: Option<std::sync::Arc<omegon_git::RepoModel>>,
+    /// Workspace boundary enforcer — shared with other tool providers.
+    boundary: WorkspaceBoundary,
+}
+
+impl CoreTools {
+    pub fn new(cwd: PathBuf) -> Self {
+        let boundary = WorkspaceBoundary::new(cwd.clone());
+        Self {
+            cwd,
+            repo_model: None,
+            boundary,
         }
     }
 
-    /// Resolve a user-provided path against cwd. Absolute paths and paths
-    /// outside the workspace are allowed if they're in a trusted directory.
-    /// Returns an error with a clear message if the path is outside the
-    /// workspace and not trusted — the agent should use bash for the first
-    /// write to an untrusted location (which will succeed, and the user
-    /// can then add it to trusted_directories).
+    /// Create with a RepoModel for git-aware operations.
+    pub fn with_repo_model(
+        cwd: PathBuf,
+        repo_model: std::sync::Arc<omegon_git::RepoModel>,
+    ) -> Self {
+        let boundary = WorkspaceBoundary::new(cwd.clone());
+        Self {
+            cwd,
+            repo_model: Some(repo_model),
+            boundary,
+        }
+    }
+
+    /// Attach shared settings for trusted directory resolution.
+    pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
+        self.boundary = self.boundary.with_settings(settings);
+        self
+    }
+
+    /// Get a clone of the workspace boundary for sharing with other providers.
+    pub fn boundary(&self) -> &WorkspaceBoundary {
+        &self.boundary
+    }
+
+    /// Record a directory as approved for this session.
+    pub fn approve_directory(&self, dir: PathBuf) {
+        self.boundary.approve_directory(dir);
+    }
+
+    /// Resolve a user-provided path against cwd, enforcing workspace boundaries.
     fn resolve_path(&self, path_str: &str) -> anyhow::Result<PathBuf> {
-        // Handle absolute paths (including ~/...)
-        let is_absolute = path_str.starts_with('/') || path_str.starts_with('~');
-        let resolved = if is_absolute {
-            Self::expand_tilde(path_str)
-        } else {
-            self.cwd.join(path_str)
-        };
-
-        // Canonicalize to resolve symlinks and `..` — but the file may not
-        // exist yet (write/edit creating new files). In that case, canonicalize
-        // the parent directory and append the filename.
-        let canonical = if resolved.exists() {
-            resolved.canonicalize()?
-        } else if let Some(parent) = resolved.parent() {
-            if parent.exists() {
-                parent
-                    .canonicalize()?
-                    .join(resolved.file_name().unwrap_or_default())
-            } else {
-                lexical_normalize(&resolved)
-            }
-        } else {
-            resolved.clone()
-        };
-
-        let cwd_canonical = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
-
-        // Inside workspace — always allowed
-        if canonical.starts_with(&cwd_canonical) {
-            return Ok(resolved);
-        }
-
-        // Outside workspace — check trusted directories
-        if self.is_trusted_path(&canonical) {
-            return Ok(resolved);
-        }
-
-        // Outside workspace and not trusted — return a typed error that
-        // the dispatch layer can intercept for interactive approval.
-        let parent_dir = canonical
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        Err(PathPermissionError {
-            requested_path: path_str.to_string(),
-            directory: parent_dir,
-            workspace: cwd_canonical.display().to_string(),
-        }
-        .into())
+        self.boundary.check_path(path_str)
     }
 }
 
@@ -760,7 +822,7 @@ impl ToolProvider for CoreTools {
                 let path_str = args["path"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'path' argument"))?;
-                let expanded = Self::expand_tilde(path_str);
+                let expanded = expand_tilde(path_str);
                 let canonical = expanded.canonicalize().unwrap_or(expanded.clone());
                 self.approve_directory(canonical.clone());
                 Ok(ToolResult {
@@ -802,7 +864,7 @@ impl ToolProvider for CoreTools {
 
             warn_git_mutation_via_bash(self.repo_model.is_some(), command);
 
-            return bash::execute_streaming(command, &self.cwd, timeout, cancel, sink).await;
+            return bash::execute_streaming(command, &self.cwd, timeout, cancel, sink, Some(self.boundary.clone())).await;
         }
 
         self.execute(tool_name, call_id, args, cancel).await
@@ -868,7 +930,7 @@ mod tests {
 
     #[test]
     fn tilde_expansion_resolves_home_directory() {
-        let expanded = CoreTools::expand_tilde("~/Documents/test.md");
+        let expanded = expand_tilde("~/Documents/test.md");
         assert!(!expanded.to_str().unwrap().contains('~'));
         assert!(expanded.to_str().unwrap().ends_with("Documents/test.md"));
     }
@@ -1017,5 +1079,49 @@ mod tests {
                 "CoreTools should not include '{name}' — it belongs to a dedicated provider"
             );
         }
+    }
+
+    // ── WorkspaceBoundary standalone tests ─────────────────────────────
+
+    #[test]
+    fn boundary_blocks_outside_workspace() {
+        let b = WorkspaceBoundary::new(PathBuf::from("/tmp/workspace"));
+        assert!(b.check_path("/etc/passwd").is_err());
+        assert!(b.check_path("/home/user/file.txt").is_err());
+    }
+
+    #[test]
+    fn boundary_allows_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("file.txt"), "test").unwrap();
+        let b = WorkspaceBoundary::new(cwd);
+        assert!(b.check_path("file.txt").is_ok());
+    }
+
+    #[test]
+    fn boundary_is_inside_predicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let b = WorkspaceBoundary::new(cwd.clone());
+        assert!(b.is_inside_boundary(&cwd.join("sub/file.txt")));
+        assert!(!b.is_inside_boundary(Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn boundary_approve_directory_allows_access() {
+        let b = WorkspaceBoundary::new(PathBuf::from("/tmp/workspace"));
+        assert!(!b.is_inside_boundary(Path::new("/opt/data/file.txt")));
+        b.approve_directory(PathBuf::from("/opt/data"));
+        assert!(b.is_inside_boundary(Path::new("/opt/data/file.txt")));
+    }
+
+    #[test]
+    fn boundary_clone_shares_approvals() {
+        let b = WorkspaceBoundary::new(PathBuf::from("/tmp/workspace"));
+        let b2 = b.clone();
+        b.approve_directory(PathBuf::from("/opt/shared"));
+        // Clone should see the same approval via Arc
+        assert!(b2.is_inside_boundary(Path::new("/opt/shared/file.txt")));
     }
 }

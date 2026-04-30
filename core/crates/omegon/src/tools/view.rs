@@ -14,20 +14,16 @@ use tokio_util::sync::CancellationToken;
 
 pub struct ViewProvider {
     cwd: PathBuf,
+    boundary: super::WorkspaceBoundary,
 }
 
 impl ViewProvider {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+    pub fn new(cwd: PathBuf, boundary: super::WorkspaceBoundary) -> Self {
+        Self { cwd, boundary }
     }
 
-    fn resolve_path(&self, path: &str) -> PathBuf {
-        let p = Path::new(path);
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.cwd.join(p)
-        }
+    fn resolve_path(&self, path: &str) -> anyhow::Result<PathBuf> {
+        self.boundary.check_path(path)
     }
 }
 
@@ -137,8 +133,10 @@ pub async fn execute(
     args: serde_json::Value,
     _cancel: tokio_util::sync::CancellationToken,
     cwd: &std::path::Path,
+    boundary: Option<&super::WorkspaceBoundary>,
 ) -> anyhow::Result<omegon_traits::ToolResult> {
-    let provider = ViewProvider::new(cwd.to_path_buf());
+    let b = boundary.cloned().unwrap_or_else(|| super::WorkspaceBoundary::new(cwd.to_path_buf()));
+    let provider = ViewProvider::new(cwd.to_path_buf(), b);
     provider.execute("view", _call_id, args, _cancel).await
 }
 
@@ -359,7 +357,7 @@ impl ToolProvider for ViewProvider {
     ) -> anyhow::Result<ToolResult> {
         let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let page = args.get("page").and_then(|v| v.as_u64()).map(|p| p as u32);
-        let path = self.resolve_path(path_str);
+        let path = self.resolve_path(path_str)?;
 
         if !path.exists() {
             return Ok(ToolResult {
@@ -415,7 +413,10 @@ mod tests {
 
     #[test]
     fn view_nonexistent_file() {
-        let _provider = ViewProvider::new(PathBuf::from("/tmp"));
+        let _provider = ViewProvider::new(
+            PathBuf::from("/tmp"),
+            crate::tools::WorkspaceBoundary::new(PathBuf::from("/tmp")),
+        );
         // Can't call async execute in sync test, but we can test the classify function
         assert!(matches!(
             classify(Path::new("nonexistent.rs")),

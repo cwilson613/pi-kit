@@ -816,6 +816,7 @@ mod tests {
                 "view",
                 Box::new(crate::tools::view::ViewProvider::new(
                     std::path::PathBuf::from("/tmp"),
+                    crate::tools::WorkspaceBoundary::new(std::path::PathBuf::from("/tmp")),
                 )),
             ),
         ];

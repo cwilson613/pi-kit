@@ -282,6 +282,7 @@ impl AgentSetup {
         } else {
             core_tools
         };
+        let boundary = core_tools.boundary().clone();
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "core-tools",
             Box::new(core_tools),
@@ -302,7 +303,7 @@ impl AgentSetup {
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "view",
-            Box::new(tools::view::ViewProvider::new(cwd.clone())),
+            Box::new(tools::view::ViewProvider::new(cwd.clone(), boundary.clone())),
         )));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "render",

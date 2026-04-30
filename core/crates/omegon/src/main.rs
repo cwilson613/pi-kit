@@ -3050,6 +3050,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                         Some(300),
                         cancel,
                         sink,
+                        None,
                     )
                     .await;
 

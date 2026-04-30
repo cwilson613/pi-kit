@@ -61,6 +61,10 @@ pub struct LoopConfig {
     /// Shared OllamaManager for warmup and model queries. Created once at
     /// startup to avoid re-creating reqwest::Client on every turn.
     pub ollama_manager: Option<crate::ollama::OllamaManager>,
+    /// Phase tracking info from loaded skills. When a skill has numbered
+    /// phases, the loop checks if the agent completed the final phase
+    /// before declaring "done." Prevents premature completion.
+    pub skill_phases: Vec<crate::skills::SkillPhaseInfo>,
 }
 
 impl Default for LoopConfig {
@@ -79,6 +83,7 @@ impl Default for LoopConfig {
             allow_commit_nudge: true,
             enforce_first_turn_execution_bias: false,
             ollama_manager: None,
+            skill_phases: Vec::new(),
         }
     }
 }
@@ -704,6 +709,39 @@ pub async fn run(
                     streaks: controller.streaks(),
                 })));
                 continue; // give it one more turn to commit
+            }
+
+            // ─── Skill phase completion check ─────────────────────────
+            // If any loaded skill has numbered phases, check whether the
+            // agent's response references the final phase. If not, nudge
+            // it to continue. Prevents the "I'm done" pattern when
+            // the last phase (e.g., "Phase 10: Export to File") was skipped.
+            if !config.skill_phases.is_empty()
+                && !conversation.intent.skill_completion_nudged
+                && turn < config.max_turns
+            {
+                let response_text = assistant_msg.text.to_lowercase();
+                let mut incomplete = Vec::new();
+                for phase in &config.skill_phases {
+                    // Check if the response mentions the final phase
+                    let phase_mentioned = response_text.contains(&format!("phase {}", phase.final_phase_number))
+                        || response_text.contains(&phase.final_phase_label.to_lowercase());
+                    if !phase_mentioned {
+                        incomplete.push(&phase.final_phase_label);
+                    }
+                }
+                if !incomplete.is_empty() {
+                    conversation.intent.skill_completion_nudged = true;
+                    let labels: Vec<String> = incomplete.iter().map(|l| format!("  - {l}")).collect();
+                    tracing::info!(incomplete = ?incomplete, "agent stopped before completing all skill phases — nudging");
+                    conversation.push_user(format!(
+                        "[System: You have not completed all phases of the active skill. \
+                         The following phase(s) still need to be executed:\n{}\n\n\
+                         Please continue and complete the remaining phases before finishing.]",
+                        labels.join("\n"),
+                    ));
+                    continue;
+                }
             }
 
             // ─── Dead-mouse detection ──────────────────────────────
@@ -2953,6 +2991,7 @@ mod tests {
             allow_commit_nudge: true,
             enforce_first_turn_execution_bias: false,
             ollama_manager: None,
+            skill_phases: Vec::new(),
         };
         // soft_limit_turns=0 → loop should compute 2/3 of max_turns (40)
         assert_eq!(config.soft_limit_turns, 0, "0 = auto-calculate in run()");

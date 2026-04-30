@@ -57,6 +57,9 @@ pub struct AgentSetup {
     pub session_secret_env: Vec<(String, String)>,
     /// Snapshot of lifecycle + memory state at startup for TUI pre-population.
     pub(crate) startup_snapshot: StartupSnapshot,
+    /// Phase tracking from loaded skills — used by the loop to detect
+    /// premature completion.
+    pub skill_phases: Vec<crate::skills::SkillPhaseInfo>,
     /// Shared handles for live dashboard updates.
     pub dashboard_handles: crate::tui::dashboard::DashboardHandles,
     /// Initial harness status assembled at startup.
@@ -567,6 +570,43 @@ impl AgentSetup {
             persona_registry.load_skills_subset(&cwd, &child_skills);
         }
 
+        // ─── Auto-trust paths declared in skills ─────────────────────────
+        // Skills can declare `trusted_paths` in their frontmatter for directories
+        // they need to read/write outside the workspace. Auto-add to settings
+        // so the user isn't prompted on every run and delegates inherit them.
+        let skill_trusted_paths = crate::skills::collect_trusted_paths(persona_registry.skills());
+        if !skill_trusted_paths.is_empty()
+            && let Some(ref s) = settings
+            && let Ok(mut settings_guard) = s.lock()
+        {
+            let mut added = Vec::new();
+            for path in &skill_trusted_paths {
+                if !settings_guard.trusted_directories.contains(path) {
+                    settings_guard.trusted_directories.push(path.clone());
+                    added.push(path.clone());
+                }
+            }
+            if !added.is_empty() {
+                tracing::info!(
+                    paths = ?added,
+                    "auto-trusted paths from skill frontmatter"
+                );
+                let mut profile = crate::settings::Profile::load(&cwd);
+                profile.capture_from(&settings_guard);
+                let _ = profile.save(&cwd);
+            }
+        }
+
+        // ─── Extract skill phase info for completion tracking ──────────
+        let skill_phases = crate::skills::collect_phase_info(persona_registry.skills());
+        if !skill_phases.is_empty() {
+            tracing::info!(
+                count = skill_phases.len(),
+                final_phases = ?skill_phases.iter().map(|p| &p.final_phase_label).collect::<Vec<_>>(),
+                "loaded skill phase tracking"
+            );
+        }
+
         // ─── Activate startup persona (child or headless --persona) ────
         if let Ok(persona_name) = std::env::var("OMEGON_CHILD_PERSONA") {
             let (personas, _) = crate::plugins::persona_loader::scan_available();
@@ -1020,6 +1060,7 @@ impl AgentSetup {
             cleave_event_slot,
             delegate_event_slot,
             vox_polling_handles,
+            skill_phases,
         })
     }
 

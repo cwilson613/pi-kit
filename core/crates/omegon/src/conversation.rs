@@ -123,6 +123,10 @@ pub struct IntentDocument {
     /// Persists across loop invocations (TUI re-enters run() per user turn)
     /// to prevent the nudge from firing every turn in the same session.
     pub commit_nudged: bool,
+    /// Set to true after the agent has been nudged about incomplete skill phases.
+    /// One nudge per session — after that, the agent's response is accepted as-is.
+    #[serde(default)]
+    pub skill_completion_nudged: bool,
 
     pub constraints_discovered: Vec<String>,
     pub failed_approaches: Vec<FailedApproach>,

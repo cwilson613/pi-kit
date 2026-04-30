@@ -197,6 +197,7 @@ async fn worker_loop(
                     allow_commit_nudge: true,
                     enforce_first_turn_execution_bias: false,
                     ollama_manager: None,
+                    skill_phases: Vec::new(),
                 };
 
                 let result = crate::r#loop::run(

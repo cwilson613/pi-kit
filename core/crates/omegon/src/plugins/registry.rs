@@ -172,6 +172,11 @@ impl PluginRegistry {
         self.loaded_skills.len()
     }
 
+    /// Access loaded skill content for trusted_paths extraction.
+    pub fn skills(&self) -> &[String] {
+        &self.loaded_skills
+    }
+
     /// Test-only: load skills from an explicit list of directories,
     /// bypassing the real ~/.omegon/skills/ path.
     #[cfg(test)]

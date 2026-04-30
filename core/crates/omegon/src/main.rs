@@ -6046,27 +6046,53 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
     cmd.arg(format!("-v={}:/work", cwd.display()));
     cmd.arg("--workdir=/work");
 
-    // Network — bridge (agent needs API access)
+    // Network — bridge (agent needs API access for LLM providers)
     cmd.arg("--network=bridge");
 
-    // Forward well-known API key env vars
-    for key in &[
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GROQ_API_KEY",
-        "XAI_API_KEY",
-        "MISTRAL_API_KEY",
-        "CEREBRAS_API_KEY",
-        "GOOGLE_API_KEY",
-        "PERPLEXITY_API_KEY",
-        "GITHUB_TOKEN",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            cmd.arg("-e");
-            cmd.arg(format!("{key}={val}"));
+    // ─── Secrets: mount vault instead of forwarding raw env vars ─────
+    // The host's ~/.omegon/ contains the encrypted secrets vault.
+    // Mount it read-only at /data/omegon/ (the container's OMEGON_HOME).
+    // omegon-secrets decrypts in memory at runtime — no plaintext on
+    // disk, no API keys in env vars, no secrets in `podman inspect`.
+    let omegon_home = crate::paths::omegon_home().ok();
+    let vault_exists = omegon_home
+        .as_ref()
+        .is_some_and(|h| h.join("secrets.json").exists());
+
+    if vault_exists {
+        let home = omegon_home.as_ref().unwrap();
+        cmd.arg(format!("-v={}:/data/omegon:ro", home.display()));
+        eprintln!("   Secrets:   {} → /data/omegon (vault, read-only)", home.display());
+    } else {
+        // No vault — fall back to env var forwarding with a warning.
+        // This is less secure (secrets visible in env/podman inspect)
+        // but necessary for users who haven't set up the vault yet.
+        eprintln!(
+            "   Secrets:   no vault found — falling back to env var forwarding\n   \
+             Run `omegon auth login` to set up the encrypted secrets vault."
+        );
+        for key in &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GROQ_API_KEY",
+            "XAI_API_KEY",
+            "MISTRAL_API_KEY",
+            "CEREBRAS_API_KEY",
+            "GOOGLE_API_KEY",
+            "PERPLEXITY_API_KEY",
+            "GITHUB_TOKEN",
+        ] {
+            if let Ok(val) = std::env::var(key) {
+                cmd.arg("-e");
+                cmd.arg(format!("{key}={val}"));
+            }
         }
     }
+
+    // No keyring inside the container — use derived key for vault decryption
+    cmd.arg("-e");
+    cmd.arg("OMEGON_NO_KEYRING=1");
 
     // Mark that we're inside the sandbox (prevents infinite re-exec)
     cmd.arg("-e");

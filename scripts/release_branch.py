@@ -92,6 +92,25 @@ def release_branch_for_version(version: str) -> str:
     return f"release/{parts[0]}.{parts[1]}"
 
 
+def next_dev_version(version: str) -> str:
+    """The dev version trunk reopens at immediately after tagging a stable release.
+
+    Tagging vX.Y.Z from trunk makes that exact version public. Trunk must not
+    keep advertising X.Y.Z afterwards: the next commit is no longer the thing
+    users installed. Reopening at X.Y.(Z+1)-dev keeps trunk strictly ahead of
+    every published tag and makes the working version self-evidently unreleased.
+
+    This is the trunk-tagging counterpart to `next_trunk_version`, which opens
+    the next *minor* line when stable ownership is handed to a release branch.
+    """
+    stable = stable_version(version)
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", stable)
+    if not match:
+        raise ReleaseBranchError(f"could not derive next dev version from {version}")
+    major, minor, patch = (int(part) for part in match.groups())
+    return f"{major}.{minor}.{patch + 1}-dev"
+
+
 def next_trunk_version(version: str) -> str:
     """The version trunk must advertise once release/X.Y is cut.
 
@@ -265,17 +284,53 @@ def merge_forward(repo_root: Path, release_branch: str | None) -> None:
     print(f"merged {branch} forward to main and restored release working branch")
 
 
+def assert_tag_reachable_from_trunk(repo_root: Path) -> None:
+    """Refuse publication unless HEAD is an ancestor of origin/main.
+
+    Under the trunk-only model this is the invariant that actually protects
+    publication. The old check — origin/main must not advertise an older
+    version than the tag — was meaningful only while a release branch could
+    publish ahead of trunk. When the tag is cut from main it is tautological:
+    the tag's version either equals trunk's or is older, so it can never fail.
+    A gate that cannot fail is worse than no gate, because it reads as
+    protection.
+
+    What can still go wrong is tagging a commit that was never on trunk: a
+    stray branch, an amended local commit, a detached experiment. Ancestry
+    catches exactly that.
+    """
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
+    ).strip()
+    reachable = (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head, "origin/main"],
+            cwd=repo_root,
+        ).returncode
+        == 0
+    )
+    if not reachable:
+        raise ReleaseBranchError(
+            f"tagged commit {head[:12]} is not reachable from origin/main; "
+            "stable tags must be cut from trunk"
+        )
+
+
 def verify_publish_invariant(repo_root: Path) -> None:
-    """Verify the tagged release and public trunk cannot advertise different versions."""
+    """Verify the tagged commit is on public trunk.
+
+    Runs from a detached tag checkout — the release workflow checks out the
+    tag, not a branch.
+    """
     ensure_clean(repo_root)
     release_version = read_workspace_version(repo_root)
     run(repo_root, "fetch", "origin", "main")
-    assert_main_version_not_behind(repo_root, release_version)
+    assert_tag_reachable_from_trunk(repo_root)
     branch = current_branch(repo_root)
     source = branch if branch else "detached release tag"
     print(
         f"publish invariant satisfied from {source}: "
-        f"origin/main builds {release_version} or newer"
+        f"{release_version} is reachable from origin/main"
     )
 
 
@@ -287,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     merge_parser = subcommands.add_parser("merge-forward")
     merge_parser.add_argument("release_branch", nargs="?")
     subcommands.add_parser("verify-publish")
+    subcommands.add_parser("next-dev-version")
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
@@ -297,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
             merge_forward(repo_root, args.release_branch)
         elif args.command == "verify-publish":
             verify_publish_invariant(repo_root)
+        elif args.command == "next-dev-version":
+            print(next_dev_version(read_workspace_version(repo_root)))
         else:
             parser.error(f"unknown command {args.command}")
     except (ReleaseBranchError, subprocess.CalledProcessError) as err:

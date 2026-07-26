@@ -33,12 +33,22 @@ class PublishInvariantTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_rejects_main_older_than_release(self) -> None:
-        with self.assertRaisesRegex(release_branch.ReleaseBranchError, "0.28.7 is behind.*0.28.8"):
-            release_branch.assert_main_version_not_behind(self.repo, "0.28.8")
+    def test_accepts_tag_on_trunk(self) -> None:
+        # The normal case: tag cut from a commit that is on origin/main.
+        release_branch.assert_tag_reachable_from_trunk(self.repo)
 
-    def test_accepts_main_at_release_version(self) -> None:
-        release_branch.assert_main_version_not_behind(self.repo, "0.28.7")
+    def test_rejects_tag_not_reachable_from_trunk(self) -> None:
+        # The failure this gate exists to catch: a tag cut from a commit that
+        # never reached trunk. The old version-comparison check could not see
+        # this at all.
+        subprocess.run(["git", "checkout", "-q", "-b", "stray"], cwd=self.repo, check=True)
+        (self.repo / "stray.txt").write_text("off-trunk")
+        subprocess.run(["git", "add", "stray.txt"], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "off trunk"], cwd=self.repo, check=True)
+        with self.assertRaisesRegex(
+            release_branch.ReleaseBranchError, "not reachable from origin/main"
+        ):
+            release_branch.assert_tag_reachable_from_trunk(self.repo)
 
     def test_verify_publish_accepts_detached_release_tag_checkout(self) -> None:
         subprocess.run(["git", "checkout", "--detach", "-q", "HEAD"], cwd=self.repo, check=True)
@@ -47,6 +57,26 @@ class PublishInvariantTests(unittest.TestCase):
 
     def test_accepts_main_newer_than_release(self) -> None:
         release_branch.assert_main_version_not_behind(self.repo, "0.28.6")
+
+
+class NextDevVersionTests(unittest.TestCase):
+    def test_reopens_at_next_patch_dev(self) -> None:
+        self.assertEqual(release_branch.next_dev_version("0.29.0"), "0.29.1-dev")
+        self.assertEqual(release_branch.next_dev_version("0.28.11"), "0.28.12-dev")
+
+    def test_rejects_prerelease_input(self) -> None:
+        with self.assertRaises(release_branch.ReleaseBranchError):
+            release_branch.next_dev_version("0.29.0-dev")
+
+    def test_reopened_trunk_outranks_the_tag_just_published(self) -> None:
+        # After tagging vX.Y.Z from trunk, trunk must sort strictly above it.
+        for published in ("0.29.0", "0.28.11", "1.0.0"):
+            reopened = release_branch.next_dev_version(published)
+            self.assertGreater(
+                release_branch.version_sort_key(reopened),
+                release_branch.version_sort_key(published),
+                f"trunk {reopened} must outrank published {published}",
+            )
 
 
 class NextTrunkVersionTests(unittest.TestCase):

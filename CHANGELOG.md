@@ -16,6 +16,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the release-branch publication gate with a tag-ancestry gate. `verify-publish` previously required a `release/X.Y` branch and compared version *strings* against `origin/main` — which enforced branch-based releases as the only legal shape and produced a self-inflicted deadlock when trunk was newer than the branch being published. It now asserts the published tag is reachable from `origin/main`, which is the property that actually matters: every stable release must be an ancestor of trunk. Trunk-tagged releases pass directly; reactive `release/X.Y` branches still pass once merged forward. Two regressions pin both directions, including refusing a tag on an unmerged side branch.
+- Made trunk reopening part of `just publish` rather than a follow-up step. Tagging vX.Y.Z makes that version public, so trunk must immediately reopen at X.Y.(Z+1)-dev; leaving it advertising the released version is what let the 0.28 line drift behind its own release branch. `next-dev-version` derives the reopen target and publish stamps, commits, and pushes it in the same procedure that published the tag.
+
 ### Fixed
 
 - Made `branch-release` state the trunk bump it requires. Cutting `release/X.Y` hands stable ownership of that line to the branch, but the helper left trunk advertising the same version — so the first patch release on the branch tripped `assert_main_version_not_behind` and blocked publication. `next_trunk_version` derives the line trunk must open and `branch-release` now prints the exact commands, with regression coverage asserting no patch on the cut line can outrank trunk.

@@ -841,6 +841,29 @@ publish:
     # Actions to silently drop workflow triggers beyond ~3 ref changes per push.
     git push origin "$BRANCH" "$TAG"
 
+    # ── Reopen trunk at the next dev version ──────────────────
+    # The tag just made $VERSION public. Trunk must not keep advertising it:
+    # the next commit is no longer what users installed. Reopening here — in
+    # the same procedure that published — is what keeps this from becoming a
+    # follow-up step that gets forgotten, which is exactly how the 0.28 line
+    # ended up with trunk behind its own release branch.
+    if [ "$BRANCH" = "main" ]; then
+        NEXT_DEV=$(python3 scripts/release_branch.py next-dev-version)
+        echo ""
+        echo "Reopening trunk at ${NEXT_DEV}..."
+        python3 - "$NEXT_DEV" <<'REOPEN'
+    import pathlib, re, sys
+    nxt = sys.argv[1]
+    p = pathlib.Path("Cargo.toml")
+    p.write_text(re.sub(r'^version = "[^"]+"', f'version = "{nxt}"', p.read_text(), count=1, flags=re.M))
+    REOPEN
+        cargo check -p omegon --offline >/dev/null 2>&1 || true
+        git add Cargo.toml Cargo.lock
+        git commit -q -m "chore(release): reopen trunk at ${NEXT_DEV}"
+        git push origin "$BRANCH"
+        echo "  trunk now at ${NEXT_DEV}"
+    fi
+
     echo ""
     echo "CI workflows triggered:"
     echo "  • release.yml  → GitHub Release with cosign-signed binaries"

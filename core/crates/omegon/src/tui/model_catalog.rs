@@ -53,6 +53,12 @@ pub struct ModelInfo {
     pub description: String,
     /// Whether it's available (authenticated, installed, etc.)
     pub available: bool,
+    /// Evidence-backed admission state, independent of credentials.
+    #[serde(default)]
+    pub admission: crate::inference_inventory::ModelAdmissionStatus,
+    /// Route-specific context pricing/allowance disclosure.
+    #[serde(default)]
+    pub context_pricing_notice: Option<crate::model_registry::ContextPricingNotice>,
     /// Stable semantic model identity shared across provider routes.
     pub conceptual_model_id: Option<String>,
     /// Model producer/vendor independent of serving provider route.
@@ -234,6 +240,10 @@ impl ModelCatalog {
                 .unwrap_or_else(|| {
                     format!("Discovered live on {display_name}; not yet curated (ungraded)")
                 });
+            let admission = snapshot.admission(offering);
+            if !admission.status.is_selectable() {
+                continue;
+            }
             providers
                 .entry(display_name.to_string())
                 .or_default()
@@ -254,6 +264,10 @@ impl ModelCatalog {
                     capabilities,
                     description,
                     available: true,
+                    admission: admission.status,
+                    context_pricing_notice: reg
+                        .model_info(&offering_id.0)
+                        .and_then(|entry| entry.context_pricing_notice.clone()),
                     conceptual_model_id: offering
                         .conceptual_model
                         .as_ref()
@@ -342,6 +356,8 @@ impl ModelCatalog {
                 capabilities: vec![Capability::Instruction, Capability::Coding],
                 description,
                 available: true,
+                admission: crate::inference_inventory::ModelAdmissionStatus::Curated,
+                context_pricing_notice: None,
                 conceptual_model_id: None,
                 producer: None,
                 execution_class: Some("local".to_string()),
@@ -404,6 +420,8 @@ impl ModelCatalog {
                         capabilities,
                         description: m.description.clone(),
                         available: true,
+                        admission: crate::inference_inventory::ModelAdmissionStatus::Observed,
+                        context_pricing_notice: None,
                         conceptual_model_id: m.conceptual_model_id.clone(),
                         producer: m.producer.clone(),
                         execution_class: m.execution_class.clone(),
@@ -441,6 +459,8 @@ impl ModelCatalog {
                         .collect(),
                     description: format!("{} via Antigravity subscription", m.name),
                     available: false,
+                    admission: crate::inference_inventory::ModelAdmissionStatus::Unavailable,
+                    context_pricing_notice: None,
                     conceptual_model_id: m.conceptual_model_id.clone(),
                     producer: m.producer.clone(),
                     execution_class: m.execution_class.clone(),
@@ -483,6 +503,8 @@ impl ModelCatalog {
                         .collect(),
                     description: m.description.clone(),
                     available: false,
+                    admission: crate::inference_inventory::ModelAdmissionStatus::Unavailable,
+                    context_pricing_notice: None,
                     conceptual_model_id: m.conceptual_model_id.clone(),
                     producer: m.producer.clone(),
                     execution_class: m.execution_class.clone(),
@@ -709,6 +731,8 @@ mod tests {
                 capabilities: vec![Capability::Reasoning, Capability::Coding],
                 description: "Qwen reasoning model".to_string(),
                 available: true,
+                admission: crate::inference_inventory::ModelAdmissionStatus::Curated,
+                context_pricing_notice: None,
                 conceptual_model_id: Some("qwen/qwen-qwq-32b".to_string()),
                 producer: Some("qwen".to_string()),
                 execution_class: Some("broker-cloud".to_string()),
@@ -729,6 +753,8 @@ mod tests {
                 ],
                 description: "Claude Sonnet 4.6".to_string(),
                 available: true,
+                admission: crate::inference_inventory::ModelAdmissionStatus::Curated,
+                context_pricing_notice: None,
                 conceptual_model_id: Some("claude-sonnet-4.6".to_string()),
                 producer: Some("anthropic".to_string()),
                 execution_class: Some("api-cloud".to_string()),
@@ -770,6 +796,8 @@ mod tests {
                 capabilities: vec![Capability::Reasoning, Capability::Coding],
                 description: "Claude Sonnet via Copilot".to_string(),
                 available: true,
+                admission: crate::inference_inventory::ModelAdmissionStatus::Curated,
+                context_pricing_notice: None,
                 conceptual_model_id: Some("claude-sonnet-4.6".to_string()),
                 producer: Some("anthropic".to_string()),
                 execution_class: Some("subscription-cloud".to_string()),
@@ -803,6 +831,8 @@ mod tests {
             capabilities: vec![],
             description: "test".to_string(),
             available: true,
+            admission: crate::inference_inventory::ModelAdmissionStatus::Curated,
+            context_pricing_notice: None,
             conceptual_model_id: None,
             producer: None,
             execution_class: None,

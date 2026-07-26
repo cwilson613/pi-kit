@@ -669,6 +669,23 @@
       "executionClass": "api-cloud"
     },
     {
+      "id": "claude-opus-5",
+      "provider": "anthropic",
+      "name": "Claude Opus 5",
+      "contextInput": 1000000,
+      "contextOutput": 131072,
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "description": "Anthropic model for complex agentic coding and enterprise work",
+      "supportsReasoning": true,
+      "conceptualModelId": "claude-opus-5",
+      "producer": "anthropic",
+      "executionClass": "api-cloud"
+    },
+    {
       "id": "claude-opus-4-8",
       "provider": "anthropic",
       "name": "Claude Opus 4.8",
@@ -708,7 +725,7 @@
       "provider": "anthropic",
       "name": "Claude Sonnet 5",
       "contextInput": 1000000,
-      "contextOutput": 65536,
+      "contextOutput": 131072,
       "capabilities": [
         "reasoning",
         "coding",
@@ -834,7 +851,12 @@
       "description": "Previous frontier model, 1M context",
       "conceptualModelId": "gpt-5.4",
       "producer": "openai",
-      "executionClass": "api-cloud"
+      "executionClass": "api-cloud",
+      "contextPricingNotice": {
+        "thresholdTokens": 272000,
+        "inputMultiplier": 2.0,
+        "outputMultiplier": 1.5
+      }
     },
     {
       "id": "gpt-5",

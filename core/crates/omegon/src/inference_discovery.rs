@@ -37,6 +37,7 @@ pub const DEFAULT_TTL_SECS: u64 = 3600;
 /// The catalog's chat-selection filter excludes offerings carrying this marker
 /// in addition to modality checks (spec: inference/catalog-unification).
 pub const EXT_NON_CHAT: &str = "discovery/non_chat";
+pub const EXT_METADATA_OBSERVED: &str = "discovery/metadata_observed";
 
 /// How an endpoint's live model list is enumerated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,6 +411,15 @@ pub fn build_discovery_layer(
             } else if model.non_chat {
                 patch.output_modalities = Some([output_modality].into());
             }
+            if result.endpoint_id == "github-copilot"
+                && (model.context_input.is_some()
+                    || model.context_output.is_some()
+                    || !model.capabilities.is_empty())
+            {
+                let mut extensions = patch.extensions.take().unwrap_or_default();
+                extensions.insert(EXT_METADATA_OBSERVED.to_string(), "true".to_string());
+                patch.extensions = Some(extensions);
+            }
             if model.non_chat {
                 // Modality alone can't exclude internal aux models whose output
                 // is nominally text (e.g. trajectory-compaction); the marker
@@ -705,6 +715,12 @@ mod tests {
              "capabilities": {"type": "chat",
                 "limits": {"max_context_window_tokens": 400000, "max_output_tokens": 64000},
                 "supports": {"tool_calls": true}}},
+            {"id": "claude-haiku-4.5", "name": "Claude Haiku 4.5",
+             "capabilities": {"type": "chat", "limits": {}, "supports": {"tool_calls": true}}},
+            {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash",
+             "capabilities": {"type": "chat", "limits": {}, "supports": {"tool_calls": true, "vision": true}}},
+            {"id": "gpt-5.4-mini", "name": "GPT-5.4 Mini",
+             "capabilities": {"type": "chat", "limits": {}, "supports": {"tool_calls": true}}},
             {"id": "text-embedding-3-small-inference",
              "capabilities": {"type": "embeddings", "limits": {}}},
             {"id": "trajectory-compaction",
@@ -715,7 +731,7 @@ mod tests {
     #[test]
     fn copilot_parser_extracts_limits_and_capabilities() {
         let models = parse_copilot(&copilot_fixture());
-        assert_eq!(models.len(), 4);
+        assert_eq!(models.len(), 7);
         let opus = &models[0];
         assert_eq!(opus.id, "claude-opus-4.8");
         assert_eq!(opus.context_input, Some(200000));
@@ -723,8 +739,73 @@ mod tests {
         assert_eq!(opus.capabilities.get("tools"), Some(&true));
         assert_eq!(opus.capabilities.get("vision"), Some(&true));
         assert!(!opus.non_chat);
-        assert!(models[2].non_chat, "embeddings type is non-chat");
-        assert!(models[3].non_chat, "internal aux model is non-chat");
+        for id in ["claude-haiku-4.5", "gemini-3.5-flash", "gpt-5.4-mini"] {
+            let model = models.iter().find(|model| model.id == id).unwrap();
+            assert_eq!(model.context_input, None);
+            assert_eq!(model.context_output, None);
+            assert!(!model.non_chat);
+        }
+        assert!(models[5].non_chat, "embeddings type is non-chat");
+        assert!(models[6].non_chat, "internal aux model is non-chat");
+    }
+
+    #[test]
+    fn copilot_live_metadata_is_admitted_observed_without_invented_grades() {
+        let models = [
+            ("claude-haiku-4.5", 200_000, 64_000),
+            ("claude-opus-4.8", 264_000, 64_000),
+            ("gemini-3.1-pro-preview", 264_000, 64_000),
+            ("gemini-3.5-flash", 264_000, 64_000),
+            ("gpt-5.3-codex", 400_000, 128_000),
+            ("gpt-5.4-mini", 400_000, 128_000),
+        ];
+        let result = DiscoveredModels {
+            endpoint_id: "github-copilot".into(),
+            models: models
+                .iter()
+                .map(|(id, context_input, context_output)| DiscoveredModel {
+                    id: (*id).into(),
+                    display_name: Some((*id).into()),
+                    context_input: Some(*context_input),
+                    context_output: Some(*context_output),
+                    capabilities: BTreeMap::from([("tools".into(), true), ("vision".into(), true)]),
+                    non_chat: false,
+                })
+                .collect(),
+            fetched_at: 1,
+            ttl_secs: 60,
+            cached: false,
+        };
+        let layer = build_discovery_layer(&[result], &BTreeMap::new());
+        let snapshot =
+            crate::inference_inventory::InventorySnapshot::build(1, vec![layer]).unwrap();
+        for (id, context_input, context_output) in models {
+            let offering = &snapshot.offerings[&OfferingId(format!("github-copilot:{id}"))];
+            assert_eq!(
+                snapshot.admission(offering).status,
+                crate::inference_inventory::ModelAdmissionStatus::Observed
+            );
+            assert_eq!(
+                offering.context_input.as_ref().map(|v| v.value),
+                Some(context_input)
+            );
+            assert_eq!(
+                offering.context_output.as_ref().map(|v| v.value),
+                Some(context_output)
+            );
+            assert_eq!(
+                offering.capabilities.get("tools").map(|v| v.value),
+                Some(true)
+            );
+            assert_eq!(
+                offering.capabilities.get("vision").map(|v| v.value),
+                Some(true)
+            );
+            assert!(
+                offering.capability_grades.is_empty(),
+                "{id} must remain ungraded"
+            );
+        }
     }
 
     #[test]

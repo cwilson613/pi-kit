@@ -1150,8 +1150,14 @@ pub async fn model_list_response() -> SlashCommandResponse {
                 "unavailable"
             };
             output.push_str(&format!(
-                "  {} ({}) — provider={}, producer={}, execution={}, {}\n",
-                model.name, model.id, model.provider, producer, execution_class, availability
+                "  {} ({}) — provider={}, producer={}, execution={}, {}, admission={}\n",
+                model.name,
+                model.id,
+                model.provider,
+                producer,
+                execution_class,
+                availability,
+                model.admission.as_str()
             ));
         }
     }
@@ -5872,6 +5878,18 @@ mod context_compaction_tests {
             },
             runtime_generation: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn model_list_projects_admission_labels() {
+        let response = model_list_response().await;
+        assert!(response.accepted);
+        let output = response.output.expect("model list output");
+        assert!(output.starts_with("Available Models\n"));
+        assert!(
+            output.lines().any(|line| line.contains("admission=")),
+            "model list must disclose route admission: {output}"
+        );
     }
 
     #[tokio::test]

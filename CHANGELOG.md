@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Added
+
+- Added the canonical human-and-agent release procedure, defining Cargo's `X.Y.0-dev` as a patchless `X.Y-dev` development-line encoding, separating stable SemVer ordering from nightly date/SHA ordering, and documenting trunk tags, long-running feature branches, reactive stabilization, immutable-tag authority, and post-release restoration without invented next-patch intent.
+
 ### Changed
 
 - Replaced the release-branch publication gate with a tag-ancestry gate. `verify-publish` previously required a `release/X.Y` branch and compared version *strings* against `origin/main` — which enforced branch-based releases as the only legal shape and produced a self-inflicted deadlock when trunk was newer than the branch being published. It now asserts the published tag is reachable from `origin/main`, which is the property that actually matters: every stable release must be an ancestor of trunk. Trunk-tagged releases pass directly; reactive `release/X.Y` branches still pass once merged forward. Two regressions pin both directions, including refusing a tag on an unmerged side branch.

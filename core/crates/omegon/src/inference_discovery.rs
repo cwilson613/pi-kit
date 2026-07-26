@@ -776,9 +776,31 @@ mod tests {
             ttl_secs: 60,
             cached: false,
         };
+        // Discovery layers are overlays: `build_discovery_layer` emits offerings
+        // that reference an endpoint but never declares the endpoint itself.
+        // Production always stacks discovery on top of a registry layer, so the
+        // test must compose the same way or the snapshot legitimately rejects
+        // offerings pointing at an undeclared endpoint.
+        let mut base = crate::inference_inventory::InventoryLayer::new(
+            InventorySource::Embedded,
+            EvidenceKind::Declared,
+        );
+        base.endpoints.insert(
+            crate::inference_inventory::EndpointId("github-copilot".into()),
+            crate::inference_inventory::EndpointPatch {
+                adapter: Some(crate::inference_inventory::AdapterId(
+                    crate::inference_inventory::AdapterId::CHAT_COMPLETIONS.into(),
+                )),
+                transport: Some(crate::inference_inventory::TransportSpec::Http {
+                    base_url: "https://api.githubcopilot.com".into(),
+                }),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
         let layer = build_discovery_layer(&[result], &BTreeMap::new());
         let snapshot =
-            crate::inference_inventory::InventorySnapshot::build(1, vec![layer]).unwrap();
+            crate::inference_inventory::InventorySnapshot::build(1, vec![base, layer]).unwrap();
         for (id, context_input, context_output) in models {
             let offering = &snapshot.offerings[&OfferingId(format!("github-copilot:{id}"))];
             assert_eq!(

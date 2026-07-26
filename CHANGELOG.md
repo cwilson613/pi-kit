@@ -16,6 +16,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+## [0.28.11] - 2026-07-26
+
+Supersedes v0.28.10, which was tagged but never published: its
+`verify-publish` gate rejected the release workflow's detached tag checkout,
+so no artifacts were built or released for that tag.
+
 ### Fixed
 
 - Allowed stable-release publish verification to run from GitHub Actions' detached tag checkout. The release workflow checks out the tag rather than the branch, so `verify-publish` rejecting detached HEAD made the gate unsatisfiable in CI and blocked v0.28.10 after every other check had passed. The version comparison against `origin/main` is the invariant that matters and holds regardless of how HEAD was reached; a regression test now runs the gate from a detached checkout.

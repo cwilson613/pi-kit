@@ -23,7 +23,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 ### Changed
 
 - Replaced the release-branch publication gate with a tag-ancestry gate. `verify-publish` previously required a `release/X.Y` branch and compared version *strings* against `origin/main` — which enforced branch-based releases as the only legal shape and produced a self-inflicted deadlock when trunk was newer than the branch being published. It now asserts the published tag is reachable from `origin/main`, which is the property that actually matters: every stable release must be an ancestor of trunk. Trunk-tagged releases pass directly; reactive `release/X.Y` branches still pass once merged forward. Two regressions pin both directions, including refusing a tag on an unmerged side branch.
-- Made trunk reopening part of `just publish` rather than a follow-up step. `just release` now accepts an explicit stable target while trunk is on `-dev`, stamps that target into `Cargo.toml` before refreshing the lockfile, and treats `cargo clippy -p omegon --all-targets -- -D warnings` as a release gate rather than relying on tests alone. Publish pushes the release commit before checking remote tag ancestry, then pushes the tag separately and reopens trunk at X.Y.(Z+1)-dev with a checked lockfile refresh; no suppressed failures and no source/tag mismatch.
+- Corrected post-release trunk restoration to preserve the patchless development-line identity documented by the release procedure. `just publish` now maps any stable `X.Y.Z` tag back to `X.Y.0-dev` rather than inventing `X.Y.(Z+1)-dev`; tests prove even arbitrarily large patch releases leave the `X.Y-dev` line unchanged.
 
 ### Fixed
 

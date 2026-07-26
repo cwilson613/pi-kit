@@ -92,23 +92,21 @@ def release_branch_for_version(version: str) -> str:
     return f"release/{parts[0]}.{parts[1]}"
 
 
-def next_dev_version(version: str) -> str:
-    """The dev version trunk reopens at immediately after tagging a stable release.
+def development_line_version(version: str) -> str:
+    """Return Cargo's encoding of the stable version's patchless dev line.
 
-    Tagging vX.Y.Z from trunk makes that exact version public. Trunk must not
-    keep advertising X.Y.Z afterwards: the next commit is no longer the thing
-    users installed. Reopening at X.Y.(Z+1)-dev keeps trunk strictly ahead of
-    every published tag and makes the working version self-evidently unreleased.
-
-    This is the trunk-tagging counterpart to `next_trunk_version`, which opens
-    the next *minor* line when stable ownership is handed to a release branch.
+    Cargo requires a three-part SemVer core, so the X.Y development line is
+    stored as X.Y.0-dev. The synthetic patch zero is not a prediction of the
+    next stable release and does not advance after X.Y.Z patch releases.
     """
     stable = stable_version(version)
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", stable)
     if not match:
-        raise ReleaseBranchError(f"could not derive next dev version from {version}")
-    major, minor, patch = (int(part) for part in match.groups())
-    return f"{major}.{minor}.{patch + 1}-dev"
+        raise ReleaseBranchError(
+            f"could not derive development line version from {version}"
+        )
+    major, minor, _patch = (int(part) for part in match.groups())
+    return f"{major}.{minor}.0-dev"
 
 
 def next_trunk_version(version: str) -> str:
@@ -342,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     merge_parser = subcommands.add_parser("merge-forward")
     merge_parser.add_argument("release_branch", nargs="?")
     subcommands.add_parser("verify-publish")
-    subcommands.add_parser("next-dev-version")
+    subcommands.add_parser("development-line-version")
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
@@ -353,8 +351,8 @@ def main(argv: list[str] | None = None) -> int:
             merge_forward(repo_root, args.release_branch)
         elif args.command == "verify-publish":
             verify_publish_invariant(repo_root)
-        elif args.command == "next-dev-version":
-            print(next_dev_version(read_workspace_version(repo_root)))
+        elif args.command == "development-line-version":
+            print(development_line_version(read_workspace_version(repo_root)))
         else:
             parser.error(f"unknown command {args.command}")
     except (ReleaseBranchError, subprocess.CalledProcessError) as err:

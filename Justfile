@@ -852,22 +852,20 @@ publish:
     python3 scripts/release_branch.py verify-publish
     git push origin "$TAG"
 
-    # ── Reopen trunk at the next dev version ──────────────────
-    # The tag just made $VERSION public. Trunk must not keep advertising it:
-    # the next commit is no longer what users installed. Reopening here — in
-    # the same procedure that published — is what keeps this from becoming a
-    # follow-up step that gets forgotten, which is exactly how the 0.28 line
-    # ended up with trunk behind its own release branch.
+    # ── Restore trunk's patchless development-line identity ───
+    # The stable tag temporarily stamped X.Y.Z into Cargo.toml. Nightly and
+    # continued development return to X.Y.0-dev, Cargo's encoding of X.Y-dev.
+    # Patch Z is release scope selected at tag time, not trunk progression.
     if [ "$BRANCH" = "main" ]; then
-        NEXT_DEV=$(python3 scripts/release_branch.py next-dev-version)
+        DEV_LINE=$(python3 scripts/release_branch.py development-line-version)
         echo ""
-        echo "Reopening trunk at ${NEXT_DEV}..."
-        python3 -c 'import pathlib, re, sys; p = pathlib.Path("Cargo.toml"); p.write_text(re.sub(r'^\''version = "[^"]+"'\'', f'\''version = "{sys.argv[1]}"'\'', p.read_text(), count=1, flags=re.M))' "$NEXT_DEV"
+        echo "Restoring trunk development line at ${DEV_LINE}..."
+        python3 -c 'import pathlib, re, sys; p = pathlib.Path("Cargo.toml"); p.write_text(re.sub(r'^\''version = "[^"]+"'\'', f'\''version = "{sys.argv[1]}"'\'', p.read_text(), count=1, flags=re.M))' "$DEV_LINE"
         {{cargo}} check -p omegon --offline
         git add Cargo.toml Cargo.lock
-        git commit -q -m "chore(release): reopen trunk at ${NEXT_DEV}"
+        git commit -q -m "chore(release): restore trunk ${DEV_LINE}"
         git push origin "$BRANCH"
-        echo "  trunk now at ${NEXT_DEV}"
+        echo "  trunk development line: ${DEV_LINE}"
     fi
 
     echo ""

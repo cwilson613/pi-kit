@@ -276,8 +276,12 @@ For a routine stable release:
 
 For normal development and nightlies: leave `Cargo.toml` at the active `X.Y.0-dev` line encoding.
 
-## Current implementation gap
+## Implementation status
 
-This document records the intended policy. At the time of writing, release tooling still contains a `next-dev-version` path that derives `X.Y.(Z+1)-dev` after publication. That behavior conflicts with the long-running development-line model above and must be changed before the next stable release.
+The release tooling now implements this policy. `development-line-version`
+derives `X.Y.0-dev` from any stable `X.Y.Z`, and `just publish` restores that
+same development-line identity after publishing instead of inventing
+`X.Y.(Z+1)-dev`.
 
-The nightly workflow already derives `X.Y` from `Cargo.toml`, stamps a dated `X.Y.0-nightly.YYYYMMDD` tag, and does not alter `main`; that part matches this procedure.
+The nightly workflow derives `X.Y` from `Cargo.toml`, stamps a dated
+`X.Y.0-nightly.YYYYMMDD` tag, and does not alter `main`.

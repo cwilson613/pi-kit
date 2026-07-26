@@ -59,24 +59,29 @@ class PublishInvariantTests(unittest.TestCase):
         release_branch.assert_main_version_not_behind(self.repo, "0.28.6")
 
 
-class NextDevVersionTests(unittest.TestCase):
-    def test_reopens_at_next_patch_dev(self) -> None:
-        self.assertEqual(release_branch.next_dev_version("0.29.0"), "0.29.1-dev")
-        self.assertEqual(release_branch.next_dev_version("0.28.11"), "0.28.12-dev")
+class DevelopmentLineVersionTests(unittest.TestCase):
+    def test_restores_patchless_cargo_dev_line(self) -> None:
+        self.assertEqual(
+            release_branch.development_line_version("0.29.0"), "0.29.0-dev"
+        )
+        self.assertEqual(
+            release_branch.development_line_version("0.29.11283345245"),
+            "0.29.0-dev",
+        )
+        self.assertEqual(
+            release_branch.development_line_version("1.4.7"), "1.4.0-dev"
+        )
 
     def test_rejects_prerelease_input(self) -> None:
         with self.assertRaises(release_branch.ReleaseBranchError):
-            release_branch.next_dev_version("0.29.0-dev")
+            release_branch.development_line_version("0.29.0-dev")
 
-    def test_reopened_trunk_outranks_the_tag_just_published(self) -> None:
-        # After tagging vX.Y.Z from trunk, trunk must sort strictly above it.
-        for published in ("0.29.0", "0.28.11", "1.0.0"):
-            reopened = release_branch.next_dev_version(published)
-            self.assertGreater(
-                release_branch.version_sort_key(reopened),
-                release_branch.version_sort_key(published),
-                f"trunk {reopened} must outrank published {published}",
-            )
+    def test_patch_releases_do_not_advance_the_development_line(self) -> None:
+        lines = {
+            release_branch.development_line_version(version)
+            for version in ("0.29.0", "0.29.5", "0.29.11283345245")
+        }
+        self.assertEqual(lines, {"0.29.0-dev"})
 
 
 class NextTrunkVersionTests(unittest.TestCase):

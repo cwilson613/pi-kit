@@ -92,6 +92,22 @@ def release_branch_for_version(version: str) -> str:
     return f"release/{parts[0]}.{parts[1]}"
 
 
+def next_trunk_version(version: str) -> str:
+    """The version trunk must advertise once release/X.Y is cut.
+
+    Cutting release/X.Y hands stable ownership of that line to the branch.
+    Trunk must immediately open the next minor line, otherwise `origin/main`
+    still advertises X.Y.Z while the branch publishes X.Y.Z+1 — and
+    `assert_main_version_not_behind` correctly refuses to publish. Opening the
+    next line at branch time is what keeps that gate from firing later.
+    """
+    stable = stable_version(version)
+    parts = stable.split(".")
+    if len(parts) < 2:
+        raise ReleaseBranchError(f"could not derive next trunk version from {version}")
+    return f"{parts[0]}.{int(parts[1]) + 1}.0-dev"
+
+
 def validate_release_branch_name(branch: str) -> None:
     if not RELEASE_BRANCH_RE.fullmatch(branch):
         raise ReleaseBranchError(f"{branch} is not a release/X.Y branch")
@@ -145,6 +161,12 @@ def create_branch(repo_root: Path) -> None:
 
     print(f"release branch ready: {target}")
     print(f"workspace version: {version}")
+    print()
+    print(f"NEXT: trunk must open the following line, or publishing {target} will be blocked")
+    print(f"  git switch main")
+    print(f"  # set Cargo.toml version = \"{next_trunk_version(version)}\"")
+    print(f"  cargo check --offline   # refresh Cargo.lock")
+    print(f"  git commit -am 'chore(release): open {next_trunk_version(version)} on trunk'")
 
 
 def assert_main_version_not_behind(repo_root: Path, release_version: str) -> None:

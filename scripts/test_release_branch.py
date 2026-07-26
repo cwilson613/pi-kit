@@ -49,5 +49,29 @@ class PublishInvariantTests(unittest.TestCase):
         release_branch.assert_main_version_not_behind(self.repo, "0.28.6")
 
 
+class NextTrunkVersionTests(unittest.TestCase):
+    """Cutting release/X.Y must open X.(Y+1) on trunk.
+
+    Regression for the 0.28.10 publish block: release/0.28 was cut while main
+    stayed at 0.28.9, so tagging v0.28.10 tripped assert_main_version_not_behind.
+    """
+
+    def test_opens_next_minor_line(self) -> None:
+        self.assertEqual(release_branch.next_trunk_version("0.28.9"), "0.29.0-dev")
+        self.assertEqual(release_branch.next_trunk_version("1.4.0"), "1.5.0-dev")
+
+    def test_next_trunk_version_outranks_any_patch_on_the_cut_line(self) -> None:
+        # The whole point: no patch release on release/0.28 can ever be
+        # "ahead of" trunk once trunk opens 0.29.
+        trunk = release_branch.version_sort_key(release_branch.next_trunk_version("0.28.9"))
+        for patch in ("0.28.10", "0.28.99"):
+            self.assertGreater(trunk, release_branch.version_sort_key(patch))
+
+    def test_rejects_prerelease_input(self) -> None:
+        with self.assertRaises(release_branch.ReleaseBranchError):
+            release_branch.next_trunk_version("0.29.0-dev")
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- Made `branch-release` state the trunk bump it requires. Cutting `release/X.Y` hands stable ownership of that line to the branch, but the helper left trunk advertising the same version — so the first patch release on the branch tripped `assert_main_version_not_behind` and blocked publication. `next_trunk_version` derives the line trunk must open and `branch-release` now prints the exact commands, with regression coverage asserting no patch on the cut line can outrank trunk.
+
 ### Added
 
 - Clarified the ACP/editor ownership boundary: Zed's native Skills settings page belongs to Zed's built-in agent and is not populated by ACP agents; Omegon `/skills` remains the supported skill inventory and execution surface in Omegon ACP threads.

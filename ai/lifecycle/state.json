@@ -1649,6 +1649,18 @@
       "tasks_done": 21,
       "created_at": "2026-07-14T13:03:44Z",
       "updated_at": "2026-07-14T16:16:57Z"
+    },
+    {
+      "name": "evidence-backed-model-admission",
+      "title": "evidence-backed-model-admission",
+      "state": "proposed",
+      "bound_node": null,
+      "specs": [],
+      "test_files": [],
+      "tasks_total": 9,
+      "tasks_done": 9,
+      "created_at": "2026-07-24T21:17:24Z",
+      "updated_at": "2026-07-24T21:17:24Z"
     }
   ],
   "milestones": [],
@@ -4035,6 +4047,15 @@
       "entity_id": "inference-discovery-producers",
       "from_state": "implementing",
       "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-07-24T21:17:24Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "(new)",
+      "to_state": "proposed",
       "reason": null,
       "forced": false
     }

@@ -356,6 +356,42 @@ fn adapter_for_protocol(protocol: EndpointProtocol) -> AdapterId {
     AdapterId(value.into())
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelAdmissionStatus {
+    #[default]
+    Curated,
+    Observed,
+    Provisional,
+    Quarantined,
+    Unavailable,
+}
+
+impl ModelAdmissionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Curated => "curated",
+            Self::Observed => "observed",
+            Self::Provisional => "provisional",
+            Self::Quarantined => "quarantined",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn is_selectable(self) -> bool {
+        matches!(self, Self::Curated | Self::Observed | Self::Provisional)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelAdmission {
+    pub status: ModelAdmissionStatus,
+    pub reason: &'static str,
+}
+
+pub const EXT_ADMISSION_QUARANTINED: &str = "admission/quarantined";
+pub const EXT_DISCOVERY_METADATA_OBSERVED: &str = "discovery/metadata_observed";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InventorySnapshot {
     pub generation: u64,
@@ -508,6 +544,70 @@ impl InventorySnapshot {
             }
         }
         Ok(())
+    }
+
+    pub fn admission(&self, offering: &InferenceOffering) -> ModelAdmission {
+        let Some(endpoint) = self.endpoints.get(&offering.endpoint.value) else {
+            return ModelAdmission {
+                status: ModelAdmissionStatus::Unavailable,
+                reason: "offering references an unavailable endpoint",
+            };
+        };
+        if !endpoint.enabled.value || !offering.enabled.value {
+            return ModelAdmission {
+                status: ModelAdmissionStatus::Unavailable,
+                reason: "offering or endpoint is disabled",
+            };
+        }
+        if offering
+            .extensions
+            .value
+            .get(EXT_ADMISSION_QUARANTINED)
+            .is_some_and(|value| value == "true")
+        {
+            return ModelAdmission {
+                status: ModelAdmissionStatus::Quarantined,
+                reason: "offering carries explicit quarantine evidence",
+            };
+        }
+
+        let observed = offering
+            .extensions
+            .value
+            .get(EXT_DISCOVERY_METADATA_OBSERVED)
+            .is_some_and(|value| value == "true")
+            || offering.native_model_id.evidence >= EvidenceKind::Probed
+            || offering.display_name.evidence >= EvidenceKind::Probed
+            || offering
+                .context_input
+                .iter()
+                .any(|value| value.evidence >= EvidenceKind::Probed)
+            || offering
+                .context_output
+                .iter()
+                .any(|value| value.evidence >= EvidenceKind::Probed)
+            || offering
+                .capabilities
+                .values()
+                .any(|value| value.evidence >= EvidenceKind::Probed);
+        if observed {
+            return ModelAdmission {
+                status: ModelAdmissionStatus::Observed,
+                reason: "offering has successful runtime or probe evidence",
+            };
+        }
+
+        if offering.native_model_id.source == InventorySource::Discovery {
+            return ModelAdmission {
+                status: ModelAdmissionStatus::Provisional,
+                reason: "offering is provider-discovered but not yet curated",
+            };
+        }
+
+        ModelAdmission {
+            status: ModelAdmissionStatus::Curated,
+            reason: "offering is declared by a trusted inventory layer",
+        }
     }
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -913,6 +1013,85 @@ mod tests {
             },
         );
         layer
+    }
+
+    fn admission_fixture(source: InventorySource, evidence: EvidenceKind) -> InventorySnapshot {
+        let mut layer = layer_with_offering(source, Modality::TEXT, false);
+        layer.evidence = evidence;
+        InventorySnapshot::build(1, vec![layer]).unwrap()
+    }
+
+    #[test]
+    fn admission_derives_curated_and_provisional_from_offering_provenance() {
+        let curated = admission_fixture(InventorySource::Project, EvidenceKind::Declared);
+        let discovered = admission_fixture(InventorySource::Discovery, EvidenceKind::Discovered);
+
+        assert_eq!(
+            curated.admission(&curated.offerings[&OfferingId("lab:model".into())]),
+            ModelAdmission {
+                status: ModelAdmissionStatus::Curated,
+                reason: "offering is declared by a trusted inventory layer",
+            }
+        );
+        assert_eq!(
+            discovered
+                .admission(&discovered.offerings[&OfferingId("lab:model".into())])
+                .status,
+            ModelAdmissionStatus::Provisional
+        );
+        assert!(ModelAdmissionStatus::Provisional.is_selectable());
+    }
+
+    #[test]
+    fn admission_precedence_is_unavailable_then_quarantined_then_observed() {
+        let mut disabled = layer_with_offering(InventorySource::Discovery, Modality::TEXT, false);
+        disabled.evidence = EvidenceKind::Discovered;
+        disabled
+            .offerings
+            .get_mut(&OfferingId("lab:model".into()))
+            .unwrap()
+            .enabled = Some(false);
+        let disabled = InventorySnapshot::build(1, vec![disabled]).unwrap();
+        assert_eq!(
+            disabled
+                .admission(&disabled.offerings[&OfferingId("lab:model".into())])
+                .status,
+            ModelAdmissionStatus::Unavailable
+        );
+
+        let base = layer_with_offering(InventorySource::Project, Modality::TEXT, false);
+        let mut probe = InventoryLayer::new(InventorySource::Probe, EvidenceKind::Probed);
+        probe.offerings.insert(
+            OfferingId("lab:model".into()),
+            OfferingPatch {
+                capabilities: BTreeMap::from([("tools".into(), true)]),
+                ..Default::default()
+            },
+        );
+        let observed = InventorySnapshot::build(1, vec![base.clone(), probe]).unwrap();
+        assert_eq!(
+            observed
+                .admission(&observed.offerings[&OfferingId("lab:model".into())])
+                .status,
+            ModelAdmissionStatus::Observed
+        );
+
+        let mut quarantine = InventoryLayer::new(InventorySource::Probe, EvidenceKind::Probed);
+        quarantine.offerings.insert(
+            OfferingId("lab:model".into()),
+            OfferingPatch {
+                extensions: Some(BTreeMap::from([(
+                    EXT_ADMISSION_QUARANTINED.into(),
+                    "true".into(),
+                )])),
+                ..Default::default()
+            },
+        );
+        let quarantined = InventorySnapshot::build(1, vec![base, quarantine]).unwrap();
+        let admission =
+            quarantined.admission(&quarantined.offerings[&OfferingId("lab:model".into())]);
+        assert_eq!(admission.status, ModelAdmissionStatus::Quarantined);
+        assert!(!admission.status.is_selectable());
     }
 
     #[test]

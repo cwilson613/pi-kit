@@ -312,6 +312,28 @@ pub struct RouteEntry {
     pub grade: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextPricingNotice {
+    pub threshold_tokens: usize,
+    #[serde(default)]
+    pub input_multiplier: Option<f32>,
+    #[serde(default)]
+    pub output_multiplier: Option<f32>,
+}
+
+impl ContextPricingNotice {
+    pub fn summary(&self) -> String {
+        let threshold = self.threshold_tokens / 1000;
+        match (self.input_multiplier, self.output_multiplier) {
+            (Some(input), Some(output)) => format!(
+                "◈ non-standard pricing above {threshold}k: {input}× input, {output}× output"
+            ),
+            _ => format!("◇ provider-specific allowance above {threshold}k"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
@@ -348,6 +370,10 @@ pub struct ModelEntry {
     /// without a schema migration.
     #[serde(default, rename = "clientRequirements")]
     pub client_requirements: Option<serde_json::Value>,
+    /// Route-specific billing or allowance change once selected input context
+    /// crosses the threshold. This is separate from model capability limits.
+    #[serde(default, rename = "contextPricingNotice")]
+    pub context_pricing_notice: Option<ContextPricingNotice>,
 }
 
 pub struct ModelRegistry {
@@ -684,6 +710,7 @@ impl ModelRegistry {
             description: format!("Dynamically discovered {provider} model"),
             supports_reasoning,
             client_requirements: None,
+            context_pricing_notice: None,
         }
     }
 
@@ -840,6 +867,28 @@ mod tests {
             Some("claude-haiku-4-5-20251001")
         );
         assert_eq!(reg.grade_model("S", "nonexistent"), None);
+    }
+
+    #[test]
+    fn claude_sonnet_5_uses_anthropics_published_output_limit() {
+        let reg = ModelRegistry::global();
+        let info = reg.model_info("anthropic:claude-sonnet-5").unwrap();
+        assert_eq!(info.context_input, 1_000_000);
+        assert_eq!(info.context_output, 131_072);
+        assert!(info.supports_reasoning);
+        assert_eq!(reg.infer_grade("anthropic", "claude-sonnet-5"), Some("B"));
+    }
+
+    #[test]
+    fn claude_opus_5_is_admitted_from_anthropics_published_contract() {
+        let reg = ModelRegistry::global();
+        let info = reg.model_info("anthropic:claude-opus-5").unwrap();
+        assert_eq!(info.name, "Claude Opus 5");
+        assert_eq!(info.context_input, 1_000_000);
+        assert_eq!(info.context_output, 131_072);
+        assert!(info.supports_reasoning);
+        assert_eq!(info.conceptual_model_id.as_deref(), Some("claude-opus-5"));
+        assert_eq!(reg.infer_grade("anthropic", "claude-opus-5"), Some("S"));
     }
 
     #[test]
@@ -1219,6 +1268,20 @@ mod tests {
         assert_eq!(deltas[0].id.as_deref(), Some("call_1"));
         assert_eq!(deltas[0].name.as_deref(), Some("bash"));
         assert_eq!(deltas[0].arguments_delta.as_deref(), Some("{\"command\":"));
+    }
+
+    #[test]
+    fn gpt_5_4_projects_openai_long_context_pricing_notice() {
+        let reg = ModelRegistry::global();
+        let info = reg.model_info("openai:gpt-5.4").expect("GPT-5.4 route");
+        let notice = info
+            .context_pricing_notice
+            .as_ref()
+            .expect("long-context pricing notice");
+        assert_eq!(notice.threshold_tokens, 272_000);
+        assert_eq!(notice.input_multiplier, Some(2.0));
+        assert_eq!(notice.output_multiplier, Some(1.5));
+        assert!(notice.summary().contains("above 272k"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ tags = []
 aliases = []
 activation = "domain_detected"
 profile = ["design", "docs"]
-project_signals = ["drawings/*.excalidraw", "diagrams/*.d2", "*.board"]
+project_signals = ["drawings/**/*.excalidraw", "diagrams/**/*.d2", "*.board"]
 +++
 
 # Style Guide

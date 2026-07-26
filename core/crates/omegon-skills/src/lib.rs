@@ -1,5 +1,7 @@
 //! Skill manifest parsing and portable SKILL.md helpers.
 
+pub mod disclosure;
+
 /// Structured provenance for upstream-imported or adapted skills.
 ///
 /// This metadata is intentionally machine-readable so `skills doctor` can

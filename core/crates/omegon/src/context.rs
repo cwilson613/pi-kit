@@ -172,6 +172,17 @@ impl ContextManager {
         // Collect injections from all providers
         for provider in &self.providers {
             if let Some(injection) = provider.provide_context(&signals) {
+                // A persistent injection is a *replacement* for that source's
+                // previous state, not an addition. Without this, a provider
+                // that injects every turn with an infinite TTL accumulates one
+                // copy per turn. Under progressive disclosure each copy differs
+                // (bodies are admitted per prompt), so the model would see N
+                // contradictory skill sets instead of the current one.
+                if injection.ttl_turns == u32::MAX {
+                    let source = injection.source.clone();
+                    self.active_injections
+                        .retain(|a| a.injection.source != source);
+                }
                 self.active_injections.push(ActiveInjection {
                     remaining_turns: injection.ttl_turns,
                     injection,
@@ -531,6 +542,67 @@ impl ContextManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider that injects a distinct persistent payload every turn,
+    /// mirroring `PersonaFeature` under progressive disclosure.
+    struct VaryingPersistentProvider {
+        source: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl omegon_traits::ContextProvider for VaryingPersistentProvider {
+        fn provide_context(
+            &self,
+            _signals: &ContextSignals<'_>,
+        ) -> Option<omegon_traits::ContextInjection> {
+            let n = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            Some(omegon_traits::ContextInjection {
+                content: format!("payload variant {n}"),
+                source: self.source.to_string(),
+                priority: 85,
+                ttl_turns: u32::MAX,
+            })
+        }
+    }
+
+    #[test]
+    fn persistent_provider_injections_replace_rather_than_accumulate() {
+        let mut mgr = ContextManager::new(
+            String::new(),
+            vec![Box::new(VaryingPersistentProvider {
+                source: "persona",
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            })],
+        );
+        let convo = ConversationState::new();
+
+        for _ in 0..5 {
+            let _ = mgr.build_system_prompt("do the thing", &convo);
+        }
+
+        let persona: Vec<_> = mgr
+            .active_injections
+            .iter()
+            .filter(|a| a.injection.source == "persona")
+            .collect();
+        assert_eq!(
+            persona.len(),
+            1,
+            "5 turns produced {} persona injections",
+            persona.len()
+        );
+        assert_eq!(
+            persona[0].injection.content, "payload variant 5",
+            "the surviving injection must be the newest, not the first"
+        );
+
+        let prompt = mgr.build_system_prompt("do the thing", &convo);
+        assert!(!prompt.contains("payload variant 1"));
+        assert!(prompt.contains("payload variant 6"));
+    }
 
     #[test]
     fn session_hud_format() {

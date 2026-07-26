@@ -2619,8 +2619,15 @@ impl App {
                     .get(provider_name)
                     .map(|state| format!(" · inventory {state}"))
                     .unwrap_or_default();
-                let description =
-                    format!("{} — {}{}{}", model.description, context, caps, freshness);
+                let pricing = model
+                    .context_pricing_notice
+                    .as_ref()
+                    .map(|notice| format!(" · {}", notice.summary()))
+                    .unwrap_or_default();
+                let description = format!(
+                    "{} — {}{}{}{}",
+                    model.description, context, caps, freshness, pricing
+                );
 
                 options.push(selector::SelectOption {
                     value: model.id.clone(),

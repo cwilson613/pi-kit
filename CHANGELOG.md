@@ -20,8 +20,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Made `branch-release` state the trunk bump it requires. Cutting `release/X.Y` hands stable ownership of that line to the branch, but the helper left trunk advertising the same version — so the first patch release on the branch tripped `assert_main_version_not_behind` and blocked publication. `next_trunk_version` derives the line trunk must open and `branch-release` now prints the exact commands, with regression coverage asserting no patch on the cut line can outrank trunk.
 
+## [0.28.11] - 2026-07-26
+
+Supersedes v0.28.10, which was tagged but never published: its
+`verify-publish` gate rejected the release workflow's detached tag checkout,
+so no artifacts were built or released for that tag.
+
+### Fixed
+
+- Allowed stable-release publish verification to run from GitHub Actions' detached tag checkout. The release workflow checks out the tag rather than the branch, so `verify-publish` rejecting detached HEAD made the gate unsatisfiable in CI and blocked v0.28.10 after every other check had passed. The version comparison against `origin/main` is the invariant that matters and holds regardless of how HEAD was reached; a regression test now runs the gate from a detached checkout.
+
+## [0.28.10] - 2026-07-25
+
 ### Added
 
+- Added evidence-backed inference-offering admission states (`curated`, `observed`, `provisional`, `quarantined`, and `unavailable`) to inventory derivation and model/control projections, keeping provider-discovered models selectable while excluding explicitly quarantined or disabled routes.
+- Added GitHub Copilot provider-metadata admission coverage for observed Anthropic, Gemini, and OpenAI routes, preserving Copilot-reported context limits, output limits, tool support, and vision capabilities without synthesizing routing grades. Copilot is an amalgamated provider, so its authenticated `/models` response — not upstream model-family documentation — is the authority for a route's effective envelope.
+- Added route-and-context-tier pricing notices to model catalog detail, including GPT-5.4's published OpenAI long-context multipliers above 272K tokens.
 - Clarified the ACP/editor ownership boundary: Zed's native Skills settings page belongs to Zed's built-in agent and is not populated by ACP agents; Omegon `/skills` remains the supported skill inventory and execution surface in Omegon ACP threads.
 - Added design artifacts for authoritative extension tool provenance across conversation surfaces, and captured the remaining operator-visible terminal-session questions alongside the new managed process viewer.
 - Connected completed `terminal` conversation cards to the managed-process viewer: select a retained terminal result and press Enter to open its canonical live session instead of inspecting a stale text dump.
@@ -36,6 +51,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 ### Fixed
 
 - Allowed stable-release publish verification to run from GitHub Actions' detached tag checkout while still enforcing that `origin/main` advertises the same or a newer workspace version.
+- Switched the live persona context injection to progressive skill disclosure. `PersonaFeature` now threads the workspace root and the current operator prompt into prompt assembly, so skill bodies are admitted per turn on workspace-signal or trigger evidence instead of every installed skill being resident in every prompt. Injection source, priority (85), and TTL are unchanged.
+- Made interactive harness sessions unlimited by default (`--max-turns 0`), while preserving explicit positive turn caps for bounded automation and operator overrides.
+- Retired the obsolete npm wrapper distribution, including its platform-package scaffolding and stale npm packaging documentation; supported installs remain GitHub Releases, the install script, and Homebrew.
+- Hardened extension detail navigation after adversarial review: keyed primary actions now respond to Space, Escape returns from an extension detail page to the extension inventory, and missing detail targets produce visible feedback instead of silently doing nothing.
+- Reworked the extension runtime menu interaction model: Space now toggles enabled/disabled state in place, Enter opens an extension-specific management page, and update/remove actions live on that detail page instead of the collection browser.
+- Reworked extension create, install, and search entry points as explicit inline menu-input actions that execute without closing into the global editor; installed extension rows now perform enable/disable on Enter and expose confirmed update/remove actions that refresh the inventory instead of defaulting to a plain-text inspect dump.
+
+### Fixed
+
+- Pinned `skills_get` and `skills_list` as core tools exempt from lazy injection. The disclosure index directs the model to these tools to retrieve a withheld skill body, so lazily dropping them would turn the index into a dead link and make disclosure destroy capability instead of deferring it.
+- Bypassed disclosure entirely when skills are loaded from an explicit operator-supplied subset. An explicit allowlist is itself the admission evidence — the parent already decided what the agent needs — so re-judging it against workspace signals would silently override operator intent.
+- Fixed persistent context injections accumulating one copy per turn. A provider returning `ttl_turns: u32::MAX` was pushed unconditionally on every `build_system_prompt`, so turn N carried N copies of the persona/skill layer; under progressive disclosure each copy differed, presenting the model with contradictory skill sets. Persistent injections now replace the prior entry from the same source, matching the existing `session-hud` behaviour.
+- Added an activation lint to the bundled-skill calibration gate. `SkillActivation::parse` returns `None` for unrecognised values and unparseable activations are never admitted, so a typo such as `project-detected` would make a skill permanently invisible with no diagnostic — the same silent-failure class as an unmatchable project signal.
+- Fixed the bundled `style` skill declaring `drawings/*.excalidraw` and `diagrams/*.d2` project signals that the validated matcher rejects, so the skill had never activated on drawing or diagram workspaces; both now use recursive `**` form and a lint asserts every bundled skill declares matchable signals.
 - Kept the Workbench `plan` tool in every actionable turn's lazy schema so the agent can reconcile plan state after turn one without permanently injecting broader lifecycle and orchestration families.
 - Reserved a response-only turn when tool execution reaches the hard turn limit, preventing a final tool result from leaving the operator at `turn supervisor completed` without an assistant conclusion.
 - Stopped successful Workbench plan reconciliation from triggering generic progress-pressure and redundant closure-narration turns, so end-of-turn plan cleanup produces one operator-facing completion instead of repeated acknowledgements.
@@ -66,13 +95,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 - Added an in-memory ACP extension RPC invocation seam with success and failure-path regression coverage, preserving production extension polling while making `_extensions/call` behavior directly testable.
 - Hardened ACP session ownership by rejecting prompts and closes for non-active session IDs, retaining the negotiated session working directory for prompts, clearing it on close, and no longer advertising shallow transcript resume as supported.
 - Corrected ACP runtime status to report WebSocket transport for WebSocket sessions instead of hard-coding `stdio`.
-
-### Changed
-
-- Retired the obsolete npm wrapper distribution, including its platform-package scaffolding and stale npm packaging documentation; supported installs remain GitHub Releases, the install script, and Homebrew.
-- Hardened extension detail navigation after adversarial review: keyed primary actions now respond to Space, Escape returns from an extension detail page to the extension inventory, and missing detail targets produce visible feedback instead of silently doing nothing.
-- Reworked the extension runtime menu interaction model: Space now toggles enabled/disabled state in place, Enter opens an extension-specific management page, and update/remove actions live on that detail page instead of the collection browser.
-- Reworked extension create, install, and search entry points as explicit inline menu-input actions that execute without closing into the global editor; installed extension rows now perform enable/disable on Enter and expose confirmed update/remove actions that refresh the inventory instead of defaulting to a plain-text inspect dump.
 
 ## [0.28.9] - 2026-07-21
 

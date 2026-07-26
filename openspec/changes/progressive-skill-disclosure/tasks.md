@@ -23,6 +23,14 @@
 ## 4. Verification
 <!-- specs: skills/progressive-disclosure -->
 
-- [ ] 4.1 Run focused skills tests plus crate checks and lint.
-- [ ] 4.2 Update `CHANGELOG.md` `[Unreleased]`.
-- [ ] 4.3 Reconcile lifecycle state and commit.
+- [x] 4.1 Run focused skills tests plus crate checks and lint.
+- [x] 4.2 Update `CHANGELOG.md` `[Unreleased]`.
+- [x] 4.3 Reconcile lifecycle state and commit.
+
+## Remaining
+
+- 2.2 is deliberately open. The lint exists and gates bundled skills at test time
+  (`every_bundled_skill_declares_matchable_signals`, `lint_activation`), but its
+  findings are not yet surfaced through the operator-facing skill doctor report.
+  Disclosure shipped in 0.28.11 without it; the gap is diagnostic reach, not
+  correctness.

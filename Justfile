@@ -822,8 +822,14 @@ publish:
         exit 1
     fi
 
-    # Verify binary version matches
+    # Verify binary, tag, and tagged source all name the same release.
     BINARY_VERSION=$("$BINARY" --version 2>/dev/null | head -1 || echo "unknown")
+    TAGGED_VERSION=$(git show "$TAG:Cargo.toml" 2>/dev/null | grep -m1 '^version = ' | cut -d'"' -f2 || true)
+    if [ "$TAGGED_VERSION" != "$VERSION" ]; then
+        echo "✗ Binary says ${VERSION}, but ${TAG} contains Cargo.toml version ${TAGGED_VERSION:-unknown}."
+        echo "  Re-run 'just release ${VERSION}' before publishing."
+        exit 1
+    fi
     echo "  Binary:  $BINARY_VERSION"
 
     # Check signing status

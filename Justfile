@@ -595,26 +595,35 @@ release:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # Preflight: proves repo is releasable before any mutation.
-    # Checks branch, clean tree, tests, docs/install version, CHANGELOG.
-    just preflight
+    CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    if echo "$CURRENT" | grep -q -- '-dev$'; then
+        NEW_VERSION=${CURRENT%-dev}
+    elif echo "$CURRENT" | grep -q '-'; then
+        echo "✗ Release version must be stable semver or end in -dev, got $CURRENT"
+        exit 1
+    else
+        NEW_VERSION="$CURRENT"
+    fi
+
+    # Preflight the stable target before mutating the dev workspace. The target
+    # must already have a complete changelog section.
+    if [ "$CURRENT" != "$NEW_VERSION" ]; then
+        python3 scripts/release_preflight.py --release-version "$NEW_VERSION"
+    else
+        just preflight
+    fi
 
     echo "Rust warning gate..."
-    # Pass warning denial through Clippy rather than RUSTFLAGS. Setting
-    # RUSTFLAGS invalidates the entire dependency cache, recompiles every
-    # transitive crate, and applies our warning policy to third-party code.
     {{cargo}} clippy -p omegon --all-targets -- -D warnings
 
-    CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-    if echo "$CURRENT" | grep -q '-'; then
-        echo "✗ Release version must be stable semver, got $CURRENT"
-        exit 1
-    fi
-    NEW_VERSION="$CURRENT"
     echo "Releasing: $NEW_VERSION"
 
     # Mark milestone as released
     ./scripts/milestone-update.sh release "$NEW_VERSION"
+
+    if [ "$CURRENT" != "$NEW_VERSION" ]; then
+        python3 -c 'import pathlib, re, sys; p = pathlib.Path("Cargo.toml"); p.write_text(re.sub(r'^\''version = "[^"]+"'\'', f'\''version = "{sys.argv[1]}"'\'', p.read_text(), count=1, flags=re.M))' "$NEW_VERSION"
+    fi
 
     # Refresh the lockfile before commit/tag so stable release steps do not
     # rewrite tracked files after the release commit already exists.
@@ -830,16 +839,12 @@ publish:
         exit 1
     fi
 
-    # Stable publication is forbidden until the release branch has been merged
-    # forward and origin/main builds this release version (or a newer one).
-    # This makes trunk synchronization a publication prerequisite rather than
-    # a follow-up step that can be forgotten after artifacts are public.
+    # Push the release commit first, then prove the tag is reachable from the
+    # remote trunk. Checking before this push rejects every fresh trunk release
+    # because origin/main cannot contain a commit that has not been pushed yet.
+    git push origin "$BRANCH"
     python3 scripts/release_branch.py verify-publish
-
-    # Push current release branch + the specific stable tag only.
-    # Do NOT use --tags: pushing many accumulated tags at once causes GitHub
-    # Actions to silently drop workflow triggers beyond ~3 ref changes per push.
-    git push origin "$BRANCH" "$TAG"
+    git push origin "$TAG"
 
     # ── Reopen trunk at the next dev version ──────────────────
     # The tag just made $VERSION public. Trunk must not keep advertising it:
@@ -851,13 +856,8 @@ publish:
         NEXT_DEV=$(python3 scripts/release_branch.py next-dev-version)
         echo ""
         echo "Reopening trunk at ${NEXT_DEV}..."
-        python3 - "$NEXT_DEV" <<'REOPEN'
-    import pathlib, re, sys
-    nxt = sys.argv[1]
-    p = pathlib.Path("Cargo.toml")
-    p.write_text(re.sub(r'^version = "[^"]+"', f'version = "{nxt}"', p.read_text(), count=1, flags=re.M))
-    REOPEN
-        cargo check -p omegon --offline >/dev/null 2>&1 || true
+        python3 -c 'import pathlib, re, sys; p = pathlib.Path("Cargo.toml"); p.write_text(re.sub(r'^\''version = "[^"]+"'\'', f'\''version = "{sys.argv[1]}"'\'', p.read_text(), count=1, flags=re.M))' "$NEXT_DEV"
+        {{cargo}} check -p omegon --offline
         git add Cargo.toml Cargo.lock
         git commit -q -m "chore(release): reopen trunk at ${NEXT_DEV}"
         git push origin "$BRANCH"

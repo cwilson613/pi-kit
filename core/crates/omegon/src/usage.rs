@@ -6,6 +6,258 @@
 use omegon_traits::ProviderTelemetrySnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunwayState {
+    Ample,
+    Adequate,
+    Tight,
+    Opaque,
+    Exhausted,
+}
+
+impl RunwayState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ample => "ample",
+            Self::Adequate => "adequate",
+            Self::Tight => "tight",
+            Self::Opaque => "opaque",
+            Self::Exhausted => "exhausted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunwayAssessment {
+    pub state: RunwayState,
+    pub available: Vec<String>,
+    pub confidence: &'static str,
+    pub unknown: Vec<String>,
+    pub recommendation: String,
+    pub evidence: String,
+}
+
+pub fn assess_runway(
+    provider: &str,
+    telemetry: Option<&ProviderTelemetrySnapshot>,
+) -> RunwayAssessment {
+    let Some(t) = telemetry else {
+        return RunwayAssessment {
+            state: RunwayState::Opaque,
+            available: vec!["no quota observation captured yet".into()],
+            confidence: "low",
+            unknown: vec!["remaining capacity".into(), "reset window".into()],
+            recommendation: "Proceed with one bounded turn, then run /limits again.".into(),
+            evidence: "no provider telemetry captured in this session".into(),
+        };
+    };
+
+    match provider {
+        "anthropic" => {
+            let mut available = Vec::new();
+            let mut limiting_used = None::<f32>;
+            if let Some(used) = t.unified_5h_utilization_pct {
+                available.push(format!(
+                    "5h window: {:.0}% remaining",
+                    (100.0 - used).clamp(0.0, 100.0)
+                ));
+                limiting_used = Some(used);
+            }
+            if let Some(used) = t.unified_7d_utilization_pct {
+                available.push(format!(
+                    "7d window: {:.0}% remaining",
+                    (100.0 - used).clamp(0.0, 100.0)
+                ));
+                limiting_used = Some(limiting_used.map_or(used, |current| current.max(used)));
+            }
+            if let Some(secs) = t.retry_after_secs {
+                available.push(format!("retry window: {}", format_duration_compact(secs)));
+            }
+            runway_from_utilization(
+                limiting_used,
+                available,
+                "Anthropic upstream utilization headers",
+                "subscription or API monetary balance",
+            )
+        }
+        "openai-codex" => {
+            let mut available = Vec::new();
+            let mut limiting_used = None::<f32>;
+            if let Some(used) = t.codex_primary_used_pct {
+                let reset = t
+                    .codex_primary_reset_secs
+                    .map(|secs| format!(" · resets in {}", format_duration_compact(secs)))
+                    .unwrap_or_default();
+                available.push(format!(
+                    "primary window: {:.0}% remaining{reset}",
+                    (100.0 - used).clamp(0.0, 100.0)
+                ));
+                limiting_used = Some(used);
+            }
+            if let Some(used) = t.codex_secondary_used_pct {
+                let reset = t
+                    .codex_secondary_reset_secs
+                    .map(|secs| format!(" · resets in {}", format_duration_compact(secs)))
+                    .unwrap_or_default();
+                available.push(format!(
+                    "secondary window: {:.0}% remaining{reset}",
+                    (100.0 - used).clamp(0.0, 100.0)
+                ));
+                limiting_used = Some(limiting_used.map_or(used, |current| current.max(used)));
+            }
+            if let Some(unlimited) = t.codex_credits_unlimited {
+                available.push(format!(
+                    "credits: {}",
+                    if unlimited { "unlimited" } else { "metered" }
+                ));
+            }
+            runway_from_utilization(
+                limiting_used,
+                available,
+                "Codex upstream usage-window headers",
+                "exact credit balance",
+            )
+        }
+        _ => {
+            let mut available = Vec::new();
+            if let Some(requests) = t.requests_remaining {
+                available.push(format!("requests remaining: {requests}"));
+            }
+            if let Some(tokens) = t.tokens_remaining {
+                available.push(format!(
+                    "tokens remaining: {}",
+                    format_compact_tokens(tokens)
+                ));
+            }
+            if let Some(secs) = t.retry_after_secs {
+                available.push(format!("retry after: {}", format_duration_compact(secs)));
+            }
+            if t.requests_remaining == Some(0) || t.tokens_remaining == Some(0) {
+                RunwayAssessment {
+                    state: RunwayState::Exhausted,
+                    available,
+                    confidence: "high",
+                    unknown: vec!["account-level refill or overage policy".into()],
+                    recommendation:
+                        "Do not start more work on this route; wait for reset or select a fallback."
+                            .into(),
+                    evidence: "provider response quota headers".into(),
+                }
+            } else if available.is_empty() {
+                RunwayAssessment {
+                    state: RunwayState::Opaque,
+                    available: vec!["route is responding, but no quota balance was exposed".into()],
+                    confidence: "low",
+                    unknown: vec!["remaining capacity".into(), "reset window".into()],
+                    recommendation:
+                        "Proceed with one bounded wave and reassess before spawning more work."
+                            .into(),
+                    evidence: format!("{provider} response exposed no recognized quota fields"),
+                }
+            } else {
+                RunwayAssessment {
+                    state: RunwayState::Adequate,
+                    available,
+                    confidence: "medium",
+                    unknown: vec!["account-level monetary or subscription balance".into()],
+                    recommendation: "Immediate capacity is available; keep the next wave bounded until burn history is calibrated.".into(),
+                    evidence: "generic provider response quota headers".into(),
+                }
+            }
+        }
+    }
+}
+
+fn runway_from_utilization(
+    limiting_used: Option<f32>,
+    mut available: Vec<String>,
+    evidence: &str,
+    unknown_balance: &str,
+) -> RunwayAssessment {
+    let Some(used) = limiting_used else {
+        if available.is_empty() {
+            available.push("route is responding, but no utilization window was exposed".into());
+        }
+        return RunwayAssessment {
+            state: RunwayState::Opaque,
+            available,
+            confidence: "low",
+            unknown: vec!["remaining utilization".into(), unknown_balance.into()],
+            recommendation:
+                "Proceed with one bounded wave and reassess after fresh telemetry arrives.".into(),
+            evidence: format!("{evidence}; utilization value absent"),
+        };
+    };
+
+    let state = if used >= 98.0 {
+        RunwayState::Exhausted
+    } else if used >= 90.0 {
+        RunwayState::Tight
+    } else if used >= 70.0 {
+        RunwayState::Adequate
+    } else {
+        RunwayState::Ample
+    };
+    let recommendation = match state {
+        RunwayState::Ample => {
+            "Current windows support continued work; reassess before a large parallel wave."
+        }
+        RunwayState::Adequate => {
+            "Continue with a bounded wave and preserve capacity for validation."
+        }
+        RunwayState::Tight => {
+            "Avoid new parallel work; finish the current milestone and reassess near reset."
+        }
+        RunwayState::Exhausted => {
+            "Do not start more work on this route; wait for reset or select a fallback."
+        }
+        RunwayState::Opaque => unreachable!(),
+    };
+    RunwayAssessment {
+        state,
+        available,
+        confidence: "high",
+        unknown: vec![
+            unknown_balance.into(),
+            "turn-equivalent estimate (history not calibrated)".into(),
+        ],
+        recommendation: recommendation.into(),
+        evidence: evidence.into(),
+    }
+}
+
+pub fn format_runway_report(
+    provider: &str,
+    model: &str,
+    telemetry: Option<&ProviderTelemetrySnapshot>,
+) -> String {
+    let assessment = assess_runway(provider, telemetry);
+    let mut lines = vec![
+        "Inference runway".to_string(),
+        String::new(),
+        "Current route".to_string(),
+        format!("- provider: {provider}"),
+        format!("- model: {model}"),
+        String::new(),
+        "Available".to_string(),
+    ];
+    lines.extend(assessment.available.iter().map(|line| format!("- {line}")));
+    lines.extend([
+        String::new(),
+        "Planning assessment".into(),
+        format!("- runway: {}", assessment.state.as_str()),
+        format!("- confidence: {}", assessment.confidence),
+        format!("- recommendation: {}", assessment.recommendation),
+        String::new(),
+        "Evidence".into(),
+        format!("- source: {}", assessment.evidence),
+    ]);
+    if !assessment.unknown.is_empty() {
+        lines.push(format!("- unknown: {}", assessment.unknown.join(", ")));
+    }
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageHeadroomState {
     Unknown,
     Healthy,

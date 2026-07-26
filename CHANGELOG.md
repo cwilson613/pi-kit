@@ -18,6 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added the first operator-facing inference capacity affordance: `/limits` translates current provider telemetry into an explicit `ample`, `adequate`, `tight`, `opaque`, or `exhausted` runway with limiting-window details, reset timing, confidence, bounded-work guidance, and named unknowns; personal Copilot premium balance remains explicitly opaque rather than being inferred or labelled unlimited. `/usage` remains the raw consumption/telemetry view, and the internal `/runway` handler remains temporarily compatible without adding a second palette command.
 - Added the canonical human-and-agent release procedure, defining Cargo's `X.Y.0-dev` as a patchless `X.Y-dev` development-line encoding, separating stable SemVer ordering from nightly date/SHA ordering, and documenting trunk tags, long-running feature branches, reactive stabilization, immutable-tag authority, and post-release restoration without invented next-patch intent.
 
 ### Changed

@@ -10,6 +10,7 @@ use omegon_traits::{
 
 use crate::usage::{
     authoritative_links, derive_headroom_state, derive_rationale, format_raw_telemetry_lines,
+    format_runway_report,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +35,14 @@ impl UsageFeature {
         Self {
             latest: LatestUsageSnapshot::default(),
         }
+    }
+
+    fn format_limits_report(&self) -> String {
+        format_runway_report(
+            self.latest.provider.as_deref().unwrap_or("unknown"),
+            self.latest.model.as_deref().unwrap_or("unknown"),
+            self.latest.telemetry.as_ref(),
+        )
     }
 
     fn format_usage_report(&self) -> String {
@@ -95,20 +104,31 @@ impl Feature for UsageFeature {
     }
 
     fn commands(&self) -> Vec<CommandDefinition> {
-        vec![CommandDefinition {
-            name: "usage".into(),
-            description: "Show current provider usage telemetry and advisory".into(),
-            subcommands: vec![],
-            availability: omegon_traits::CommandAvailability::ALL,
-            safety: omegon_traits::CommandSafety::READ_ONLY,
-        }]
+        vec![
+            CommandDefinition {
+                name: "limits".into(),
+                description: "Show provider capacity, reset timing, and bounded-work guidance"
+                    .into(),
+                subcommands: vec![],
+                availability: omegon_traits::CommandAvailability::ALL,
+                safety: omegon_traits::CommandSafety::READ_ONLY,
+            },
+            CommandDefinition {
+                name: "usage".into(),
+                description: "Show raw provider usage telemetry and advisory".into(),
+                subcommands: vec![],
+                availability: omegon_traits::CommandAvailability::ALL,
+                safety: omegon_traits::CommandSafety::READ_ONLY,
+            },
+        ]
     }
 
     fn handle_command(&mut self, name: &str, _args: &str) -> CommandResult {
-        if name != "usage" {
-            return CommandResult::NotHandled;
+        match name {
+            "limits" | "runway" => CommandResult::Display(self.format_limits_report()),
+            "usage" => CommandResult::Display(self.format_usage_report()),
+            _ => CommandResult::NotHandled,
         }
-        CommandResult::Display(self.format_usage_report())
     }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
@@ -124,6 +144,80 @@ impl Feature for UsageFeature {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limits_command_formats_codex_planning_guidance() {
+        let mut feature = UsageFeature::new();
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: Some("gpt-5.6-codex".into()),
+                provider: Some("openai-codex".into()),
+                estimated_tokens: 0,
+                context_window: 0,
+                context_composition: Default::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+                provider_telemetry: Some(ProviderTelemetrySnapshot {
+                    provider: "openai-codex".into(),
+                    codex_primary_used_pct: Some(42.0),
+                    codex_secondary_used_pct: Some(79.0),
+                    codex_primary_reset_secs: Some(3_600),
+                    codex_secondary_reset_secs: Some(86_400),
+                    ..Default::default()
+                }),
+            },
+        )));
+
+        let CommandResult::Display(text) = feature.handle_command("limits", "") else {
+            panic!("expected display result");
+        };
+        assert!(text.contains("Inference runway"), "got: {text}");
+        assert!(text.contains("runway: adequate"), "got: {text}");
+        assert!(
+            text.contains("secondary window: 21% remaining"),
+            "got: {text}"
+        );
+        assert!(text.contains("bounded wave"), "got: {text}");
+        assert!(text.contains("turn-equivalent estimate"), "got: {text}");
+    }
+
+    #[test]
+    fn limits_command_keeps_copilot_personal_balance_opaque() {
+        let mut feature = UsageFeature::new();
+        feature.on_event(&BusEvent::TurnEnd(Box::new(
+            omegon_traits::BusEventTurnEnd {
+                turn: 1,
+                model: Some("claude-opus-4.6".into()),
+                provider: Some("github-copilot".into()),
+                estimated_tokens: 0,
+                context_window: 0,
+                context_composition: Default::default(),
+                actual_input_tokens: 0,
+                actual_output_tokens: 0,
+                cache_read_tokens: 0,
+                dominant_phase: None,
+                drift_kind: None,
+                progress_signal: omegon_traits::ProgressSignal::None,
+                provider_telemetry: None,
+            },
+        )));
+
+        let CommandResult::Display(text) = feature.handle_command("limits", "") else {
+            panic!("expected display result");
+        };
+        assert!(text.contains("runway: opaque"), "got: {text}");
+        assert!(
+            text.contains("no provider telemetry captured in this session"),
+            "got: {text}"
+        );
+        assert!(text.contains("one bounded turn"), "got: {text}");
+        assert!(!text.contains("unlimited"), "got: {text}");
+    }
 
     #[test]
     fn usage_command_formats_anthropic_with_authority_link() {
@@ -210,6 +304,25 @@ mod tests {
             text.contains("developers.openai.com/api/docs/guides/rate-limits"),
             "got: {text}"
         );
+    }
+
+    #[test]
+    fn command_registry_exposes_limits_and_usage_without_runway() {
+        let feature = UsageFeature::new();
+        let definitions = Feature::commands(&feature);
+        let names: Vec<_> = definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["limits", "usage"]);
+    }
+
+    #[test]
+    fn runway_handler_remains_compatible_with_limits_output() {
+        let mut feature = UsageFeature::new();
+        let limits = feature.handle_command("limits", "");
+        let runway = feature.handle_command("runway", "");
+        assert_eq!(format!("{limits:?}"), format!("{runway:?}"));
     }
 
     #[test]

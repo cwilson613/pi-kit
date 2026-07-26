@@ -901,9 +901,12 @@ impl AgentSetup {
 
         let shared_augment_registry =
             features::persona::SharedAugmentRegistry::new(persona_registry);
-        bus.register(Box::new(features::persona::PersonaFeature::new(
-            shared_augment_registry.clone(),
-        )));
+        bus.register(Box::new(
+            features::persona::PersonaFeature::with_workspace_root(
+                shared_augment_registry.clone(),
+                cwd.clone(),
+            ),
+        ));
         bus.register(Box::new(features::skills::SkillsFeature::new(
             shared_augment_registry,
         )));

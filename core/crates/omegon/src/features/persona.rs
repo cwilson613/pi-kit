@@ -37,13 +37,30 @@ pub struct PersonaFeature {
     registry: SharedAugmentRegistry,
     /// Flag indicating harness status should be refreshed on next turn boundary
     refresh_status_pending: AtomicBool,
+    /// Workspace root used to resolve skill project-signal evidence.
+    ///
+    /// Captured once at construction rather than read per turn: the registry
+    /// loaded its skills against this same root, so re-reading the process CWD
+    /// each turn could silently disagree with what was loaded.
+    workspace_root: std::path::PathBuf,
 }
 
 impl PersonaFeature {
     pub fn new(registry: SharedAugmentRegistry) -> Self {
+        Self::with_workspace_root(
+            registry,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        )
+    }
+
+    pub fn with_workspace_root(
+        registry: SharedAugmentRegistry,
+        workspace_root: std::path::PathBuf,
+    ) -> Self {
         Self {
             registry,
             refresh_status_pending: AtomicBool::new(false),
+            workspace_root,
         }
     }
 
@@ -337,10 +354,16 @@ impl Feature for PersonaFeature {
 
     fn provide_context(
         &self,
-        _signals: &omegon_traits::ContextSignals<'_>,
+        signals: &omegon_traits::ContextSignals<'_>,
     ) -> Option<omegon_traits::ContextInjection> {
-        // Inject persona directive + tone directive as context
-        let prompt = self.registry.lock().build_system_prompt();
+        // Inject persona directive + tone directive as context, with skill
+        // bodies disclosed progressively. The operator prompt is threaded in so
+        // trigger-activated skills are admitted on the turn they are named
+        // rather than being fixed at startup.
+        let prompt = self
+            .registry
+            .lock()
+            .build_system_prompt_disclosed(&self.workspace_root, Some(signals.user_prompt));
         if prompt.is_empty() {
             return None;
         }
@@ -387,6 +410,97 @@ mod tests {
 
     fn test_registry() -> AugmentRegistry {
         AugmentRegistry::new("Test Lex Imperialis.".into())
+    }
+
+    /// Build signals carrying an operator prompt; other fields are inert here.
+    fn signals_with_prompt(prompt: &str) -> omegon_traits::ContextSignals<'_> {
+        const NO_TOOLS: &[String] = &[];
+        const NO_FILES: &[std::path::PathBuf] = &[];
+        omegon_traits::ContextSignals {
+            user_prompt: prompt,
+            recent_tools: NO_TOOLS,
+            recent_files: NO_FILES,
+            lifecycle_phase: &omegon_traits::LifecyclePhase::Idle,
+            turn_number: 1,
+            context_budget_tokens: 200_000,
+        }
+    }
+
+    #[test]
+    fn injected_context_discloses_skills_and_tracks_the_operator_prompt() {
+        use omegon_traits::Feature;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        for (name, activation, extra, marker) in [
+            (
+                "style",
+                "domain_detected",
+                "triggers = [\"diagram\"]",
+                "STYLE BODY MARKER",
+            ),
+            (
+                "typescript",
+                "project_detected",
+                "project_signals = [\"tsconfig.json\"]",
+                "TS BODY MARKER",
+            ),
+        ] {
+            let dir = skills_dir.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let filler = "filler line\n".repeat(200);
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "+++\nname = \"{name}\"\ndescription = \"Conventions for {name} work in this project\"\nactivation = \"{activation}\"\n{extra}\n+++\n\n{marker}\n\n{filler}"
+                ),
+            )
+            .unwrap();
+        }
+
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut registry = test_registry();
+        registry.load_skills_from_dirs_for_test(&[skills_dir]);
+        let unfiltered = registry.build_system_prompt();
+        let feature = PersonaFeature::with_workspace_root(
+            SharedAugmentRegistry::new(registry),
+            workspace.clone(),
+        );
+
+        // Neither skill has workspace evidence and the prompt names neither:
+        // both bodies are withheld, both stay discoverable.
+        let quiet = feature
+            .provide_context(&signals_with_prompt("what changed in the release?"))
+            .expect("persona layer must still inject");
+        assert!(!quiet.content.contains("STYLE BODY MARKER"));
+        assert!(!quiet.content.contains("TS BODY MARKER"));
+        assert!(quiet.content.contains("# Available skills (not loaded)"));
+        assert!(quiet.content.contains("- style —"));
+        assert!(quiet.content.contains("- typescript —"));
+        assert!(
+            quiet.content.len() < unfiltered.len(),
+            "disclosed {} !< unfiltered {}",
+            quiet.content.len(),
+            unfiltered.len()
+        );
+
+        // The operator names a trigger: that body is admitted on this turn,
+        // and the unrelated skill stays withheld.
+        let asked = feature
+            .provide_context(&signals_with_prompt("draw me a diagram of the pipeline"))
+            .expect("persona layer must still inject");
+        assert!(
+            asked.content.contains("STYLE BODY MARKER"),
+            "trigger must admit the body on the naming turn"
+        );
+        assert!(!asked.content.contains("TS BODY MARKER"));
+
+        // Priority and TTL are unchanged by disclosure.
+        assert_eq!(asked.priority, 85);
+        assert_eq!(asked.ttl_turns, u32::MAX);
+        assert_eq!(asked.source, "persona");
     }
 
     #[test]

@@ -227,6 +227,11 @@ pub fn doctor_report() -> anyhow::Result<String> {
                 for warning in adapted_skill_manifest_warnings(&manifest, &body) {
                     metadata.push(format!("adaptation-warning:{warning}"));
                 }
+                if let Some(finding) =
+                    omegon_skills::disclosure::lint_retrieval_key(&manifest.description)
+                {
+                    metadata.push(format!("retrieval-key:{}", finding.message()));
+                }
             }
             if metadata.is_empty() {
                 metadata.push("compatible".into());
@@ -807,6 +812,58 @@ pub struct SkillDetails {
     pub entry: Option<SkillEntry>,
 }
 
+/// One skill as projected for progressive disclosure.
+///
+/// `body` is populated *only* when the disclosure entry admits it. This is the
+/// safety property of the type: a caller cannot accidentally project a withheld
+/// body, because a withheld body is not present to project.
+#[derive(Debug, Clone)]
+pub struct DisclosedSkill {
+    pub entry: omegon_skills::disclosure::SkillDisclosureEntry,
+    pub body: Option<String>,
+}
+
+impl DisclosedSkill {
+    /// Resident-tier metadata is always available for discovery.
+    pub fn name(&self) -> &str {
+        &self.entry.name
+    }
+
+    pub fn description(&self) -> &str {
+        &self.entry.description
+    }
+}
+
+/// Build the progressive-disclosure projection over the installed skill set.
+///
+/// Resolution reuses [`get_skill`] so project-local skills continue to shadow
+/// user skills, which continue to shadow bundled skills. Admission is decided
+/// by declared activation plus workspace evidence under `root` and the current
+/// operator `prompt`; a skill whose body is not admitted still appears in the
+/// projection with its name and description intact.
+pub fn disclosure_projection(
+    root: &std::path::Path,
+    prompt: Option<&str>,
+) -> anyhow::Result<Vec<DisclosedSkill>> {
+    let listed = list_structured()?;
+    let mut disclosed = Vec::with_capacity(listed.len());
+
+    for entry in listed {
+        // Only skills that are actually resolvable can contribute a body.
+        let Ok((manifest, body, _path)) = get_skill(&entry.name) else {
+            continue;
+        };
+        let disclosure_entry = omegon_skills::disclosure::disclose(&manifest, root, prompt);
+        let body = disclosure_entry.admits_body().then_some(body);
+        disclosed.push(DisclosedSkill {
+            entry: disclosure_entry,
+            body,
+        });
+    }
+
+    Ok(disclosed)
+}
+
 pub fn delete_external_skill(name: &str) -> anyhow::Result<SkillDeleteSummary> {
     let slug = validate_skill_name(name)?;
     let cwd = std::env::current_dir()?;
@@ -926,6 +983,50 @@ fn extract_description(content: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_only_workspace_keeps_unmatched_skills_resident_only() {
+        use omegon_skills::disclosure::{DisclosureTier, disclose};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname='x'\n").expect("write Cargo.toml");
+
+        // Every bundled skill, judged against a workspace that only proves Rust.
+        let mut resident = Vec::new();
+        let mut admitted = Vec::new();
+        for (name, content) in BUNDLED {
+            let (manifest, _body) = parse_skill_file(content);
+            let entry = disclose(&manifest, root, None);
+            if entry.tier == DisclosureTier::Resident {
+                resident.push(*name);
+            } else {
+                admitted.push(*name);
+            }
+            // Resident-tier metadata must survive regardless of admission.
+            assert!(!entry.name.is_empty(), "{name} lost its name");
+            assert!(!entry.description.is_empty(), "{name} lost its description");
+        }
+
+        // The Rust skill is signal-backed and its signal is present.
+        assert!(
+            admitted.contains(&"rust"),
+            "rust must be admitted in a Cargo workspace, admitted: {admitted:?}"
+        );
+
+        // Skills whose evidence is absent must stay resident, not be guessed in.
+        for withheld in ["oci", "typescript", "flynt"] {
+            assert!(
+                resident.contains(&withheld),
+                "{withheld} has no evidence here and must stay resident, resident: {resident:?}"
+            );
+        }
+
+        assert!(
+            !resident.is_empty(),
+            "a Rust-only workspace should withhold at least one bundled skill body"
+        );
+    }
 
     #[test]
     fn bundled_skills_all_have_content() {

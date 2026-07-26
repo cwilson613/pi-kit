@@ -131,6 +131,13 @@ pub struct AugmentRegistry {
     /// Project-local (.omegon/skills/) entries override same-named user-installed
     /// entries so prompt assembly consumes one resolved directive per skill name.
     loaded_skills: Vec<String>,
+    /// True when skills were loaded from an explicit operator-supplied subset.
+    ///
+    /// An explicit subset is itself the admission evidence: the parent already
+    /// decided which skills this agent needs. Re-judging that choice against
+    /// workspace signals would silently override operator intent, so disclosure
+    /// is bypassed entirely in this mode.
+    explicit_skill_subset: bool,
     skill_activation_events: Vec<omegon_traits::SkillActivationEvent>,
     skill_conflict_resolution: SkillConflictResolution,
 }
@@ -203,6 +210,7 @@ impl AugmentRegistry {
             active_tone: None,
             memory: MemoryLayers::default(),
             loaded_skills: Vec::new(),
+            explicit_skill_subset: false,
             skill_activation_events: Vec::new(),
             skill_conflict_resolution: SkillConflictResolution::default(),
         }
@@ -233,6 +241,7 @@ impl AugmentRegistry {
             self.skill_conflict_resolution,
         );
         self.loaded_skills = result.skills;
+        self.explicit_skill_subset = !allowed.is_empty();
         self.skill_activation_events = result.events;
     }
 
@@ -385,6 +394,13 @@ impl AugmentRegistry {
     /// Test-only: load skills from an explicit list of directories,
     /// bypassing the real ~/.omegon/skills/ path.
     #[cfg(test)]
+    pub(crate) fn load_skills_from_dirs_for_test(&mut self, dirs: &[std::path::PathBuf]) {
+        self.load_skills_from_explicit(dirs);
+    }
+
+    /// Test-only: load skills from an explicit list of directories,
+    /// bypassing the real ~/.omegon/skills/ path.
+    #[cfg(test)]
     fn load_skills_from_explicit(&mut self, dirs: &[std::path::PathBuf]) {
         let result =
             Self::load_from_dirs_filtered_with_policy(dirs, &[], self.skill_conflict_resolution);
@@ -479,6 +495,10 @@ impl AugmentRegistry {
 
     /// Assemble the system prompt from all active layers.
     /// Order: Lex Imperialis → Skills → Tone → Persona.
+    ///
+    /// Every loaded skill contributes its full body. Prefer
+    /// [`Self::build_system_prompt_disclosed`] on the interactive path, which
+    /// withholds bodies that the workspace and prompt provide no evidence for.
     pub fn build_system_prompt(&self) -> String {
         let mut layers = vec![self.lex_imperialis.as_str()];
 
@@ -486,6 +506,67 @@ impl AugmentRegistry {
             layers.push(skill.as_str());
         }
 
+        self.finish_system_prompt(layers)
+    }
+
+    /// Assemble the system prompt with progressive skill disclosure applied.
+    ///
+    /// Admitted skills contribute their full body exactly as
+    /// [`Self::build_system_prompt`] would. Unadmitted skills collapse to a
+    /// single `name — description` line under a shared index header, so the
+    /// model can still discover them and pull the body with `skills_get`.
+    ///
+    /// Admission is decided by declared activation plus workspace evidence
+    /// under `root` and the current operator `prompt`. A skill whose manifest
+    /// cannot be re-parsed is admitted rather than dropped: losing a capability
+    /// silently is worse than spending its tokens.
+    pub fn build_system_prompt_disclosed(
+        &self,
+        root: &std::path::Path,
+        prompt: Option<&str>,
+    ) -> String {
+        let mut layers = vec![self.lex_imperialis.as_str()];
+        let mut withheld: Vec<String> = Vec::new();
+
+        // An explicit skill subset is the operator's decision about what this
+        // agent needs. Disclosure must not second-guess it.
+        if self.explicit_skill_subset {
+            return self.build_system_prompt();
+        }
+
+        for skill in &self.loaded_skills {
+            let (manifest, _body) = omegon_skills::parse_skill_file(skill);
+            if manifest.name.is_empty() {
+                layers.push(skill.as_str());
+                continue;
+            }
+            let entry = omegon_skills::disclosure::disclose(&manifest, root, prompt);
+            if entry.admits_body() {
+                layers.push(skill.as_str());
+            } else {
+                withheld.push(format!("- {} — {}", entry.name, entry.description));
+            }
+        }
+
+        let index = (!withheld.is_empty()).then(|| {
+            format!(
+                "# Available skills (not loaded)\n\n\
+                 These skills are installed but their bodies are withheld from this \
+                 prompt because the workspace and your request provide no evidence \
+                 they apply. Call `skills_get` with a name to load one in full.\n\n{}",
+                withheld.join("\n")
+            )
+        });
+        if let Some(ref index) = index {
+            layers.push(index.as_str());
+        }
+
+        self.finish_system_prompt(layers)
+    }
+
+    /// Append the tone and persona layers and join. Shared by both assemblers so
+    /// disclosure can never reorder or drop a non-skill layer.
+    fn finish_system_prompt<'a>(&'a self, mut layers: Vec<&'a str>) -> String {
         if let Some(ref tone) = self.active_tone {
             layers.push(&tone.directive);
         }
@@ -953,6 +1034,198 @@ mod tests {
         ] {
             assert!(prompt.contains(directive), "missing directive: {directive}");
         }
+    }
+
+    /// Write `skills/<name>/SKILL.md` under `dir`, creating parents.
+    fn write_skill(dir: &std::path::Path, name: &str, content: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[test]
+    fn disclosed_prompt_withholds_unmatched_skills_but_keeps_them_discoverable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+
+        // A signal-gated skill whose marker is absent from the workspace.
+        // Body is padded to a realistic size: real bundled skills run 5–10 KB,
+        // and the index header is a fixed ~250-byte cost paid once no matter how
+        // many skills are withheld. A toy-sized body would not clear that floor.
+        let ts_body = format!("TS BODY MARKER\n\n{}", "ts filler line\n".repeat(200));
+        write_skill(
+            &skills,
+            "typescript",
+            &format!(
+                "+++\nname = \"typescript\"\ndescription = \"Conventions for TypeScript code and tooling\"\nactivation = \"project_detected\"\nproject_signals = [\"tsconfig.json\"]\n+++\n\n{ts_body}"
+            ),
+        );
+        // A signal-gated skill whose marker is present.
+        write_skill(
+            &skills,
+            "rust",
+            "+++\nname = \"rust\"\ndescription = \"Conventions for Rust code and tooling\"\nactivation = \"project_detected\"\nproject_signals = [\"Cargo.toml\"]\n+++\n\nRUST BODY MARKER",
+        );
+        // An always-on skill.
+        write_skill(
+            &skills,
+            "security",
+            "+++\nname = \"security\"\ndescription = \"Defensive coding practices for implementation and review\"\nactivation = \"always\"\n+++\n\nSECURITY BODY MARKER",
+        );
+
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("Cargo.toml"), "[package]\n").unwrap();
+
+        let mut reg = AugmentRegistry::new(LEX.into());
+        reg.load_skills_from_explicit(&[skills]);
+        assert_eq!(reg.skill_count(), 3);
+
+        let full = reg.build_system_prompt();
+        let disclosed = reg.build_system_prompt_disclosed(&workspace, None);
+
+        // Every body is present without disclosure.
+        for marker in ["TS BODY MARKER", "RUST BODY MARKER", "SECURITY BODY MARKER"] {
+            assert!(full.contains(marker), "baseline must contain {marker}");
+        }
+
+        // Evidence-backed skills keep their bodies.
+        assert!(disclosed.contains("RUST BODY MARKER"));
+        assert!(disclosed.contains("SECURITY BODY MARKER"));
+
+        // The unmatched skill loses its body but stays discoverable by name and
+        // description — this is the property that makes withholding safe.
+        assert!(!disclosed.contains("TS BODY MARKER"));
+        assert!(disclosed.contains("# Available skills (not loaded)"));
+        assert!(
+            disclosed.contains("- typescript — Conventions for TypeScript code and tooling"),
+            "withheld skill must remain retrievable:\n{disclosed}"
+        );
+        assert!(disclosed.contains("skills_get"));
+
+        // Disclosure must strictly shrink the prompt once withheld bodies clear
+        // the fixed cost of the index header.
+        assert!(
+            disclosed.len() < full.len(),
+            "disclosed {} !< full {}",
+            disclosed.len(),
+            full.len()
+        );
+        // And the saving should be most of the withheld body, not a rounding error.
+        assert!(
+            full.len() - disclosed.len() > 2_000,
+            "expected substantial savings, got {}",
+            full.len() - disclosed.len()
+        );
+    }
+
+    #[test]
+    fn disclosed_prompt_admits_on_prompt_trigger_and_preserves_persona_layers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_skill(
+            &skills,
+            "style",
+            "+++\nname = \"style\"\ndescription = \"Canonical design system tokens for visual output\"\nactivation = \"domain_detected\"\ntriggers = [\"diagram\"]\n+++\n\nSTYLE BODY MARKER",
+        );
+
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut reg = AugmentRegistry::new(LEX.into());
+        reg.load_skills_from_explicit(&[skills]);
+
+        // No evidence, no trigger: withheld.
+        let quiet = reg.build_system_prompt_disclosed(&workspace, None);
+        assert!(!quiet.contains("STYLE BODY MARKER"));
+
+        // The operator names the trigger: admitted on this turn.
+        let asked = reg.build_system_prompt_disclosed(&workspace, Some("draw me a diagram"));
+        assert!(
+            asked.contains("STYLE BODY MARKER"),
+            "prompt trigger must admit the body:\n{asked}"
+        );
+        // Admitting the only withheld skill removes the index entirely.
+        assert!(!asked.contains("# Available skills (not loaded)"));
+    }
+
+    /// The load-bearing property of progressive disclosure: a withheld body must
+    /// still be *reachable*. This walks the full round trip — withhold, read the
+    /// advertised name out of the index, resolve that name from disk, and
+    /// confirm the body comes back intact.
+    #[test]
+    fn a_withheld_skill_is_retrievable_by_the_name_the_index_advertises() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        let dir = skills_dir.join("typescript");
+        std::fs::create_dir_all(&dir).unwrap();
+        let filler = "filler line\n".repeat(200);
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "+++\nname = \"typescript\"\ndescription = \"Conventions for TypeScript code and tooling\"\nactivation = \"project_detected\"\nproject_signals = [\"tsconfig.json\"]\n+++\n\nTS BODY MARKER\n\n{filler}"
+            ),
+        )
+        .unwrap();
+
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut reg = AugmentRegistry::new(LEX.into());
+        reg.load_skills_from_explicit(&[skills_dir.clone()]);
+        let disclosed = reg.build_system_prompt_disclosed(&workspace, None);
+
+        // The body is withheld.
+        assert!(!disclosed.contains("TS BODY MARKER"));
+
+        // Recover the advertised name exactly as a model would read it: from
+        // inside the index section, not from arbitrary bullets elsewhere in the
+        // prompt.
+        let index_section = disclosed
+            .split_once("# Available skills (not loaded)")
+            .expect("index header must be present")
+            .1;
+        let advertised = index_section
+            .lines()
+            .find_map(|line| line.strip_prefix("- ")?.split(" — ").next())
+            .expect("index must advertise at least one skill name")
+            .to_string();
+        assert_eq!(advertised, "typescript");
+
+        // That name must resolve on disk — this is the step that fails if the
+        // index ever advertises a manifest name that diverges from the directory.
+        let resolved = skills_dir.join(&advertised).join("SKILL.md");
+        assert!(
+            resolved.exists(),
+            "skills_get resolves by directory name; `{advertised}` did not resolve"
+        );
+        let (manifest, body) =
+            omegon_skills::parse_skill_file(&std::fs::read_to_string(&resolved).unwrap());
+        assert_eq!(manifest.name, advertised);
+        assert!(
+            body.contains("TS BODY MARKER"),
+            "retrieval must return the body that disclosure withheld"
+        );
+    }
+
+    #[test]
+    fn disclosure_never_drops_a_skill_with_an_unparseable_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        // No frontmatter at all — disclosure cannot judge it.
+        write_skill(&skills, "legacy", "ORPHAN BODY MARKER");
+
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut reg = AugmentRegistry::new(LEX.into());
+        reg.load_skills_from_explicit(&[skills]);
+
+        let disclosed = reg.build_system_prompt_disclosed(&workspace, None);
+        assert!(
+            disclosed.contains("ORPHAN BODY MARKER"),
+            "an unjudgeable skill must be admitted, not silently dropped:\n{disclosed}"
+        );
     }
 
     #[test]

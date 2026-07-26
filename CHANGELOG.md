@@ -16,6 +16,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Changed
+
+- Switched the live persona context injection to progressive skill disclosure. `PersonaFeature` now threads the workspace root and the current operator prompt into prompt assembly, so skill bodies are admitted per turn on workspace-signal or trigger evidence instead of every installed skill being resident in every prompt. Injection source, priority (85), and TTL are unchanged.
+
+### Fixed
+
+- Pinned `skills_get` and `skills_list` as core tools exempt from lazy injection. The disclosure index directs the model to these tools to retrieve a withheld skill body, so lazily dropping them would turn the index into a dead link and make disclosure destroy capability instead of deferring it.
+- Bypassed disclosure entirely when skills are loaded from an explicit operator-supplied subset. An explicit allowlist is itself the admission evidence — the parent already decided what the agent needs — so re-judging it against workspace signals would silently override operator intent.
+- Fixed persistent context injections accumulating one copy per turn. A provider returning `ttl_turns: u32::MAX` was pushed unconditionally on every `build_system_prompt`, so turn N carried N copies of the persona/skill layer; under progressive disclosure each copy differed, presenting the model with contradictory skill sets. Persistent injections now replace the prior entry from the same source, matching the existing `session-hud` behaviour.
+- Added an activation lint to the bundled-skill calibration gate. `SkillActivation::parse` returns `None` for unrecognised values and unparseable activations are never admitted, so a typo such as `project-detected` would make a skill permanently invisible with no diagnostic — the same silent-failure class as an unmatchable project signal.
+- Fixed the bundled `style` skill declaring `drawings/*.excalidraw` and `diagrams/*.d2` project signals that the validated matcher rejects, so the skill had never activated on drawing or diagram workspaces; both now use recursive `**` form and a lint asserts every bundled skill declares matchable signals.
+
 ### Added
 
 - Clarified the ACP/editor ownership boundary: Zed's native Skills settings page belongs to Zed's built-in agent and is not populated by ACP agents; Omegon `/skills` remains the supported skill inventory and execution surface in Omegon ACP threads.

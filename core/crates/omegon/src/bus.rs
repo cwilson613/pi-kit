@@ -31,8 +31,13 @@ use omegon_traits::{
 use serde_json::Value;
 
 /// Core tools that are always present regardless of lazy injection.
-/// These are the coding-loop essentials and the Workbench reconciliation tool
-/// required by durable harness instructions on every actionable turn.
+///
+/// These are the coding-loop essentials, the Workbench reconciliation tool
+/// required by durable harness instructions on every actionable turn, and any
+/// tool the system prompt itself names as a required affordance. Progressive
+/// skill disclosure withholds skill bodies and directs the model to
+/// `skills_get`; if that tool were lazily injected the index would be a dead
+/// link and disclosure would destroy capability rather than defer it.
 fn is_core_tool(name: &str) -> bool {
     use crate::tool_registry as reg;
     matches!(
@@ -49,6 +54,8 @@ fn is_core_tool(name: &str) -> bool {
             | reg::context::CONTEXT_STATUS
             | reg::context::REQUEST_CONTEXT
             | reg::manage_tools::MANAGE_TOOLS
+            | reg::skills::SKILLS_GET
+            | reg::skills::SKILLS_LIST
             | reg::view::VIEW
     )
 }
@@ -903,6 +910,21 @@ mod tests {
             is_core_tool(crate::tool_registry::core::PLAN),
             "plan must remain callable while durable Workbench instructions require reconciliation"
         );
+    }
+
+    #[test]
+    fn skill_retrieval_survives_lazy_injection() {
+        use crate::tool_registry as reg;
+
+        // The disclosure index in the system prompt names these tools as the
+        // way to reach a withheld skill body. If lazy injection can drop them,
+        // withheld skills become unreachable.
+        for name in [reg::skills::SKILLS_GET, reg::skills::SKILLS_LIST] {
+            assert!(
+                is_core_tool(name),
+                "'{name}' is named by the skill disclosure index and must not be lazily dropped"
+            );
+        }
     }
 
     #[test]

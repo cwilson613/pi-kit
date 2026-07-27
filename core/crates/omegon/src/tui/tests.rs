@@ -8573,11 +8573,57 @@ fn palette_system_notification_matrix_accounts_for_palette_slash_outputs() {
         ("## Skills\nsummary", Some("/skills")),
         ("## Prompt library\nsummary", Some("/prompt list")),
         ("## Random\nsummary", None),
+        ("Usage\n\nOverview\n- provider: anthropic", Some("/usage")),
+        ("Limits\n\nOverview\n- provider: openai-codex", Some("/limits")),
+        ("Usage: /context request <kind> <query>", None),
     ];
 
     for (message, expected) in cases {
         assert_eq!(slash_command_for_palette_notification(message), expected);
     }
+}
+
+#[test]
+fn capacity_system_notification_opens_modal_instead_of_conversation_dump() {
+    let mut app = test_app();
+
+    let message = crate::features::usage::format_usage_report_with_capacity(
+        "anthropic",
+        "claude-sonnet-4-6",
+        None,
+        None,
+    );
+    app.handle_agent_event(AgentEvent::SystemNotification {
+        message: message.clone(),
+    });
+
+    assert!(
+        app.command_panel.is_some(),
+        "expected /usage report to open a modal panel"
+    );
+    assert!(
+        !app.conversation
+            .segments()
+            .iter()
+            .any(|segment| matches!(
+                &segment.content,
+                SegmentContent::SystemNotification { text } if text == &message
+            )),
+        "usage report should not be dumped into the conversation"
+    );
+
+    let limits = crate::usage::format_limits_report_with_capacity(
+        "openai-codex",
+        "gpt-5.6-sol",
+        None,
+        None,
+    );
+    app.command_panel = None;
+    app.handle_agent_event(AgentEvent::SystemNotification { message: limits });
+    assert!(
+        app.command_panel.is_some(),
+        "expected /limits report to open a modal panel"
+    );
 }
 
 #[test]

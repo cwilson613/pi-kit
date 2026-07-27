@@ -22,6 +22,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 - Added direct, no-inference account-capacity probes for `/limits` and `/usage`: Codex reads `account/rateLimits/read` through the authenticated local app-server, while Claude reads its OAuth usage endpoint through Omegon's existing refreshed credentials. Results normalize plan, reset windows, utilization, and credits, cache for 60 seconds, coalesce concurrent refreshes, preserve the last good observation on refresh failure, and support explicit `refresh`, `--refresh`, or `-r` command arguments.
 - Added the canonical human-and-agent release procedure, defining Cargo's `X.Y.0-dev` as a patchless `X.Y-dev` development-line encoding, separating stable SemVer ordering from nightly date/SHA ordering, and documenting trunk tags, long-running feature branches, reactive stabilization, immutable-tag authority, and post-release restoration without invented next-patch intent.
 
+### Fixed
+
+- Routed interactive `/usage` and `/limits` output into the metric modals. The modal routing lived only on the `show_slash_response` path, so interactive TUI invocations — which deliver their report as a `SystemNotification` on the agent event bus — still dumped plaintext into the conversation. The palette-notification matrix now recognizes both capacity reports by their report headers and opens the modal instead.
+
 ### Changed
 
 - Replaced the provisional `runway` vocabulary with a single `/limits` magazine-check surface. `/usage` now combines account windows, session telemetry, and evidence, while `/limits` prioritizes hard remaining-capacity buckets; the undocumented `/runway` compatibility command has been removed.

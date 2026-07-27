@@ -57,6 +57,11 @@ fn slash_command_for_palette_notification(message: &str) -> Option<&'static str>
         ("## Thinking levels\n", "/think status"),
         ("## Skills\n", "/skills"),
         ("## Prompt library\n", "/prompt list"),
+        // Capacity reports are emitted as system notifications by the interactive
+        // bus path, so they need the same modal routing that `show_slash_response`
+        // applies to the remote/registry path.
+        ("Usage\n\n", "/usage"),
+        ("Limits\n\n", "/limits"),
     ];
 
     PALETTE_NOTIFICATION_COMMANDS

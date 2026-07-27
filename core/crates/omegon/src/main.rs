@@ -5548,6 +5548,39 @@ fn build_tui_secret_readiness_snapshot(
             }
 
             tui::TuiCommand::BusCommand { name, args } => {
+                if is_capacity_slash_command(&name) {
+                    let model = shared_settings
+                        .lock()
+                        .ok()
+                        .map(|settings| settings.model.clone())
+                        .unwrap_or_else(|| "unknown".into());
+                    let provider = providers::infer_provider_id(&model);
+                    let force = args
+                        .split_whitespace()
+                        .any(|arg| matches!(arg, "refresh" | "--refresh" | "-r"));
+                    let capacity = capacity::observe(&provider, force).await;
+                    let telemetry = runtime_state
+                        .conversation
+                        .last_provider_telemetry(Some(&provider));
+                    let message = if name == "limits" {
+                        usage::format_limits_report_with_capacity(
+                            &provider,
+                            &model,
+                            telemetry.as_ref(),
+                            Some(&capacity),
+                        )
+                    } else {
+                        features::usage::format_usage_report_with_capacity(
+                            &provider,
+                            &model,
+                            telemetry.as_ref(),
+                            Some(&capacity),
+                        )
+                    };
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                    continue;
+                }
+
                 if name == "context_request" {
                     let tool_args = if args.trim_start().starts_with('{') {
                         match serde_json::from_str::<serde_json::Value>(&args) {
@@ -8329,6 +8362,10 @@ fn list_sessions_message(cwd: &Path) -> String {
     }
 }
 
+fn is_capacity_slash_command(name: &str) -> bool {
+    matches!(name, "usage" | "limits")
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_remote_slash_command(
     runtime_state: &mut InteractiveAgentState,
@@ -8344,7 +8381,7 @@ async fn execute_remote_slash_command(
     use crate::tui::canonical_slash_command;
     use omegon_traits::SlashCommandResponse;
 
-    if matches!(name, "usage" | "limits") {
+    if is_capacity_slash_command(name) {
         let model = shared_settings
             .lock()
             .ok()
@@ -12568,6 +12605,14 @@ mod tests {
             result.is_ok(),
             "clean repo should pass preflight: {result:?}"
         );
+    }
+
+    #[test]
+    fn capacity_commands_are_intercepted_for_live_route_probing() {
+        assert!(is_capacity_slash_command("usage"));
+        assert!(is_capacity_slash_command("limits"));
+        assert!(!is_capacity_slash_command("runway"));
+        assert!(!is_capacity_slash_command("context_request"));
     }
 
     #[test]

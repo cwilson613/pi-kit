@@ -31,6 +31,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Fixed fresh-session interactive `/usage` and `/limits` dispatch bypassing the direct capacity probe and reporting an `unknown` route even while the footer showed the selected model. The TUI command path now resolves provider/model from live settings, probes account capacity without inference, and keeps response telemetry as a separate optional session signal.
 - Made `branch-release` state the trunk bump it requires. Cutting `release/X.Y` hands stable ownership of that line to the branch, but the helper left trunk advertising the same version — so the first patch release on the branch tripped `assert_main_version_not_behind` and blocked publication. `next_trunk_version` derives the line trunk must open and `branch-release` now prints the exact commands, with regression coverage asserting no patch on the cut line can outrank trunk.
 
 ## [0.28.11] - 2026-07-26

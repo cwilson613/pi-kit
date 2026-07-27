@@ -24,7 +24,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
-- Rendered capacity reset times as operator-meaningful values. `/limits` and `/usage` previously printed `resets at unix 1799999999`, which requires the operator to do epoch arithmetic to learn anything. Windows now report time-to-reset plus local wall-clock time (`resets in 2h 14m (Tue 14:03 local)`), and an elapsed window reads `reset due`.
+- Rendered capacity reset times as operator-meaningful values. `/limits` and `/usage` previously printed `resets at unix 1799999999`, which requires the operator to do epoch arithmetic to learn anything. Windows now report time-to-reset plus local wall-clock time (`resets in 2h 14m (Tue 14:03 local)`), and an elapsed window reads `reset due`. Clock precision scales with horizon — bare time inside a day, weekday inside a week, calendar date at 7 days or beyond — because a Codex weekly window is exactly 10080 minutes out, where a bare weekday collides with today, and monthly buckets (GitHub Copilot premium requests / AI credits, reset on the 1st) run further still.
 - Routed interactive `/usage` and `/limits` output into the metric modals. The modal routing lived only on the `show_slash_response` path, so interactive TUI invocations — which deliver their report as a `SystemNotification` on the agent event bus — still dumped plaintext into the conversation. The palette-notification matrix now recognizes both capacity reports by their report headers and opens the modal instead.
 
 ### Changed

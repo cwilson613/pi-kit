@@ -300,12 +300,20 @@ pub fn format_reset_at(epoch: u64) -> String {
 }
 
 fn format_reset_from(now: u64, epoch: u64) -> String {
+    // Horizon-scaled precision. Provider windows observed today top out at 7
+    // days (Codex weekly = 10080 window minutes; Claude seven_day*), where a
+    // bare weekday collides with today. Monthly buckets — GitHub Copilot
+    // premium requests / AI credits reset on the 1st — need a calendar date.
+    let away = epoch.saturating_sub(now);
+    let pattern = if away < 86_400 {
+        "%H:%M"
+    } else if away < 7 * 86_400 {
+        "%a %H:%M"
+    } else {
+        "%b %-d %H:%M"
+    };
     let clock = chrono::DateTime::from_timestamp(epoch as i64, 0)
-        .map(|utc| {
-            utc.with_timezone(&chrono::Local)
-                .format("%a %H:%M")
-                .to_string()
-        })
+        .map(|utc| utc.with_timezone(&chrono::Local).format(pattern).to_string())
         .unwrap_or_else(|| "unknown time".to_string());
 
     if epoch <= now {
@@ -390,6 +398,37 @@ mod tests {
             "{}",
             format_reset_from(now, now - 60)
         );
+    }
+
+    #[test]
+    fn reset_clock_precision_scales_with_horizon() {
+        let now = 1_800_000_000u64;
+
+        // Within a day: bare wall clock is unambiguous.
+        let same_day = format_reset_from(now, now + 3 * 3600);
+        assert!(!same_day.contains("Mon") && !same_day.contains("Tue"), "{same_day}");
+
+        // Inside a week (both live provider window classes): weekday qualifier.
+        let weekly = format_reset_from(now, now + 3 * 86_400);
+        assert_eq!(
+            weekly.matches(':').count(),
+            1,
+            "expected weekday + clock, got {weekly}"
+        );
+
+        // At or beyond 7 days a weekday collides with today, so use a date.
+        // Codex weekly windows report windowDurationMins 10080 == exactly 7d,
+        // and monthly buckets (Copilot premium requests) run further out.
+        let weekly_edge = format_reset_from(now, now + 7 * 86_400);
+        let monthly = format_reset_from(now, now + 30 * 86_400);
+        for rendered in [&weekly_edge, &monthly] {
+            assert!(
+                rendered.chars().any(|c| c.is_ascii_digit()),
+                "expected calendar date in {rendered}"
+            );
+        }
+        assert!(weekly_edge.starts_with("in 7d ("), "{weekly_edge}");
+        assert!(monthly.starts_with("in 30d ("), "{monthly}");
     }
 
     #[test]

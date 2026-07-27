@@ -2840,6 +2840,14 @@ pub enum AgentEvent {
     SkillActivation {
         event: SkillActivationEvent,
     },
+    /// Operator command output with its originating command carried as
+    /// provenance. Renderers must route on the command, not by sniffing the
+    /// body text — content-shape inference silently regresses whenever a
+    /// formatter is reworded.
+    CommandSurface {
+        command: String,
+        body: String,
+    },
     /// System notification — displayed in TUI but not sent to the LLM.
     SystemNotification {
         message: String,

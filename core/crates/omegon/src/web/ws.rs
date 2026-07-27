@@ -2393,6 +2393,14 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "event_name": "system.notification",
             "message": escape_html(message),
         }),
+        // Command provenance is carried as its own field rather than being
+        // inferred from body text by the client.
+        AgentEvent::CommandSurface { command, body } => json!({
+            "type": "command_surface",
+            "event_name": "command.surface",
+            "command": escape_html(command),
+            "body": escape_html(body),
+        }),
         AgentEvent::OperatorCopyBlock {
             label,
             text,
@@ -3183,6 +3191,7 @@ mod tests {
             AgentEvent::SkillActivation { .. } => {}
             AgentEvent::RuntimeLifecycleUpdated { .. } => {}
             AgentEvent::SystemNotification { .. } => {}
+            AgentEvent::CommandSurface { .. } => {}
             AgentEvent::OperatorCopyBlock { .. } => {}
             AgentEvent::StreamIdle { .. } => {}
             AgentEvent::ProviderRetry { .. } => {}
@@ -3344,6 +3353,10 @@ mod tests {
             AgentEvent::SystemNotification {
                 message: "test".into(),
             },
+            AgentEvent::CommandSurface {
+                command: "/limits refresh".into(),
+                body: "Current week: 40% left".into(),
+            },
             AgentEvent::OperatorCopyBlock {
                 label: "Device code".into(),
                 text: "432F-FB36".into(),
@@ -3411,8 +3424,8 @@ mod tests {
         }
         assert_eq!(
             events.len(),
-            29,
-            "should cover all 29 AgentEvent variants — see _exhaustive_agent_event_serialization_coverage"
+            30,
+            "should cover all 30 AgentEvent variants — see _exhaustive_agent_event_serialization_coverage"
         );
     }
 

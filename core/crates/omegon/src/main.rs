@@ -5549,9 +5549,12 @@ fn build_tui_secret_readiness_snapshot(
 
             tui::TuiCommand::BusCommand { name, args } => {
                 if is_capacity_slash_command(&name) {
-                    let message =
+                    let body =
                         capacity_report(&runtime_state, &shared_settings, &name, &args).await;
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message });
+                    let _ = events_tx.send(AgentEvent::CommandSurface {
+                        command: slash_command_line(&name, &args),
+                        body,
+                    });
                     continue;
                 }
 
@@ -5831,9 +5834,11 @@ fn build_tui_secret_readiness_snapshot(
                             // Unknown auth command - fall through to bus
                             let result = runtime_state.bus.dispatch_command(&name, &args);
                             match result {
-                                omegon_traits::CommandResult::Display(msg) => {
-                                    let _ = events_tx
-                                        .send(AgentEvent::SystemNotification { message: msg });
+                                omegon_traits::CommandResult::Display(body) => {
+                                    let _ = events_tx.send(AgentEvent::CommandSurface {
+                                        command: slash_command_line(&name, &args),
+                                        body,
+                                    });
                                 }
                                 omegon_traits::CommandResult::Handled => {
                                     tracing::debug!(cmd = %name, "bus command handled silently");
@@ -5848,9 +5853,13 @@ fn build_tui_secret_readiness_snapshot(
                     // Regular bus command
                     let result = runtime_state.bus.dispatch_command(&name, &args);
                     match result {
-                        omegon_traits::CommandResult::Display(msg) => {
-                            // Send back to TUI as a system notification (not into LLM conversation)
-                            let _ = events_tx.send(AgentEvent::SystemNotification { message: msg });
+                        omegon_traits::CommandResult::Display(body) => {
+                            // Command output carries its own provenance so operator
+                            // surfaces route by command, not by sniffing body text.
+                            let _ = events_tx.send(AgentEvent::CommandSurface {
+                                command: slash_command_line(&name, &args),
+                                body,
+                            });
                         }
                         omegon_traits::CommandResult::Handled => {
                             tracing::debug!(cmd = %name, "bus command handled silently");
@@ -8338,6 +8347,17 @@ fn list_sessions_message(cwd: &Path) -> String {
 
 fn is_capacity_slash_command(name: &str) -> bool {
     matches!(name, "usage" | "limits")
+}
+
+/// Reconstruct the operator-visible command line for provenance on
+/// `AgentEvent::CommandSurface`. Bus commands arrive split into name and args.
+fn slash_command_line(name: &str, args: &str) -> String {
+    let args = args.trim();
+    if args.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{name} {args}")
+    }
 }
 
 /// Single source of truth for capacity report generation. The interactive bus

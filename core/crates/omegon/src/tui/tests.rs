@@ -29,6 +29,41 @@ impl Drop for CurrentDirGuard {
     }
 }
 
+/// RAII guard for the process-global `HOME` variable. Serializes on the same
+/// lock the auth tests use so concurrent tests cannot observe a half-applied
+/// environment, and restores the prior value on drop.
+struct ScopedHomeEnv {
+    prev: Option<String>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ScopedHomeEnv {
+    fn set(home: &Path) -> Self {
+        let guard = crate::auth::TEST_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("HOME").ok();
+        // SAFETY: serialized by TEST_AUTH_ENV_LOCK, held for this guard's life.
+        unsafe { std::env::set_var("HOME", home) };
+        Self {
+            prev,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ScopedHomeEnv {
+    fn drop(&mut self) {
+        // SAFETY: serialized by the lock still held in `_guard`.
+        unsafe {
+            match self.prev.take() {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
+
 fn push_current_dir(path: &Path) -> CurrentDirGuard {
     let guard = crate::test_support::cwd::lock();
     let prev = std::env::current_dir().expect("current dir");
@@ -8595,25 +8630,61 @@ fn runtime_queue_zero_depth_hides_queue_line() {
 }
 
 #[test]
-fn palette_system_notification_matrix_accounts_for_palette_slash_outputs() {
-    let cases = [
-        ("## Context\nsummary", None),
-        ("## Thinking levels\nsummary", Some("/think status")),
-        ("## Skills\nsummary", Some("/skills")),
-        ("## Prompt library\nsummary", Some("/prompt list")),
-        ("## Random\nsummary", None),
-        ("Usage\n\nOverview\n- provider: anthropic", Some("/usage")),
-        ("Limits\n\nOverview\n- provider: openai-codex", Some("/limits")),
-        ("Usage: /context request <kind> <query>", None),
-    ];
-
-    for (message, expected) in cases {
-        assert_eq!(slash_command_for_palette_notification(message), expected);
+fn panel_surface_ownership_is_keyed_on_command_not_body_text() {
+    // Routing is provenance-based: the command decides the surface. Body text
+    // is never consulted, so rewording a formatter cannot demote its surface.
+    for command in [
+        "/usage",
+        "/usage refresh",
+        "/limits",
+        "/limits -r",
+        "/skills",
+        "/skills get rust",
+        "/think status",
+        "/prompt list",
+    ] {
+        assert!(
+            command_owns_panel_surface(command),
+            "expected panel surface for {command}"
+        );
+    }
+    for command in ["/status", "/context", "/model nope", "/thinking-ish", ""] {
+        assert!(
+            !command_owns_panel_surface(command),
+            "unexpected panel surface for {command}"
+        );
     }
 }
 
 #[test]
-fn capacity_system_notification_opens_modal_instead_of_conversation_dump() {
+fn command_surface_event_routes_by_provenance_regardless_of_body_wording() {
+    // The old router matched on a "Usage\n\n" body prefix. Prove the reworded
+    // body still lands in the modal, and that identical text from a non-panel
+    // command does not.
+    let mut app = test_app();
+    app.handle_agent_event(AgentEvent::CommandSurface {
+        command: "/limits refresh".into(),
+        body: "Totally reworded header\n- Current week: 40% left".into(),
+    });
+    let panel = app
+        .command_panel
+        .as_ref()
+        .expect("provenance routing must not depend on body text");
+    assert_eq!(panel.source.as_deref(), Some("/limits refresh"));
+
+    let mut app = test_app();
+    app.handle_agent_event(AgentEvent::CommandSurface {
+        command: "/status".into(),
+        body: "Usage\n\nOverview\n- provider: anthropic".into(),
+    });
+    assert!(
+        app.command_panel.is_none(),
+        "body text must not conjure a panel for a non-panel command"
+    );
+}
+
+#[test]
+fn capacity_command_surface_opens_modal_instead_of_conversation_dump() {
     let mut app = test_app();
 
     let message = crate::features::usage::format_usage_report_with_capacity(
@@ -8622,8 +8693,9 @@ fn capacity_system_notification_opens_modal_instead_of_conversation_dump() {
         None,
         None,
     );
-    app.handle_agent_event(AgentEvent::SystemNotification {
-        message: message.clone(),
+    app.handle_agent_event(AgentEvent::CommandSurface {
+        command: "/usage".into(),
+        body: message.clone(),
     });
 
     assert!(
@@ -8648,7 +8720,10 @@ fn capacity_system_notification_opens_modal_instead_of_conversation_dump() {
         None,
     );
     app.command_panel = None;
-    app.handle_agent_event(AgentEvent::SystemNotification { message: limits });
+    app.handle_agent_event(AgentEvent::CommandSurface {
+        command: "/limits".into(),
+        body: limits,
+    });
     assert!(
         app.command_panel.is_some(),
         "expected /limits report to open a modal panel"
@@ -8683,8 +8758,9 @@ fn capacity_system_notification_opens_modal_instead_of_conversation_dump() {
         "raw epoch leaked into report: {probed}"
     );
     app.command_panel = None;
-    app.handle_agent_event(AgentEvent::SystemNotification {
-        message: probed.clone(),
+    app.handle_agent_event(AgentEvent::CommandSurface {
+        command: "/limits refresh".into(),
+        body: probed.clone(),
     });
     assert!(
         app.command_panel.is_some(),
@@ -10339,7 +10415,11 @@ fn init_menu_recommends_matching_user_skill_for_project_copy() {
         "---\nname: rust-helper\ndescription: Rust helper\nactivation: project_detected\nprofile: [coding]\nproject_signals: [Cargo.toml]\n---\n\n# Rust helper\n",
     )
     .expect("skill");
-    unsafe { std::env::set_var("HOME", &home) };
+    // HOME is process-global. Leaking it repoints every later test's global
+    // profile/skill resolution at this tempdir, which is how an unrelated ACP
+    // profile assertion started failing under interleaving. Serialize on the
+    // shared auth env lock and restore on drop.
+    let _home = ScopedHomeEnv::set(&home);
     let _cwd = push_current_dir(&repo);
     let mut app = test_app();
     app.footer_data.cwd = repo.display().to_string();

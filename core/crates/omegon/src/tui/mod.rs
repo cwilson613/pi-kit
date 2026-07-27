@@ -52,21 +52,14 @@ pub mod workbench;
 #[cfg(test)]
 mod snapshot_tests;
 
-fn slash_command_for_palette_notification(message: &str) -> Option<&'static str> {
-    const PALETTE_NOTIFICATION_COMMANDS: &[(&str, &str)] = &[
-        ("## Thinking levels\n", "/think status"),
-        ("## Skills\n", "/skills"),
-        ("## Prompt library\n", "/prompt list"),
-        // Capacity reports are emitted as system notifications by the interactive
-        // bus path, so they need the same modal routing that `show_slash_response`
-        // applies to the remote/registry path.
-        ("Usage\n\n", "/usage"),
-        ("Limits\n\n", "/limits"),
-    ];
-
-    PALETTE_NOTIFICATION_COMMANDS
-        .iter()
-        .find_map(|(prefix, command)| message.starts_with(prefix).then_some(*command))
+/// Commands whose output is a browsable surface rather than a status line.
+/// Keyed on the command — the producer — not on body text, so rewording a
+/// formatter can never silently demote its surface to a transcript dump.
+fn command_owns_panel_surface(command: &str) -> bool {
+    matches!(
+        command.split_whitespace().next(),
+        Some("/usage" | "/limits" | "/skills" | "/think" | "/prompt")
+    )
 }
 
 fn should_toast_slash_response(response: &str) -> bool {
@@ -9895,10 +9888,7 @@ warning: {warning}"
     }
 
     fn show_slash_response(&mut self, command: &str, response: &str) {
-        if matches!(
-            command.split_whitespace().next(),
-            Some("/usage" | "/limits")
-        ) {
+        if command_owns_panel_surface(command) {
             self.open_command_panel(CommandPanel::from_slash(command, response));
         } else if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
             // Secret entry already owns the normal editor. Keep its acquisition
@@ -12909,6 +12899,11 @@ Scroll transcript:
                 self.conversation
                     .push_operator_copy_block(label, text, kind, copy_attempt);
             }
+            AgentEvent::CommandSurface { command, body } => {
+                // Provenance-routed: identical policy to a keyboard-submitted
+                // slash command, because it is the same command.
+                self.show_slash_response(&command, &body);
+            }
             AgentEvent::SystemNotification { message } => {
                 if let Some(detail) = upstream_retry_hint(&message) {
                     self.slim_turn_state = SlimTurnState::UpstreamRetrying(detail);
@@ -12923,8 +12918,6 @@ Scroll transcript:
                     self.show_toast(&message, ratatui_toaster::ToastType::Warning);
                 } else if message.starts_with('↯') || is_one_shot_context_notification(&message) {
                     self.show_toast(&message, ratatui_toaster::ToastType::Info);
-                } else if let Some(command) = slash_command_for_palette_notification(&message) {
-                    self.open_command_panel(CommandPanel::from_slash(command, &message));
                 } else {
                     self.conversation.push_system(&message);
                 }

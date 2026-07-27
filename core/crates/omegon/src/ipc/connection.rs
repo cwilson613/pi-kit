@@ -1100,6 +1100,13 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
                 snapshot: snapshot.clone(),
             })
         }
+        // Remote IPC clients have no command panel; preserve the output with
+        // its originating command so provenance survives the projection.
+        AgentEvent::CommandSurface { command, body } => {
+            Some(IpcEventPayload::SystemNotification {
+                message: format!("{command}\n{body}"),
+            })
+        }
         AgentEvent::SystemNotification { message } => Some(IpcEventPayload::SystemNotification {
             message: message.clone(),
         }),

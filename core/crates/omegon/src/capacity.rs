@@ -292,6 +292,54 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
+/// Render a reset epoch the way an operator reads it: how long until the
+/// window reopens, plus the local wall-clock time it happens. A raw unix
+/// epoch is not an operator-meaningful datapoint.
+pub fn format_reset_at(epoch: u64) -> String {
+    format_reset_from(now_epoch(), epoch)
+}
+
+fn format_reset_from(now: u64, epoch: u64) -> String {
+    let clock = chrono::DateTime::from_timestamp(epoch as i64, 0)
+        .map(|utc| {
+            utc.with_timezone(&chrono::Local)
+                .format("%a %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "unknown time".to_string());
+
+    if epoch <= now {
+        return format!("reset due ({clock} local)");
+    }
+    format!("in {} ({clock} local)", humanize_duration(epoch - now))
+}
+
+fn humanize_duration(secs: u64) -> String {
+    let minutes = secs / 60;
+    if minutes < 1 {
+        return "<1m".to_string();
+    }
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        let rem = minutes % 60;
+        return if rem == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {rem}m")
+        };
+    }
+    let days = hours / 24;
+    let rem = hours % 24;
+    if rem == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d {rem}h")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +359,44 @@ mod tests {
         let observation = parse_claude(&value);
         assert_eq!(observation.windows.len(), 2);
         assert_eq!(observation.windows[0].label, "Current session");
+    }
+
+    #[test]
+    fn reset_rendering_is_operator_meaningful_not_raw_epoch() {
+        let now = 1_800_000_000u64;
+
+        let soon = format_reset_from(now, now + 45 * 60);
+        assert!(soon.starts_with("in 45m ("), "{soon}");
+        assert!(soon.ends_with(" local)"), "{soon}");
+        assert!(!soon.contains("1800"), "raw epoch leaked: {soon}");
+
+        assert!(
+            format_reset_from(now, now + 2 * 3600 + 14 * 60).starts_with("in 2h 14m ("),
+            "{}",
+            format_reset_from(now, now + 2 * 3600 + 14 * 60)
+        );
+        assert!(
+            format_reset_from(now, now + 3 * 86400 + 3600).starts_with("in 3d 1h ("),
+            "{}",
+            format_reset_from(now, now + 3 * 86400 + 3600)
+        );
+        assert!(
+            format_reset_from(now, now + 20).starts_with("in <1m ("),
+            "{}",
+            format_reset_from(now, now + 20)
+        );
+        assert!(
+            format_reset_from(now, now - 60).starts_with("reset due ("),
+            "{}",
+            format_reset_from(now, now - 60)
+        );
+    }
+
+    #[test]
+    fn humanized_durations_drop_zero_remainders() {
+        assert_eq!(humanize_duration(3600), "1h");
+        assert_eq!(humanize_duration(86400), "1d");
+        assert_eq!(humanize_duration(59), "<1m");
+        assert_eq!(humanize_duration(7 * 86400), "7d");
     }
 }

@@ -47,11 +47,16 @@ pub fn format_usage_report_with_capacity(
             ));
         } else {
             for window in &capacity.windows {
+                let reset = window
+                    .resets_at
+                    .map(|epoch| format!(" · resets {}", crate::capacity::format_reset_at(epoch)))
+                    .unwrap_or_default();
                 lines.push(format!(
-                    "- {}: {:.0}% used · {:.0}% left",
+                    "- {}: {:.0}% used · {:.0}% left{}",
                     window.label,
                     window.used_percent,
-                    (100.0 - window.used_percent).clamp(0.0, 100.0)
+                    (100.0 - window.used_percent).clamp(0.0, 100.0),
+                    reset
                 ));
             }
         }

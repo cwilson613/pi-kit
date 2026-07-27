@@ -256,7 +256,7 @@ pub fn format_limits_report_with_capacity(
             let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
             let reset = window
                 .resets_at
-                .map(|epoch| format!(", resets at unix {epoch}"))
+                .map(|epoch| format!(", resets {}", crate::capacity::format_reset_at(epoch)))
                 .unwrap_or_default();
             lines.push(format!(
                 "- {}: {:.0}% left ({:.0}% used{})",

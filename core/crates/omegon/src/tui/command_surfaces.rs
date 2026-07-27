@@ -84,7 +84,7 @@ pub fn render_panel(area: Rect, buf: &mut Buffer, theme: &dyn Theme, panel: &Com
     }
 
     let panel_area = command_modal_area(area);
-    if matches!(panel.source.as_deref(), Some("/usage" | "/limits" | "/runway")) {
+    if matches!(panel.source.as_deref(), Some("/usage" | "/limits")) {
         render_usage_panel_in(panel_area, buf, theme, panel);
     } else {
         render_panel_in(panel_area, buf, theme, panel);
@@ -100,7 +100,7 @@ struct UsageSection {
 fn usage_sections(body: &str) -> Vec<UsageSection> {
     let mut sections = Vec::<UsageSection>::new();
     for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if matches!(line, "Usage" | "Inference runway") {
+        if matches!(line, "Usage" | "Limits") {
             continue;
         }
         if let Some(metric) = line.strip_prefix("- ") {
@@ -114,7 +114,11 @@ fn usage_sections(body: &str) -> Vec<UsageSection> {
                     metrics: Vec::new(),
                 });
             }
-            sections.last_mut().unwrap().metrics.push((label.into(), value.into()));
+            sections
+                .last_mut()
+                .unwrap()
+                .metrics
+                .push((label.into(), value.into()));
         } else {
             sections.push(UsageSection {
                 title: line.into(),
@@ -138,7 +142,7 @@ fn render_usage_panel_in(
     let title = if panel.source.as_deref() == Some("/usage") {
         "Usage telemetry"
     } else {
-        "Inference runway"
+        "Limits"
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -146,7 +150,9 @@ fn render_usage_panel_in(
         .border_style(Style::default().fg(theme.accent()))
         .title(Span::styled(
             format!(" {title} "),
-            Style::default().fg(theme.accent_bright()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent_bright())
+                .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " Esc close · ↑↓ scroll · ^Y copy ",
@@ -164,7 +170,9 @@ fn render_usage_panel_in(
         }
         lines.push(Line::from(Span::styled(
             section.title.to_uppercase(),
-            Style::default().fg(theme.accent_bright()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent_bright())
+                .add_modifier(Modifier::BOLD),
         )));
         for (label, value) in &section.metrics {
             lines.push(Line::from(vec![

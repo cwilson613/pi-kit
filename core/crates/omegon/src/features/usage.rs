@@ -9,9 +9,85 @@ use omegon_traits::{
 };
 
 use crate::usage::{
-    authoritative_links, derive_headroom_state, derive_rationale, format_raw_telemetry_lines,
-    format_runway_report,
+    authoritative_links, derive_headroom_state, derive_rationale, format_limits_report,
+    format_raw_telemetry_lines,
 };
+
+pub fn format_usage_report_with_capacity(
+    provider: &str,
+    model: &str,
+    telemetry: Option<&ProviderTelemetrySnapshot>,
+    capacity: Option<&crate::capacity::CapacityObservation>,
+) -> String {
+    let headroom = derive_headroom_state(telemetry);
+    let rationale = derive_rationale(telemetry, &headroom);
+    let authority = authoritative_links(provider);
+
+    let mut lines = vec![
+        "Usage".to_string(),
+        String::new(),
+        "Overview".to_string(),
+        format!("- provider: {provider}"),
+        format!("- model: {model}"),
+        format!("- operational headroom: {}", headroom.as_str()),
+    ];
+    if let Some(capacity) = capacity {
+        if let Some(plan) = &capacity.plan {
+            lines.push(format!("- plan: {plan}"));
+        }
+        lines.push(String::new());
+        lines.push("Limits".to_string());
+        if capacity.windows.is_empty() {
+            lines.push(format!(
+                "- unavailable: {}",
+                capacity
+                    .error
+                    .as_deref()
+                    .unwrap_or("provider returned no account windows")
+            ));
+        } else {
+            for window in &capacity.windows {
+                lines.push(format!(
+                    "- {}: {:.0}% used · {:.0}% left",
+                    window.label,
+                    window.used_percent,
+                    (100.0 - window.used_percent).clamp(0.0, 100.0)
+                ));
+            }
+        }
+    }
+    lines.push(String::new());
+    lines.push("Session".to_string());
+    match telemetry {
+        Some(t) => {
+            let raw = format_raw_telemetry_lines(t);
+            if raw.is_empty() {
+                lines.push("- no response quota fields exposed".into());
+            } else {
+                lines.extend(raw.into_iter().map(|line| format!("- {line}")));
+            }
+        }
+        None => lines.push("- no inference telemetry captured in this session".into()),
+    }
+    lines.push(String::new());
+    lines.push("Evidence".to_string());
+    lines.push(format!("- advisory: {rationale}"));
+    if let Some(capacity) = capacity {
+        lines.push(format!("- capacity source: {}", capacity.source));
+    }
+    for link in authority {
+        lines.push(format!("- {}: {}", link.label, link.url));
+    }
+    lines.join("\n")
+}
+
+pub fn format_usage_report(
+    provider: &str,
+    model: &str,
+    telemetry: Option<&ProviderTelemetrySnapshot>,
+) -> String {
+    format_usage_report_with_capacity(provider, model, telemetry, None)
+}
 
 #[derive(Debug, Clone, Default)]
 struct LatestUsageSnapshot {
@@ -38,7 +114,7 @@ impl UsageFeature {
     }
 
     fn format_limits_report(&self) -> String {
-        format_runway_report(
+        format_limits_report(
             self.latest.provider.as_deref().unwrap_or("unknown"),
             self.latest.model.as_deref().unwrap_or("unknown"),
             self.latest.telemetry.as_ref(),
@@ -125,7 +201,7 @@ impl Feature for UsageFeature {
 
     fn handle_command(&mut self, name: &str, _args: &str) -> CommandResult {
         match name {
-            "limits" | "runway" => CommandResult::Display(self.format_limits_report()),
+            "limits" => CommandResult::Display(self.format_limits_report()),
             "usage" => CommandResult::Display(self.format_usage_report()),
             _ => CommandResult::NotHandled,
         }
@@ -176,8 +252,8 @@ mod tests {
         let CommandResult::Display(text) = feature.handle_command("limits", "") else {
             panic!("expected display result");
         };
-        assert!(text.contains("Inference runway"), "got: {text}");
-        assert!(text.contains("runway: adequate"), "got: {text}");
+        assert!(text.contains("Limits"), "got: {text}");
+        assert!(text.contains("state: adequate"), "got: {text}");
         assert!(
             text.contains("secondary window: 21% remaining"),
             "got: {text}"
@@ -210,7 +286,7 @@ mod tests {
         let CommandResult::Display(text) = feature.handle_command("limits", "") else {
             panic!("expected display result");
         };
-        assert!(text.contains("runway: opaque"), "got: {text}");
+        assert!(text.contains("state: opaque"), "got: {text}");
         assert!(
             text.contains("no provider telemetry captured in this session"),
             "got: {text}"
@@ -318,11 +394,12 @@ mod tests {
     }
 
     #[test]
-    fn runway_handler_remains_compatible_with_limits_output() {
+    fn runway_is_not_handled() {
         let mut feature = UsageFeature::new();
-        let limits = feature.handle_command("limits", "");
-        let runway = feature.handle_command("runway", "");
-        assert_eq!(format!("{limits:?}"), format!("{runway:?}"));
+        assert!(matches!(
+            feature.handle_command("runway", ""),
+            CommandResult::NotHandled
+        ));
     }
 
     #[test]

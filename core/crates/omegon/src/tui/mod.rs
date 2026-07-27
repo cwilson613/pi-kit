@@ -9890,7 +9890,10 @@ warning: {warning}"
     }
 
     fn show_slash_response(&mut self, command: &str, response: &str) {
-        if matches!(command.split_whitespace().next(), Some("/usage" | "/limits" | "/runway")) {
+        if matches!(
+            command.split_whitespace().next(),
+            Some("/usage" | "/limits")
+        ) {
             self.open_command_panel(CommandPanel::from_slash(command, response));
         } else if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
             // Secret entry already owns the normal editor. Keep its acquisition

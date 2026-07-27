@@ -3235,7 +3235,7 @@ fn usage_and_limits_slash_responses_open_dedicated_metric_modals() {
         ),
         (
             "/limits",
-            "Inference runway\n\nCurrent route\n- provider: openai-codex\n- model: gpt-5.6-sol\n\nPlanning assessment\n- runway: adequate",
+            "Limits\n\nCurrent route\n- provider: openai-codex\n- model: gpt-5.6-sol\n\nMagazine check\n- state: adequate",
             "command · /limits",
         ),
     ] {
@@ -3252,7 +3252,7 @@ fn usage_and_limits_slash_responses_open_dedicated_metric_modals() {
         assert!(rendered.contains(if command == "/usage" {
             "Usage telemetry"
         } else {
-            "Inference runway"
+            "Limits"
         }));
         assert!(rendered.contains("CURRENT ROUTE"), "got: {rendered}");
         assert!(rendered.contains("provider"), "got: {rendered}");

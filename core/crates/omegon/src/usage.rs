@@ -6,7 +6,7 @@
 use omegon_traits::ProviderTelemetrySnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunwayState {
+pub enum LimitState {
     Ample,
     Adequate,
     Tight,
@@ -14,7 +14,7 @@ pub enum RunwayState {
     Exhausted,
 }
 
-impl RunwayState {
+impl LimitState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ample => "ample",
@@ -27,8 +27,8 @@ impl RunwayState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunwayAssessment {
-    pub state: RunwayState,
+pub struct LimitsAssessment {
+    pub state: LimitState,
     pub available: Vec<String>,
     pub confidence: &'static str,
     pub unknown: Vec<String>,
@@ -36,13 +36,13 @@ pub struct RunwayAssessment {
     pub evidence: String,
 }
 
-pub fn assess_runway(
+pub fn assess_limits(
     provider: &str,
     telemetry: Option<&ProviderTelemetrySnapshot>,
-) -> RunwayAssessment {
+) -> LimitsAssessment {
     let Some(t) = telemetry else {
-        return RunwayAssessment {
-            state: RunwayState::Opaque,
+        return LimitsAssessment {
+            state: LimitState::Opaque,
             available: vec!["no quota observation captured yet".into()],
             confidence: "low",
             unknown: vec!["remaining capacity".into(), "reset window".into()],
@@ -72,7 +72,7 @@ pub fn assess_runway(
             if let Some(secs) = t.retry_after_secs {
                 available.push(format!("retry window: {}", format_duration_compact(secs)));
             }
-            runway_from_utilization(
+            limits_from_utilization(
                 limiting_used,
                 available,
                 "Anthropic upstream utilization headers",
@@ -110,7 +110,7 @@ pub fn assess_runway(
                     if unlimited { "unlimited" } else { "metered" }
                 ));
             }
-            runway_from_utilization(
+            limits_from_utilization(
                 limiting_used,
                 available,
                 "Codex upstream usage-window headers",
@@ -132,8 +132,8 @@ pub fn assess_runway(
                 available.push(format!("retry after: {}", format_duration_compact(secs)));
             }
             if t.requests_remaining == Some(0) || t.tokens_remaining == Some(0) {
-                RunwayAssessment {
-                    state: RunwayState::Exhausted,
+                LimitsAssessment {
+                    state: LimitState::Exhausted,
                     available,
                     confidence: "high",
                     unknown: vec!["account-level refill or overage policy".into()],
@@ -143,8 +143,8 @@ pub fn assess_runway(
                     evidence: "provider response quota headers".into(),
                 }
             } else if available.is_empty() {
-                RunwayAssessment {
-                    state: RunwayState::Opaque,
+                LimitsAssessment {
+                    state: LimitState::Opaque,
                     available: vec!["route is responding, but no quota balance was exposed".into()],
                     confidence: "low",
                     unknown: vec!["remaining capacity".into(), "reset window".into()],
@@ -154,8 +154,8 @@ pub fn assess_runway(
                     evidence: format!("{provider} response exposed no recognized quota fields"),
                 }
             } else {
-                RunwayAssessment {
-                    state: RunwayState::Adequate,
+                LimitsAssessment {
+                    state: LimitState::Adequate,
                     available,
                     confidence: "medium",
                     unknown: vec!["account-level monetary or subscription balance".into()],
@@ -167,18 +167,18 @@ pub fn assess_runway(
     }
 }
 
-fn runway_from_utilization(
+fn limits_from_utilization(
     limiting_used: Option<f32>,
     mut available: Vec<String>,
     evidence: &str,
     unknown_balance: &str,
-) -> RunwayAssessment {
+) -> LimitsAssessment {
     let Some(used) = limiting_used else {
         if available.is_empty() {
             available.push("route is responding, but no utilization window was exposed".into());
         }
-        return RunwayAssessment {
-            state: RunwayState::Opaque,
+        return LimitsAssessment {
+            state: LimitState::Opaque,
             available,
             confidence: "low",
             unknown: vec!["remaining utilization".into(), unknown_balance.into()],
@@ -189,30 +189,30 @@ fn runway_from_utilization(
     };
 
     let state = if used >= 98.0 {
-        RunwayState::Exhausted
+        LimitState::Exhausted
     } else if used >= 90.0 {
-        RunwayState::Tight
+        LimitState::Tight
     } else if used >= 70.0 {
-        RunwayState::Adequate
+        LimitState::Adequate
     } else {
-        RunwayState::Ample
+        LimitState::Ample
     };
     let recommendation = match state {
-        RunwayState::Ample => {
+        LimitState::Ample => {
             "Current windows support continued work; reassess before a large parallel wave."
         }
-        RunwayState::Adequate => {
+        LimitState::Adequate => {
             "Continue with a bounded wave and preserve capacity for validation."
         }
-        RunwayState::Tight => {
+        LimitState::Tight => {
             "Avoid new parallel work; finish the current milestone and reassess near reset."
         }
-        RunwayState::Exhausted => {
+        LimitState::Exhausted => {
             "Do not start more work on this route; wait for reset or select a fallback."
         }
-        RunwayState::Opaque => unreachable!(),
+        LimitState::Opaque => unreachable!(),
     };
-    RunwayAssessment {
+    LimitsAssessment {
         state,
         available,
         confidence: "high",
@@ -225,14 +225,62 @@ fn runway_from_utilization(
     }
 }
 
-pub fn format_runway_report(
+pub fn format_limits_report(
     provider: &str,
     model: &str,
     telemetry: Option<&ProviderTelemetrySnapshot>,
 ) -> String {
-    let assessment = assess_runway(provider, telemetry);
+    format_limits_report_with_capacity(provider, model, telemetry, None)
+}
+
+pub fn format_limits_report_with_capacity(
+    provider: &str,
+    model: &str,
+    telemetry: Option<&ProviderTelemetrySnapshot>,
+    capacity: Option<&crate::capacity::CapacityObservation>,
+) -> String {
+    if let Some(capacity) = capacity.filter(|capacity| !capacity.windows.is_empty()) {
+        let mut lines = vec![
+            "Limits".to_string(),
+            String::new(),
+            "Current route".to_string(),
+            format!("- provider: {provider}"),
+            format!("- model: {model}"),
+        ];
+        if let Some(plan) = &capacity.plan {
+            lines.push(format!("- plan: {plan}"));
+        }
+        lines.push(String::new());
+        lines.push("Account capacity".to_string());
+        for window in &capacity.windows {
+            let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
+            let reset = window
+                .resets_at
+                .map(|epoch| format!(", resets at unix {epoch}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "- {}: {:.0}% left ({:.0}% used{})",
+                window.label, remaining, window.used_percent, reset
+            ));
+        }
+        if let Some(credits) = &capacity.credits {
+            lines.push(format!(
+                "- credits: {}{}",
+                if credits.enabled { "enabled" } else { "off" },
+                credits
+                    .balance
+                    .as_ref()
+                    .map(|balance| format!(" (balance {balance})"))
+                    .unwrap_or_default()
+            ));
+        }
+        lines.push(format!("- source: {}", capacity.source));
+        return lines.join("\n");
+    }
+
+    let assessment = assess_limits(provider, telemetry);
     let mut lines = vec![
-        "Inference runway".to_string(),
+        "Limits".to_string(),
         String::new(),
         "Current route".to_string(),
         format!("- provider: {provider}"),
@@ -243,8 +291,8 @@ pub fn format_runway_report(
     lines.extend(assessment.available.iter().map(|line| format!("- {line}")));
     lines.extend([
         String::new(),
-        "Planning assessment".into(),
-        format!("- runway: {}", assessment.state.as_str()),
+        "Magazine check".into(),
+        format!("- state: {}", assessment.state.as_str()),
         format!("- confidence: {}", assessment.confidence),
         format!("- recommendation: {}", assessment.recommendation),
         String::new(),

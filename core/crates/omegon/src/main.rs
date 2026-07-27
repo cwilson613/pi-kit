@@ -37,6 +37,7 @@ mod behavior;
 mod bootstrap;
 mod bridge;
 pub mod bus;
+mod capacity;
 mod cleave;
 mod cleave_smoke;
 mod clipboard;
@@ -8342,6 +8343,41 @@ async fn execute_remote_slash_command(
 ) -> omegon_traits::SlashCommandResponse {
     use crate::tui::canonical_slash_command;
     use omegon_traits::SlashCommandResponse;
+
+    if matches!(name, "usage" | "limits") {
+        let model = shared_settings
+            .lock()
+            .ok()
+            .map(|settings| settings.model.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let provider = providers::infer_provider_id(&model);
+        let force = args
+            .split_whitespace()
+            .any(|arg| matches!(arg, "refresh" | "--refresh" | "-r"));
+        let capacity = capacity::observe(&provider, force).await;
+        let telemetry = runtime_state
+            .conversation
+            .last_provider_telemetry(Some(&provider));
+        let output = if name == "limits" {
+            usage::format_limits_report_with_capacity(
+                &provider,
+                &model,
+                telemetry.as_ref(),
+                Some(&capacity),
+            )
+        } else {
+            features::usage::format_usage_report_with_capacity(
+                &provider,
+                &model,
+                telemetry.as_ref(),
+                Some(&capacity),
+            )
+        };
+        return SlashCommandResponse {
+            accepted: true,
+            output: Some(output),
+        };
+    }
 
     let Some(command) = canonical_slash_command(name, args) else {
         if let Some(response) = execute_registered_remote_command(runtime_state, cli, name, args) {

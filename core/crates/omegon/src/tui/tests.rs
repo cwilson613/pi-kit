@@ -3261,6 +3261,35 @@ fn usage_and_limits_slash_responses_open_dedicated_metric_modals() {
 }
 
 #[test]
+fn usage_modal_survives_refresh_arguments() {
+    // `source` carries the whole command line. Dispatching on the full string
+    // silently demoted the documented refresh forms back to a plaintext dump.
+    for command in ["/usage refresh", "/usage --refresh", "/limits -r"] {
+        let response = "Usage\n\nCurrent route\n- provider: anthropic\n- model: claude-sonnet-4-6\n\nAccount capacity\n- Current week: 40% left";
+        let mut app = test_app();
+        app.show_slash_response(command, response);
+
+        let panel = app.command_panel.as_ref().expect("usage metric modal");
+        assert_eq!(panel.source.as_deref(), Some(command));
+
+        let rendered = render_app_to_string(&mut app, 120, 36);
+        assert!(
+            rendered.contains("CURRENT ROUTE") && rendered.contains("ACCOUNT CAPACITY"),
+            "expected metric renderer for {command}, got: {rendered}"
+        );
+        let expected_title = if command.starts_with("/usage") {
+            "Usage telemetry"
+        } else {
+            "Limits"
+        };
+        assert!(
+            rendered.contains(expected_title),
+            "expected {expected_title} for {command}, got: {rendered}"
+        );
+    }
+}
+
+#[test]
 fn usage_syntax_errors_still_use_command_panel() {
     let mut app = test_app();
     let response = "Usage: /model [list|route]";
@@ -8623,6 +8652,43 @@ fn capacity_system_notification_opens_modal_instead_of_conversation_dump() {
     assert!(
         app.command_panel.is_some(),
         "expected /limits report to open a modal panel"
+    );
+
+    // The capacity-present branch is a separate early return in
+    // format_limits_report_with_capacity and is the branch operators actually
+    // hit once a probe succeeds. Route it explicitly.
+    let observation = crate::capacity::CapacityObservation {
+        provider: "openai-codex".into(),
+        plan: Some("pro".into()),
+        source: "app-server".into(),
+        observed_at: 1_800_000_000,
+        windows: vec![crate::capacity::CapacityWindow {
+            id: "codex-primary".into(),
+            label: "Current week".into(),
+            used_percent: 60.0,
+            window_minutes: Some(10_080),
+            resets_at: Some(1_800_608_400),
+        }],
+        credits: None,
+        error: None,
+    };
+    let probed = crate::usage::format_limits_report_with_capacity(
+        "openai-codex",
+        "gpt-5.6-sol",
+        None,
+        Some(&observation),
+    );
+    assert!(
+        !probed.contains("unix"),
+        "raw epoch leaked into report: {probed}"
+    );
+    app.command_panel = None;
+    app.handle_agent_event(AgentEvent::SystemNotification {
+        message: probed.clone(),
+    });
+    assert!(
+        app.command_panel.is_some(),
+        "expected probed /limits report to open a modal panel, body: {probed}"
     );
 }
 

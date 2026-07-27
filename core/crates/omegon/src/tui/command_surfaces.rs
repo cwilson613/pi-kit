@@ -84,7 +84,14 @@ pub fn render_panel(area: Rect, buf: &mut Buffer, theme: &dyn Theme, panel: &Com
     }
 
     let panel_area = command_modal_area(area);
-    if matches!(panel.source.as_deref(), Some("/usage" | "/limits")) {
+    // `source` carries the full command line, including arguments — `/usage
+    // refresh` and `/limits -r` are the documented refresh forms — so dispatch
+    // on the command token, not the whole string.
+    let command = panel
+        .source
+        .as_deref()
+        .and_then(|source| source.split_whitespace().next());
+    if matches!(command, Some("/usage" | "/limits")) {
         render_usage_panel_in(panel_area, buf, theme, panel);
     } else {
         render_panel_in(panel_area, buf, theme, panel);
@@ -139,7 +146,12 @@ fn render_usage_panel_in(
         return;
     }
     Clear.render(panel_area, buf);
-    let title = if panel.source.as_deref() == Some("/usage") {
+    let title = if panel
+        .source
+        .as_deref()
+        .and_then(|source| source.split_whitespace().next())
+        == Some("/usage")
+    {
         "Usage telemetry"
     } else {
         "Limits"

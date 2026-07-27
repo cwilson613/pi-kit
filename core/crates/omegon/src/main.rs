@@ -5549,34 +5549,8 @@ fn build_tui_secret_readiness_snapshot(
 
             tui::TuiCommand::BusCommand { name, args } => {
                 if is_capacity_slash_command(&name) {
-                    let model = shared_settings
-                        .lock()
-                        .ok()
-                        .map(|settings| settings.model.clone())
-                        .unwrap_or_else(|| "unknown".into());
-                    let provider = providers::infer_provider_id(&model);
-                    let force = args
-                        .split_whitespace()
-                        .any(|arg| matches!(arg, "refresh" | "--refresh" | "-r"));
-                    let capacity = capacity::observe(&provider, force).await;
-                    let telemetry = runtime_state
-                        .conversation
-                        .last_provider_telemetry(Some(&provider));
-                    let message = if name == "limits" {
-                        usage::format_limits_report_with_capacity(
-                            &provider,
-                            &model,
-                            telemetry.as_ref(),
-                            Some(&capacity),
-                        )
-                    } else {
-                        features::usage::format_usage_report_with_capacity(
-                            &provider,
-                            &model,
-                            telemetry.as_ref(),
-                            Some(&capacity),
-                        )
-                    };
+                    let message =
+                        capacity_report(&runtime_state, &shared_settings, &name, &args).await;
                     let _ = events_tx.send(AgentEvent::SystemNotification { message });
                     continue;
                 }
@@ -8366,6 +8340,48 @@ fn is_capacity_slash_command(name: &str) -> bool {
     matches!(name, "usage" | "limits")
 }
 
+/// Single source of truth for capacity report generation. The interactive bus
+/// path and the remote slash path both render `/usage` and `/limits`; keeping
+/// two copies is how the surfaces drift apart.
+async fn capacity_report(
+    runtime_state: &InteractiveAgentState,
+    shared_settings: &settings::SharedSettings,
+    name: &str,
+    args: &str,
+) -> String {
+    let model = shared_settings
+        .lock()
+        .ok()
+        .map(|settings| settings.model.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let provider = providers::infer_provider_id(&model);
+    let force = capacity_refresh_requested(args);
+    let capacity = capacity::observe(&provider, force).await;
+    let telemetry = runtime_state
+        .conversation
+        .last_provider_telemetry(Some(&provider));
+    if name == "limits" {
+        usage::format_limits_report_with_capacity(
+            &provider,
+            &model,
+            telemetry.as_ref(),
+            Some(&capacity),
+        )
+    } else {
+        features::usage::format_usage_report_with_capacity(
+            &provider,
+            &model,
+            telemetry.as_ref(),
+            Some(&capacity),
+        )
+    }
+}
+
+fn capacity_refresh_requested(args: &str) -> bool {
+    args.split_whitespace()
+        .any(|arg| matches!(arg, "refresh" | "--refresh" | "-r"))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_remote_slash_command(
     runtime_state: &mut InteractiveAgentState,
@@ -8382,37 +8398,9 @@ async fn execute_remote_slash_command(
     use omegon_traits::SlashCommandResponse;
 
     if is_capacity_slash_command(name) {
-        let model = shared_settings
-            .lock()
-            .ok()
-            .map(|settings| settings.model.clone())
-            .unwrap_or_else(|| "unknown".into());
-        let provider = providers::infer_provider_id(&model);
-        let force = args
-            .split_whitespace()
-            .any(|arg| matches!(arg, "refresh" | "--refresh" | "-r"));
-        let capacity = capacity::observe(&provider, force).await;
-        let telemetry = runtime_state
-            .conversation
-            .last_provider_telemetry(Some(&provider));
-        let output = if name == "limits" {
-            usage::format_limits_report_with_capacity(
-                &provider,
-                &model,
-                telemetry.as_ref(),
-                Some(&capacity),
-            )
-        } else {
-            features::usage::format_usage_report_with_capacity(
-                &provider,
-                &model,
-                telemetry.as_ref(),
-                Some(&capacity),
-            )
-        };
         return SlashCommandResponse {
             accepted: true,
-            output: Some(output),
+            output: Some(capacity_report(runtime_state, shared_settings, name, args).await),
         };
     }
 
@@ -12613,6 +12601,19 @@ mod tests {
         assert!(is_capacity_slash_command("limits"));
         assert!(!is_capacity_slash_command("runway"));
         assert!(!is_capacity_slash_command("context_request"));
+    }
+
+    #[test]
+    fn capacity_refresh_flags_are_recognized_in_every_documented_form() {
+        for args in ["refresh", "--refresh", "-r", "  refresh  "] {
+            assert!(capacity_refresh_requested(args), "expected refresh: {args}");
+        }
+        for args in ["", "stale", "--force", "r"] {
+            assert!(
+                !capacity_refresh_requested(args),
+                "unexpected refresh: {args}"
+            );
+        }
     }
 
     #[test]

@@ -9890,7 +9890,9 @@ warning: {warning}"
     }
 
     fn show_slash_response(&mut self, command: &str, response: &str) {
-        if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
+        if matches!(command.split_whitespace().next(), Some("/usage" | "/limits" | "/runway")) {
+            self.open_command_panel(CommandPanel::from_slash(command, response));
+        } else if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
             // Secret entry already owns the normal editor. Keep its acquisition
             // guidance compact instead of obscuring the workspace with a modal.
             self.command_panel = None;

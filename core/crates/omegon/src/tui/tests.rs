@@ -3226,7 +3226,42 @@ fn verbose_informational_slash_responses_become_system_segments() {
 }
 
 #[test]
-fn usage_slash_responses_still_use_command_panel() {
+fn usage_and_limits_slash_responses_open_dedicated_metric_modals() {
+    for (command, response, title) in [
+        (
+            "/usage",
+            "Usage\n\nCurrent route\n- provider: openai-codex\n- model: gpt-5.6-sol\n\nRaw upstream telemetry\n- primary used: 42%",
+            "command · /usage",
+        ),
+        (
+            "/limits",
+            "Inference runway\n\nCurrent route\n- provider: openai-codex\n- model: gpt-5.6-sol\n\nPlanning assessment\n- runway: adequate",
+            "command · /limits",
+        ),
+    ] {
+        let mut app = test_app();
+        app.show_slash_response(command, response);
+
+        assert!(app.conversation.segments().is_empty());
+        let panel = app.command_panel.as_ref().expect("usage metric modal");
+        assert_eq!(panel.title, title);
+        assert_eq!(panel.source.as_deref(), Some(command));
+        assert_eq!(panel.body, response);
+
+        let rendered = render_app_to_string(&mut app, 120, 36);
+        assert!(rendered.contains(if command == "/usage" {
+            "Usage telemetry"
+        } else {
+            "Inference runway"
+        }));
+        assert!(rendered.contains("CURRENT ROUTE"), "got: {rendered}");
+        assert!(rendered.contains("provider"), "got: {rendered}");
+        assert!(rendered.contains("openai-codex"), "got: {rendered}");
+    }
+}
+
+#[test]
+fn usage_syntax_errors_still_use_command_panel() {
     let mut app = test_app();
     let response = "Usage: /model [list|route]";
 

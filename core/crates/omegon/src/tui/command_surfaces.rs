@@ -84,7 +84,100 @@ pub fn render_panel(area: Rect, buf: &mut Buffer, theme: &dyn Theme, panel: &Com
     }
 
     let panel_area = command_modal_area(area);
-    render_panel_in(panel_area, buf, theme, panel);
+    if matches!(panel.source.as_deref(), Some("/usage" | "/limits" | "/runway")) {
+        render_usage_panel_in(panel_area, buf, theme, panel);
+    } else {
+        render_panel_in(panel_area, buf, theme, panel);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UsageSection {
+    title: String,
+    metrics: Vec<(String, String)>,
+}
+
+fn usage_sections(body: &str) -> Vec<UsageSection> {
+    let mut sections = Vec::<UsageSection>::new();
+    for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if matches!(line, "Usage" | "Inference runway") {
+            continue;
+        }
+        if let Some(metric) = line.strip_prefix("- ") {
+            let (label, value) = metric
+                .split_once(':')
+                .map(|(label, value)| (label.trim(), value.trim()))
+                .unwrap_or((metric, ""));
+            if sections.is_empty() {
+                sections.push(UsageSection {
+                    title: "Summary".into(),
+                    metrics: Vec::new(),
+                });
+            }
+            sections.last_mut().unwrap().metrics.push((label.into(), value.into()));
+        } else {
+            sections.push(UsageSection {
+                title: line.into(),
+                metrics: Vec::new(),
+            });
+        }
+    }
+    sections
+}
+
+fn render_usage_panel_in(
+    panel_area: Rect,
+    buf: &mut Buffer,
+    theme: &dyn Theme,
+    panel: &CommandPanel,
+) {
+    if panel_area.width < 20 || panel_area.height < 6 {
+        return;
+    }
+    Clear.render(panel_area, buf);
+    let title = if panel.source.as_deref() == Some("/usage") {
+        "Usage telemetry"
+    } else {
+        "Inference runway"
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent()))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(theme.accent_bright()).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " Esc close · ↑↓ scroll · ^Y copy ",
+            Style::default().fg(theme.dim()),
+        ))
+        .style(Style::default().bg(theme.card_bg()));
+    let inner = block.inner(panel_area);
+    block.render(panel_area, buf);
+
+    let sections = usage_sections(&panel.body);
+    let mut lines = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            section.title.to_uppercase(),
+            Style::default().fg(theme.accent_bright()).add_modifier(Modifier::BOLD),
+        )));
+        for (label, value) in &section.metrics {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {label:<22}"), Style::default().fg(theme.dim())),
+                Span::styled(value, Style::default().fg(theme.fg())),
+            ]));
+        }
+    }
+    Paragraph::new(lines)
+        .style(Style::default().fg(theme.fg()).bg(theme.card_bg()))
+        .wrap(Wrap { trim: false })
+        .scroll((panel.scroll, 0))
+        .render(inner, buf);
 }
 
 fn render_panel_in(panel_area: Rect, buf: &mut Buffer, theme: &dyn Theme, panel: &CommandPanel) {

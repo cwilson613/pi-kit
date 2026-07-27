@@ -23,6 +23,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Replaced `/usage` and `/limits` plaintext command dumps in the TUI with dedicated metric modals. Provider route, raw telemetry, derived advisory, runway, evidence, and authority sections now render as scannable labelled metric groups while retaining scroll and copy controls; non-TUI command consumers keep the existing plaintext contract.
 - Replaced the release-branch publication gate with a tag-ancestry gate. `verify-publish` previously required a `release/X.Y` branch and compared version *strings* against `origin/main` — which enforced branch-based releases as the only legal shape and produced a self-inflicted deadlock when trunk was newer than the branch being published. It now asserts the published tag is reachable from `origin/main`, which is the property that actually matters: every stable release must be an ancestor of trunk. Trunk-tagged releases pass directly; reactive `release/X.Y` branches still pass once merged forward. Two regressions pin both directions, including refusing a tag on an unmerged side branch.
 - Corrected post-release trunk restoration to preserve the patchless development-line identity documented by the release procedure. `just publish` now maps any stable `X.Y.Z` tag back to `X.Y.0-dev` rather than inventing `X.Y.(Z+1)-dev`; tests prove even arbitrarily large patch releases leave the `X.Y-dev` line unchanged.
 

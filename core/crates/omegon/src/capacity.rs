@@ -313,7 +313,11 @@ fn format_reset_from(now: u64, epoch: u64) -> String {
         "%b %-d %H:%M"
     };
     let clock = chrono::DateTime::from_timestamp(epoch as i64, 0)
-        .map(|utc| utc.with_timezone(&chrono::Local).format(pattern).to_string())
+        .map(|utc| {
+            utc.with_timezone(&chrono::Local)
+                .format(pattern)
+                .to_string()
+        })
         .unwrap_or_else(|| "unknown time".to_string());
 
     if epoch <= now {
@@ -406,7 +410,10 @@ mod tests {
 
         // Within a day: bare wall clock is unambiguous.
         let same_day = format_reset_from(now, now + 3 * 3600);
-        assert!(!same_day.contains("Mon") && !same_day.contains("Tue"), "{same_day}");
+        assert!(
+            !same_day.contains("Mon") && !same_day.contains("Tue"),
+            "{same_day}"
+        );
 
         // Inside a week (both live provider window classes): weekday qualifier.
         let weekly = format_reset_from(now, now + 3 * 86_400);

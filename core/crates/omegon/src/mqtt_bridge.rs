@@ -243,11 +243,9 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
         }),
         // Remote surfaces have no command panel; preserve the output as a
         // notification but keep the originating command visible.
-        AgentEvent::CommandSurface { command, body } => {
-            Some(IpcEventPayload::SystemNotification {
-                message: format!("{command}\n{body}"),
-            })
-        }
+        AgentEvent::CommandSurface { command, body } => Some(IpcEventPayload::SystemNotification {
+            message: format!("{command}\n{body}"),
+        }),
         AgentEvent::OperatorCopyBlock { label, text, .. } => {
             Some(IpcEventPayload::SystemNotification {
                 message: format!("{label}: {text}"),

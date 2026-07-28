@@ -108,28 +108,36 @@ impl Editor {
         }
     }
 
-    fn attachment_placeholder(path: &Path, _idx: usize) -> String {
+    fn attachment_placeholder(path: &Path, idx: usize) -> String {
         let label = path
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| path.to_str().unwrap_or("file"));
-        let kind = if Self::is_image_reference(path) {
-            return format!("[image{_idx}]");
+        if Self::is_image_reference(path) {
+            format!("[image{idx}]")
         } else {
-            "@"
-        };
-        format!("{kind} {label}")
+            format!("@ {label}")
+        }
+    }
+
+    fn image_media_type(path: &Path) -> Option<&'static str> {
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("png") => Some("image/png"),
+            Some("jpg" | "jpeg") => Some("image/jpeg"),
+            Some("gif") => Some("image/gif"),
+            Some("webp") => Some("image/webp"),
+            _ => None,
+        }
     }
 
     fn is_image_reference(path: &Path) -> bool {
-        matches!(
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref(),
-            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "tif")
-        )
+        Self::image_media_type(path).is_some()
     }
 
     fn append_file_reference(text: &mut String, path: &Path) {
@@ -1231,6 +1239,17 @@ mod tests {
         let (text, attachments) = e.take_submission();
         assert!(text.is_empty());
         assert_eq!(attachments, vec![PathBuf::from("/tmp/diagram.PNG")]);
+    }
+
+    #[test]
+    fn provider_unsupported_image_formats_are_tool_references() {
+        let mut e = Editor::new();
+        e.insert_attachment(PathBuf::from("/tmp/scan.tiff"));
+
+        assert_eq!(e.render_text(), "@ scan.tiff");
+        let (text, attachments) = e.take_submission();
+        assert!(attachments.is_empty());
+        assert!(text.contains("/tmp/scan.tiff"));
     }
 
     #[test]

@@ -6835,14 +6835,16 @@ async fn run_interactive_active_turn(
         let mut images = Vec::new();
         for path in &active.prompt.image_paths {
             if let Ok(data) = std::fs::read(path) {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
-                let media_type = match ext {
-                    "jpg" | "jpeg" => "image/jpeg",
-                    "gif" => "image/gif",
-                    "webp" => "image/webp",
-                    "bmp" => "image/bmp",
-                    "tiff" | "tif" => "image/tiff",
-                    _ => "image/png",
+                let media_type = match image::guess_format(&data) {
+                    Ok(image::ImageFormat::Png) => Some("image/png"),
+                    Ok(image::ImageFormat::Jpeg) => Some("image/jpeg"),
+                    Ok(image::ImageFormat::Gif) => Some("image/gif"),
+                    Ok(image::ImageFormat::WebP) => Some("image/webp"),
+                    _ => None,
+                };
+                let Some(media_type) = media_type else {
+                    tracing::warn!(path = %path.display(), "skipping invalid or provider-unsupported image attachment");
+                    continue;
                 };
                 use base64::Engine;
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);

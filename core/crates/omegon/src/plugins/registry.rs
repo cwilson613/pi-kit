@@ -1172,7 +1172,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
 
         let mut reg = AugmentRegistry::new(LEX.into());
-        reg.load_skills_from_explicit(&[skills_dir.clone()]);
+        reg.load_skills_from_explicit(std::slice::from_ref(&skills_dir));
         let disclosed = reg.build_system_prompt_disclosed(&workspace, None);
 
         // The body is withheld.

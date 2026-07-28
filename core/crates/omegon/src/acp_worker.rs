@@ -1553,6 +1553,7 @@ mod command_safety_tests {
                     requires_confirmation,
                     prompt_injection_sensitive: false,
                 },
+                surface: Default::default(),
             },
             handled: handled.clone(),
         }));

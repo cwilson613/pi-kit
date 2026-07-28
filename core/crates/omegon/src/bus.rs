@@ -834,6 +834,7 @@ mod tests {
                 subcommands: vec![],
                 availability: omegon_traits::CommandAvailability::ALL,
                 safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
             }]
         }
 

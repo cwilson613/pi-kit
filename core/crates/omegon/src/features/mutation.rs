@@ -1741,6 +1741,7 @@ impl Feature for MutationFeature {
             subcommands: vec!["stats".into(), "review".into(), "config".into()],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::STATE_CHANGING,
+            surface: Default::default(),
         }]
     }
 

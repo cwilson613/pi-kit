@@ -2264,6 +2264,7 @@ No delegate tasks found.
                 subcommands: vec!["status".to_string()],
                 availability: omegon_traits::CommandAvailability::ALL,
                 safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
             },
             CommandDefinition {
                 name: "subagent".to_string(),
@@ -2271,6 +2272,7 @@ No delegate tasks found.
                 subcommands: vec!["status".to_string()],
                 availability: omegon_traits::CommandAvailability::ALL,
                 safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
             },
         ]
     }

@@ -54,6 +54,7 @@ impl Feature for ClipboardFeature {
             subcommands: vec!["prune".into()],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::DESTRUCTIVE,
+            surface: Default::default(),
         }]
     }
 

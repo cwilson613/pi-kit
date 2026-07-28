@@ -216,6 +216,7 @@ impl Feature for HarnessSettings {
             ],
             availability: CommandAvailability::ALL,
             safety: CommandSafety::READ_ONLY,
+            surface: Default::default(),
         }]
     }
 

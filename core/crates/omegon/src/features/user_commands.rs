@@ -233,6 +233,7 @@ fn command_definition(manifest: &UserCommandManifest) -> anyhow::Result<CommandD
             requires_confirmation: manifest.safety.requires_confirmation,
             prompt_injection_sensitive: manifest.safety.prompt_injection_sensitive,
         },
+        surface: Default::default(),
     })
 }
 

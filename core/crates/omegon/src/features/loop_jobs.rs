@@ -437,6 +437,7 @@ impl Feature for LoopFeature {
             ],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: CommandSafety::QUEUE_MUTATION,
+            surface: Default::default(),
         }]
     }
 

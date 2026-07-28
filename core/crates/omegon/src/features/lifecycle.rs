@@ -1243,6 +1243,7 @@ impl Feature for LifecycleFeature {
                 subcommands: self.provider.lock().unwrap().all_nodes().keys().cloned().collect(),
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::STATE_CHANGING,
+                surface: Default::default(),
             },
             CommandDefinition {
                 name: "design-unfocus".into(),
@@ -1250,6 +1251,7 @@ impl Feature for LifecycleFeature {
                 subcommands: vec![],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::STATE_CHANGING,
+                surface: Default::default(),
             },
             CommandDefinition {
                 name: "design".into(),
@@ -1257,6 +1259,7 @@ impl Feature for LifecycleFeature {
                 subcommands: vec!["list".into(), "frontier".into(), "ready".into()],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
             },
         ]
     }

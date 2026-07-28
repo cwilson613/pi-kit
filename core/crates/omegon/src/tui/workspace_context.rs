@@ -167,7 +167,10 @@ mod tests {
         repo.remote("origin", "git@github.com:styrene-labs/canonical-name.git")
             .unwrap();
 
-        assert_eq!(repo_display_name(&checkout), Some("canonical-name".to_string()));
+        assert_eq!(
+            repo_display_name(&checkout),
+            Some("canonical-name".to_string())
+        );
         assert_eq!(workspace_dir_basename(&checkout), "local-checkout-name");
     }
 

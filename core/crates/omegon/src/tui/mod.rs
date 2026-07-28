@@ -2570,8 +2570,7 @@ impl App {
         WorkbenchWorkspaceContext {
             repo,
             dir,
-            git_branch: git_branch(cwd)
-                .or_else(|| self.footer_data.harness.git_branch.clone()),
+            git_branch: git_branch(cwd).or_else(|| self.footer_data.harness.git_branch.clone()),
         }
     }
 

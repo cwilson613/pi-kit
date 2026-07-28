@@ -141,6 +141,7 @@ const PROVIDER_ERROR_RULES: &[ErrorRule] = &[
     ErrorRule {
         providers: &[
             "openai",
+            "openai-codex",
             "openrouter",
             "groq",
             "xai",
@@ -1063,6 +1064,11 @@ mod tests {
                 "openai",
                 "HTTP 500 server_error",
                 UpstreamErrorClass::Upstream5xx,
+            ),
+            (
+                "openai-codex",
+                "Codex 400: The image data you provided does not represent a valid image",
+                UpstreamErrorClass::BadRequest,
             ),
             (
                 "openai-codex",

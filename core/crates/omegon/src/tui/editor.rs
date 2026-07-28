@@ -108,17 +108,36 @@ impl Editor {
         }
     }
 
-    fn attachment_placeholder(path: &Path, idx: usize) -> String {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.to_ascii_lowercase());
-        let kind = match ext.as_deref() {
-            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "tif") => "image",
-            Some("pdf") => "pdf",
-            _ => "attachment",
+    fn attachment_placeholder(path: &Path, _idx: usize) -> String {
+        let label = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| path.to_str().unwrap_or("file"));
+        let kind = if Self::is_image_reference(path) {
+            return format!("[image{_idx}]");
+        } else {
+            "@"
         };
-        format!("[{kind}{idx}]")
+        format!("{kind} {label}")
+    }
+
+    fn is_image_reference(path: &Path) -> bool {
+        matches!(
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "tif")
+        )
+    }
+
+    fn append_file_reference(text: &mut String, path: &Path) {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push_str("\n\n");
+        }
+        text.push_str("Operator-referenced project artifact (inspect with the appropriate harness tool before answering):\n");
+        text.push_str(&path.to_string_lossy());
     }
 
     fn paste_placeholder(text: &str, idx: usize) -> String {
@@ -715,7 +734,12 @@ impl Editor {
             if ch == Self::INLINE_TOKEN_SENTINEL {
                 if let Some(token) = self.inline_tokens.get(token_ord) {
                     match token {
-                        InlineToken::Attachment(path) => attachments.push(path.clone()),
+                        InlineToken::Attachment(path) if Self::is_image_reference(path) => {
+                            attachments.push(path.clone());
+                        }
+                        InlineToken::Attachment(path) => {
+                            Self::append_file_reference(&mut text, path);
+                        }
                         InlineToken::CollapsedPaste { text: pasted } => text.push_str(pasted),
                     }
                 }
@@ -1182,6 +1206,31 @@ mod tests {
         }
         e.insert_attachment(PathBuf::from("/tmp/paste.png"));
         assert_eq!(e.render_text(), "hello [image0]world");
+    }
+
+    #[test]
+    fn file_reference_renders_by_name_and_submits_as_tool_inspection_hint() {
+        let mut e = Editor::new();
+        e.set_text("assess this");
+        e.insert_attachment(PathBuf::from("/workspace/docs/new-doc.md"));
+
+        assert_eq!(e.render_text(), "assess this@ new-doc.md");
+        let (text, attachments) = e.take_submission();
+        assert!(attachments.is_empty());
+        assert_eq!(
+            text,
+            "assess this\n\nOperator-referenced project artifact (inspect with the appropriate harness tool before answering):\n/workspace/docs/new-doc.md"
+        );
+    }
+
+    #[test]
+    fn image_reference_remains_a_multimodal_attachment() {
+        let mut e = Editor::new();
+        e.insert_attachment(PathBuf::from("/tmp/diagram.PNG"));
+
+        let (text, attachments) = e.take_submission();
+        assert!(text.is_empty());
+        assert_eq!(attachments, vec![PathBuf::from("/tmp/diagram.PNG")]);
     }
 
     #[test]

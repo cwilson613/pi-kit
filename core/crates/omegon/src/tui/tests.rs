@@ -8654,7 +8654,12 @@ fn panel_surface_is_declared_by_the_command_registry() {
         crate::features::usage::UsageFeature::default().commands()
     };
 
-    for command in ["/skills", "/skills get rust", "/think status", "/skill list"] {
+    for command in [
+        "/skills",
+        "/skills get rust",
+        "/think status",
+        "/skill list",
+    ] {
         assert_eq!(
             declared_command_surface(&builtins, command),
             Some(omegon_traits::CommandSurface::Panel),
@@ -8723,22 +8728,15 @@ fn capacity_command_surface_opens_modal_instead_of_conversation_dump() {
         "expected /usage report to open a modal panel"
     );
     assert!(
-        !app.conversation
-            .segments()
-            .iter()
-            .any(|segment| matches!(
-                &segment.content,
-                SegmentContent::SystemNotification { text } if text == &message
-            )),
+        !app.conversation.segments().iter().any(|segment| matches!(
+            &segment.content,
+            SegmentContent::SystemNotification { text } if text == &message
+        )),
         "usage report should not be dumped into the conversation"
     );
 
-    let limits = crate::usage::format_limits_report_with_capacity(
-        "openai-codex",
-        "gpt-5.6-sol",
-        None,
-        None,
-    );
+    let limits =
+        crate::usage::format_limits_report_with_capacity("openai-codex", "gpt-5.6-sol", None, None);
     app.command_panel = None;
     app.handle_agent_event(AgentEvent::CommandSurface {
         command: "/limits".into(),

@@ -12064,11 +12064,27 @@ Scroll transcript:
         filtered.sort();
         filtered
             .into_iter()
-            .map(|path| selector::SelectOption {
-                value: path.clone(),
-                label: path.clone(),
-                description: "Insert file into prompt context".to_string(),
-                active: false,
+            .map(|path| {
+                let label = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                let description = std::path::Path::new(&path)
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(|parent| {
+                        format!("{} · reference; agent inspects on demand", parent.display())
+                    })
+                    .unwrap_or_else(|| {
+                        "project root · reference; agent inspects on demand".to_string()
+                    });
+                selector::SelectOption {
+                    value: path,
+                    label,
+                    description,
+                    active: false,
+                }
             })
             .collect()
     }
@@ -12083,7 +12099,7 @@ Scroll transcript:
             self.at_picker = None;
             return;
         }
-        self.at_picker = Some(selector::Selector::new("Inject file into context", options));
+        self.at_picker = Some(selector::Selector::new("Reference project file", options));
     }
 
     /// Load editor history from disk.

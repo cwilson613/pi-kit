@@ -36,6 +36,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Extracted Workbench workspace identity and Git-status inspection from the monolithic Ratatui adapter into `tui/workspace_context.rs`. The new boundary owns repository discovery, remote-name selection, branch/ahead/behind/dirty/state labels, and checkout-name fallback as plain data, while `tui/mod.rs` only assembles that data into the existing Workbench projection.
 - Unified capacity report generation behind a single `capacity_report` helper. The interactive bus path and the remote slash path carried verbatim copies of the provider resolution, refresh-flag parsing, probe, and formatter selection — the duplication that let modal routing ship on one surface and not the other.
 - Replaced the provisional `runway` vocabulary with a single `/limits` magazine-check surface. `/usage` now combines account windows, session telemetry, and evidence, while `/limits` prioritizes hard remaining-capacity buckets; the undocumented `/runway` compatibility command has been removed.
 - Replaced `/usage` and `/limits` plaintext command dumps in the TUI with dedicated metric modals. Provider route, raw telemetry, derived advisory, runway, evidence, and authority sections now render as scannable labelled metric groups while retaining scroll and copy controls; non-TUI command consumers keep the existing plaintext contract.

@@ -82,6 +82,15 @@ fn test_settings() -> crate::settings::SharedSettings {
 
 fn test_app() -> App {
     let mut app = App::new(test_settings());
+    // The runtime always populates bus_commands from registered features
+    // (see setup.rs). A fixture with an empty registry hides command-declared
+    // metadata such as surface presentation, so mirror the real registration.
+    app.bus_commands = {
+        use omegon_traits::Feature as _;
+        let mut defs = crate::features::usage::UsageFeature::new().commands();
+        defs.extend(crate::features::prompt::PromptFeature::new().commands());
+        defs
+    };
     app.apply_ui_preset(UiSurfaces::lean());
     app
 }
@@ -6641,6 +6650,7 @@ fn slash_cleave_run_still_uses_bus_path() {
         subcommands: vec!["status".into(), "cancel".into()],
         availability: omegon_traits::CommandAvailability::ALL,
         safety: omegon_traits::CommandSafety::READ_ONLY,
+        surface: Default::default(),
     });
     let (tx, mut rx) = test_tx_with_rx();
 
@@ -6692,6 +6702,7 @@ fn hidden_model_aliases_do_not_appear_in_palette() {
             subcommands: vec![],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::READ_ONLY,
+            surface: Default::default(),
         },
         omegon_traits::CommandDefinition {
             name: "B".into(),
@@ -6699,6 +6710,7 @@ fn hidden_model_aliases_do_not_appear_in_palette() {
             subcommands: vec![],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::READ_ONLY,
+            surface: Default::default(),
         },
     ];
     app.editor.set_text("/");
@@ -6716,6 +6728,7 @@ fn command_palette_exposes_registry_metadata_badges() {
         subcommands: vec!["list".into()],
         availability: omegon_traits::CommandAvailability::ALL,
         safety: omegon_traits::CommandSafety::QUEUE_MUTATION,
+        surface: Default::default(),
     }];
     app.editor.set_text("/pro");
 
@@ -6810,6 +6823,7 @@ fn palette_deduplicates_builtin_and_bus_commands() {
         subcommands: vec!["status".into()],
         availability: omegon_traits::CommandAvailability::ALL,
         safety: omegon_traits::CommandSafety::READ_ONLY,
+        surface: Default::default(),
     }];
     app.editor.set_text("/cl");
     let matches = app.matching_commands();
@@ -6855,6 +6869,7 @@ fn slash_cleave_warns_on_anthropic_subscription_but_proceeds() {
         subcommands: vec![],
         availability: omegon_traits::CommandAvailability::ALL,
         safety: omegon_traits::CommandSafety::READ_ONLY,
+        surface: Default::default(),
     });
     let tx = test_tx();
     let result = app.handle_slash_command("/cleave demo", &tx);
@@ -8630,30 +8645,35 @@ fn runtime_queue_zero_depth_hides_queue_line() {
 }
 
 #[test]
-fn panel_surface_ownership_is_keyed_on_command_not_body_text() {
-    // Routing is provenance-based: the command decides the surface. Body text
-    // is never consulted, so rewording a formatter cannot demote its surface.
-    for command in [
-        "/usage",
-        "/usage refresh",
-        "/limits",
-        "/limits -r",
-        "/skills",
-        "/skills get rust",
-        "/think status",
-        "/prompt list",
-    ] {
-        assert!(
-            command_owns_panel_surface(command),
-            "expected panel surface for {command}"
+fn panel_surface_is_declared_by_the_command_registry() {
+    // Presentation is registry metadata, not a renderer-local list. If a
+    // command declares Panel at its definition site, the TUI honours it.
+    let builtins = crate::command_registry::builtin_command_definitions();
+    let features = {
+        use omegon_traits::Feature as _;
+        crate::features::usage::UsageFeature::default().commands()
+    };
+
+    for command in ["/skills", "/skills get rust", "/think status", "/skill list"] {
+        assert_eq!(
+            declared_command_surface(&builtins, command),
+            Some(omegon_traits::CommandSurface::Panel),
+            "registry must declare a panel for {command}"
         );
     }
-    for command in ["/status", "/context", "/model nope", "/thinking-ish", ""] {
-        assert!(
-            !command_owns_panel_surface(command),
-            "unexpected panel surface for {command}"
+    for command in ["/usage", "/usage refresh", "/limits", "/limits -r"] {
+        assert_eq!(
+            declared_command_surface(&features, command),
+            Some(omegon_traits::CommandSurface::Panel),
+            "usage feature must declare a panel for {command}"
         );
     }
+    // Unknown commands have no declaration and fall back to shape heuristics.
+    assert_eq!(declared_command_surface(&builtins, "/not-a-command"), None);
+    assert_eq!(
+        declared_command_surface(&builtins, "/model"),
+        Some(omegon_traits::CommandSurface::Inline)
+    );
 }
 
 #[test]

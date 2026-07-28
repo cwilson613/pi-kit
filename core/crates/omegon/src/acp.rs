@@ -6660,6 +6660,13 @@ Progress: 1/2"
 
     #[test]
     fn config_options_expose_profile_context_and_semantic_categories() {
+        // Profile resolution reads process-global HOME. This test resolves it
+        // twice — once inside build_config_options and once to compute the
+        // expectation — so a concurrent test mutating HOME between the two
+        // reads makes them disagree. Hold the shared env lock across both.
+        let _env = crate::auth::TEST_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let cwd = tempfile::tempdir().unwrap();
         let agent = OmegonAcpAgent::new("test-model");
         let options = agent.build_config_options(

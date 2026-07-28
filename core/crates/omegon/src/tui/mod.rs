@@ -52,14 +52,24 @@ pub mod workbench;
 #[cfg(test)]
 mod snapshot_tests;
 
-/// Commands whose output is a browsable surface rather than a status line.
-/// Keyed on the command — the producer — not on body text, so rewording a
-/// formatter can never silently demote its surface to a transcript dump.
-fn command_owns_panel_surface(command: &str) -> bool {
-    matches!(
-        command.split_whitespace().next(),
-        Some("/usage" | "/limits" | "/skills" | "/think" | "/prompt")
-    )
+/// Resolve a command's declared presentation from the registry.
+///
+/// Commands declare their own surface at definition; renderers never infer it
+/// from output text. An unknown command has no declaration, so it falls back to
+/// the content-shape heuristics in `show_slash_response`.
+fn declared_command_surface(
+    definitions: &[omegon_traits::CommandDefinition],
+    command: &str,
+) -> Option<omegon_traits::CommandSurface> {
+    let name = command
+        .split_whitespace()
+        .next()?
+        .trim_start_matches('/')
+        .trim();
+    definitions
+        .iter()
+        .find(|definition| definition.name == name)
+        .map(|definition| definition.surface)
 }
 
 fn should_toast_slash_response(response: &str) -> bool {
@@ -9888,9 +9898,18 @@ warning: {warning}"
     }
 
     fn show_slash_response(&mut self, command: &str, response: &str) {
-        if command_owns_panel_surface(command) {
-            self.open_command_panel(CommandPanel::from_slash(command, response));
-        } else if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
+        match self.declared_surface(command) {
+            Some(omegon_traits::CommandSurface::Panel) => {
+                self.open_command_panel(CommandPanel::from_slash(command, response));
+                return;
+            }
+            Some(omegon_traits::CommandSurface::Inline) if !response.trim().is_empty() => {
+                // Declared inline, but errors and long output still deserve a
+                // readable surface — fall through to the shape heuristics.
+            }
+            _ => {}
+        }
+        if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
             // Secret entry already owns the normal editor. Keep its acquisition
             // guidance compact instead of obscuring the workspace with a modal.
             self.command_panel = None;
@@ -9905,6 +9924,17 @@ warning: {warning}"
             self.conversation
                 .push_system(&format!("command · {command}\n{response}"));
         }
+    }
+
+    /// Presentation declared by the command itself: feature-provided bus
+    /// commands first, then the built-in registry.
+    fn declared_surface(&self, command: &str) -> Option<omegon_traits::CommandSurface> {
+        declared_command_surface(&self.bus_commands, command).or_else(|| {
+            declared_command_surface(
+                &crate::command_registry::builtin_command_definitions(),
+                command,
+            )
+        })
     }
 
     fn open_command_panel(&mut self, panel: CommandPanel) {

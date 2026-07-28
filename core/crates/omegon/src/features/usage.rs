@@ -193,6 +193,7 @@ impl Feature for UsageFeature {
                 subcommands: vec![],
                 availability: omegon_traits::CommandAvailability::ALL,
                 safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: omegon_traits::CommandSurface::Panel,
             },
             CommandDefinition {
                 name: "usage".into(),
@@ -200,6 +201,7 @@ impl Feature for UsageFeature {
                 subcommands: vec![],
                 availability: omegon_traits::CommandAvailability::ALL,
                 safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: omegon_traits::CommandSurface::Panel,
             },
         ]
     }

@@ -11,6 +11,7 @@ pub(crate) struct BuiltinCommandSpec {
     pub(crate) subcommands: &'static [&'static str],
     pub(crate) availability: omegon_traits::CommandAvailability,
     pub(crate) safety: omegon_traits::CommandSafety,
+    pub(crate) surface: omegon_traits::CommandSurface,
 }
 
 impl BuiltinCommandSpec {
@@ -46,7 +47,15 @@ impl BuiltinCommandSpec {
             subcommands,
             availability,
             safety,
+            surface: omegon_traits::CommandSurface::Inline,
         }
+    }
+
+    /// Declare that this command's output owns a panel surface rather than a
+    /// status line. Renderers read this instead of inspecting output text.
+    const fn panel(mut self) -> Self {
+        self.surface = omegon_traits::CommandSurface::Panel;
+        self
     }
 
     const fn with_safety(
@@ -279,6 +288,7 @@ impl BuiltinCommandSpec {
                 .collect(),
             availability: self.availability,
             safety: self.safety,
+            surface: self.surface,
         }
     }
 }
@@ -328,7 +338,8 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
         "think",
         "set thinking level",
         &["off", "minimal", "low", "medium", "high"],
-    ),
+    )
+    .panel(),
     BuiltinCommandSpec::cli_acp_state_changing(
         "profile",
         "open profile menu or manage runtime profile defaults",
@@ -444,7 +455,8 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
             "get <name>",
             "delete <name>",
         ],
-    ),
+    )
+    .panel(),
     BuiltinCommandSpec::cli_acp_state_changing(
         "skill",
         "alias for /skills",
@@ -469,7 +481,8 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
             "get <name>",
             "delete <name>",
         ],
-    ),
+    )
+    .panel(),
     BuiltinCommandSpec::acp_external_side_effect(
         "extension",
         "manage extensions (armory name, URL, path)",

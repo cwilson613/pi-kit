@@ -2121,6 +2121,24 @@ pub struct CommandDefinition {
     pub availability: CommandAvailability,
     /// Side-effect and prompt-injection safety metadata for remote surfaces.
     pub safety: CommandSafety,
+    /// How operator surfaces should present this command's output. Declared by
+    /// the command itself so renderers never infer presentation from body text.
+    pub surface: CommandSurface,
+}
+
+/// Presentation contract for a command's output.
+///
+/// This is a property of the command, not of the text it happens to emit.
+/// Renderers that guess from content silently regress whenever a formatter is
+/// reworded; renderers that read this field cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandSurface {
+    /// Status-line or transcript output: toasts, short confirmations, errors.
+    #[default]
+    Inline,
+    /// A browsable report that owns a panel: scrollable, copyable, dismissible.
+    Panel,
 }
 
 /// Result of handling a slash command.

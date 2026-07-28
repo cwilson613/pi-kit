@@ -224,6 +224,7 @@ impl Feature for PromptFeature {
             ],
             availability: omegon_traits::CommandAvailability::ALL,
             safety: CommandSafety::QUEUE_MUTATION,
+            surface: omegon_traits::CommandSurface::Panel,
         }]
     }
 

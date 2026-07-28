@@ -259,6 +259,7 @@ mod tests {
             subcommands: subcommands.iter().map(|sub| sub.to_string()).collect(),
             availability,
             safety,
+            surface: Default::default(),
         }
     }
 

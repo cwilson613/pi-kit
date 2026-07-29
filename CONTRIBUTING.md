@@ -35,6 +35,31 @@ It deliberately does not overwrite `/usr/local/bin`, `/opt/homebrew/bin`, or pac
 
 **Trunk-based development** on `main`. Direct commits for small, self-contained changes. Feature branches for multi-file or multi-session work.
 
+### Happy Development Loop
+
+Use this loop for changes to Omegon itself:
+
+1. **Inspect** — establish the current repository, runtime, and Workbench state from evidence before changing anything.
+2. **Design** — identify the smallest coherent change, record durable decisions when the work has architectural consequences, and surface unresolved assumptions instead of coding through them.
+3. **Implement** — make bounded edits against code already read; keep interfaces and ownership explicit.
+4. **Test** — run focused checks while iterating, then the required landing gates. For Rust behavior changes, this means `just lint` and `just test-rust` before commit.
+5. **Commit** — update `[Unreleased]` for operator-visible behavior or workflow changes and create a focused Conventional Commit.
+6. **Rebuild and install** — run `just link` so the executable and bundled assets used by the development environment match the committed source.
+7. **Exercise the real harness** — launch the installed/current Omegon through the normal operator path and verify the behavior in its actual TUI, process, and tool environment rather than relying only on unit tests.
+8. **Reconcile state** — align Workbench plans, OpenSpec tasks, design status, validation evidence, and git state with what actually landed.
+9. **Hand off cleanly** — stop transient processes, leave no stale active plan, confirm the worktree state, and report the commit, verification performed, and any explicit remaining limitation.
+
+In short:
+
+```text
+inspect → design → implement → test → commit → rebuild/install
+        → run the real harness → reconcile state → hand off cleanly
+```
+
+A timeout or cancellation must terminate the full process group, not only its immediate shell. Build and validation workflows routinely spawn `cargo`, `rustc`, test binaries, and other descendants; leaving those descendants alive corrupts subsequent iterations and makes repository state appear nondeterministic.
+
+The final runtime exercise complements automated validation; it does not replace it. If the harness cannot be exercised in the current environment, record that limitation explicitly rather than treating a successful build as equivalent evidence.
+
 ### When to Branch
 
 | Scenario | Approach |

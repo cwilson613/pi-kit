@@ -7434,64 +7434,6 @@ fn tutorial_status_line() {
     assert!(tut.status_line().contains("(final)"));
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn clipboard_format_matching() {
-    use super::match_clipboard_image_format;
-
-    // Real osascript output from a screenshot
-    let info = "«class PNGf», 29460, «class AVIF», 14396, «class 8BPS», 141278, GIF picture, 9009, «class jp2 », 39826, JPEG picture, 27092, TIFF picture, 792990, «class BMP », 792202, «class TPIC», 58310";
-    let result = match_clipboard_image_format(info);
-    assert!(
-        result.is_some(),
-        "should match PNGf in real clipboard output"
-    );
-    let (ext, pb) = result.unwrap();
-    assert_eq!(ext, "png");
-    assert_eq!(pb, "«class PNGf»");
-
-    // JPEG-only clipboard
-    let info = "JPEG picture, 12345";
-    let (ext, _) = match_clipboard_image_format(info).unwrap();
-    assert_eq!(ext, "jpg");
-
-    // TIFF-only clipboard
-    let info = "TIFF picture, 99999";
-    let (ext, _) = match_clipboard_image_format(info).unwrap();
-    assert_eq!(ext, "tiff");
-
-    // GIF
-    let info = "GIF picture, 5000";
-    let (ext, _) = match_clipboard_image_format(info).unwrap();
-    assert_eq!(ext, "gif");
-
-    // BMP
-    let info = "«class BMP », 200000";
-    let (ext, _) = match_clipboard_image_format(info).unwrap();
-    assert_eq!(ext, "bmp");
-
-    // No image — text only
-    let info = "«class utf8», 100, string, 100";
-    assert!(match_clipboard_image_format(info).is_none());
-
-    // Empty
-    assert!(match_clipboard_image_format("").is_none());
-
-    // The OLD broken matching — UTI strings that never appeared in osascript output
-    let info_with_uti = "public.png, 29460";
-    // This should NOT match PNGf (it contains "public.png" not "PNGf")
-    // But wait — "png" is not in our markers. This correctly returns None.
-    // The old code would have matched "public.png" → that was the bug.
-    assert!(
-        match_clipboard_image_format(info_with_uti).is_none(),
-        "UTI strings should not match — osascript never outputs them"
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// /note and /notes commands
-// ═══════════════════════════════════════════════════════════════════
-
 #[test]
 fn slash_note_with_text_persists_to_disk() {
     let tmp = tempfile::tempdir().unwrap();

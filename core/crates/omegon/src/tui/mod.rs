@@ -34,6 +34,7 @@ pub mod instruments;
 pub mod layout_projection;
 pub(crate) mod menu_surface;
 pub mod model_catalog;
+pub mod native_io;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
@@ -6769,81 +6770,17 @@ warning: {warning}"
     }
 
     fn try_paste_clipboard_image(&mut self) {
-        if let Some(path) = clipboard_image_to_temp() {
+        if let Some(path) = native_io::clipboard_image_to_temp() {
             self.show_toast(
                 "📎 Image pasted — send a message to include it",
                 ratatui_toaster::ToastType::Info,
             );
             self.editor.insert_attachment(path);
         }
-        // No feedback on failure — the user might just be pressing Ctrl+V
-        // for a normal text paste that crossterm handles separately.
     }
 
     fn copy_text_to_clipboard(&self, text: &str) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            use std::io::Write;
-            let mut child = match std::process::Command::new("pbcopy")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(_) => return false,
-            };
-            if let Some(mut stdin) = child.stdin.take() {
-                if stdin.write_all(text.as_bytes()).is_err() {
-                    let _ = child.wait();
-                    return false;
-                }
-            } else {
-                let _ = child.wait();
-                return false;
-            }
-            child.wait().is_ok_and(|status| status.success())
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            use std::io::Write;
-            let commands: &[(&str, &[&str])] = if std::env::var("WAYLAND_DISPLAY").is_ok() {
-                &[("wl-copy", &[])]
-            } else {
-                &[
-                    ("xclip", &["-selection", "clipboard"]),
-                    ("xsel", &["--clipboard", "--input"]),
-                ]
-            };
-            for (cmd, args) in commands {
-                let mut child = match std::process::Command::new(cmd)
-                    .args(*args)
-                    .stdin(std::process::Stdio::piped())
-                    .spawn()
-                {
-                    Ok(child) => child,
-                    Err(_) => continue,
-                };
-                if let Some(mut stdin) = child.stdin.take() {
-                    if stdin.write_all(text.as_bytes()).is_err() {
-                        let _ = child.wait();
-                        continue;
-                    }
-                } else {
-                    let _ = child.wait();
-                    continue;
-                }
-                if child.wait().is_ok_and(|status| status.success()) {
-                    return true;
-                }
-            }
-            false
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            let _ = text;
-            false
-        }
+        native_io::copy_text_to_clipboard(text)
     }
 
     fn copy_selected_conversation_segment_with_mode(&mut self, mode: SegmentExportMode) {
@@ -7651,192 +7588,8 @@ pub struct TuiInitialState {
     pub workspace_status: Option<String>,
 }
 
-/// Path to the editor history file — persists across sessions.
 /// Open a URL in the default browser (cross-platform).
-pub fn open_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .spawn();
-    }
-}
-
-/// Monotonic counter for unique clipboard temp filenames.
-static CLIPBOARD_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Clipboard format markers → (extension, pasteboard type for AppleScript).
-/// `osascript -e 'clipboard info'` outputs markers like «class PNGf»,
-/// JPEG picture, TIFF picture — NOT UTI strings like public.png.
-const CLIPBOARD_FORMATS: &[(&str, &str, &str)] = &[
-    ("PNGf", "png", "«class PNGf»"),
-    ("JPEG picture", "jpg", "«class JPEG»"),
-    ("JPEG", "jpg", "«class JPEG»"),
-    ("TIFF picture", "tiff", "«class TIFF»"),
-    ("TIFF", "tiff", "«class TIFF»"),
-    ("GIF picture", "gif", "«class GIFf»"),
-    ("GIFf", "gif", "«class GIFf»"),
-    ("BMP", "bmp", "«class BMP »"),
-];
-
-/// Match clipboard info output against known image format markers.
-/// Returns (extension, pasteboard_type) if a known image format is found.
-#[cfg(target_os = "macos")]
-fn match_clipboard_image_format(info_str: &str) -> Option<(&'static str, &'static str)> {
-    CLIPBOARD_FORMATS
-        .iter()
-        .find(|(marker, _, _)| info_str.contains(marker))
-        .map(|(_, ext, pb)| (*ext, *pb))
-}
-
-/// Try to read image data from the system clipboard and save to a temp file.
-///
-/// Supports PNG, JPEG, TIFF, GIF, BMP, and WebP. On macOS uses `osascript`
-/// to probe clipboard info and AppleScript for extraction.
-/// On Linux uses `xclip` or `wl-paste`. Returns the temp file path on success.
-fn clipboard_image_to_temp() -> Option<std::path::PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        // Ask the clipboard what types are available
-        let info = std::process::Command::new("osascript")
-            .args(["-e", "clipboard info"])
-            .output()
-            .ok()?;
-        let info_str = String::from_utf8_lossy(&info.stdout);
-
-        let (ext, pb_type) = match_clipboard_image_format(&info_str)?;
-
-        // Read the raw image data via AppleScript
-        let script = format!("set imgData to the clipboard as {pb_type}\nreturn imgData");
-        let output = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .output()
-            .ok()?;
-
-        if !output.status.success() || output.stdout.is_empty() {
-            return None;
-        }
-
-        // osascript returns the data with a «data ....» wrapper — extract raw bytes
-        // Actually, osascript binary output is unreliable. Use a write-to-file approach instead.
-        let tmp_dir = std::env::temp_dir();
-        let filename = format!(
-            "omegon-clipboard-{}-{}.{ext}",
-            std::process::id(),
-            CLIPBOARD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let tmp_path = tmp_dir.join(&filename);
-
-        let write_script = format!(
-            r#"set imgData to the clipboard as {pb_type}
-set filePath to POSIX file "{}" as text
-set fileRef to open for access file filePath with write permission
-set eof fileRef to 0
-write imgData to fileRef
-close access fileRef"#,
-            tmp_path.display()
-        );
-
-        let result = std::process::Command::new("osascript")
-            .args(["-e", &write_script])
-            .output()
-            .ok()?;
-
-        if result.status.success() && tmp_path.exists() {
-            let meta = std::fs::metadata(&tmp_path).ok()?;
-            if meta.len() > 0 {
-                return Some(tmp_path);
-            }
-        }
-        let _ = std::fs::remove_file(&tmp_path);
-        None
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // Try each MIME type in order of preference
-        let types = &[
-            ("image/png", "png"),
-            ("image/jpeg", "jpg"),
-            ("image/gif", "gif"),
-            ("image/bmp", "bmp"),
-            ("image/webp", "webp"),
-            ("image/tiff", "tiff"),
-        ];
-
-        // Try wl-paste first (Wayland), fall back to xclip (X11)
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-
-        if is_wayland {
-            // wl-paste: try each MIME type
-            for &(mime, ext) in types.iter() {
-                let output = std::process::Command::new("wl-paste")
-                    .args(["--type", mime, "--no-newline"])
-                    .output()
-                    .ok();
-                if let Some(output) = output {
-                    if output.status.success() && !output.stdout.is_empty() {
-                        let tmp_dir = std::env::temp_dir();
-                        let filename = format!(
-                            "omegon-clipboard-{}-{}.{ext}",
-                            std::process::id(),
-                            CLIPBOARD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        );
-                        let tmp_path = tmp_dir.join(&filename);
-                        std::fs::write(&tmp_path, &output.stdout).ok()?;
-                        return Some(tmp_path);
-                    }
-                }
-            }
-            return None;
-        }
-
-        // X11: use xclip
-        let targets = std::process::Command::new("xclip")
-            .args(["-selection", "clipboard", "-t", "TARGETS", "-o"])
-            .output()
-            .ok()?;
-        let targets_str = String::from_utf8_lossy(&targets.stdout);
-
-        let (mime, ext) = types
-            .iter()
-            .find(|(mime, _)| targets_str.contains(mime))
-            .copied()?;
-
-        let output = std::process::Command::new("xclip")
-            .args(["-selection", "clipboard", "-t", mime, "-o"])
-            .output()
-            .ok()?;
-
-        if !output.status.success() || output.stdout.is_empty() {
-            return None;
-        }
-
-        let tmp_dir = std::env::temp_dir();
-        let filename = format!(
-            "omegon-clipboard-{}-{}.{ext}",
-            std::process::id(),
-            CLIPBOARD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let tmp_path = tmp_dir.join(&filename);
-
-        std::fs::write(&tmp_path, &output.stdout).ok()?;
-        Some(tmp_path)
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        None
-    }
-}
+pub use native_io::open_browser;
 
 fn history_path(cwd: &str) -> std::path::PathBuf {
     let project_root = crate::setup::find_project_root(std::path::Path::new(cwd));

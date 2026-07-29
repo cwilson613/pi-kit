@@ -333,6 +333,14 @@ themes/                     Alpharius theme assets
 
 ---
 
+## Contributing
+
+Contributions are welcome, including small documentation fixes, focused bug fixes, tests, and reports that make a confusing workflow reproducible. You do **not** need to understand Omegon's lifecycle machinery or run its entire test suite before opening your first pull request.
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). It includes a first-contribution path, scoped validation commands, and what maintainers will handle during review.
+
+---
+
 ## Build from source
 
 ```sh

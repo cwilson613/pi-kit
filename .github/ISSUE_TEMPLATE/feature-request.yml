@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a focused improvement to an existing Omegon workflow.
+title: "[feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the operator problem first. You do not need to design the implementation or know Omegon's internal architecture.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Tell us what is difficult or impossible today and who encounters it.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: What does the current workflow look like?
+      description: Include a short example, command sequence, or use case when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What outcome would help?
+      description: Describe observable behavior rather than a required implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
+      description: Optional. Workarounds and related tools help us understand the tradeoff.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution interest
+      options:
+        - label: I may be interested in working on a focused version of this with maintainer guidance.

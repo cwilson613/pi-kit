@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Omegon.
+title: "[bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. A minimal observation is enough to start; you do not need to diagnose the cause or propose a fix.
+        Remove secrets, access tokens, and private repository content from logs before submitting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the incorrect behavior in a few sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include the smallest sequence of commands or actions you know. If it is intermittent, say so.
+      placeholder: |
+        1. Run `omegon ...`
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include `omegon --version`, operating system, install method, and provider/model when relevant. "Unknown" is acceptable.
+      placeholder: |
+        Omegon version:
+        OS:
+        Install method:
+        Provider/model (if relevant):
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or additional evidence
+      description: Paste relevant output or screenshots. Remove secrets and private source content first.
+      render: shell
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Did this work in an earlier Omegon version?
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure"
+    validations:
+      required: true

@@ -13,6 +13,84 @@ visibility = "private"
 
 Guidelines for branching, merging, and collaborating on this repository.
 
+## Your First Contribution
+
+You do not need to learn Omegon's agent-only lifecycle systems to contribute. Design Tree, OpenSpec, Workbench reconciliation, release signing, and the full local test matrix are maintainer workflows unless a maintainer explicitly asks you to use them.
+
+A good first contribution is deliberately small:
+
+- clarify a confusing sentence or example;
+- add a regression test for an existing bug;
+- fix a focused issue with a clear reproduction;
+- improve an error message without redesigning the surrounding subsystem.
+
+If you are unsure whether an idea fits, open a feature request first. An incomplete report with a concrete observation is more useful than a large speculative patch.
+
+### 1. Fork and clone
+
+Fork the repository on GitHub, then clone your fork and create a branch:
+
+```bash
+git clone https://github.com/<your-name>/omegon.git
+cd omegon
+git switch -c fix/short-description
+```
+
+You may use another branch name. The important boundary is that community contributions arrive through a pull request; direct commits to `main` described later in this guide are for maintainers with repository access.
+
+### 2. Check your environment
+
+Omegon's supported development environments are macOS, Linux, and Linux processes running under WSL2. Native Windows process semantics are not currently supported.
+
+Run the read-only prerequisite check:
+
+```bash
+just bootstrap --check
+```
+
+It reports missing tools without installing or changing them. The usual prerequisites are:
+
+- Git;
+- a Rust stable toolchain installed through `rustup`;
+- `rustfmt` and Clippy;
+- `just`;
+- Python 3 for repository developer scripts.
+
+Pkl is optional unless your change touches Pkl schemas or custom posture/agent configuration. Provider credentials are not required to compile the workspace or run ordinary unit tests.
+
+To install missing prerequisites and build/link Omegon automatically, run `just bootstrap`. The script may install system or user-level tools, so inspect `scripts/bootstrap.sh` first if you do not want that automation.
+
+### 3. Make and validate a focused change
+
+Use the narrowest check that covers your change:
+
+| Change | While iterating | Before opening the pull request |
+|---|---|---|
+| Markdown-only documentation | inspect the rendered diff | `git diff --check` |
+| Rust formatting or compile fix | `cargo fmt --all` and `just check-changed` | `just test-commit` and `just clippy-changed` |
+| Focused Rust behavior | `just test-filter "test_name"` or `just test-crate <crate>` | `just test-commit` and `just clippy-changed` |
+| Developer scripts | run the affected Python test | `just test-dev-scripts` |
+| Public docs site | relevant site test | `cd site && npm test && npm run build` |
+
+You are not expected to run `just test-rust` for every first contribution. It is the serialized full-workspace CI/release gate and can be expensive. CI and maintainers will run broader checks when needed.
+
+Do not update `CHANGELOG.md` for a trivial typo or internal test cleanup. Do add an `[Unreleased]` entry when your pull request changes operator-visible behavior, public documentation, tooling, packaging, API behavior, or contributor workflow. A maintainer can help classify the entry during review.
+
+### 4. Open the pull request early
+
+Use the repository pull request template. A draft pull request is welcome when you want feedback before polishing the implementation. Include:
+
+- the problem and why the change is useful;
+- the smallest reproduction or before/after example you have;
+- the exact validation commands you ran;
+- anything you could not verify locally.
+
+Maintainers own repository-wide integration, release gates, lifecycle bookkeeping, and final release notes. Review may ask for a focused test or a smaller scope, but it should not require you to reverse-engineer hidden process.
+
+### What review should feel like
+
+Expect maintainers to explain blocking requests, distinguish required changes from suggestions, and help with project-specific mechanics. You may disagree with feedback and ask for the underlying constraint. No prior issue, design document, or permission is required for a small pull request.
+
 ## Development Setup
 
 ```bash
@@ -35,9 +113,11 @@ It deliberately does not overwrite `/usr/local/bin`, `/opt/homebrew/bin`, or pac
 
 **Trunk-based development** on `main`. Direct commits for small, self-contained changes. Feature branches for multi-file or multi-session work.
 
-### Happy Development Loop
+### Happy Development Loop (Maintainers and Large Changes)
 
-Use this loop for changes to Omegon itself:
+The full loop below describes changes made by maintainers and contributors working on large or architecturally significant changes. First-time contributors can use the shorter path above; maintainers own any required lifecycle reconciliation and release integration.
+
+Use this loop for substantial changes to Omegon itself:
 
 1. **Inspect** — establish the current repository, runtime, and Workbench state from evidence before changing anything.
 2. **Design** — identify the smallest coherent change, record durable decisions when the work has architectural consequences, and surface unresolved assumptions instead of coding through them.
@@ -60,7 +140,9 @@ A timeout or cancellation must terminate the full process group, not only its im
 
 The final runtime exercise complements automated validation; it does not replace it. If the harness cannot be exercised in the current environment, record that limitation explicitly rather than treating a successful build as equivalent evidence.
 
-### When to Branch
+### When Maintainers Branch
+
+The table below describes branches created inside the main repository. External contributors should normally create any topic branch in their fork and open a pull request.
 
 | Scenario | Approach |
 |---|---|

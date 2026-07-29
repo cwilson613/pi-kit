@@ -17,6 +17,36 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_OUTPUT_BYTES: usize = 50 * 1024;
 const MAX_OUTPUT_LINES: usize = 2000;
+const PROCESS_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+async fn terminate_process_group(pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    // SAFETY: the spawned shell is the leader of a dedicated process group;
+    // negative PID signaling cannot target unrelated Omegon processes.
+    unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+    }
+    tokio::time::sleep(PROCESS_TERMINATION_GRACE).await;
+    // SAFETY: the process group remains scoped to this command. ESRCH means
+    // all members exited during the grace period.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_group(_pid: Option<u32>) {}
 
 /// Minimum interval between content-bearing streamed partials. Cheap
 /// rate-limit so a command spewing thousands of lines a second doesn't
@@ -153,8 +183,10 @@ pub async fn execute_streaming(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    configure_process_group(&mut cmd);
 
     let mut child = cmd.spawn()?;
+    let child_pid = child.id();
     let stdout = child
         .stdout
         .take()
@@ -200,14 +232,16 @@ pub async fn execute_streaming(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
-                anyhow::bail!("Command aborted");
+                terminate_process_group(child_pid).await;
+                let _ = child.wait().await;
+                anyhow::bail!("Command aborted; the command process group was terminated");
             }
             _ = &mut timeout_fut => {
                 let secs = timeout_secs.unwrap();
-                let _ = child.kill().await;
+                terminate_process_group(child_pid).await;
+                let _ = child.wait().await;
                 anyhow::bail!(
-                    "Command timed out after {secs} seconds; the process was killed before Omegon could observe a final exit status. This is an indeterminate host-action result: the operation may have partially completed, completed just before the timeout, or made no progress. Verify with an idempotent status/check command before retrying or reporting failure. For installers, check whether the target is already present."
+                    "Command timed out after {secs} seconds; the command process group was terminated before Omegon could observe a final exit status. This is an indeterminate host-action result: the operation may have partially completed, completed just before the timeout, or made no progress. Verify with an idempotent status/check command before retrying or reporting failure. For installers, check whether the target is already present."
                 );
             }
             _ = heartbeat.tick() => {
@@ -1342,6 +1376,40 @@ mod tests {
         assert!(err.contains("Command timed out after 1 seconds"));
         assert!(err.contains("indeterminate host-action result"));
         assert!(err.contains("Verify with an idempotent status/check command"));
+    }
+
+    #[cfg(unix)]
+    async fn assert_descendant_cleanup(timeout_secs: Option<u64>, cancel: CancellationToken) {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("descendant-survived");
+        let command = format!("(sleep 3; printf survived > '{}') & wait", marker.display());
+        let cancellation = cancel.clone();
+        if timeout_secs.is_none() {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                cancellation.cancel();
+            });
+        }
+
+        let result = execute(&command, temp.path(), timeout_secs, cancel).await;
+        assert!(result.is_err());
+        tokio::time::sleep(Duration::from_millis(3_100)).await;
+        assert!(
+            !marker.exists(),
+            "bash descendant survived process-group cleanup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_cancel_terminates_descendants() {
+        assert_descendant_cleanup(None, CancellationToken::new()).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_timeout_terminates_descendants() {
+        assert_descendant_cleanup(Some(1), CancellationToken::new()).await;
     }
 
     #[tokio::test]

@@ -37,7 +37,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 ### Changed
 
 - Added persistent jittered overload recovery for interactive Codex turns. Provider-capacity failures no longer abandon recoverable work after the generic ten-minute transient envelope; retries retain capped exponential backoff with deterministic jitter, while bounded worker runs keep their explicit attempt cap.
-- Validation command timeouts now terminate the validator's entire process group, preventing Cargo children such as `rustc` from surviving as orphaned processes after a timed-out check.
+- Validation command timeouts and bash-tool timeout/cancellation now terminate the command's entire process group, preventing descendants such as `rustc` from surviving as orphaned processes.
 - Added a release-preflight target override so a matching `X.Y.Z-dev` workspace can be validated against its intended stable `X.Y.Z` release while rejecting mismatched targets.
 - Extracted native browser and clipboard process/file interaction from the TUI application service into `tui/native_io.rs`, leaving attachment policy, editor mutation, and operator notifications in `App`.
 - Extracted completed turn-tool episode projection from `tui/conversation_projection.rs` into `tui/turn_tool_projection.rs`. The new boundary owns turn/runtime-turn grouping, authoritative completion detection, standalone operator-shell fallback, failure outcomes, and one-row emission, while the conversation projector now only composes lifecycle, turn-tool, export, and presentation-level policies.

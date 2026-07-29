@@ -1442,6 +1442,21 @@
       "bound_change": null,
       "created_at": "2026-07-26T20:35:08Z",
       "updated_at": "2026-07-26T20:43:05Z"
+    },
+    {
+      "id": "windows-compatibility",
+      "title": "Windows compatibility and WSL host-boundary constraints",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-07-29T19:24:05Z",
+      "updated_at": "2026-07-29T19:24:05Z"
     }
   ],
   "changes": [
@@ -4154,6 +4169,24 @@
       "to_state": "decided",
       "reason": null,
       "forced": false
+    },
+    {
+      "timestamp": "2026-07-29T19:24:05Z",
+      "entity_type": "node",
+      "entity_id": "windows-compatibility",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-07-29T19:24:05Z",
+      "entity_type": "node",
+      "entity_id": "windows-compatibility",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
     }
   ]
 }

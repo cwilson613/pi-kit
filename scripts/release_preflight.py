@@ -133,7 +133,12 @@ def ensure_release_workspace_role(repo_root: Path) -> None:
     lease_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def collect_failures(repo_root: Path, *, check_release_gaps: bool = True) -> list[str]:
+def collect_failures(
+    repo_root: Path,
+    *,
+    check_release_gaps: bool = True,
+    release_version_override: str | None = None,
+) -> list[str]:
     failures: list[str] = []
 
     branch = git_stdout(repo_root, "branch", "--show-current")
@@ -155,7 +160,18 @@ def collect_failures(repo_root: Path, *, check_release_gaps: bool = True) -> lis
 
     try:
         current_version = read_workspace_version(repo_root)
-        release_version = stable_version(current_version)
+        release_version = (
+            stable_version(release_version_override)
+            if release_version_override is not None
+            else stable_version(current_version)
+        )
+        if release_version_override is not None:
+            expected_dev = f"{release_version}-dev"
+            if current_version != expected_dev:
+                failures.append(
+                    f"workspace version {current_version} does not match release target "
+                    f"{release_version} (expected {expected_dev})"
+                )
     except PreflightError as err:
         failures.append(str(err))
         return failures
@@ -194,6 +210,10 @@ def main(argv: list[str] | None = None) -> int:
         help="repair/create .omegon/runtime/workspace.json with role=release before exiting",
     )
     parser.add_argument(
+        "--release-version",
+        help="validate a dev workspace for this stable target (for example 0.29.0-dev -> 0.29.0)",
+    )
+    parser.add_argument(
         "--skip-release-gap-check",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -209,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     failures = collect_failures(
         repo_root,
         check_release_gaps=not args.skip_release_gap_check,
+        release_version_override=args.release_version,
     )
     if failures:
         print("✗ Release preflight failed:", file=sys.stderr)
@@ -216,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {failure}", file=sys.stderr)
         return 1
 
-    version = stable_version(read_workspace_version(repo_root))
+    version = args.release_version or stable_version(read_workspace_version(repo_root))
     print(f"✓ Release preflight passed — repo is releasable as {version}")
     return 0
 

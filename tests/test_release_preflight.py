@@ -69,7 +69,9 @@ class ReleasePreflightTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def run_script(self, repo_root: Path) -> subprocess.CompletedProcess[str]:
+    def run_script(
+        self, repo_root: Path, *extra_args: str
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 "python3",
@@ -77,6 +79,7 @@ class ReleasePreflightTests(unittest.TestCase):
                 "--repo-root",
                 str(repo_root),
                 "--skip-release-gap-check",
+                *extra_args,
             ],
             cwd=ROOT,
             check=False,
@@ -93,6 +96,32 @@ class ReleasePreflightTests(unittest.TestCase):
             result = self.run_script(repo_root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("0.28.0", result.stdout)
+
+    def test_preflight_accepts_explicit_stable_target_for_matching_dev_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            self.write_repo_fixture(repo_root, version="0.29.0-dev")
+            (repo_root / "CHANGELOG.md").write_text(
+                "# Changelog\n\n## [0.29.0] - 2026-07-29\n"
+            )
+            self.init_git_repo(repo_root, branch="release/0.29")
+
+            result = self.run_script(repo_root, "--release-version", "0.29.0")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("repo is releasable as 0.29.0", result.stdout)
+
+    def test_preflight_rejects_explicit_target_that_does_not_match_dev_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            self.write_repo_fixture(repo_root, version="0.30.0-dev")
+            self.init_git_repo(repo_root, branch="release/0.29")
+
+            result = self.run_script(repo_root, "--release-version", "0.29.0")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "workspace version 0.30.0-dev does not match release target 0.29.0",
+                result.stderr,
+            )
 
     def test_preflight_fails_when_changelog_missing_target_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -174,12 +203,16 @@ class ReleaseRecipeTests(unittest.TestCase):
         end = justfile.index("\nsmoke:\n", start)
         return justfile[start:end]
 
-    def test_publish_requires_main_version_before_push(self) -> None:
+    def test_publish_verifies_tag_reachability_after_branch_push(self) -> None:
         block = self.publish_block()
         self.assertIn("python3 scripts/release_branch.py verify-publish", block)
         self.assertLess(
+            block.index('git push origin "$BRANCH"'),
             block.index("python3 scripts/release_branch.py verify-publish"),
-            block.index('git push origin "$BRANCH" "$TAG"'),
+        )
+        self.assertLess(
+            block.index("python3 scripts/release_branch.py verify-publish"),
+            block.index('git push origin "$TAG"'),
         )
 
     def test_release_recipe_runs_preflight_before_mutation(self) -> None:

@@ -7,7 +7,10 @@ open_questions:
   - "[assumption] Community contributors who extend Windows support will have access to representative native Windows and WSL environments for platform-specific integration tests."
   - "[assumption] The documented support contract may remain Linux/macOS-first without requiring warnings on every WSL invocation of a Windows-host executable."
 dependencies: []
-related: []
+related:
+  - "https://github.com/styrene-lab/omegon/issues/161"
+  - "https://github.com/styrene-lab/omegon/issues/162"
+  - "https://github.com/styrene-lab/omegon/issues/163"
 ---
 
 # Windows compatibility and WSL host-boundary constraints
@@ -29,6 +32,14 @@ Omegon is Linux/macOS-first. Native Windows support and complete lifecycle contr
 **Status:** accepted
 
 **Rationale:** The operator prioritizes Linux/macOS engineering capacity and accepts reduced Windows guarantees. Recording ownership prevents accidental expansion of the core support contract.
+
+## Community Issues
+
+- [#161 — WSL: investigate lifecycle control for Windows-host child processes](https://github.com/styrene-lab/omegon/issues/161) tracks reliable cleanup when a Linux command crosses into `cmd.exe`, PowerShell, or another Windows-host executable.
+- [#162 — WSL: document and diagnose Windows-mounted workspaces](https://github.com/styrene-lab/omegon/issues/162) tracks newcomer guidance and low-noise diagnostics for checkouts under `/mnt/<drive>`.
+- [#163 — Windows: define safe non-Unix self-restart semantics](https://github.com/styrene-lab/omegon/issues/163) tracks the deferred spawn-and-exit/rollback contract for a possible native-Windows restart path.
+
+These are intentionally scoped as community-owned investigations. Completing one does not establish native Windows as a supported Omegon target; support admission requires representative platform tests and must preserve Linux/macOS behavior.
 
 ## Open Questions
 

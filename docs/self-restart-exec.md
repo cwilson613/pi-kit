@@ -33,5 +33,5 @@ The agent should be able to modify its own source, rebuild, health-check the new
 
 ## Open Questions
 
-- How do we handle exec() on non-Unix (Windows)? OpenCrabs just errors — is that acceptable or do we need a spawn-and-exit fallback?
+- [#163](https://github.com/styrene-lab/omegon/issues/163): How do we handle exec() on non-Unix (Windows)? OpenCrabs just errors — is that acceptable or do we need a spawn-and-exit fallback?
 - Should /evolve pull from GitHub Releases or cargo install? We already have a release pipeline (brutus) — downloading the binary and swapping is faster than compiling from source.

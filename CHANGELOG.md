@@ -18,6 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Published community-owned WSL and Windows-adjacent issues for cross-boundary process cleanup, Windows-mounted workspace guidance, and safe non-Unix self-restart semantics, with explicit platform evidence requirements and Linux/macOS non-regression boundaries.
 - Added a first-contribution path that separates community expectations from maintainer-only lifecycle and release machinery, documents fork/PR workflow and scoped validation, welcomes draft pull requests, and provides general bug, feature, and pull request templates.
 - Documented the canonical happy development loop for Omegon contributors: inspect, design, implement, test, commit, rebuild/install, exercise the real harness, reconcile lifecycle and Workbench state, and hand off cleanly without orphaned descendant processes.
 - Added the first operator-facing inference capacity affordance: `/limits` translates current provider telemetry into an explicit `ample`, `adequate`, `tight`, `opaque`, or `exhausted` runway with limiting-window details, reset timing, confidence, bounded-work guidance, and named unknowns; personal Copilot premium balance remains explicitly opaque rather than being inferred or labelled unlimited. `/usage` remains the raw consumption/telemetry view, and the internal `/runway` handler remains temporarily compatible without adding a second palette command.

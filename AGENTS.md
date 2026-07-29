@@ -17,24 +17,37 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 
 ## Architecture
 
-- **Workspace root**: Cargo workspace at repo root. Crates at `core/crates/`: `omegon` (main binary), `omegon-memory`, `omegon-extension`, `omegon-traits`, `omegon-git`, `omegon-secrets`, `omegon-codescan`, `omegon-opsx`
-- **Build + install**: `just build && just link` — builds release binary, writes dev aliases for `omegon` + `om`, installs bundled skills
-- **Test**: `just test-rust` — 1800+ tests, must all pass before committing
-- **Lint**: `just lint` — type check + clippy
+- **Workspace root**: Cargo workspace at the repository root. Crates live under `core/crates/`:
+  - `omegon` — main binary, agent loop, providers, tools, TUI, ACP, daemon/control plane, and integration composition
+  - `omegon-codescan` — code and knowledge indexing
+  - `omegon-git` — repository, commit, merge, worktree, and submodule operations
+  - `omegon-memory` — fact storage, decay, search, injection, and vault synchronization
+  - `omegon-opsx` — OpenSpec/design lifecycle state machine
+  - `omegon-rbac` — Omegon capability vocabulary mapped onto Styrene RBAC
+  - `omegon-secrets` — secret resolution, redaction, and tool guards
+  - `omegon-skills` — skill parsing, inventory, activation, and suggestion policy
+  - `omegon-traits` — shared protocol, feature, command, tool, and event contracts
+  - `omegon-web` — web search and content extraction (not the embedded dashboard, which remains in `omegon`)
+  - `styrene-work-model` — provider-neutral work-item contracts
+  - `styrene-work-runtime` — work-source refresh and immutable aggregate snapshots
+- **Build and run**: `just run` rebuilds and launches the current `dev-release` binary. `just link` performs its own release build, installs the stable launchers, registers the checkout/channel, and installs bundled skills/catalog; do not precede it with a redundant `just build` unless a standalone release build is itself required.
+- **Validation ladder**: use focused tests while iterating; `just test-commit` and `just clippy-changed` are the normal focused landing gates. Use `just lint` and serialized `just test-rust` for broad/high-risk changes, release hardening, or when affected-crate analysis is insufficient.
 - **Single crate**: `just test-crate omegon-memory`
 - **Filter**: `just test-filter "vault_sync"`
-- **Config schemas**: `pkl/` directory — 10 Pkl schemas validating config surfaces
+- **Config schemas**: `pkl/` contains the Pkl schemas for configuration surfaces. Avoid embedding a schema count here; it changes over time.
 - **Skills**: `skills/*/SKILL.md` — YAML frontmatter is canonical for portable skills; TOML frontmatter remains supported for bundled/existing skills. `name` and `description` are required.
+- **Nested directives**: strategic crates may contain their own `AGENTS.md`. The nearest file adds crate-local ownership and invariant guidance; this root file remains authoritative for repository-wide workflow.
 
 ## Key conventions
 
 - **Conventional commits** — `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`. See `skills/git/SKILL.md`.
-- **Direct commits to `main`** for focused changes. Feature branches for multi-session work. Release hardening happens on `release/X.Y` branches once the line is cut; `release/X.Y` owns stable tags, `main` owns nightly tags, and hardening fixes merge forward with `just merge-release-forward`.
-- **Read before editing** — `Edit` requires exact text matches. Always read the file first.
-- **Run tests after changes** — `cargo test -p omegon` from the repo root. Don't commit with failures.
-- **Cargo test filters** — Cargo accepts only one positional test-name filter per `cargo test` invocation. To run multiple focused tests, use one shared substring filter, run separate invocations, or loop: `for f in test_one test_two; do cargo test -p omegon "$f" --locked || exit 1; done`.
-- **Build and install after changes** — `just link` from the repo root to install over itself.
-- **CHANGELOG.md is mandatory release memory** — every commit that changes behavior, docs/site output, tooling, packaging, public API, or operator workflow must update `[Unreleased]` in the same change. Every release/tag must have a complete section for that exact version and must not skip intermediate released versions.
+- **Internal branch policy** — focused maintainer/agent changes may commit directly to `main`; use feature branches for multi-session work. External contributors work on branches in forks and open pull requests. Release hardening happens on `release/X.Y`; stable fixes merge forward with `just merge-release-forward`.
+- **Read before editing** — `edit` requires an exact current-text match. Read the target first and make the smallest justified replacement.
+- **Test after changes** — run the narrowest relevant test while iterating, then the landing gate appropriate to the change. Do not claim a full gate passed unless it actually ran.
+- **Cargo test filters** — Cargo accepts only one positional test-name filter per invocation. Use one shared substring, separate invocations, or a loop such as `for f in test_one test_two; do cargo test -p omegon "$f" --locked || exit 1; done`.
+- **Install only when runtime evidence needs it** — use `just run` to exercise current source directly. Use `just link` when the installed launcher/assets must match the commit, then verify resolution with `omegon --which` when binary identity matters.
+- **Happy development loop** — inspect → design → implement → focused test → commit → rebuild/install → exercise the real harness → reconcile Workbench/OpenSpec/design/git state → hand off cleanly.
+- **CHANGELOG.md is release memory** — update `[Unreleased]` for behavior, public docs/site output, tooling, packaging, public API, or operator/contributor workflow changes. Trivial typo-only and internal-test-only changes need no entry. Every release/tag needs a complete section for that exact version without skipped released versions.
 
 ## Provider system
 
@@ -45,9 +58,10 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 
 ## TUI
 
-- `tui/mod.rs` is the main event loop (~8000 lines). Segments, widgets, footer, instruments are separate modules.
-- Default mode is `Slim` — dashboard, instruments, and segment metadata hidden. `/ui full` reveals them.
-- Table rendering uses `markdown_display_width` for column measurement (strips bold/code markers before padding).
+- `core/crates/omegon/src/tui/mod.rs` owns top-level native TUI orchestration and remains large. Prefer the extracted owners for rendering, input, agent-event projection, semantic actions, slash routing, native I/O, Auspex, workspace context, and conversation/operation projections rather than adding new policy to the monolith.
+- Presentation levels are `Om` (default), `Active`, and `Full`; `lean`/`slim` remain compatibility aliases. `/ui full` reveals the complete presentation.
+- Shared semantic projections live under `core/crates/omegon/src/surfaces/`. Keep producer/provenance independent from content form and avoid renderer-specific policy.
+- Table rendering uses `markdown_display_width` for column measurement so Markdown emphasis/code markers do not distort padding.
 
 
 ## Current harness surfaces
@@ -60,8 +74,8 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 
 ## Codex integration
 
-- Auto-detected when `.codex/config.toml` exists at project root. Config: `.codex/omegon-integration.toml` or `.omegon/codex.toml`.
-- Memory facts materialize to `{vault}/ai/memory/` on session end. Design nodes export to `{vault}/design/`.
+- Integration is optional and loads, in order, from `.codex/omegon-integration.toml` or `.omegon/codex.toml`. A generic `.codex/config.toml` does not enable it.
+- Memory facts materialize to `{vault}/ai/memory/` on session end. Design nodes export to `{vault}/design/` by default.
 - Facts referenced by vault notes get reinforced (decay timer reset) on sync.
 
 ## MCP
@@ -78,9 +92,11 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 ## Things to be careful with
 
 - **Never fabricate URLs, client IDs, or API endpoints.** Research real values from provider documentation or source code. The Antigravity provider had fabricated credentials that wasted significant time.
+- **Process cleanup is tree-scoped.** Timeout/cancellation paths that spawn commands must terminate the whole process group, not only the immediate shell. Under WSL this guarantee covers Linux descendants; Windows-host executables cross a lifecycle boundary and remain best-effort unless platform-specific control is added and tested.
 - **`Settings::provider()` returns `String`** (not `&str`). It uses `infer_provider_id` — no hardcoded catch-all.
 - **Skill frontmatter** — YAML (`---`) is canonical for portable/user-facing `SKILL.md` files; TOML (`+++`) remains supported for bundled and existing Omegon skills. `extract_description` handles both.
-- **Extension `execute_tool` RPC** — extensions must implement this handler or the call returns a graceful error.
+- **Extension `execute_tool` RPC** — extensions must implement this handler or the call returns a graceful error. The extension SDK is external; do not recreate the removed internal `omegon-extension` crate.
 - **Memory/lifecycle features** have optional `codex_vault_path` — set via `with_codex_vault()` in `setup.rs`.
-- **Plan/Workbench consistency** — never report "nothing pending" while the active Workbench plan still has active/todo items. Either update/complete/clear the plan or state the mismatch explicitly.
+- **Plan/Workbench consistency** — never report "nothing pending" while the active Workbench plan still has active/todo items. Update, complete, skip, or clear it, or state the mismatch explicitly.
 - **Logical commits** — split feature changes, rustfmt-only churn, and generated state changes into separate commits.
+- **Avoid volatile facts in directives.** Counts, line totals, version strings, and inventories decay quickly; name the authoritative command or source unless the value itself is an enforced invariant.

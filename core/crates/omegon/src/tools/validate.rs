@@ -9,6 +9,7 @@ use omegon_traits::{ContentBlock, ToolResult};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::process::Command;
@@ -21,6 +22,68 @@ const TYPESCRIPT_VALIDATION_TIMEOUT_SECS: u64 = 180;
 const PYTHON_VALIDATION_TIMEOUT_SECS: u64 = 120;
 const EMBEDDED_VALIDATION_TIMEOUT_SECS: u64 = 30;
 const OPERATOR_VALIDATION_TIMEOUT_SECS: u64 = 300;
+const VALIDATION_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+enum ValidationCommandError {
+    Spawn(std::io::Error),
+    Wait(std::io::Error),
+    TimedOut,
+}
+
+async fn run_validation_command(
+    program: &str,
+    args: &[impl AsRef<std::ffi::OsStr>],
+    cwd: &Path,
+    timeout: Duration,
+) -> std::result::Result<Output, ValidationCommandError> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    configure_validation_process_group(&mut command);
+
+    let child = command.spawn().map_err(ValidationCommandError::Spawn)?;
+    let pid = child.id();
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result.map_err(ValidationCommandError::Wait),
+        Err(_) => {
+            terminate_validation_process_group(pid, VALIDATION_TERMINATION_GRACE).await;
+            Err(ValidationCommandError::TimedOut)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn configure_validation_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_validation_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+async fn terminate_validation_process_group(pid: Option<u32>, grace: Duration) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    // SAFETY: a negative PID addresses the process group created for this
+    // validation command. ESRCH simply means it exited before the signal.
+    unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+    }
+    tokio::time::sleep(grace).await;
+    // SAFETY: the process group remains scoped to the spawned validator.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_validation_process_group(_pid: Option<u32>, _grace: Duration) {}
 
 fn validation_timeout_secs(kind: ValidatorKind) -> u64 {
     match kind {
@@ -741,23 +804,22 @@ async fn run_operator_validator(
 
     let args = operator_validator_command(validator, &matched_paths);
     let rendered = format_dynamic_command(&validator.runner.program, &args);
-    let child = Command::new(&validator.runner.program)
-        .args(&args)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .output();
     let timeout_secs = validator.policy.timeout_secs.max(1);
-    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), child).await;
+    let result = run_validation_command(
+        &validator.runner.program,
+        &args,
+        cwd,
+        Duration::from_secs(timeout_secs),
+    )
+    .await;
 
     match result {
-        Ok(Ok(output)) if output.status.success() => format!(
+        Ok(output) if output.status.success() => format!(
             "Operator validator `{}` (`{rendered}`): ✓ passed for {} path(s)",
             validator.id,
             matched_paths.len()
         ),
-        Ok(Ok(output)) => {
+        Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             let combined = format!(
@@ -773,11 +835,11 @@ async fn run_operator_validator(
                 summary
             )
         }
-        Ok(Err(e)) => format!(
+        Err(ValidationCommandError::Spawn(e) | ValidationCommandError::Wait(e)) => format!(
             "Operator validator `{}` (`{rendered}`): failed to execute: {e}",
             validator.id
         ),
-        Err(_) => format!(
+        Err(ValidationCommandError::TimedOut) => format!(
             "Operator validator `{}` (`{rendered}`): ⏱ timed out after {timeout_secs}s",
             validator.id
         ),
@@ -1891,19 +1953,17 @@ async fn validate_language_paths(
     config: ValidatorConfig,
     cwd: &Path,
 ) -> String {
-    let child = Command::new(config.command)
-        .args(&config.args)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-
     let timeout_secs = validation_timeout_secs(kind);
-    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), child).await;
+    let result = run_validation_command(
+        config.command,
+        &config.args,
+        cwd,
+        Duration::from_secs(timeout_secs),
+    )
+    .await;
 
     match result {
-        Ok(Ok(output)) => {
+        Ok(output) => {
             let exit_code = output.status.code().unwrap_or(-1);
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1928,7 +1988,7 @@ async fn validate_language_paths(
                 )
             }
         }
-        Ok(Err(e)) => {
+        Err(ValidationCommandError::Spawn(e) | ValidationCommandError::Wait(e)) => {
             tracing::debug!("Validation command failed to execute: {e}");
             format!(
                 "Validation (`{}`) for {} {} path(s): failed to execute: {e}",
@@ -1937,7 +1997,7 @@ async fn validate_language_paths(
                 kind.label()
             )
         }
-        Err(_) => {
+        Err(ValidationCommandError::TimedOut) => {
             tracing::warn!(
                 "Validation timed out after {}s for `{}`",
                 timeout_secs,
@@ -2007,26 +2067,25 @@ pub async fn run_affected_tests(cwd: &Path, files: &[&PathBuf]) -> Option<String
     }?;
     let cmd = format_command(test_command.0, &test_command.1);
 
-    let child = Command::new(test_command.0)
-        .args(&test_command.1)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-
-    let result =
-        tokio::time::timeout(Duration::from_secs(EMBEDDED_VALIDATION_TIMEOUT_SECS), child).await;
+    let result = run_validation_command(
+        test_command.0,
+        &test_command.1,
+        cwd,
+        Duration::from_secs(EMBEDDED_VALIDATION_TIMEOUT_SECS),
+    )
+    .await;
     match result {
-        Ok(Ok(output)) if output.status.success() => {
+        Ok(output) if output.status.success() => {
             Some(format!("Affected tests (`{cmd}`): ✓ passed"))
         }
-        Ok(Ok(output)) => Some(format!(
+        Ok(output) => Some(format!(
             "Affected tests (`{cmd}`): ✗ failed\n{}",
             truncate_validation(&String::from_utf8_lossy(&output.stderr), 500)
         )),
-        Ok(Err(e)) => Some(format!("Affected tests (`{cmd}`): failed to execute: {e}")),
-        Err(_) => Some(format!(
+        Err(ValidationCommandError::Spawn(e) | ValidationCommandError::Wait(e)) => {
+            Some(format!("Affected tests (`{cmd}`): failed to execute: {e}"))
+        }
+        Err(ValidationCommandError::TimedOut) => Some(format!(
             "Affected tests (`{cmd}`): ⏱ timed out after {}s",
             EMBEDDED_VALIDATION_TIMEOUT_SECS
         )),
@@ -2255,6 +2314,29 @@ fn truncate_validation(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn validation_timeout_terminates_descendant_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("descendant-survived");
+        let script = format!("(sleep 1; printf survived > '{}') & wait", marker.display());
+
+        let result = run_validation_command(
+            "sh",
+            &["-c", script.as_str()],
+            temp.path(),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ValidationCommandError::TimedOut)));
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !marker.exists(),
+            "validator descendant survived process-group cleanup"
+        );
+    }
 
     #[test]
     fn validation_defaults_have_cold_cache_headroom() {

@@ -608,7 +608,18 @@ impl SplashScreen {
         }
     }
 
-    /// Mark all items as done (safety timeout).
+    /// Mark unfinished items as failed because startup inspection did not
+    /// produce evidence for them before its deadline.
+    pub fn fail_unfinished(&mut self, summary: &str) {
+        for item in &mut self.items {
+            if matches!(item.state, LoadState::Pending | LoadState::Active) {
+                item.state = LoadState::Failed;
+                item.summary = Some(summary.to_string());
+            }
+        }
+    }
+
+    /// Mark all items as done for a cosmetic replay with no live probes.
     pub fn force_done(&mut self) {
         for item in &mut self.items {
             if matches!(item.state, LoadState::Pending | LoadState::Active) {

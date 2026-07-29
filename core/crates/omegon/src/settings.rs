@@ -280,6 +280,38 @@ impl OperatingProfile {
     }
 }
 
+/// Startup splash policy for interactive TUI sessions.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StartupSplashMode {
+    /// Play only before the workspace's first completed launch.
+    #[default]
+    FirstRun,
+    /// Play on every interactive startup.
+    Always,
+    /// Never play automatically; `/splash` replay remains available.
+    Never,
+}
+
+impl StartupSplashMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstRun => "first-run",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "first-run" | "first_run" | "first" => Some(Self::FirstRun),
+            "always" | "on" => Some(Self::Always),
+            "never" | "off" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
 /// Runtime settings that can change mid-session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -354,6 +386,10 @@ pub struct Settings {
     /// instead of silently substituting another provider.
     #[serde(default)]
     pub fallback_providers: Vec<String>,
+
+    /// Startup splash policy for interactive sessions.
+    #[serde(default)]
+    pub startup_splash: StartupSplashMode,
 
     /// Update channel for in-app self-update.
     #[serde(default = "default_update_channel")]
@@ -687,6 +723,7 @@ impl Default for Settings {
             requested_context_class: None,
             tool_detail: ToolDetail::Detailed,
             ui_presentation: crate::surfaces::layout::UiPresentationLevel::Om,
+            startup_splash: StartupSplashMode::default(),
             profile_source: ProfileSource::BuiltInDefault,
             provider_order: Vec::new(),
             fallback_providers: Vec::new(),
@@ -1219,6 +1256,9 @@ pub struct Profile {
     pub auto_update: Option<bool>,
 
     // ── Display preferences ──
+    /// Startup splash policy: "first-run", "always", or "never".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_splash: Option<String>,
     /// Tool output density: "lean", "compact", "detailed", "verbose".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_detail: Option<String>,
@@ -1707,6 +1747,11 @@ impl Profile {
         }
         if let Some(au) = self.auto_update {
             settings.auto_update = au;
+        }
+        if let Some(ref splash) = self.startup_splash
+            && let Some(mode) = StartupSplashMode::parse(splash)
+        {
+            settings.startup_splash = mode;
         }
         if let Some(ref td) = self.tool_detail
             && let Some(detail) = ToolDetail::parse(td)
@@ -2542,6 +2587,28 @@ mod tests {
 
         assert_eq!(loaded.profile.compact_label(), Some("review"));
         assert!(!tmp.path().join(".omegon/active-profile.json").exists());
+    }
+
+    #[test]
+    fn startup_splash_mode_defaults_and_profile_overrides_are_stable() {
+        assert_eq!(
+            Settings::default().startup_splash,
+            StartupSplashMode::FirstRun
+        );
+        assert_eq!(
+            StartupSplashMode::parse("always"),
+            Some(StartupSplashMode::Always)
+        );
+        assert_eq!(
+            StartupSplashMode::parse("off"),
+            Some(StartupSplashMode::Never)
+        );
+        assert_eq!(StartupSplashMode::parse("sometimes"), None);
+
+        let profile: Profile = serde_json::from_str(r#"{"startupSplash":"always"}"#).unwrap();
+        let mut settings = Settings::default();
+        profile.apply_to(&mut settings);
+        assert_eq!(settings.startup_splash, StartupSplashMode::Always);
     }
 
     #[test]

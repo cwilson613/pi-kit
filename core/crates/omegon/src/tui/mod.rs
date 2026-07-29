@@ -45,6 +45,7 @@ pub(crate) mod settings_menu;
 mod slash_commands;
 pub mod spinner;
 pub mod splash;
+mod startup_splash;
 pub mod statusline;
 pub mod tab_bar;
 pub mod theme;
@@ -8440,104 +8441,15 @@ pub async fn run_tui(
     app.dashboard.focused_node = config.initial.focused_node;
     app.dashboard.active_changes = config.initial.active_changes;
 
-    // ── Splash screen with real systems check ─────────────────────
+    // ── Splash screen with live capability inspection ─────────────
     if !config.no_splash {
-        let size = terminal.size()?;
-        if let Some(mut splash) = splash::SplashScreen::new(size.width, size.height) {
-            // Mark all items as scanning
-            for item in &[
-                "cloud",
-                "local",
-                "hardware",
-                "memory",
-                "tools",
-                "design",
-                "secrets",
-                "container",
-                "mcp",
-            ] {
-                splash.set_load_state(item, splash::LoadState::Active);
-            }
-
-            // Spawn probes on a background thread with its own tokio runtime.
-            // The splash loop blocks the main thread with event::poll(), so
-            // tokio::spawn would never make progress — the worker is blocked.
-            let (probe_tx, probe_rx) = std::sync::mpsc::channel();
-            let probe_cwd = config.cwd.clone();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("probe runtime");
-                rt.block_on(crate::startup::run_probes(probe_tx, probe_cwd));
-            });
-            let mut collected_probes: Vec<crate::startup::ProbeResult> = Vec::new();
-
-            // Run splash animation loop
-            let splash_start = std::time::Instant::now();
-            let safety_timeout = std::time::Duration::from_secs(5);
-
-            loop {
-                // Draw splash (includes tachyonfx post-processing)
-                {
-                    let t = &app.theme;
-                    terminal.draw(|f| splash.draw(f, t.as_ref()))?;
-                }
-
-                // Exit after dissolve completes
-                if splash.is_dissolved() {
-                    break;
-                }
-
-                // Poll for keypress at animation frame rate
-                let interval = splash::SplashScreen::frame_interval();
-                if event::poll(interval)?
-                    && matches!(event::read()?, Event::Key(_))
-                    && (splash.ready_to_dismiss()
-                        || splash_start.elapsed() > std::time::Duration::from_millis(300))
-                {
-                    splash.dismiss(); // starts dissolve — keep rendering
-                }
-
-                splash.tick();
-
-                // Receive probe results as they complete
-                while let Ok(result) = probe_rx.try_recv() {
-                    splash.receive_probe(result.clone());
-                    collected_probes.push(result);
-                }
-
-                // Drain agent events to prevent broadcast buffer overflow.
-                // HarnessStatusChanged carries the startup memory snapshot —
-                // keep the latest one so it isn't lost before the main loop.
-                while let Ok(ev) = events_rx.try_recv() {
-                    if let AgentEvent::HarnessStatusChanged { status_json } = ev
-                        && let Ok(status) =
-                            serde_json::from_value::<crate::status::HarnessStatus>(status_json)
-                    {
-                        app.footer_data.update_harness(status);
-                    }
-                }
-
-                // Safety timeout
-                if splash_start.elapsed() > safety_timeout {
-                    splash.force_done();
-                    splash.dismiss();
-                }
-
-                // Auto-dismiss after hold period (~4s — enough for one breathing cycle)
-                if splash.ready_to_dismiss() && splash.hold_count > splash::HOLD_FRAMES + 90 {
-                    splash.dismiss();
-                }
-            }
-
-            // Drain any stragglers that arrived after the last loop iteration
-            while let Ok(result) = probe_rx.try_recv() {
-                collected_probes.push(result);
-            }
-            // Classify startup capability tier from ALL collected results
-            app.capability_grade = Some(crate::startup::classify_tier(&collected_probes));
-        }
+        startup_splash::run_startup_splash(
+            &mut terminal,
+            &mut app,
+            &mut events_rx,
+            config.cwd.clone(),
+        )
+        .await?;
     }
 
     // Queue startup reveal effects (footer sweep-in, conversation fade)
@@ -8566,31 +8478,7 @@ pub async fn run_tui(
         // ── Splash replay (/splash command) ─────────────────────────
         if app.replay_splash {
             app.replay_splash = false;
-            let size = terminal.size()?;
-            if let Some(mut splash) = splash::SplashScreen::new(size.width, size.height) {
-                splash.force_done(); // No loading checklist on replay
-                loop {
-                    {
-                        let t = &app.theme;
-                        terminal.draw(|f| splash.draw(f, t.as_ref()))?;
-                    }
-                    if splash.is_dissolved() {
-                        break;
-                    }
-                    let interval = splash::SplashScreen::frame_interval();
-                    if event::poll(interval)? {
-                        let ev = event::read()?;
-                        if matches!(ev, Event::Key(_) | Event::Mouse(_)) {
-                            splash.dismiss();
-                        }
-                    }
-                    splash.tick();
-                    // Auto-end after full animation + hold
-                    if splash.frame > splash::TOTAL_FRAMES + splash::HOLD_FRAMES + 20 {
-                        splash.dismiss();
-                    }
-                }
-            }
+            startup_splash::run_replay_splash(&mut terminal, &mut app).await?;
         }
 
         // Drain agent events BEFORE drawing — so telemetry counters

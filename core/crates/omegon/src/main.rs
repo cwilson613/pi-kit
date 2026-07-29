@@ -4399,14 +4399,24 @@ fn build_tui_secret_readiness_snapshot(
 
     let voice_notification_receivers = std::mem::take(&mut agent.voice_notification_receivers);
     let voice_polling_handles = std::mem::take(&mut agent.voice_polling_handles);
-    // Show splash only on first launch; skip on subsequent runs unless
-    // the operator explicitly replays via /splash.
+    // Resolve the persisted startup splash policy. The CLI flag remains the
+    // highest-authority one-shot override, while `/splash` remains available
+    // for cosmetic replay regardless of this startup decision.
     let is_first_run = first_run::should_run(&cli.cwd);
+    let startup_splash = shared_settings
+        .lock()
+        .map(|settings| settings.startup_splash)
+        .unwrap_or_default();
+    let splash_enabled = match startup_splash {
+        settings::StartupSplashMode::FirstRun => is_first_run,
+        settings::StartupSplashMode::Always => true,
+        settings::StartupSplashMode::Never => false,
+    };
     let tui_config = tui::TuiConfig {
         cwd: agent.cwd.to_string_lossy().to_string(),
         is_oauth,
         initial,
-        no_splash: cli.no_splash || !is_first_run,
+        no_splash: cli.no_splash || !splash_enabled,
         bus_commands,
         runtime_generation,
         runtime_inventory,

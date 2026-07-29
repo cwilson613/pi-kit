@@ -2163,14 +2163,14 @@ async fn stream_with_retry(
             message: err_msg.clone(),
         });
 
-        // Soft exhaustion: bail after N consecutive transient failures.
-        //
-        // Four exhaustion paths:
-        // - max_retries > 0 (cleave): hard cap on attempt count
-        // - max_retries == 0 (TUI) + rate-limit: bail after 120s continuous
-        // - max_retries == 0 (TUI) + stall: provider/reasoning-aware cumulative budget
-        // - every other transient family: a finite 10-minute total retry envelope
+        // Soft exhaustion: bounded worker runs retain their explicit attempt cap.
+        // Interactive Codex overloads are intentionally persistent: the provider
+        // may be admitting only a small fraction of requests, and surrendering
+        // after an arbitrary wall-clock envelope discards otherwise recoverable
+        // work. Operator cancellation remains authoritative while waiting.
         let elapsed = started.elapsed();
+        let persistent_codex_overload =
+            persistent_interactive_overload_retry(config.max_retries, &provider, transient_kind);
         let rate_limit_exhausted = config.max_retries == 0
             && matches!(transient_kind, Some(TransientFailureKind::RateLimited))
             && elapsed.as_secs() >= 120;
@@ -2178,11 +2178,12 @@ async fn stream_with_retry(
             && matches!(transient_kind, Some(TransientFailureKind::StalledStream))
             && elapsed.as_secs()
                 >= stall_exhaustion_secs(&provider, &model, options.reasoning.as_deref());
-        let transient_envelope_exhausted = transient_retry_envelope_exhausted(
-            config.max_retries,
-            transient_kind,
-            elapsed.as_secs(),
-        );
+        let transient_envelope_exhausted = !persistent_codex_overload
+            && transient_retry_envelope_exhausted(
+                config.max_retries,
+                transient_kind,
+                elapsed.as_secs(),
+            );
         let attempt_exhausted = config.max_retries > 0 && attempt >= config.max_retries;
 
         if attempt_exhausted
@@ -2236,9 +2237,11 @@ async fn stream_with_retry(
         }
 
         // Transient — retry with escalating visual feedback.
+        let base_delay = delay;
+        let retry_delay = jittered_retry_delay_ms(base_delay, attempt, &provider, &model);
         tracing::warn!(
             attempt,
-            delay_ms = delay,
+            delay_ms = retry_delay,
             kind = transient_kind
                 .map(TransientFailureKind::label)
                 .unwrap_or("transient upstream failure"),
@@ -2268,21 +2271,46 @@ async fn stream_with_retry(
             .unwrap_or_else(|| crate::util::truncate_str(&err_msg, 300).to_string());
         let msg = format!(
             "⚠ Upstream {kind_label} — retrying (attempt {attempt}, delay {}ms): {operator_detail}",
-            delay
+            retry_delay
         );
         let _ = events.send(AgentEvent::ProviderRetry {
             provider: provider.clone(),
             model: model.clone(),
             attempt,
-            delay_ms: delay,
+            delay_ms: retry_delay,
             reason: kind_label.to_string(),
             message: operator_detail.clone(),
             recoverable: true,
         });
         let _ = events.send(AgentEvent::SystemNotification { message: msg });
-        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-        delay = delay.saturating_mul(2).min(15_000); // exponential backoff, cap at 15s
+        tokio::time::sleep(std::time::Duration::from_millis(retry_delay)).await;
+        delay = base_delay.saturating_mul(2).min(15_000); // exponential backoff, cap at 15s
     }
+}
+
+fn persistent_interactive_overload_retry(
+    max_retries: u32,
+    provider: &str,
+    transient_kind: Option<TransientFailureKind>,
+) -> bool {
+    max_retries == 0
+        && provider == "openai-codex"
+        && matches!(
+            transient_kind,
+            Some(TransientFailureKind::ProviderOverloaded)
+        )
+}
+
+fn jittered_retry_delay_ms(base_delay_ms: u64, attempt: u32, provider: &str, model: &str) -> u64 {
+    // Deterministic full jitter avoids synchronized retry waves without requiring
+    // runtime RNG state. Keep at least half the exponential delay so persistent
+    // overload recovery does not turn into an aggressive request loop.
+    let mut hasher = DefaultHasher::new();
+    provider.hash(&mut hasher);
+    model.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    let half = base_delay_ms / 2;
+    half.saturating_add(hasher.finish() % base_delay_ms.saturating_sub(half).max(1))
 }
 
 fn transient_retry_envelope_exhausted(
@@ -6705,6 +6733,37 @@ mod tests {
             Some(TransientFailureKind::StalledStream),
             600
         ));
+    }
+
+    #[test]
+    fn interactive_codex_overload_bypasses_generic_retry_envelope() {
+        use crate::upstream_errors::TransientFailureKind;
+
+        let kind = Some(TransientFailureKind::ProviderOverloaded);
+        let generic_envelope_exhausted = transient_retry_envelope_exhausted(0, kind, 600);
+        let persistent_codex_overload =
+            persistent_interactive_overload_retry(0, "openai-codex", kind);
+
+        assert!(generic_envelope_exhausted);
+        assert!(persistent_codex_overload);
+        assert!(!persistent_interactive_overload_retry(
+            8,
+            "openai-codex",
+            kind
+        ));
+        assert!(!persistent_interactive_overload_retry(0, "openai", kind));
+    }
+
+    #[test]
+    fn retry_jitter_is_deterministic_bounded_and_attempt_specific() {
+        let first = jittered_retry_delay_ms(15_000, 11, "openai-codex", "gpt-5.6-sol");
+        let repeated = jittered_retry_delay_ms(15_000, 11, "openai-codex", "gpt-5.6-sol");
+        let next_attempt = jittered_retry_delay_ms(15_000, 12, "openai-codex", "gpt-5.6-sol");
+
+        assert_eq!(first, repeated);
+        assert!((7_500..15_000).contains(&first), "delay was {first}");
+        assert!((7_500..15_000).contains(&next_attempt));
+        assert_ne!(first, next_attempt);
     }
 
     #[test]

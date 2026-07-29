@@ -36,6 +36,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Added persistent jittered overload recovery for interactive Codex turns. Provider-capacity failures no longer abandon recoverable work after the generic ten-minute transient envelope; retries retain capped exponential backoff with deterministic jitter, while bounded worker runs keep their explicit attempt cap.
 - Extracted native browser and clipboard process/file interaction from the TUI application service into `tui/native_io.rs`, leaving attachment policy, editor mutation, and operator notifications in `App`.
 - Extracted completed turn-tool episode projection from `tui/conversation_projection.rs` into `tui/turn_tool_projection.rs`. The new boundary owns turn/runtime-turn grouping, authoritative completion detection, standalone operator-shell fallback, failure outcomes, and one-row emission, while the conversation projector now only composes lifecycle, turn-tool, export, and presentation-level policies.
 - Extracted compact completed-operation lifecycle projection from `tui/conversation_projection.rs` into `tui/operation_lifecycle_projection.rs`. The new boundary owns operation evidence grouping, terminal-state detection, failure classification, canonical outcome placement, and synthetic summary construction, while the conversation projector retains presentation-level policy and turn projection.

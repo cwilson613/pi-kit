@@ -42,6 +42,7 @@ ai/benchmarks/archive/
 
 # Jujutsu VCS (co-located with git)
 .jj/
+.omegon/AGENTS.md
 .omegon/history
 .omegon/worktrees/
 .omegon/release-worktrees/

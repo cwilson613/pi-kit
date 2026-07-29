@@ -1412,6 +1412,36 @@
       "bound_change": null,
       "created_at": "2026-07-14T13:01:59Z",
       "updated_at": "2026-07-14T13:05:49Z"
+    },
+    {
+      "id": "monolith-crate-breakup",
+      "title": "Monolith crate breakup: omegon compilation-unit decomposition",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-07-26T02:53:04Z",
+      "updated_at": "2026-07-26T02:53:04Z"
+    },
+    {
+      "id": "trunk-only-release-model",
+      "title": "Trunk-only release model — retire the permanent release branch",
+      "state": "decided",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-07-26T20:35:08Z",
+      "updated_at": "2026-07-26T20:43:05Z"
     }
   ],
   "changes": [
@@ -1661,6 +1691,18 @@
       "tasks_done": 9,
       "created_at": "2026-07-24T21:17:24Z",
       "updated_at": "2026-07-24T21:17:24Z"
+    },
+    {
+      "name": "auspex-managed-command-delivery",
+      "title": "Auspex managed command delivery",
+      "state": "proposed",
+      "bound_node": null,
+      "specs": [],
+      "test_files": [],
+      "tasks_total": 13,
+      "tasks_done": 0,
+      "created_at": "2026-07-25T02:54:18Z",
+      "updated_at": "2026-07-25T02:55:11Z"
     }
   ],
   "milestones": [],
@@ -4056,6 +4098,60 @@
       "entity_id": "evidence-backed-model-admission",
       "from_state": "(new)",
       "to_state": "proposed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-07-25T02:54:18Z",
+      "entity_type": "change",
+      "entity_id": "auspex-managed-command-delivery",
+      "from_state": "(new)",
+      "to_state": "proposed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-07-26T02:53:04Z",
+      "entity_type": "node",
+      "entity_id": "monolith-crate-breakup",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-07-26T02:53:04Z",
+      "entity_type": "node",
+      "entity_id": "monolith-crate-breakup",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
+    },
+    {
+      "timestamp": "2026-07-26T20:35:08Z",
+      "entity_type": "node",
+      "entity_id": "trunk-only-release-model",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-07-26T20:35:08Z",
+      "entity_type": "node",
+      "entity_id": "trunk-only-release-model",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
+    },
+    {
+      "timestamp": "2026-07-26T20:43:05Z",
+      "entity_type": "node",
+      "entity_id": "trunk-only-release-model",
+      "from_state": "exploring",
+      "to_state": "decided",
       "reason": null,
       "forced": false
     }

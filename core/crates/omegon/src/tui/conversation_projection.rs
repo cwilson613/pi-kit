@@ -4,14 +4,11 @@
 //! metadata into a synthetic outcome segment. Full returns canonical segments
 //! unchanged. The source transcript is never mutated.
 
-use std::collections::BTreeMap;
-
-use crate::surfaces::conversation::ProjectConversationSegment;
-use crate::surfaces::episodes::{OperationEpisodeProjection, OperationEpisodeState};
 use crate::surfaces::layout::UiPresentationLevel;
 
 use super::operation_lifecycle_projection::{OperationLifecycleProjection, OperationLifecycleRow};
-use super::segments::{Segment, SegmentContent, SegmentMeta};
+use super::segments::Segment;
+use super::turn_tool_projection::{TurnToolProjection, TurnToolRow};
 
 #[derive(Debug, Clone)]
 pub struct ConversationProjection {
@@ -72,48 +69,13 @@ pub fn project_conversation(
         };
     }
 
-    let mut complete_turn_episodes: BTreeMap<(Option<u64>, u32), OperationEpisodeProjection> =
-        BTreeMap::new();
-    let mut tools_by_turn: BTreeMap<(Option<u64>, u32), Vec<_>> = BTreeMap::new();
-    for segment in segments {
-        let Some(turn) = segment.meta.turn else {
-            continue;
-        };
-        let turn_coordinate = (segment.meta.runtime_turn, turn);
-        let projection = segment.project_conversation_segment();
-        if matches!(
-            projection.kind,
-            crate::surfaces::conversation::ConversationSegmentKind::Tool(_)
-        ) {
-            tools_by_turn
-                .entry(turn_coordinate)
-                .or_default()
-                .push(projection);
-        }
-    }
-    for ((runtime_turn, turn), tools) in &tools_by_turn {
-        let episode_id = runtime_turn.map_or_else(
-            || format!("turn:{turn}"),
-            |runtime_turn| format!("runtime:{runtime_turn}/turn:{turn}"),
-        );
-        if let Some(episode) =
-            OperationEpisodeProjection::from_authoritative_boundary(episode_id, tools)
-            && matches!(
-                episode.state,
-                OperationEpisodeState::Complete | OperationEpisodeState::Failed
-            )
-        {
-            complete_turn_episodes.insert((*runtime_turn, *turn), episode);
-        }
-    }
-
     let mut operation_lifecycle = OperationLifecycleProjection::new(segments);
+    let mut turn_tools = TurnToolProjection::new(segments);
 
     let mut projected = ConversationProjection {
         segments: Vec::with_capacity(segments.len()),
         canonical_indices: Vec::with_capacity(segments.len()),
     };
-    let mut emitted_turn = None;
     for (canonical_index, segment) in segments.iter().enumerate() {
         match operation_lifecycle.project_row(canonical_index, segment) {
             OperationLifecycleRow::Outcome {
@@ -126,42 +88,13 @@ pub fn project_conversation(
             OperationLifecycleRow::Suppressed => continue,
             OperationLifecycleRow::NotOperation => {}
         }
-        if segment.meta.turn.is_none()
-            && let SegmentContent::ToolCard {
-                name,
-                complete: true,
-                ..
-            } = &segment.content
-            && name == "operator_shell"
-        {
-            let semantic = segment.project_conversation_segment();
-            if let Some(episode) = OperationEpisodeProjection::single_tool_fallback(&semantic) {
-                projected.push_synthetic(
-                    canonical_index,
-                    outcome_segment(segment.meta.clone(), &episode),
-                );
+        match turn_tools.project_row(segment) {
+            TurnToolRow::Outcome(segment) => {
+                projected.push_synthetic(canonical_index, *segment);
                 continue;
             }
-        }
-        let collapsible = segment
-            .meta
-            .turn
-            .and_then(|turn| {
-                let coordinate = (segment.meta.runtime_turn, turn);
-                complete_turn_episodes
-                    .get(&coordinate)
-                    .map(|episode| (coordinate, episode))
-            })
-            .filter(|_| matches!(segment.content, SegmentContent::ToolCard { .. }));
-        if let Some((coordinate, episode)) = collapsible {
-            if emitted_turn != Some(coordinate) {
-                projected.push_synthetic(
-                    canonical_index,
-                    outcome_segment(segment.meta.clone(), episode),
-                );
-                emitted_turn = Some(coordinate);
-            }
-            continue;
+            TurnToolRow::Suppressed => continue,
+            TurnToolRow::Canonical => {}
         }
         projected.push_canonical(canonical_index, segment);
     }
@@ -175,28 +108,9 @@ pub fn project_conversation_segments(
     project_conversation(segments, level).segments
 }
 
-fn outcome_segment(mut meta: SegmentMeta, episode: &OperationEpisodeProjection) -> Segment {
-    meta.duration_ms = None;
-    Segment {
-        meta,
-        content: SegmentContent::SystemNotification {
-            text: format!(
-                "{} {} · {} operation{}",
-                if episode.state == OperationEpisodeState::Failed {
-                    "✗"
-                } else {
-                    "✓"
-                },
-                episode.outcome,
-                episode.tool_count,
-                if episode.tool_count == 1 { "" } else { "s" }
-            ),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::segments::{SegmentContent, SegmentMeta};
     use super::*;
 
     fn tool(turn: Option<u32>, id: &str, result: &str, complete: bool) -> Segment {

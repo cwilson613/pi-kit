@@ -51,6 +51,7 @@ pub mod statusline;
 pub mod tab_bar;
 pub mod theme;
 pub mod tool_inspection;
+pub mod turn_tool_projection;
 pub mod tutorial;
 mod ui_actions;
 pub mod widget_renderer;

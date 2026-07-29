@@ -161,7 +161,7 @@ where
     if let Some(rx) = probe_rx.as_ref() {
         drain_probe_results(&mut splash, rx, &mut outcome.probes);
     }
-    if let Some(rx) = events_rx.as_deref_mut() {
+    if let Some(rx) = events_rx {
         drain_startup_agent_events(app, rx, &mut outcome.deferred_events);
     }
     Ok(outcome)

@@ -34,6 +34,7 @@ pub mod instruments;
 pub mod layout_projection;
 pub(crate) mod menu_surface;
 pub mod model_catalog;
+pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
 mod render;
@@ -7687,7 +7688,6 @@ const CLIPBOARD_FORMATS: &[(&str, &str, &str)] = &[
 
 /// Match clipboard info output against known image format markers.
 /// Returns (extension, pasteboard_type) if a known image format is found.
-
 #[cfg(target_os = "macos")]
 fn match_clipboard_image_format(info_str: &str) -> Option<(&'static str, &'static str)> {
     CLIPBOARD_FORMATS

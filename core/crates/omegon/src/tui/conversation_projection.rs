@@ -10,6 +10,7 @@ use crate::surfaces::conversation::ProjectConversationSegment;
 use crate::surfaces::episodes::{OperationEpisodeProjection, OperationEpisodeState};
 use crate::surfaces::layout::UiPresentationLevel;
 
+use super::operation_lifecycle_projection::{OperationLifecycleProjection, OperationLifecycleRow};
 use super::segments::{Segment, SegmentContent, SegmentMeta};
 
 #[derive(Debug, Clone)]
@@ -106,59 +107,24 @@ pub fn project_conversation(
         }
     }
 
-    let mut operation_lifecycle: BTreeMap<String, Vec<&Segment>> = BTreeMap::new();
-    for segment in segments {
-        if let Some(operation_id) = segment
-            .meta
-            .source_channel
-            .as_deref()
-            .and_then(|source| source.strip_prefix("operation:"))
-        {
-            operation_lifecycle
-                .entry(operation_id.to_string())
-                .or_default()
-                .push(segment);
-        }
-    }
+    let mut operation_lifecycle = OperationLifecycleProjection::new(segments);
 
     let mut projected = ConversationProjection {
         segments: Vec::with_capacity(segments.len()),
         canonical_indices: Vec::with_capacity(segments.len()),
     };
-    let mut emitted_operations = std::collections::BTreeSet::new();
     let mut emitted_turn = None;
     for (canonical_index, segment) in segments.iter().enumerate() {
-        if let Some(operation_id) = segment
-            .meta
-            .source_channel
-            .as_deref()
-            .and_then(|source| source.strip_prefix("operation:"))
-        {
-            let operation_segments = &operation_lifecycle[operation_id];
-            let terminal = operation_segments.iter().rev().find(|candidate| {
-                matches!(
-                    &candidate.content,
-                    SegmentContent::LifecycleEvent { text, .. }
-                        if is_terminal_operation_text(text)
-                )
-            });
-            if let Some(terminal) = terminal {
-                if emitted_operations.insert(operation_id.to_string()) {
-                    let terminal_index = segments
-                        .iter()
-                        .position(|candidate| std::ptr::eq(candidate, *terminal))
-                        .unwrap_or(canonical_index);
-                    projected.push_synthetic(
-                        terminal_index,
-                        operation_outcome_segment(
-                            terminal.meta.clone(),
-                            operation_id,
-                            operation_segments,
-                        ),
-                    );
-                }
+        match operation_lifecycle.project_row(canonical_index, segment) {
+            OperationLifecycleRow::Outcome {
+                canonical_index,
+                segment,
+            } => {
+                projected.push_synthetic(canonical_index, *segment);
                 continue;
             }
+            OperationLifecycleRow::Suppressed => continue,
+            OperationLifecycleRow::NotOperation => {}
         }
         if segment.meta.turn.is_none()
             && let SegmentContent::ToolCard {
@@ -207,64 +173,6 @@ pub fn project_conversation_segments(
     level: UiPresentationLevel,
 ) -> Vec<Segment> {
     project_conversation(segments, level).segments
-}
-
-fn operation_episode_id_from_source(source: Option<&str>) -> Option<&str> {
-    source?.strip_prefix("operation:")
-}
-
-fn is_terminal_operation_text(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("merged")
-        || lower.contains("completed (no merge)")
-        || lower.contains("failed")
-        || lower.contains("cancelled")
-}
-
-fn operation_failed(evidence: &[&Segment]) -> bool {
-    evidence.iter().any(|segment| {
-        matches!(
-            &segment.content,
-            SegmentContent::LifecycleEvent { icon, text }
-                if icon == "✗"
-                    || text.to_ascii_lowercase().contains("failed")
-                    || text.to_ascii_lowercase().contains("cancelled")
-        )
-    })
-}
-
-fn operation_outcome_segment(
-    mut meta: SegmentMeta,
-    operation_id: &str,
-    evidence: &[&Segment],
-) -> Segment {
-    meta.duration_ms = None;
-    let terminal_text = evidence
-        .iter()
-        .rev()
-        .find_map(|segment| match &segment.content {
-            SegmentContent::LifecycleEvent { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .unwrap_or("completed");
-    let label = operation_id
-        .split_once(':')
-        .map(|(kind, id)| format!("{kind} {id}"))
-        .unwrap_or_else(|| operation_id.to_string());
-    let state = if operation_failed(evidence) {
-        "✗"
-    } else {
-        "✓"
-    };
-    Segment {
-        meta,
-        content: SegmentContent::SystemNotification {
-            text: format!(
-                "{state} {label} · {terminal_text} · {} events",
-                evidence.len()
-            ),
-        },
-    }
 }
 
 fn outcome_segment(mut meta: SegmentMeta, episode: &OperationEpisodeProjection) -> Segment {

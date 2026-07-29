@@ -36,6 +36,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Extracted compact completed-operation lifecycle projection from `tui/conversation_projection.rs` into `tui/operation_lifecycle_projection.rs`. The new boundary owns operation evidence grouping, terminal-state detection, failure classification, canonical outcome placement, and synthetic summary construction, while the conversation projector retains presentation-level policy and turn projection.
 - Extracted top-level Ratatui frame composition from the monolithic TUI module into `tui/render.rs`. The new boundary owns frame clearing, layout allocation, specialized-surface composition, overlay precedence, and render-time mouse hit-area registration, while the event loop retains terminal ownership and redraw scheduling and existing surface modules retain their specialized renderers.
 - Added a persisted startup splash policy for interactive sessions. Profiles can set `startup_splash` to `first-run` (the default), `always`, or `never`; `--no-splash` remains the highest-authority one-shot override, and `/splash` remains available for manual cosmetic replay.
 - Extracted native crossterm input routing from the monolithic TUI event loop into `tui/input.rs`. Terminal polling and ownership remain in `run_tui`, while modal precedence, mouse hit routing, paste handling, keyboard shortcuts, menu/selector navigation, editor actions, and semantic `UiAction` dispatch now cross one decoded-event adapter boundary with an explicit loop disposition.

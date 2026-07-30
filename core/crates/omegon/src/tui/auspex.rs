@@ -61,7 +61,7 @@ pub(super) fn launch_with_startup(startup: &WebStartupInfo) -> anyhow::Result<St
     let attach_payload = build_attach_payload(startup, preferred_handoff.clone())?;
 
     if matches!(preferred_handoff, AuspexHandoffMode::BrowserUrl) {
-        super::open_browser(&startup.http_base);
+        crate::native_io::open_browser(&startup.http_base);
         return Ok(format!("{target} via browser-url"));
     }
 

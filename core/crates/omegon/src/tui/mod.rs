@@ -32,7 +32,6 @@ mod input;
 pub mod instruments;
 pub mod layout_projection;
 pub(crate) mod menu_surface;
-pub mod native_io;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
@@ -6597,7 +6596,7 @@ warning: {warning}"
     }
 
     fn try_paste_clipboard_image(&mut self) {
-        if let Some(path) = native_io::clipboard_image_to_temp() {
+        if let Some(path) = crate::native_io::clipboard_image_to_temp() {
             self.show_toast(
                 "📎 Image pasted — send a message to include it",
                 ratatui_toaster::ToastType::Info,
@@ -6607,7 +6606,7 @@ warning: {warning}"
     }
 
     fn copy_text_to_clipboard(&self, text: &str) -> bool {
-        native_io::copy_text_to_clipboard(text)
+        crate::native_io::copy_text_to_clipboard(text)
     }
 
     fn copy_selected_conversation_segment_with_mode(&mut self, mode: SegmentExportMode) {
@@ -7406,7 +7405,6 @@ pub struct TuiConfig {
 }
 
 /// Open a URL in the default browser (cross-platform).
-pub use native_io::open_browser;
 
 fn history_path(cwd: &str) -> std::path::PathBuf {
     let project_root = crate::setup::find_project_root(std::path::Path::new(cwd));

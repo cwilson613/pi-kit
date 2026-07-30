@@ -112,6 +112,7 @@ mod managed_agent_supervisor;
 mod model_catalog;
 mod model_registry;
 mod mqtt_bridge;
+mod native_io;
 mod ollama;
 mod packages;
 mod paths;
@@ -5408,7 +5409,7 @@ fn build_tui_secret_readiness_snapshot(
                                 events_tx.send(AgentEvent::WebDashboardStarted { startup_json });
                         }
                         let url = format!("http://{}/?token={}", startup.addr, startup.token);
-                        tui::open_browser(&url);
+                        native_io::open_browser(&url);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
                             message: format!(
                                 "Dashboard started at {url} (auth: {} via {})",

@@ -1235,7 +1235,7 @@ Scroll transcript:
                             "Auspex compatibility/debug browser path running at {url}{detail}"
                         ))
                     } else {
-                        open_browser(&url);
+                        crate::native_io::open_browser(&url);
                         SlashResult::Display(format!(
                             "Opened Auspex compatibility/debug browser path at {url}"
                         ))

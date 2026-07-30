@@ -127,7 +127,7 @@ pub fn launch_cleave_surface_smoke(
     local_events_tx: Option<std::sync::mpsc::Sender<AgentEvent>>,
 ) -> SlashCommandResponse {
     let progress = Arc::new(Mutex::new(initial_cleave_progress(scenario)));
-    handles.cleave = Some(progress.clone());
+    handles.install_cleave(progress.clone());
     handles.delegate = None;
     let tx = events_tx.clone();
     let local_tx = local_events_tx.clone();
@@ -150,7 +150,7 @@ fn launch_delegate_surface_smoke(
 ) -> SlashCommandResponse {
     let progress = Arc::new(Mutex::new(initial_delegate_progress(scenario)));
     handles.delegate = Some(progress.clone());
-    handles.cleave = None;
+    handles.clear_cleave();
     let tx = events_tx.clone();
     let local_tx = local_events_tx.clone();
     std::thread::spawn(move || run_delegate_timeline(progress, scenario, tx, local_tx));
@@ -169,7 +169,7 @@ fn reset_smoke_surfaces(
     tx: &Option<broadcast::Sender<AgentEvent>>,
     local_tx: &Option<std::sync::mpsc::Sender<AgentEvent>>,
 ) {
-    handles.cleave = None;
+    handles.clear_cleave();
     handles.delegate = None;
     let event = AgentEvent::PlanUpdated {
         projection: PlanSurfaceProjection::default(),
@@ -184,9 +184,9 @@ fn reset_smoke_surfaces(
 
 fn active_cleave(handles: &crate::runtime_state::RuntimeStateHandles) -> bool {
     handles
-        .cleave
-        .as_ref()
-        .and_then(|progress| progress.lock().ok())
+        .observe_cleave()
+        .ok()
+        .flatten()
         .is_some_and(|progress| progress.active)
 }
 

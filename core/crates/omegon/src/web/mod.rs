@@ -1090,9 +1090,9 @@ fn refresh_startup_daemon_status(state: &WebState) {
     };
     daemon_status.active_child_runtimes = state
         .handles
-        .cleave
-        .as_ref()
-        .and_then(|lock| lock.lock().ok())
+        .observe_cleave()
+        .ok()
+        .flatten()
         .map(|cleave| {
             cleave
                 .children

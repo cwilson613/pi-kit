@@ -71,7 +71,7 @@ fn ipc_operation_episodes(handles: &DashboardHandles) -> Vec<IpcOperationEpisode
             crate::surfaces::operations::OperationWorkbenchProjection::from_delegate(&progress);
         episodes.push(ipc_operation_episode(&projection));
     }
-    if let Some(progress) = handles.cleave.as_ref().and_then(|value| value.lock().ok())
+    if let Ok(Some(progress)) = handles.observe_cleave()
         && progress.active
     {
         let projection =
@@ -302,16 +302,8 @@ fn project_openspec(handles: &DashboardHandles) -> IpcOpenSpecSnapshot {
 }
 
 fn project_cleave(handles: &DashboardHandles) -> IpcCleaveSnapshot {
-    let Some(ref cp_lock) = handles.cleave else {
-        return IpcCleaveSnapshot {
-            active: false,
-            total_children: 0,
-            completed: 0,
-            failed: 0,
-            children: vec![],
-        };
-    };
-    let Ok(cp) = cp_lock.lock() else {
+    let cp = handles.observe_cleave().ok().flatten();
+    let Some(cp) = cp else {
         return IpcCleaveSnapshot {
             active: false,
             total_children: 0,

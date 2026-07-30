@@ -95,9 +95,9 @@ impl App {
         // ── Main surface layout ────────────────────────────────────
         let live_cleave = self
             .dashboard_handles
-            .cleave
-            .as_ref()
-            .and_then(|cp_lock| cp_lock.lock().ok().map(|cp| cp.clone()))
+            .observe_cleave()
+            .ok()
+            .flatten()
             .filter(|cp| cp.active)
             .or_else(|| self.dashboard.cleave.clone().filter(|cp| cp.active));
         let live_delegate = self
@@ -533,9 +533,7 @@ impl App {
 
             // Push live cleave progress into the instrument panel each render tick
             // so the tools→cleave swap happens without turn-boundary latency.
-            if let Some(ref cp_lock) = self.dashboard_handles.cleave
-                && let Ok(cp) = cp_lock.lock()
-            {
+            if let Ok(Some(cp)) = self.dashboard_handles.observe_cleave() {
                 let snapshot = if cp.active { Some(cp.clone()) } else { None };
                 self.instrument_panel.set_cleave_progress(snapshot);
                 // Roll new child tokens into session totals (delta only).

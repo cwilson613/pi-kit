@@ -86,10 +86,8 @@ fn refresh_openspec(handles: &DashboardHandles, state: &mut DashboardState) {
 
 fn refresh_non_lifecycle(handles: &DashboardHandles, state: &mut DashboardState) {
     // Cleave
-    if let Some(ref cp_lock) = handles.cleave
-        && let Ok(cp) = cp_lock.lock()
-    {
-        state.cleave = Some(cp.clone());
+    if let Ok(Some(cp)) = handles.observe_cleave() {
+        state.cleave = Some(cp);
     }
     // Delegate
     if let Some(ref dp_lock) = handles.delegate

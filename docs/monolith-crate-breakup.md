@@ -689,3 +689,33 @@ omnibus observer.
 3. Should mutation methods return typed poison errors instead of preserving the
    previous best-effort behavior? That is a behavior-policy decision and is not
    included in Phase 1A.
+
+## Phase 1B implementation status: cleave observation
+
+The cleave audit supports one shared source contract and rejects a shared
+presentation contract. IPC, web daemon status, TUI, and smoke orchestration all
+need the current `CleaveProgress`, but they interpret it differently:
+
+- IPC emits active operation episodes.
+- web daemon status extracts supervised child runtimes.
+- TUI renders progress and accounts child tokens.
+- smoke orchestration owns installation and removal of synthetic progress.
+
+Accordingly, `observe_cleave()` copies the source domain under one short lock
+and returns `Option<CleaveProgress>`. `None` means that the invocation has no
+cleave source installed; it is intentionally distinct from an installed but
+inactive progress value. No `WorkObservation`, cached aggregate, cross-domain
+snapshot, or surface-neutral presentation model is introduced.
+
+Singleton/service-locator controls remain structural: the method requires an
+explicit invocation-owned `RuntimeStateHandles`, observations are owned copies,
+and independent handle instances retain independent cleave sources. Mutation is
+limited to explicit `install_cleave()` and `clear_cleave()` composition methods;
+normal surface consumers use observation and availability methods. The backing
+field remains visible during the same test-fixture migration described for
+session state, but production read paths no longer acquire its mutex directly.
+
+The adversarial stop condition is unchanged: delegate, harness, or lifecycle
+must not be folded into an omnibus work/runtime observation merely because they
+are adjacent fields. Each requires demonstrated shared source semantics and its
+own poison/absence policy before migration.

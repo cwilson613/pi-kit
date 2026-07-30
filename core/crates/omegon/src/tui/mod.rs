@@ -4044,13 +4044,8 @@ impl App {
         if response.accepted {
             self.smoke_event_rx = Some(rx);
         }
-        if let Some(cp) = self
-            .dashboard_handles
-            .cleave
-            .as_ref()
-            .and_then(|lock| lock.lock().ok())
-        {
-            self.dashboard.cleave = Some(cp.clone());
+        if let Ok(Some(cp)) = self.dashboard_handles.observe_cleave() {
+            self.dashboard.cleave = Some(cp);
         }
         SlashResult::Display(
             response

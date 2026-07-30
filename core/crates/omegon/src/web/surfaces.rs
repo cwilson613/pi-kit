@@ -241,7 +241,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                     compactions: session.as_ref().map(|s| s.compactions).unwrap_or(0),
                 },
                 lifecycle_available: state.handles.lifecycle.is_some(),
-                cleave_available: state.handles.cleave.is_some(),
+                cleave_available: state.handles.cleave_available(),
                 delegate_available: state.handles.delegate.is_some(),
                 harness_available: state.handles.harness.is_some(),
             },
@@ -355,7 +355,7 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         }
     }
 
-    if let Some(cleave) = state.handles.cleave.as_ref().and_then(|c| c.lock().ok())
+    if let Some(cleave) = state.handles.observe_cleave().ok().flatten()
         && (cleave.active || !cleave.children.is_empty())
     {
         if kind.is_none() {

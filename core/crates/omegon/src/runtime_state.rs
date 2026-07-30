@@ -25,6 +25,7 @@ pub struct SessionObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObservationDomain {
     Session,
+    Cleave,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,7 +76,37 @@ impl RuntimeStateHandles {
             .map_err(|_| ObserveError::Poisoned(ObservationDomain::Session))
     }
 
-    /// Replace the surface-owned counters as one bounded mutation.
+    /// Copy the complete cleave source domain under one short lock.
+    ///
+    /// `None` means this invocation has no cleave source installed. Adapters
+    /// remain responsible for projecting the owned source into their own wire
+    /// or renderer contracts.
+    pub fn observe_cleave(&self) -> Result<Option<CleaveProgress>, ObserveError> {
+        self.cleave
+            .as_ref()
+            .map(|cleave| {
+                cleave
+                    .lock()
+                    .map(|progress| progress.clone())
+                    .map_err(|_| ObserveError::Poisoned(ObservationDomain::Cleave))
+            })
+            .transpose()
+    }
+
+    pub fn cleave_available(&self) -> bool {
+        self.cleave.is_some()
+    }
+
+    /// Install or replace the cleave progress source for this invocation.
+    pub fn install_cleave(&mut self, progress: Arc<Mutex<CleaveProgress>>) {
+        self.cleave = Some(progress);
+    }
+
+    /// Remove the cleave progress source for this invocation.
+    pub fn clear_cleave(&mut self) {
+        self.cleave = None;
+    }
+
     pub fn update_session_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
         if let Ok(mut session) = self.session.lock() {
             session.turns = turns;
@@ -131,6 +162,57 @@ mod tests {
 
         assert_eq!(first.observe_session().unwrap().turns, 11);
         assert_eq!(second.observe_session().unwrap().turns, 29);
+    }
+
+    #[test]
+    fn absent_cleave_is_distinct_from_inactive_cleave() {
+        let handles = RuntimeStateHandles::default();
+        assert!(!handles.cleave_available());
+        assert!(handles.observe_cleave().unwrap().is_none());
+
+        let mut handles = handles;
+        handles.install_cleave(Arc::new(Mutex::new(CleaveProgress::default())));
+        assert!(handles.cleave_available());
+        assert!(!handles.observe_cleave().unwrap().unwrap().active);
+    }
+
+    #[test]
+    fn cleave_observations_are_owned_and_isolated_by_runtime_instance() {
+        let mut first = RuntimeStateHandles::default();
+        let mut second = RuntimeStateHandles::default();
+        first.install_cleave(Arc::new(Mutex::new(CleaveProgress {
+            active: true,
+            run_id: "first".into(),
+            ..Default::default()
+        })));
+        second.install_cleave(Arc::new(Mutex::new(CleaveProgress {
+            active: true,
+            run_id: "second".into(),
+            ..Default::default()
+        })));
+
+        let mut observed = first.observe_cleave().unwrap().unwrap();
+        observed.run_id = "detached-copy".into();
+
+        assert_eq!(first.observe_cleave().unwrap().unwrap().run_id, "first");
+        assert_eq!(second.observe_cleave().unwrap().unwrap().run_id, "second");
+    }
+
+    #[test]
+    fn poisoned_cleave_state_is_explicit() {
+        let mut handles = RuntimeStateHandles::default();
+        let cleave = Arc::new(Mutex::new(CleaveProgress::default()));
+        handles.install_cleave(cleave.clone());
+        let _ = std::thread::spawn(move || {
+            let _guard = cleave.lock().unwrap();
+            panic!("poison cleave fixture");
+        })
+        .join();
+
+        assert!(matches!(
+            handles.observe_cleave(),
+            Err(ObserveError::Poisoned(ObservationDomain::Cleave))
+        ));
     }
 
     #[test]

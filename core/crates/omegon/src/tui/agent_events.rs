@@ -803,7 +803,7 @@ impl App {
                             .push_system(&snapshot.system_notification_text("Plan progress"));
                     }
                     self.conversation.snap_to_bottom();
-                    self.dashboard_handles.cleave = None;
+                    self.dashboard_handles.clear_cleave();
                     self.dashboard_handles.delegate = None;
                     self.dashboard.cleave = None;
                     self.dashboard.delegate = None;

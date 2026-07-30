@@ -2026,52 +2026,44 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
     }
 
     // Read cleave state
-    let cleave = if let Some(ref cp_lock) = state.handles.cleave {
-        if let Ok(cp) = cp_lock.lock() {
-            CleaveSnapshot {
-                active: cp.active,
-                total_children: cp.total_children,
-                completed: cp.completed,
-                failed: cp.failed,
-                children: cp
-                    .children
-                    .iter()
-                    .map(|c| ChildSnapshot {
-                        label: c.label.clone(),
-                        status: c.status.clone(),
-                        duration_secs: c.duration_secs,
-                        runtime: c.runtime.as_ref().map(|runtime| ChildRuntimeSnapshot {
-                            model: runtime.model.clone(),
-                            thinking_level: runtime.thinking_level.clone(),
-                            context_class: runtime.context_class.clone(),
-                            enabled_tools: runtime.enabled_tools.clone(),
-                            disabled_tools: runtime.disabled_tools.clone(),
-                            skills: runtime.skills.clone(),
-                            enabled_extensions: runtime.enabled_extensions.clone(),
-                            disabled_extensions: runtime.disabled_extensions.clone(),
-                            preloaded_files: runtime.preloaded_files.clone(),
-                        }),
-                    })
-                    .collect(),
-            }
-        } else {
-            CleaveSnapshot {
-                active: false,
-                total_children: 0,
-                completed: 0,
-                failed: 0,
-                children: Vec::new(),
-            }
-        }
-    } else {
-        CleaveSnapshot {
+    let cleave = state
+        .handles
+        .observe_cleave()
+        .ok()
+        .flatten()
+        .map(|cp| CleaveSnapshot {
+            active: cp.active,
+            total_children: cp.total_children,
+            completed: cp.completed,
+            failed: cp.failed,
+            children: cp
+                .children
+                .iter()
+                .map(|c| ChildSnapshot {
+                    label: c.label.clone(),
+                    status: c.status.clone(),
+                    duration_secs: c.duration_secs,
+                    runtime: c.runtime.as_ref().map(|runtime| ChildRuntimeSnapshot {
+                        model: runtime.model.clone(),
+                        thinking_level: runtime.thinking_level.clone(),
+                        context_class: runtime.context_class.clone(),
+                        enabled_tools: runtime.enabled_tools.clone(),
+                        disabled_tools: runtime.disabled_tools.clone(),
+                        skills: runtime.skills.clone(),
+                        enabled_extensions: runtime.enabled_extensions.clone(),
+                        disabled_extensions: runtime.disabled_extensions.clone(),
+                        preloaded_files: runtime.preloaded_files.clone(),
+                    }),
+                })
+                .collect(),
+        })
+        .unwrap_or(CleaveSnapshot {
             active: false,
             total_children: 0,
             completed: 0,
             failed: 0,
             children: Vec::new(),
-        }
-    };
+        });
 
     // Read session stats from shared handle
     let observed_session = state.handles.observe_session().unwrap_or_default();

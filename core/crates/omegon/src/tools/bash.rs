@@ -48,6 +48,45 @@ async fn terminate_process_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 async fn terminate_process_group(_pid: Option<u32>) {}
 
+/// Synchronous last-resort cleanup for execution futures dropped by their
+/// caller. The normal timeout and cancellation paths provide a graceful TERM
+/// window; `Drop` cannot await, so an externally aborted future must kill the
+/// dedicated process group immediately to avoid orphaning descendants.
+struct ProcessGroupDropGuard {
+    #[cfg(unix)]
+    pid: Option<i32>,
+}
+
+impl ProcessGroupDropGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self {
+            #[cfg(unix)]
+            pid: pid.and_then(|pid| i32::try_from(pid).ok()),
+        }
+    }
+
+    fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.pid = None;
+        }
+    }
+}
+
+impl Drop for ProcessGroupDropGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            // SAFETY: the shell was spawned as leader of a dedicated process
+            // group. Drop runs while the owned child is still live, so the
+            // group id cannot have been recycled for an unrelated process.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// Minimum interval between content-bearing streamed partials. Cheap
 /// rate-limit so a command spewing thousands of lines a second doesn't
 /// flood the broadcast channel — the partial is still a complete tail
@@ -187,6 +226,7 @@ pub async fn execute_streaming(
 
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
+    let mut process_group_guard = ProcessGroupDropGuard::new(child_pid);
     let stdout = child
         .stdout
         .take()
@@ -234,12 +274,14 @@ pub async fn execute_streaming(
             _ = cancel.cancelled() => {
                 terminate_process_group(child_pid).await;
                 let _ = child.wait().await;
+                process_group_guard.disarm();
                 anyhow::bail!("Command aborted; the command process group was terminated");
             }
             _ = &mut timeout_fut => {
                 let secs = timeout_secs.unwrap();
                 terminate_process_group(child_pid).await;
                 let _ = child.wait().await;
+                process_group_guard.disarm();
                 anyhow::bail!(
                     "Command timed out after {secs} seconds; the command process group was terminated before Omegon could observe a final exit status. This is an indeterminate host-action result: the operation may have partially completed, completed just before the timeout, or made no progress. Verify with an idempotent status/check command before retrying or reporting failure. For installers, check whether the target is already present."
                 );
@@ -294,6 +336,7 @@ pub async fn execute_streaming(
             }
         }
     };
+    process_group_guard.disarm();
 
     let duration_ms = start.elapsed().as_millis() as u64;
     let exit_code = exit_status.code().unwrap_or(-1);
@@ -1410,6 +1453,40 @@ mod tests {
     #[tokio::test]
     async fn execute_timeout_terminates_descendants() {
         assert_descendant_cleanup(Some(1), CancellationToken::new()).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_execution_future_terminates_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("descendant-survived-drop");
+        let ready = temp.path().join("execution-started");
+        let command = format!(
+            "printf ready > '{}'; (sleep 2; printf survived > '{}') & wait",
+            ready.display(),
+            marker.display()
+        );
+        let task = tokio::spawn({
+            let cwd = temp.path().to_path_buf();
+            async move { execute(&command, &cwd, None, CancellationToken::new()).await }
+        });
+
+        for _ in 0..50 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "bash command did not start before abort");
+        task.abort();
+        let join_error = task.await.expect_err("execution task should be aborted");
+        assert!(join_error.is_cancelled());
+
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
+        assert!(
+            !marker.exists(),
+            "bash descendant survived execution-future drop"
+        );
     }
 
     #[tokio::test]

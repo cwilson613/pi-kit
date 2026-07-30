@@ -39,6 +39,7 @@ mod autonomy;
 mod backend;
 mod behavior;
 mod bootstrap;
+mod bootstrap_projection;
 mod bridge;
 pub mod bus;
 mod capacity;

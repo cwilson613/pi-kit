@@ -12,7 +12,6 @@
 
 mod agent_events;
 mod auspex;
-pub mod bootstrap;
 pub mod command_surfaces;
 pub mod conv_widget;
 pub mod conversation;

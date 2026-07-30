@@ -1171,7 +1171,7 @@ impl AgentSetup {
         // Print bootstrap panel if running interactively
         let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
         if use_color || std::io::stderr().is_terminal() {
-            let panel = crate::tui::bootstrap::render_bootstrap(&harness_status, use_color);
+            let panel = crate::bootstrap_projection::render_bootstrap(&harness_status, use_color);
             eprint!("{panel}");
         }
 

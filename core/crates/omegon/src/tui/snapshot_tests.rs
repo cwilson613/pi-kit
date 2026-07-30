@@ -536,7 +536,7 @@ fn snapshot_tools_panel_with_runtime_and_error() {
 #[test]
 fn snapshot_bootstrap_default() {
     let status = HarnessStatus::default();
-    let output = super::bootstrap::render_bootstrap(&status, false);
+    let output = crate::bootstrap_projection::render_bootstrap(&status, false);
     insta::assert_snapshot!(output);
 }
 
@@ -644,7 +644,7 @@ fn snapshot_bootstrap_full() {
         },
         ..Default::default()
     };
-    let output = super::bootstrap::render_bootstrap(&status, false);
+    let output = crate::bootstrap_projection::render_bootstrap(&status, false);
     insta::assert_snapshot!(output);
 }
 

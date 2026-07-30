@@ -733,7 +733,7 @@ mod tests {
         stale.active = false;
         stale.completed = 1;
         stale.failed = 2;
-        handles.cleave = Some(Arc::new(Mutex::new(stale)));
+        handles.install_cleave(Arc::new(Mutex::new(stale)));
 
         let response = launch_surface_smoke(
             &mut handles,
@@ -744,7 +744,7 @@ mod tests {
 
         assert!(response.accepted);
         assert!(
-            handles.cleave.is_none(),
+            !handles.cleave_available(),
             "stale cleave handle must be removed"
         );
         let delegate = handles
@@ -783,7 +783,7 @@ mod tests {
             response.output.as_deref(),
             Some("A smoke or live subagent operation is already running.")
         );
-        assert!(handles.cleave.is_none());
+        assert!(!handles.cleave_available());
         assert!(handles.delegate.is_some());
     }
 
@@ -941,7 +941,7 @@ mod tests {
         let mut handles = crate::runtime_state::RuntimeStateHandles::default();
         let mut stale = initial_cleave_progress(SmokeScenarioKind::CleaveFailureMix);
         stale.active = false;
-        handles.cleave = Some(Arc::new(Mutex::new(stale)));
+        handles.install_cleave(Arc::new(Mutex::new(stale)));
         let (local_tx, local_rx) = std::sync::mpsc::channel();
 
         let response = launch_surface_smoke(

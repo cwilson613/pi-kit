@@ -37,7 +37,7 @@ pub enum ObserveError {
 #[derive(Clone, Default)]
 pub struct RuntimeStateHandles {
     pub lifecycle: Option<LifecycleReadHandle>,
-    pub cleave: Option<Arc<Mutex<CleaveProgress>>>,
+    pub(crate) cleave: Arc<Mutex<Option<Arc<Mutex<CleaveProgress>>>>>,
     pub delegate: Option<Arc<Mutex<DelegateProgress>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
     pub(crate) session: Arc<Mutex<SessionObservation>>,
@@ -55,7 +55,7 @@ impl RuntimeStateHandles {
     ) -> Self {
         Self {
             lifecycle,
-            cleave,
+            cleave: Arc::new(Mutex::new(cleave)),
             delegate,
             delegate_tasks,
             session: Arc::default(),
@@ -82,8 +82,12 @@ impl RuntimeStateHandles {
     /// remain responsible for projecting the owned source into their own wire
     /// or renderer contracts.
     pub fn observe_cleave(&self) -> Result<Option<CleaveProgress>, ObserveError> {
-        self.cleave
-            .as_ref()
+        let cleave = self
+            .cleave
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Cleave))?
+            .clone();
+        cleave
             .map(|cleave| {
                 cleave
                     .lock()
@@ -94,17 +98,21 @@ impl RuntimeStateHandles {
     }
 
     pub fn cleave_available(&self) -> bool {
-        self.cleave.is_some()
+        self.cleave.lock().is_ok_and(|cleave| cleave.is_some())
     }
 
     /// Install or replace the cleave progress source for this invocation.
-    pub fn install_cleave(&mut self, progress: Arc<Mutex<CleaveProgress>>) {
-        self.cleave = Some(progress);
+    pub fn install_cleave(&self, progress: Arc<Mutex<CleaveProgress>>) {
+        if let Ok(mut cleave) = self.cleave.lock() {
+            *cleave = Some(progress);
+        }
     }
 
     /// Remove the cleave progress source for this invocation.
-    pub fn clear_cleave(&mut self) {
-        self.cleave = None;
+    pub fn clear_cleave(&self) {
+        if let Ok(mut cleave) = self.cleave.lock() {
+            *cleave = None;
+        }
     }
 
     pub fn update_session_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
@@ -131,7 +139,7 @@ mod tests {
     fn defaults_are_empty_and_session_state_is_shared_across_clones() {
         let handles = RuntimeStateHandles::default();
         assert!(handles.lifecycle.is_none());
-        assert!(handles.cleave.is_none());
+        assert!(!handles.cleave_available());
         assert!(handles.delegate.is_none());
         assert!(handles.delegate_tasks.is_none());
         assert!(handles.harness.is_none());
@@ -170,7 +178,6 @@ mod tests {
         assert!(!handles.cleave_available());
         assert!(handles.observe_cleave().unwrap().is_none());
 
-        let mut handles = handles;
         handles.install_cleave(Arc::new(Mutex::new(CleaveProgress::default())));
         assert!(handles.cleave_available());
         assert!(!handles.observe_cleave().unwrap().unwrap().active);
@@ -178,8 +185,8 @@ mod tests {
 
     #[test]
     fn cleave_observations_are_owned_and_isolated_by_runtime_instance() {
-        let mut first = RuntimeStateHandles::default();
-        let mut second = RuntimeStateHandles::default();
+        let first = RuntimeStateHandles::default();
+        let second = RuntimeStateHandles::default();
         first.install_cleave(Arc::new(Mutex::new(CleaveProgress {
             active: true,
             run_id: "first".into(),
@@ -199,8 +206,25 @@ mod tests {
     }
 
     #[test]
+    fn cleave_install_and_clear_are_visible_across_handle_clones() {
+        let handles = RuntimeStateHandles::default();
+        let clone = handles.clone();
+
+        handles.install_cleave(Arc::new(Mutex::new(CleaveProgress {
+            active: true,
+            run_id: "shared".into(),
+            ..Default::default()
+        })));
+        assert_eq!(clone.observe_cleave().unwrap().unwrap().run_id, "shared");
+
+        clone.clear_cleave();
+        assert!(!handles.cleave_available());
+        assert!(handles.observe_cleave().unwrap().is_none());
+    }
+
+    #[test]
     fn poisoned_cleave_state_is_explicit() {
-        let mut handles = RuntimeStateHandles::default();
+        let handles = RuntimeStateHandles::default();
         let cleave = Arc::new(Mutex::new(CleaveProgress::default()));
         handles.install_cleave(cleave.clone());
         let _ = std::thread::spawn(move || {

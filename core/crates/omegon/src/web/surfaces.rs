@@ -676,20 +676,22 @@ mod tests {
             pending_results: 0,
             children: vec![delegate_child("deleg-a", "running")],
         })));
-        state.handles.cleave = Some(Arc::new(Mutex::new(CleaveProgress {
-            active: true,
-            run_id: "run-9".into(),
-            inventory_generation: None,
-            total_children: 2,
-            completed: 1,
-            failed: 0,
-            children: vec![
-                cleave_child("cleave-a", "running"),
-                cleave_child("cleave-b", "completed"),
-            ],
-            total_tokens_in: 0,
-            total_tokens_out: 0,
-        })));
+        state
+            .handles
+            .install_cleave(Arc::new(Mutex::new(CleaveProgress {
+                active: true,
+                run_id: "run-9".into(),
+                inventory_generation: None,
+                total_children: 2,
+                completed: 1,
+                failed: 0,
+                children: vec![
+                    cleave_child("cleave-a", "running"),
+                    cleave_child("cleave-b", "completed"),
+                ],
+                total_tokens_in: 0,
+                total_tokens_out: 0,
+            })));
 
         let ops = project_operations(&state);
         // delegate wins the kind label when both are active

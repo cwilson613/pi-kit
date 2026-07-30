@@ -1954,36 +1954,37 @@ fn plan_update_without_active_lane_clears_stale_workbench_plan() {
 #[test]
 fn completed_plan_update_clears_live_operation_handles_but_keeps_workstream_summary() {
     let mut app = test_app();
-    app.dashboard_handles.cleave = Some(std::sync::Arc::new(std::sync::Mutex::new(
-        crate::features::cleave::CleaveProgress {
-            active: true,
-            run_id: "cleave-activity".into(),
-            inventory_generation: None,
-            total_children: 1,
-            completed: 0,
-            failed: 0,
-            children: vec![crate::features::cleave::ChildProgress {
-                label: "scout/files".into(),
-                status: "pending".into(),
-                failure_kind: None,
-                duration_secs: None,
-                supervision_mode: None,
-                pid: None,
-                last_tool: None,
-                last_tool_activity: None,
-                last_turn: None,
-                tasks: Vec::new(),
-                tasks_done: 0,
-                started_at: None,
-                last_activity_at: None,
-                tokens_in: 0,
-                tokens_out: 0,
-                runtime: None,
-            }],
-            total_tokens_in: 0,
-            total_tokens_out: 0,
-        },
-    )));
+    app.dashboard_handles
+        .install_cleave(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::features::cleave::CleaveProgress {
+                active: true,
+                run_id: "cleave-activity".into(),
+                inventory_generation: None,
+                total_children: 1,
+                completed: 0,
+                failed: 0,
+                children: vec![crate::features::cleave::ChildProgress {
+                    label: "scout/files".into(),
+                    status: "pending".into(),
+                    failure_kind: None,
+                    duration_secs: None,
+                    supervision_mode: None,
+                    pid: None,
+                    last_tool: None,
+                    last_tool_activity: None,
+                    last_turn: None,
+                    tasks: Vec::new(),
+                    tasks_done: 0,
+                    started_at: None,
+                    last_activity_at: None,
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    runtime: None,
+                }],
+                total_tokens_in: 0,
+                total_tokens_out: 0,
+            },
+        )));
 
     app.handle_agent_event(AgentEvent::PlanUpdated {
         projection: omegon_traits::PlanSurfaceProjection {
@@ -2017,7 +2018,7 @@ fn completed_plan_update_clears_live_operation_handles_but_keeps_workstream_summ
         },
     });
 
-    assert!(app.dashboard_handles.cleave.is_none());
+    assert!(!app.dashboard_handles.cleave_available());
     assert!(app.workbench_state.active.is_none());
     assert_eq!(app.workbench_state.workstreams.len(), 1);
     assert_eq!(app.workbench_state.workstreams[0].completed, 4);
@@ -5138,19 +5139,20 @@ fn draw_clears_stale_completed_cleave_snapshot_from_tools_panel() {
             total_tokens_in: 100,
             total_tokens_out: 50,
         }));
-    app.dashboard_handles.cleave = Some(std::sync::Arc::new(std::sync::Mutex::new(
-        crate::features::cleave::CleaveProgress {
-            active: false,
-            run_id: "done-run".into(),
-            inventory_generation: None,
-            total_children: 3,
-            completed: 3,
-            failed: 0,
-            children: vec![],
-            total_tokens_in: 100,
-            total_tokens_out: 50,
-        },
-    )));
+    app.dashboard_handles
+        .install_cleave(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::features::cleave::CleaveProgress {
+                active: false,
+                run_id: "done-run".into(),
+                inventory_generation: None,
+                total_children: 3,
+                completed: 3,
+                failed: 0,
+                children: vec![],
+                total_tokens_in: 100,
+                total_tokens_out: 50,
+            },
+        )));
 
     let rendered = render_app_to_string(&mut app, 140, 36);
 

@@ -3889,8 +3889,10 @@ required = ["BRAVE_API_KEY"]
             preloaded_files: vec!["docs/runtime-preload.md".into()],
         };
         let mut state = test_state();
-        state.handles = DashboardHandles {
-            cleave: Some(std::sync::Arc::new(std::sync::Mutex::new(
+        state.handles = DashboardHandles::default();
+        state
+            .handles
+            .install_cleave(std::sync::Arc::new(std::sync::Mutex::new(
                 crate::features::cleave::CleaveProgress {
                     active: true,
                     run_id: "run-1".into(),
@@ -3919,9 +3921,7 @@ required = ["BRAVE_API_KEY"]
                     total_tokens_in: 0,
                     total_tokens_out: 0,
                 },
-            ))),
-            ..DashboardHandles::default()
-        };
+            )));
 
         let snap = build_snapshot(&state);
         let child = &snap.cleave.children[0];

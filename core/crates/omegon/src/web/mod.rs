@@ -1924,53 +1924,52 @@ mod tests {
     async fn daemon_event_worker_preserves_child_runtime_metadata_in_startup_status() {
         let (events_tx, _events_rx) = tokio::sync::broadcast::channel(4);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
-        let state = WebState::with_auth_state(
-            DashboardHandles {
-                cleave: Some(Arc::new(Mutex::new(
-                    crate::features::cleave::CleaveProgress {
-                        active: true,
-                        run_id: "run-1".into(),
-                        inventory_generation: None,
-                        total_children: 1,
-                        completed: 0,
-                        failed: 0,
-                        children: vec![crate::features::cleave::ChildProgress {
-                            label: "child-1".into(),
-                            status: "running".into(),
-                            failure_kind: None,
-                            supervision_mode: Some(
-                                crate::features::cleave::ChildSupervisionMode::RecoveredDegraded,
-                            ),
-                            duration_secs: None,
-                            pid: Some(4242),
-                            last_tool: None,
-                            last_tool_activity: None,
-                            last_turn: None,
-                            tasks: Vec::new(),
-                            tasks_done: 0,
-                            started_at: None,
-                            last_activity_at: None,
-                            tokens_in: 0,
-                            tokens_out: 0,
-                            runtime: Some(crate::features::cleave::ChildRuntimeSummary {
-                                model: Some("anthropic:claude-sonnet-4-6".into()),
-                                route_decision: None,
-                                thinking_level: Some("high".into()),
-                                context_class: Some("massive".into()),
-                                enabled_tools: vec!["read".into()],
-                                disabled_tools: vec!["bash".into()],
-                                skills: vec!["security".into()],
-                                enabled_extensions: vec!["alpha".into()],
-                                disabled_extensions: vec!["beta".into()],
-                                preloaded_files: vec!["docs/runtime-preload.md".into()],
-                            }),
-                        }],
-                        total_tokens_in: 0,
-                        total_tokens_out: 0,
-                    },
-                ))),
-                ..DashboardHandles::default()
+        let handles = DashboardHandles::default();
+        handles.install_cleave(Arc::new(Mutex::new(
+            crate::features::cleave::CleaveProgress {
+                active: true,
+                run_id: "run-1".into(),
+                inventory_generation: None,
+                total_children: 1,
+                completed: 0,
+                failed: 0,
+                children: vec![crate::features::cleave::ChildProgress {
+                    label: "child-1".into(),
+                    status: "running".into(),
+                    failure_kind: None,
+                    supervision_mode: Some(
+                        crate::features::cleave::ChildSupervisionMode::RecoveredDegraded,
+                    ),
+                    duration_secs: None,
+                    pid: Some(4242),
+                    last_tool: None,
+                    last_tool_activity: None,
+                    last_turn: None,
+                    tasks: Vec::new(),
+                    tasks_done: 0,
+                    started_at: None,
+                    last_activity_at: None,
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    runtime: Some(crate::features::cleave::ChildRuntimeSummary {
+                        model: Some("anthropic:claude-sonnet-4-6".into()),
+                        route_decision: None,
+                        thinking_level: Some("high".into()),
+                        context_class: Some("massive".into()),
+                        enabled_tools: vec!["read".into()],
+                        disabled_tools: vec!["bash".into()],
+                        skills: vec!["security".into()],
+                        enabled_extensions: vec!["alpha".into()],
+                        disabled_extensions: vec!["beta".into()],
+                        preloaded_files: vec!["docs/runtime-preload.md".into()],
+                    }),
+                }],
+                total_tokens_in: 0,
+                total_tokens_out: 0,
             },
+        )));
+        let state = WebState::with_auth_state(
+            handles,
             events_tx,
             WebAuthState::ephemeral_generated("test".into()),
         );

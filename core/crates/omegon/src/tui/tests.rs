@@ -10160,6 +10160,18 @@ fn slash_init_opens_harness_init_menu() {
             .iter()
             .any(|tab| { tab.groups.iter().any(|group| group.id == "init.skills") })
     );
+    let analysis = menu
+        .projection
+        .tabs
+        .iter()
+        .flat_map(|tab| &tab.groups)
+        .find(|group| group.id == "init.analysis")
+        .expect("codebase orientation group");
+    let action = analysis.rows[0]
+        .primary_action
+        .as_ref()
+        .expect("skill inspection action");
+    assert_eq!(action.command.as_deref(), Some("/skills get codebase-init"));
 }
 
 #[test]

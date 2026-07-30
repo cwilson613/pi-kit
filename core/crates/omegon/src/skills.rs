@@ -75,6 +75,10 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "code-act",
         include_str!("../../../../skills/code-act/SKILL.md"),
     ),
+    (
+        "codebase-init",
+        include_str!("../../../../skills/codebase-init/SKILL.md"),
+    ),
     ("git", include_str!("../../../../skills/git/SKILL.md")),
     ("oci", include_str!("../../../../skills/oci/SKILL.md")),
     (
@@ -1665,6 +1669,21 @@ description: Project git override
         );
         assert!(prompt.contains("/skills refresh"));
         assert!(prompt.contains("/tmp/project/.omegon/skills/<name>/SKILL.md"));
+    }
+
+    #[test]
+    fn bundled_codebase_init_skill_is_first_order_and_evidence_led() {
+        let (manifest, body, _path) = get_skill("codebase-init").unwrap();
+        assert_eq!(manifest.activation.as_deref(), Some("project_detected"));
+        assert!(
+            manifest
+                .project_signals
+                .iter()
+                .any(|signal| signal == ".git")
+        );
+        assert!(body.contains("Initialization has two phases"));
+        assert!(body.contains("Do **not** create one per directory mechanically"));
+        assert!(body.contains("## `/init` integration"));
     }
 
     #[test]

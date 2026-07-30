@@ -18,6 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added a first-order bundled `codebase-init` skill for evidence-led repository orientation, directive-drift assessment, and strategic nested `AGENTS.md` placement; `/init` now exposes the read-only playbook separately from explicit scan and migration mutations.
 - Added strategic per-crate agent guidance for the integration binary, shared traits, memory, and OpenSpec lifecycle crates, establishing ownership boundaries and deep-dive invariants without duplicating the root workflow.
 - Refreshed the internal agent directives to match the current workspace, scoped validation ladder, `just run`/`just link` workflow, semantic presentation levels, Codex integration discovery, process-tree cleanup requirements, and maintainer/community boundaries.
 - Published community-owned WSL and Windows-adjacent issues for cross-boundary process cleanup, Windows-mounted workspace guidance, and safe non-Unix self-restart semantics, with explicit platform evidence requirements and Linux/macOS non-regression boundaries.

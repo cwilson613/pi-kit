@@ -3378,6 +3378,7 @@ impl App {
             .map(|home| home.join(".omegon/active-profile.json"));
 
         let mut pending = Vec::new();
+        pending.push("inspect repository architecture and refresh agent guidance with the bundled codebase-init skill");
         if !project_root.join(".omegon").exists() {
             pending.push("create .omegon/ harness configuration directory");
         }
@@ -3629,6 +3630,21 @@ impl App {
                         }
                         rows
                     },
+                },
+                MenuGroupProjection {
+                    id: "init.analysis".into(),
+                    label: "Codebase orientation".into(),
+                    description: Some("Evidence-led repository analysis is distinct from harness mutation. Load the bundled skill to assess architecture, workflow, directive drift, and strategic nested guidance before applying changes.".into()),
+                    rows: vec![row(
+                        "init.analysis.skill",
+                        "Inspect the codebase initialization playbook",
+                        "Load the first-order codebase-init skill before analyzing an unfamiliar repository or refreshing AGENTS.md guidance. Inspection is read-only until the operator approves an edit plan.",
+                        Some("bundled skill".into()),
+                        "inspect",
+                        MenuBadgeTone::Info,
+                        "/skills get codebase-init",
+                        false,
+                    )],
                 },
                 MenuGroupProjection {
                     id: "init.skills".into(),

@@ -476,3 +476,159 @@ compatibility tests, and a stop/go reassessment before any crate extraction.
   `runtime_observation.rs` module? Prefer the sibling if the first slice exceeds
   a small cohesive module.
 - What exact warm validation baseline should be recorded before migration?
+
+## Upstream Rust research reassessment (2026-07-30)
+
+### Sources consulted
+
+Primary/upstream documentation:
+
+- Tokio, **Shared state**: synchronous mutexes are appropriate in async code
+  when contention is low and guards are not held across `.await`; wrapping the
+  mutex and exposing short non-async operations is the safest pattern.
+  <https://tokio.rs/tokio/tutorial/shared-state>
+- Tokio `Mutex` documentation: ordinary `std::sync::Mutex` is often preferred
+  for data rather than I/O; a dedicated task plus message passing is preferable
+  when shared state is an I/O resource.
+  <https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html>
+- Axum `State` documentation: application state is supplied explicitly to the
+  router, and `FromRef` supports narrow substates rather than requiring every
+  handler to consume one omnibus state object.
+  <https://docs.rs/axum/latest/axum/extract/struct.State.html>
+- Rust `std::sync::Mutex` documentation: poisoning signals that protected data
+  may violate invariants; silently treating poison as absence/default is not a
+  generally sound recovery policy.
+  <https://doc.rust-lang.org/std/sync/struct.Mutex.html>
+- `arc-swap` documentation: `ArcSwap` is intended for read-mostly values that
+  are atomically replaced, such as periodically renewed configuration or a
+  deliberately maintained snapshot. It solves a measured publication problem;
+  it does not justify creating a snapshot cache by itself.
+  <https://docs.rs/arc-swap>
+- Tokio `watch` source/documentation: a watch channel publishes the latest value
+  and tracks change visibility for receivers. It is suitable when a producer
+  intentionally maintains a current value and consumers need notification.
+  <https://docs.rs/tokio/latest/tokio/sync/watch/>
+
+Secondary architectural material used as supporting, not normative, evidence:
+
+- Firezone's Rust sans-I/O discussion: keep policy/state transformation
+  synchronous and represent inputs/outputs as data, leaving I/O in adapters.
+  <https://www.firezone.dev/blog/sans-io>
+- Tyler Mandry, **Contexts and capabilities in Rust**: explicit context
+  parameters are inconvenient but make capability requirements visible; a
+  borrowed context should grant only the required capability.
+  <https://tmandry.gitlab.io/blog/posts/2021-12-21-context-capabilities>
+
+### Findings applied to this codebase
+
+1. **Explicit instance injection is idiomatic.** Axum's state model validates
+   passing state from the composition root, but its `FromRef` substate pattern
+   argues against handing every consumer all of `RuntimeStateHandles`.
+2. **Short synchronous observation methods are appropriate.** Omegon's handles
+   protect in-memory data with `std::sync::Mutex`; synchronous copy-and-release
+   operations with no `.await` or I/O match Tokio's guidance.
+3. **A maintained snapshot is a different architecture.** `watch` and
+   `ArcSwap` are good tools only when there is an intentional producer,
+   publication lifecycle, freshness contract, and need for latest-value reads.
+   Phase 1 has not established those requirements. Adding either now would
+   create the cache/lifecycle singleton risk under review.
+4. **Poison is not ordinary unavailability.** Current IPC and web code often
+   maps lock poison to empty/default payloads. The upstream `Mutex` contract
+   says the state may be tainted. Shared observation code should preserve that
+   distinction internally, while adapters may map it to their existing wire
+   representation for compatibility.
+5. **Pure policy should be separate from acquisition.** The strongest
+   sans-I/O-shaped boundary is not a large observer object. It is:
+   acquire/copy one domain under a short lock, then run pure conversion over
+   owned data outside the lock.
+
+### Source audit against the proposed domains
+
+The implementation audit changes the proposed scope:
+
+- **Session is proven overlap.** IPC and web both read turns, tool calls, and
+  compactions from `handles.session`; IPC additionally reads `busy`. This is a
+  valid first observation domain.
+- **Cleave is only partially common.** IPC and web both copy cleave progress,
+  but their external payloads and child detail differ. The shared unit should
+  be an owned domain copy (or pure summary primitive), not a shared transport
+  projection.
+- **Harness is not yet proven as one common semantic domain.** IPC uses harness
+  data for session Git state, instance identity, harness details, and health;
+  web clones the whole `HarnessStatus` and maps it later. Defining a broad
+  `HarnessObservation` now would reproduce the omnibus object problem.
+- **Delegate/work is not proven overlap in the inspected full-state builders.**
+  IPC emits operation episodes from delegate and cleave; web's state snapshot
+  primarily exposes cleave. A combined `WorkObservation` is premature.
+- **Lifecycle is duplicated but large and semantically divergent.** It remains
+  excluded.
+
+### Reassessment: revise Phase 1 downward
+
+The research supports explicit, scoped read capabilities, but it does **not**
+support implementing the three-domain observer API proposed above. That API
+was still speculative framework design ahead of demonstrated common semantics.
+
+**Revised recommendation: Phase 1A should implement session observation only.**
+
+Preferred API:
+
+```rust
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SessionObservation {
+    pub turns: u32,
+    pub tool_calls: u32,
+    pub compactions: u32,
+    pub busy: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObserveError {
+    Poisoned(ObservationDomain),
+}
+
+impl RuntimeStateHandles {
+    pub fn observe_session(&self) -> Result<SessionObservation, ObserveError>;
+}
+```
+
+This method is not singleton behavior: it is invoked on an explicitly supplied
+instance, reads one lock, returns a small owned value, performs no I/O, has no
+cache or background lifecycle, and is independently testable across multiple
+instances.
+
+A separate `RuntimeObserver<'a>` facade is **not recommended** for Phase 1A.
+With one proven operation it is ceremony and risks evolving into a service
+locator. Put the narrow method on `RuntimeStateHandles`, or use a free function
+if later crate placement requires it.
+
+IPC and web should map `SessionObservation` into their existing payloads. They
+must preserve current external behavior on poison for compatibility, but the
+adapter mapping should be explicit, e.g. `unwrap_or_default()` at the wire/view
+boundary rather than inside the domain observation.
+
+### Stop/go gate after Phase 1A
+
+After session migration, inventory cleave field-by-field. Proceed to a cleave
+observation only if both consumers need the same owned source semantics. Do not
+introduce `WorkObservation` or `HarnessObservation` without equivalent evidence.
+Do not add `watch`, `ArcSwap`, a cached read model, or a snapshot producer unless
+profiling or consistency requirements demonstrate a publication problem.
+
+### Updated adversarial verdict
+
+The no-global/no-cache constraints remain necessary but were not sufficient.
+An explicitly passed omnibus context can still function as a service locator,
+and a borrowed facade over it can still conceal excessive capability. Upstream
+practice strengthens the design with **capability minimization**: consumers
+should depend on the smallest substate/read capability they require.
+
+Accordingly:
+
+- The broad `RuntimeObserver` proposal is rejected for the first slice.
+- `SessionObservation` is approved as a bounded experiment.
+- `WorkObservation` and `HarnessObservation` return to open questions.
+- A maintained immutable read model is deferred; it is not currently justified.
+- Phase 1 succeeds only if it removes duplicate session lock interpretation
+  without increasing the number of consumers that can see unrelated runtime
+  state.

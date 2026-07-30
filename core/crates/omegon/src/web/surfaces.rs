@@ -242,7 +242,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 },
                 lifecycle_available: state.handles.lifecycle.is_some(),
                 cleave_available: state.handles.cleave_available(),
-                delegate_available: state.handles.delegate.is_some(),
+                delegate_available: state.handles.delegate_available(),
                 harness_available: state.handles.harness.is_some(),
             },
             footer: WebFooterSurface {
@@ -336,7 +336,7 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
     let (mut running, mut completed, mut failed) = (0usize, 0usize, 0usize);
     let mut children: Vec<WebOperationChild> = Vec::new();
 
-    if let Some(delegate) = state.handles.delegate.as_ref().and_then(|d| d.lock().ok())
+    if let Ok(Some(delegate)) = state.handles.observe_delegate()
         && (delegate.active || !delegate.children.is_empty())
     {
         kind = Some("delegate".to_string());
@@ -640,18 +640,20 @@ mod tests {
 
     #[test]
     fn operations_surface_projects_delegate_children() {
-        let mut state = test_state();
-        state.handles.delegate = Some(Arc::new(Mutex::new(DelegateProgress {
-            active: true,
-            running: 1,
-            completed: 1,
-            failed: 0,
-            pending_results: 1,
-            children: vec![
-                delegate_child("scout-mod", "running"),
-                delegate_child("scout-tests", "completed"),
-            ],
-        })));
+        let state = test_state();
+        state
+            .handles
+            .install_delegate(Arc::new(Mutex::new(DelegateProgress {
+                active: true,
+                running: 1,
+                completed: 1,
+                failed: 0,
+                pending_results: 1,
+                children: vec![
+                    delegate_child("scout-mod", "running"),
+                    delegate_child("scout-tests", "completed"),
+                ],
+            })));
 
         let ops = project_operations(&state);
         assert_eq!(ops.kind.as_deref(), Some("delegate"));
@@ -667,15 +669,17 @@ mod tests {
 
     #[test]
     fn operations_surface_merges_delegate_and_cleave() {
-        let mut state = test_state();
-        state.handles.delegate = Some(Arc::new(Mutex::new(DelegateProgress {
-            active: true,
-            running: 1,
-            completed: 0,
-            failed: 0,
-            pending_results: 0,
-            children: vec![delegate_child("deleg-a", "running")],
-        })));
+        let state = test_state();
+        state
+            .handles
+            .install_delegate(Arc::new(Mutex::new(DelegateProgress {
+                active: true,
+                running: 1,
+                completed: 0,
+                failed: 0,
+                pending_results: 0,
+                children: vec![delegate_child("deleg-a", "running")],
+            })));
         state
             .handles
             .install_cleave(Arc::new(Mutex::new(CleaveProgress {
@@ -706,8 +710,10 @@ mod tests {
 
     #[test]
     fn snapshot_bundle_reports_capability_flags() {
-        let mut state = test_state();
-        state.handles.delegate = Some(Arc::new(Mutex::new(DelegateProgress::default())));
+        let state = test_state();
+        state
+            .handles
+            .install_delegate(Arc::new(Mutex::new(DelegateProgress::default())));
         let snap = project_web_surfaces(&state);
         assert_eq!(snap.schema_version, WEB_SURFACES_SCHEMA_VERSION);
         assert!(snap.surfaces.dashboard.delegate_available);

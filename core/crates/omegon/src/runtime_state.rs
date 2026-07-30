@@ -26,6 +26,7 @@ pub struct SessionObservation {
 pub enum ObservationDomain {
     Session,
     Cleave,
+    Delegate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,7 +39,7 @@ pub enum ObserveError {
 pub struct RuntimeStateHandles {
     pub lifecycle: Option<LifecycleReadHandle>,
     pub(crate) cleave: Arc<Mutex<Option<Arc<Mutex<CleaveProgress>>>>>,
-    pub delegate: Option<Arc<Mutex<DelegateProgress>>>,
+    pub(crate) delegate: Arc<Mutex<Option<Arc<Mutex<DelegateProgress>>>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
     pub(crate) session: Arc<Mutex<SessionObservation>>,
     pub harness: Option<Arc<Mutex<HarnessStatus>>>,
@@ -56,7 +57,7 @@ impl RuntimeStateHandles {
         Self {
             lifecycle,
             cleave: Arc::new(Mutex::new(cleave)),
-            delegate,
+            delegate: Arc::new(Mutex::new(delegate)),
             delegate_tasks,
             session: Arc::default(),
             harness,
@@ -115,6 +116,46 @@ impl RuntimeStateHandles {
         }
     }
 
+    /// Copy the complete delegate source domain under one short lock.
+    ///
+    /// `None` means this invocation has no delegate source installed. Surface
+    /// adapters retain ownership of their wire and rendering projections.
+    pub fn observe_delegate(&self) -> Result<Option<DelegateProgress>, ObserveError> {
+        let delegate = self
+            .delegate
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Delegate))?
+            .clone();
+        delegate
+            .map(|delegate| {
+                delegate
+                    .lock()
+                    .map(|progress| progress.clone())
+                    .map_err(|_| ObserveError::Poisoned(ObservationDomain::Delegate))
+            })
+            .transpose()
+    }
+
+    pub fn delegate_available(&self) -> bool {
+        self.delegate
+            .lock()
+            .is_ok_and(|delegate| delegate.is_some())
+    }
+
+    /// Install or replace the delegate progress source for this invocation.
+    pub fn install_delegate(&self, progress: Arc<Mutex<DelegateProgress>>) {
+        if let Ok(mut delegate) = self.delegate.lock() {
+            *delegate = Some(progress);
+        }
+    }
+
+    /// Remove the delegate progress source for this invocation.
+    pub fn clear_delegate(&self) {
+        if let Ok(mut delegate) = self.delegate.lock() {
+            *delegate = None;
+        }
+    }
+
     pub fn update_session_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
         if let Ok(mut session) = self.session.lock() {
             session.turns = turns;
@@ -140,7 +181,7 @@ mod tests {
         let handles = RuntimeStateHandles::default();
         assert!(handles.lifecycle.is_none());
         assert!(!handles.cleave_available());
-        assert!(handles.delegate.is_none());
+        assert!(!handles.delegate_available());
         assert!(handles.delegate_tasks.is_none());
         assert!(handles.harness.is_none());
         assert!(handles.runtime_lifecycle.lock().unwrap().is_none());
@@ -236,6 +277,40 @@ mod tests {
         assert!(matches!(
             handles.observe_cleave(),
             Err(ObserveError::Poisoned(ObservationDomain::Cleave))
+        ));
+    }
+
+    #[test]
+    fn delegate_install_and_clear_are_visible_across_handle_clones() {
+        let handles = RuntimeStateHandles::default();
+        let clone = handles.clone();
+
+        handles.install_delegate(Arc::new(Mutex::new(DelegateProgress {
+            active: true,
+            running: 1,
+            ..Default::default()
+        })));
+        assert_eq!(clone.observe_delegate().unwrap().unwrap().running, 1);
+
+        clone.clear_delegate();
+        assert!(!handles.delegate_available());
+        assert!(handles.observe_delegate().unwrap().is_none());
+    }
+
+    #[test]
+    fn poisoned_delegate_state_is_explicit() {
+        let handles = RuntimeStateHandles::default();
+        let delegate = Arc::new(Mutex::new(DelegateProgress::default()));
+        handles.install_delegate(delegate.clone());
+        let _ = std::thread::spawn(move || {
+            let _guard = delegate.lock().unwrap();
+            panic!("poison delegate fixture");
+        })
+        .join();
+
+        assert!(matches!(
+            handles.observe_delegate(),
+            Err(ObserveError::Poisoned(ObservationDomain::Delegate))
         ));
     }
 

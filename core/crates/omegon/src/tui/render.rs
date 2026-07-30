@@ -102,9 +102,9 @@ impl App {
             .or_else(|| self.dashboard.cleave.clone().filter(|cp| cp.active));
         let live_delegate = self
             .dashboard_handles
-            .delegate
-            .as_ref()
-            .and_then(|dp_lock| dp_lock.lock().ok().map(|dp| dp.clone()))
+            .observe_delegate()
+            .ok()
+            .flatten()
             .filter(|dp| dp.active || dp.running > 0)
             .or_else(|| {
                 self.dashboard

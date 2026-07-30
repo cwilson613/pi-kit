@@ -61,10 +61,7 @@ pub fn build_state_snapshot(
 
 fn ipc_operation_episodes(handles: &DashboardHandles) -> Vec<IpcOperationEpisodeSnapshot> {
     let mut episodes = Vec::new();
-    if let Some(progress) = handles
-        .delegate
-        .as_ref()
-        .and_then(|value| value.lock().ok())
+    if let Ok(Some(progress)) = handles.observe_delegate()
         && (progress.active || progress.running > 0)
     {
         let projection =

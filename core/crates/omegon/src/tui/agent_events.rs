@@ -804,7 +804,7 @@ impl App {
                     }
                     self.conversation.snap_to_bottom();
                     self.dashboard_handles.clear_cleave();
-                    self.dashboard_handles.delegate = None;
+                    self.dashboard_handles.clear_delegate();
                     self.dashboard.cleave = None;
                     self.dashboard.delegate = None;
                     self.instrument_panel.set_cleave_progress(None);

@@ -128,7 +128,7 @@ pub fn launch_cleave_surface_smoke(
 ) -> SlashCommandResponse {
     let progress = Arc::new(Mutex::new(initial_cleave_progress(scenario)));
     handles.install_cleave(progress.clone());
-    handles.delegate = None;
+    handles.clear_delegate();
     let tx = events_tx.clone();
     let local_tx = local_events_tx.clone();
     std::thread::spawn(move || run_cleave_timeline(progress, scenario, tx, local_tx));
@@ -149,7 +149,7 @@ fn launch_delegate_surface_smoke(
     local_events_tx: Option<std::sync::mpsc::Sender<AgentEvent>>,
 ) -> SlashCommandResponse {
     let progress = Arc::new(Mutex::new(initial_delegate_progress(scenario)));
-    handles.delegate = Some(progress.clone());
+    handles.install_delegate(progress.clone());
     handles.clear_cleave();
     let tx = events_tx.clone();
     let local_tx = local_events_tx.clone();
@@ -170,7 +170,7 @@ fn reset_smoke_surfaces(
     local_tx: &Option<std::sync::mpsc::Sender<AgentEvent>>,
 ) {
     handles.clear_cleave();
-    handles.delegate = None;
+    handles.clear_delegate();
     let event = AgentEvent::PlanUpdated {
         projection: PlanSurfaceProjection::default(),
     };
@@ -192,9 +192,9 @@ fn active_cleave(handles: &crate::runtime_state::RuntimeStateHandles) -> bool {
 
 fn active_delegate(handles: &crate::runtime_state::RuntimeStateHandles) -> bool {
     handles
-        .delegate
-        .as_ref()
-        .and_then(|progress| progress.lock().ok())
+        .observe_delegate()
+        .ok()
+        .flatten()
         .is_some_and(|progress| progress.active || progress.running > 0)
 }
 
@@ -748,9 +748,8 @@ mod tests {
             "stale cleave handle must be removed"
         );
         let delegate = handles
-            .delegate
-            .as_ref()
-            .and_then(|progress| progress.lock().ok())
+            .observe_delegate()
+            .expect("delegate smoke progress lock should remain healthy")
             .expect("delegate smoke progress should be installed");
         assert_eq!(delegate.children.len(), 3);
         assert!(
@@ -769,7 +768,7 @@ mod tests {
         completed.running = 0;
         completed.completed = 2;
         completed.failed = 1;
-        handles.delegate = Some(Arc::new(Mutex::new(completed)));
+        handles.install_delegate(Arc::new(Mutex::new(completed)));
 
         let response = launch_surface_smoke(
             &mut handles,
@@ -784,7 +783,7 @@ mod tests {
             Some("A smoke or live subagent operation is already running.")
         );
         assert!(!handles.cleave_available());
-        assert!(handles.delegate.is_some());
+        assert!(handles.delegate_available());
     }
 
     #[test]

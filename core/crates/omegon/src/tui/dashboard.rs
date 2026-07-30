@@ -90,10 +90,8 @@ fn refresh_non_lifecycle(handles: &DashboardHandles, state: &mut DashboardState)
         state.cleave = Some(cp);
     }
     // Delegate
-    if let Some(ref dp_lock) = handles.delegate
-        && let Ok(dp) = dp_lock.lock()
-    {
-        state.delegate = Some(dp.clone());
+    if let Ok(Some(dp)) = handles.observe_delegate() {
+        state.delegate = Some(dp);
     }
     // Harness
     if let Some(ref harness_lock) = handles.harness

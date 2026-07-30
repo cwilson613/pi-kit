@@ -34,6 +34,16 @@ pub struct WorkspaceStartupState {
     pub admission: crate::workspace::types::AdmissionOutcome,
 }
 
+/// Renderer-neutral state captured during setup for an interactive surface's
+/// first projection.
+#[derive(Default)]
+pub struct InteractiveInitialState {
+    pub total_facts: usize,
+    pub focused_node: Option<crate::runtime_state::FocusedNodeSummary>,
+    pub active_changes: Vec<crate::runtime_state::ChangeSummary>,
+    pub workspace_status: Option<String>,
+}
+
 /// Everything needed to run an agent loop.
 pub struct AgentSetup {
     /// The event bus — owns all features. The loop dispatches tools and
@@ -1501,9 +1511,10 @@ impl AgentSetup {
         })
     }
 
-    /// Gather initial state for the TUI so the first frame has real data.
-    pub fn initial_tui_state(&self) -> crate::tui::TuiInitialState {
-        crate::tui::TuiInitialState {
+    /// Gather initial state for an interactive surface so its first projection
+    /// has real setup data.
+    pub fn interactive_initial_state(&self) -> InteractiveInitialState {
+        InteractiveInitialState {
             total_facts: self.startup_snapshot.total_facts,
             focused_node: self.startup_snapshot.lifecycle.focused_node.clone(),
             active_changes: self.startup_snapshot.lifecycle.active_changes.clone(),

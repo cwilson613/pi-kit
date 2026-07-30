@@ -7371,7 +7371,7 @@ pub struct TuiConfig {
     /// Present when a prior session was resumed; retained for runtime context.
     pub resume_info: Option<crate::setup::ResumeInfo>,
     /// Pre-populated initial state so the first frame isn't empty.
-    pub initial: TuiInitialState,
+    pub initial: crate::setup::InteractiveInitialState,
     /// Skip the splash animation on startup.
     pub no_splash: bool,
     /// Command definitions from bus features — shown in command palette.
@@ -7403,16 +7403,6 @@ pub struct TuiConfig {
         Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
     /// Voice idle notification pumps — one per voice-capable extension.
     pub voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
-}
-
-/// Initial state snapshot gathered during setup, before the TUI event loop starts.
-/// Populates footer cards and dashboard on the very first frame.
-#[derive(Default)]
-pub struct TuiInitialState {
-    pub total_facts: usize,
-    pub focused_node: Option<crate::runtime_state::FocusedNodeSummary>,
-    pub active_changes: Vec<crate::runtime_state::ChangeSummary>,
-    pub workspace_status: Option<String>,
 }
 
 /// Open a URL in the default browser (cross-platform).

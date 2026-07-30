@@ -4327,7 +4327,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             tracing::info!(class = %class_str, "requested context class policy applied");
         }
 
-    let initial = agent.initial_tui_state();
+    let initial = agent.interactive_initial_state();
     // Extract bus command definitions for the TUI command palette
     let bus_commands: Vec<omegon_traits::CommandDefinition> = agent
         .bus

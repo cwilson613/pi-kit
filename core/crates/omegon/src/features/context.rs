@@ -18,9 +18,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::lifecycle::context::LifecycleContextProvider;
 use crate::lifecycle::design;
 use crate::lifecycle::types::ChangeStage;
+use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::settings::{Settings, SharedSettings};
 use crate::shadow_context::{ContextKind, EntryBody, ShadowContext, ShadowEntry};
-use crate::tui::TuiCommand;
 
 fn dispatch_command(command_tx: &SharedCommandTx, command: TuiCommand) -> bool {
     if let Ok(guard) = command_tx.lock()

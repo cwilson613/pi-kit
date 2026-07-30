@@ -263,275 +263,349 @@ pub enum ControlRequest {
 }
 
 pub fn control_request_from_slash(
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> Option<ControlRequest> {
     Some(match command {
-        crate::tui::CanonicalSlashCommand::ModelView => ControlRequest::ModelView,
-        crate::tui::CanonicalSlashCommand::ModelList => ControlRequest::ModelList,
-        crate::tui::CanonicalSlashCommand::ModelUnpin => ControlRequest::ClearModelOverride,
-        crate::tui::CanonicalSlashCommand::SetModel(requested_model) => ControlRequest::SetModel {
-            requested_model: requested_model.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::SetModelGrade(grade) => ControlRequest::SetModelIntent {
-            grade: grade.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::SetModelProvider(provider) => {
+        crate::runtime_commands::CanonicalSlashCommand::ModelView => ControlRequest::ModelView,
+        crate::runtime_commands::CanonicalSlashCommand::ModelList => ControlRequest::ModelList,
+        crate::runtime_commands::CanonicalSlashCommand::ModelUnpin => {
+            ControlRequest::ClearModelOverride
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SetModel(requested_model) => {
+            ControlRequest::SetModel {
+                requested_model: requested_model.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SetModelGrade(grade) => {
+            ControlRequest::SetModelIntent {
+                grade: grade.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SetModelProvider(provider) => {
             ControlRequest::SetModelProvider {
                 provider: provider.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::SetModelPolicy(policy) => {
+        crate::runtime_commands::CanonicalSlashCommand::SetModelPolicy(policy) => {
             ControlRequest::SetModelPolicy {
                 policy: policy.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::ThinkingView => ControlRequest::ThinkingView,
-        crate::tui::CanonicalSlashCommand::SetThinking(level) => {
+        crate::runtime_commands::CanonicalSlashCommand::ThinkingView => {
+            ControlRequest::ThinkingView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SetThinking(level) => {
             ControlRequest::SetThinking { level: *level }
         }
-        crate::tui::CanonicalSlashCommand::ProfileView => ControlRequest::ProfileView,
-        crate::tui::CanonicalSlashCommand::ProfileExport => ControlRequest::ProfileExport,
-        crate::tui::CanonicalSlashCommand::ProfileCapture(target) => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileView => ControlRequest::ProfileView,
+        crate::runtime_commands::CanonicalSlashCommand::ProfileExport => {
+            ControlRequest::ProfileExport
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ProfileCapture(target) => {
             ControlRequest::ProfileCapture {
                 target: target.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::ProfileApply => ControlRequest::ProfileApply,
-        crate::tui::CanonicalSlashCommand::ProfileUse { id, scope } => ControlRequest::ProfileUse {
-            id: id.clone(),
-            scope: scope.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::ProfileSetMqtt(enabled) => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileApply => {
+            ControlRequest::ProfileApply
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ProfileUse { id, scope } => {
+            ControlRequest::ProfileUse {
+                id: id.clone(),
+                scope: scope.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ProfileSetMqtt(enabled) => {
             ControlRequest::ProfileSetMqtt { enabled: *enabled }
         }
-        crate::tui::CanonicalSlashCommand::ProfileExtensionAllow(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileExtensionAllow(name) => {
             ControlRequest::ProfileExtensionAllow { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ProfileExtensionDeny(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileExtensionDeny(name) => {
             ControlRequest::ProfileExtensionDeny { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ProfileExtensionClear => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileExtensionClear => {
             ControlRequest::ProfileExtensionClear
         }
-        crate::tui::CanonicalSlashCommand::ProfileSetPersona(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileSetPersona(name) => {
             ControlRequest::ProfileSetPersona { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ProfileSetTone(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ProfileSetTone(name) => {
             ControlRequest::ProfileSetTone { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::AutomationView => ControlRequest::AutomationView,
-        crate::tui::CanonicalSlashCommand::AutomationSet(level) => {
+        crate::runtime_commands::CanonicalSlashCommand::AutomationView => {
+            ControlRequest::AutomationView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::AutomationSet(level) => {
             ControlRequest::AutomationSet { level: *level }
         }
-        crate::tui::CanonicalSlashCommand::PermissionsView => ControlRequest::PermissionsView,
-        crate::tui::CanonicalSlashCommand::PermissionTrustAdd(path) => {
+        crate::runtime_commands::CanonicalSlashCommand::PermissionsView => {
+            ControlRequest::PermissionsView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::PermissionTrustAdd(path) => {
             ControlRequest::PermissionTrustAdd { path: path.clone() }
         }
-        crate::tui::CanonicalSlashCommand::PermissionTrustRemove(path) => {
+        crate::runtime_commands::CanonicalSlashCommand::PermissionTrustRemove(path) => {
             ControlRequest::PermissionTrustRemove { path: path.clone() }
         }
-        crate::tui::CanonicalSlashCommand::StatusView => ControlRequest::StatusView,
-        crate::tui::CanonicalSlashCommand::RuntimeInventoryStatus => {
+        crate::runtime_commands::CanonicalSlashCommand::StatusView => ControlRequest::StatusView,
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeInventoryStatus => {
             ControlRequest::RuntimeInventoryStatus
         }
-        crate::tui::CanonicalSlashCommand::RuntimeSubstrateRefresh => {
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeSubstrateRefresh => {
             ControlRequest::RuntimeSubstrateRefresh
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceStatusView => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceStatusView => {
             ControlRequest::WorkspaceStatusView
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceListView => ControlRequest::WorkspaceListView,
-        crate::tui::CanonicalSlashCommand::WorkspaceNew(label) => ControlRequest::WorkspaceNew {
-            label: label.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::WorkspaceDestroy(target) => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceListView => {
+            ControlRequest::WorkspaceListView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceNew(label) => {
+            ControlRequest::WorkspaceNew {
+                label: label.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceDestroy(target) => {
             ControlRequest::WorkspaceDestroy {
                 target: target.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceAdopt => ControlRequest::WorkspaceAdopt,
-        crate::tui::CanonicalSlashCommand::WorkspaceRelease => ControlRequest::WorkspaceRelease,
-        crate::tui::CanonicalSlashCommand::WorkspaceArchive => ControlRequest::WorkspaceArchive,
-        crate::tui::CanonicalSlashCommand::WorkspacePrune => ControlRequest::WorkspacePrune,
-        crate::tui::CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceAdopt => {
+            ControlRequest::WorkspaceAdopt
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceRelease => {
+            ControlRequest::WorkspaceRelease
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceArchive => {
+            ControlRequest::WorkspaceArchive
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspacePrune => {
+            ControlRequest::WorkspacePrune
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
             ControlRequest::WorkspaceBindMilestone {
                 milestone_id: milestone_id.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
             ControlRequest::WorkspaceBindNode {
                 design_node_id: design_node_id.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceBindClear => ControlRequest::WorkspaceBindClear,
-        crate::tui::CanonicalSlashCommand::WorkspaceRoleView => ControlRequest::WorkspaceRoleView,
-        crate::tui::CanonicalSlashCommand::WorkspaceRoleSet(role) => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindClear => {
+            ControlRequest::WorkspaceBindClear
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleView => {
+            ControlRequest::WorkspaceRoleView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleSet(role) => {
             ControlRequest::WorkspaceRoleSet { role: *role }
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceRoleClear => ControlRequest::WorkspaceRoleClear,
-        crate::tui::CanonicalSlashCommand::WorkspaceKindView => ControlRequest::WorkspaceKindView,
-        crate::tui::CanonicalSlashCommand::WorkspaceKindSet(kind) => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleClear => {
+            ControlRequest::WorkspaceRoleClear
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindView => {
+            ControlRequest::WorkspaceKindView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindSet(kind) => {
             ControlRequest::WorkspaceKindSet { kind: *kind }
         }
-        crate::tui::CanonicalSlashCommand::WorkspaceKindClear => ControlRequest::WorkspaceKindClear,
-        crate::tui::CanonicalSlashCommand::SessionStatsView => ControlRequest::SessionStatsView,
-        crate::tui::CanonicalSlashCommand::TreeView { args } => {
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindClear => {
+            ControlRequest::WorkspaceKindClear
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SessionStatsView => {
+            ControlRequest::SessionStatsView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::TreeView { args } => {
             ControlRequest::TreeView { args: args.clone() }
         }
-        crate::tui::CanonicalSlashCommand::NoteAdd { text } => {
+        crate::runtime_commands::CanonicalSlashCommand::NoteAdd { text } => {
             ControlRequest::NoteAdd { text: text.clone() }
         }
-        crate::tui::CanonicalSlashCommand::NotesView => ControlRequest::NotesView,
-        crate::tui::CanonicalSlashCommand::NotesClear => ControlRequest::NotesClear,
-        crate::tui::CanonicalSlashCommand::CheckinView => ControlRequest::CheckinView,
-        crate::tui::CanonicalSlashCommand::ContextStatus => ControlRequest::ContextStatus,
-        crate::tui::CanonicalSlashCommand::ContextCompact => ControlRequest::ContextCompact,
-        crate::tui::CanonicalSlashCommand::ContextClear => ControlRequest::ContextClear,
-        crate::tui::CanonicalSlashCommand::ContextRequest { kind, query } => {
+        crate::runtime_commands::CanonicalSlashCommand::NotesView => ControlRequest::NotesView,
+        crate::runtime_commands::CanonicalSlashCommand::NotesClear => ControlRequest::NotesClear,
+        crate::runtime_commands::CanonicalSlashCommand::CheckinView => ControlRequest::CheckinView,
+        crate::runtime_commands::CanonicalSlashCommand::ContextStatus => {
+            ControlRequest::ContextStatus
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ContextCompact => {
+            ControlRequest::ContextCompact
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ContextClear => {
+            ControlRequest::ContextClear
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ContextRequest { kind, query } => {
             ControlRequest::ContextRequest {
                 kind: kind.clone(),
                 query: query.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::ContextRequestJson(raw) => {
+        crate::runtime_commands::CanonicalSlashCommand::ContextRequestJson(raw) => {
             ControlRequest::ContextRequestJson { raw: raw.clone() }
         }
-        crate::tui::CanonicalSlashCommand::SetContextClass(class) => {
+        crate::runtime_commands::CanonicalSlashCommand::SetContextClass(class) => {
             ControlRequest::SetContextClass { class: *class }
         }
-        crate::tui::CanonicalSlashCommand::NewSession => ControlRequest::NewSession,
-        crate::tui::CanonicalSlashCommand::ListSessions => ControlRequest::ListSessions,
-        crate::tui::CanonicalSlashCommand::ResumeSession(id) => {
+        crate::runtime_commands::CanonicalSlashCommand::NewSession => ControlRequest::NewSession,
+        crate::runtime_commands::CanonicalSlashCommand::ListSessions => {
+            ControlRequest::ListSessions
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ResumeSession(id) => {
             ControlRequest::ResumeSession { id: id.clone() }
         }
-        crate::tui::CanonicalSlashCommand::AuthView => return None,
-        crate::tui::CanonicalSlashCommand::AuthStatus => ControlRequest::AuthStatus,
-        crate::tui::CanonicalSlashCommand::AuthUnlock => ControlRequest::AuthUnlock,
-        crate::tui::CanonicalSlashCommand::AuthLogin(provider) => ControlRequest::AuthLogin {
-            provider: provider.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::AuthLogout(provider) => ControlRequest::AuthLogout {
-            provider: provider.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::SkillsView => ControlRequest::SkillsView,
-        crate::tui::CanonicalSlashCommand::SkillsHelp => ControlRequest::SkillsHelp,
-        crate::tui::CanonicalSlashCommand::RuntimeProcessRestart => return None,
-        crate::tui::CanonicalSlashCommand::SkillsReload => return None,
-        crate::tui::CanonicalSlashCommand::SkillsInstall(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::AuthView => return None,
+        crate::runtime_commands::CanonicalSlashCommand::AuthStatus => ControlRequest::AuthStatus,
+        crate::runtime_commands::CanonicalSlashCommand::AuthUnlock => ControlRequest::AuthUnlock,
+        crate::runtime_commands::CanonicalSlashCommand::AuthLogin(provider) => {
+            ControlRequest::AuthLogin {
+                provider: provider.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::AuthLogout(provider) => {
+            ControlRequest::AuthLogout {
+                provider: provider.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SkillsView => ControlRequest::SkillsView,
+        crate::runtime_commands::CanonicalSlashCommand::SkillsHelp => ControlRequest::SkillsHelp,
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeProcessRestart => return None,
+        crate::runtime_commands::CanonicalSlashCommand::SkillsReload => return None,
+        crate::runtime_commands::CanonicalSlashCommand::SkillsInstall(name) => {
             ControlRequest::SkillsInstall { name: name.clone() }
         }
         // SkillCreate/SkillImport are handled directly in the TUI (queues a prompt) —
         // they never reach control_runtime. Return None to signal this.
-        crate::tui::CanonicalSlashCommand::SkillCreate(_)
-        | crate::tui::CanonicalSlashCommand::SkillImport { .. } => return None,
-        crate::tui::CanonicalSlashCommand::SkillGet(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::SkillCreate(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillImport { .. } => return None,
+        crate::runtime_commands::CanonicalSlashCommand::SkillGet(name) => {
             ControlRequest::SkillGet { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::SkillDelete(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::SkillDelete(name) => {
             ControlRequest::SkillDelete { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::PlanView
-        | crate::tui::CanonicalSlashCommand::PlanList
-        | crate::tui::CanonicalSlashCommand::PlanShow(_)
-        | crate::tui::CanonicalSlashCommand::PlanSwitch(_)
-        | crate::tui::CanonicalSlashCommand::PlanResume(_)
-        | crate::tui::CanonicalSlashCommand::PlanBackground(_)
-        | crate::tui::CanonicalSlashCommand::PlanDetach(_)
-        | crate::tui::CanonicalSlashCommand::PlanPromote(_)
-        | crate::tui::CanonicalSlashCommand::PlanBind(_)
-        | crate::tui::CanonicalSlashCommand::PlanLedger(_)
-        | crate::tui::CanonicalSlashCommand::PlanSet(_)
-        | crate::tui::CanonicalSlashCommand::PlanApprove
-        | crate::tui::CanonicalSlashCommand::PlanExecute
-        | crate::tui::CanonicalSlashCommand::PlanAdvance
-        | crate::tui::CanonicalSlashCommand::PlanSkip
-        | crate::tui::CanonicalSlashCommand::PlanClear => return None,
-        crate::tui::CanonicalSlashCommand::ExtensionView => ControlRequest::ExtensionView,
-        crate::tui::CanonicalSlashCommand::ExtensionInit(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::PlanView
+        | crate::runtime_commands::CanonicalSlashCommand::PlanList
+        | crate::runtime_commands::CanonicalSlashCommand::PlanShow(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanSwitch(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanResume(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanBackground(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanDetach(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanPromote(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanBind(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanLedger(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanSet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::PlanApprove
+        | crate::runtime_commands::CanonicalSlashCommand::PlanExecute
+        | crate::runtime_commands::CanonicalSlashCommand::PlanAdvance
+        | crate::runtime_commands::CanonicalSlashCommand::PlanSkip
+        | crate::runtime_commands::CanonicalSlashCommand::PlanClear => return None,
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionView => {
+            ControlRequest::ExtensionView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionInit(name) => {
             ControlRequest::ExtensionInit { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionGet(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionGet(name) => {
             ControlRequest::ExtensionGet { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionInstall(uri) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionInstall(uri) => {
             ControlRequest::ExtensionInstall { uri: uri.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionRemove(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionRemove(name) => {
             ControlRequest::ExtensionRemove { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionUpdate(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionUpdate(name) => {
             ControlRequest::ExtensionUpdate { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionEnable(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionEnable(name) => {
             ControlRequest::ExtensionEnable { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionDisable(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionDisable(name) => {
             ControlRequest::ExtensionDisable { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::ExtensionSearch(query) => {
+        crate::runtime_commands::CanonicalSlashCommand::ExtensionSearch(query) => {
             ControlRequest::ExtensionSearch {
                 query: query.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::ArmoryBrowse(query) => ControlRequest::ArmoryBrowse {
-            query: query.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::ArmoryInstall(target) => ControlRequest::ArmoryInstall {
-            target: target.clone(),
-        },
-        crate::tui::CanonicalSlashCommand::PersonaList => ControlRequest::PersonaList,
-        crate::tui::CanonicalSlashCommand::CatalogView => ControlRequest::CatalogView,
-        crate::tui::CanonicalSlashCommand::CatalogInstall => ControlRequest::CatalogInstall,
-        crate::tui::CanonicalSlashCommand::CatalogRemove(id) => {
+        crate::runtime_commands::CanonicalSlashCommand::ArmoryBrowse(query) => {
+            ControlRequest::ArmoryBrowse {
+                query: query.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ArmoryInstall(target) => {
+            ControlRequest::ArmoryInstall {
+                target: target.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::PersonaList => ControlRequest::PersonaList,
+        crate::runtime_commands::CanonicalSlashCommand::CatalogView => ControlRequest::CatalogView,
+        crate::runtime_commands::CanonicalSlashCommand::CatalogInstall => {
+            ControlRequest::CatalogInstall
+        }
+        crate::runtime_commands::CanonicalSlashCommand::CatalogRemove(id) => {
             ControlRequest::CatalogRemove { id: id.clone() }
         }
-        crate::tui::CanonicalSlashCommand::PluginView => ControlRequest::PluginView,
-        crate::tui::CanonicalSlashCommand::PluginInstall(uri) => {
+        crate::runtime_commands::CanonicalSlashCommand::PluginView => ControlRequest::PluginView,
+        crate::runtime_commands::CanonicalSlashCommand::PluginInstall(uri) => {
             ControlRequest::PluginInstall { uri: uri.clone() }
         }
-        crate::tui::CanonicalSlashCommand::PluginRemove(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::PluginRemove(name) => {
             ControlRequest::PluginRemove { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::PluginUpdate(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::PluginUpdate(name) => {
             ControlRequest::PluginUpdate { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::SecretsView => ControlRequest::SecretsView,
-        crate::tui::CanonicalSlashCommand::SecretsSet { name, value } => {
+        crate::runtime_commands::CanonicalSlashCommand::SecretsView => ControlRequest::SecretsView,
+        crate::runtime_commands::CanonicalSlashCommand::SecretsSet { name, value } => {
             ControlRequest::SecretsSet {
                 name: name.clone(),
                 value: value.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::SecretsGet(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::SecretsGet(name) => {
             ControlRequest::SecretsGet { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::SecretsDelete(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::SecretsDelete(name) => {
             ControlRequest::SecretsDelete { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::VariablesView => ControlRequest::VariablesView,
-        crate::tui::CanonicalSlashCommand::VariablesSet { name, value } => {
+        crate::runtime_commands::CanonicalSlashCommand::VariablesView => {
+            ControlRequest::VariablesView
+        }
+        crate::runtime_commands::CanonicalSlashCommand::VariablesSet { name, value } => {
             ControlRequest::VariablesSet {
                 name: name.clone(),
                 value: value.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::VariablesGet(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::VariablesGet(name) => {
             ControlRequest::VariablesGet { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::VariablesDelete(name) => {
+        crate::runtime_commands::CanonicalSlashCommand::VariablesDelete(name) => {
             ControlRequest::VariablesDelete { name: name.clone() }
         }
-        crate::tui::CanonicalSlashCommand::VaultStatus => ControlRequest::VaultStatus,
-        crate::tui::CanonicalSlashCommand::VaultConfigure => ControlRequest::VaultConfigure,
-        crate::tui::CanonicalSlashCommand::VaultInitPolicy => ControlRequest::VaultInitPolicy,
-        crate::tui::CanonicalSlashCommand::CleaveStatus => ControlRequest::CleaveStatus,
-        crate::tui::CanonicalSlashCommand::Smoke(command) => ControlRequest::Smoke(*command),
-        crate::tui::CanonicalSlashCommand::CleaveCancelChild(label) => {
+        crate::runtime_commands::CanonicalSlashCommand::VaultStatus => ControlRequest::VaultStatus,
+        crate::runtime_commands::CanonicalSlashCommand::VaultConfigure => {
+            ControlRequest::VaultConfigure
+        }
+        crate::runtime_commands::CanonicalSlashCommand::VaultInitPolicy => {
+            ControlRequest::VaultInitPolicy
+        }
+        crate::runtime_commands::CanonicalSlashCommand::CleaveStatus => {
+            ControlRequest::CleaveStatus
+        }
+        crate::runtime_commands::CanonicalSlashCommand::Smoke(command) => {
+            ControlRequest::Smoke(*command)
+        }
+        crate::runtime_commands::CanonicalSlashCommand::CleaveCancelChild(label) => {
             ControlRequest::CleaveCancelChild {
                 label: label.clone(),
             }
         }
-        crate::tui::CanonicalSlashCommand::DelegateStatus => ControlRequest::DelegateStatus,
+        crate::runtime_commands::CanonicalSlashCommand::DelegateStatus => {
+            ControlRequest::DelegateStatus
+        }
     })
 }
 

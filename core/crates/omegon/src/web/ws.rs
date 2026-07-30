@@ -1934,7 +1934,7 @@ async fn handle_client_command(
                 return;
             }
 
-            if let Some(command) = crate::tui::canonical_slash_command(&name, &args)
+            if let Some(command) = crate::runtime_commands::canonical_slash_command(&name, &args)
                 && let Some(request) = crate::control_runtime::control_request_from_slash(&command)
             {
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();

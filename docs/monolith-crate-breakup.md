@@ -6,6 +6,33 @@ tags: []
 open_questions:
   - "Do `settings` (205 refs from tui) and `control_runtime` (106 refs) need to move or split before `omegon-tui` can become near-leaf? If they carry their own inbound coupling from the rest of the monolith, Phase 2 may require a further extraction round that is not yet scoped."
   - "Is the current validation cost dominated by crate size or by the linker? Debug binaries reached 250 MB and emitted repeated `__eh_frame section too large (max 16MB)` warnings; the `[profile.dev]` change in 08a02bdb targets exactly that and its effect has not been measured. If linking dominates, the crate split addresses the wrong bottleneck and should be deferred."
+  - "[assumption] A no-TUI build may retain the `Interactive` CLI variant and return a precise capability error rather than changing the CLI schema between feature matrices. Is stable help/completion output more important than compile-time removal of the variant?"
+  - "Should a no-subcommand invocation in a no-TUI build print help, run a headless mode only when a prompt is supplied, or fail with an explicit `interactive support was not compiled` message? Today no subcommand selects the TUI, so feature-gating without deciding this changes startup semantics."
+  - "Should `switch` retain its independent Crossterm version picker in a no-TUI build, or should all terminal interaction be part of the `tui` feature? Keeping it preserves CLI UX but means `crossterm` cannot be removed from daemon artifacts."
+  - "Is `OperatorCommand` intentionally an integration-crate contract, or must it eventually move to an extracted crate? It currently references conversation observations, update metadata, settings types, and `ControlRequest`; moving it across a crate boundary now would create or expose dependency cycles."
+
+## Second-order feature-boundary assessment (2026-07-30)
+
+The first contract extraction exposed four effects that must shape the feature
+gate rather than be discovered accidentally during packaging:
+
+1. **CLI schema and startup behavior are separate concerns.** Removing the
+   `Interactive` variant changes generated help and shell completions between
+   artifacts. Keeping the variant and returning an explicit capability error
+   preserves the operator contract. A no-subcommand invocation without a prompt
+   must likewise fail explicitly rather than silently selecting another runtime.
+2. **Crossterm has a second owner.** `switch` uses terminal interaction outside
+   `tui/`. A daemon artifact cannot claim to exclude terminal dependencies while
+   retaining that picker. The version-explicit `switch VERSION` path should
+   remain available; picker-only behavior becomes conditional on `tui`.
+3. **The command envelope is neutral in ownership but not yet portable across
+   crates.** `OperatorCommand` carries integration-owned types. Treating its move
+   out of `tui` as permission to publish it from `omegon-traits` would create a
+   dependency inversion and broaden the change substantially.
+4. **Tests must be matrix-aware.** TUI unit/snapshot tests should compile only
+   with `tui`; daemon/control tests must compile in both matrices. A normal
+   `cargo check` alone cannot prove the deployment boundary, and a no-TUI check
+   alone cannot prove preservation of interactive behavior.
 dependencies: []
 related: []
 ---
@@ -186,6 +213,43 @@ Measured, all three from the same tree:
 The warm-loop measurement remains the only outstanding performance question, and it is now the *sole* remaining justification for Phase 2.
 
 ## Decisions
+
+### Feature-gating is an architectural boundary, not a performance claim
+
+**Status:** accepted
+
+**Decision:** Establish a default-enabled `tui` Cargo feature inside the existing
+`omegon` integration crate before attempting an `omegon-tui` crate extraction.
+The headless matrix must compile without terminal/rendering dependencies, while
+the default binary preserves current interactive behavior. Extract
+surface-neutral command and cancellation contracts first; do not scatter
+`#[cfg(feature = "tui")]` through shared runtime logic to conceal reverse
+dependencies.
+
+**Rationale:** The immediate operational goal is a deployable daemon artifact
+that does not bundle terminal rendering. Cargo feature gating proves that
+boundary without prematurely creating a cross-crate dependency chain. It also
+turns reverse dependencies from daemon/runtime code into TUI code into compiler
+failures. This decision makes no claim that feature gating or later crate
+splitting improves cold build time; prior measurements explicitly do not support
+that claim.
+
+### Keep operator command contracts in the integration crate for this phase
+
+**Status:** accepted
+
+**Decision:** `CanonicalSlashCommand`, its parser, `OperatorCommand`, prompt
+submission metadata, and the shared cancellation slot move out of the `tui`
+namespace into renderer-neutral modules in `omegon`. They do not move into
+`omegon-traits` or a new crate in this phase.
+
+**Rationale:** These contracts are shared by TUI, ACP, web, IPC, and daemon
+composition, but several variants still carry integration-owned types including
+`ControlRequest`, settings values, update metadata, and conversation
+observations. Moving them across a Cargo crate boundary now would either create
+cycles or force a much broader public API extraction. Neutral ownership inside
+the integration crate removes the incorrect TUI dependency while keeping the
+first change bounded.
 
 ### Phase 1A: expose one narrow session observation capability
 

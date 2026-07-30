@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use omegon_traits::{OperatorWaitResponse, PermissionResponse};
 
+use crate::operator_commands::{PromptMetadata, PromptQueueMode};
 use crate::surfaces::layout::{UiPresentationLevel, UiSurfaces};
-use crate::tui::{PromptMetadata, PromptQueueMode};
 
 /// Semantic operator action emitted by a frontend adapter.
 #[derive(Debug, Clone, PartialEq)]

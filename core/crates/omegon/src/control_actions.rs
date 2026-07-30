@@ -1,4 +1,4 @@
-use crate::tui::canonical_slash_command;
+use crate::runtime_commands::canonical_slash_command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -390,25 +390,25 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
         }
         "think" => (CanonicalAction::ThinkingSet, ControlRole::Edit, true),
         "context" => match canonical_slash_command("context", args) {
-            Some(crate::tui::CanonicalSlashCommand::ContextStatus) | None
+            Some(crate::runtime_commands::CanonicalSlashCommand::ContextStatus) | None
                 if args.trim().is_empty() =>
             {
                 (CanonicalAction::ContextView, ControlRole::Read, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::ContextStatus) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::ContextStatus) => {
                 (CanonicalAction::ContextView, ControlRole::Read, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::ContextCompact) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::ContextCompact) => {
                 (CanonicalAction::ContextCompact, ControlRole::Edit, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::ContextClear) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::ContextClear) => {
                 (CanonicalAction::ContextClear, ControlRole::Edit, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::ContextRequest { .. })
-            | Some(crate::tui::CanonicalSlashCommand::ContextRequestJson(_)) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::ContextRequest { .. })
+            | Some(crate::runtime_commands::CanonicalSlashCommand::ContextRequestJson(_)) => {
                 (CanonicalAction::ContextRequest, ControlRole::Edit, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::SetContextClass(_)) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::SetContextClass(_)) => {
                 (CanonicalAction::ContextSetClass, ControlRole::Edit, true)
             }
             _ => (CanonicalAction::Unknown, ControlRole::Admin, false),
@@ -434,13 +434,13 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
         "new" => (CanonicalAction::SessionNew, ControlRole::Edit, true),
         "sessions" => (CanonicalAction::SessionList, ControlRole::Read, false),
         "auth" => match canonical_slash_command("auth", args) {
-            Some(crate::tui::CanonicalSlashCommand::AuthView)
-            | Some(crate::tui::CanonicalSlashCommand::AuthStatus) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::AuthView)
+            | Some(crate::runtime_commands::CanonicalSlashCommand::AuthStatus) => {
                 (CanonicalAction::AuthStatus, ControlRole::Read, true)
             }
-            Some(crate::tui::CanonicalSlashCommand::AuthUnlock)
-            | Some(crate::tui::CanonicalSlashCommand::AuthLogin(_))
-            | Some(crate::tui::CanonicalSlashCommand::AuthLogout(_)) => {
+            Some(crate::runtime_commands::CanonicalSlashCommand::AuthUnlock)
+            | Some(crate::runtime_commands::CanonicalSlashCommand::AuthLogin(_))
+            | Some(crate::runtime_commands::CanonicalSlashCommand::AuthLogout(_)) => {
                 (CanonicalAction::AuthLogin, ControlRole::Admin, false)
             }
             _ => (CanonicalAction::Unknown, ControlRole::Admin, false),

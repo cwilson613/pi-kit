@@ -68,8 +68,10 @@ mod ipc;
 mod local_embedding;
 mod migrate;
 mod observation;
+mod operator_commands;
 #[cfg(test)]
 mod recro_coe_integration_tests;
+mod runtime_commands;
 mod runtime_composition;
 mod runtime_state;
 mod session_settings_commands;
@@ -2557,11 +2559,12 @@ async fn run_embedded_command(
     }
 
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
-    let (ipc_cmd_tx, mut ipc_cmd_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(32);
+    let (ipc_cmd_tx, mut ipc_cmd_rx) =
+        tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(32);
     {
         let ipc_cfg =
             ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), &agent.session_id);
-        let shared_cancel: tui::SharedCancel =
+        let shared_cancel: operator_commands::SharedCancel =
             Arc::new(std::sync::Mutex::new(Some(global_cancel.clone())));
         ipc::start_ipc_server(
             ipc_cfg,
@@ -2893,7 +2896,7 @@ async fn run_embedded_command(
             }
             ipc_cmd = ipc_cmd_rx.recv() => {
                 match ipc_cmd {
-                    Some(tui::TuiCommand::SubmitPrompt(submission)) => {
+                    Some(operator_commands::OperatorCommand::SubmitPrompt(submission)) => {
                         tracing::info!(prompt_len = submission.text.len(), "daemon: IPC prompt");
                         let session = default_session.clone();
                         let events_tx = events_tx.clone();
@@ -2929,10 +2932,10 @@ async fn run_embedded_command(
                             },
                         );
                     }
-                    Some(tui::TuiCommand::ManagedDelegateControl { method, respond_to, .. }) => {
+                    Some(operator_commands::OperatorCommand::ManagedDelegateControl { method, respond_to, .. }) => {
                         let _ = respond_to.send(serde_json::json!({"type": format!("{method}_result"), "accepted": false, "error": "managed delegation requires the interactive runtime"}));
                     }
-                    Some(tui::TuiCommand::ExecuteControl { request, respond_to }) => {
+                    Some(operator_commands::OperatorCommand::ExecuteControl { request, respond_to }) => {
                         tracing::info!(request = ?request, "daemon: IPC control request");
                         let response = control_runtime::execute_daemon_control(
                             request,
@@ -2947,7 +2950,7 @@ async fn run_embedded_command(
                             let _ = tx.send(response);
                         }
                     }
-                    Some(tui::TuiCommand::UpdatePlan { respond_to, .. }) => {
+                    Some(operator_commands::OperatorCommand::UpdatePlan { respond_to, .. }) => {
                         let response = omegon_traits::ControlOutputResponse {
                             accepted: false,
                             output: Some(
@@ -2958,7 +2961,7 @@ async fn run_embedded_command(
                             let _ = tx.send(response);
                         }
                     }
-                    Some(tui::TuiCommand::RunSlashCommand { name, args, respond_to }) => {
+                    Some(operator_commands::OperatorCommand::RunSlashCommand { name, args, respond_to }) => {
                         tracing::info!(command = %name, "daemon: IPC slash command → prompt");
                         let prompt = if args.is_empty() {
                             format!("/{name}")
@@ -3004,7 +3007,7 @@ async fn run_embedded_command(
                             },
                         );
                     }
-                    Some(tui::TuiCommand::Quit) => {
+                    Some(operator_commands::OperatorCommand::Quit) => {
                         tracing::info!("daemon: IPC shutdown requested");
                         break;
                     }
@@ -4204,7 +4207,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         ));
         agent.bus.finalize();
     }
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(16);
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 
     // Wire command_tx to ContextProvider for tool dispatch
     if let Ok(mut shared_tx) = agent.command_tx.lock() {
@@ -4262,7 +4265,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
     }
 
-    let shared_cancel: tui::SharedCancel = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let shared_cancel: operator_commands::SharedCancel = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     // The route matrix is a static fallback. The /v1/models endpoint
     // returns the real context window for the selected model.
@@ -4513,20 +4516,20 @@ fn build_tui_secret_readiness_snapshot(
         };
 
         let cmd = match cmd {
-            tui::TuiCommand::VoicePrompt { text, metadata } => tui::TuiCommand::SubmitPrompt(tui::PromptSubmission {
+            operator_commands::OperatorCommand::VoicePrompt { text, metadata } => operator_commands::OperatorCommand::SubmitPrompt(operator_commands::PromptSubmission {
                 text: format!("🎙 {}", text.trim()),
                 image_paths: Vec::new(),
                 submitted_by: "voice".to_string(),
                 via: "voice",
-                queue_mode: tui::PromptQueueMode::UntilReady,
-                metadata: tui::PromptMetadata { voice: Some(metadata) },
+                queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                metadata: operator_commands::PromptMetadata { voice: Some(metadata) },
             }),
             other => other,
         };
 
         match cmd {
-            tui::TuiCommand::Quit => break,
-            tui::TuiCommand::InstallUpdate { info, args } => {
+            operator_commands::OperatorCommand::Quit => break,
+            operator_commands::OperatorCommand::InstallUpdate { info, args } => {
                 let latest = info.latest.clone();
                 let operation_id = uuid::Uuid::new_v4().to_string();
                 let mut lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
@@ -4571,7 +4574,7 @@ fn build_tui_secret_readiness_snapshot(
                     }
                 }
             }
-            tui::TuiCommand::RestartProcess { binary, args } => {
+            operator_commands::OperatorCommand::RestartProcess { binary, args } => {
                 let lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
                     operation_id: uuid::Uuid::new_v4().to_string(),
                     kind: omegon_traits::RuntimeLifecycleKind::Restart,
@@ -4586,7 +4589,7 @@ fn build_tui_secret_readiness_snapshot(
                 break;
             }
 
-            tui::TuiCommand::ManagedDelegateControl { method, payload, respond_to } => {
+            operator_commands::OperatorCommand::ManagedDelegateControl { method, payload, respond_to } => {
                 let reply = match crate::managed_agent_supervisor::parse_operation(&method, &payload) {
                     Ok((envelope, operation)) => match operation {
                         crate::managed_agent_supervisor::SupervisorOperation::GetObservation { task_id } => {
@@ -4607,7 +4610,7 @@ fn build_tui_secret_readiness_snapshot(
                 let _ = respond_to.send(reply);
             }
 
-            tui::TuiCommand::ExecuteControl { request, respond_to } => {
+            operator_commands::OperatorCommand::ExecuteControl { request, respond_to } => {
                 let mut ctx = control_runtime::ControlContext {
                     runtime_state: &mut runtime_state,
                     agent: &mut agent,
@@ -4634,7 +4637,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::UpdatePlan {
+            operator_commands::OperatorCommand::UpdatePlan {
                 command,
                 respond_to,
             } => {
@@ -4657,7 +4660,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::RunShellCommand { command, respond_to } => {
+            operator_commands::OperatorCommand::RunShellCommand { command, respond_to } => {
                 // Spawn so the command loop stays unblocked — operator can
                 // submit new prompts / commands while this is in-flight.
                 let cwd = agent.cwd.clone();
@@ -4756,7 +4759,7 @@ fn build_tui_secret_readiness_snapshot(
                     };
                     let (committed_tx, committed_rx) = tokio::sync::oneshot::channel();
                     if completion_tx
-                        .send(tui::TuiCommand::OperatorShellCompleted {
+                        .send(operator_commands::OperatorCommand::OperatorShellCompleted {
                             observation,
                             committed: committed_tx,
                         })
@@ -4788,7 +4791,7 @@ fn build_tui_secret_readiness_snapshot(
                 });
             }
 
-            tui::TuiCommand::OperatorShellCompleted {
+            operator_commands::OperatorCommand::OperatorShellCompleted {
                 observation,
                 committed,
             } => {
@@ -4807,7 +4810,7 @@ fn build_tui_secret_readiness_snapshot(
                 let _ = committed.send(());
             }
 
-            tui::TuiCommand::ShellHandoff { keyboard_enhancement } => {
+            operator_commands::OperatorCommand::ShellHandoff { keyboard_enhancement } => {
                 if runtime.is_busy() {
                     let _ = events_tx.send(AgentEvent::SystemNotification {
                         message: "Shell handoff refused while a turn is active. Cancel first.".into(),
@@ -4865,7 +4868,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ModelView { respond_to } => {
+            operator_commands::OperatorCommand::ModelView { respond_to } => {
                 let response = control_runtime::model_view_response(&shared_settings).await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -4878,7 +4881,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ModelList { respond_to } => {
+            operator_commands::OperatorCommand::ModelList { respond_to } => {
                 let response = control_runtime::model_list_response().await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -4891,7 +4894,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SetModel { model, respond_to } => {
+            operator_commands::OperatorCommand::SetModel { model, respond_to } => {
                 let response = control_runtime::set_model_response(
                     &mut agent,
                     &shared_settings,
@@ -4924,7 +4927,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SetModelGrade { grade, respond_to } => {
+            operator_commands::OperatorCommand::SetModelGrade { grade, respond_to } => {
                 let response = if let Some(parsed) = crate::route::ModelGrade::parse(&grade) {
                     let snapshot = route_controller
                         .set_model_intent(crate::route::ModelIntent::with_grade(parsed))
@@ -4969,7 +4972,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SetModelProvider { provider, respond_to } => {
+            operator_commands::OperatorCommand::SetModelProvider { provider, respond_to } => {
                 let response = if let Some(selection) = crate::route::ProviderSelection::parse(&provider) {
                     let snapshot = route_controller.set_provider_selection(selection).await;
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
@@ -5006,7 +5009,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SetModelPolicy { policy, respond_to } => {
+            operator_commands::OperatorCommand::SetModelPolicy { policy, respond_to } => {
                 let response = if let Some(parsed) = crate::route::GradePolicy::parse(&policy) {
                     let snapshot = route_controller.set_grade_policy(parsed).await;
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
@@ -5043,7 +5046,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ModelUnpin { respond_to } => {
+            operator_commands::OperatorCommand::ModelUnpin { respond_to } => {
                 let snapshot = route_controller.clear_exact_model_override().await;
                 if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
@@ -5064,7 +5067,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SetThinking { level, respond_to } => {
+            operator_commands::OperatorCommand::SetThinking { level, respond_to } => {
                 let response =
                     control_runtime::set_thinking_response(&shared_settings, &agent.cwd, level).await;
                 if let Some(output) = response.output.clone() {
@@ -5078,7 +5081,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::Compact => {
+            operator_commands::OperatorCommand::Compact => {
                 tracing::info!("manual compaction requested");
 
                 let bridge_guard = bridge.read().await;
@@ -5178,7 +5181,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ContextStatus { respond_to } => {
+            operator_commands::OperatorCommand::ContextStatus { respond_to } => {
                 let response = control_runtime::context_status_response(&runtime_state, &shared_settings).await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -5191,7 +5194,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ContextCompact { respond_to } => {
+            operator_commands::OperatorCommand::ContextCompact { respond_to } => {
                 let mut ctx = control_runtime::ControlContext {
                     runtime_state: &mut runtime_state,
                     agent: &mut agent,
@@ -5222,7 +5225,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ContextClear { respond_to } => {
+            operator_commands::OperatorCommand::ContextClear { respond_to } => {
                 let mut ctx = control_runtime::ControlContext {
                     runtime_state: &mut runtime_state,
                     agent: &mut agent,
@@ -5253,7 +5256,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ListSessions { respond_to } => {
+            operator_commands::OperatorCommand::ListSessions { respond_to } => {
                 let text = list_sessions_message(&agent.cwd);
                 let _ = events_tx.send(AgentEvent::SystemNotification {
                     message: text.clone(),
@@ -5268,7 +5271,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::NewSession { respond_to } => {
+            operator_commands::OperatorCommand::NewSession { respond_to } => {
                 let response = control_runtime::new_session_response(
                     &mut runtime_state,
                     &mut agent,
@@ -5288,7 +5291,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthStatus { respond_to } => {
+            operator_commands::OperatorCommand::AuthStatus { respond_to } => {
                 let response = control_runtime::auth_status_response().await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -5301,7 +5304,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthLogin { provider, respond_to } => {
+            operator_commands::OperatorCommand::AuthLogin { provider, respond_to } => {
                 let response = control_runtime::auth_login_response(
                     &shared_settings,
                     &bridge,
@@ -5324,7 +5327,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthLogout { provider, respond_to } => {
+            operator_commands::OperatorCommand::AuthLogout { provider, respond_to } => {
                 let response = control_runtime::auth_logout_response(&provider).await;
                 if response.accepted {
                     // Evict provider credentials from the secrets session cache
@@ -5370,7 +5373,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthUnlock { respond_to } => {
+            operator_commands::OperatorCommand::AuthUnlock { respond_to } => {
                 let response = control_runtime::auth_unlock_response().await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -5383,7 +5386,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::StartWebDashboard => {
+            operator_commands::OperatorCommand::StartWebDashboard => {
                 let web_state = web::WebState::with_auth_state_and_secrets(
                     agent.dashboard_handles.clone(),
                     events_tx.clone(),
@@ -5411,7 +5414,7 @@ fn build_tui_secret_readiness_snapshot(
                             while let Some(web_cmd) = rx.recv().await {
                                 let tui_cmd = match web_cmd {
                                     web::WebCommand::UserPrompt { text, image_paths } => {
-                                        tui::TuiCommand::SubmitPrompt(crate::tui::PromptSubmission {
+                                        operator_commands::OperatorCommand::SubmitPrompt(crate::operator_commands::PromptSubmission {
                                             text,
                                             image_paths: image_paths
                                                 .into_iter()
@@ -5419,8 +5422,8 @@ fn build_tui_secret_readiness_snapshot(
                                                 .collect(),
                                             submitted_by: "web-dashboard".to_string(),
                                             via: "websocket",
-                                            queue_mode: crate::tui::PromptQueueMode::InterruptAfterTurn,
-                                            metadata: crate::tui::PromptMetadata::default(),
+                                            queue_mode: crate::operator_commands::PromptQueueMode::InterruptAfterTurn,
+                                            metadata: crate::operator_commands::PromptMetadata::default(),
                                         })
                                     }
                                     web::WebCommand::SlashCommand {
@@ -5428,37 +5431,37 @@ fn build_tui_secret_readiness_snapshot(
                                         args,
                                         respond_to,
                                     } => {
-                                        tui::TuiCommand::RunSlashCommand {
+                                        operator_commands::OperatorCommand::RunSlashCommand {
                                             name,
                                             args,
                                             respond_to,
                                         }
                                     }
-                                    web::WebCommand::Cancel => tui::TuiCommand::CancelActiveTurn {
+                                    web::WebCommand::Cancel => operator_commands::OperatorCommand::CancelActiveTurn {
                                         submitted_by: "web-dashboard".to_string(),
                                         via: "websocket",
                                     },
                                     web::WebCommand::ExecuteControl { request, respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ExecuteControl { request, respond_to }).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl { request, respond_to }).await.is_err() {
                                             break;
                                         }
                                         continue;
                                     }
                                     web::WebCommand::ManagedDelegateControl { method, payload, respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ManagedDelegateControl { method, payload, respond_to }).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ManagedDelegateControl { method, payload, respond_to }).await.is_err() {
                                             break;
                                         }
                                         continue;
                                     }
                                     web::WebCommand::Shutdown => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::Quit).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::Quit).await.is_err() {
                                             break;
                                         }
                                         continue;
                                     }
                                     web::WebCommand::CancelCleaveChild { label, respond_to } => {
                                         let (control_tx, control_rx) = tokio::sync::oneshot::channel();
-                                        if cmd_tx_clone.send(tui::TuiCommand::ExecuteControl {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl {
                                             request: crate::control_runtime::ControlRequest::CleaveCancelChild {
                                                 label,
                                             },
@@ -5501,20 +5504,20 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::RunSlashCommand {
+            operator_commands::OperatorCommand::RunSlashCommand {
                 name,
                 args,
                 respond_to,
             } => {
-                let lifecycle_command = crate::tui::canonical_slash_command(&name, &args);
+                let lifecycle_command = crate::runtime_commands::canonical_slash_command(&name, &args);
                 if matches!(
                     lifecycle_command,
-                    Some(crate::tui::CanonicalSlashCommand::RuntimeProcessRestart)
+                    Some(crate::runtime_commands::CanonicalSlashCommand::RuntimeProcessRestart)
                 ) {
                     let binary = std::env::current_exe()
                         .and_then(|path| path.canonicalize())
                         .unwrap_or_else(|_| std::path::PathBuf::from("omegon"));
-                    deferred_commands.push_back(tui::TuiCommand::RestartProcess {
+                    deferred_commands.push_back(operator_commands::OperatorCommand::RestartProcess {
                         binary,
                         args: std::env::args().skip(1).collect(),
                     });
@@ -5531,8 +5534,8 @@ fn build_tui_secret_readiness_snapshot(
                 }
                 if matches!(
                     lifecycle_command,
-                    Some(crate::tui::CanonicalSlashCommand::RuntimeSubstrateRefresh)
-                        | Some(crate::tui::CanonicalSlashCommand::SkillsReload)
+                    Some(crate::runtime_commands::CanonicalSlashCommand::RuntimeSubstrateRefresh)
+                        | Some(crate::runtime_commands::CanonicalSlashCommand::SkillsReload)
                 ) {
                     let response = control_runtime::runtime_substrate_refresh_response(
                         &mut runtime_state,
@@ -5561,7 +5564,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::BusCommand { name, args } => {
+            operator_commands::OperatorCommand::BusCommand { name, args } => {
                 if is_capacity_slash_command(&name) {
                     let body =
                         capacity_report(&runtime_state, &shared_settings, &name, &args).await;
@@ -5941,7 +5944,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SubmitPrompt(prompt) => {
+            operator_commands::OperatorCommand::SubmitPrompt(prompt) => {
                 let actor = RuntimeActor {
                     kind: runtime_actor_kind_from_via(prompt.via),
                     label: prompt.submitted_by.clone(),
@@ -5949,9 +5952,9 @@ fn build_tui_secret_readiness_snapshot(
                 let via = control_surface_from_via(prompt.via);
 
                 let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
-                        crate::tui::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
-                        crate::tui::PromptQueueMode::UntilReady => QueueMode::UntilReady,
-                        crate::tui::PromptQueueMode::Immediate => QueueMode::Immediate,
+                        crate::operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
+                        crate::operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
+                        crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
                     }));
 
                 if runtime.is_busy() {
@@ -6056,28 +6059,28 @@ fn build_tui_secret_readiness_snapshot(
                                 };
 
                                 let cmd = match cmd {
-                                    tui::TuiCommand::VoicePrompt { text, metadata } => tui::TuiCommand::SubmitPrompt(tui::PromptSubmission {
+                                    operator_commands::OperatorCommand::VoicePrompt { text, metadata } => operator_commands::OperatorCommand::SubmitPrompt(operator_commands::PromptSubmission {
                                         text: format!("🎙 {}", text.trim()),
                                         image_paths: Vec::new(),
                                         submitted_by: "voice".to_string(),
                                         via: "voice",
-                                        queue_mode: tui::PromptQueueMode::UntilReady,
-                                        metadata: tui::PromptMetadata { voice: Some(metadata) },
+                                        queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                        metadata: operator_commands::PromptMetadata { voice: Some(metadata) },
                                     }),
                                     other => other,
                                 };
 
                                 match cmd {
-                                    tui::TuiCommand::SubmitPrompt(prompt) => {
+                                    operator_commands::OperatorCommand::SubmitPrompt(prompt) => {
                                         let actor = RuntimeActor {
                                             kind: runtime_actor_kind_from_via(prompt.via),
                                             label: prompt.submitted_by.clone(),
                                         };
                                         let via = control_surface_from_via(prompt.via);
                                         let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
-                                            crate::tui::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
-                                            crate::tui::PromptQueueMode::UntilReady => QueueMode::UntilReady,
-                                            crate::tui::PromptQueueMode::Immediate => QueueMode::Immediate,
+                                            crate::operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
+                                            crate::operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
+                                            crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
                                         }));
                                         emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
                                         if let Some(queued_prompt) = runtime.queue.iter().find(|queued| queued.id == prompt_id)
@@ -6088,7 +6091,7 @@ fn build_tui_secret_readiness_snapshot(
                                             });
                                         }
                                     }
-                                    tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
+                                    operator_commands::OperatorCommand::CancelActiveTurn { submitted_by, via } => {
                                         handle_runtime_cancel_command(
                                             &mut runtime,
                                             &shared_cancel,
@@ -6097,7 +6100,7 @@ fn build_tui_secret_readiness_snapshot(
                                             via,
                                         );
                                     }
-                                    tui::TuiCommand::Quit => {
+                                    operator_commands::OperatorCommand::Quit => {
                                         quit_after_turn = true;
                                         if let Ok(guard) = shared_cancel.lock()
                                             && let Some(ref cancel) = *guard
@@ -6105,9 +6108,9 @@ fn build_tui_secret_readiness_snapshot(
                                             cancel.cancel();
                                         }
                                     }
-                                    tui::TuiCommand::InstallUpdate { info, args } => {
+                                    operator_commands::OperatorCommand::InstallUpdate { info, args } => {
                                         deferred_commands.push_back(
-                                            tui::TuiCommand::InstallUpdate { info, args },
+                                            operator_commands::OperatorCommand::InstallUpdate { info, args },
                                         );
                                         quit_after_turn = true;
                                         if let Ok(guard) = shared_cancel.lock()
@@ -6116,7 +6119,7 @@ fn build_tui_secret_readiness_snapshot(
                                             cancel.cancel();
                                         }
                                     }
-                                    tui::TuiCommand::RestartProcess { binary, args } => {
+                                    operator_commands::OperatorCommand::RestartProcess { binary, args } => {
                                         restart_request = Some((binary, args));
                                         quit_after_turn = true;
                                         if let Ok(guard) = shared_cancel.lock()
@@ -6142,7 +6145,7 @@ fn build_tui_secret_readiness_snapshot(
                     }
                 }
             }
-            tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
+            operator_commands::OperatorCommand::CancelActiveTurn { submitted_by, via } => {
                 handle_runtime_cancel_command(
                     &mut runtime,
                     &shared_cancel,
@@ -6151,7 +6154,7 @@ fn build_tui_secret_readiness_snapshot(
                     via,
                 );
             }
-            tui::TuiCommand::VoicePrompt { .. } => unreachable!("VoicePrompt is normalized above"),
+            operator_commands::OperatorCommand::VoicePrompt { .. } => unreachable!("VoicePrompt is normalized above"),
         }
     }
 
@@ -6490,7 +6493,7 @@ struct PromptEnvelope {
     image_paths: Vec<PathBuf>,
     submitted_by: RuntimeActor,
     via: ControlSurface,
-    metadata: tui::PromptMetadata,
+    metadata: operator_commands::PromptMetadata,
     queue_mode: QueueMode,
     queued_at: std::time::Instant,
 }
@@ -6620,7 +6623,7 @@ fn control_surface_from_via(via: &str) -> ControlSurface {
 
 fn handle_runtime_cancel_command(
     runtime: &mut InteractiveRuntimeSupervisor,
-    shared_cancel: &tui::SharedCancel,
+    shared_cancel: &operator_commands::SharedCancel,
     events_tx: &broadcast::Sender<AgentEvent>,
     submitted_by: String,
     via: &'static str,
@@ -6781,7 +6784,7 @@ async fn run_interactive_active_turn(
     runtime: InteractiveRuntimeResources,
     bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
-    shared_cancel: tui::SharedCancel,
+    shared_cancel: operator_commands::SharedCancel,
     pending_compact: Arc<std::sync::atomic::AtomicBool>,
     events_tx: broadcast::Sender<AgentEvent>,
     active: ActiveTurnMeta,
@@ -7129,7 +7132,7 @@ impl InteractiveRuntimeSupervisor {
         image_paths: Vec<PathBuf>,
         actor: RuntimeActor,
         via: ControlSurface,
-        metadata: tui::PromptMetadata,
+        metadata: operator_commands::PromptMetadata,
         queue_mode: Option<QueueMode>,
     ) -> u64 {
         self.next_prompt_id += 1;
@@ -8382,7 +8385,7 @@ async fn execute_remote_slash_command(
     name: &str,
     args: &str,
 ) -> omegon_traits::SlashCommandResponse {
-    use crate::tui::canonical_slash_command;
+    use crate::runtime_commands::canonical_slash_command;
     use omegon_traits::SlashCommandResponse;
 
     if is_capacity_slash_command(name) {
@@ -8428,22 +8431,22 @@ async fn execute_remote_slash_command(
 
     if matches!(
         command,
-        crate::tui::CanonicalSlashCommand::PlanView
-            | crate::tui::CanonicalSlashCommand::PlanSet(_)
-            | crate::tui::CanonicalSlashCommand::PlanList
-            | crate::tui::CanonicalSlashCommand::PlanShow(_)
-            | crate::tui::CanonicalSlashCommand::PlanSwitch(_)
-            | crate::tui::CanonicalSlashCommand::PlanResume(_)
-            | crate::tui::CanonicalSlashCommand::PlanBackground(_)
-            | crate::tui::CanonicalSlashCommand::PlanDetach(_)
-            | crate::tui::CanonicalSlashCommand::PlanPromote(_)
-            | crate::tui::CanonicalSlashCommand::PlanBind(_)
-            | crate::tui::CanonicalSlashCommand::PlanLedger(_)
-            | crate::tui::CanonicalSlashCommand::PlanApprove
-            | crate::tui::CanonicalSlashCommand::PlanExecute
-            | crate::tui::CanonicalSlashCommand::PlanAdvance
-            | crate::tui::CanonicalSlashCommand::PlanSkip
-            | crate::tui::CanonicalSlashCommand::PlanClear
+        crate::runtime_commands::CanonicalSlashCommand::PlanView
+            | crate::runtime_commands::CanonicalSlashCommand::PlanSet(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanList
+            | crate::runtime_commands::CanonicalSlashCommand::PlanShow(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanSwitch(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanResume(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanBackground(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanDetach(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanPromote(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanBind(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanLedger(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanApprove
+            | crate::runtime_commands::CanonicalSlashCommand::PlanExecute
+            | crate::runtime_commands::CanonicalSlashCommand::PlanAdvance
+            | crate::runtime_commands::CanonicalSlashCommand::PlanSkip
+            | crate::runtime_commands::CanonicalSlashCommand::PlanClear
     ) {
         return execute_plan_slash_command(runtime_state, command);
     }
@@ -8469,7 +8472,7 @@ enum RemoteBuiltinPolicy {
 
 fn reject_remote_builtin_command(
     name: &str,
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
     cli: &Cli,
 ) -> Option<omegon_traits::SlashCommandResponse> {
     use omegon_traits::SlashCommandResponse;
@@ -8494,7 +8497,7 @@ fn reject_remote_builtin_command(
 
 fn remote_builtin_policy(
     name: &str,
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> RemoteBuiltinPolicy {
     let registry_name = remote_registry_name_for_command(name, command);
     let Some(definition) = crate::command_registry::builtin_command_definitions()
@@ -8506,15 +8509,19 @@ fn remote_builtin_policy(
 
     if registry_name == "skills" {
         return match command {
-            crate::tui::CanonicalSlashCommand::SkillsView
-            | crate::tui::CanonicalSlashCommand::SkillsHelp
-            | crate::tui::CanonicalSlashCommand::SkillGet(_) => RemoteBuiltinPolicy::Allow,
-            crate::tui::CanonicalSlashCommand::SkillsInstall(_)
-            | crate::tui::CanonicalSlashCommand::SkillDelete(_) => {
+            crate::runtime_commands::CanonicalSlashCommand::SkillsView
+            | crate::runtime_commands::CanonicalSlashCommand::SkillsHelp
+            | crate::runtime_commands::CanonicalSlashCommand::SkillGet(_) => {
+                RemoteBuiltinPolicy::Allow
+            }
+            crate::runtime_commands::CanonicalSlashCommand::SkillsInstall(_)
+            | crate::runtime_commands::CanonicalSlashCommand::SkillDelete(_) => {
                 RemoteBuiltinPolicy::RequiresBypass
             }
-            crate::tui::CanonicalSlashCommand::SkillCreate(_)
-            | crate::tui::CanonicalSlashCommand::SkillImport { .. } => RemoteBuiltinPolicy::Deny,
+            crate::runtime_commands::CanonicalSlashCommand::SkillCreate(_)
+            | crate::runtime_commands::CanonicalSlashCommand::SkillImport { .. } => {
+                RemoteBuiltinPolicy::Deny
+            }
             _ => RemoteBuiltinPolicy::Deny,
         };
     }
@@ -8524,11 +8531,13 @@ fn remote_builtin_policy(
     }
 
     match command {
-        crate::tui::CanonicalSlashCommand::AuthView
-        | crate::tui::CanonicalSlashCommand::AuthStatus => RemoteBuiltinPolicy::Allow,
-        crate::tui::CanonicalSlashCommand::AuthUnlock
-        | crate::tui::CanonicalSlashCommand::AuthLogin(_) => RemoteBuiltinPolicy::RequiresBypass,
-        crate::tui::CanonicalSlashCommand::AuthLogout(_) => RemoteBuiltinPolicy::Allow,
+        crate::runtime_commands::CanonicalSlashCommand::AuthView
+        | crate::runtime_commands::CanonicalSlashCommand::AuthStatus => RemoteBuiltinPolicy::Allow,
+        crate::runtime_commands::CanonicalSlashCommand::AuthUnlock
+        | crate::runtime_commands::CanonicalSlashCommand::AuthLogin(_) => {
+            RemoteBuiltinPolicy::RequiresBypass
+        }
+        crate::runtime_commands::CanonicalSlashCommand::AuthLogout(_) => RemoteBuiltinPolicy::Allow,
         _ if definition.safety.requires_confirmation => RemoteBuiltinPolicy::RequiresBypass,
         _ => RemoteBuiltinPolicy::Allow,
     }
@@ -8536,45 +8545,45 @@ fn remote_builtin_policy(
 
 fn remote_registry_name_for_command<'a>(
     name: &'a str,
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> &'a str {
     match command {
-        crate::tui::CanonicalSlashCommand::AutomationView
-        | crate::tui::CanonicalSlashCommand::AutomationSet(_) => "automation",
-        crate::tui::CanonicalSlashCommand::AuthView
-        | crate::tui::CanonicalSlashCommand::AuthStatus
-        | crate::tui::CanonicalSlashCommand::AuthUnlock
-        | crate::tui::CanonicalSlashCommand::AuthLogin(_)
-        | crate::tui::CanonicalSlashCommand::AuthLogout(_) => "auth",
-        crate::tui::CanonicalSlashCommand::SkillsView
-        | crate::tui::CanonicalSlashCommand::SkillsHelp
-        | crate::tui::CanonicalSlashCommand::SkillsReload
-        | crate::tui::CanonicalSlashCommand::SkillsInstall(_)
-        | crate::tui::CanonicalSlashCommand::SkillCreate(_)
-        | crate::tui::CanonicalSlashCommand::SkillImport { .. }
-        | crate::tui::CanonicalSlashCommand::SkillGet(_)
-        | crate::tui::CanonicalSlashCommand::SkillDelete(_) => "skills",
-        crate::tui::CanonicalSlashCommand::NoteAdd { .. }
-        | crate::tui::CanonicalSlashCommand::NotesView
-        | crate::tui::CanonicalSlashCommand::NotesClear
-        | crate::tui::CanonicalSlashCommand::CheckinView => "notes",
-        crate::tui::CanonicalSlashCommand::WorkspaceStatusView
-        | crate::tui::CanonicalSlashCommand::WorkspaceListView
-        | crate::tui::CanonicalSlashCommand::WorkspaceNew(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceDestroy(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceAdopt
-        | crate::tui::CanonicalSlashCommand::WorkspaceRelease
-        | crate::tui::CanonicalSlashCommand::WorkspaceArchive
-        | crate::tui::CanonicalSlashCommand::WorkspacePrune
-        | crate::tui::CanonicalSlashCommand::WorkspaceBindMilestone(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceBindNode(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceBindClear
-        | crate::tui::CanonicalSlashCommand::WorkspaceRoleView
-        | crate::tui::CanonicalSlashCommand::WorkspaceRoleSet(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceRoleClear
-        | crate::tui::CanonicalSlashCommand::WorkspaceKindView
-        | crate::tui::CanonicalSlashCommand::WorkspaceKindSet(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceKindClear => "status",
+        crate::runtime_commands::CanonicalSlashCommand::AutomationView
+        | crate::runtime_commands::CanonicalSlashCommand::AutomationSet(_) => "automation",
+        crate::runtime_commands::CanonicalSlashCommand::AuthView
+        | crate::runtime_commands::CanonicalSlashCommand::AuthStatus
+        | crate::runtime_commands::CanonicalSlashCommand::AuthUnlock
+        | crate::runtime_commands::CanonicalSlashCommand::AuthLogin(_)
+        | crate::runtime_commands::CanonicalSlashCommand::AuthLogout(_) => "auth",
+        crate::runtime_commands::CanonicalSlashCommand::SkillsView
+        | crate::runtime_commands::CanonicalSlashCommand::SkillsHelp
+        | crate::runtime_commands::CanonicalSlashCommand::SkillsReload
+        | crate::runtime_commands::CanonicalSlashCommand::SkillsInstall(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillCreate(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillImport { .. }
+        | crate::runtime_commands::CanonicalSlashCommand::SkillGet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillDelete(_) => "skills",
+        crate::runtime_commands::CanonicalSlashCommand::NoteAdd { .. }
+        | crate::runtime_commands::CanonicalSlashCommand::NotesView
+        | crate::runtime_commands::CanonicalSlashCommand::NotesClear
+        | crate::runtime_commands::CanonicalSlashCommand::CheckinView => "notes",
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceStatusView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceListView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceNew(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceDestroy(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceAdopt
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRelease
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceArchive
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspacePrune
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindMilestone(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindNode(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindClear
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleSet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleClear
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindSet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindClear => "status",
         _ => name,
     }
 }
@@ -8631,9 +8640,9 @@ fn execute_registered_remote_command(
 
 fn execute_plan_slash_command(
     runtime_state: &mut InteractiveAgentState,
-    command: crate::tui::CanonicalSlashCommand,
+    command: crate::runtime_commands::CanonicalSlashCommand,
 ) -> omegon_traits::SlashCommandResponse {
-    use crate::tui::CanonicalSlashCommand;
+    use crate::runtime_commands::CanonicalSlashCommand;
     use omegon_traits::SlashCommandResponse;
 
     let intent = &mut runtime_state.conversation.intent;
@@ -10293,8 +10302,8 @@ mod tests {
             image_paths: Vec::new(),
             submitted_by: RuntimeActor::tui(),
             via: ControlSurface::Tui,
-            metadata: tui::PromptMetadata {
-                voice: Some(tui::VoicePromptMetadata {
+            metadata: operator_commands::PromptMetadata {
+                voice: Some(operator_commands::VoicePromptMetadata {
                     event_id: "u-close".to_string(),
                     duration_s: None,
                     radio_cue: Some("over_and_out".to_string()),
@@ -10308,8 +10317,8 @@ mod tests {
         assert!(prompt.requests_voice_close());
 
         let malformed_close = PromptEnvelope {
-            metadata: tui::PromptMetadata {
-                voice: Some(tui::VoicePromptMetadata {
+            metadata: operator_commands::PromptMetadata {
+                voice: Some(operator_commands::VoicePromptMetadata {
                     event_id: "u-close".to_string(),
                     duration_s: None,
                     radio_cue: Some("over".to_string()),
@@ -10325,8 +10334,8 @@ mod tests {
     #[test]
     fn interactive_runtime_supervisor_preserves_prompt_metadata() {
         let mut supervisor = InteractiveRuntimeSupervisor::default();
-        let metadata = tui::PromptMetadata {
-            voice: Some(tui::VoicePromptMetadata {
+        let metadata = operator_commands::PromptMetadata {
+            voice: Some(operator_commands::VoicePromptMetadata {
                 event_id: "u-close".to_string(),
                 duration_s: Some(2.1),
                 radio_cue: Some("over_and_out".to_string()),
@@ -10355,7 +10364,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -10363,7 +10372,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -10386,7 +10395,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.maybe_start_next_turn().expect("active turn");
@@ -10414,7 +10423,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.maybe_start_next_turn().expect("active turn");
@@ -10435,7 +10444,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -10443,7 +10452,7 @@ mod tests {
             vec![PathBuf::from("/tmp/paste.png")],
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -10493,7 +10502,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -10501,7 +10510,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -10528,7 +10537,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -10563,7 +10572,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -10571,7 +10580,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor
@@ -10601,7 +10610,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -10609,7 +10618,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -10785,29 +10794,38 @@ mod tests {
     #[test]
     fn remote_auth_status_is_allowed_but_nested_auth_side_effects_require_bypass() {
         assert_eq!(
-            remote_builtin_policy("auth", &crate::tui::CanonicalSlashCommand::AuthStatus,),
-            RemoteBuiltinPolicy::Allow
-        );
-        assert_eq!(
-            remote_builtin_policy("auth", &crate::tui::CanonicalSlashCommand::AuthView,),
+            remote_builtin_policy(
+                "auth",
+                &crate::runtime_commands::CanonicalSlashCommand::AuthStatus,
+            ),
             RemoteBuiltinPolicy::Allow
         );
         assert_eq!(
             remote_builtin_policy(
                 "auth",
-                &crate::tui::CanonicalSlashCommand::AuthLogin("anthropic".into()),
+                &crate::runtime_commands::CanonicalSlashCommand::AuthView,
+            ),
+            RemoteBuiltinPolicy::Allow
+        );
+        assert_eq!(
+            remote_builtin_policy(
+                "auth",
+                &crate::runtime_commands::CanonicalSlashCommand::AuthLogin("anthropic".into()),
             ),
             RemoteBuiltinPolicy::RequiresBypass
         );
         assert_eq!(
             remote_builtin_policy(
                 "auth",
-                &crate::tui::CanonicalSlashCommand::AuthLogout("anthropic".into()),
+                &crate::runtime_commands::CanonicalSlashCommand::AuthLogout("anthropic".into()),
             ),
             RemoteBuiltinPolicy::Allow
         );
         assert_eq!(
-            remote_builtin_policy("auth", &crate::tui::CanonicalSlashCommand::AuthUnlock,),
+            remote_builtin_policy(
+                "auth",
+                &crate::runtime_commands::CanonicalSlashCommand::AuthUnlock,
+            ),
             RemoteBuiltinPolicy::RequiresBypass
         );
     }
@@ -11571,7 +11589,7 @@ mod tests {
 
         let response = execute_plan_slash_command(
             &mut runtime_state,
-            crate::tui::CanonicalSlashCommand::PlanView,
+            crate::runtime_commands::CanonicalSlashCommand::PlanView,
         );
 
         assert!(response.accepted);

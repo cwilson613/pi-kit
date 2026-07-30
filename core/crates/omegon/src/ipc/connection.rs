@@ -22,8 +22,8 @@ use omegon_traits::{
 
 use super::snapshot::build_state_snapshot;
 use super::wire::{decode_envelope, encode_envelope, read_frame};
+use crate::operator_commands::{OperatorCommand as TuiCommand, SharedCancel};
 use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
-use crate::tui::{SharedCancel, TuiCommand};
 
 fn parse_caller_role(raw: Option<&str>) -> crate::control_actions::ControlRole {
     match raw.unwrap_or("admin") {
@@ -264,14 +264,17 @@ impl IpcConnection {
                     }
                     let accepted = cfg
                         .command_tx
-                        .send(TuiCommand::SubmitPrompt(crate::tui::PromptSubmission {
-                            text: req.prompt,
-                            image_paths: Vec::new(),
-                            submitted_by: "ipc-controller".to_string(),
-                            via: "ipc",
-                            queue_mode: crate::tui::PromptQueueMode::InterruptAfterTurn,
-                            metadata: crate::tui::PromptMetadata::default(),
-                        }))
+                        .send(TuiCommand::SubmitPrompt(
+                            crate::operator_commands::PromptSubmission {
+                                text: req.prompt,
+                                image_paths: Vec::new(),
+                                submitted_by: "ipc-controller".to_string(),
+                                via: "ipc",
+                                queue_mode:
+                                    crate::operator_commands::PromptQueueMode::InterruptAfterTurn,
+                                metadata: crate::operator_commands::PromptMetadata::default(),
+                            },
+                        ))
                         .await
                         .is_ok();
                     send_response(

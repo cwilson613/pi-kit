@@ -268,7 +268,16 @@ pub async fn execute_streaming(
         IDLE_HEARTBEAT_INTERVAL,
     );
 
+    let mut stdout_open = true;
+    let mut stderr_open = true;
     let exit_status = loop {
+        // Keep timeout and cancellation active until both pipes close. Draining
+        // one pipe in an uninterruptible inner loop lets a descendant that
+        // inherited the other pipe hold execution open past either deadline.
+        if !stdout_open && !stderr_open {
+            break child.wait().await?;
+        }
+
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
@@ -294,7 +303,7 @@ pub async fn execute_streaming(
                     last_flush = Instant::now();
                 }
             }
-            line = read_lossy_line(&mut stdout_lines) => {
+            line = read_lossy_line(&mut stdout_lines), if stdout_open => {
                 match line? {
                     Some(l) => {
                         combined.push_str(&l);
@@ -302,19 +311,10 @@ pub async fn execute_streaming(
                         lines_seen += 1;
                         maybe_flush_partial(&sink, sink_active, &combined, lines_seen, start, &mut last_flush);
                     }
-                    None => {
-                        // stdout closed — drain remaining stderr then wait for exit
-                        while let Some(l) = read_lossy_line(&mut stderr_lines).await? {
-                            combined.push_str(&l);
-                            combined.push('\n');
-                            lines_seen += 1;
-                            maybe_flush_partial(&sink, sink_active, &combined, lines_seen, start, &mut last_flush);
-                        }
-                        break child.wait().await?;
-                    }
+                    None => stdout_open = false,
                 }
             }
-            line = read_lossy_line(&mut stderr_lines) => {
+            line = read_lossy_line(&mut stderr_lines), if stderr_open => {
                 match line? {
                     Some(l) => {
                         combined.push_str(&l);
@@ -322,16 +322,7 @@ pub async fn execute_streaming(
                         lines_seen += 1;
                         maybe_flush_partial(&sink, sink_active, &combined, lines_seen, start, &mut last_flush);
                     }
-                    None => {
-                        // stderr closed — drain remaining stdout then wait for exit
-                        while let Some(l) = read_lossy_line(&mut stdout_lines).await? {
-                            combined.push_str(&l);
-                            combined.push('\n');
-                            lines_seen += 1;
-                            maybe_flush_partial(&sink, sink_active, &combined, lines_seen, start, &mut last_flush);
-                        }
-                        break child.wait().await?;
-                    }
+                    None => stderr_open = false,
                 }
             }
         }
@@ -1486,6 +1477,67 @@ mod tests {
         assert!(
             !marker.exists(),
             "bash descendant survived execution-future drop"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_remains_active_after_stdout_closes() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("stderr-holder-survived");
+        let command = format!(
+            "exec 1>&-; (sleep 3; printf survived > '{}') & wait",
+            marker.display()
+        );
+
+        let started = Instant::now();
+        let result = execute(&command, temp.path(), Some(1), CancellationToken::new()).await;
+        let err = result.expect_err("closed stdout must not disable timeout");
+        assert!(
+            err.to_string()
+                .contains("Command timed out after 1 seconds")
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "execution ignored its timeout while draining stderr"
+        );
+
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
+        assert!(
+            !marker.exists(),
+            "stderr-holding descendant survived timeout"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_remains_active_after_stderr_closes() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("stdout-holder-survived");
+        let command = format!(
+            "exec 2>&-; (sleep 3; printf survived > '{}') & wait",
+            marker.display()
+        );
+        let cancel = CancellationToken::new();
+        let cancellation = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancellation.cancel();
+        });
+
+        let started = Instant::now();
+        let result = execute(&command, temp.path(), None, cancel).await;
+        let err = result.expect_err("closed stderr must not disable cancellation");
+        assert!(err.to_string().contains("Command aborted"));
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "execution ignored cancellation while draining stdout"
+        );
+
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
+        assert!(
+            !marker.exists(),
+            "stdout-holding descendant survived cancellation"
         );
     }
 

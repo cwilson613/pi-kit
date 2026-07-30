@@ -1813,8 +1813,31 @@ fn collect_plugin_secret_requirements(cwd: &std::path::Path) -> Vec<String> {
     );
     names
 }
+fn extension_secret_names(manifest: &crate::extensions::ExtensionManifest) -> Vec<String> {
+    let mut names = manifest.secrets.required.clone();
+    for name in &manifest.secrets.optional {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
+async fn resolve_extension_secrets(
+    manifest: &crate::extensions::ExtensionManifest,
+    secrets: &omegon_secrets::SecretsManager,
+) -> Vec<(String, String)> {
+    let mut resolved = Vec::new();
+    for name in extension_secret_names(manifest) {
+        if let Some(value) = secrets.resolve_async(&name).await {
+            resolved.push((name, value));
+        }
+    }
+    resolved
+}
+
 ///
-/// Resolves declared secrets from the session cache and delivers them to each
+/// Resolves declared secrets at the enabled extension's spawn boundary and
 /// extension via `bootstrap_secrets` RPC — never via subprocess environment.
 async fn discover_and_register_extensions(
     cwd: &Path,
@@ -1888,22 +1911,13 @@ async fn discover_and_register_extensions(
             continue;
         }
 
-        // Extension registration is non-interactive. Inject only credentials
-        // already resident in process memory; required secrets that need
-        // Keychain/Vault interaction remain unavailable until an explicit
-        // operation resolves them rather than prompting during startup.
+        // Spawning an enabled extension is its explicit operation boundary:
+        // resolve declared credentials on demand here, then deliver them only
+        // through bootstrap_secrets RPC. Discovery/status paths remain
+        // metadata-only and therefore cannot trigger secure-store access.
         let resolved_secrets: Vec<(String, String)> = {
             if let Ok(manifest) = crate::extensions::ExtensionManifest::from_extension_dir(&path) {
-                manifest
-                    .secrets
-                    .required
-                    .iter()
-                    .filter_map(|name| {
-                        secrets
-                            .resolve_cached(name)
-                            .map(|value| (name.clone(), value))
-                    })
-                    .collect()
+                resolve_extension_secrets(&manifest, secrets.as_ref()).await
             } else {
                 vec![]
             }
@@ -2050,6 +2064,40 @@ mod tests {
             Ok(value) => value,
             Err(payload) => std::panic::resume_unwind(payload),
         }
+    }
+
+    #[tokio::test]
+    async fn extension_secret_resolution_executes_deferred_recipe_at_spawn_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = omegon_secrets::SecretsManager::new(dir.path()).unwrap();
+        secrets
+            .set_recipe("OMADA_TEST_SECRET", "cmd:printf omada-secret")
+            .unwrap();
+        assert_eq!(secrets.resolve_cached("OMADA_TEST_SECRET"), None);
+
+        let manifest_toml = r#"
+[extension]
+name = "recipe-backed-extension"
+version = "0.1.0"
+description = "fixture"
+
+[runtime]
+type = "native"
+binary = "fixture"
+
+[secrets]
+required = ["OMADA_TEST_SECRET"]
+"#;
+        std::fs::write(dir.path().join("manifest.toml"), manifest_toml).unwrap();
+        let manifest =
+            crate::extensions::ExtensionManifest::from_extension_dir(dir.path()).unwrap();
+
+        let resolved = resolve_extension_secrets(&manifest, &secrets).await;
+
+        assert_eq!(
+            resolved,
+            vec![("OMADA_TEST_SECRET".to_string(), "omada-secret".to_string())]
+        );
     }
 
     #[test]

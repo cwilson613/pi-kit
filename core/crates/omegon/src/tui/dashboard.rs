@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use crate::features::cleave::CleaveProgress;
 use crate::lifecycle::design;
 use crate::lifecycle::read_model::{DesignTreeSnapshot, SnapshotOptions};
-use crate::runtime_state::RuntimeStateHandles;
+use crate::runtime_state::{ChangeSummary, FocusedNodeSummary, RuntimeStateHandles};
 use crate::status::HarnessStatus;
 
 pub type DashboardHandles = RuntimeStateHandles;
@@ -389,31 +389,11 @@ pub struct NodeSummary {
 }
 
 #[derive(Clone)]
-pub struct FocusedNodeSummary {
-    pub id: String,
-    pub title: String,
-    pub status: NodeStatus,
-    pub open_questions: usize,
-    pub assumptions: usize,
-    pub decisions: usize,
-    pub readiness: f32,
-    pub openspec_change: Option<String>,
-}
-
-#[derive(Clone)]
 pub struct DegradedNodeSummary {
     pub id: String,
     pub title: String,
     pub file_path: String,
     pub reason: String,
-}
-
-#[derive(Clone)]
-pub struct ChangeSummary {
-    pub name: String,
-    pub stage: String,
-    pub done_tasks: usize,
-    pub total_tasks: usize,
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────

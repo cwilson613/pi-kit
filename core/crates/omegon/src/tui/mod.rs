@@ -33,7 +33,6 @@ mod input;
 pub mod instruments;
 pub mod layout_projection;
 pub(crate) mod menu_surface;
-pub mod model_catalog;
 pub mod native_io;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
@@ -214,6 +213,8 @@ use crate::operator_commands::{
     OperatorCommand as TuiCommand, PromptMetadata, PromptQueueMode, PromptSubmission, SharedCancel,
     VoicePromptMetadata,
 };
+#[cfg(test)]
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptPrefixMode {
@@ -1105,7 +1106,7 @@ impl App {
         let current = self.settings().model.clone();
 
         // Build selector options from the unified model catalog
-        let catalog = self::model_catalog::ModelCatalog::discover();
+        let catalog = crate::model_catalog::ModelCatalog::discover();
         let mut options: Vec<selector::SelectOption> = Vec::new();
 
         // Group models by provider for visual organization
@@ -7410,8 +7411,8 @@ pub struct TuiConfig {
 #[derive(Default)]
 pub struct TuiInitialState {
     pub total_facts: usize,
-    pub focused_node: Option<dashboard::FocusedNodeSummary>,
-    pub active_changes: Vec<dashboard::ChangeSummary>,
+    pub focused_node: Option<crate::runtime_state::FocusedNodeSummary>,
+    pub active_changes: Vec<crate::runtime_state::ChangeSummary>,
     pub workspace_status: Option<String>,
 }
 
@@ -8295,7 +8296,6 @@ mod slash_command_parsing_tests {
     use super::SlashResult;
     use super::TuiCommand;
     use super::canonical_slash_command;
-    use super::dashboard;
     use super::permission_lane::{
         format_permission_prompt, permission_persist_scope_label, permission_response_for_key,
     };
@@ -8826,13 +8826,13 @@ mod slash_command_parsing_tests {
 
     #[test]
     fn workbench_context_labels_active_tracking_and_lifecycle_links() {
-        let changes = vec![dashboard::ChangeSummary {
+        let changes = vec![crate::runtime_state::ChangeSummary {
             name: "rollup".into(),
             stage: "implementing".into(),
             done_tasks: 1,
             total_tasks: 3,
         }];
-        let focused = dashboard::FocusedNodeSummary {
+        let focused = crate::runtime_state::FocusedNodeSummary {
             id: "node".into(),
             title: "Node".into(),
             status: NodeStatus::Exploring,

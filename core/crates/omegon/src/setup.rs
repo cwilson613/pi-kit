@@ -223,8 +223,8 @@ pub(crate) struct StartupSnapshot {
 
 /// Snapshot of design-tree + openspec state, extracted before boxing the provider.
 pub(crate) struct LifecycleSnapshot {
-    pub focused_node: Option<crate::tui::dashboard::FocusedNodeSummary>,
-    pub active_changes: Vec<crate::tui::dashboard::ChangeSummary>,
+    pub focused_node: Option<crate::runtime_state::FocusedNodeSummary>,
+    pub active_changes: Vec<crate::runtime_state::ChangeSummary>,
 }
 
 impl LifecycleSnapshot {
@@ -246,7 +246,7 @@ impl LifecycleSnapshot {
                             .as_ref()
                             .map(|s| s.readiness_score())
                             .unwrap_or(0.0);
-                        crate::tui::dashboard::FocusedNodeSummary {
+                        crate::runtime_state::FocusedNodeSummary {
                             id: n.id.clone(),
                             title: n.title.clone(),
                             status: n.status,
@@ -259,6 +259,8 @@ impl LifecycleSnapshot {
                     })
                 })
             });
+                })
+            });
 
         let active_changes: Vec<_> = read_handle
             .openspec_snapshot(Default::default())
@@ -266,7 +268,7 @@ impl LifecycleSnapshot {
                 snapshot
                     .changes
                     .into_iter()
-                    .map(|c| crate::tui::dashboard::ChangeSummary {
+                    .map(|c| crate::runtime_state::ChangeSummary {
                         name: c.name,
                         stage: c.lifecycle_state,
                         done_tasks: c.done_tasks,

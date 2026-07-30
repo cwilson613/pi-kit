@@ -9,8 +9,11 @@
 use crate::conversation::PlanAction;
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
+#[cfg(feature = "tui")]
 use crossterm::ExecutableCommand;
+#[cfg(feature = "tui")]
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+#[cfg(feature = "tui")]
 use crossterm::terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
 use std::io;
@@ -105,6 +108,7 @@ mod github_copilot;
 mod lifecycle;
 mod r#loop;
 mod managed_agent_supervisor;
+mod model_catalog;
 mod model_registry;
 mod mqtt_bridge;
 mod ollama;
@@ -136,6 +140,7 @@ mod task_tree;
 pub mod tool_registry;
 mod tools;
 mod triggers;
+#[cfg(feature = "tui")]
 mod tui;
 mod ui_runtime;
 pub mod util;
@@ -3944,10 +3949,12 @@ fn apply_posture_to_settings(name: &str, settings: &mut settings::Settings, cwd:
     }
 }
 
+#[cfg(feature = "tui")]
 fn cli_prefers_slim_mode(cli: &Cli) -> bool {
     cli.slim
 }
 
+#[cfg(feature = "tui")]
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -6779,6 +6786,13 @@ fn build_interactive_loop_config(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "tui"))]
+async fn run_interactive_command(_cli: &Cli) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "interactive support was not compiled; rebuild with the `tui` feature or use `omegon serve`"
+    )
+}
+
 async fn run_interactive_active_turn(
     mut runtime_state: InteractiveAgentState,
     runtime: InteractiveRuntimeResources,
@@ -8197,7 +8211,7 @@ async fn run_discovery_probe_command() -> anyhow::Result<()> {
             println!("  - {diagnostic}");
         }
     }
-    let catalog = tui::model_catalog::ModelCatalog::discover();
+    let catalog = model_catalog::ModelCatalog::discover();
     if !catalog.freshness.is_empty() {
         println!("Catalog freshness:");
         for (provider, state) in &catalog.freshness {

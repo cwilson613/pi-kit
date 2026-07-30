@@ -14,6 +14,7 @@ use super::footer::FooterData;
 use super::instruments::InstrumentPanel;
 use super::theme::Alpharius;
 use crate::lifecycle::types::*;
+use crate::runtime_state::{ChangeSummary, FocusedNodeSummary};
 use crate::settings::ContextClass;
 #[allow(unused_imports)]
 use crate::settings::Settings;

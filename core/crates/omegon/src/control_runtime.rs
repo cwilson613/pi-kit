@@ -1203,7 +1203,7 @@ pub async fn model_view_response(
 }
 
 pub async fn model_list_response() -> SlashCommandResponse {
-    let catalog = crate::tui::model_catalog::ModelCatalog::discover();
+    let catalog = crate::model_catalog::ModelCatalog::discover();
     let grouped = catalog.by_conceptual_model();
     let mut output = String::from("Available Models\n");
     if !catalog.freshness.is_empty() {

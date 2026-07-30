@@ -6233,9 +6233,7 @@ fn build_tui_secret_readiness_snapshot(
 }
 
 fn mark_interactive_session_busy(handles: &crate::runtime_state::RuntimeStateHandles, busy: bool) {
-    if let Ok(mut ss) = handles.session.lock() {
-        ss.busy = busy;
-    }
+    handles.set_session_busy(busy);
 }
 
 fn format_interactive_turn_task_failure(join_err: &tokio::task::JoinError) -> String {
@@ -10733,9 +10731,9 @@ mod tests {
     fn mark_interactive_session_busy_updates_dashboard_flag() {
         let handles = crate::runtime_state::RuntimeStateHandles::default();
         mark_interactive_session_busy(&handles, true);
-        assert!(handles.session.lock().expect("session lock").busy);
+        assert!(handles.observe_session().expect("session observation").busy);
         mark_interactive_session_busy(&handles, false);
-        assert!(!handles.session.lock().expect("session lock").busy);
+        assert!(!handles.observe_session().expect("session observation").busy);
     }
 
     #[test]

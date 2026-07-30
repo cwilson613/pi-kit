@@ -382,8 +382,7 @@ fn default_live_session_summary(state: &WebState) -> Result<WebSessionSummary, S
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let session = state
         .handles
-        .session
-        .lock()
+        .observe_session()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(WebSessionSummary {
         session_id: "default".to_string(),
@@ -902,24 +901,13 @@ pub async fn get_web_session(
 ) -> Result<Json<WebSessionShowResponse>, StatusCode> {
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let session = if session_id == "default" {
+        let observed_session = state.handles.observe_session().unwrap_or_default();
         WebSessionSummary {
             session_id: "default".to_string(),
             cwd: cwd.to_string_lossy().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
-            turns: state
-                .handles
-                .session
-                .lock()
-                .ok()
-                .map(|s| s.turns)
-                .unwrap_or(0),
-            tool_calls: state
-                .handles
-                .session
-                .lock()
-                .ok()
-                .map(|s| s.tool_calls)
-                .unwrap_or(0),
+            turns: observed_session.turns,
+            tool_calls: observed_session.tool_calls,
             description: "Current live session".to_string(),
             last_prompt_snippet: "Current live session".to_string(),
             current: true,
@@ -2086,18 +2074,11 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
     };
 
     // Read session stats from shared handle
-    let session = if let Ok(ss) = state.handles.session.lock() {
-        SessionSnapshot {
-            turns: ss.turns,
-            tool_calls: ss.tool_calls,
-            compactions: ss.compactions,
-        }
-    } else {
-        SessionSnapshot {
-            turns: 0,
-            tool_calls: 0,
-            compactions: 0,
-        }
+    let observed_session = state.handles.observe_session().unwrap_or_default();
+    let session = SessionSnapshot {
+        turns: observed_session.turns,
+        tool_calls: observed_session.tool_calls,
+        compactions: observed_session.compactions,
     };
 
     let harness = state
@@ -2127,12 +2108,7 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
                 turns: session.turns,
                 tool_calls: session.tool_calls,
                 compactions: session.compactions,
-                busy: state
-                    .handles
-                    .session
-                    .lock()
-                    .map(|s| s.busy)
-                    .unwrap_or(false),
+                busy: state.handles.observe_session().unwrap_or_default().busy,
                 git_branch: harness.as_ref().and_then(|h| h.git_branch.clone()),
                 git_detached: harness.as_ref().is_some_and(|h| h.git_detached),
                 session_id: None,

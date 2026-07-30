@@ -1479,19 +1479,15 @@ impl AgentSetup {
             extension_metadata,
             extension_rpc_handles,
             widget_receivers,
-            dashboard_handles: crate::runtime_state::RuntimeStateHandles {
-                lifecycle: Some(lifecycle_handle),
-                cleave: Some(cleave_handle),
-                delegate: Some(delegate_handle),
-                delegate_tasks: Some(delegate_tasks),
-                session: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::runtime_state::SharedSessionStats::default(),
-                )),
-                harness: Some(std::sync::Arc::new(std::sync::Mutex::new(
+            dashboard_handles: crate::runtime_state::RuntimeStateHandles::new(
+                Some(lifecycle_handle),
+                Some(cleave_handle),
+                Some(delegate_handle),
+                Some(delegate_tasks),
+                Some(std::sync::Arc::new(std::sync::Mutex::new(
                     initial_harness_status.clone(),
                 ))),
-                runtime_lifecycle: Default::default(),
-            },
+            ),
             cleave_event_slot,
             delegate_event_slot,
             vox_polling_handles,

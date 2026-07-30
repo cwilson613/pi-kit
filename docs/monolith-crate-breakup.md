@@ -1,7 +1,7 @@
 ---
 id: monolith-crate-breakup
 title: "Monolith crate breakup: omegon compilation-unit decomposition"
-status: exploring
+status: implementing
 tags: []
 open_questions:
   - "Do `settings` (205 refs from tui) and `control_runtime` (106 refs) need to move or split before `omegon-tui` can become near-leaf? If they carry their own inbound coupling from the rest of the monolith, Phase 2 may require a further extraction round that is not yet scoped."
@@ -186,6 +186,27 @@ Measured, all three from the same tree:
 The warm-loop measurement remains the only outstanding performance question, and it is now the *sole* remaining justification for Phase 2.
 
 ## Decisions
+
+### Phase 1A: expose one narrow session observation capability
+
+**Status:** accepted
+
+**Decision:** Add `RuntimeStateHandles::observe_session`, returning an owned
+`SessionObservation` or an explicit poison error. Migrate IPC and web session
+projection to this capability while preserving their external fallback
+contracts. Do not add a general observer facade, global accessor, cache,
+background producer, `watch`, `ArcSwap`, work observation, harness observation,
+or lifecycle observation in this phase.
+
+**Rationale:** IPC and web demonstrably duplicate interpretation of the same
+session lock. Upstream Tokio and Axum guidance supports explicit state injection,
+short synchronous lock scopes, and narrow substates. The bounded method removes
+that duplication without introducing a canonical runtime snapshot or hidden
+process-wide lifecycle.
+
+**Spike stop/go gate:** Two-instance isolation, explicit poison behavior, and
+unchanged IPC/web payload tests must pass. Further observation domains require a
+new field-by-field overlap assessment.
 
 ### Phase 0 first: relocate shared session-state types, create no crates
 
@@ -632,3 +653,39 @@ Accordingly:
 - Phase 1 succeeds only if it removes duplicate session lock interpretation
   without increasing the number of consumers that can see unrelated runtime
   state.
+
+## Phase 1A implementation status
+
+Phase 1A now lands the bounded session capability described above:
+
+- `RuntimeStateHandles::observe_session()` returns an owned
+  `SessionObservation` and exposes lock poisoning as `ObserveError`.
+- IPC, web state, and web surface adapters use that observation rather than
+  acquiring the session mutex themselves.
+- Session producers use `update_session_counters()` and `set_session_busy()`;
+  direct session mutex access is confined to `runtime_state.rs`. The backing
+  field remains `pub(crate)` only because Rust struct-update syntax in existing
+  in-crate tests requires field visibility even when the default supplies it;
+  repository-wide source audit enforces the intended boundary until those
+  fixtures migrate to constructors.
+- `RuntimeStateHandles::new(...)` constructs invocation-owned state without
+  allowing composition code to inject or share a process-global session cell.
+- Tests prove clone sharing within one invocation, isolation between separately
+  constructed invocations, and explicit poison handling.
+
+This is deliberately not a maintained aggregate snapshot. Each call copies one
+small domain under one short lock, and the caller maps that owned value into its
+surface contract. The handles object still exposes other legacy domains, so the
+service-locator risk is reduced for session state but not eliminated for the
+whole type. Future slices must privatize one domain at a time rather than add an
+omnibus observer.
+
+### Remaining Phase 1 questions
+
+1. Does cleave have a shared owned source contract across IPC, web, and TUI, or
+   only superficially similar transport projections?
+2. Can harness reads be split into narrow health and identity capabilities
+   without cloning the complete `HarnessStatus`?
+3. Should mutation methods return typed poison errors instead of preserving the
+   previous best-effort behavior? That is a behavior-policy decision and is not
+   included in Phase 1A.

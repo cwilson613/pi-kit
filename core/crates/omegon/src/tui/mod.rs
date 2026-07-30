@@ -6463,9 +6463,7 @@ warning: {warning}"
         self.history.push(raw_text.clone());
         self.exit_history_recall();
         self.agent_active = true;
-        if let Ok(mut ss) = self.dashboard_handles.session.lock() {
-            ss.busy = true;
-        }
+        self.dashboard_handles.set_session_busy(true);
         let _ = command_tx
             .send(TuiCommand::SubmitPrompt(PromptSubmission {
                 text: final_text,
@@ -6510,9 +6508,7 @@ warning: {warning}"
         self.history.push(decorated.clone());
         self.exit_history_recall();
         self.agent_active = true;
-        if let Ok(mut ss) = self.dashboard_handles.session.lock() {
-            ss.busy = true;
-        }
+        self.dashboard_handles.set_session_busy(true);
         let _ = command_tx
             .send(TuiCommand::SubmitPrompt(PromptSubmission {
                 text: decorated,

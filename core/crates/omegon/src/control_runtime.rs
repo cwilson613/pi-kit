@@ -2093,9 +2093,8 @@ pub async fn session_stats_view_response(
     let est = runtime_state.conversation.estimate_tokens();
     let session = agent
         .dashboard_handles
-        .session
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .observe_session()
+        .unwrap_or_default();
     let turns = session.turns.max(runtime_state.conversation.turn_count());
     let tool_calls = session.tool_calls;
     let live_harness = agent

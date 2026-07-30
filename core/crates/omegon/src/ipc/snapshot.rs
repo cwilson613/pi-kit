@@ -10,7 +10,7 @@ use omegon_traits::{
     OmegonPlacementKind, OmegonRole, OmegonRuntime, OmegonRuntimeHealth, OmegonRuntimeProfile,
 };
 
-use crate::runtime_state::{RuntimeStateHandles as DashboardHandles, SharedSessionStats};
+use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 
 /// Build a full state snapshot from the shared dashboard handles.
 /// Always returns a valid snapshot even if some handles are unavailable.
@@ -153,16 +153,7 @@ fn project_session(
     started_at: &str,
     session_id: &str,
 ) -> IpcSessionSnapshot {
-    let stats = handles
-        .session
-        .lock()
-        .map(|s| SharedSessionStats {
-            turns: s.turns,
-            tool_calls: s.tool_calls,
-            compactions: s.compactions,
-            busy: s.busy,
-        })
-        .unwrap_or_default();
+    let stats = handles.observe_session().unwrap_or_default();
 
     let (git_branch, git_detached) = if let Some(ref h) = handles.harness
         && let Ok(s) = h.lock()

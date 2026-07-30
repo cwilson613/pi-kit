@@ -62,11 +62,11 @@ impl App {
             self.dashboard_refresh_turn = self.turn;
             self.dashboard_handles.refresh_into(&mut self.dashboard);
             // Write session stats for the web API
-            if let Ok(mut ss) = self.dashboard_handles.session.lock() {
-                ss.turns = self.turn;
-                ss.tool_calls = self.tool_calls;
-                ss.compactions = self.dashboard.compactions;
-            }
+            self.dashboard_handles.update_session_counters(
+                self.turn,
+                self.tool_calls,
+                self.dashboard.compactions,
+            );
 
             // Feed context gauge into dashboard
             self.dashboard.context_used_pct = self.footer_data.context_percent;

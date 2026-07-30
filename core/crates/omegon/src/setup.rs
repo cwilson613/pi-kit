@@ -68,7 +68,7 @@ pub struct AgentSetup {
     /// premature completion.
     pub skill_phases: Vec<crate::skills::SkillPhaseInfo>,
     /// Shared handles for live dashboard updates.
-    pub dashboard_handles: crate::tui::dashboard::DashboardHandles,
+    pub dashboard_handles: crate::runtime_state::RuntimeStateHandles,
     /// Initial harness status assembled at startup.
     /// The agent loop broadcasts this as AgentEvent::HarnessStatusChanged
     /// when the events channel is created.
@@ -1479,13 +1479,13 @@ impl AgentSetup {
             extension_metadata,
             extension_rpc_handles,
             widget_receivers,
-            dashboard_handles: crate::tui::dashboard::DashboardHandles {
+            dashboard_handles: crate::runtime_state::RuntimeStateHandles {
                 lifecycle: Some(lifecycle_handle),
                 cleave: Some(cleave_handle),
                 delegate: Some(delegate_handle),
                 delegate_tasks: Some(delegate_tasks),
                 session: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::tui::dashboard::SharedSessionStats::default(),
+                    crate::runtime_state::SharedSessionStats::default(),
                 )),
                 harness: Some(std::sync::Arc::new(std::sync::Mutex::new(
                     initial_harness_status.clone(),

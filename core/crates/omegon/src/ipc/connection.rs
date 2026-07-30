@@ -22,7 +22,7 @@ use omegon_traits::{
 
 use super::snapshot::build_state_snapshot;
 use super::wire::{decode_envelope, encode_envelope, read_frame};
-use crate::tui::dashboard::DashboardHandles;
+use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 use crate::tui::{SharedCancel, TuiCommand};
 
 fn parse_caller_role(raw: Option<&str>) -> crate::control_actions::ControlRole {

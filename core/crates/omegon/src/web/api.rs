@@ -1873,7 +1873,7 @@ pub async fn get_graph(State(state): State<WebState>) -> Json<GraphData> {
     Json(build_graph_data(&state.handles))
 }
 
-pub fn build_graph_data(handles: &crate::tui::dashboard::DashboardHandles) -> GraphData {
+pub fn build_graph_data(handles: &crate::runtime_state::RuntimeStateHandles) -> GraphData {
     let mut nodes = Vec::new();
     let mut links = Vec::new();
 
@@ -2274,7 +2274,7 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::dashboard::DashboardHandles;
+    use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
     use crate::web::{ControlPlaneState, WebAuthState, WebDaemonStatus, WebStartupInfo};
     use std::sync::{Arc, Mutex};
 

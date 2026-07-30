@@ -139,7 +139,7 @@ use self::auspex::{
     transport_security as startup_transport_security,
 };
 use self::conversation::{ConversationView, Tab};
-use self::dashboard::DashboardState;
+use self::dashboard::{DashboardHandleExt, DashboardState};
 use self::editor::Editor;
 use self::footer::{FooterData, SessionUsageSlice};
 use self::input::InputDisposition;

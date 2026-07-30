@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::tui::dashboard::DashboardHandles;
+use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 pub use auth::{WEB_AUTH_SECRET_NAME, WebAuthSource, WebAuthState};
 use omegon_traits::{
     DaemonEventEnvelope, IpcHarnessSnapshot, IpcHealthSnapshot, IpcHealthState, IpcMemorySnapshot,

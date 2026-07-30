@@ -543,7 +543,7 @@ pub(crate) async fn execute_stateless_control(
     shared_settings: &settings::SharedSettings,
     secrets: &Arc<omegon_secrets::SecretsManager>,
     cwd: &Path,
-    handles: &crate::tui::dashboard::DashboardHandles,
+    handles: &crate::runtime_state::RuntimeStateHandles,
 ) -> Option<SlashCommandResponse> {
     let resp = match request {
         ControlRequest::ModelView => model_view_response(shared_settings).await,
@@ -951,7 +951,7 @@ pub async fn execute_daemon_control(
     shared_settings: &settings::SharedSettings,
     secrets: &Arc<omegon_secrets::SecretsManager>,
     cwd: &Path,
-    handles: &crate::tui::dashboard::DashboardHandles,
+    handles: &crate::runtime_state::RuntimeStateHandles,
     events_tx: &broadcast::Sender<AgentEvent>,
 ) -> omegon_traits::ControlOutputResponse {
     let is_settings_mutation = matches!(
@@ -3913,7 +3913,7 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
 pub async fn profile_export_response(
     shared_settings: &settings::SharedSettings,
     cwd: &Path,
-    handles: &crate::tui::dashboard::DashboardHandles,
+    handles: &crate::runtime_state::RuntimeStateHandles,
 ) -> SlashCommandResponse {
     let settings_json = if let Ok(s) = shared_settings.lock() {
         serde_json::json!({
@@ -4041,7 +4041,7 @@ fn render_profile_export(
 }
 
 pub async fn persona_list_response(
-    handles: &crate::tui::dashboard::DashboardHandles,
+    handles: &crate::runtime_state::RuntimeStateHandles,
 ) -> SlashCommandResponse {
     let (personas, tones) = crate::plugins::persona_loader::scan_available();
 

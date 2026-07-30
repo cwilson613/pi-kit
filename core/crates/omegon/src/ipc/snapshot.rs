@@ -10,7 +10,7 @@ use omegon_traits::{
     OmegonPlacementKind, OmegonRole, OmegonRuntime, OmegonRuntimeHealth, OmegonRuntimeProfile,
 };
 
-use crate::tui::dashboard::{DashboardHandles, SharedSessionStats};
+use crate::runtime_state::{RuntimeStateHandles as DashboardHandles, SharedSessionStats};
 
 /// Build a full state snapshot from the shared dashboard handles.
 /// Always returns a valid snapshot even if some handles are unavailable.

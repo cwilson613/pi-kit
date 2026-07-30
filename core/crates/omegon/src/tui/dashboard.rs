@@ -22,185 +22,171 @@ use super::widgets;
 use crate::lifecycle::types::*;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use crate::features::cleave::CleaveProgress;
 use crate::lifecycle::context::LifecycleContextProvider;
 use crate::lifecycle::design;
-use crate::lifecycle::read_model::{LifecycleReadHandle, SnapshotOptions};
+use crate::lifecycle::read_model::SnapshotOptions;
+use crate::runtime_state::RuntimeStateHandles;
 use crate::status::HarnessStatus;
 
-/// Shared session stats — written by the TUI, read by the web API.
-#[derive(Default)]
-pub struct SharedSessionStats {
-    pub turns: u32,
-    pub tool_calls: u32,
-    pub compactions: u32,
-    pub busy: bool,
+pub type DashboardHandles = RuntimeStateHandles;
+
+pub trait DashboardHandleExt {
+    fn rescan_and_refresh(&self, state: &mut DashboardState);
+    fn refresh_into(&self, state: &mut DashboardState);
 }
 
-/// Shared handles to feature state, for live dashboard updates.
-#[derive(Clone, Default)]
-pub struct DashboardHandles {
-    pub lifecycle: Option<LifecycleReadHandle>,
-    pub cleave: Option<Arc<Mutex<CleaveProgress>>>,
-    pub delegate: Option<Arc<Mutex<crate::features::delegate::DelegateProgress>>>,
-    pub delegate_tasks: Option<Arc<crate::features::delegate::DelegateResultStore>>,
-    pub session: Arc<Mutex<SharedSessionStats>>,
-    pub harness: Option<Arc<Mutex<HarnessStatus>>>,
-    pub runtime_lifecycle: Arc<Mutex<Option<omegon_traits::RuntimeLifecycleSnapshot>>>,
-}
-
-impl DashboardHandles {
+impl DashboardHandleExt for DashboardHandles {
     /// Rescan filesystem and refresh dashboard in a single lock acquisition.
     /// Call periodically to pick up changes from external processes
     /// (other Omegon instances, git pull, manual edits).
     /// Combines rescan + refresh to avoid double-locking the lifecycle Mutex.
-    pub fn rescan_and_refresh(&self, state: &mut DashboardState) {
+    fn rescan_and_refresh(&self, state: &mut DashboardState) {
         if let Some(ref lifecycle) = self.lifecycle
             && let Ok(mut lp) = lifecycle.provider().lock()
         {
             lp.refresh();
             // Fall through to refresh_from_lifecycle below
-            Self::refresh_from_lifecycle(&lp, state);
+            refresh_from_lifecycle(&lp, state);
         }
-        self.refresh_openspec(state);
-        self.refresh_non_lifecycle(state);
+        refresh_openspec(self, state);
+        refresh_non_lifecycle(self, state);
     }
 
     /// Refresh dashboard state from the shared feature handles.
-    pub fn refresh_into(&self, state: &mut DashboardState) {
+    fn refresh_into(&self, state: &mut DashboardState) {
         // Lifecycle
         if let Some(ref lifecycle) = self.lifecycle
             && let Ok(lp) = lifecycle.provider().lock()
         {
-            Self::refresh_from_lifecycle(&lp, state);
+            refresh_from_lifecycle(&lp, state);
         }
-        self.refresh_openspec(state);
-        self.refresh_non_lifecycle(state);
+        refresh_openspec(self, state);
+        refresh_non_lifecycle(self, state);
     }
+}
 
-    fn refresh_openspec(&self, state: &mut DashboardState) {
-        if let Some(ref lifecycle) = self.lifecycle
-            && let Ok(openspec) = lifecycle.openspec_snapshot(SnapshotOptions::default())
-        {
-            state.active_changes = openspec
-                .changes
-                .into_iter()
-                .map(|c| ChangeSummary {
-                    name: c.name,
-                    stage: c.lifecycle_state,
-                    done_tasks: c.done_tasks,
-                    total_tasks: c.total_tasks,
-                })
-                .collect();
-        }
-    }
-
-    fn refresh_non_lifecycle(&self, state: &mut DashboardState) {
-        // Cleave
-        if let Some(ref cp_lock) = self.cleave
-            && let Ok(cp) = cp_lock.lock()
-        {
-            state.cleave = Some(cp.clone());
-        }
-        // Delegate
-        if let Some(ref dp_lock) = self.delegate
-            && let Ok(dp) = dp_lock.lock()
-        {
-            state.delegate = Some(dp.clone());
-        }
-        // Harness
-        if let Some(ref harness_lock) = self.harness
-            && let Ok(harness) = harness_lock.lock()
-        {
-            state.harness = Some(harness.clone());
-        }
-    }
-
-    fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardState) {
-        state.focused_node = lp.focused_node_id().and_then(|id| {
-            lp.get_node(id).map(|n| {
-                let sections = design::read_node_sections(n);
-                let assumptions = n.assumption_count();
-                let decisions_count = sections
-                    .as_ref()
-                    .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
-                    .unwrap_or(0);
-                let readiness = sections
-                    .as_ref()
-                    .map(|s| s.readiness_score())
-                    .unwrap_or(0.0);
-                FocusedNodeSummary {
-                    id: n.id.clone(),
-                    title: n.title.clone(),
-                    status: n.status,
-                    open_questions: n.open_questions.len() - assumptions,
-                    assumptions,
-                    decisions: decisions_count,
-                    readiness,
-                    openspec_change: n.openspec_change.clone(),
-                }
-            })
-        });
-        // Status counts + node lists
-        let nodes = lp.all_nodes();
-        let mut counts = StatusCounts {
-            total: nodes.len(),
-            ..Default::default()
-        };
-        state.implementing_nodes.clear();
-        state.actionable_nodes.clear();
-        state.all_nodes.clear();
-
-        for node in nodes.values() {
-            match node.status {
-                NodeStatus::Implementing => counts.implementing += 1,
-                NodeStatus::Decided => counts.decided += 1,
-                NodeStatus::Exploring => counts.exploring += 1,
-                NodeStatus::Implemented => counts.implemented += 1,
-                NodeStatus::Blocked => counts.blocked += 1,
-                NodeStatus::Deferred => counts.deferred += 1,
-                _ => {}
-            }
-            counts.open_questions += node.open_questions.len();
-
-            let summary = NodeSummary {
-                id: node.id.clone(),
-                title: node.title.clone(),
-                status: node.status,
-                open_questions: node.open_questions.len(),
-                parent: node.parent.clone(),
-                priority: node.priority,
-                issue_type: node.issue_type,
-                openspec_change: node.openspec_change.clone(),
-            };
-
-            // Collect all non-implemented nodes for tree view
-            if !matches!(node.status, NodeStatus::Implemented) {
-                state.all_nodes.push(summary.clone());
-            }
-            if matches!(node.status, NodeStatus::Implementing) {
-                state.implementing_nodes.push(summary.clone());
-            }
-            if matches!(node.status, NodeStatus::Decided) {
-                state.actionable_nodes.push(summary);
-            }
-        }
-        state.status_counts = counts;
-
-        // Collect degraded nodes
-        state.degraded_nodes = lp
-            .degraded_nodes()
-            .iter()
-            .map(|d| DegradedNodeSummary {
-                id: d.id.clone(),
-                title: d.title.clone(),
-                file_path: d.file_path.display().to_string(),
-                reason: d.reason.to_string(),
+fn refresh_openspec(handles: &DashboardHandles, state: &mut DashboardState) {
+    if let Some(ref lifecycle) = handles.lifecycle
+        && let Ok(openspec) = lifecycle.openspec_snapshot(SnapshotOptions::default())
+    {
+        state.active_changes = openspec
+            .changes
+            .into_iter()
+            .map(|c| ChangeSummary {
+                name: c.name,
+                stage: c.lifecycle_state,
+                done_tasks: c.done_tasks,
+                total_tasks: c.total_tasks,
             })
             .collect();
     }
+}
+
+fn refresh_non_lifecycle(handles: &DashboardHandles, state: &mut DashboardState) {
+    // Cleave
+    if let Some(ref cp_lock) = handles.cleave
+        && let Ok(cp) = cp_lock.lock()
+    {
+        state.cleave = Some(cp.clone());
+    }
+    // Delegate
+    if let Some(ref dp_lock) = handles.delegate
+        && let Ok(dp) = dp_lock.lock()
+    {
+        state.delegate = Some(dp.clone());
+    }
+    // Harness
+    if let Some(ref harness_lock) = handles.harness
+        && let Ok(harness) = harness_lock.lock()
+    {
+        state.harness = Some(harness.clone());
+    }
+}
+
+fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardState) {
+    state.focused_node = lp.focused_node_id().and_then(|id| {
+        lp.get_node(id).map(|n| {
+            let sections = design::read_node_sections(n);
+            let assumptions = n.assumption_count();
+            let decisions_count = sections
+                .as_ref()
+                .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
+                .unwrap_or(0);
+            let readiness = sections
+                .as_ref()
+                .map(|s| s.readiness_score())
+                .unwrap_or(0.0);
+            FocusedNodeSummary {
+                id: n.id.clone(),
+                title: n.title.clone(),
+                status: n.status,
+                open_questions: n.open_questions.len() - assumptions,
+                assumptions,
+                decisions: decisions_count,
+                readiness,
+                openspec_change: n.openspec_change.clone(),
+            }
+        })
+    });
+    // Status counts + node lists
+    let nodes = lp.all_nodes();
+    let mut counts = StatusCounts {
+        total: nodes.len(),
+        ..Default::default()
+    };
+    state.implementing_nodes.clear();
+    state.actionable_nodes.clear();
+    state.all_nodes.clear();
+
+    for node in nodes.values() {
+        match node.status {
+            NodeStatus::Implementing => counts.implementing += 1,
+            NodeStatus::Decided => counts.decided += 1,
+            NodeStatus::Exploring => counts.exploring += 1,
+            NodeStatus::Implemented => counts.implemented += 1,
+            NodeStatus::Blocked => counts.blocked += 1,
+            NodeStatus::Deferred => counts.deferred += 1,
+            _ => {}
+        }
+        counts.open_questions += node.open_questions.len();
+
+        let summary = NodeSummary {
+            id: node.id.clone(),
+            title: node.title.clone(),
+            status: node.status,
+            open_questions: node.open_questions.len(),
+            parent: node.parent.clone(),
+            priority: node.priority,
+            issue_type: node.issue_type,
+            openspec_change: node.openspec_change.clone(),
+        };
+
+        // Collect all non-implemented nodes for tree view
+        if !matches!(node.status, NodeStatus::Implemented) {
+            state.all_nodes.push(summary.clone());
+        }
+        if matches!(node.status, NodeStatus::Implementing) {
+            state.implementing_nodes.push(summary.clone());
+        }
+        if matches!(node.status, NodeStatus::Decided) {
+            state.actionable_nodes.push(summary);
+        }
+    }
+    state.status_counts = counts;
+
+    // Collect degraded nodes
+    state.degraded_nodes = lp
+        .degraded_nodes()
+        .iter()
+        .map(|d| DegradedNodeSummary {
+            id: d.id.clone(),
+            title: d.title.clone(),
+            file_path: d.file_path.display().to_string(),
+            reason: d.reason.to_string(),
+        })
+        .collect();
 }
 
 /// Dashboard state — updated from lifecycle scanning.
@@ -1063,6 +1049,7 @@ mod tests {
     use crate::surfaces::dashboard::ProjectDashboardSurface;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::sync::{Arc, Mutex};
 
     fn buf_text(terminal: &Terminal<TestBackend>) -> String {
         let buf = terminal.backend().buffer();

@@ -751,7 +751,7 @@ async fn worker_loop(
                 request,
                 response_tx,
             } => {
-                let handles = crate::tui::dashboard::DashboardHandles::default();
+                let handles = crate::runtime_state::RuntimeStateHandles::default();
                 let text = crate::control_runtime::execute_stateless_control(
                     &request,
                     &shared_settings,

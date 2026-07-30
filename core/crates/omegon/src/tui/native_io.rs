@@ -27,7 +27,7 @@ pub fn open_browser(url: &str) {
 pub fn copy_text_to_clipboard(text: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        return write_to_process("pbcopy", &[], text.as_bytes());
+        write_to_process("pbcopy", &[], text.as_bytes())
     }
 
     #[cfg(target_os = "linux")]

@@ -2541,7 +2541,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let mut state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
         state.web_role = styrene_rbac::Role::Monitor;
@@ -2568,7 +2568,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let mut state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
         state.web_role = styrene_rbac::Role::Monitor;
@@ -2591,7 +2591,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 
@@ -2650,7 +2650,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 
@@ -2677,7 +2677,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 
@@ -2728,7 +2728,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 
@@ -2776,7 +2776,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 
@@ -2824,7 +2824,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 
@@ -2872,7 +2872,7 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
         let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
         let state = WebState::new(
-            crate::tui::dashboard::DashboardHandles::default(),
+            crate::runtime_state::RuntimeStateHandles::default(),
             events_tx,
         );
 

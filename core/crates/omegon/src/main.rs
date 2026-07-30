@@ -69,6 +69,7 @@ mod migrate;
 mod observation;
 #[cfg(test)]
 mod recro_coe_integration_tests;
+mod runtime_state;
 mod session_settings_commands;
 mod shadow_context;
 mod skills;
@@ -6231,7 +6232,7 @@ fn build_tui_secret_readiness_snapshot(
         .await
 }
 
-fn mark_interactive_session_busy(handles: &crate::tui::dashboard::DashboardHandles, busy: bool) {
+fn mark_interactive_session_busy(handles: &crate::runtime_state::RuntimeStateHandles, busy: bool) {
     if let Ok(mut ss) = handles.session.lock() {
         ss.busy = busy;
     }
@@ -6683,7 +6684,7 @@ pub(crate) struct InteractiveAgentHost {
     pub(crate) cwd: PathBuf,
     pub(crate) secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
     pub(crate) web_auth_state: crate::web::WebAuthState,
-    pub(crate) dashboard_handles: crate::tui::dashboard::DashboardHandles,
+    pub(crate) dashboard_handles: crate::runtime_state::RuntimeStateHandles,
     pub(crate) resume_info: Option<setup::ResumeInfo>,
     pub(crate) workspace_state: setup::WorkspaceStartupState,
     pub(crate) runtime_generation: u64,
@@ -10122,7 +10123,7 @@ mod tests {
                 },
             },
             skill_phases: vec![],
-            dashboard_handles: crate::tui::dashboard::DashboardHandles::default(),
+            dashboard_handles: crate::runtime_state::RuntimeStateHandles::default(),
             initial_harness_status: crate::status::HarnessStatus::default(),
             resume_info: None,
             workspace_state: setup::WorkspaceStartupState {
@@ -10730,7 +10731,7 @@ mod tests {
 
     #[test]
     fn mark_interactive_session_busy_updates_dashboard_flag() {
-        let handles = crate::tui::dashboard::DashboardHandles::default();
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
         mark_interactive_session_busy(&handles, true);
         assert!(handles.session.lock().expect("session lock").busy);
         mark_interactive_session_busy(&handles, false);

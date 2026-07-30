@@ -98,7 +98,7 @@ pub fn smoke_list_text() -> String {
 }
 
 pub fn launch_surface_smoke(
-    handles: &mut crate::tui::dashboard::DashboardHandles,
+    handles: &mut crate::runtime_state::RuntimeStateHandles,
     scenario: SmokeScenarioKind,
     events_tx: Option<broadcast::Sender<AgentEvent>>,
     local_events_tx: Option<std::sync::mpsc::Sender<AgentEvent>>,
@@ -121,7 +121,7 @@ pub fn launch_surface_smoke(
 }
 
 pub fn launch_cleave_surface_smoke(
-    handles: &mut crate::tui::dashboard::DashboardHandles,
+    handles: &mut crate::runtime_state::RuntimeStateHandles,
     scenario: SmokeScenarioKind,
     events_tx: Option<broadcast::Sender<AgentEvent>>,
     local_events_tx: Option<std::sync::mpsc::Sender<AgentEvent>>,
@@ -143,7 +143,7 @@ pub fn launch_cleave_surface_smoke(
 }
 
 fn launch_delegate_surface_smoke(
-    handles: &mut crate::tui::dashboard::DashboardHandles,
+    handles: &mut crate::runtime_state::RuntimeStateHandles,
     scenario: SmokeScenarioKind,
     events_tx: Option<broadcast::Sender<AgentEvent>>,
     local_events_tx: Option<std::sync::mpsc::Sender<AgentEvent>>,
@@ -165,7 +165,7 @@ fn launch_delegate_surface_smoke(
 }
 
 fn reset_smoke_surfaces(
-    handles: &mut crate::tui::dashboard::DashboardHandles,
+    handles: &mut crate::runtime_state::RuntimeStateHandles,
     tx: &Option<broadcast::Sender<AgentEvent>>,
     local_tx: &Option<std::sync::mpsc::Sender<AgentEvent>>,
 ) {
@@ -182,7 +182,7 @@ fn reset_smoke_surfaces(
     }
 }
 
-fn active_cleave(handles: &crate::tui::dashboard::DashboardHandles) -> bool {
+fn active_cleave(handles: &crate::runtime_state::RuntimeStateHandles) -> bool {
     handles
         .cleave
         .as_ref()
@@ -190,7 +190,7 @@ fn active_cleave(handles: &crate::tui::dashboard::DashboardHandles) -> bool {
         .is_some_and(|progress| progress.active)
 }
 
-fn active_delegate(handles: &crate::tui::dashboard::DashboardHandles) -> bool {
+fn active_delegate(handles: &crate::runtime_state::RuntimeStateHandles) -> bool {
     handles
         .delegate
         .as_ref()
@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn launching_new_smoke_clears_stale_operation_handles() {
-        let mut handles = crate::tui::dashboard::DashboardHandles::default();
+        let mut handles = crate::runtime_state::RuntimeStateHandles::default();
         let mut stale = initial_cleave_progress(SmokeScenarioKind::CleaveFailureMix);
         stale.active = false;
         stale.completed = 1;
@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn completed_smoke_rejects_restart_until_terminal_plan_is_sent() {
-        let mut handles = crate::tui::dashboard::DashboardHandles::default();
+        let mut handles = crate::runtime_state::RuntimeStateHandles::default();
         let mut completed = initial_delegate_progress(SmokeScenarioKind::DelegatePendingResult);
         completed.active = true;
         completed.running = 0;
@@ -938,7 +938,7 @@ mod tests {
 
     #[test]
     fn launching_new_smoke_emits_clear_plan_before_new_plan() {
-        let mut handles = crate::tui::dashboard::DashboardHandles::default();
+        let mut handles = crate::runtime_state::RuntimeStateHandles::default();
         let mut stale = initial_cleave_progress(SmokeScenarioKind::CleaveFailureMix);
         stale.active = false;
         handles.cleave = Some(Arc::new(Mutex::new(stale)));

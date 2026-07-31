@@ -3355,7 +3355,7 @@ fn active_menu_display_commands_open_returnable_command_panel() {
 
     let result = app.execute_active_menu_command("/version".to_string(), &tx);
 
-    assert!(matches!(result, SlashResult::Handled));
+    assert!(matches!(result.result, SlashResult::Handled));
     assert!(
         app.active_menu.is_some(),
         "menu remains underneath output panel"
@@ -6332,7 +6332,7 @@ fn secrets_menu_status_row_enqueues_execute_control() {
         .expect("status command");
 
     assert!(matches!(
-        app.execute_active_menu_command(command, &tx),
+        app.execute_active_menu_command(command, &tx).result,
         SlashResult::Handled
     ));
     match rx.try_recv().expect("queued command") {
@@ -8664,7 +8664,8 @@ fn context_menu_compact_action_uses_shared_command_path() {
 
     assert_eq!(command.as_deref(), Some("/context compact"));
     assert!(matches!(
-        app.execute_active_menu_command(command.unwrap(), &tx),
+        app.execute_active_menu_command(command.unwrap(), &tx)
+            .result,
         SlashResult::Handled
     ));
     assert!(app.command_panel.is_some());
@@ -9347,7 +9348,7 @@ fn menu_login_secret_input_closes_menu_without_output_panel() {
 
     let result = app.execute_active_menu_command("/login openai".to_string(), &tx);
 
-    assert!(matches!(result, SlashResult::Handled));
+    assert!(matches!(result.result, SlashResult::Handled));
     assert!(matches!(
         app.editor.mode(),
         super::editor::EditorMode::SecretInput { .. }

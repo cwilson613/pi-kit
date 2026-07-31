@@ -4,7 +4,7 @@ use super::*;
 use crate::runtime_commands::{CanonicalSlashCommand, SkillCreateScope, canonical_slash_command};
 
 /// Result of handling a slash command.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SlashResult {
     /// Display this text as a system message.
     Display(String),

@@ -5,6 +5,8 @@
 
 use crate::surfaces::menu::{MenuActionClosePolicy, MenuActionDisposition, MenuActionProjection};
 
+use super::slash_commands::SlashResult;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SelectorTarget {
     ContextClass,
@@ -63,6 +65,68 @@ impl SettingsRowTarget {
             Some("workspace.trusted_directories") => SettingsRowAction::ExplainTrustedDirectories,
             _ => SettingsRowAction::ProjectedEditor,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum MenuCommandPresentation {
+    None,
+    Toast { message: String },
+    CommandPanel { response: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MenuCommandOutcome {
+    pub(super) result: SlashResult,
+    pub(super) record_history: bool,
+    pub(super) close_menu: bool,
+    pub(super) request_quit: bool,
+    pub(super) presentation: MenuCommandPresentation,
+}
+
+impl MenuCommandOutcome {
+    pub(super) fn from_slash_result(result: SlashResult, secret_input: bool) -> Self {
+        match result {
+            SlashResult::Display(response) if secret_input => Self {
+                result: SlashResult::Handled,
+                record_history: true,
+                close_menu: true,
+                request_quit: false,
+                presentation: MenuCommandPresentation::Toast { message: response },
+            },
+            SlashResult::Display(response) => Self {
+                result: SlashResult::Handled,
+                record_history: true,
+                close_menu: false,
+                request_quit: false,
+                presentation: MenuCommandPresentation::CommandPanel { response },
+            },
+            SlashResult::Handled => Self {
+                result: SlashResult::Handled,
+                record_history: true,
+                close_menu: true,
+                request_quit: false,
+                presentation: MenuCommandPresentation::None,
+            },
+            SlashResult::Quit => Self {
+                result: SlashResult::Quit,
+                record_history: true,
+                close_menu: true,
+                request_quit: true,
+                presentation: MenuCommandPresentation::None,
+            },
+            SlashResult::NotACommand => Self {
+                result: SlashResult::Handled,
+                record_history: false,
+                close_menu: false,
+                request_quit: false,
+                presentation: MenuCommandPresentation::None,
+            },
+        }
+    }
+
+    pub(super) fn should_refresh_menu(&self, close_policy: MenuActionClosePolicy) -> bool {
+        self.result == SlashResult::Handled && close_policy == MenuActionClosePolicy::RefreshMenu
     }
 }
 
@@ -229,5 +293,45 @@ mod tests {
         };
         assert_eq!(target.id(), Some("future.setting"));
         assert_eq!(target.action(), SettingsRowAction::ProjectedEditor);
+    }
+
+    #[test]
+    fn display_outcome_keeps_menu_return_path() {
+        let outcome =
+            MenuCommandOutcome::from_slash_result(SlashResult::Display("status".into()), false);
+
+        assert_eq!(outcome.result, SlashResult::Handled);
+        assert!(outcome.record_history);
+        assert!(!outcome.close_menu);
+        assert_eq!(
+            outcome.presentation,
+            MenuCommandPresentation::CommandPanel {
+                response: "status".into()
+            }
+        );
+    }
+
+    #[test]
+    fn secret_display_outcome_closes_menu_and_uses_toast() {
+        let outcome = MenuCommandOutcome::from_slash_result(
+            SlashResult::Display("secret stored".into()),
+            true,
+        );
+
+        assert!(outcome.close_menu);
+        assert_eq!(
+            outcome.presentation,
+            MenuCommandPresentation::Toast {
+                message: "secret stored".into()
+            }
+        );
+    }
+
+    #[test]
+    fn handled_outcome_can_request_menu_refresh() {
+        let outcome = MenuCommandOutcome::from_slash_result(SlashResult::Handled, false);
+
+        assert!(outcome.should_refresh_menu(MenuActionClosePolicy::RefreshMenu));
+        assert!(!outcome.should_refresh_menu(MenuActionClosePolicy::CloseMenu));
     }
 }

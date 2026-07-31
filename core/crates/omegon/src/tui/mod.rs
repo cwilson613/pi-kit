@@ -144,7 +144,10 @@ use self::footer::{FooterData, SessionUsageSlice};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
-use self::menu_effects::{MenuEffect, SelectorTarget, SettingsRowAction, SettingsRowTarget};
+use self::menu_effects::{
+    MenuCommandOutcome, MenuCommandPresentation, MenuEffect, SelectorTarget, SettingsRowAction,
+    SettingsRowTarget,
+};
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
@@ -4294,18 +4297,14 @@ impl App {
                         .active_menu
                         .as_ref()
                         .map(|menu| menu.projection.id.clone());
-                    let result = self.execute_active_menu_command(command, tx);
-                    if matches!(result, SlashResult::Handled)
-                        && matches!(
-                            close_policy,
-                            crate::surfaces::menu::MenuActionClosePolicy::RefreshMenu
-                        )
+                    let outcome = self.execute_active_menu_command(command, tx);
+                    if outcome.should_refresh_menu(close_policy)
                         && let Some(menu_id) = menu_id.as_deref()
                         && self.rebuild_active_menu(menu_id)
                     {
                         return SlashResult::Handled;
                     }
-                    result
+                    outcome.result
                 } else {
                     SlashResult::Handled
                 }
@@ -4317,37 +4316,37 @@ impl App {
         &mut self,
         command: String,
         tx: &mpsc::Sender<TuiCommand>,
-    ) -> SlashResult {
-        match self.handle_slash_command(&command, tx) {
-            SlashResult::Display(response) => {
-                self.history.push(command.clone());
-                self.exit_history_recall();
-                if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
-                    self.active_menu = None;
-                    self.show_command_toast(CommandToast::new(response, CommandSeverity::Info));
-                } else {
-                    self.open_command_panel(
-                        CommandPanel::from_slash(&command, response)
-                            .with_return_target(CommandPanelReturnTarget::Menu),
-                    );
-                }
-                SlashResult::Handled
-            }
-            SlashResult::Handled => {
-                self.active_menu = None;
-                self.history.push(command);
-                self.exit_history_recall();
-                SlashResult::Handled
-            }
-            SlashResult::Quit => {
-                self.active_menu = None;
-                self.history.push(command);
-                self.exit_history_recall();
-                self.should_quit = true;
-                SlashResult::Quit
-            }
-            SlashResult::NotACommand => SlashResult::Handled,
+    ) -> MenuCommandOutcome {
+        let secret_input = matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. });
+        let outcome = MenuCommandOutcome::from_slash_result(
+            self.handle_slash_command(&command, tx),
+            secret_input,
+        );
+
+        if outcome.record_history {
+            self.history.push(command.clone());
+            self.exit_history_recall();
         }
+        if outcome.close_menu {
+            self.active_menu = None;
+        }
+        if outcome.request_quit {
+            self.should_quit = true;
+        }
+        match &outcome.presentation {
+            MenuCommandPresentation::None => {}
+            MenuCommandPresentation::Toast { message } => {
+                self.show_command_toast(CommandToast::new(message, CommandSeverity::Info));
+            }
+            MenuCommandPresentation::CommandPanel { response } => {
+                self.open_command_panel(
+                    CommandPanel::from_slash(&command, response.clone())
+                        .with_return_target(CommandPanelReturnTarget::Menu),
+                );
+            }
+        }
+
+        outcome
     }
 
     fn provider_status_rows(

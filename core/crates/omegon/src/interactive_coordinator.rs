@@ -426,6 +426,7 @@ async fn run_interactive_command(_cli: &Cli) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "tui")]
+#[allow(clippy::too_many_arguments)]
 async fn run_interactive_active_turn(
     mut runtime_state: InteractiveAgentState,
     runtime: InteractiveRuntimeResources,

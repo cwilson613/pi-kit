@@ -7404,8 +7404,6 @@ pub struct TuiConfig {
     pub voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
 }
 
-/// Open a URL in the default browser (cross-platform).
-
 fn history_path(cwd: &str) -> std::path::PathBuf {
     let project_root = crate::setup::find_project_root(std::path::Path::new(cwd));
     project_root.join(".omegon").join("history")

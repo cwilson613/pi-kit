@@ -32,6 +32,7 @@ pub mod inline_render;
 mod input;
 pub mod instruments;
 pub mod layout_projection;
+mod menu_effects;
 pub(crate) mod menu_surface;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
@@ -143,6 +144,7 @@ use self::footer::{FooterData, SessionUsageSlice};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
+use self::menu_effects::MenuEffect;
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
@@ -4194,9 +4196,9 @@ impl App {
         } else {
             self.pending_menu_confirmation = None;
         }
-        match action.disposition {
-            crate::surfaces::menu::MenuActionDisposition::FocusRow => {
-                if let Some(target_row_id) = action.target_row_id
+        match MenuEffect::from(action) {
+            MenuEffect::FocusRow { target_row_id } => {
+                if let Some(target_row_id) = target_row_id
                     && let Some(menu) = self.active_menu.as_mut()
                 {
                     menu.state
@@ -4204,24 +4206,27 @@ impl App {
                 }
                 SlashResult::Handled
             }
-            crate::surfaces::menu::MenuActionDisposition::PrimeEditor => {
+            MenuEffect::PrimeEditor { text, message } => {
                 self.active_menu = None;
-                if let Some(text) = action.editor_text {
+                if let Some(text) = text {
                     self.editor.set_text(&text);
                 }
-                if let Some(message) = action.message {
+                if let Some(message) = message {
                     self.show_command_toast(CommandToast::new(message, CommandSeverity::Info));
                 }
                 SlashResult::Handled
             }
-            crate::surfaces::menu::MenuActionDisposition::InlineInput => {
-                if let Some(command_prefix) = action.editor_text {
+            MenuEffect::BeginInlineInput {
+                label,
+                command_prefix,
+            } => {
+                if let Some(command_prefix) = command_prefix {
                     let original_footer = self
                         .active_menu
                         .as_ref()
                         .and_then(|menu| menu.projection.footer.clone());
                     self.menu_input = Some(MenuInput {
-                        action_label: action.label,
+                        action_label: label,
                         command_prefix,
                         value: String::new(),
                         original_footer,
@@ -4233,10 +4238,13 @@ impl App {
                 }
                 SlashResult::Handled
             }
-            crate::surfaces::menu::MenuActionDisposition::OpenSelector => {
+            MenuEffect::OpenSelector {
+                target_row_id,
+                label,
+            } => {
                 self.active_menu = None;
                 self.pending_menu_confirmation = None;
-                match action.target_row_id.as_deref() {
+                match target_row_id.as_deref() {
                     Some("context.class") => self.open_context_selector(),
                     Some("model.current") => self.open_model_selector(),
                     Some("model.grade") => self.open_model_grade_selector(),
@@ -4244,14 +4252,14 @@ impl App {
                     Some("model.policy") => self.open_model_policy_selector(),
                     Some("secrets.name") => self.open_secret_name_selector(),
                     _ => self.show_command_toast(CommandToast::new(
-                        format!("No selector registered for {}", action.label),
+                        format!("No selector registered for {label}"),
                         CommandSeverity::Warning,
                     )),
                 }
                 SlashResult::Handled
             }
-            crate::surfaces::menu::MenuActionDisposition::OpenExtensionDetail => {
-                if let Some(extension_name) = action.target_row_id.as_deref() {
+            MenuEffect::OpenExtensionDetail { target_row_id } => {
+                if let Some(extension_name) = target_row_id.as_deref() {
                     self.open_extension_detail_menu(extension_name);
                 } else {
                     self.show_command_toast(CommandToast::new(
@@ -4261,19 +4269,25 @@ impl App {
                 }
                 SlashResult::Handled
             }
-            crate::surfaces::menu::MenuActionDisposition::OpenSettingsRow => {
-                if let Some(row_id) = action.target_row_id.as_deref() {
+            MenuEffect::OpenSettingsRow {
+                target_row_id,
+                label,
+            } => {
+                if let Some(row_id) = target_row_id.as_deref() {
                     self.open_settings_row_by_id(row_id);
                 } else {
                     self.show_command_toast(CommandToast::new(
-                        format!("No settings row registered for {}", action.label),
+                        format!("No settings row registered for {label}"),
                         CommandSeverity::Warning,
                     ));
                 }
                 SlashResult::Handled
             }
-            crate::surfaces::menu::MenuActionDisposition::RunCommand => {
-                if let Some(command) = action.command {
+            MenuEffect::RunCommand {
+                command,
+                close_policy,
+            } => {
+                if let Some(command) = command {
                     let menu_id = self
                         .active_menu
                         .as_ref()
@@ -4281,7 +4295,7 @@ impl App {
                     let result = self.execute_active_menu_command(command, tx);
                     if matches!(result, SlashResult::Handled)
                         && matches!(
-                            action.close_policy,
+                            close_policy,
                             crate::surfaces::menu::MenuActionClosePolicy::RefreshMenu
                         )
                         && let Some(menu_id) = menu_id.as_deref()

@@ -9346,9 +9346,14 @@ fn menu_login_secret_input_closes_menu_without_output_panel() {
     let tx = test_tx();
     app.open_auth_menu();
 
-    let result = app.execute_active_menu_command("/login openai".to_string(), &tx);
+    let outcome = app.execute_active_menu_command("/login openai".to_string(), &tx);
 
-    assert!(matches!(result.result, SlashResult::Handled));
+    assert!(matches!(outcome.result, SlashResult::Handled));
+    assert!(outcome.close_menu);
+    assert!(matches!(
+        outcome.presentation,
+        super::menu_effects::MenuCommandPresentation::Toast { .. }
+    ));
     assert!(matches!(
         app.editor.mode(),
         super::editor::EditorMode::SecretInput { .. }

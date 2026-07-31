@@ -4317,11 +4317,9 @@ impl App {
         command: String,
         tx: &mpsc::Sender<TuiCommand>,
     ) -> MenuCommandOutcome {
+        let slash_result = self.handle_slash_command(&command, tx);
         let secret_input = matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. });
-        let outcome = MenuCommandOutcome::from_slash_result(
-            self.handle_slash_command(&command, tx),
-            secret_input,
-        );
+        let outcome = MenuCommandOutcome::from_slash_result(slash_result, secret_input);
 
         if outcome.record_history {
             self.history.push(command.clone());

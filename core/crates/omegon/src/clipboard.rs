@@ -1,6 +1,6 @@
 //! Clipboard paste retention.
 //!
-//! Clipboard image pastes (the `tui::pull_clipboard_image` path on
+//! Clipboard image pastes (the `native_io::clipboard_image_to_temp` path on
 //! macOS via `osascript`, on Linux via `wl-paste` / `xclip`) are
 //! written to the system temp directory under filenames like
 //! `omegon-clipboard-{pid}-{counter}.{ext}`. Without explicit cleanup,
@@ -37,7 +37,7 @@ use std::time::{Duration, SystemTime};
 
 /// Filename prefix that identifies an omegon clipboard paste. Must
 /// stay in sync with the `format!("omegon-clipboard-{pid}-{counter}.{ext}")`
-/// strings in `tui::mod::pull_clipboard_image`.
+/// strings in `native_io::clipboard_temp_path`.
 const CLIPBOARD_PREFIX: &str = "omegon-clipboard-";
 
 /// Result of a single sweep.

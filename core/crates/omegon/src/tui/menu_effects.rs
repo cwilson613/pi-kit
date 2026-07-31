@@ -6,6 +6,31 @@
 use crate::surfaces::menu::{MenuActionClosePolicy, MenuActionDisposition, MenuActionProjection};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SelectorTarget {
+    ContextClass,
+    CurrentModel,
+    ModelGrade,
+    ModelProvider,
+    ModelPolicy,
+    SecretName,
+    Unknown(Option<String>),
+}
+
+impl SelectorTarget {
+    fn from_id(selector_id: Option<String>) -> Self {
+        match selector_id.as_deref() {
+            Some("context.class") => Self::ContextClass,
+            Some("model.current") => Self::CurrentModel,
+            Some("model.grade") => Self::ModelGrade,
+            Some("model.provider") => Self::ModelProvider,
+            Some("model.policy") => Self::ModelPolicy,
+            Some("secrets.name") => Self::SecretName,
+            _ => Self::Unknown(selector_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MenuEffect {
     FocusRow {
         target_row_id: Option<String>,
@@ -19,7 +44,7 @@ pub(super) enum MenuEffect {
         command_prefix: Option<String>,
     },
     OpenSelector {
-        target_row_id: Option<String>,
+        target: SelectorTarget,
         label: String,
     },
     OpenExtensionDetail {
@@ -50,7 +75,7 @@ impl From<MenuActionProjection> for MenuEffect {
                 command_prefix: action.editor_text,
             },
             MenuActionDisposition::OpenSelector => Self::OpenSelector {
-                target_row_id: action.target_row_id,
+                target: SelectorTarget::from_id(action.target_row_id),
                 label: action.label,
             },
             MenuActionDisposition::OpenExtensionDetail => Self::OpenExtensionDetail {
@@ -116,8 +141,25 @@ mod tests {
         assert_eq!(
             MenuEffect::from(action),
             MenuEffect::OpenSelector {
-                target_row_id: Some("model.provider".into()),
+                target: SelectorTarget::ModelProvider,
                 label: "Choose provider".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_selector_target_remains_diagnostic() {
+        let action = MenuActionProjection::open_selector(
+            "future.selector.open",
+            "Choose future value",
+            "future.selector",
+        );
+
+        assert_eq!(
+            MenuEffect::from(action),
+            MenuEffect::OpenSelector {
+                target: SelectorTarget::Unknown(Some("future.selector".into())),
+                label: "Choose future value".into(),
             }
         );
     }

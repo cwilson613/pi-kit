@@ -144,7 +144,7 @@ use self::footer::{FooterData, SessionUsageSlice};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
-use self::menu_effects::MenuEffect;
+use self::menu_effects::{MenuEffect, SelectorTarget};
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
@@ -4238,23 +4238,28 @@ impl App {
                 }
                 SlashResult::Handled
             }
-            MenuEffect::OpenSelector {
-                target_row_id,
-                label,
-            } => {
+            MenuEffect::OpenSelector { target, label } => {
                 self.active_menu = None;
                 self.pending_menu_confirmation = None;
-                match target_row_id.as_deref() {
-                    Some("context.class") => self.open_context_selector(),
-                    Some("model.current") => self.open_model_selector(),
-                    Some("model.grade") => self.open_model_grade_selector(),
-                    Some("model.provider") => self.open_model_provider_selector(),
-                    Some("model.policy") => self.open_model_policy_selector(),
-                    Some("secrets.name") => self.open_secret_name_selector(),
-                    _ => self.show_command_toast(CommandToast::new(
-                        format!("No selector registered for {label}"),
-                        CommandSeverity::Warning,
-                    )),
+                match target {
+                    SelectorTarget::ContextClass => self.open_context_selector(),
+                    SelectorTarget::CurrentModel => self.open_model_selector(),
+                    SelectorTarget::ModelGrade => self.open_model_grade_selector(),
+                    SelectorTarget::ModelProvider => self.open_model_provider_selector(),
+                    SelectorTarget::ModelPolicy => self.open_model_policy_selector(),
+                    SelectorTarget::SecretName => self.open_secret_name_selector(),
+                    SelectorTarget::Unknown(selector_id) => {
+                        self.show_command_toast(CommandToast::new(
+                            format!(
+                                "No selector registered for {label}{}",
+                                selector_id
+                                    .as_deref()
+                                    .map(|id| format!(" ({id})"))
+                                    .unwrap_or_default()
+                            ),
+                            CommandSeverity::Warning,
+                        ))
+                    }
                 }
                 SlashResult::Handled
             }

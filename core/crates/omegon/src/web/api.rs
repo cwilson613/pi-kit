@@ -1442,16 +1442,13 @@ pub async fn get_lifecycle_design_node(
     let Some(lifecycle) = state.handles.lifecycle.as_ref() else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let provider = lifecycle.provider();
-    let guard = provider
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let Some(node) = guard.get_node(&id) else {
-        return Err(StatusCode::NOT_FOUND);
-    };
+    let node = lifecycle
+        .design_node(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(LifecycleDesignNodeResponse {
         schema_version: 1,
-        node: node_brief(node),
+        node: node_brief(&node),
     }))
 }
 
@@ -1461,11 +1458,10 @@ fn lifecycle_nodes(
     let Some(lifecycle) = state.handles.lifecycle.as_ref() else {
         return Ok(std::collections::HashMap::new());
     };
-    let provider = lifecycle.provider();
-    let guard = provider
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(guard.all_nodes().clone())
+    lifecycle
+        .design_tree_snapshot(false)
+        .map(|snapshot| snapshot.nodes)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// GET /api/lifecycle/design/ready — decided nodes whose dependencies are implemented.
@@ -1866,9 +1862,9 @@ pub fn build_graph_data(handles: &crate::runtime_state::RuntimeStateHandles) -> 
     let mut links = Vec::new();
 
     if let Some(ref lifecycle) = handles.lifecycle
-        && let Ok(lp) = lifecycle.provider().lock()
+        && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
     {
-        let all = lp.all_nodes();
+        let all = &snapshot.nodes;
         for node in all.values() {
             let group = match node.status {
                 NodeStatus::Seed => 0,
@@ -1958,9 +1954,9 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
 
     // Read lifecycle state
     if let Some(ref lifecycle) = state.handles.lifecycle
-        && let Ok(lp) = lifecycle.provider().lock()
+        && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
     {
-        let nodes = lp.all_nodes();
+        let nodes = &snapshot.nodes;
         design.counts.total = nodes.len();
 
         for node in nodes.values() {
@@ -1990,8 +1986,8 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
         }
 
         // Focused node
-        if let Some(id) = lp.focused_node_id()
-            && let Some(node) = lp.get_node(id)
+        if let Some(id) = snapshot.focused_node_id.as_deref()
+            && let Some(node) = nodes.get(id)
         {
             let sections = crate::lifecycle::design::read_node_sections(node);
             let children = crate::lifecycle::design::get_children(nodes, id);

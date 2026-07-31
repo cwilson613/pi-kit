@@ -179,8 +179,7 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
             nodes: vec![],
         };
     };
-    let provider = lifecycle.provider();
-    let Ok(lp) = provider.lock() else {
+    let Ok(snapshot) = lifecycle.design_tree_snapshot(false) else {
         return IpcDesignTreeSnapshot {
             counts: IpcDesignCounts::default(),
             focused: None,
@@ -192,7 +191,7 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
 
     use crate::lifecycle::types::NodeStatus;
 
-    let all = lp.all_nodes();
+    let all = &snapshot.nodes;
     let mut counts = IpcDesignCounts {
         total: all.len(),
         ..IpcDesignCounts::default()
@@ -235,9 +234,10 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
         nodes.push(brief);
     }
 
-    let focused = lp
-        .focused_node_id()
-        .and_then(|id| lp.get_node(id))
+    let focused = snapshot
+        .focused_node_id
+        .as_deref()
+        .and_then(|id| all.get(id))
         .map(|n| IpcFocusedNode {
             id: n.id.clone(),
             title: n.title.clone(),

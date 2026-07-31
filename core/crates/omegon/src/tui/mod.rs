@@ -12,6 +12,7 @@
 
 mod agent_events;
 mod auspex;
+mod auth_menu_projection;
 pub mod command_surfaces;
 pub mod conv_widget;
 pub mod conversation;
@@ -3981,27 +3982,7 @@ impl App {
         outcome
     }
 
-    fn provider_status_rows(
-        &self,
-        row_prefix: &str,
-    ) -> Vec<crate::surfaces::menu::MenuRowProjection> {
-        use crate::surfaces::menu::{
-            MenuActionProjection, MenuBadgeProjection, MenuBadgeTone, MenuRowKind,
-            MenuRowProjection,
-        };
-        let provider_ids: Vec<&str> = if row_prefix == "auth.provider" {
-            crate::auth::operator_auth_provider_ids()
-        } else {
-            vec![
-                "anthropic",
-                "openai-codex",
-                "github-copilot",
-                "openai",
-                "openrouter",
-                "google",
-                "ollama",
-            ]
-        };
+    fn provider_route_snapshot(&self) -> auth_menu_projection::ProviderRouteSnapshot {
         let settings_model = self.settings().model.clone();
         let selected_provider = self
             .route_selected_model
@@ -4016,132 +3997,54 @@ impl App {
                     .then_some(self.footer_data.model_id.as_str())
             })
             .map(crate::providers::infer_provider_id);
-        provider_ids
-            .into_iter()
-            .map(|provider| {
-                let status = crate::surfaces::menu::ProviderStatusProjection::from_credential_probe(
-                    provider,
-                );
-                let login_command = status
-                    .remediation_command
-                    .clone()
-                    .unwrap_or_else(|| format!("/login {provider}"));
-                let logout_command = format!("/logout {provider}");
-                let mut badges = vec![MenuBadgeProjection {
-                    label: status.badge_label().into(),
-                    tone: status.badge_tone(),
-                }];
-                let mut metadata = vec![
-                    login_command.clone(),
-                    logout_command.clone(),
-                    format!("provider: {}", status.provider_id),
-                ];
-                if selected_provider.as_deref() == Some(provider) {
-                    badges.push(MenuBadgeProjection {
-                        label: "selected".into(),
-                        tone: MenuBadgeTone::Info,
-                    });
-                    metadata.push("route: selected".into());
-                }
-                if serving_provider.as_deref() == Some(provider) {
-                    badges.push(MenuBadgeProjection {
-                        label: "serving".into(),
-                        tone: MenuBadgeTone::Success,
-                    });
-                    metadata.push("route: serving".into());
-                    if self.route_state.as_deref() == Some("fallback")
-                        && selected_provider
-                            .as_deref()
-                            .is_some_and(|selected| selected != provider)
-                    {
-                        badges.push(MenuBadgeProjection {
-                            label: "fallback".into(),
-                            tone: MenuBadgeTone::Warning,
-                        });
-                        metadata.push("route: fallback serving".into());
-                    }
-                }
-                MenuRowProjection {
-                    id: format!("{row_prefix}.{provider}"),
-                    label: status.display_name.clone(),
-                    description: status.credential_state.clone(),
-                    value: Some(status.provider_id.clone()),
-                    kind: MenuRowKind::Object,
-                    badges,
-                    metadata,
-                    primary_action: Some(MenuActionProjection::command(
-                        format!("{row_prefix}.{provider}.login"),
-                        "Login",
-                        login_command.clone(),
-                    )),
-                    actions: vec![
-                        {
-                            let mut action = MenuActionProjection::command(
-                                format!("{row_prefix}.{provider}.login.action"),
-                                "Login",
-                                login_command,
-                            );
-                            action.key = Some("l".into());
-                            action
-                        },
-                        {
-                            let mut action = MenuActionProjection::command(
-                                format!("{row_prefix}.{provider}.logout.action"),
-                                "Logout",
-                                logout_command,
-                            );
-                            action.key = Some("o".into());
-                            action
-                        },
-                    ],
-                    safety: None,
-                    availability: None,
-                }
-            })
-            .collect()
+        auth_menu_projection::ProviderRouteSnapshot {
+            selected_provider,
+            serving_provider,
+            route_state: self.route_state.clone(),
+        }
+    }
+
+    fn provider_status_rows(
+        &self,
+        row_prefix: &str,
+    ) -> Vec<crate::surfaces::menu::MenuRowProjection> {
+        let provider_ids: Vec<&str> = if row_prefix == "auth.provider" {
+            crate::auth::operator_auth_provider_ids()
+        } else {
+            vec![
+                "anthropic",
+                "openai-codex",
+                "github-copilot",
+                "openai",
+                "openrouter",
+                "google",
+                "ollama",
+            ]
+        };
+        auth_menu_projection::build_provider_status_rows(
+            row_prefix,
+            provider_ids
+                .into_iter()
+                .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+                .collect(),
+            &self.provider_route_snapshot(),
+        )
     }
 
     fn open_auth_menu(&mut self) {
-        use crate::surfaces::menu::{MenuGroupProjection, MenuProjection, MenuTabProjection};
-        let mut menu = MenuProjection::new("auth", "Authentication");
-        let mut summary = "Provider authentication status. Enter logs into the selected provider; l login; o logout; / filters providers.".to_string();
-        if self.route_state.is_some()
-            || self.route_selected_model.is_some()
-            || self.route_serving_model.is_some()
-            || self.footer_data.route_warning.is_some()
-        {
-            let route_state = self.route_state.as_deref().unwrap_or("unknown");
-            summary.push_str(&format!(
-                "
-route: {route_state}"
-            ));
-            if let Some(selected) = self.route_selected_model.as_deref() {
-                summary.push_str(&format!(" · selected: {selected}"));
-            }
-            if let Some(serving) = self.route_serving_model.as_deref() {
-                summary.push_str(&format!(" · serving: {serving}"));
-            }
-            if let Some(warning) = self.footer_data.route_warning.as_deref() {
-                summary.push_str(&format!(
-                    "
-warning: {warning}"
-                ));
-            }
-        }
-        menu.summary = Some(summary);
-        menu.footer = Some(
-            "↑/↓ navigate · Enter login · l login · o logout · / filter · Esc close · /auth status for text readout".into(),
+        let providers = crate::auth::operator_auth_provider_ids()
+            .into_iter()
+            .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+            .collect();
+        let menu = auth_menu_projection::build_authentication_menu(
+            auth_menu_projection::AuthenticationMenuInputs {
+                providers,
+                route: self.provider_route_snapshot(),
+                selected_model: self.route_selected_model.clone(),
+                serving_model: self.route_serving_model.clone(),
+                route_warning: self.footer_data.route_warning.clone(),
+            },
         );
-        menu.tabs = vec![MenuTabProjection {
-            id: "providers".into(),
-            label: "Providers".into(),
-            groups: vec![MenuGroupProjection {
-                id: "auth.providers".into(),
-                label: "Provider credentials".into(),
-                description: Some("Credential probe status and login/logout actions.".into()),
-                rows: self.provider_status_rows("auth.provider"),
-            }],
-        }];
         self.open_menu_projection(menu);
     }
 

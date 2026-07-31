@@ -144,7 +144,7 @@ use self::footer::{FooterData, SessionUsageSlice};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
-use self::menu_effects::{MenuEffect, SelectorTarget};
+use self::menu_effects::{MenuEffect, SelectorTarget, SettingsRowAction, SettingsRowTarget};
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
@@ -4274,12 +4274,9 @@ impl App {
                 }
                 SlashResult::Handled
             }
-            MenuEffect::OpenSettingsRow {
-                target_row_id,
-                label,
-            } => {
-                if let Some(row_id) = target_row_id.as_deref() {
-                    self.open_settings_row_by_id(row_id);
+            MenuEffect::OpenSettingsRow { target, label } => {
+                if target.id().is_some() {
+                    self.open_settings_row(target);
                 } else {
                     self.show_command_toast(CommandToast::new(
                         format!("No settings row registered for {label}"),
@@ -4759,7 +4756,10 @@ warning: {warning}"
         self.open_menu_projection(menu);
     }
 
-    fn open_settings_row_by_id(&mut self, row_id: &str) {
+    fn open_settings_row(&mut self, target: SettingsRowTarget) {
+        let Some(row_id) = target.id() else {
+            return;
+        };
         let projection = self.settings_projection();
         let Some(row) = projection
             .tabs
@@ -4796,20 +4796,20 @@ warning: {warning}"
             return;
         }
 
-        match row_id.as_str() {
-            "runtime.model" => {
+        match target.action() {
+            SettingsRowAction::OpenModelSelector => {
                 self.active_menu = None;
                 self.pending_menu_confirmation = None;
                 self.open_model_selector();
             }
-            "runtime.max_turns" => {
+            SettingsRowAction::OpenMaxTurnsSelector => {
                 self.active_menu = None;
                 self.pending_menu_confirmation = None;
                 self.open_max_turns_selector();
             }
-            "workspace.sandbox" => self.toggle_settings_sandbox(),
-            "updates.auto_update" => self.toggle_settings_auto_update(),
-            "workspace.trusted_directories" => {
+            SettingsRowAction::ToggleSandbox => self.toggle_settings_sandbox(),
+            SettingsRowAction::ToggleAutoUpdate => self.toggle_settings_auto_update(),
+            SettingsRowAction::ExplainTrustedDirectories => {
                 let settings = self.settings();
                 if settings.trusted_directories.is_empty() {
                     self.show_command_toast(CommandToast::new(
@@ -4823,7 +4823,7 @@ warning: {warning}"
                     ));
                 }
             }
-            _ => self.show_command_toast(CommandToast::new(
+            SettingsRowAction::ProjectedEditor => self.show_command_toast(CommandToast::new(
                 format!("No editor registered for {}", row.label),
                 CommandSeverity::Warning,
             )),

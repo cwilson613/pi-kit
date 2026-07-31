@@ -30,6 +30,42 @@ impl SelectorTarget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SettingsRowAction {
+    OpenModelSelector,
+    OpenMaxTurnsSelector,
+    ToggleSandbox,
+    ToggleAutoUpdate,
+    ExplainTrustedDirectories,
+    ProjectedEditor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SettingsRowTarget {
+    id: Option<String>,
+}
+
+impl SettingsRowTarget {
+    fn from_id(id: Option<String>) -> Self {
+        Self { id }
+    }
+
+    pub(super) fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    pub(super) fn action(&self) -> SettingsRowAction {
+        match self.id() {
+            Some("runtime.model") => SettingsRowAction::OpenModelSelector,
+            Some("runtime.max_turns") => SettingsRowAction::OpenMaxTurnsSelector,
+            Some("workspace.sandbox") => SettingsRowAction::ToggleSandbox,
+            Some("updates.auto_update") => SettingsRowAction::ToggleAutoUpdate,
+            Some("workspace.trusted_directories") => SettingsRowAction::ExplainTrustedDirectories,
+            _ => SettingsRowAction::ProjectedEditor,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MenuEffect {
     FocusRow {
@@ -51,7 +87,7 @@ pub(super) enum MenuEffect {
         target_row_id: Option<String>,
     },
     OpenSettingsRow {
-        target_row_id: Option<String>,
+        target: SettingsRowTarget,
         label: String,
     },
     RunCommand {
@@ -82,7 +118,7 @@ impl From<MenuActionProjection> for MenuEffect {
                 target_row_id: action.target_row_id,
             },
             MenuActionDisposition::OpenSettingsRow => Self::OpenSettingsRow {
-                target_row_id: action.target_row_id,
+                target: SettingsRowTarget::from_id(action.target_row_id),
                 label: action.label,
             },
             MenuActionDisposition::RunCommand => Self::RunCommand {
@@ -162,5 +198,36 @@ mod tests {
                 label: "Choose future value".into(),
             }
         );
+    }
+
+    #[test]
+    fn settings_row_effect_types_local_actions() {
+        let action = MenuActionProjection::open_settings_row(
+            "settings.sandbox.open",
+            "Sandbox",
+            "workspace.sandbox",
+        );
+
+        let MenuEffect::OpenSettingsRow { target, label } = MenuEffect::from(action) else {
+            panic!("expected settings row effect");
+        };
+        assert_eq!(target.id(), Some("workspace.sandbox"));
+        assert_eq!(target.action(), SettingsRowAction::ToggleSandbox);
+        assert_eq!(label, "Sandbox");
+    }
+
+    #[test]
+    fn settings_row_effect_preserves_projected_editor_fallback() {
+        let action = MenuActionProjection::open_settings_row(
+            "settings.future.open",
+            "Future setting",
+            "future.setting",
+        );
+
+        let MenuEffect::OpenSettingsRow { target, .. } = MenuEffect::from(action) else {
+            panic!("expected settings row effect");
+        };
+        assert_eq!(target.id(), Some("future.setting"));
+        assert_eq!(target.action(), SettingsRowAction::ProjectedEditor);
     }
 }

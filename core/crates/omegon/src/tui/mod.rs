@@ -145,7 +145,9 @@ use self::footer::{FooterData, SessionUsageSlice};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
-use self::menu_effects::{MenuCommandOutcome, SettingsRowAction, SettingsRowTarget};
+use self::menu_effects::{
+    MenuCommandOutcome, MenuRefreshTarget, SettingsRowAction, SettingsRowTarget,
+};
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
@@ -3947,19 +3949,18 @@ impl App {
         ));
     }
 
-    fn rebuild_active_menu(&mut self, menu_id: &str) -> bool {
-        let projection = match menu_id {
-            "ui" => self.ui_menu_projection(),
-            "extension-runtime" => self.extension_runtime_menu_projection(),
-            id if id.starts_with("extension-detail:") => {
-                let Some(projection) = self
-                    .extension_detail_menu_projection(id.trim_start_matches("extension-detail:"))
+    fn rebuild_active_menu(&mut self, target: MenuRefreshTarget) -> bool {
+        let projection = match target {
+            MenuRefreshTarget::Ui => self.ui_menu_projection(),
+            MenuRefreshTarget::ExtensionRuntime => self.extension_runtime_menu_projection(),
+            MenuRefreshTarget::ExtensionDetail(extension_name) => {
+                let Some(projection) = self.extension_detail_menu_projection(&extension_name)
                 else {
                     return false;
                 };
                 projection
             }
-            _ => return false,
+            MenuRefreshTarget::Unsupported(_) => return false,
         };
         self.active_menu = Some(ActiveMenu::new(projection));
         self.pending_menu_confirmation = None;

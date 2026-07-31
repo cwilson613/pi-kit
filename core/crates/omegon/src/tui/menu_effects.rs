@@ -14,6 +14,27 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum MenuRefreshTarget {
+    Ui,
+    ExtensionRuntime,
+    ExtensionDetail(String),
+    Unsupported(String),
+}
+
+impl MenuRefreshTarget {
+    fn from_menu_id(menu_id: String) -> Self {
+        match menu_id.as_str() {
+            "ui" => Self::Ui,
+            "extension-runtime" => Self::ExtensionRuntime,
+            _ if menu_id.starts_with("extension-detail:") => {
+                Self::ExtensionDetail(menu_id.trim_start_matches("extension-detail:").to_string())
+            }
+            _ => Self::Unsupported(menu_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SelectorTarget {
     ContextClass,
     CurrentModel,
@@ -312,14 +333,14 @@ impl App {
                 close_policy,
             } => {
                 if let Some(command) = command {
-                    let menu_id = self
+                    let refresh_target = self
                         .active_menu
                         .as_ref()
-                        .map(|menu| menu.projection.id.clone());
+                        .map(|menu| MenuRefreshTarget::from_menu_id(menu.projection.id.clone()));
                     let outcome = self.execute_active_menu_command(command, tx);
                     if outcome.should_refresh_menu(close_policy)
-                        && let Some(menu_id) = menu_id.as_deref()
-                        && self.rebuild_active_menu(menu_id)
+                        && let Some(refresh_target) = refresh_target
+                        && self.rebuild_active_menu(refresh_target)
                     {
                         return SlashResult::Handled;
                     }
@@ -463,6 +484,26 @@ mod tests {
         };
         assert_eq!(target.id(), Some("future.setting"));
         assert_eq!(target.action(), SettingsRowAction::ProjectedEditor);
+    }
+
+    #[test]
+    fn refresh_target_types_supported_menu_ids() {
+        assert_eq!(
+            MenuRefreshTarget::from_menu_id("ui".into()),
+            MenuRefreshTarget::Ui
+        );
+        assert_eq!(
+            MenuRefreshTarget::from_menu_id("extension-runtime".into()),
+            MenuRefreshTarget::ExtensionRuntime
+        );
+        assert_eq!(
+            MenuRefreshTarget::from_menu_id("extension-detail:demo".into()),
+            MenuRefreshTarget::ExtensionDetail("demo".into())
+        );
+        assert_eq!(
+            MenuRefreshTarget::from_menu_id("settings".into()),
+            MenuRefreshTarget::Unsupported("settings".into())
+        );
     }
 
     #[test]

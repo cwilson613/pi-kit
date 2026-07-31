@@ -16,7 +16,9 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 #[cfg(feature = "tui")]
 use crossterm::terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
+#[cfg(feature = "tui")]
 use std::io;
+#[cfg(feature = "tui")]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1597,7 +1599,16 @@ async fn main() -> anyhow::Result<()> {
             } else if let Some(ver) = version {
                 switch::switch_to_version(&ver).await
             } else {
-                switch::interactive_picker().await
+                #[cfg(feature = "tui")]
+                {
+                    switch::interactive_picker().await
+                }
+                #[cfg(not(feature = "tui"))]
+                {
+                    anyhow::bail!(
+                        "interactive version selection was not compiled; pass an explicit version or use --list, --latest, or --latest-rc"
+                    )
+                }
             }
         }
         Some(Commands::Acp {
@@ -3951,7 +3962,6 @@ fn apply_posture_to_settings(name: &str, settings: &mut settings::Settings, cwd:
     }
 }
 
-#[cfg(feature = "tui")]
 fn cli_prefers_slim_mode(cli: &Cli) -> bool {
     cli.slim
 }
@@ -6795,6 +6805,7 @@ async fn run_interactive_command(_cli: &Cli) -> anyhow::Result<()> {
     )
 }
 
+#[cfg(feature = "tui")]
 async fn run_interactive_active_turn(
     mut runtime_state: InteractiveAgentState,
     runtime: InteractiveRuntimeResources,

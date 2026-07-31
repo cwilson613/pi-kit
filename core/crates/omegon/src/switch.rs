@@ -10,6 +10,7 @@
 
 use anyhow::{Result, anyhow};
 use dirs::home_dir;
+#[cfg(feature = "tui")]
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -373,7 +374,8 @@ impl VersionSwitcher {
         Ok(())
     }
 
-    /// Interactive version picker
+    /// Interactive version picker.
+    #[cfg(feature = "tui")]
     pub async fn interactive_picker(&mut self) -> Result<Option<String>> {
         use crossterm::{
             cursor,
@@ -791,6 +793,7 @@ pub async fn switch_to_latest(_include_rc: bool) -> anyhow::Result<()> {
 }
 
 /// `omegon switch` (no args) — interactive picker.
+#[cfg(feature = "tui")]
 pub async fn interactive_picker() -> anyhow::Result<()> {
     let mut switcher = VersionSwitcher::new();
     println!("Fetching releases...");

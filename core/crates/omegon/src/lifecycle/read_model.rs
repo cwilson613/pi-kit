@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use omegon_opsx::{ChangeState, JsonFileStore, Lifecycle as OpsxLifecycle};
 
-use super::context::LifecycleContextProvider;
+use super::context::{DegradedNode, LifecycleContextProvider};
 use super::{doctor, spec};
-use crate::lifecycle::types::ChangeInfo;
+use crate::lifecycle::types::{ChangeInfo, DesignNode};
 
 #[derive(Debug, Clone, Default)]
 pub struct SnapshotOptions {
@@ -77,6 +77,18 @@ pub struct LifecycleDriftFinding {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DesignTreeSnapshot {
+    pub nodes: std::collections::HashMap<String, DesignNode>,
+    pub focused_node_id: Option<String>,
+    pub degraded_nodes: Vec<DegradedNode>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LifecycleReadError {
+    ProviderPoisoned,
+}
+
 #[derive(Clone)]
 pub struct LifecycleReadHandle {
     provider: Arc<Mutex<LifecycleContextProvider>>,
@@ -99,6 +111,33 @@ impl LifecycleReadHandle {
 
     pub fn provider(&self) -> Arc<Mutex<LifecycleContextProvider>> {
         Arc::clone(&self.provider)
+    }
+
+    /// Return an owned design-tree snapshot without exposing the provider lock.
+    pub fn design_tree_snapshot(
+        &self,
+        refresh: bool,
+    ) -> Result<DesignTreeSnapshot, LifecycleReadError> {
+        let mut provider = self
+            .provider
+            .lock()
+            .map_err(|_| LifecycleReadError::ProviderPoisoned)?;
+        if refresh {
+            provider.refresh();
+        }
+        Ok(DesignTreeSnapshot {
+            nodes: provider.all_nodes().clone(),
+            focused_node_id: provider.focused_node_id().map(str::to_string),
+            degraded_nodes: provider.degraded_nodes().to_vec(),
+        })
+    }
+
+    /// Return one owned design node without exposing the provider lock.
+    pub fn design_node(&self, id: &str) -> Result<Option<DesignNode>, LifecycleReadError> {
+        self.provider
+            .lock()
+            .map(|provider| provider.get_node(id).cloned())
+            .map_err(|_| LifecycleReadError::ProviderPoisoned)
     }
 
     pub fn refresh(&self) {

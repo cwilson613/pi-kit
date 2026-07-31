@@ -24,9 +24,8 @@ use crate::lifecycle::types::*;
 use std::collections::HashMap;
 
 use crate::features::cleave::CleaveProgress;
-use crate::lifecycle::context::LifecycleContextProvider;
 use crate::lifecycle::design;
-use crate::lifecycle::read_model::SnapshotOptions;
+use crate::lifecycle::read_model::{DesignTreeSnapshot, SnapshotOptions};
 use crate::runtime_state::RuntimeStateHandles;
 use crate::status::HarnessStatus;
 
@@ -44,11 +43,9 @@ impl DashboardHandleExt for DashboardHandles {
     /// Combines rescan + refresh to avoid double-locking the lifecycle Mutex.
     fn rescan_and_refresh(&self, state: &mut DashboardState) {
         if let Some(ref lifecycle) = self.lifecycle
-            && let Ok(mut lp) = lifecycle.provider().lock()
+            && let Ok(snapshot) = lifecycle.design_tree_snapshot(true)
         {
-            lp.refresh();
-            // Fall through to refresh_from_lifecycle below
-            refresh_from_lifecycle(&lp, state);
+            refresh_from_lifecycle(&snapshot, state);
         }
         refresh_openspec(self, state);
         refresh_non_lifecycle(self, state);
@@ -58,9 +55,9 @@ impl DashboardHandleExt for DashboardHandles {
     fn refresh_into(&self, state: &mut DashboardState) {
         // Lifecycle
         if let Some(ref lifecycle) = self.lifecycle
-            && let Ok(lp) = lifecycle.provider().lock()
+            && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
         {
-            refresh_from_lifecycle(&lp, state);
+            refresh_from_lifecycle(&snapshot, state);
         }
         refresh_openspec(self, state);
         refresh_non_lifecycle(self, state);
@@ -97,9 +94,9 @@ fn refresh_non_lifecycle(handles: &DashboardHandles, state: &mut DashboardState)
     state.harness = handles.observe_harness().ok().flatten();
 }
 
-fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardState) {
-    state.focused_node = lp.focused_node_id().and_then(|id| {
-        lp.get_node(id).map(|n| {
+fn refresh_from_lifecycle(snapshot: &DesignTreeSnapshot, state: &mut DashboardState) {
+    state.focused_node = snapshot.focused_node_id.as_deref().and_then(|id| {
+        snapshot.nodes.get(id).map(|n| {
             let sections = design::read_node_sections(n);
             let assumptions = n.assumption_count();
             let decisions_count = sections
@@ -123,7 +120,7 @@ fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardSt
         })
     });
     // Status counts + node lists
-    let nodes = lp.all_nodes();
+    let nodes = &snapshot.nodes;
     let mut counts = StatusCounts {
         total: nodes.len(),
         ..Default::default()
@@ -169,8 +166,8 @@ fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardSt
     state.status_counts = counts;
 
     // Collect degraded nodes
-    state.degraded_nodes = lp
-        .degraded_nodes()
+    state.degraded_nodes = snapshot
+        .degraded_nodes
         .iter()
         .map(|d| DegradedNodeSummary {
             id: d.id.clone(),

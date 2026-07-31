@@ -179,16 +179,33 @@ impl RuntimeStateHandles {
         self.harness.lock().is_ok_and(|harness| harness.is_some())
     }
 
+    pub fn try_install_harness(
+        &self,
+        status: Arc<Mutex<HarnessStatus>>,
+    ) -> Result<(), ObserveError> {
+        let mut harness = self
+            .harness
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Harness))?;
+        *harness = Some(status);
+        Ok(())
+    }
+
     pub fn install_harness(&self, status: Arc<Mutex<HarnessStatus>>) {
-        if let Ok(mut harness) = self.harness.lock() {
-            *harness = Some(status);
-        }
+        let _ = self.try_install_harness(status);
+    }
+
+    pub fn try_clear_harness(&self) -> Result<(), ObserveError> {
+        let mut harness = self
+            .harness
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Harness))?;
+        *harness = None;
+        Ok(())
     }
 
     pub fn clear_harness(&self) {
-        if let Ok(mut harness) = self.harness.lock() {
-            *harness = None;
-        }
+        let _ = self.try_clear_harness();
     }
 
     pub fn mutate_harness<R>(
@@ -433,6 +450,26 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_harness_source_slot_is_explicit() {
+        let handles = RuntimeStateHandles::default();
+        let harness_slot = handles.harness.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = harness_slot.lock().unwrap();
+            panic!("poison harness source slot fixture");
+        })
+        .join();
+
+        assert!(matches!(
+            handles.try_install_harness(Arc::new(Mutex::new(HarnessStatus::default()))),
+            Err(ObserveError::Poisoned(ObservationDomain::Harness))
+        ));
+        assert!(matches!(
+            handles.try_clear_harness(),
+            Err(ObserveError::Poisoned(ObservationDomain::Harness))
+        ));
+    }
+
+    #[test]
     fn lifecycle_publication_stores_before_calling_publisher() {
         let handles = RuntimeStateHandles::default();
         let snapshot = omegon_traits::RuntimeLifecycleSnapshot {
@@ -453,6 +490,35 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    #[test]
+    fn poisoned_lifecycle_slot_does_not_publish() {
+        let handles = RuntimeStateHandles::default();
+        let lifecycle_slot = handles.runtime_lifecycle.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = lifecycle_slot.lock().unwrap();
+            panic!("poison lifecycle slot fixture");
+        })
+        .join();
+        let snapshot = omegon_traits::RuntimeLifecycleSnapshot {
+            operation_id: "restart-poisoned".into(),
+            kind: omegon_traits::RuntimeLifecycleKind::Restart,
+            phase: omegon_traits::RuntimeLifecyclePhase::Queued,
+            message: "restart requested".into(),
+            session_id: None,
+            target_version: None,
+            reconnect_required: true,
+        };
+        let published = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(matches!(
+            handles.publish_runtime_lifecycle(snapshot, |_| {
+                published.store(true, std::sync::atomic::Ordering::SeqCst);
+            }),
+            Err(ObserveError::Poisoned(ObservationDomain::RuntimeLifecycle))
+        ));
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

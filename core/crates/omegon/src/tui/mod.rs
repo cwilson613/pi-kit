@@ -52,6 +52,7 @@ pub mod theme;
 pub mod tool_inspection;
 pub mod turn_tool_projection;
 pub mod tutorial;
+mod tutorial_state;
 mod ui_actions;
 pub mod widget_renderer;
 pub mod widgets;
@@ -147,6 +148,9 @@ use self::permission_lane::{format_permission_prompt, permission_response_for_ke
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
 use self::settings_menu::SelectorKind;
 use self::slash_commands::SlashResult;
+use self::tutorial_state::TutorialState;
+#[cfg(test)]
+use self::tutorial_state::parse_lesson;
 use self::workbench::{
     PlanDisplaySnapshot, SlimPlanContext, SlimPlanHintState, SlimTurnState, WorkbenchState,
     WorkbenchWorkspaceContext, active_plan_workspace_context_height, active_workbench_snapshot,
@@ -7344,169 +7348,6 @@ fn save_milestones(
 ) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(milestones)?;
     std::fs::write(path, json)
-}
-
-/// A single tutorial lesson.
-#[derive(Debug, Clone)]
-struct TutorialLesson {
-    /// Filename (e.g. "01-cockpit.md")
-    filename: String,
-    /// Title from frontmatter
-    title: String,
-    /// The lesson prompt content (body after frontmatter)
-    content: String,
-}
-
-/// Tutorial runner state — tracks lessons and progress.
-#[derive(Debug)]
-struct TutorialState {
-    lessons: Vec<TutorialLesson>,
-    current: usize, // 0-indexed
-    tutorial_dir: std::path::PathBuf,
-}
-
-/// Persisted tutorial progress.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct TutorialProgress {
-    current_lesson: usize,
-    completed: Vec<usize>,
-}
-
-impl TutorialState {
-    /// Load tutorial lessons from a directory.
-    fn load(tutorial_dir: &std::path::Path) -> Option<Self> {
-        if !tutorial_dir.is_dir() {
-            return None;
-        }
-
-        let mut entries: Vec<_> = std::fs::read_dir(tutorial_dir)
-            .ok()?
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                name.ends_with(".md") && name.chars().next().is_some_and(|c| c.is_ascii_digit())
-            })
-            .collect();
-        entries.sort_by_key(|e| e.file_name());
-
-        let mut lessons = Vec::new();
-        for entry in entries {
-            let filename = entry.file_name().to_string_lossy().to_string();
-            let raw = std::fs::read_to_string(entry.path()).ok()?;
-            let (title, content) = parse_lesson(&raw, &filename);
-            lessons.push(TutorialLesson {
-                filename,
-                title,
-                content,
-            });
-        }
-
-        if lessons.is_empty() {
-            return None;
-        }
-
-        // Load progress
-        let progress = load_tutorial_progress(tutorial_dir);
-        let current = progress.current_lesson.min(lessons.len().saturating_sub(1));
-
-        Some(Self {
-            lessons,
-            current,
-            tutorial_dir: tutorial_dir.to_path_buf(),
-        })
-    }
-
-    fn current_lesson(&self) -> &TutorialLesson {
-        &self.lessons[self.current]
-    }
-
-    fn total(&self) -> usize {
-        self.lessons.len()
-    }
-
-    fn is_last(&self) -> bool {
-        self.current >= self.lessons.len() - 1
-    }
-
-    fn advance(&mut self) -> bool {
-        if self.current < self.lessons.len() - 1 {
-            self.current += 1;
-            self.save_progress();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn go_back(&mut self) -> bool {
-        if self.current > 0 {
-            self.current -= 1;
-            self.save_progress();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn reset(&mut self) {
-        self.current = 0;
-        let progress_path = self.tutorial_dir.join("progress.json");
-        let _ = std::fs::remove_file(progress_path);
-    }
-
-    fn save_progress(&self) {
-        let progress = TutorialProgress {
-            current_lesson: self.current,
-            completed: (0..self.current).collect(),
-        };
-        let progress_path = self.tutorial_dir.join("progress.json");
-        if let Ok(json) = serde_json::to_string_pretty(&progress) {
-            let _ = std::fs::write(progress_path, json);
-        }
-    }
-
-    fn status_line(&self) -> String {
-        let lesson = self.current_lesson();
-        format!(
-            "Tutorial: lesson {}/{} — \"{}\"{}",
-            self.current + 1,
-            self.total(),
-            lesson.title,
-            if self.is_last() { " (final)" } else { "" }
-        )
-    }
-}
-
-fn parse_lesson(raw: &str, filename: &str) -> (String, String) {
-    // Extract title from frontmatter if present
-    let mut title = filename.trim_end_matches(".md").to_string();
-    let content;
-
-    if let Some(rest) = raw.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---") {
-            let frontmatter = &rest[..end];
-            for line in frontmatter.lines() {
-                if let Some(t) = line.strip_prefix("title:") {
-                    title = t.trim().trim_matches('"').trim_matches('\'').to_string();
-                }
-            }
-            content = rest[end + 4..].trim().to_string();
-        } else {
-            content = raw.to_string();
-        }
-    } else {
-        content = raw.to_string();
-    }
-
-    (title, content)
-}
-
-fn load_tutorial_progress(tutorial_dir: &std::path::Path) -> TutorialProgress {
-    let path = tutorial_dir.join("progress.json");
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
 }
 
 fn merge_zed_agent_server(

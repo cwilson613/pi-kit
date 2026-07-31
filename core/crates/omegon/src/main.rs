@@ -3967,6 +3967,35 @@ fn cli_prefers_slim_mode(cli: &Cli) -> bool {
 }
 
 #[cfg(feature = "tui")]
+fn secret_readiness_inputs(
+    secrets: &omegon_secrets::SecretsManager,
+) -> crate::capabilities::secrets::SecretReadinessInputs {
+    crate::capabilities::secrets::SecretReadinessInputs {
+        session_diagnostics: secrets
+            .session_diagnostics()
+            .into_iter()
+            .map(
+                |diag| crate::capabilities::secrets::SecretSessionDiagnostic {
+                    name: diag.name,
+                    warmed: diag.warmed,
+                },
+            )
+            .collect(),
+        recipe_descriptors: secrets
+            .list_recipe_descriptors()
+            .into_iter()
+            .map(
+                |descriptor| crate::capabilities::secrets::SecretRecipeDescriptorSummary {
+                    name: descriptor.name,
+                    source: (descriptor.kind == "env").then_some(descriptor.payload),
+                    kind: descriptor.kind,
+                },
+            )
+            .collect(),
+        checked_names: Vec::new(),
+    }
+}
+
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -4362,6 +4391,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let runtime_generation = 1;
     let extension_widgets = std::mem::take(&mut agent.extension_widgets);
     let widget_receivers = std::mem::take(&mut agent.widget_receivers);
+
 fn build_tui_secret_readiness_snapshot(
     agent: &setup::AgentSetup,
     active_agent: Option<&crate::capabilities::agents::AgentBundleSummary>,
@@ -4376,49 +4406,15 @@ fn build_tui_secret_readiness_snapshot(
     })
     .ok()?;
     let active_agents: Vec<_> = active_agent.iter().cloned().cloned().collect();
-    let build_secret_inputs = |checked_names: Vec<String>| {
-        crate::capabilities::secrets::SecretReadinessInputs {
-            session_diagnostics: agent
-                .secrets
-                .session_diagnostics()
-                .into_iter()
-                .map(|diag| crate::capabilities::secrets::SecretSessionDiagnostic {
-                    name: diag.name,
-                    warmed: diag.warmed,
-                })
-                .collect(),
-            recipe_descriptors: agent
-                .secrets
-                .list_recipe_descriptors()
-                .into_iter()
-                .map(|descriptor| crate::capabilities::secrets::SecretRecipeDescriptorSummary {
-                    name: descriptor.name,
-                    source: (descriptor.kind == "env").then_some(descriptor.payload),
-                            kind: descriptor.kind,
-                })
-                .collect(),
-            checked_names,
-        }
-    };
-    let preliminary = crate::capabilities::secrets::build_secret_readiness_snapshot(
-        &extensions,
-        &active_agents,
-        build_secret_inputs(Vec::new()),
-    );
-    let known_secret_names: Vec<String> = preliminary
-        .secrets
-        .iter()
-        .map(|secret| secret.name.clone())
-        .collect();
-    for name in &known_secret_names {
-        agent
-            .secrets
-            .warm_secret(name, omegon_secrets::SecretUse::Other, false);
-    }
+    // Startup readiness is a metadata projection, not a credential-use boundary.
+    // Resolving here causes one macOS authorization dialog per legacy Keychain
+    // item after every ad-hoc development rebuild. Actual provider, extension,
+    // and tool operations resolve their required credentials on first use.
+    let inputs = secret_readiness_inputs(&agent.secrets);
     Some(crate::capabilities::secrets::build_secret_readiness_snapshot(
         &extensions,
         &active_agents,
-        build_secret_inputs(known_secret_names),
+        inputs,
     ))
 }
 
@@ -9802,6 +9798,34 @@ mod tests {
         let snapshot = supervisor.queue_snapshot_json();
         assert_eq!(snapshot["depth"], 0);
         assert_eq!(snapshot["active"]["prompt_id"], 2);
+    }
+
+    #[test]
+    fn startup_secret_readiness_inputs_do_not_resolve_declared_recipes() {
+        let dir = tempdir().expect("temp dir");
+        let marker = dir.path().join("recipe-resolved");
+        let secrets = omegon_secrets::SecretsManager::new(dir.path()).expect("secrets manager");
+        secrets
+            .set_recipe(
+                "BRAVE_API_KEY",
+                &format!("cmd:touch {} && printf secret", marker.display()),
+            )
+            .expect("set deferred recipe");
+
+        let inputs = secret_readiness_inputs(&secrets);
+
+        assert!(
+            !marker.exists(),
+            "startup readiness executed a secret recipe"
+        );
+        assert!(inputs.checked_names.is_empty());
+        assert!(
+            inputs
+                .recipe_descriptors
+                .iter()
+                .any(|descriptor| descriptor.name == "BRAVE_API_KEY" && descriptor.kind == "cmd")
+        );
+        assert_eq!(secrets.resolve_cached("BRAVE_API_KEY"), None);
     }
 
     #[tokio::test]

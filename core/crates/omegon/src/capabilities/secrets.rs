@@ -260,12 +260,14 @@ pub fn build_secret_readiness_snapshot(
                     }));
             let status = if warmed {
                 SecretReadinessStatus::Warmed
+            } else if checked.contains(&name) {
+                SecretReadinessStatus::Missing
             } else if matches!(recipe_kind.as_deref(), Some("vault")) {
                 SecretReadinessStatus::Deferred
-            } else if checked.contains(&name) || requirement.required {
-                SecretReadinessStatus::Missing
             } else if recipe_kind.is_some() {
                 SecretReadinessStatus::Configured
+            } else if requirement.required {
+                SecretReadinessStatus::Missing
             } else {
                 SecretReadinessStatus::Unchecked
             };
@@ -726,6 +728,93 @@ mod tests {
         assert_eq!(recipe.status, SecretReadinessStatus::Configured);
         assert_eq!(recipe.recipe_kind.as_deref(), Some("env"));
         assert!(recipe.consumers.is_empty());
+    }
+
+    #[test]
+    fn required_configured_recipe_is_ready_without_eager_resolution() {
+        let agent = AgentBundleSummary {
+            id: "daily".into(),
+            name: "Daily".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            domain: "ops".into(),
+            source_path: "/catalog/daily".into(),
+            persona: AgentPersonaSummary::default(),
+            extensions: Vec::new(),
+            settings: AgentSettingsSummary::default(),
+            workflow: None,
+            secrets: AgentSecretsSummary {
+                required: vec!["MANAGED_API_KEY".into()],
+                optional: Vec::new(),
+            },
+            triggers: Vec::new(),
+        };
+
+        let snapshot = build_secret_readiness_snapshot(
+            &[],
+            &[agent],
+            SecretReadinessInputs {
+                session_diagnostics: Vec::new(),
+                recipe_descriptors: vec![SecretRecipeDescriptorSummary {
+                    name: "MANAGED_API_KEY".into(),
+                    kind: "store".into(),
+                    source: None,
+                }],
+                checked_names: Vec::new(),
+            },
+        );
+
+        let secret = snapshot
+            .secrets
+            .iter()
+            .find(|secret| secret.name == "MANAGED_API_KEY")
+            .expect("required configured secret");
+        assert_eq!(secret.status, SecretReadinessStatus::Configured);
+        assert_eq!(secret.reason, None);
+        assert!(secret.required);
+    }
+
+    #[test]
+    fn checked_required_recipe_that_failed_resolution_is_missing() {
+        let agent = AgentBundleSummary {
+            id: "daily".into(),
+            name: "Daily".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            domain: "ops".into(),
+            source_path: "/catalog/daily".into(),
+            persona: AgentPersonaSummary::default(),
+            extensions: Vec::new(),
+            settings: AgentSettingsSummary::default(),
+            workflow: None,
+            secrets: AgentSecretsSummary {
+                required: vec!["MANAGED_API_KEY".into()],
+                optional: Vec::new(),
+            },
+            triggers: Vec::new(),
+        };
+
+        let snapshot = build_secret_readiness_snapshot(
+            &[],
+            &[agent],
+            SecretReadinessInputs {
+                session_diagnostics: Vec::new(),
+                recipe_descriptors: vec![SecretRecipeDescriptorSummary {
+                    name: "MANAGED_API_KEY".into(),
+                    kind: "store".into(),
+                    source: None,
+                }],
+                checked_names: vec!["MANAGED_API_KEY".into()],
+            },
+        );
+
+        let secret = snapshot
+            .secrets
+            .iter()
+            .find(|secret| secret.name == "MANAGED_API_KEY")
+            .expect("checked required secret");
+        assert_eq!(secret.status, SecretReadinessStatus::Missing);
+        assert_eq!(secret.reason, Some(SecretReadinessReason::SourceFailed));
     }
 
     #[test]

@@ -269,8 +269,6 @@ impl LifecycleSnapshot {
                     })
                 })
             });
-                })
-            });
 
         let active_changes: Vec<_> = read_handle
             .openspec_snapshot(Default::default())

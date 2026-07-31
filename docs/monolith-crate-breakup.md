@@ -10,6 +10,11 @@ open_questions:
   - "Should a no-subcommand invocation in a no-TUI build print help, run a headless mode only when a prompt is supplied, or fail with an explicit `interactive support was not compiled` message? Today no subcommand selects the TUI, so feature-gating without deciding this changes startup semantics."
   - "Should `switch` retain its independent Crossterm version picker in a no-TUI build, or should all terminal interaction be part of the `tui` feature? Keeping it preserves CLI UX but means `crossterm` cannot be removed from daemon artifacts."
   - "Is `OperatorCommand` intentionally an integration-crate contract, or must it eventually move to an extracted crate? It currently references conversation observations, update metadata, settings types, and `ControlRequest`; moving it across a crate boundary now would create or expose dependency cycles."
+  - "[deferred packaging] Should the headless artifact keep the `omegon` executable name or ship as `omegon-daemon`? A second name is operationally explicit but creates manifest, installer, update-channel, and support-matrix work."
+  - "[deferred packaging] Is the first supported no-TUI deployment a standalone archive, an OCI image, or both? Existing release automation and `core/Containerfile` currently assume the default-feature binary."
+  - "[deferred packaging] Which runtime assets must accompany a headless binary (Pkl schemas, bundled skills/catalog, CA material, extension metadata), and which interactive assets can be omitted without changing daemon behavior?"
+  - "[deferred packaging] Must full and headless artifacts share one update channel and version identity, or should artifact capability be encoded in release-manifest metadata and OCI labels?"
+  - "[deferred packaging] What is the minimum supported daemon smoke contract: readiness, authenticated HTTP/WebSocket control, ACP/IPC policy, graceful shutdown, writable state paths, and no terminal dependency in `cargo tree`?"
 
 ## Second-order feature-boundary assessment (2026-07-30)
 
@@ -33,6 +38,91 @@ gate rather than be discovered accidentally during packaging:
    with `tui`; daemon/control tests must compile in both matrices. A normal
    `cargo check` alone cannot prove the deployment boundary, and a no-TUI check
    alone cannot prove preservation of interactive behavior.
+
+## Deferred plan: non-TUI deployment and packaging
+
+**Status:** deferred after the compile boundary landed. This section preserves
+fresh design context; it does not authorize release, installer, container, or
+artifact-name changes.
+
+### Goal
+
+Produce a supported deployment artifact built with:
+
+```bash
+cargo build --release -p omegon --no-default-features
+```
+
+The artifact must retain daemon/control functionality while excluding terminal
+rendering dependencies. The existing default-feature `omegon` artifact remains
+the compatibility and operator-interactive distribution until packaging policy
+is explicitly decided.
+
+### Proposed work order
+
+1. **Keep the boundary continuously healthy**
+   - Add a CI compile lane for `cargo check -p omegon --no-default-features`.
+   - Add a focused headless test lane for daemon, control, web, ACP/IPC, and
+     shutdown behavior; do not run TUI snapshots in that matrix.
+   - Add a dependency assertion that the no-default-features graph excludes
+     Ratatui, Crossterm, TachyonFX, terminal-image, and TUI widget crates.
+2. **Define the artifact contract**
+   - Decide executable naming (`omegon` versus `omegon-daemon`) without changing
+     the CLI schema accidentally.
+   - Inventory runtime assets installed by `just link` and packaged by release
+     automation; classify each as required, optional, or interactive-only.
+   - Specify filesystem, environment, secret, network-listen, health/readiness,
+     and graceful-shutdown expectations for non-interactive operation.
+3. **Add a local packaging recipe before changing release CI**
+   - Add a dedicated Just recipe such as `build-headless` that invokes the
+     exact feature matrix and emits an explicitly named staging artifact.
+   - Add an isolated smoke test that launches the staged artifact, probes
+     readiness, exercises one authenticated control path, and shuts it down.
+   - Record binary size and `cargo tree` evidence; treat these as packaging
+     evidence, not build-performance claims.
+4. **Add OCI packaging**
+   - Prefer a separate minimal runtime stage/Containerfile target rather than
+     making the existing full image conditional and opaque.
+   - Run as a non-root user with explicit writable state/config mounts, a fixed
+     listen address/port contract, healthcheck, and signal-forwarding behavior.
+   - Do not bundle shells, compilers, terminal libraries, or interactive assets
+     unless a daemon capability demonstrably requires them.
+5. **Integrate release metadata and distribution**
+   - Extend `scripts/release_manifest.py` and release workflow matrices only
+     after the local artifact contract and smoke test are stable.
+   - Encode artifact capability/profile in manifest metadata, checksums,
+     attestations, and OCI labels; never rely only on filename convention.
+   - Decide whether Homebrew and the stable launcher remain full-only. They
+     should not silently switch existing installations to the headless build.
+6. **Document and support**
+   - Publish supported invocation examples, required mounts/environment,
+     upgrade/rollback behavior, and the precise errors for interactive-only
+     commands.
+   - Document the capability difference between full and headless artifacts and
+     keep version identity/reporting unambiguous.
+
+### Go/no-go acceptance gates
+
+- Both default and no-default-features release builds succeed from a clean tree.
+- Headless dependency graph contains no terminal presentation stack.
+- Packaged daemon starts without a TTY and reaches readiness.
+- Authenticated HTTP/WebSocket control and selected ACP/IPC behavior match the
+  declared deployment contract.
+- SIGTERM produces bounded graceful shutdown and clean state persistence.
+- Runtime assets are complete in a clean container/VM, with no checkout-relative
+  paths or accidental dependence on `just link` side effects.
+- Release manifest, checksums, signatures/attestations, and OCI labels identify
+  the artifact profile.
+- Existing default-feature archive, launcher, update, and Homebrew behavior is
+  unchanged unless separately approved.
+
+### Explicit non-goals for the deferred phase
+
+- No claim that the headless artifact improves cold compile time.
+- No immediate `omegon-tui` crate split.
+- No removal of shared command or CLI variants solely to shrink the artifact.
+- No automatic publication of a second artifact before smoke and provenance
+  contracts exist.
 dependencies: []
 related: []
 ---

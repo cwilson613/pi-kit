@@ -15,14 +15,22 @@ Conventions, tooling, and patterns for Python development.
 
 ## Core Conventions
 
-- **Python 3.11+** minimum
-- **src/ layout** (PEP 517) for all packages
-- **pyproject.toml** is the single config file — no `.cfg`, `.ini`, or separate `.toml`
-- **venv + pip** is the default for new/simple projects; respect existing Poetry, Conda, uv, or PDM setups when present
-- **Makefile** (or justfile) wraps all dev commands
-- **Editable install**: `pip install -e ".[dev]"` for development
+- **Respect the project first.** Preserve its supported Python versions, layout,
+  dependency manager, build backend, and command wrappers.
+- For a new project with no policy, Python 3.11+, a `src/` package layout, and
+  PEP 517 metadata in `pyproject.toml` are reasonable defaults.
+- Keep tool configuration in `pyproject.toml` when the selected tools support
+  it; do not migrate established configuration merely for uniformity.
+- Use the environment/dependency workflow already present (uv, Poetry, PDM,
+  Conda, venv/pip, or another project-owned tool).
+- Expose repeatable development commands through the repository's existing
+  `justfile`, Makefile, task runner, or package manager scripts.
+- For pip-managed development installs, use `pip install -e ".[dev]"` when the
+  package defines that extra.
 
-## Project Scaffold
+## New-Project Scaffold
+
+Use this only when creating a package with no established layout or toolchain:
 
 ```
 <project>/
@@ -37,7 +45,10 @@ Conventions, tooling, and patterns for Python development.
 └── .github/workflows/ci.yml
 ```
 
-**Build backend choice:**
+**Build backend choice for a new package:**
+
+Choose the simplest backend that satisfies the project. Hatchling and
+setuptools are common options, not mandatory defaults.
 | Project Type | Backend |
 |-------------|---------|
 | Library / CLI tool | hatchling |
@@ -133,8 +144,8 @@ async def test_connection():
 
 | Pattern | Convention |
 |---------|-----------|
-| Paths | `pathlib.Path`, never `os.path` |
-| Data models | `dataclasses` for internal, Pydantic at validation boundaries |
+| Paths | Prefer `pathlib.Path` in new code; preserve established project conventions when interoperability requires otherwise |
+| Data models | `dataclasses` for simple internal models; validate untrusted input at explicit boundaries |
 | Imports | stdlib / third-party / local (ruff `I` rule enforces) |
 | Async | `asyncio.gather` for concurrency, `asyncio.wait_for` for timeouts |
 | Logging | `logging.getLogger(__name__)` |

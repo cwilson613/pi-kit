@@ -29,80 +29,66 @@ Related: [[design-tree|Design Exploration Tree]]
 
 Unresolved wikilinks render as styled concept references (italic, muted) — they're safe to use as forward references or concept tags.
 
-## Frontmatter
+## Workspace Documents
 
-Always include YAML frontmatter with at least `title`:
+Use the workspace's existing organization and frontmatter conventions. For a new
+Flynt note, include a title when the active surface or project template does not
+supply one:
 
 ```yaml
 ---
 title: Architecture Decision Record
 status: decided
-tags: [architecture, crdt, storage]
+tags: [architecture, storage]
 ---
 ```
 
-Common fields:
-- `title` — displayed in sidebar and graph labels
-- `status` — seed, exploring, decided, blocked, deferred
-- `tags` — for filtering and grouping
-- `date` — ISO date for temporal ordering
+Common fields include `title`, `status`, `tags`, and `date`, but structured
+surfaces may manage their own metadata. Do not add generic frontmatter to
+Excalidraw wrappers, design-board wrappers, generated files, or established
+project documents that use a different schema.
+
+Choose the artifact that matches the operator's active Flynt surface:
+
+- markdown notes for durable prose and linked knowledge;
+- D2 for text-authored structural diagrams;
+- Excalidraw for freeform drawings;
+- design boards for component/layout exploration;
+- flow graphs for editable node-and-edge workflows.
+
+Use `flynt_surface_guide` when that capability is exposed and the correct
+surface is unclear. When the operator refers to "the open document" or "what I
+have open," use `get_ui_state` before asking them to identify it.
 
 ## File Organization
 
-Structure directories so the hierarchy IS the navigation:
+Respect the existing workspace hierarchy. Typical durable locations include:
 
-```
+```text
 project/
-  ai/
-    design/           ← design tree nodes
-    memory/           ← memory index (generated)
-  openspec/
-    changes/
-      feature-name/
-        proposal.md   ← what and why
-        design.md     ← how (architecture decisions)
-        tasks.md      ← work breakdown
-        specs/        ← Given/When/Then scenarios
-  docs/               ← long-lived documentation
+  docs/               # long-lived project documentation
+  openspec/           # lifecycle changes and specifications, when enabled
+  drawings/           # Excalidraw assets and their markdown wrappers
+  diagrams/           # text-authored D2 sources
+  boards/             # Flynt design-board artifacts and wrappers
 ```
+
+Do not invent legacy `ai/design` or generated memory directories. Use the
+surface-specific creation tools when available because they preserve wrappers,
+indexes, and sidecar contracts.
 
 ## Graph-Friendly Patterns
 
-- **Link generously** — every doc should link to at least one other doc
-- **Backlink naturally** — if A links to B, B should mention A
-- **Hub pages** — create index/MOC (Map of Content) files that link to all docs in a directory
-- **Consistent naming** — use kebab-case for filenames (`architecture-decisions.md`)
+- Link related durable documents where the relationship is useful.
+- Prefer meaningful links over reciprocal-link quotas.
+- Use hub/index pages only when they improve navigation.
+- Follow the repository's filename conventions; use kebab-case only when no
+  local convention exists.
 
-## Running the Viewer
+## Viewing and Navigation
 
-```bash
-# Serve current project (recursive, all .md files)
-mdserve .
-
-# Serve specific directory
-mdserve openspec/
-
-# Auto-open browser
-mdserve . --open
-
-# Custom port
-mdserve . --port 8080
-```
-
-The viewer provides:
-- Sidebar navigation with directory tree
-- Live reload on file changes (WebSocket)
-- Interactive graph view at `/graph`
-- Theme picker (including Styrene dark theme)
-- Per-project persistent settings
-
-## Installation
-
-```bash
-# From source (requires Rust toolchain)
-cargo install --git https://github.com/cwilson613/mdserve --branch feature/wikilinks-graph
-
-# Or build locally
-git clone https://github.com/cwilson613/mdserve
-cd mdserve && cargo install --path .
-```
+Flynt's native notes, graph, kanban, drawings, boards, and flow surfaces are the
+primary workspace viewers. Use the exposed Flynt tools to inspect or mutate
+those artifacts. If the native surface is unavailable, markdown remains
+portable to GitHub and other CommonMark-compatible viewers; do not install a
+separate viewer unless the operator explicitly requests one.

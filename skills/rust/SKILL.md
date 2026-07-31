@@ -15,11 +15,13 @@ Conventions for Rust development and Cargo workflows.
 
 ## Core Conventions
 
-- **Rust stable** toolchain (`rustup default stable`)
-- **Cargo** for build, test, lint, format — no external build tools needed
-- **clippy** for linting, **rustfmt** for formatting
-- **Edition 2021** minimum
-- Workspace layout for multi-crate projects, single `Cargo.toml` otherwise
+- **Rust stable** unless the repository pins another toolchain in `rust-toolchain.toml`
+- **Use repository-owned commands first.** Cargo remains the underlying build,
+  test, lint, and format tool, but established `just`, Make, Nix, Bazel, or CI
+  wrappers may encode required features and environment setup.
+- **clippy** for linting and **rustfmt** for formatting when enabled by project policy
+- Preserve the repository's Rust edition; use Edition 2021 or newer for a new project unless compatibility requires otherwise
+- Prefer a Cargo workspace for related multi-crate projects and one package manifest for a simple crate
 
 ## Project Scaffold
 

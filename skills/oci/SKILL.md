@@ -15,11 +15,22 @@ Conventions for container images, OCI artifacts, and registry operations.
 
 ## Core Conventions
 
-- **Containerfile** (not Dockerfile) as the canonical name
-- **Podman** preferred, Docker compatible — commands are interchangeable
-- **Multi-stage builds** to minimize final image size
-- **Non-root** user in production images
-- **Immutable tags** — never overwrite a published tag
+Respect the repository's existing container engine, filenames, build wrappers,
+and release policy. For a new containerized project with no local convention:
+
+- use `Containerfile` as a vendor-neutral default; keep `Dockerfile` when the
+  project or hosting platform expects it;
+- prefer rootless Podman where it is supported, but treat Docker Buildx,
+  Docker Desktop, and engine-specific flags as distinct capabilities rather
+  than interchangeable commands;
+- use multi-stage builds where they materially reduce the runtime image;
+- run production workloads as a non-root user;
+- publish immutable release and commit tags. Mutable convenience tags such as
+  `latest` are optional aliases, never the deployment source of truth.
+
+Examples below use Docker syntax because Buildx is common. Translate them only
+when the selected engine supports an equivalent feature, and prefer the
+repository's existing `just`, Make, CI, or deployment wrappers.
 
 ## Registry Authentication
 
@@ -62,7 +73,7 @@ Configure in `~/.docker/config.json`:
 }
 ```
 
-## Containerfile Conventions
+## Container Build-File Conventions
 
 ### Structure
 
@@ -100,7 +111,10 @@ ENTRYPOINT ["python", "-m", "myapp"]
 
 ### ARG Defaults — Not Build Scripts
 
-Define version defaults in the Containerfile, not in justfiles or Makefiles:
+Define version defaults in the build file when it is the project's source of
+truth. If the repository centrally manages versions through a lockfile,
+dependency bot, build wrapper, or CI matrix, preserve that contract instead of
+duplicating it:
 
 ```dockerfile
 # Good — version lives with the build definition
@@ -129,18 +143,21 @@ node_modules
 
 ## Cross-Platform Builds
 
-### Apple Silicon → amd64 Clusters
+### Cross-Architecture Builds
 
-**Always specify `--platform` when the build host differs from the target.**
+Specify the target platform when the build host differs from the deployment
+target. Do not assume every engine uses the Buildx command surface.
 
 ```bash
-# Building on arm64 Mac for amd64 Kubernetes
-docker build --platform linux/amd64 -t myimage:latest .
+# Docker/BuildKit example: arm64 Mac targeting amd64 Kubernetes
+docker build --platform linux/amd64 -t myimage:dev .
 ```
 
-Without `--platform`, the image is arm64 and **fails silently** on amd64 nodes.
+Without a target platform, the produced architecture follows the builder and
+may be unschedulable on the deployment nodes. Verify the resulting image
+manifest rather than relying on the tag.
 
-### Multi-Arch with Buildx
+### Multi-Arch with Docker Buildx
 
 ```bash
 docker buildx create --name multiarch --use

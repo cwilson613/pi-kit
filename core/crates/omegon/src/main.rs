@@ -3996,6 +3996,7 @@ fn secret_readiness_inputs(
     }
 }
 
+#[cfg(feature = "tui")]
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -4825,6 +4826,7 @@ fn build_tui_secret_readiness_snapshot(
                 let _ = committed.send(());
             }
 
+            #[cfg(feature = "tui")]
             operator_commands::OperatorCommand::ShellHandoff { keyboard_enhancement } => {
                 if runtime.is_busy() {
                     let _ = events_tx.send(AgentEvent::SystemNotification {

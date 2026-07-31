@@ -6,6 +6,7 @@
 use crate::surfaces::menu::{MenuActionClosePolicy, MenuActionDisposition, MenuActionProjection};
 
 use super::slash_commands::SlashResult;
+use super::{App, CommandPanel, CommandPanelReturnTarget, CommandSeverity, CommandToast};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SelectorTarget {
@@ -193,6 +194,37 @@ impl From<MenuActionProjection> for MenuEffect {
     }
 }
 
+impl App {
+    pub(super) fn apply_menu_command_outcome(
+        &mut self,
+        command: &str,
+        outcome: &MenuCommandOutcome,
+    ) {
+        if outcome.record_history {
+            self.history.push(command.to_string());
+            self.exit_history_recall();
+        }
+        if outcome.close_menu {
+            self.active_menu = None;
+        }
+        if outcome.request_quit {
+            self.should_quit = true;
+        }
+        match &outcome.presentation {
+            MenuCommandPresentation::None => {}
+            MenuCommandPresentation::Toast { message } => {
+                self.show_command_toast(CommandToast::new(message, CommandSeverity::Info));
+            }
+            MenuCommandPresentation::CommandPanel { response } => {
+                self.open_command_panel(
+                    CommandPanel::from_slash(command, response.clone())
+                        .with_return_target(CommandPanelReturnTarget::Menu),
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +365,36 @@ mod tests {
 
         assert!(outcome.should_refresh_menu(MenuActionClosePolicy::RefreshMenu));
         assert!(!outcome.should_refresh_menu(MenuActionClosePolicy::CloseMenu));
+    }
+
+    #[test]
+    fn applying_quit_outcome_records_history_closes_menu_and_requests_quit() {
+        let mut app = super::super::tests::test_app();
+        app.open_settings_menu();
+        app.history_idx = Some(0);
+        app.history_draft = Some("draft".into());
+        let outcome = MenuCommandOutcome::from_slash_result(SlashResult::Quit, false);
+
+        app.apply_menu_command_outcome("/quit", &outcome);
+
+        assert_eq!(app.history.last().map(String::as_str), Some("/quit"));
+        assert!(app.history_idx.is_none());
+        assert!(app.history_draft.is_none());
+        assert!(app.active_menu.is_none());
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn applying_display_outcome_preserves_menu_and_opens_returnable_panel() {
+        let mut app = super::super::tests::test_app();
+        app.open_settings_menu();
+        let outcome =
+            MenuCommandOutcome::from_slash_result(SlashResult::Display("status".into()), false);
+
+        app.apply_menu_command_outcome("/status", &outcome);
+
+        assert!(app.active_menu.is_some());
+        assert!(app.command_panel.is_some());
+        assert_eq!(app.history.last().map(String::as_str), Some("/status"));
     }
 }

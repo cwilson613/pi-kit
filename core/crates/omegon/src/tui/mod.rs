@@ -145,8 +145,7 @@ use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
 use self::menu_effects::{
-    MenuCommandOutcome, MenuCommandPresentation, MenuEffect, SelectorTarget, SettingsRowAction,
-    SettingsRowTarget,
+    MenuCommandOutcome, MenuEffect, SelectorTarget, SettingsRowAction, SettingsRowTarget,
 };
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
@@ -4321,28 +4320,7 @@ impl App {
         let secret_input = matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. });
         let outcome = MenuCommandOutcome::from_slash_result(slash_result, secret_input);
 
-        if outcome.record_history {
-            self.history.push(command.clone());
-            self.exit_history_recall();
-        }
-        if outcome.close_menu {
-            self.active_menu = None;
-        }
-        if outcome.request_quit {
-            self.should_quit = true;
-        }
-        match &outcome.presentation {
-            MenuCommandPresentation::None => {}
-            MenuCommandPresentation::Toast { message } => {
-                self.show_command_toast(CommandToast::new(message, CommandSeverity::Info));
-            }
-            MenuCommandPresentation::CommandPanel { response } => {
-                self.open_command_panel(
-                    CommandPanel::from_slash(&command, response.clone())
-                        .with_return_target(CommandPanelReturnTarget::Menu),
-                );
-            }
-        }
+        self.apply_menu_command_outcome(&command, &outcome);
 
         outcome
     }

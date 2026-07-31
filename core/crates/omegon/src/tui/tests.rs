@@ -80,7 +80,7 @@ fn test_settings() -> crate::settings::SharedSettings {
     )))
 }
 
-fn test_app() -> App {
+pub(super) fn test_app() -> App {
     let mut app = App::new(test_settings());
     // The runtime always populates bus_commands from registered features
     // (see setup.rs). A fixture with an empty registry hides command-declared

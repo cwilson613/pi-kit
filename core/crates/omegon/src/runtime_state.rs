@@ -87,11 +87,57 @@ impl SessionStateHandle {
     }
 }
 
+/// Invocation-owned cleave progress source.
+#[derive(Clone, Default)]
+pub struct CleaveStateHandle {
+    source: Arc<Mutex<Option<Arc<Mutex<CleaveProgress>>>>>,
+}
+
+impl CleaveStateHandle {
+    fn new(source: Option<Arc<Mutex<CleaveProgress>>>) -> Self {
+        Self {
+            source: Arc::new(Mutex::new(source)),
+        }
+    }
+
+    pub fn observe(&self) -> Result<Option<CleaveProgress>, ObserveError> {
+        let source = self
+            .source
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Cleave))?
+            .clone();
+        source
+            .map(|source| {
+                source
+                    .lock()
+                    .map(|progress| progress.clone())
+                    .map_err(|_| ObserveError::Poisoned(ObservationDomain::Cleave))
+            })
+            .transpose()
+    }
+
+    pub fn available(&self) -> bool {
+        self.source.lock().is_ok_and(|source| source.is_some())
+    }
+
+    pub fn install(&self, progress: Arc<Mutex<CleaveProgress>>) {
+        if let Ok(mut source) = self.source.lock() {
+            *source = Some(progress);
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut source) = self.source.lock() {
+            *source = None;
+        }
+    }
+}
+
 /// Shared handles to live runtime state.
 #[derive(Clone, Default)]
 pub struct RuntimeStateHandles {
     pub lifecycle: Option<LifecycleReadHandle>,
-    pub(crate) cleave: Arc<Mutex<Option<Arc<Mutex<CleaveProgress>>>>>,
+    cleave: CleaveStateHandle,
     pub(crate) delegate: Arc<Mutex<Option<Arc<Mutex<DelegateProgress>>>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
     session: SessionStateHandle,
@@ -109,7 +155,7 @@ impl RuntimeStateHandles {
     ) -> Self {
         Self {
             lifecycle,
-            cleave: Arc::new(Mutex::new(cleave)),
+            cleave: CleaveStateHandle::new(cleave),
             delegate: Arc::new(Mutex::new(delegate)),
             delegate_tasks,
             session: SessionStateHandle::default(),
@@ -122,43 +168,26 @@ impl RuntimeStateHandles {
         &self.session
     }
 
-    /// Copy the complete cleave source domain under one short lock.
-    ///
-    /// `None` means this invocation has no cleave source installed. Adapters
-    /// remain responsible for projecting the owned source into their own wire
-    /// or renderer contracts.
+    pub fn cleave(&self) -> &CleaveStateHandle {
+        &self.cleave
+    }
+
     pub fn observe_cleave(&self) -> Result<Option<CleaveProgress>, ObserveError> {
-        let cleave = self
-            .cleave
-            .lock()
-            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Cleave))?
-            .clone();
-        cleave
-            .map(|cleave| {
-                cleave
-                    .lock()
-                    .map(|progress| progress.clone())
-                    .map_err(|_| ObserveError::Poisoned(ObservationDomain::Cleave))
-            })
-            .transpose()
+        self.cleave.observe()
     }
 
     pub fn cleave_available(&self) -> bool {
-        self.cleave.lock().is_ok_and(|cleave| cleave.is_some())
+        self.cleave.available()
     }
 
     /// Install or replace the cleave progress source for this invocation.
     pub fn install_cleave(&self, progress: Arc<Mutex<CleaveProgress>>) {
-        if let Ok(mut cleave) = self.cleave.lock() {
-            *cleave = Some(progress);
-        }
+        self.cleave.install(progress);
     }
 
     /// Remove the cleave progress source for this invocation.
     pub fn clear_cleave(&self) {
-        if let Ok(mut cleave) = self.cleave.lock() {
-            *cleave = None;
-        }
+        self.cleave.clear();
     }
 
     /// Copy the complete delegate source domain under one short lock.
@@ -387,6 +416,23 @@ mod tests {
         clone.clear_cleave();
         assert!(!handles.cleave_available());
         assert!(handles.observe_cleave().unwrap().is_none());
+    }
+
+    #[test]
+    fn cleave_handle_reports_poisoned_source_slot() {
+        let handle = CleaveStateHandle::default();
+        let slot = handle.source.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = slot.lock().unwrap();
+            panic!("poison cleave source slot fixture");
+        })
+        .join();
+
+        assert!(matches!(
+            handle.observe(),
+            Err(ObserveError::Poisoned(ObservationDomain::Cleave))
+        ));
+        assert!(!handle.available());
     }
 
     #[test]

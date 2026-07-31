@@ -52,19 +52,38 @@ impl SessionStateHandle {
             .map_err(|_| ObserveError::Poisoned(ObservationDomain::Session))
     }
 
+    pub fn try_update_counters(
+        &self,
+        turns: u32,
+        tool_calls: u32,
+        compactions: u32,
+    ) -> Result<(), ObserveError> {
+        let mut session = self
+            .state
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Session))?;
+        session.turns = turns;
+        session.tool_calls = tool_calls;
+        session.compactions = compactions;
+        Ok(())
+    }
+
     pub fn update_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
-        if let Ok(mut session) = self.state.lock() {
-            session.turns = turns;
-            session.tool_calls = tool_calls;
-            session.compactions = compactions;
-        }
+        let _ = self.try_update_counters(turns, tool_calls, compactions);
     }
 
     /// Mark whether this invocation currently has interactive work in flight.
+    pub fn try_set_busy(&self, busy: bool) -> Result<(), ObserveError> {
+        let mut session = self
+            .state
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Session))?;
+        session.busy = busy;
+        Ok(())
+    }
+
     pub fn set_busy(&self, busy: bool) {
-        if let Ok(mut session) = self.state.lock() {
-            session.busy = busy;
-        }
+        let _ = self.try_set_busy(busy);
     }
 }
 
@@ -75,7 +94,7 @@ pub struct RuntimeStateHandles {
     pub(crate) cleave: Arc<Mutex<Option<Arc<Mutex<CleaveProgress>>>>>,
     pub(crate) delegate: Arc<Mutex<Option<Arc<Mutex<DelegateProgress>>>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
-    pub session: SessionStateHandle,
+    session: SessionStateHandle,
     pub(crate) harness: Arc<Mutex<Option<Arc<Mutex<HarnessStatus>>>>>,
     pub(crate) runtime_lifecycle: Arc<Mutex<Option<omegon_traits::RuntimeLifecycleSnapshot>>>,
 }
@@ -540,6 +559,14 @@ mod tests {
         })
         .join();
 
+        assert!(matches!(
+            handles.session.try_update_counters(1, 2, 3),
+            Err(ObserveError::Poisoned(ObservationDomain::Session))
+        ));
+        assert!(matches!(
+            handles.session.try_set_busy(true),
+            Err(ObserveError::Poisoned(ObservationDomain::Session))
+        ));
         assert_eq!(
             handles.session.observe(),
             Err(ObserveError::Poisoned(ObservationDomain::Session))

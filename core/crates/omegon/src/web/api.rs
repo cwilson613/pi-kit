@@ -1376,10 +1376,10 @@ pub async fn get_providers_status(
 ) -> Result<Json<ProviderStatusResponse>, StatusCode> {
     let providers = state
         .handles
-        .harness
-        .as_ref()
-        .and_then(|harness| harness.lock().ok())
-        .map(|harness| harness.providers.clone())
+        .observe_harness()
+        .ok()
+        .flatten()
+        .map(|harness| harness.providers)
         .unwrap_or_default();
     Ok(Json(ProviderStatusResponse {
         schema_version: 1,
@@ -2073,11 +2073,7 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
         compactions: observed_session.compactions,
     };
 
-    let harness = state
-        .handles
-        .harness
-        .as_ref()
-        .and_then(|h| h.lock().ok().map(|guard| guard.clone()));
+    let harness = state.handles.observe_harness().ok().flatten();
 
     let instance = state
         .startup_info
@@ -2429,7 +2425,7 @@ required = ["MISSING_REQUIRED_TOKEN"]
 
     #[tokio::test]
     async fn providers_status_reports_harness_provider_inventory() {
-        let mut state = test_state();
+        let state = test_state();
         let mut harness = crate::status::HarnessStatus::default();
         harness.providers.push(crate::status::ProviderStatus {
             name: "OpenAI".into(),
@@ -2442,7 +2438,7 @@ required = ["MISSING_REQUIRED_TOKEN"]
             last_failure_kind: None,
             last_failure_at: None,
         });
-        state.handles.harness = Some(Arc::new(Mutex::new(harness)));
+        state.handles.install_harness(Arc::new(Mutex::new(harness)));
 
         let response = get_providers_status(axum::extract::State(state))
             .await
@@ -3450,17 +3446,16 @@ required = ["BRAVE_API_KEY"]
 
     #[test]
     fn snapshot_includes_harness_when_available() {
-        let mut state = test_state();
-        state.handles = DashboardHandles {
-            harness: Some(Arc::new(Mutex::new(crate::status::HarnessStatus {
+        let state = test_state();
+        state
+            .handles
+            .install_harness(Arc::new(Mutex::new(crate::status::HarnessStatus {
                 thinking_level: "high".into(),
                 capability_grade: "B".into(),
                 memory_available: true,
                 cleave_available: true,
                 ..Default::default()
-            }))),
-            ..Default::default()
-        };
+            })));
 
         let snap = build_snapshot(&state);
         let harness = snap.harness.expect("harness snapshot");

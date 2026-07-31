@@ -27,6 +27,8 @@ pub enum ObservationDomain {
     Session,
     Cleave,
     Delegate,
+    Harness,
+    RuntimeLifecycle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,8 +44,8 @@ pub struct RuntimeStateHandles {
     pub(crate) delegate: Arc<Mutex<Option<Arc<Mutex<DelegateProgress>>>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
     pub(crate) session: Arc<Mutex<SessionObservation>>,
-    pub harness: Option<Arc<Mutex<HarnessStatus>>>,
-    pub runtime_lifecycle: Arc<Mutex<Option<omegon_traits::RuntimeLifecycleSnapshot>>>,
+    pub(crate) harness: Arc<Mutex<Option<Arc<Mutex<HarnessStatus>>>>>,
+    pub(crate) runtime_lifecycle: Arc<Mutex<Option<omegon_traits::RuntimeLifecycleSnapshot>>>,
 }
 
 impl RuntimeStateHandles {
@@ -60,7 +62,7 @@ impl RuntimeStateHandles {
             delegate: Arc::new(Mutex::new(delegate)),
             delegate_tasks,
             session: Arc::default(),
-            harness,
+            harness: Arc::new(Mutex::new(harness)),
             runtime_lifecycle: Arc::default(),
         }
     }
@@ -156,6 +158,85 @@ impl RuntimeStateHandles {
         }
     }
 
+    /// Copy the current harness source without retaining synchronization guards.
+    pub fn observe_harness(&self) -> Result<Option<HarnessStatus>, ObserveError> {
+        let harness = self
+            .harness
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Harness))?
+            .clone();
+        harness
+            .map(|harness| {
+                harness
+                    .lock()
+                    .map(|status| status.clone())
+                    .map_err(|_| ObserveError::Poisoned(ObservationDomain::Harness))
+            })
+            .transpose()
+    }
+
+    pub fn harness_available(&self) -> bool {
+        self.harness.lock().is_ok_and(|harness| harness.is_some())
+    }
+
+    pub fn install_harness(&self, status: Arc<Mutex<HarnessStatus>>) {
+        if let Ok(mut harness) = self.harness.lock() {
+            *harness = Some(status);
+        }
+    }
+
+    pub fn clear_harness(&self) {
+        if let Ok(mut harness) = self.harness.lock() {
+            *harness = None;
+        }
+    }
+
+    pub fn mutate_harness<R>(
+        &self,
+        mutate: impl FnOnce(&mut HarnessStatus) -> R,
+    ) -> Result<Option<(R, HarnessStatus)>, ObserveError> {
+        let harness = self
+            .harness
+            .lock()
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Harness))?
+            .clone();
+        harness
+            .map(|harness| {
+                let mut status = harness
+                    .lock()
+                    .map_err(|_| ObserveError::Poisoned(ObservationDomain::Harness))?;
+                let result = mutate(&mut status);
+                Ok((result, status.clone()))
+            })
+            .transpose()
+    }
+
+    pub fn observe_runtime_lifecycle(
+        &self,
+    ) -> Result<Option<omegon_traits::RuntimeLifecycleSnapshot>, ObserveError> {
+        self.runtime_lifecycle
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::RuntimeLifecycle))
+    }
+
+    /// Store replay state before publishing it, and never publish while locked.
+    pub fn publish_runtime_lifecycle(
+        &self,
+        snapshot: omegon_traits::RuntimeLifecycleSnapshot,
+        publish: impl FnOnce(&omegon_traits::RuntimeLifecycleSnapshot),
+    ) -> Result<(), ObserveError> {
+        {
+            let mut current = self
+                .runtime_lifecycle
+                .lock()
+                .map_err(|_| ObserveError::Poisoned(ObservationDomain::RuntimeLifecycle))?;
+            *current = Some(snapshot.clone());
+        }
+        publish(&snapshot);
+        Ok(())
+    }
+
     pub fn update_session_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
         if let Ok(mut session) = self.session.lock() {
             session.turns = turns;
@@ -183,8 +264,8 @@ mod tests {
         assert!(!handles.cleave_available());
         assert!(!handles.delegate_available());
         assert!(handles.delegate_tasks.is_none());
-        assert!(handles.harness.is_none());
-        assert!(handles.runtime_lifecycle.lock().unwrap().is_none());
+        assert!(!handles.harness_available());
+        assert!(handles.observe_runtime_lifecycle().unwrap().is_none());
 
         let clone = handles.clone();
         {
@@ -312,6 +393,66 @@ mod tests {
             handles.observe_delegate(),
             Err(ObserveError::Poisoned(ObservationDomain::Delegate))
         ));
+    }
+
+    #[test]
+    fn harness_install_mutate_and_clear_are_visible_across_clones() {
+        let handles = RuntimeStateHandles::default();
+        let clone = handles.clone();
+        handles.install_harness(Arc::new(Mutex::new(HarnessStatus::default())));
+
+        let (_, mutated) = handles
+            .mutate_harness(|status| status.context_class = "Massive".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(mutated.context_class, "Massive");
+        assert_eq!(
+            clone.observe_harness().unwrap().unwrap().context_class,
+            "Massive"
+        );
+
+        clone.clear_harness();
+        assert!(!handles.harness_available());
+    }
+
+    #[test]
+    fn poisoned_harness_state_is_explicit() {
+        let handles = RuntimeStateHandles::default();
+        let harness = Arc::new(Mutex::new(HarnessStatus::default()));
+        handles.install_harness(harness.clone());
+        let _ = std::thread::spawn(move || {
+            let _guard = harness.lock().unwrap();
+            panic!("poison harness fixture");
+        })
+        .join();
+
+        assert!(matches!(
+            handles.observe_harness(),
+            Err(ObserveError::Poisoned(ObservationDomain::Harness))
+        ));
+    }
+
+    #[test]
+    fn lifecycle_publication_stores_before_calling_publisher() {
+        let handles = RuntimeStateHandles::default();
+        let snapshot = omegon_traits::RuntimeLifecycleSnapshot {
+            operation_id: "restart-1".into(),
+            kind: omegon_traits::RuntimeLifecycleKind::Restart,
+            phase: omegon_traits::RuntimeLifecyclePhase::Queued,
+            message: "restart requested".into(),
+            session_id: None,
+            target_version: None,
+            reconnect_required: true,
+        };
+        handles
+            .publish_runtime_lifecycle(snapshot.clone(), |published| {
+                assert_eq!(published, &snapshot);
+                assert_eq!(
+                    handles.observe_runtime_lifecycle().unwrap(),
+                    Some(snapshot.clone())
+                );
+            })
+            .unwrap();
     }
 
     #[test]

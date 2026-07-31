@@ -94,11 +94,7 @@ fn refresh_non_lifecycle(handles: &DashboardHandles, state: &mut DashboardState)
         state.delegate = Some(dp);
     }
     // Harness
-    if let Some(ref harness_lock) = handles.harness
-        && let Ok(harness) = harness_lock.lock()
-    {
-        state.harness = Some(harness.clone());
-    }
+    state.harness = handles.observe_harness().ok().flatten();
 }
 
 fn refresh_from_lifecycle(lp: &LifecycleContextProvider, state: &mut DashboardState) {
@@ -1630,10 +1626,8 @@ mod tests {
             ..Default::default()
         }));
 
-        let handles = DashboardHandles {
-            harness: Some(harness_status),
-            ..Default::default()
-        };
+        let handles = DashboardHandles::default();
+        handles.install_harness(harness_status);
         let mut state = DashboardState::default();
         handles.refresh_into(&mut state);
 

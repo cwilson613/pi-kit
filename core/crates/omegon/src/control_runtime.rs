@@ -1056,17 +1056,16 @@ pub async fn execute_daemon_control(
     // updated state without polling.
     if resp.accepted
         && is_settings_mutation
-        && let Some(ref harness_handle) = handles.harness
-        && let Ok(mut status) = harness_handle.lock()
+        && let Ok(Some(((), status))) = handles.mutate_harness(|status| {
+            // Refresh settings-derived fields in the live harness status.
+            if let Ok(s) = shared_settings.lock() {
+                status.context_class = s.effective_requested_class().label().to_string();
+                status.thinking_level = s.thinking.as_str().to_string();
+            }
+        })
+        && let Ok(status_json) = serde_json::to_value(status)
     {
-        // Refresh settings-derived fields in the live harness status.
-        if let Ok(s) = shared_settings.lock() {
-            status.context_class = s.effective_requested_class().label().to_string();
-            status.thinking_level = s.thinking.as_str().to_string();
-        }
-        if let Ok(json) = serde_json::to_value(&*status) {
-            let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json: json });
-        }
+        let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json });
     }
     omegon_traits::ControlOutputResponse {
         accepted: resp.accepted,
@@ -1911,14 +1910,9 @@ pub async fn status_view_response(
 ) -> SlashCommandResponse {
     let mut status = agent
         .dashboard_handles
-        .harness
-        .as_ref()
-        .map(|handle| {
-            handle
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-        })
+        .observe_harness()
+        .ok()
+        .flatten()
         .unwrap_or_else(crate::status::HarnessStatus::assemble);
     let settings = shared_settings
         .lock()
@@ -2099,9 +2093,9 @@ pub async fn session_stats_view_response(
     let tool_calls = session.tool_calls;
     let live_harness = agent
         .dashboard_handles
-        .harness
-        .as_ref()
-        .and_then(|h| h.lock().ok().map(|status| status.clone()))
+        .observe_harness()
+        .ok()
+        .flatten()
         .unwrap_or_else(crate::status::HarnessStatus::assemble);
     let persona = live_harness
         .active_persona
@@ -3927,25 +3921,21 @@ pub async fn profile_export_response(
         serde_json::json!(null)
     };
 
-    let persona_json = if let Some(ref harness) = handles.harness {
-        if let Ok(h) = harness.lock() {
-            if let Some(ref p) = h.active_persona {
-                serde_json::json!({
-                    "id": p.id,
-                    "name": p.name,
-                    "badge": p.badge,
-                    "activated_skills": p.activated_skills,
-                    "disabled_tools": p.disabled_tools,
-                })
-            } else {
-                serde_json::json!(null)
-            }
-        } else {
-            serde_json::json!(null)
-        }
-    } else {
-        serde_json::json!(null)
-    };
+    let persona_json = handles
+        .observe_harness()
+        .ok()
+        .flatten()
+        .and_then(|harness| harness.active_persona)
+        .map(|persona| {
+            serde_json::json!({
+                "id": persona.id,
+                "name": persona.name,
+                "badge": persona.badge,
+                "activated_skills": persona.activated_skills,
+                "disabled_tools": persona.disabled_tools,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null);
 
     let profile = settings::Profile::load(cwd);
 
@@ -4045,10 +4035,10 @@ pub async fn persona_list_response(
     let (personas, tones) = crate::plugins::persona_loader::scan_available();
 
     let active_id = handles
-        .harness
-        .as_ref()
-        .and_then(|h| h.lock().ok())
-        .and_then(|h| h.active_persona.as_ref().map(|p| p.id.clone()));
+        .observe_harness()
+        .ok()
+        .flatten()
+        .and_then(|h| h.active_persona.map(|p| p.id));
 
     let persona_list: Vec<serde_json::Value> = personas
         .iter()

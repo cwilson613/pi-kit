@@ -205,7 +205,7 @@ pub struct WebSettingsSurface {
 
 pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
     let session = state.handles.observe_session().ok();
-    let harness = state.handles.harness.as_ref().and_then(|h| h.lock().ok());
+    let harness = state.handles.observe_harness().ok().flatten();
     let startup = state
         .startup_info
         .lock()
@@ -243,7 +243,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 lifecycle_available: state.handles.lifecycle.is_some(),
                 cleave_available: state.handles.cleave_available(),
                 delegate_available: state.handles.delegate_available(),
-                harness_available: state.handles.harness.is_some(),
+                harness_available: state.handles.harness_available(),
             },
             footer: WebFooterSurface {
                 busy: session.as_ref().is_some_and(|s| s.busy),
@@ -255,7 +255,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
             },
             operations: project_operations(state),
             plan: project_plan(state),
-            runtime: project_runtime(harness.as_deref()),
+            runtime: project_runtime(harness.as_ref()),
             settings: WebSettingsSurface {
                 auth_mode: startup.as_ref().map(|s| s.auth_mode.clone()),
                 auth_source: startup.as_ref().map(|s| s.auth_source.clone()),

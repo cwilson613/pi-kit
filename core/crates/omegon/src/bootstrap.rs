@@ -197,11 +197,9 @@ pub fn apply_runtime_posture(
     agent
         .initial_harness_status
         .update_runtime_posture(profile.clone(), autonomy.clone());
-    if let Some(ref harness) = agent.dashboard_handles.harness
-        && let Ok(mut status) = harness.lock()
-    {
+    let _ = agent.dashboard_handles.mutate_harness(|status| {
         status.update_runtime_posture(profile, autonomy);
-    }
+    });
 }
 
 // ─── Loop config builder ────────────────────────────────────────────────────

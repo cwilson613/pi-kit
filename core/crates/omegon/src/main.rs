@@ -4492,12 +4492,13 @@ fn build_tui_secret_readiness_snapshot(
     let mut runtime = InteractiveRuntimeSupervisor::default();
     let mut deferred_commands = VecDeque::new();
     let mut restart_request: Option<(std::path::PathBuf, Vec<String>)> = None;
-    let runtime_lifecycle_handle = agent.dashboard_handles.runtime_lifecycle.clone();
+    let runtime_lifecycle_handles = agent.dashboard_handles.clone();
     let emit_lifecycle = |snapshot: omegon_traits::RuntimeLifecycleSnapshot| {
-        if let Ok(mut current) = runtime_lifecycle_handle.lock() {
-            *current = Some(snapshot.clone());
-        }
-        let _ = events_tx.send(AgentEvent::RuntimeLifecycleUpdated { snapshot });
+        let _ = runtime_lifecycle_handles.publish_runtime_lifecycle(snapshot, |published| {
+            let _ = events_tx.send(AgentEvent::RuntimeLifecycleUpdated {
+                snapshot: published.clone(),
+            });
+        });
     };
     'interactive: loop {
         let cmd = if let Some(cmd) = deferred_commands.pop_front() {

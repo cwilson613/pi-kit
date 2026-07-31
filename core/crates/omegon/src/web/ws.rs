@@ -541,9 +541,9 @@ async fn handle_client_command(
             if let Some(model) = cmd["model"].as_str() {
                 let current_model: String = state
                     .handles
-                    .harness
-                    .as_ref()
-                    .and_then(|lock| lock.lock().ok())
+                    .observe_harness()
+                    .ok()
+                    .flatten()
                     .and_then(|h| {
                         h.providers
                             .iter()

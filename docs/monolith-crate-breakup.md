@@ -214,6 +214,190 @@ new field-by-field overlap assessment.
 
 **Rationale:** 
 
+## Harness and runtime-lifecycle seam assessment (2026-07-30)
+
+### Evidence and ownership
+
+These two remaining mutex-backed fields are not one domain and must not be
+combined into a general runtime snapshot.
+
+| Domain | Authoritative producers | Consumers | Actual contract |
+|---|---|---|---|
+| `harness` | setup assembly plus explicit runtime/settings/persona/provider posture mutations | TUI dashboard/footer, IPC snapshots, web/API/WebSocket, bootstrap, control/profile views | latest invocation-scoped `HarnessStatus`, copied before projection |
+| `runtime_lifecycle` | interactive runtime supervisor around restart/queue transitions | IPC reconnect snapshot; WebSocket clients receive the corresponding `RuntimeLifecycleUpdated` event | latest replayable lifecycle event for late subscribers |
+
+`HarnessStatus` is broad, but it is already the shared semantic source. The
+surface DTOs remain different: IPC projects protocol fields, web projects
+runtime panels and instance descriptors, and TUI owns footer/dashboard view
+models. Moving any of those projections into `runtime_state.rs` would recreate
+the monolith at a new layer.
+
+`runtime_lifecycle` is not ordinary dashboard state. It is replay state for an
+event stream. The stored latest value and the emitted `RuntimeLifecycleUpdated`
+event represent one logical publication and must not be allowed to diverge.
+
+### Adversarial findings
+
+1. **Inconsistent poison policy.** Harness readers currently variously omit the
+   domain, synthesize defaults, recover poisoned state with `into_inner`, or
+   return an error. This makes adapter behavior accidental rather than an
+   explicit compatibility choice.
+2. **Lock guards cross projection work.** Several IPC/web helpers retain the
+   harness guard while allocating and mapping transport payloads. The source
+   lock should cover only cloning.
+3. **Mutation and publication are split.** Multiple producers mutate
+   `HarnessStatus`, serialize it, and emit `HarnessStatusChanged` independently.
+   A successful mutation can therefore fail to publish; a poison failure can be
+   silently ignored; serialization and event behavior are duplicated.
+4. **Lifecycle split-brain.** The supervisor currently writes the latest
+   lifecycle snapshot under a mutex and emits the event as separate operations.
+   If the mutex is poisoned, it still emits an event that late IPC subscribers
+   cannot replay. If broadcast send fails, the stored replay value advances
+   while current subscribers miss it. Broadcast lag is expected, so durable
+   latest-value replay is the recovery contract; failure to store is not.
+5. **False availability.** `Option<Arc<Mutex<HarnessStatus>>>` exposes presence,
+   but presence does not imply observability when poisoned. Availability and
+   observation failure must remain distinct.
+6. **Service-locator pressure.** A combined `observe_runtime()` or global status
+   manager would make every adapter depend on unrelated state and encourage a
+   process-wide singleton. Both are rejected.
+7. **Staleness is domain-specific.** Harness status is best-effort current
+   telemetry assembled from several subsystems. Runtime lifecycle is an ordered
+   replay contract. They cannot share one freshness or generation policy.
+
+### Decisions
+
+#### Harness: bounded source access, surface-local policy
+
+Add these invocation-scoped methods to `RuntimeStateHandles`:
+
+```rust
+pub fn observe_harness(&self) -> Result<Option<HarnessStatus>, ObserveError>;
+pub fn harness_available(&self) -> bool;
+pub fn install_harness(&self, status: Arc<Mutex<HarnessStatus>>);
+pub fn clear_harness(&self);
+pub fn mutate_harness<R>(
+    &self,
+    mutate: impl FnOnce(&mut HarnessStatus) -> R,
+) -> Result<Option<(R, HarnessStatus)>, ObserveError>;
+```
+
+`observe_harness` clones under one short lock and returns no guard. Absence is
+`Ok(None)`; poisoned source/slot state is
+`Err(ObserveError::Poisoned(ObservationDomain::Harness))`. Adapters preserve
+their existing compatibility behavior explicitly: fail-closed control checks,
+HTTP 500 where the endpoint already promises live state, or documented fallback
+status for informational surfaces.
+
+`mutate_harness` returns the mutation result and the post-mutation owned
+snapshot. It does **not** emit events from `runtime_state.rs`; the neutral state
+module must not depend on transport/event infrastructure. Callers that must
+publish use one shared orchestration helper outside `runtime_state.rs` to mutate,
+serialize the returned snapshot, and emit `HarnessStatusChanged`. Mutation-only
+call sites must be justified; most live mutations should use that helper.
+
+The harness source slot should use the same clone-visible shape as cleave and
+delegate:
+
+```rust
+Arc<Mutex<Option<Arc<Mutex<HarnessStatus>>>>>
+```
+
+This prevents installation/replacement through one `RuntimeStateHandles` clone
+from being invisible to existing web/IPC/TUI clones.
+
+#### Runtime lifecycle: publication API, not a generic setter
+
+Add:
+
+```rust
+pub fn observe_runtime_lifecycle(
+    &self,
+) -> Result<Option<RuntimeLifecycleSnapshot>, ObserveError>;
+
+pub fn publish_runtime_lifecycle(
+    &self,
+    snapshot: RuntimeLifecycleSnapshot,
+    publish: impl FnOnce(&RuntimeLifecycleSnapshot),
+) -> Result<(), ObserveError>;
+```
+
+The publication method stores the owned snapshot first, releases the lock, then
+invokes the supplied publisher. It never calls external code while holding a
+lock. A poisoned replay slot returns
+`ObservationDomain::RuntimeLifecycle` and **must not publish**, because emitting
+an unreplayable event violates the reconnect contract. Broadcast send failure
+after successful storage is non-fatal: lagged/current subscribers recover from
+the latest snapshot. The publisher closure should record transport failure where
+that surface has diagnostics, but storage remains authoritative.
+
+Do not expose `set_runtime_lifecycle`, a mutable guard, the backing `Arc`, or a
+combined harness/lifecycle observation. Lifecycle ordering remains producer
+owned; this slice does not add sequence numbers because there is one current
+producer and no evidence of concurrent writers. If another producer appears,
+introducing monotonic revisions requires a separate contract change.
+
+### Locking and failure contract
+
+- No method acquires harness and lifecycle locks together.
+- Slot locks are used only to clone the installed source `Arc`; source locks are
+  then acquired separately. No nested slot/source guard is retained.
+- No filesystem, network, serialization, event send, or projection runs under a
+  runtime-state lock.
+- Poison is explicit in the source API. Compatibility fallback belongs to each
+  adapter and must be covered by that adapter's tests.
+- `available()` reports installed source presence only; it is not a health
+  check. Consumers needing data call `observe_*`.
+- All state remains constructed by the composition root and passed explicitly.
+  No static, `OnceLock`, registry lookup, thread-local, or `global()` accessor is
+  permitted.
+
+### Migration sequence
+
+1. Add `Harness` and `RuntimeLifecycle` observation domains, owned-copy methods,
+   clone-visibility tests, instance-isolation tests, and poison tests.
+2. Migrate read-only harness consumers first (IPC, web, TUI dashboard,
+   bootstrap/control informational views), preserving each external fallback.
+3. Introduce the shared mutate-and-publish orchestration helper and migrate live
+   harness producers one behavior at a time. Keep setup's
+   `initial_harness_status` as construction input until startup publication is
+   reconciled; do not create a second long-lived source.
+4. Migrate lifecycle supervisor publication to store-before-publish and IPC
+   reconnect reads to `observe_runtime_lifecycle`.
+5. Convert fixtures to constructors/install methods, then make both backing
+   fields private. A temporary `pub(crate)` field is acceptable only while Rust
+   struct-update fixtures are being removed and must have no production reads.
+6. Audit source with `rg` to prove no direct `.harness` or
+   `.runtime_lifecycle.lock()` access remains outside `runtime_state.rs` and
+   designated test fixtures.
+
+### Regression gates
+
+- Two separately constructed runtimes retain independent harness and lifecycle
+  values.
+- Installation, replacement, and clearing are visible across pre-existing
+  handle clones.
+- Returned snapshots are owned: mutating a returned value does not mutate the
+  source.
+- Poisoned harness and lifecycle domains produce their exact typed errors.
+- Lifecycle poison prevents event publication; successful storage invokes the
+  publisher only after the lock is released.
+- A failed/closed broadcast does not erase the latest replay snapshot.
+- Existing IPC, HTTP, WebSocket, TUI, bootstrap, profile-export, and control
+  authorization payload tests remain unchanged.
+- No cross-domain lock acquisition, global accessor, background cache, surface
+  DTO, or event dependency is added to `runtime_state.rs`.
+- `just test-commit` and changed-crate Clippy pass.
+
+### Explicit non-goals
+
+- Making `HarnessStatus` transactionally consistent with settings, providers,
+  memory, or lifecycle state.
+- Combining harness and runtime lifecycle into an atomic snapshot.
+- Replacing `HarnessStatusChanged`/`RuntimeLifecycleUpdated` event contracts.
+- Moving IPC/web/TUI projections into runtime state.
+- Introducing a new crate in this slice.
+
 ## Open Questions
 
 - Do `settings` (205 refs from tui) and `control_runtime` (106 refs) need to move or split before `omegon-tui` can become near-leaf? If they carry their own inbound coupling from the rest of the monolith, Phase 2 may require a further extraction round that is not yet scoped.

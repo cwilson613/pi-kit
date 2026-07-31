@@ -144,10 +144,9 @@ fn project_web_instance(
     handles: &DashboardHandles,
     startup: &WebStartupInfo,
 ) -> omegon_traits::OmegonInstanceDescriptor {
-    let harness_projection = handles
-        .harness
+    let harness = handles.observe_harness().ok().flatten();
+    let harness_projection = harness
         .as_ref()
-        .and_then(|lock| lock.lock().ok())
         .map(|h| IpcHarnessSnapshot {
             context_class: h.context_class.clone(),
             thinking_level: h.thinking_level.clone(),
@@ -228,10 +227,8 @@ fn project_web_instance(
             execution_substrate: Some(crate::execution_substrate::detect()),
         });
 
-    let (git_branch, git_detached) = handles
-        .harness
+    let (git_branch, git_detached) = harness
         .as_ref()
-        .and_then(|lock| lock.lock().ok())
         .map(|h| (h.git_branch.clone(), h.git_detached))
         .unwrap_or((None, false));
 
@@ -249,10 +246,8 @@ fn project_web_instance(
         },
         memory_ok: harness_projection.memory_available
             || harness_projection.memory_warning.is_none(),
-        provider_ok: handles
-            .harness
+        provider_ok: harness
             .as_ref()
-            .and_then(|lock| lock.lock().ok())
             .is_some_and(|h| h.providers.iter().any(|p| p.authenticated)),
         checked_at: chrono::Utc::now().to_rfc3339(),
     };

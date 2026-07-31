@@ -51,11 +51,7 @@ pub fn build_state_snapshot(
         health,
         presentation: Some(ipc_presentation_snapshot(presentation_level)),
         operation_episodes: ipc_operation_episodes(handles),
-        runtime_lifecycle: handles
-            .runtime_lifecycle
-            .lock()
-            .ok()
-            .and_then(|snapshot| snapshot.clone()),
+        runtime_lifecycle: handles.observe_runtime_lifecycle().ok().flatten(),
     }
 }
 
@@ -152,13 +148,12 @@ fn project_session(
 ) -> IpcSessionSnapshot {
     let stats = handles.observe_session().unwrap_or_default();
 
-    let (git_branch, git_detached) = if let Some(ref h) = handles.harness
-        && let Ok(s) = h.lock()
-    {
-        (s.git_branch.clone(), s.git_detached)
-    } else {
-        (None, false)
-    };
+    let (git_branch, git_detached) = handles
+        .observe_harness()
+        .ok()
+        .flatten()
+        .map(|status| (status.git_branch, status.git_detached))
+        .unwrap_or((None, false));
 
     IpcSessionSnapshot {
         cwd: cwd.to_string(),
@@ -341,10 +336,10 @@ pub fn project_instance_descriptor(
         .or_else(|| std::env::var("HOST").ok());
     let workspace_id = workspace_id_from_cwd(cwd);
     let auth = handles
-        .harness
-        .as_ref()
-        .and_then(|lock| lock.lock().ok())
-        .map(|h| (h.web_auth_mode.clone(), h.web_auth_source.clone()));
+        .observe_harness()
+        .ok()
+        .flatten()
+        .map(|h| (h.web_auth_mode, h.web_auth_source));
 
     OmegonInstanceDescriptor {
         schema_version: omegon_traits::IPC_PROTOCOL_VERSION,
@@ -451,7 +446,7 @@ fn workspace_id_from_cwd(cwd: &str) -> String {
 }
 
 fn project_harness(handles: &DashboardHandles) -> IpcHarnessSnapshot {
-    let Some(ref h_lock) = handles.harness else {
+    let Ok(Some(h)) = handles.observe_harness() else {
         return IpcHarnessSnapshot {
             context_class: "Compact".into(),
             thinking_level: "Medium".into(),
@@ -494,50 +489,6 @@ fn project_harness(handles: &DashboardHandles) -> IpcHarnessSnapshot {
             execution_substrate: Some(crate::execution_substrate::detect()),
         };
     };
-    let Ok(h) = h_lock.lock() else {
-        return IpcHarnessSnapshot {
-            context_class: "Compact".into(),
-            thinking_level: "Medium".into(),
-            capability_tier: "B".into(),
-            runtime_profile: "primary-interactive".into(),
-            autonomy_mode: "operator-driven".into(),
-            dispatcher: IpcDispatcherSnapshot {
-                available_options: vec![
-                    "F".into(),
-                    "D".into(),
-                    "C".into(),
-                    "B".into(),
-                    "A".into(),
-                    "S".into(),
-                ],
-                switch_state: "idle".into(),
-                request_id: None,
-                expected_profile: None,
-                expected_model: None,
-                active_profile: Some("B".into()),
-                active_model: None,
-                failure_code: None,
-                note: None,
-            },
-            memory_available: false,
-            cleave_available: false,
-            memory_warning: None,
-            memory: IpcMemorySnapshot {
-                active_facts: 0,
-                project_facts: 0,
-                working_facts: 0,
-                episodes: 0,
-            },
-            providers: vec![],
-            mcp_server_count: 0,
-            mcp_tool_count: 0,
-            active_persona: None,
-            active_tone: None,
-            active_delegate_count: 0,
-            execution_substrate: Some(crate::execution_substrate::detect()),
-        };
-    };
-
     IpcHarnessSnapshot {
         context_class: h.context_class.clone(),
         thinking_level: h.thinking_level.clone(),
@@ -591,21 +542,22 @@ fn project_harness(handles: &DashboardHandles) -> IpcHarnessSnapshot {
 
 fn project_health(handles: &DashboardHandles) -> IpcHealthSnapshot {
     let now = chrono::Utc::now().to_rfc3339();
-    let (memory_ok, provider_ok) = if let Some(ref h_lock) = handles.harness
-        && let Ok(h) = h_lock.lock()
-    {
-        let mem_ok = h.memory_available || h.memory_warning.is_none();
-        let prov_ok = h.providers.iter().any(|p| {
-            p.authenticated
-                && !matches!(
-                    p.runtime_status,
-                    Some(crate::status::ProviderRuntimeStatus::Degraded)
-                )
-        });
-        (mem_ok, prov_ok)
-    } else {
-        (true, false)
-    };
+    let (memory_ok, provider_ok) = handles
+        .observe_harness()
+        .ok()
+        .flatten()
+        .map(|h| {
+            let mem_ok = h.memory_available || h.memory_warning.is_none();
+            let prov_ok = h.providers.iter().any(|p| {
+                p.authenticated
+                    && !matches!(
+                        p.runtime_status,
+                        Some(crate::status::ProviderRuntimeStatus::Degraded)
+                    )
+            });
+            (mem_ok, prov_ok)
+        })
+        .unwrap_or((true, false));
 
     IpcHealthSnapshot {
         state: IpcHealthState::Ready,
@@ -631,10 +583,10 @@ mod tests {
             target_version: None,
             reconnect_required: true,
         };
-        let handles = DashboardHandles {
-            runtime_lifecycle: Arc::new(Mutex::new(Some(lifecycle.clone()))),
-            ..Default::default()
-        };
+        let handles = DashboardHandles::default();
+        handles
+            .publish_runtime_lifecycle(lifecycle.clone(), |_| {})
+            .unwrap();
 
         let snap = build_state_snapshot(
             &handles,
@@ -657,32 +609,30 @@ mod tests {
 
     #[test]
     fn build_state_snapshot_includes_instance_descriptor() {
-        let handles = DashboardHandles {
-            harness: Some(Arc::new(Mutex::new(crate::status::HarnessStatus {
-                context_class: "Compact".into(),
-                thinking_level: "high".into(),
-                capability_grade: "B".into(),
-                runtime_profile: omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
-                autonomy_mode: omegon_traits::OmegonAutonomyMode::OperatorDriven,
-                dispatcher: crate::status::DispatcherStatus {
-                    available_options: vec!["D".into(), "B".into(), "S".into()],
-                    switch_state: "idle".into(),
-                    request_id: None,
-                    expected_profile: None,
-                    expected_model: None,
-                    active_profile: Some("B".into()),
-                    active_model: Some("anthropic:claude-sonnet-4-6".into()),
-                    failure_code: None,
-                    note: None,
-                },
-                memory_available: true,
-                cleave_available: true,
-                web_auth_mode: Some("ephemeral-bearer".into()),
-                web_auth_source: Some("generated".into()),
-                ..Default::default()
-            }))),
+        let handles = DashboardHandles::default();
+        handles.install_harness(Arc::new(Mutex::new(crate::status::HarnessStatus {
+            context_class: "Compact".into(),
+            thinking_level: "high".into(),
+            capability_grade: "B".into(),
+            runtime_profile: omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
+            autonomy_mode: omegon_traits::OmegonAutonomyMode::OperatorDriven,
+            dispatcher: crate::status::DispatcherStatus {
+                available_options: vec!["D".into(), "B".into(), "S".into()],
+                switch_state: "idle".into(),
+                request_id: None,
+                expected_profile: None,
+                expected_model: None,
+                active_profile: Some("B".into()),
+                active_model: Some("anthropic:claude-sonnet-4-6".into()),
+                failure_code: None,
+                note: None,
+            },
+            memory_available: true,
+            cleave_available: true,
+            web_auth_mode: Some("ephemeral-bearer".into()),
+            web_auth_source: Some("generated".into()),
             ..Default::default()
-        };
+        })));
 
         let snap = build_state_snapshot(
             &handles,

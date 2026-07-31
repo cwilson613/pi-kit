@@ -25,6 +25,7 @@ pub mod extension_overlays;
 pub mod footer;
 pub mod footer_projection;
 pub mod glyphs;
+mod history;
 pub mod horizontal_line;
 pub mod image;
 pub mod inline_render;
@@ -7230,36 +7231,6 @@ warning: {warning}"
         self.at_picker = Some(selector::Selector::new("Reference project file", options));
     }
 
-    /// Load editor history from disk.
-    fn load_history(cwd: &str) -> Vec<String> {
-        let path = history_path(cwd);
-        match std::fs::read_to_string(&path) {
-            Ok(content) => content
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
-    /// Save editor history to disk.
-    fn save_history(&self) {
-        let path = history_path(&self.footer_data.cwd);
-        if self.history.is_empty() {
-            return;
-        }
-        // Keep last 500 entries
-        let start = self.history.len().saturating_sub(500);
-        let content = self.history[start..].join("\n");
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&path, content) {
-            tracing::debug!("Failed to save history: {e}");
-        }
-    }
-
     fn handle_mouse_scroll_up(&mut self, column: u16, row: u16) {
         let over_dashboard = self.mouse_capture_enabled
             && self.dashboard_area.is_some_and(|area| {
@@ -7307,56 +7278,6 @@ warning: {warning}"
             self.editor.move_down();
         }
     }
-
-    fn history_up(&mut self) {
-        if self.history.is_empty() {
-            return;
-        }
-        if self.history_idx.is_none() {
-            self.history_draft = Some(self.editor.render_text());
-        }
-        let idx = match self.history_idx {
-            None => self.history.len().saturating_sub(1),
-            Some(i) => i.saturating_sub(1),
-        };
-        self.history_idx = Some(idx);
-        self.editor.set_text(&self.history[idx]);
-    }
-
-    fn history_down(&mut self) {
-        match self.history_idx {
-            None => {}
-            Some(i) => {
-                if i + 1 < self.history.len() {
-                    self.history_idx = Some(i + 1);
-                    self.editor.set_text(&self.history[i + 1]);
-                } else {
-                    self.history_idx = None;
-                    let draft = self.history_draft.take().unwrap_or_default();
-                    self.editor.set_text(&draft);
-                }
-            }
-        }
-    }
-
-    fn exit_history_recall(&mut self) {
-        self.history_idx = None;
-        self.history_draft = None;
-    }
-
-    fn history_recall_up(&mut self) {
-        self.pending_history_preload = None;
-        if self.history_idx.is_some() || self.editor.is_empty() {
-            self.history_up();
-        }
-    }
-
-    fn history_recall_down(&mut self) {
-        self.pending_history_preload = None;
-        if self.history_idx.is_some() {
-            self.history_down();
-        }
-    }
 }
 
 /// Run the interactive TUI. Returns when the user quits.
@@ -7402,11 +7323,6 @@ pub struct TuiConfig {
         Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
     /// Voice idle notification pumps — one per voice-capable extension.
     pub voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
-}
-
-fn history_path(cwd: &str) -> std::path::PathBuf {
-    let project_root = crate::setup::find_project_root(std::path::Path::new(cwd));
-    project_root.join(".omegon").join("history")
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

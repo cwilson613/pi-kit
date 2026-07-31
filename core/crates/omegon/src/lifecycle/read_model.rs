@@ -116,7 +116,9 @@ impl LifecycleReadHandle {
         }
     }
 
-    pub fn provider(&self) -> Arc<Mutex<LifecycleContextProvider>> {
+    /// Internal composition hook for providers that participate in lifecycle
+    /// context assembly. Surface adapters must use the owned read methods.
+    pub(crate) fn provider(&self) -> Arc<Mutex<LifecycleContextProvider>> {
         Arc::clone(&self.provider)
     }
 

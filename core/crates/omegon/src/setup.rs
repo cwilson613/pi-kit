@@ -229,36 +229,38 @@ pub(crate) struct LifecycleSnapshot {
 
 impl LifecycleSnapshot {
     fn from_lifecycle_feature(lf: &features::lifecycle::LifecycleFeature) -> Self {
-        let focused_node = {
-            let lp = lf.provider();
-            lp.focused_node_id().and_then(|id| {
-                lp.get_node(id).map(|n| {
-                    let sections = lifecycle::design::read_node_sections(n);
-                    let assumptions = n.assumption_count();
-                    let decisions_count = sections
-                        .as_ref()
-                        .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
-                        .unwrap_or(0);
-                    let readiness = sections
-                        .as_ref()
-                        .map(|s| s.readiness_score())
-                        .unwrap_or(0.0);
-                    crate::tui::dashboard::FocusedNodeSummary {
-                        id: n.id.clone(),
-                        title: n.title.clone(),
-                        status: n.status,
-                        open_questions: n.open_questions.len() - assumptions,
-                        assumptions,
-                        decisions: decisions_count,
-                        readiness,
-                        openspec_change: n.openspec_change.clone(),
-                    }
+        let read_handle = lf.read_handle();
+        let focused_node = read_handle
+            .design_tree_snapshot(false)
+            .ok()
+            .and_then(|snapshot| {
+                snapshot.focused_node_id.and_then(|id| {
+                    snapshot.nodes.get(&id).map(|n| {
+                        let sections = lifecycle::design::read_node_sections(n);
+                        let assumptions = n.assumption_count();
+                        let decisions_count = sections
+                            .as_ref()
+                            .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
+                            .unwrap_or(0);
+                        let readiness = sections
+                            .as_ref()
+                            .map(|s| s.readiness_score())
+                            .unwrap_or(0.0);
+                        crate::tui::dashboard::FocusedNodeSummary {
+                            id: n.id.clone(),
+                            title: n.title.clone(),
+                            status: n.status,
+                            open_questions: n.open_questions.len() - assumptions,
+                            assumptions,
+                            decisions: decisions_count,
+                            readiness,
+                            openspec_change: n.openspec_change.clone(),
+                        }
+                    })
                 })
-            })
-        };
+            });
 
-        let active_changes: Vec<_> = lf
-            .read_handle()
+        let active_changes: Vec<_> = read_handle
             .openspec_snapshot(Default::default())
             .map(|snapshot| {
                 snapshot

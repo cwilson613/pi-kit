@@ -84,6 +84,13 @@ pub struct DesignTreeSnapshot {
     pub degraded_nodes: Vec<DegradedNode>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DesignNodeObservation {
+    pub node: DesignNode,
+    pub sections: Option<crate::lifecycle::types::DocumentSections>,
+    pub child_count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum LifecycleReadError {
     ProviderPoisoned,
@@ -138,6 +145,44 @@ impl LifecycleReadHandle {
             .lock()
             .map(|provider| provider.get_node(id).cloned())
             .map_err(|_| LifecycleReadError::ProviderPoisoned)
+    }
+
+    /// Return an owned node plus optional derived details. Only source cloning
+    /// occurs under the provider lock; section parsing happens after release.
+    pub fn design_node_observation(
+        &self,
+        id: &str,
+        refresh: bool,
+        include_sections: bool,
+        include_tree_context: bool,
+    ) -> Result<Option<DesignNodeObservation>, LifecycleReadError> {
+        let (node, nodes) = {
+            let mut provider = self
+                .provider
+                .lock()
+                .map_err(|_| LifecycleReadError::ProviderPoisoned)?;
+            if refresh {
+                provider.refresh();
+            }
+            (
+                provider.get_node(id).cloned(),
+                include_tree_context.then(|| provider.all_nodes().clone()),
+            )
+        };
+        let Some(node) = node else {
+            return Ok(None);
+        };
+        let sections = include_sections
+            .then(|| super::design::read_node_sections(&node))
+            .flatten();
+        let child_count = nodes
+            .as_ref()
+            .map(|nodes| super::design::get_children(nodes, id).len());
+        Ok(Some(DesignNodeObservation {
+            node,
+            sections,
+            child_count,
+        }))
     }
 
     pub fn refresh(&self) {

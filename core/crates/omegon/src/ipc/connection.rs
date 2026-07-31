@@ -248,7 +248,8 @@ impl IpcConnection {
                     }
                     let turn_busy = cfg
                         .handles
-                        .observe_session()
+                        .session()
+                        .observe()
                         .map(|session| session.busy)
                         .unwrap_or(true);
                     if turn_busy {

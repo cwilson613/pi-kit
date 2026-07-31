@@ -36,6 +36,38 @@ pub enum ObserveError {
     Poisoned(ObservationDomain),
 }
 
+/// Invocation-owned session state. Clones share one invocation's counters;
+/// separately constructed handles remain isolated.
+#[derive(Clone, Default)]
+pub struct SessionStateHandle {
+    state: Arc<Mutex<SessionObservation>>,
+}
+
+impl SessionStateHandle {
+    /// Copy the session domain under one short synchronous lock.
+    pub fn observe(&self) -> Result<SessionObservation, ObserveError> {
+        self.state
+            .lock()
+            .map(|session| *session)
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Session))
+    }
+
+    pub fn update_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
+        if let Ok(mut session) = self.state.lock() {
+            session.turns = turns;
+            session.tool_calls = tool_calls;
+            session.compactions = compactions;
+        }
+    }
+
+    /// Mark whether this invocation currently has interactive work in flight.
+    pub fn set_busy(&self, busy: bool) {
+        if let Ok(mut session) = self.state.lock() {
+            session.busy = busy;
+        }
+    }
+}
+
 /// Shared handles to live runtime state.
 #[derive(Clone, Default)]
 pub struct RuntimeStateHandles {
@@ -43,7 +75,7 @@ pub struct RuntimeStateHandles {
     pub(crate) cleave: Arc<Mutex<Option<Arc<Mutex<CleaveProgress>>>>>,
     pub(crate) delegate: Arc<Mutex<Option<Arc<Mutex<DelegateProgress>>>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
-    pub(crate) session: Arc<Mutex<SessionObservation>>,
+    pub session: SessionStateHandle,
     pub(crate) harness: Arc<Mutex<Option<Arc<Mutex<HarnessStatus>>>>>,
     pub(crate) runtime_lifecycle: Arc<Mutex<Option<omegon_traits::RuntimeLifecycleSnapshot>>>,
 }
@@ -61,22 +93,14 @@ impl RuntimeStateHandles {
             cleave: Arc::new(Mutex::new(cleave)),
             delegate: Arc::new(Mutex::new(delegate)),
             delegate_tasks,
-            session: Arc::default(),
+            session: SessionStateHandle::default(),
             harness: Arc::new(Mutex::new(harness)),
             runtime_lifecycle: Arc::default(),
         }
     }
 
-    /// Copy the session domain under one short synchronous lock.
-    ///
-    /// The returned value owns its data and carries no synchronization guard.
-    /// Adapters decide how an observation failure maps to their external
-    /// compatibility contract.
-    pub fn observe_session(&self) -> Result<SessionObservation, ObserveError> {
-        self.session
-            .lock()
-            .map(|session| *session)
-            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Session))
+    pub fn session(&self) -> &SessionStateHandle {
+        &self.session
     }
 
     /// Copy the complete cleave source domain under one short lock.
@@ -253,21 +277,6 @@ impl RuntimeStateHandles {
         publish(&snapshot);
         Ok(())
     }
-
-    pub fn update_session_counters(&self, turns: u32, tool_calls: u32, compactions: u32) {
-        if let Ok(mut session) = self.session.lock() {
-            session.turns = turns;
-            session.tool_calls = tool_calls;
-            session.compactions = compactions;
-        }
-    }
-
-    /// Mark whether the invocation currently has interactive work in flight.
-    pub fn set_session_busy(&self, busy: bool) {
-        if let Ok(mut session) = self.session.lock() {
-            session.busy = busy;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -286,14 +295,14 @@ mod tests {
 
         let clone = handles.clone();
         {
-            let mut session = handles.session.lock().unwrap();
+            let mut session = handles.session.state.lock().unwrap();
             session.turns = 3;
             session.tool_calls = 7;
             session.compactions = 1;
             session.busy = true;
         }
 
-        let session = clone.observe_session().unwrap();
+        let session = clone.session.observe().unwrap();
         assert_eq!(session.turns, 3);
         assert_eq!(session.tool_calls, 7);
         assert_eq!(session.compactions, 1);
@@ -304,11 +313,11 @@ mod tests {
     fn session_observations_are_isolated_by_runtime_instance() {
         let first = RuntimeStateHandles::default();
         let second = RuntimeStateHandles::default();
-        first.session.lock().unwrap().turns = 11;
-        second.session.lock().unwrap().turns = 29;
+        first.session.state.lock().unwrap().turns = 11;
+        second.session.state.lock().unwrap().turns = 29;
 
-        assert_eq!(first.observe_session().unwrap().turns, 11);
-        assert_eq!(second.observe_session().unwrap().turns, 29);
+        assert_eq!(first.session.observe().unwrap().turns, 11);
+        assert_eq!(second.session.observe().unwrap().turns, 29);
     }
 
     #[test]
@@ -524,7 +533,7 @@ mod tests {
     #[test]
     fn poisoned_session_state_is_explicit() {
         let handles = RuntimeStateHandles::default();
-        let session = handles.session.clone();
+        let session = handles.session.state.clone();
         let _ = std::thread::spawn(move || {
             let _guard = session.lock().unwrap();
             panic!("poison session fixture");
@@ -532,7 +541,7 @@ mod tests {
         .join();
 
         assert_eq!(
-            handles.observe_session(),
+            handles.session.observe(),
             Err(ObserveError::Poisoned(ObservationDomain::Session))
         );
     }

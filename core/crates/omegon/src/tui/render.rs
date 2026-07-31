@@ -62,7 +62,7 @@ impl App {
             self.dashboard_refresh_turn = self.turn;
             self.dashboard_handles.refresh_into(&mut self.dashboard);
             // Write session stats for the web API
-            self.dashboard_handles.update_session_counters(
+            self.dashboard_handles.session().update_counters(
                 self.turn,
                 self.tool_calls,
                 self.dashboard.compactions,

@@ -106,7 +106,7 @@ impl App {
             AgentEvent::TurnStart { turn } => {
                 self.agent_active = true;
                 self.slim_turn_state = SlimTurnState::RequestingProvider;
-                self.dashboard_handles.set_session_busy(true);
+                self.dashboard_handles.session().set_busy(true);
                 self.turn = turn;
                 self.working_verb = spinner::next_verb();
                 self.effects.start_spinner_glow();
@@ -145,7 +145,7 @@ impl App {
                         | omegon_traits::TurnEndReason::Cancelled
                 ) {
                     self.agent_active = false;
-                    self.dashboard_handles.set_session_busy(false);
+                    self.dashboard_handles.session().set_busy(false);
                     self.effects.stop_spinner_glow();
                     self.effects.stop_border_pulse();
                 }
@@ -579,7 +579,7 @@ impl App {
                     self.interrupt_pending = false;
                     self.suppress_editor_input_for(Duration::from_millis(500));
                 }
-                self.dashboard_handles.set_session_busy(false);
+                self.dashboard_handles.session().set_busy(false);
                 self.conversation.finalize_message();
                 // Keep completed turns anchored at the live tail. The old long-response
                 // active-plan heuristic rewound compact sessions to the start of the final

@@ -259,7 +259,7 @@ fn project_web_instance(
         turns: 0,
         tool_calls: 0,
         compactions: 0,
-        busy: handles.observe_session().unwrap_or_default().busy,
+        busy: handles.session().observe().unwrap_or_default().busy,
         git_branch,
         git_detached,
         session_id: None,

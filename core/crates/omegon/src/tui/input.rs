@@ -787,7 +787,7 @@ impl App {
                                                 CommandSeverity::Info,
                                             ));
                                             self.agent_active = true;
-                                            self.dashboard_handles.set_session_busy(true);
+                                            self.dashboard_handles.session().set_busy(true);
                                             let _ = command_tx
                                                 .send(TuiCommand::SubmitPrompt(PromptSubmission {
                                                     text: prompt,
@@ -828,7 +828,7 @@ impl App {
                                                 CommandSeverity::Info,
                                             ));
                                             self.agent_active = true;
-                                            self.dashboard_handles.set_session_busy(true);
+                                            self.dashboard_handles.session().set_busy(true);
                                             let _ = command_tx
                                                 .send(TuiCommand::SubmitPrompt(PromptSubmission {
                                                     text: prompt,

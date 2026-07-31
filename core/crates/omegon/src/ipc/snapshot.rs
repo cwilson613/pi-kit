@@ -146,7 +146,7 @@ fn project_session(
     started_at: &str,
     session_id: &str,
 ) -> IpcSessionSnapshot {
-    let stats = handles.observe_session().unwrap_or_default();
+    let stats = handles.session().observe().unwrap_or_default();
 
     let (git_branch, git_detached) = handles
         .observe_harness()

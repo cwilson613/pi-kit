@@ -204,7 +204,7 @@ pub struct WebSettingsSurface {
 }
 
 pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
-    let session = state.handles.observe_session().ok();
+    let session = state.handles.session().observe().ok();
     let harness = state.handles.observe_harness().ok().flatten();
     let startup = state
         .startup_info

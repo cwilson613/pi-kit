@@ -107,7 +107,7 @@ fn full_test_app() -> App {
     app
 }
 
-fn test_tx() -> mpsc::Sender<TuiCommand> {
+pub(super) fn test_tx() -> mpsc::Sender<TuiCommand> {
     let (tx, _rx) = mpsc::channel(16);
     tx
 }

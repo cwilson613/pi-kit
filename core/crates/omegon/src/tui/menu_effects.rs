@@ -3,10 +3,15 @@
 //! This is the boundary between renderer-neutral `MenuActionProjection` values
 //! and mutations performed by the native TUI `App` adapter.
 
+use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::surfaces::menu::{MenuActionClosePolicy, MenuActionDisposition, MenuActionProjection};
 
+use tokio::sync::mpsc;
+
 use super::slash_commands::SlashResult;
-use super::{App, CommandPanel, CommandPanelReturnTarget, CommandSeverity, CommandToast};
+use super::{
+    App, CommandPanel, CommandPanelReturnTarget, CommandSeverity, CommandToast, MenuInput,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SelectorTarget {
@@ -190,6 +195,139 @@ impl From<MenuActionProjection> for MenuEffect {
                 command: action.command,
                 close_policy: action.close_policy,
             },
+        }
+    }
+}
+
+impl App {
+    pub(super) fn execute_active_menu_action(
+        &mut self,
+        action: crate::surfaces::menu::MenuActionProjection,
+        tx: &mpsc::Sender<TuiCommand>,
+    ) -> SlashResult {
+        if action.requires_confirmation {
+            if self.pending_menu_confirmation.as_deref() != Some(action.id.as_str()) {
+                self.pending_menu_confirmation = Some(action.id.clone());
+                self.show_command_toast(CommandToast::new(
+                    format!("Press Enter/shortcut again to confirm {}", action.label),
+                    CommandSeverity::Warning,
+                ));
+                return SlashResult::Handled;
+            }
+            self.pending_menu_confirmation = None;
+        } else {
+            self.pending_menu_confirmation = None;
+        }
+        match MenuEffect::from(action) {
+            MenuEffect::FocusRow { target_row_id } => {
+                if let Some(target_row_id) = target_row_id
+                    && let Some(menu) = self.active_menu.as_mut()
+                {
+                    menu.state
+                        .select_row_by_id(&menu.projection, &target_row_id);
+                }
+                SlashResult::Handled
+            }
+            MenuEffect::PrimeEditor { text, message } => {
+                self.active_menu = None;
+                if let Some(text) = text {
+                    self.editor.set_text(&text);
+                }
+                if let Some(message) = message {
+                    self.show_command_toast(CommandToast::new(message, CommandSeverity::Info));
+                }
+                SlashResult::Handled
+            }
+            MenuEffect::BeginInlineInput {
+                label,
+                command_prefix,
+            } => {
+                if let Some(command_prefix) = command_prefix {
+                    let original_footer = self
+                        .active_menu
+                        .as_ref()
+                        .and_then(|menu| menu.projection.footer.clone());
+                    self.menu_input = Some(MenuInput {
+                        action_label: label,
+                        command_prefix,
+                        value: String::new(),
+                        original_footer,
+                    });
+                    if let Some(menu) = self.active_menu.as_mut() {
+                        menu.projection.footer =
+                            Some("Type value · Enter execute · Esc cancel".into());
+                    }
+                }
+                SlashResult::Handled
+            }
+            MenuEffect::OpenSelector { target, label } => {
+                self.active_menu = None;
+                self.pending_menu_confirmation = None;
+                match target {
+                    SelectorTarget::ContextClass => self.open_context_selector(),
+                    SelectorTarget::CurrentModel => self.open_model_selector(),
+                    SelectorTarget::ModelGrade => self.open_model_grade_selector(),
+                    SelectorTarget::ModelProvider => self.open_model_provider_selector(),
+                    SelectorTarget::ModelPolicy => self.open_model_policy_selector(),
+                    SelectorTarget::SecretName => self.open_secret_name_selector(),
+                    SelectorTarget::Unknown(selector_id) => {
+                        self.show_command_toast(CommandToast::new(
+                            format!(
+                                "No selector registered for {label}{}",
+                                selector_id
+                                    .as_deref()
+                                    .map(|id| format!(" ({id})"))
+                                    .unwrap_or_default()
+                            ),
+                            CommandSeverity::Warning,
+                        ))
+                    }
+                }
+                SlashResult::Handled
+            }
+            MenuEffect::OpenExtensionDetail { target_row_id } => {
+                if let Some(extension_name) = target_row_id.as_deref() {
+                    self.open_extension_detail_menu(extension_name);
+                } else {
+                    self.show_command_toast(CommandToast::new(
+                        "Extension detail target is unavailable",
+                        CommandSeverity::Warning,
+                    ));
+                }
+                SlashResult::Handled
+            }
+            MenuEffect::OpenSettingsRow { target, label } => {
+                if target.id().is_some() {
+                    self.open_settings_row(target);
+                } else {
+                    self.show_command_toast(CommandToast::new(
+                        format!("No settings row registered for {label}"),
+                        CommandSeverity::Warning,
+                    ));
+                }
+                SlashResult::Handled
+            }
+            MenuEffect::RunCommand {
+                command,
+                close_policy,
+            } => {
+                if let Some(command) = command {
+                    let menu_id = self
+                        .active_menu
+                        .as_ref()
+                        .map(|menu| menu.projection.id.clone());
+                    let outcome = self.execute_active_menu_command(command, tx);
+                    if outcome.should_refresh_menu(close_policy)
+                        && let Some(menu_id) = menu_id.as_deref()
+                        && self.rebuild_active_menu(menu_id)
+                    {
+                        return SlashResult::Handled;
+                    }
+                    outcome.result
+                } else {
+                    SlashResult::Handled
+                }
+            }
         }
     }
 }
@@ -396,5 +534,59 @@ mod tests {
         assert!(app.active_menu.is_some());
         assert!(app.command_panel.is_some());
         assert_eq!(app.history.last().map(String::as_str), Some("/status"));
+    }
+
+    #[test]
+    fn applying_prime_editor_effect_closes_menu_and_sets_text() {
+        let mut app = super::super::tests::test_app();
+        app.open_settings_menu();
+        let action = MenuActionProjection::prime_editor(
+            "profile.save",
+            "Save profile",
+            "/settings profile save ",
+            "Enter a profile name",
+        );
+
+        app.execute_active_menu_action(action, &super::super::tests::test_tx());
+
+        assert!(app.active_menu.is_none());
+        assert_eq!(app.editor.render_text(), "/settings profile save ");
+    }
+
+    #[test]
+    fn applying_inline_input_effect_preserves_menu_and_starts_capture() {
+        let mut app = super::super::tests::test_app();
+        app.open_settings_menu();
+        let action = MenuActionProjection::inline_input(
+            "extension.search",
+            "Search extensions",
+            "/extension search ",
+        );
+
+        app.execute_active_menu_action(action, &super::super::tests::test_tx());
+
+        assert!(app.active_menu.is_some());
+        let input = app.menu_input.as_ref().expect("inline input");
+        assert_eq!(input.action_label, "Search extensions");
+        assert_eq!(input.command_prefix, "/extension search ");
+    }
+
+    #[test]
+    fn applying_unknown_selector_effect_closes_menu_and_warns() {
+        let mut app = super::super::tests::test_app();
+        app.open_settings_menu();
+        let action = MenuActionProjection::open_selector(
+            "future.selector.open",
+            "Choose future value",
+            "future.selector",
+        );
+
+        app.execute_active_menu_action(action, &super::super::tests::test_tx());
+
+        assert!(app.active_menu.is_none());
+        assert!(app.operator_events.iter().any(|event| {
+            event.message.contains("future.selector")
+                && event.message.contains("No selector registered")
+        }));
     }
 }

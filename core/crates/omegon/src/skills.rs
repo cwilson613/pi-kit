@@ -1052,8 +1052,22 @@ mod tests {
 
     #[test]
     fn bundled_count_matches_skills_directory() {
-        // 10 skills: code-act, git, oci, openspec, python, rust, security, style, typescript, flynt
-        assert_eq!(BUNDLED.len(), 10);
+        let skills_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../skills");
+        let mut directory_names = std::fs::read_dir(&skills_dir)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", skills_dir.display()))
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join("SKILL.md").is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        directory_names.sort();
+
+        let mut bundled_names = BUNDLED
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect::<Vec<_>>();
+        bundled_names.sort();
+
+        assert_eq!(bundled_names, directory_names);
     }
 
     #[test]

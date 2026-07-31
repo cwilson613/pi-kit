@@ -1055,7 +1055,14 @@ mod tests {
         let skills_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../skills");
         let mut directory_names = std::fs::read_dir(&skills_dir)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", skills_dir.display()))
-            .filter_map(Result::ok)
+            .map(|entry| {
+                entry.unwrap_or_else(|error| {
+                    panic!(
+                        "failed to read an entry in {}: {error}",
+                        skills_dir.display()
+                    )
+                })
+            })
             .filter(|entry| entry.path().join("SKILL.md").is_file())
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();

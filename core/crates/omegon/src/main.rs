@@ -74,6 +74,7 @@ mod runtime_composition;
 mod runtime_prompt;
 mod runtime_state;
 mod runtime_turn;
+mod runtime_turn_execution;
 mod session_settings_commands;
 mod shadow_context;
 mod skills;
@@ -5985,17 +5986,22 @@ fn build_tui_secret_readiness_snapshot(
 
                     let mut quit_after_turn = false;
                     let state_for_turn = runtime_state;
-                    let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
-                        state_for_turn,
-                        runtime_resources.clone(),
-                        bridge.clone(),
+                    let execution = InteractiveTurnExecution::new(
+                        &runtime_resources,
                         shared_settings.clone(),
                         shared_cancel.clone(),
-                        pending_compact.clone(),
-                        events_tx.clone(),
-                        active,
-                        lifecycle.clone(),
-                    ));
+                        &pending_compact,
+                    );
+                    let mut turn_task = tokio::task::spawn_local(
+                        runtime_turn_execution::execute(
+                            state_for_turn,
+                            execution,
+                            bridge.clone(),
+                            events_tx.clone(),
+                            active,
+                            lifecycle.clone(),
+                        ),
+                    );
                     let active_wait_started_at = std::time::Instant::now();
                     let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
                     let mut slow_turn_notifications: u32 = 0;
@@ -6553,6 +6559,30 @@ struct InteractiveRuntimeResources {
     route_controller: Arc<route::RouteController>,
 }
 
+pub(crate) struct InteractiveTurnExecution {
+    loop_config: r#loop::LoopConfig,
+    shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
+    shared_cancel: tui::SharedCancel,
+    context_metrics:
+        std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
+}
+
+impl InteractiveTurnExecution {
+    fn new(
+        runtime: &InteractiveRuntimeResources,
+        shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
+        shared_cancel: tui::SharedCancel,
+        pending_compact: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            loop_config: build_interactive_loop_config(runtime, &shared_settings, pending_compact),
+            shared_settings,
+            shared_cancel,
+            context_metrics: runtime.context_metrics.clone(),
+        }
+    }
+}
+
 fn build_interactive_loop_config(
     runtime: &InteractiveRuntimeResources,
     shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
@@ -6587,306 +6617,6 @@ fn build_interactive_loop_config(
             ..Default::default()
         },
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_interactive_active_turn(
-    mut runtime_state: InteractiveAgentState,
-    runtime: InteractiveRuntimeResources,
-    bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
-    shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
-    shared_cancel: tui::SharedCancel,
-    pending_compact: Arc<std::sync::atomic::AtomicBool>,
-    events_tx: broadcast::Sender<AgentEvent>,
-    active: ActiveTurnMeta,
-    lifecycle: RuntimeTurnLifecycle,
-) -> InteractiveAgentState {
-    let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut loop_config =
-        build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
-    loop_config.cancel_keeps_prompt = Some(cancel_keeps_prompt.clone());
-    loop_config.drain_post_loop_requests = false;
-
-    if active.prompt.image_paths.is_empty() {
-        runtime_state
-            .conversation
-            .push_user(active.prompt.text.clone());
-    } else {
-        let mut images = Vec::new();
-        for path in &active.prompt.image_paths {
-            if let Ok(data) = std::fs::read(path) {
-                let media_type = match image::guess_format(&data) {
-                    Ok(image::ImageFormat::Png) => Some("image/png"),
-                    Ok(image::ImageFormat::Jpeg) => Some("image/jpeg"),
-                    Ok(image::ImageFormat::Gif) => Some("image/gif"),
-                    Ok(image::ImageFormat::WebP) => Some("image/webp"),
-                    _ => None,
-                };
-                let Some(media_type) = media_type else {
-                    tracing::warn!(path = %path.display(), "skipping invalid or provider-unsupported image attachment");
-                    continue;
-                };
-                use base64::Engine;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                images.push(crate::bridge::ImageAttachment {
-                    data: b64,
-                    media_type: media_type.to_string(),
-                    source_path: Some(path.display().to_string()),
-                });
-            }
-        }
-        runtime_state
-            .conversation
-            .push_user_with_images(active.prompt.text.clone(), images);
-    }
-
-    lifecycle.emit_phase("conversation_updated", 0, 0, &events_tx, "worker");
-
-    let cancel = CancellationToken::new();
-    if let Ok(mut guard) = shared_cancel.lock() {
-        *guard = Some(cancel.clone());
-    }
-
-    let loop_started_at = std::time::Instant::now();
-    lifecycle.emit_phase("loop_running", 0, 0, &events_tx, "worker");
-    let run_result = {
-        let bridge_guard = bridge.read().await;
-        let mut run = std::pin::pin!(r#loop::run(
-            bridge_guard.as_ref(),
-            &mut runtime_state.bus,
-            &mut runtime_state.context_manager,
-            &mut runtime_state.conversation,
-            &events_tx,
-            cancel.clone(),
-            &loop_config,
-        ));
-
-        tokio::select! {
-            result = &mut run => Some(result),
-            _ = cancel.cancelled() => {
-                let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
-                let disposition = if keep_prompt { "interrupted · kept" } else { "aborted · forgotten" };
-                tracing::warn!(
-                    runtime_turn_id = active.runtime_turn_id,
-                    "operator cancellation requested; abandoning active turn to recover operator surface"
-                );
-                let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: format!("Interrupt requested — recovered the operator surface ({disposition}). The abandoned provider/tool request may finish in the background."),
-                });
-                let _ = events_tx.send(AgentEvent::AgentEnd);
-                None
-            }
-        }
-    };
-    let cleanup_started_at = std::time::Instant::now();
-    lifecycle.emit_phase("post_loop_cleanup", 0, 0, &events_tx, "worker");
-    tracing::info!(
-        runtime_turn_id = active.runtime_turn_id,
-        loop_elapsed_ms = loop_started_at.elapsed().as_millis() as u64,
-        cancelled = cancel.is_cancelled(),
-        result = match &run_result {
-            Some(Ok(_)) => "ok",
-            Some(Err(_)) => "error",
-            None => "abandoned",
-        },
-        "interactive active turn loop returned; starting post-turn cleanup"
-    );
-
-    if (matches!(run_result, Some(Ok(_))) || run_result.is_none()) && cancel.is_cancelled() {
-        let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
-        if !keep_prompt {
-            runtime_state
-                .conversation
-                .rollback_last_user_if_text(&active.prompt.text);
-        }
-        let disposition = if keep_prompt {
-            "interrupted · kept"
-        } else {
-            "aborted · forgotten"
-        };
-        let _ = events_tx.send(AgentEvent::MessageAbort {
-            reason: Some(disposition.to_string()),
-        });
-    }
-
-    if let Some(Err(e)) = run_result {
-        let terminal_reason = if r#loop::is_upstream_exhausted(&e) {
-            omegon_traits::TurnEndReason::ProviderExhausted
-        } else {
-            omegon_traits::TurnEndReason::WorkerFailed
-        };
-        let _ = events_tx.send(AgentEvent::TurnEnd(Box::new(
-            omegon_traits::AgentEventTurnEnd {
-                turn: runtime_state.conversation.intent.stats.turns,
-                turn_end_reason: terminal_reason,
-                model: loop_config
-                    .bridge_model
-                    .clone()
-                    .or_else(|| Some(loop_config.model.clone())),
-                provider: loop_config
-                    .bridge_model
-                    .as_deref()
-                    .map(crate::providers::infer_provider_id)
-                    .or_else(|| Some(crate::providers::infer_provider_id(&loop_config.model))),
-                estimated_tokens: runtime_state.conversation.estimate_tokens(),
-                context_window: 0,
-                context_composition: omegon_traits::ContextComposition::default(),
-                actual_input_tokens: 0,
-                actual_output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                provider_telemetry: None,
-                dominant_phase: None,
-                drift_kind: None,
-                progress_nudge_reason: None,
-                intent_task: runtime_state.conversation.intent.current_task.clone(),
-                intent_phase: Some(format!(
-                    "{:?}",
-                    runtime_state.conversation.intent.lifecycle_phase
-                )),
-                files_read_count: runtime_state.conversation.intent.files_read.len(),
-                files_modified_count: runtime_state.conversation.intent.files_modified.len(),
-                stats_tool_calls: runtime_state.conversation.intent.stats.tool_calls,
-                streaks: omegon_traits::ControllerStreaks::default(),
-            },
-        )));
-        let recent_telemetry = runtime_state.conversation.last_provider_telemetry(None);
-        let user_msg = format_agent_error(&e, recent_telemetry.as_ref());
-        tracing::error!(
-            runtime_turn_id = active.runtime_turn_id,
-            "Agent loop error: {e}"
-        );
-        runtime_state
-            .conversation
-            .rollback_last_user_if_text(&active.prompt.text);
-        let _ = events_tx.send(AgentEvent::SystemNotification { message: user_msg });
-        let _ = events_tx.send(AgentEvent::AgentEnd);
-    }
-
-    let cancel_lock_started_at = std::time::Instant::now();
-    if let Ok(mut guard) = shared_cancel.lock() {
-        guard.take();
-    }
-    let cancel_lock_elapsed = cancel_lock_started_at.elapsed();
-    lifecycle.emit_phase(
-        "cleanup_cancel_token_cleared",
-        cancel_lock_elapsed.as_millis() as u64,
-        0,
-        &events_tx,
-        "worker",
-    );
-    if cancel_lock_elapsed > std::time::Duration::from_millis(250) {
-        tracing::warn!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = cancel_lock_elapsed.as_millis() as u64,
-            "post-turn cleanup waited on shared cancel lock"
-        );
-    } else {
-        tracing::debug!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = cancel_lock_elapsed.as_millis() as u64,
-            "post-turn cleanup cleared shared cancel token"
-        );
-    }
-
-    let estimate_started_at = std::time::Instant::now();
-    let est = runtime_state.conversation.estimate_tokens();
-    let estimate_elapsed = estimate_started_at.elapsed();
-    lifecycle.emit_phase(
-        "cleanup_tokens_estimated",
-        estimate_elapsed.as_millis() as u64,
-        0,
-        &events_tx,
-        "worker",
-    );
-    if estimate_elapsed > std::time::Duration::from_millis(250) {
-        tracing::warn!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = estimate_elapsed.as_millis() as u64,
-            estimated_tokens = est,
-            "post-turn cleanup spent unusually long estimating transcript tokens"
-        );
-    } else {
-        tracing::debug!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = estimate_elapsed.as_millis() as u64,
-            estimated_tokens = est,
-            "post-turn cleanup estimated transcript tokens"
-        );
-    }
-
-    let settings_lock_started_at = std::time::Instant::now();
-    let settings = shared_settings.lock().unwrap();
-    let settings_lock_elapsed = settings_lock_started_at.elapsed();
-    lifecycle.emit_phase(
-        "cleanup_settings_acquired",
-        settings_lock_elapsed.as_millis() as u64,
-        0,
-        &events_tx,
-        "worker",
-    );
-    if settings_lock_elapsed > std::time::Duration::from_millis(250) {
-        tracing::warn!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = settings_lock_elapsed.as_millis() as u64,
-            "post-turn cleanup waited on shared settings lock"
-        );
-    } else {
-        tracing::debug!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = settings_lock_elapsed.as_millis() as u64,
-            "post-turn cleanup acquired shared settings lock"
-        );
-    }
-    let context_window = settings.context_window;
-    let context_class = settings.effective_requested_class().label().to_string();
-    let thinking_level = settings.thinking.as_str().to_string();
-
-    let metrics_lock_started_at = std::time::Instant::now();
-    if let Ok(mut metrics) = runtime.context_metrics.lock() {
-        metrics.update(est, context_window, &context_class, &thinking_level);
-    }
-    let metrics_lock_elapsed = metrics_lock_started_at.elapsed();
-    lifecycle.emit_phase(
-        "cleanup_metrics_updated",
-        metrics_lock_elapsed.as_millis() as u64,
-        0,
-        &events_tx,
-        "worker",
-    );
-    if metrics_lock_elapsed > std::time::Duration::from_millis(250) {
-        tracing::warn!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = metrics_lock_elapsed.as_millis() as u64,
-            "post-turn cleanup waited on context metrics lock"
-        );
-    } else {
-        tracing::debug!(
-            runtime_turn_id = active.runtime_turn_id,
-            elapsed_ms = metrics_lock_elapsed.as_millis() as u64,
-            "post-turn cleanup updated context metrics"
-        );
-    }
-    let _ = events_tx.send(AgentEvent::ContextUpdated {
-        tokens: est as u64,
-        context_window: context_window as u64,
-        context_class,
-        thinking_level,
-    });
-    tracing::info!(
-        runtime_turn_id = active.runtime_turn_id,
-        cleanup_elapsed_ms = cleanup_started_at.elapsed().as_millis() as u64,
-        "interactive active turn post-turn cleanup finished"
-    );
-    lifecycle.emit_phase(
-        "worker_returning",
-        cleanup_started_at.elapsed().as_millis() as u64,
-        0,
-        &events_tx,
-        "worker",
-    );
-
-    runtime_state
 }
 
 async fn stop_voice_session_if_requested(

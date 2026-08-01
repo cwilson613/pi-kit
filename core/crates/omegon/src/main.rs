@@ -73,6 +73,7 @@ mod recro_coe_integration_tests;
 mod runtime_composition;
 mod runtime_prompt;
 mod runtime_state;
+mod runtime_turn;
 mod session_settings_commands;
 mod shadow_context;
 mod skills;
@@ -5959,7 +5960,7 @@ fn build_tui_secret_readiness_snapshot(
                     tracing::info!(
                         prompt_id,
                         queue_depth = runtime.queue_depth(),
-                        active_turn_id = runtime.active_turn.as_ref().map(|active| active.runtime_turn_id),
+                        active_turn_id = runtime.turns.current().map(|active| active.runtime_turn_id),
                         submitted_by = prompt.submitted_by,
                         via = prompt.via,
                         "prompt queued behind active interactive turn"
@@ -6408,26 +6409,10 @@ fn provider_status_hint(provider: &str) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ActiveTurnPhase {
-    Running,
-    Cancelling {
-        requested_by: RuntimeActor,
-        via: ControlSurface,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ActiveTurnMeta {
-    runtime_turn_id: u64,
-    prompt: PromptEnvelope,
-    phase: ActiveTurnPhase,
-    started_at: std::time::Instant,
-}
-
 use runtime_prompt::{
     ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimeActorKind,
 };
+use runtime_turn::{ActiveTurnMeta, ActiveTurnState};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone)]
@@ -7023,8 +7008,7 @@ async fn stop_voice_session_if_requested(
 #[derive(Debug, Default)]
 struct InteractiveRuntimeSupervisor {
     queue: PromptQueue,
-    active_turn: Option<ActiveTurnMeta>,
-    next_runtime_turn_id: u64,
+    turns: ActiveTurnState,
 }
 
 impl InteractiveRuntimeSupervisor {
@@ -7052,15 +7036,12 @@ impl InteractiveRuntimeSupervisor {
     fn queue_snapshot_json(&self) -> serde_json::Value {
         serde_json::json!({
             "depth": self.queue_depth(),
-            "active": self.active_turn.as_ref().map(|active| serde_json::json!({
+            "active": self.turns.current().map(|active| serde_json::json!({
                 "turn_id": active.runtime_turn_id,
                 "prompt_id": active.prompt.id,
                 "submitted_by": active.prompt.submitted_by.display_label(),
                 "via": active.prompt.via.label(),
-                "phase": match &active.phase {
-                    ActiveTurnPhase::Running => "running",
-                    ActiveTurnPhase::Cancelling { .. } => "cancelling",
-                },
+                "phase": active.phase.label(),
                 "elapsed_ms": active.started_at.elapsed().as_millis() as u64,
                 "queued_wait_ms": active.started_at.saturating_duration_since(active.prompt.queued_at).as_millis() as u64,
             })),
@@ -7070,23 +7051,14 @@ impl InteractiveRuntimeSupervisor {
     }
 
     fn is_busy(&self) -> bool {
-        self.active_turn.is_some()
+        self.turns.is_busy()
     }
 
     fn maybe_start_next_turn(&mut self) -> Option<ActiveTurnMeta> {
-        if self.active_turn.is_some() {
+        if self.turns.is_busy() {
             return None;
         }
-        let prompt = self.queue.pop_front()?;
-        self.next_runtime_turn_id += 1;
-        let active = ActiveTurnMeta {
-            runtime_turn_id: self.next_runtime_turn_id,
-            prompt,
-            phase: ActiveTurnPhase::Running,
-            started_at: std::time::Instant::now(),
-        };
-        self.active_turn = Some(active.clone());
-        Some(active)
+        self.turns.start(self.queue.pop_front()?)
     }
 
     fn request_cancel(
@@ -7094,18 +7066,11 @@ impl InteractiveRuntimeSupervisor {
         actor: RuntimeActor,
         via: ControlSurface,
     ) -> Option<&ActiveTurnMeta> {
-        let active = self.active_turn.as_mut()?;
-        if matches!(active.phase, ActiveTurnPhase::Running) {
-            active.phase = ActiveTurnPhase::Cancelling {
-                requested_by: actor,
-                via,
-            };
-        }
-        self.active_turn.as_ref()
+        self.turns.request_cancel(actor, via)
     }
 
     fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
-        self.active_turn.take()
+        self.turns.complete()
     }
 
     fn pop_front_prompt(&mut self) -> Option<PromptEnvelope> {
@@ -9854,6 +9819,7 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::conversation::ConversationState;
+    use crate::runtime_turn::ActiveTurnPhase;
     use clap::CommandFactory;
     use tempfile::tempdir;
 

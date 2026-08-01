@@ -71,6 +71,7 @@ mod observation;
 #[cfg(test)]
 mod recro_coe_integration_tests;
 mod runtime_composition;
+mod runtime_prompt;
 mod runtime_state;
 mod session_settings_commands;
 mod shadow_context;
@@ -6080,7 +6081,7 @@ fn build_tui_secret_readiness_snapshot(
                                             crate::tui::PromptQueueMode::Immediate => QueueMode::Immediate,
                                         }));
                                         emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
-                                        if let Some(queued_prompt) = runtime.queue.iter().find(|queued| queued.id == prompt_id)
+                                        if let Some(queued_prompt) = runtime.queue.get(prompt_id)
                                             && queued_prompt.requests_voice_close()
                                         {
                                             let _ = events_tx.send(AgentEvent::SystemNotification {
@@ -6408,103 +6409,6 @@ fn provider_status_hint(provider: &str) -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum RuntimeActorKind {
-    Tui,
-    Auspex,
-    IpcClient,
-    WebClient,
-    DaemonEvent,
-    System,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuntimeActor {
-    kind: RuntimeActorKind,
-    label: String,
-}
-
-impl RuntimeActor {
-    fn display_label(&self) -> &str {
-        if self.label.is_empty() {
-            match self.kind {
-                RuntimeActorKind::Tui => "tui",
-                RuntimeActorKind::Auspex => "auspex",
-                RuntimeActorKind::IpcClient => "ipc-client",
-                RuntimeActorKind::WebClient => "web-client",
-                RuntimeActorKind::DaemonEvent => "daemon-event",
-                RuntimeActorKind::System => "system",
-            }
-        } else {
-            &self.label
-        }
-    }
-
-    fn tui() -> Self {
-        Self {
-            kind: RuntimeActorKind::Tui,
-            label: "local-tui".to_string(),
-        }
-    }
-
-    fn auspex() -> Self {
-        Self {
-            kind: RuntimeActorKind::Auspex,
-            label: "auspex".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlSurface {
-    Tui,
-    Ipc,
-    WebSocket,
-    HttpEventIngress,
-    Internal,
-}
-
-impl ControlSurface {
-    fn label(&self) -> &'static str {
-        match self {
-            ControlSurface::Tui => "tui",
-            ControlSurface::Ipc => "ipc",
-            ControlSurface::WebSocket => "websocket",
-            ControlSurface::HttpEventIngress => "http-event-ingress",
-            ControlSurface::Internal => "internal",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum QueueMode {
-    InterruptAfterTurn,
-    #[default]
-    UntilReady,
-    Immediate,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PromptEnvelope {
-    id: u64,
-    text: String,
-    image_paths: Vec<PathBuf>,
-    submitted_by: RuntimeActor,
-    via: ControlSurface,
-    metadata: tui::PromptMetadata,
-    queue_mode: QueueMode,
-    queued_at: std::time::Instant,
-}
-
-impl PromptEnvelope {
-    fn requests_voice_close(&self) -> bool {
-        self.metadata.voice.as_ref().is_some_and(|voice| {
-            voice.close_session_requested == Some(true)
-                && voice.radio_cue.as_deref() == Some("over_and_out")
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum ActiveTurnPhase {
     Running,
     Cancelling {
@@ -6521,6 +6425,9 @@ struct ActiveTurnMeta {
     started_at: std::time::Instant,
 }
 
+use runtime_prompt::{
+    ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimeActorKind,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone)]
@@ -6648,7 +6555,7 @@ fn emit_runtime_queue_notification(
     events_tx: &broadcast::Sender<AgentEvent>,
     prompt_id: u64,
 ) {
-    if let Some(prompt) = runtime.queue.iter().find(|prompt| prompt.id == prompt_id) {
+    if let Some(prompt) = runtime.queue.get(prompt_id) {
         emit_runtime_queue_snapshot(runtime, events_tx);
         let _ = events_tx.send(AgentEvent::SystemNotification {
             message: format!(
@@ -7115,11 +7022,9 @@ async fn stop_voice_session_if_requested(
 
 #[derive(Debug, Default)]
 struct InteractiveRuntimeSupervisor {
-    queue: VecDeque<PromptEnvelope>,
+    queue: PromptQueue,
     active_turn: Option<ActiveTurnMeta>,
-    next_prompt_id: u64,
     next_runtime_turn_id: u64,
-    default_queue_mode: QueueMode,
 }
 
 impl InteractiveRuntimeSupervisor {
@@ -7132,54 +7037,16 @@ impl InteractiveRuntimeSupervisor {
         metadata: tui::PromptMetadata,
         queue_mode: Option<QueueMode>,
     ) -> u64 {
-        self.next_prompt_id += 1;
-        let prompt_id = self.next_prompt_id;
-        self.queue.push_back(PromptEnvelope {
-            id: prompt_id,
-            text,
-            image_paths,
-            submitted_by: actor,
-            via,
-            metadata,
-            queue_mode: queue_mode.unwrap_or(self.default_queue_mode),
-            queued_at: std::time::Instant::now(),
-        });
-        prompt_id
+        self.queue
+            .enqueue(text, image_paths, actor, via, metadata, queue_mode)
     }
 
     fn queue_depth(&self) -> usize {
-        self.queue.len()
+        self.queue.depth()
     }
 
     fn queue_preview(&self) -> Vec<String> {
-        self.queue
-            .iter()
-            .map(|prompt| {
-                let attachment_summary = if prompt.image_paths.is_empty() {
-                    String::new()
-                } else {
-                    let names = prompt
-                        .image_paths
-                        .iter()
-                        .take(3)
-                        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-                        .collect::<Vec<_>>();
-                    let suffix = if prompt.image_paths.len() > names.len() {
-                        format!(" +{} more", prompt.image_paths.len() - names.len())
-                    } else {
-                        String::new()
-                    };
-                    format!(" [{}{}]", names.join(", "), suffix)
-                };
-                let preview = prompt.text.chars().take(48).collect::<String>();
-                let mode = match prompt.queue_mode {
-                    QueueMode::InterruptAfterTurn => "after-turn",
-                    QueueMode::UntilReady => "ready",
-                    QueueMode::Immediate => "now",
-                };
-                format!("#{} {mode}: {}{}", prompt.id, preview, attachment_summary)
-            })
-            .collect()
+        self.queue.previews()
     }
 
     fn queue_snapshot_json(&self) -> serde_json::Value {
@@ -7197,20 +7064,7 @@ impl InteractiveRuntimeSupervisor {
                 "elapsed_ms": active.started_at.elapsed().as_millis() as u64,
                 "queued_wait_ms": active.started_at.saturating_duration_since(active.prompt.queued_at).as_millis() as u64,
             })),
-            "items": self.queue.iter().map(|prompt| serde_json::json!({
-                "id": prompt.id,
-                "submitted_by": prompt.submitted_by.display_label(),
-                "via": prompt.via.label(),
-                "queue_mode": match prompt.queue_mode {
-                    QueueMode::InterruptAfterTurn => "interrupt_after_turn",
-                    QueueMode::UntilReady => "until_ready",
-                    QueueMode::Immediate => "immediate",
-                },
-                "preview": prompt.text.chars().take(80).collect::<String>(),
-                "attachments": prompt.image_paths.len(),
-                "voice": prompt.metadata.voice.is_some(),
-                "wait_ms": prompt.queued_at.elapsed().as_millis() as u64,
-            })).collect::<Vec<_>>(),
+            "items": self.queue.snapshot_items(),
             "previews": self.queue_preview(),
         })
     }

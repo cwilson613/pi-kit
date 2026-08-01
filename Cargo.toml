@@ -14,6 +14,12 @@ members = [
     "core/crates/omegon-web",
 ]
 
+[profile.dev]
+# Omegon's test binary is large enough for Apple's linker to overflow the
+# 16 MiB compact-unwind encoding range when dependencies retain full DWARF.
+# Keep line tables for useful panic backtraces while reducing unwind/debug size.
+debug = "line-tables-only"
+
 [profile.release]
 lto = "fat"
 strip = true

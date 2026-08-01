@@ -36,20 +36,23 @@ source-clean:
 test-rust:
     {{cargo}} test --workspace -- --test-threads=1
 
-# Commit-time Rust validation for changed crates. This is the default local gate for
-# focused commits; CI/release hardening still uses test-rust for the full workspace.
+# Affected-crate Rust validation for multi-crate/shared-contract commits.
+# Single-crate changes should normally use test-crate (or a feature-specific
+# recipe) plus clippy-changed; this recipe may rebuild every reverse-dependent
+# crate and is intentionally not the default gate for isolated crate edits.
 test-commit *args:
     just test-changed {{args}}
 
-# Run tests for a specific crate
+# Run tests for a specific crate.
 test-crate crate:
-    {{cargo}} test -p {{crate}}
+    {{cargo}} test -p {{crate}} --locked
 
 # Run tests matching a pattern
 test-filter pattern:
     {{cargo}} test -p omegon '{{pattern}}'
 
-# Show Rust workspace crates affected by changed paths.
+# Show Rust workspace crates affected by changed paths. By default this is the
+# reverse-dependent closure used for broad integration confidence.
 affected *args:
     python3 scripts/affected_crates.py {{args}}
 
@@ -1205,9 +1208,12 @@ schema-check:
 
 # ─── Secrets ────────────────────────────────────────────────
 
-# Run secrets crate tests
+# Run the secrets crate in both shipped configurations. This is the normal
+# landing test for scoped omegon-secrets changes; it avoids rebuilding reverse
+# dependents while preserving default and optional-backend coverage.
 test-secrets:
-    {{cargo}} test -p omegon-secrets
+    {{cargo}} test -p omegon-secrets --locked
+    {{cargo}} test -p omegon-secrets --features styrene-identity --locked
 
 # ─── MCP ────────────────────────────────────────────────────
 

@@ -36,6 +36,9 @@ pub enum KeyBackend {
     Keyring,
     /// AES key derived from passphrase via Argon2id
     Passphrase,
+    /// AES key derived from the operator's Styrene Identity root.
+    #[cfg(feature = "styrene-identity")]
+    StyreneIdentity,
 }
 
 impl std::fmt::Display for KeyBackend {
@@ -43,6 +46,8 @@ impl std::fmt::Display for KeyBackend {
         match self {
             Self::Keyring => write!(f, "keyring"),
             Self::Passphrase => write!(f, "passphrase"),
+            #[cfg(feature = "styrene-identity")]
+            Self::StyreneIdentity => write!(f, "styrene-identity"),
         }
     }
 }
@@ -133,6 +138,43 @@ impl SecretStore {
             db,
             key,
             backend: KeyBackend::Passphrase,
+        })
+    }
+
+    /// Initialize a new store with a key derived from a Styrene Identity root.
+    #[cfg(feature = "styrene-identity")]
+    pub fn init_styrene_identity(
+        path: &Path,
+        root: &styrene_identity::signer::RootSecret,
+    ) -> anyhow::Result<Self> {
+        Self::create(
+            path,
+            derive_key_styrene_identity(root),
+            KeyBackend::StyreneIdentity,
+            None,
+        )
+    }
+
+    /// Open an existing store with a key derived from a Styrene Identity root.
+    #[cfg(feature = "styrene-identity")]
+    pub fn open_styrene_identity(
+        path: &Path,
+        root: &styrene_identity::signer::RootSecret,
+    ) -> anyhow::Result<Self> {
+        let db = Self::open_db(path)?;
+        let meta = Self::read_meta(&db)?;
+        if meta.backend != KeyBackend::StyreneIdentity {
+            anyhow::bail!(
+                "store was initialized with {} backend, not styrene-identity",
+                meta.backend
+            );
+        }
+        let key = derive_key_styrene_identity(root);
+        Self::verify_canary(&db, &key)?;
+        Ok(Self {
+            db,
+            key,
+            backend: KeyBackend::StyreneIdentity,
         })
     }
 
@@ -298,6 +340,8 @@ impl SecretStore {
         let backend = match backend_str.as_str() {
             "keyring" => KeyBackend::Keyring,
             "passphrase" => KeyBackend::Passphrase,
+            #[cfg(feature = "styrene-identity")]
+            "styrene-identity" => KeyBackend::StyreneIdentity,
             other => anyhow::bail!("unknown backend: {other}"),
         };
 
@@ -435,6 +479,18 @@ fn derive_key_argon2id(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LENGTH] {
     key
 }
 
+#[cfg(feature = "styrene-identity")]
+fn derive_key_styrene_identity(root: &styrene_identity::signer::RootSecret) -> [u8; KEY_LENGTH] {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let hkdf = Hkdf::<Sha256>::new(Some(b"sh.styrene.omegon/secrets.db/v1"), root.as_bytes());
+    let mut key = [0u8; KEY_LENGTH];
+    hkdf.expand(b"aes-256-gcm store key", &mut key)
+        .expect("fixed-length HKDF output is valid");
+    key
+}
+
 fn hex_to_key(hex_str: &str) -> anyhow::Result<[u8; KEY_LENGTH]> {
     let bytes = hex::decode(hex_str).map_err(|e| anyhow::anyhow!("invalid hex key: {e}"))?;
     if bytes.len() != KEY_LENGTH {
@@ -453,6 +509,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.db");
         (dir, path)
+    }
+
+    #[cfg(feature = "styrene-identity")]
+    #[test]
+    fn styrene_identity_init_open_and_reject_wrong_identity() {
+        let (_dir, path) = temp_store_path();
+        let root = styrene_identity::signer::RootSecret::new([7u8; 32]);
+        let wrong_root = styrene_identity::signer::RootSecret::new([8u8; 32]);
+
+        let store = SecretStore::init_styrene_identity(&path, &root).unwrap();
+        assert_eq!(store.backend(), KeyBackend::StyreneIdentity);
+        store
+            .put("API_KEY", &SecretString::from("identity-bound-secret"))
+            .unwrap();
+        drop(store);
+
+        assert!(SecretStore::open_styrene_identity(&path, &wrong_root).is_err());
+        let store = SecretStore::open_styrene_identity(&path, &root).unwrap();
+        assert_eq!(
+            store.get("API_KEY").unwrap().unwrap().expose_secret(),
+            "identity-bound-secret"
+        );
     }
 
     #[test]

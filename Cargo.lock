@@ -5165,6 +5165,7 @@ dependencies = [
  "getrandom 0.2.17",
  "globset",
  "hex",
+ "hkdf",
  "keyring",
  "libc",
  "mockito",
@@ -5175,6 +5176,8 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
+ "styrene-identity",
  "tempfile",
  "tokio",
  "tokio-test",
@@ -7738,6 +7741,22 @@ dependencies = [
  "chrono",
  "serde",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "styrene-identity"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebe24b322ff5d7b5d4aec64424668100e0cc839fef412d791d8849fb182d2796"
+dependencies = [
+ "async-trait",
+ "hex",
+ "hkdf",
+ "rand_core 0.6.4",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]

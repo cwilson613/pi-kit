@@ -752,7 +752,9 @@ impl ToolProvider for CoreTools {
                 label: reg::BASH.into(),
                 description: "Execute a bash command in the current working directory. \
                     Returns stdout and stderr. Output is truncated to last 2000 lines \
-                    or 50KB. Optionally provide a timeout in seconds."
+                    or 50KB. Optionally provide a timeout in seconds. Commands expected \
+                    to run longer than 10 minutes should use the terminal tool so they \
+                    remain monitorable without occupying one tool call."
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -763,7 +765,7 @@ impl ToolProvider for CoreTools {
                         },
                         "timeout": {
                             "type": "number",
-                            "description": "Timeout in seconds (optional)"
+                            "description": "Timeout in seconds (optional). Values above 600 are honored by the native runtime; provider or transport layers may impose a shorter call deadline. Use terminal sessions for commands expected to exceed 10 minutes."
                         }
                     },
                     "required": ["command"]

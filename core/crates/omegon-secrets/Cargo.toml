@@ -17,6 +17,7 @@ description = "Secret resolution, output redaction, and tool guards for Omegon"
 [features]
 default = ["agent"]
 agent = ["dep:omegon-traits"]
+styrene-identity = ["dep:hkdf", "dep:sha2", "dep:styrene-identity"]
 
 [dependencies]
 serde = { workspace = true }
@@ -41,6 +42,9 @@ url = "2"
 globset = "0.4"
 regex = "1"
 libc = "0.2"
+hkdf = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+styrene-identity = { version = "0.3.2", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

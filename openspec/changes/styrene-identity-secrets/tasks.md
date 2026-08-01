@@ -23,13 +23,13 @@ visibility = "private"
 - [x] 2.1 OS keyring backend (default) — store key via `keyring_set("sh.styrene.omegon", "store-key")`
 - [x] 2.2 Passphrase backend — AES key derived via Argon2id (`argon2` 0.5)
 
-## 3. Deferred to post-0.27.0 — Styrene Identity backend
+## 3. Styrene Identity backend
 
-Deferred by operator decision (2026-07-01, release assessment): blocked on the
-RNS identity stack being available as a dependency. Not release-gating for
-0.27.0; the shipped keyring/passphrase backends are the complete 0.27.0 scope.
+The previously blocked identity dependency is now published as
+`styrene-identity` 0.3.2. Store integration remains opt-in so default builds do
+not acquire an identity dependency or prompt for identity access.
 
-- [ ] 3.1 Styrene Identity backend — HKDF-derived key from RNS Ed25519/X25519, behind a `styrene-identity` cargo feature (documented in store.rs module header; no feature flag or implementation exists yet)
+- [x] 3.1 Styrene Identity backend — domain-separated HKDF-SHA256 key from `RootSecret`, behind the `styrene-identity` cargo feature
 - [ ] 3.2 Backend selection/fallback order: identity (if feature + identity present) → keyring → passphrase prompt
 
 ## 4. Deferred to post-0.27.0 — Mesh secrets
@@ -43,6 +43,7 @@ RNS identity stack being available as a dependency. Not release-gating for
 > as a dependency — substantial feature work, not bookkeeping. Original
 > scaffolder one-liners replaced with the actual task breakdown.
 >
-> Deferral note (2026-07-01): groups 3 and 4 formally deferred to
-> post-0.27.0 during the release assessment (docs/release-0.27.0-assessment.md,
-> decision D3). This change does not gate the 0.27.0 cut.
+> Implementation note (2026-08-01): Group 3.1 is now implemented using the
+> published `styrene-identity` 0.3.2 crate. Automatic backend selection remains
+> separate work because it requires an explicit non-interactive identity-unlock
+> contract; mesh lookup and trust transport remain deferred.

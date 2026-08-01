@@ -31,8 +31,10 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
   - `styrene-work-model` — provider-neutral work-item contracts
   - `styrene-work-runtime` — work-source refresh and immutable aggregate snapshots
 - **Build and run**: `just run` rebuilds and launches the current `dev-release` binary. `just link` performs its own release build, installs the stable launchers, registers the checkout/channel, and installs bundled skills/catalog; do not precede it with a redundant `just build` unless a standalone release build is itself required.
-- **Validation ladder**: use focused tests while iterating; `just test-commit` and `just clippy-changed` are the normal focused landing gates. Use `just lint` and serialized `just test-rust` for broad/high-risk changes, release hardening, or when affected-crate analysis is insufficient.
+- **Validation ladder**: use the narrowest relevant test while iterating. For an isolated single-crate change, land with `just test-crate <crate>` (or its feature-specific recipe) plus `just clippy-changed`; `just test-secrets` covers both shipped `omegon-secrets` configurations. Reserve `just test-commit` for multi-crate changes, shared contracts/dependencies, or cases where reverse-dependent coverage is materially useful—it may cold-build every affected crate. Use `just lint` and serialized `just test-rust` for broad/high-risk changes and release hardening.
+- **Long-running Cargo gates**: cold dependency/feature builds are routinely longer than blocking tool-call ceilings. A timeout without compiler/test failure is indeterminate, not a failed gate. Start long gates in an interactive terminal and monitor them to completion; do not repeatedly restart a cold build or halt progress because a short wrapper timeout expired.
 - **Single crate**: `just test-crate omegon-memory`
+- **Secrets configurations**: `just test-secrets`
 - **Filter**: `just test-filter "vault_sync"`
 - **Config schemas**: `pkl/` contains the Pkl schemas for configuration surfaces. Avoid embedding a schema count here; it changes over time.
 - **Skills**: `skills/*/SKILL.md` — YAML frontmatter is canonical for portable skills; TOML frontmatter remains supported for bundled/existing skills. `name` and `description` are required.

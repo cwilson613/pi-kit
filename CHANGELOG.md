@@ -18,6 +18,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added an opt-in `styrene-identity` secret-store backend that derives the local AES-256-GCM store key from a Styrene Identity root using domain-separated HKDF-SHA256; opening with a different identity fails authenticated canary verification.
+- Added `just test-secrets` as the focused landing gate for both default and Styrene Identity-enabled `omegon-secrets` configurations, and documented managed terminal sessions as the immediate workaround for long validation commands that outlive a blocking tool-call deadline.
+
 - Added a first-order bundled `codebase-init` skill for evidence-led repository orientation, directive-drift assessment, and strategic nested `AGENTS.md` placement; `/init` now exposes the read-only playbook separately from explicit scan and migration mutations.
 - Added strategic per-crate agent guidance for the integration binary, shared traits, memory, and OpenSpec lifecycle crates, establishing ownership boundaries and deep-dive invariants without duplicating the root workflow.
 - Refreshed the internal agent directives to match the current workspace, scoped validation ladder, `just run`/`just link` workflow, semantic presentation levels, Codex integration discovery, process-tree cleanup requirements, and maintainer/community boundaries.

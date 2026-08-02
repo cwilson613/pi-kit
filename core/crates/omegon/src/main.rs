@@ -32,6 +32,7 @@ mod acp;
 mod acp_plan_tasks;
 mod acp_worker;
 mod active_worker_command;
+mod active_worker_wait;
 mod auth;
 mod autonomy;
 mod backend;
@@ -5807,10 +5808,10 @@ fn build_tui_secret_readiness_snapshot(
                             lifecycle.clone(),
                         ),
                     );
-                    let active_wait_started_at = std::time::Instant::now();
-                    let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
-                    let mut slow_turn_notifications: u32 = 0;
-                    let mut notified_blocked_prompt_queue = false;
+                    let mut wait_telemetry =
+                        active_worker_wait::ActiveWorkerWaitTelemetry::new();
+                    let mut slow_turn_probe =
+                        Box::pin(tokio::time::sleep(wait_telemetry.probe_interval()));
 
                     loop {
                         tokio::select! {
@@ -5834,28 +5835,28 @@ fn build_tui_secret_readiness_snapshot(
                                 break;
                             }
                             _ = &mut slow_turn_probe => {
-                                slow_turn_notifications = slow_turn_notifications.saturating_add(1);
-                                let elapsed = active_wait_started_at.elapsed();
+                                let observation = wait_telemetry.observe(runtime.queue_depth());
                                 tracing::warn!(
-                                    elapsed_secs = elapsed.as_secs(),
-                                    queued_prompts = runtime.queue_depth(),
-                                    lifecycle = %lifecycle.snapshot(runtime.queue_depth()),
-                                    slow_turn_notifications,
+                                    elapsed_secs = observation.elapsed.as_secs(),
+                                    queued_prompts = observation.queue_depth,
+                                    lifecycle = %lifecycle.snapshot(observation.queue_depth),
+                                    slow_turn_notifications = observation.notification_count,
                                     "interactive active turn worker is still running after visible turn start; queued prompts remain blocked until worker returns"
                                 );
-                                if runtime.queue_depth() > 0 && !notified_blocked_prompt_queue {
-                                    notified_blocked_prompt_queue = true;
+                                if observation.notify_blocked_queue {
                                     let _ = events_tx.send(AgentEvent::RuntimeTurnLifecycleUpdated {
-                                        snapshot_json: lifecycle.snapshot(runtime.queue_depth()),
+                                        snapshot_json: lifecycle.snapshot(observation.queue_depth),
                                     });
                                     let _ = events_tx.send(AgentEvent::SystemNotification {
                                         message: format!(
                                             "Prompt queued behind active turn after {}s. Latest lifecycle state is recorded in the agent log; queued prompts will start when this turn's worker returns.",
-                                            elapsed.as_secs()
+                                            observation.elapsed.as_secs()
                                         ),
                                     });
                                 }
-                                slow_turn_probe.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
+                                slow_turn_probe.as_mut().reset(
+                                    tokio::time::Instant::now() + observation.next_probe_after,
+                                );
                             }
                             maybe_cmd = command_rx.recv() => {
                                 let Some(cmd) = maybe_cmd else {

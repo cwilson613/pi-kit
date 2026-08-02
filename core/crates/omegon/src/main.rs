@@ -32,6 +32,7 @@ mod acp;
 mod acp_plan_tasks;
 mod acp_worker;
 mod active_worker_command;
+mod active_worker_completion;
 mod active_worker_wait;
 mod auth;
 mod autonomy;
@@ -5881,11 +5882,12 @@ fn build_tui_secret_readiness_snapshot(
                         }
                     }
 
-                    lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
-                    runtime.complete_active_turn();
-                    lifecycle.transition("supervisor_completed", runtime.queue_depth(), &events_tx);
-                    emit_runtime_queue_snapshot(&runtime, &events_tx);
-                    mark_interactive_session_busy(&agent.dashboard_handles, runtime.is_busy());
+                    active_worker_completion::complete(
+                        &mut runtime,
+                        &mut lifecycle,
+                        &events_tx,
+                        &agent.dashboard_handles,
+                    );
 
                     match completion_policy.finish() {
                         post_worker_completion::PostWorkerDisposition::PromoteNext => {}
@@ -6001,7 +6003,10 @@ fn build_tui_secret_readiness_snapshot(
         .await
 }
 
-fn mark_interactive_session_busy(handles: &crate::runtime_state::RuntimeStateHandles, busy: bool) {
+pub(crate) fn mark_interactive_session_busy(
+    handles: &crate::runtime_state::RuntimeStateHandles,
+    busy: bool,
+) {
     handles.session().set_busy(busy);
 }
 

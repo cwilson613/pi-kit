@@ -72,6 +72,7 @@ mod observation;
 #[cfg(test)]
 mod recro_coe_integration_tests;
 mod runtime_composition;
+mod runtime_lifecycle_command;
 mod runtime_prompt;
 mod runtime_state;
 mod runtime_turn;
@@ -107,6 +108,7 @@ mod github_copilot;
 mod lifecycle;
 mod r#loop;
 mod managed_agent_supervisor;
+mod model_commands;
 mod model_registry;
 mod mqtt_bridge;
 mod ollama;
@@ -1192,7 +1194,7 @@ fn parse_csv_env(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn resolve_current_model_intent_route(
+pub(crate) async fn resolve_current_model_intent_route(
     route_controller: &std::sync::Arc<route::RouteController>,
     inference_runtime: &crate::inference_runtime::InferenceRuntimeState,
 ) -> Option<route::RouteSnapshot> {
@@ -4528,29 +4530,38 @@ fn build_tui_secret_readiness_snapshot(
             other => other,
         };
 
+        if model_commands::is_model_command(&cmd) {
+            model_commands::handle(
+                cmd,
+                model_commands::ModelCommandContext {
+                    agent: &mut agent,
+                    shared_settings: &shared_settings,
+                    bridge: &bridge,
+                    route_controller: &route_controller,
+                    inference_runtime: &runtime_state.inference_runtime,
+                    bridge_model: &runtime_resources.bridge_model,
+                    events_tx: &events_tx,
+                },
+            )
+            .await;
+            continue;
+        }
+
         match cmd {
             tui::TuiCommand::Quit => break,
             tui::TuiCommand::InstallUpdate { info, args } => {
                 let latest = info.latest.clone();
-                let operation_id = uuid::Uuid::new_v4().to_string();
-                let mut lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
-                    operation_id,
-                    kind: omegon_traits::RuntimeLifecycleKind::UpdateInstall,
-                    phase: omegon_traits::RuntimeLifecyclePhase::Downloading,
-                    message: "Downloading and verifying update".into(),
-                    session_id: Some(agent.session_id.clone()),
-                    target_version: Some(latest.clone()),
-                    reconnect_required: false,
-                };
+                let mut lifecycle = runtime_lifecycle_command::update_download_snapshot(
+                    &agent.session_id,
+                    &latest,
+                );
                 emit_lifecycle(lifecycle.clone());
                 let _ = events_tx.send(AgentEvent::SystemNotification {
                     message: format!("Downloading and verifying Omegon v{latest}…"),
                 });
                 match crate::update::download_and_replace(&info).await {
                     Ok(binary) => {
-                        lifecycle.phase = omegon_traits::RuntimeLifecyclePhase::Restarting;
-                        lifecycle.message = "Update installed; saving session and restarting".into();
-                        lifecycle.reconnect_required = true;
+                        runtime_lifecycle_command::mark_update_restarting(&mut lifecycle);
                         emit_lifecycle(lifecycle);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
                             message: format!(
@@ -4561,11 +4572,7 @@ fn build_tui_secret_readiness_snapshot(
                         break;
                     }
                     Err(error) => {
-                        lifecycle.phase = omegon_traits::RuntimeLifecyclePhase::Failed;
-                        lifecycle.message = format!(
-                            "Update failed; current version still running: {error}"
-                        );
-                        lifecycle.reconnect_required = false;
+                        runtime_lifecycle_command::mark_update_failed(&mut lifecycle, &error);
                         emit_lifecycle(lifecycle);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
                             message: format!(
@@ -4576,16 +4583,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
             tui::TuiCommand::RestartProcess { binary, args } => {
-                let lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
-                    operation_id: uuid::Uuid::new_v4().to_string(),
-                    kind: omegon_traits::RuntimeLifecycleKind::Restart,
-                    phase: omegon_traits::RuntimeLifecyclePhase::Restarting,
-                    message: "Saving session and restarting".into(),
-                    session_id: Some(agent.session_id.clone()),
-                    target_version: None,
-                    reconnect_required: true,
-                };
-                emit_lifecycle(lifecycle);
+                emit_lifecycle(runtime_lifecycle_command::restart_snapshot(&agent.session_id));
                 restart_request = Some((binary, args));
                 break;
             }
@@ -4869,217 +4867,20 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ModelView { respond_to } => {
-                let response = control_runtime::model_view_response(&shared_settings).await;
-                if let Some(output) = response.output.clone() {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
-            }
-
-            tui::TuiCommand::ModelList { respond_to } => {
-                let response = control_runtime::model_list_response().await;
-                if let Some(output) = response.output.clone() {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
-            }
-
-            tui::TuiCommand::SetModel { model, respond_to } => {
-                let response = control_runtime::set_model_response(
-                    &mut agent,
-                    &shared_settings,
-                    &bridge,
-                    Some(route_controller.clone()),
-                    &model,
+            command if model_commands::is_model_command(&command) => {
+                model_commands::handle(
+                    command,
+                    model_commands::ModelCommandContext {
+                        agent: &mut agent,
+                        shared_settings: &shared_settings,
+                        bridge: &bridge,
+                        route_controller: &route_controller,
+                        inference_runtime: &runtime_state.inference_runtime,
+                        bridge_model: &runtime_resources.bridge_model,
+                        events_tx: &events_tx,
+                    },
                 )
                 .await;
-                if let Some(output) = response.output.clone() {
-                    for line in output.split('\n') {
-                        let _ = events_tx.send(AgentEvent::SystemNotification {
-                            message: line.to_string(),
-                        });
-                    }
-                }
-                if response.accepted {
-                    if let Ok(mut bridge_model) = runtime_resources.bridge_model.lock() {
-                        *bridge_model = None;
-                    }
-                    let snapshot = route_controller.snapshot().await;
-                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
-                    }
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
-            }
-
-            tui::TuiCommand::SetModelGrade { grade, respond_to } => {
-                let response = if let Some(parsed) = crate::route::ModelGrade::parse(&grade) {
-                    let snapshot = route_controller
-                        .set_model_intent(crate::route::ModelIntent::with_grade(parsed))
-                        .await;
-                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
-                    }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
-                    let active = resolved
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.serving_model())
-                        .or_else(|| snapshot.serving_model())
-                        .unwrap_or("disconnected");
-                    omegon_traits::SlashCommandResponse {
-                        accepted: true,
-                        output: Some(format!(
-                            "Model intent updated — {}. Active route: {}",
-                            snapshot.intent.summary(),
-                            active
-                        )),
-                    }
-                } else {
-                    omegon_traits::SlashCommandResponse {
-                        accepted: false,
-                        output: Some(format!(
-                            "Invalid model grade: {grade}. Use F, D, C, B, A, or S. Use /model provider local for local endpoints."
-                        )),
-                    }
-                };
-                if let Some(output) = response.output.clone() {
-                    for line in output.split('\n') {
-                        let _ = events_tx.send(AgentEvent::SystemNotification {
-                            message: line.to_string(),
-                        });
-                    }
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
-            }
-
-            tui::TuiCommand::SetModelProvider { provider, respond_to } => {
-                let response = if let Some(selection) = crate::route::ProviderSelection::parse(&provider) {
-                    let snapshot = route_controller.set_provider_selection(selection).await;
-                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
-                    }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
-                    let active = resolved
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.serving_model())
-                        .or_else(|| snapshot.serving_model())
-                        .unwrap_or("disconnected");
-                    omegon_traits::SlashCommandResponse {
-                        accepted: true,
-                        output: Some(format!(
-                            "Model provider intent updated — {}. Active route: {}",
-                            snapshot.intent.summary(),
-                            active
-                        )),
-                    }
-                } else {
-                    omegon_traits::SlashCommandResponse {
-                        accepted: false,
-                        output: Some("Invalid model provider selector. Use auto, local, upstream, or an endpoint id.".into()),
-                    }
-                };
-                if let Some(output) = response.output.clone() {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
-            }
-
-            tui::TuiCommand::SetModelPolicy { policy, respond_to } => {
-                let response = if let Some(parsed) = crate::route::GradePolicy::parse(&policy) {
-                    let snapshot = route_controller.set_grade_policy(parsed).await;
-                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
-                    }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
-                    let active = resolved
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.serving_model())
-                        .or_else(|| snapshot.serving_model())
-                        .unwrap_or("disconnected");
-                    omegon_traits::SlashCommandResponse {
-                        accepted: true,
-                        output: Some(format!(
-                            "Model policy intent updated — {}. Active route: {}",
-                            snapshot.intent.summary(),
-                            active
-                        )),
-                    }
-                } else {
-                    omegon_traits::SlashCommandResponse {
-                        accepted: false,
-                        output: Some("Invalid model policy. Use exact, minimum, or nearest.".into()),
-                    }
-                };
-                if let Some(output) = response.output.clone() {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
-            }
-
-            tui::TuiCommand::ModelUnpin { respond_to } => {
-                let snapshot = route_controller.clear_exact_model_override().await;
-                if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
-                }
-                let output = format!(
-                    "Model exact override cleared — {}. Active route unchanged: {}",
-                    snapshot.intent.summary(),
-                    snapshot.serving_model().unwrap_or("disconnected")
-                );
-                let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: output.clone(),
-                });
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: true,
-                        output: Some(output),
-                    });
-                }
-            }
-
-            tui::TuiCommand::SetThinking { level, respond_to } => {
-                let response =
-                    control_runtime::set_thinking_response(&shared_settings, &agent.cwd, level).await;
-                if let Some(output) = response.output.clone() {
-                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                }
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
             }
 
             tui::TuiCommand::Compact => {
@@ -6083,17 +5884,16 @@ fn build_tui_secret_readiness_snapshot(
                                     active_worker_command::ActiveWorkerCommand::Cancel { submitted_by, via } => {
                                         handle_runtime_cancel_command(&mut runtime, &shared_cancel, &events_tx, submitted_by, via);
                                     }
-                                    active_worker_command::ActiveWorkerCommand::Quit => {
-                                        quit_after_turn = true;
-                                        cancel_shared_turn(&shared_cancel);
-                                    }
-                                    active_worker_command::ActiveWorkerCommand::InstallUpdate { info, args } => {
-                                        deferred_commands.push_back(tui::TuiCommand::InstallUpdate { info, args });
-                                        quit_after_turn = true;
-                                        cancel_shared_turn(&shared_cancel);
-                                    }
-                                    active_worker_command::ActiveWorkerCommand::RestartProcess { binary, args } => {
-                                        restart_request = Some((binary, args));
+                                    active_worker_command::ActiveWorkerCommand::Lifecycle(command) => {
+                                        match command.for_active_worker() {
+                                            runtime_lifecycle_command::ActiveWorkerLifecycleDisposition::QuitAfterTurn => {}
+                                            runtime_lifecycle_command::ActiveWorkerLifecycleDisposition::DeferInstallUpdate { info, args } => {
+                                                deferred_commands.push_back(tui::TuiCommand::InstallUpdate { info, args });
+                                            }
+                                            runtime_lifecycle_command::ActiveWorkerLifecycleDisposition::RestartAfterTurn { binary, args } => {
+                                                restart_request = Some((binary, args));
+                                            }
+                                        }
                                         quit_after_turn = true;
                                         cancel_shared_turn(&shared_cancel);
                                     }
@@ -6128,6 +5928,7 @@ fn build_tui_secret_readiness_snapshot(
                     RuntimePromptSubmission::from_voice(text, metadata).into_tui(),
                 ));
             }
+            _ => unreachable!("model commands were handled before idle dispatch"),
         }
     }
 

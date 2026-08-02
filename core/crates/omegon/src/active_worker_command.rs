@@ -1,3 +1,4 @@
+use crate::runtime_lifecycle_command;
 use crate::runtime_prompt::RuntimePromptSubmission;
 use crate::tui;
 
@@ -8,15 +9,7 @@ pub(crate) enum ActiveWorkerCommand {
         submitted_by: String,
         via: &'static str,
     },
-    Quit,
-    InstallUpdate {
-        info: crate::update::UpdateInfo,
-        args: Vec<String>,
-    },
-    RestartProcess {
-        binary: std::path::PathBuf,
-        args: Vec<String>,
-    },
+    Lifecycle(runtime_lifecycle_command::RuntimeLifecycleCommand),
     Defer(tui::TuiCommand),
 }
 
@@ -31,14 +24,14 @@ pub(crate) fn classify(command: tui::TuiCommand) -> ActiveWorkerCommand {
         tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
             ActiveWorkerCommand::Cancel { submitted_by, via }
         }
-        tui::TuiCommand::Quit => ActiveWorkerCommand::Quit,
-        tui::TuiCommand::InstallUpdate { info, args } => {
-            ActiveWorkerCommand::InstallUpdate { info, args }
-        }
-        tui::TuiCommand::RestartProcess { binary, args } => {
-            ActiveWorkerCommand::RestartProcess { binary, args }
-        }
-        other => ActiveWorkerCommand::Defer(other),
+        other => match runtime_lifecycle_command::classify(other) {
+            runtime_lifecycle_command::LifecycleClassification::Lifecycle(command) => {
+                ActiveWorkerCommand::Lifecycle(command)
+            }
+            runtime_lifecycle_command::LifecycleClassification::Other(other) => {
+                ActiveWorkerCommand::Defer(other)
+            }
+        },
     }
 }
 
@@ -70,7 +63,9 @@ mod tests {
     fn active_worker_control_commands_have_typed_dispositions() {
         assert!(matches!(
             classify(tui::TuiCommand::Quit),
-            ActiveWorkerCommand::Quit
+            ActiveWorkerCommand::Lifecycle(
+                runtime_lifecycle_command::RuntimeLifecycleCommand::Quit
+            )
         ));
         assert!(matches!(
             classify(tui::TuiCommand::CancelActiveTurn {

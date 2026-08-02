@@ -1,3 +1,8 @@
+use std::collections::VecDeque;
+
+use omegon_traits::AgentEvent;
+use tokio::sync::broadcast;
+
 use crate::post_worker_completion::PostWorkerCompletionPolicy;
 use crate::runtime_lifecycle_command;
 use crate::runtime_prompt::RuntimePromptSubmission;
@@ -61,6 +66,41 @@ pub(crate) fn apply(
     }
 }
 
+pub(crate) fn interpret(
+    effect: ActiveWorkerCommandEffect,
+    runtime: &mut InteractiveRuntimeSupervisor,
+    shared_cancel: &tui::SharedCancel,
+    events_tx: &broadcast::Sender<AgentEvent>,
+    deferred_commands: &mut VecDeque<tui::TuiCommand>,
+) {
+    match effect {
+        ActiveWorkerCommandEffect::PromptQueued {
+            prompt_id,
+            requests_voice_close,
+        } => {
+            crate::emit_runtime_queue_notification(runtime, events_tx, prompt_id);
+            if requests_voice_close {
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: "Voice requested shutdown after this prompt; it will be stopped when the active turn completes.".to_string(),
+                });
+            }
+        }
+        ActiveWorkerCommandEffect::Cancel { submitted_by, via } => {
+            crate::handle_runtime_cancel_command(
+                runtime,
+                shared_cancel,
+                events_tx,
+                submitted_by,
+                via,
+            );
+        }
+        ActiveWorkerCommandEffect::LifecycleRequested => {
+            crate::cancel_shared_turn(shared_cancel);
+        }
+        ActiveWorkerCommandEffect::Deferred(command) => deferred_commands.push_back(command),
+    }
+}
+
 pub(crate) fn classify(command: tui::TuiCommand) -> ActiveWorkerCommand {
     match command {
         tui::TuiCommand::SubmitPrompt(prompt) => {
@@ -105,6 +145,47 @@ mod tests {
             crate::runtime_prompt::QueueMode::UntilReady
         );
         assert!(prompt.metadata.voice.is_some());
+    }
+
+    #[test]
+    fn interpret_deferred_effect_appends_command() {
+        let mut runtime = InteractiveRuntimeSupervisor::default();
+        let shared_cancel = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (events_tx, _) = broadcast::channel(8);
+        let mut deferred = VecDeque::new();
+
+        interpret(
+            ActiveWorkerCommandEffect::Deferred(tui::TuiCommand::Compact),
+            &mut runtime,
+            &shared_cancel,
+            &events_tx,
+            &mut deferred,
+        );
+
+        assert!(matches!(
+            deferred.pop_front(),
+            Some(tui::TuiCommand::Compact)
+        ));
+    }
+
+    #[test]
+    fn interpret_lifecycle_effect_cancels_active_token() {
+        let mut runtime = InteractiveRuntimeSupervisor::default();
+        let token = tokio_util::sync::CancellationToken::new();
+        let shared_cancel = std::sync::Arc::new(std::sync::Mutex::new(Some(token.clone())));
+        let (events_tx, _) = broadcast::channel(8);
+        let mut deferred = VecDeque::new();
+
+        interpret(
+            ActiveWorkerCommandEffect::LifecycleRequested,
+            &mut runtime,
+            &shared_cancel,
+            &events_tx,
+            &mut deferred,
+        );
+
+        assert!(token.is_cancelled());
+        assert!(deferred.is_empty());
     }
 
     #[test]

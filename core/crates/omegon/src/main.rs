@@ -5865,27 +5865,18 @@ fn build_tui_secret_readiness_snapshot(
                                     continue;
                                 };
 
-                                match active_worker_command::apply(
+                                let effect = active_worker_command::apply(
                                     active_worker_command::classify(cmd),
                                     &mut runtime,
                                     &mut completion_policy,
-                                ) {
-                                    active_worker_command::ActiveWorkerCommandEffect::PromptQueued { prompt_id, requests_voice_close } => {
-                                        emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
-                                        if requests_voice_close {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification {
-                                                message: "Voice requested shutdown after this prompt; it will be stopped when the active turn completes.".to_string(),
-                                            });
-                                        }
-                                    }
-                                    active_worker_command::ActiveWorkerCommandEffect::Cancel { submitted_by, via } => {
-                                        handle_runtime_cancel_command(&mut runtime, &shared_cancel, &events_tx, submitted_by, via);
-                                    }
-                                    active_worker_command::ActiveWorkerCommandEffect::LifecycleRequested => {
-                                        cancel_shared_turn(&shared_cancel);
-                                    }
-                                    active_worker_command::ActiveWorkerCommandEffect::Deferred(other) => deferred_commands.push_back(other),
-                                }
+                                );
+                                active_worker_command::interpret(
+                                    effect,
+                                    &mut runtime,
+                                    &shared_cancel,
+                                    &events_tx,
+                                    &mut deferred_commands,
+                                );
                             }
                         }
                     }

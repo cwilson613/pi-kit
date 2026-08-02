@@ -119,6 +119,7 @@ mod pkl_modules;
 mod plan;
 mod plugin_cli;
 mod plugins;
+mod post_worker_completion;
 mod project_rules;
 mod prompt;
 mod prompts;
@@ -5787,7 +5788,8 @@ fn build_tui_secret_readiness_snapshot(
                     mark_interactive_session_busy(&agent.dashboard_handles, true);
                     lifecycle.transition("worker_spawned", runtime.queue_depth(), &events_tx);
 
-                    let mut quit_after_turn = false;
+                    let mut completion_policy =
+                        post_worker_completion::PostWorkerCompletionPolicy::default();
                     let state_for_turn = runtime_state;
                     let execution = InteractiveTurnExecution::new(
                         &runtime_resources,
@@ -5857,12 +5859,8 @@ fn build_tui_secret_readiness_snapshot(
                             }
                             maybe_cmd = command_rx.recv() => {
                                 let Some(cmd) = maybe_cmd else {
-                                    quit_after_turn = true;
-                                    if let Ok(guard) = shared_cancel.lock()
-                                        && let Some(ref cancel) = *guard
-                                    {
-                                        cancel.cancel();
-                                    }
+                                    completion_policy.request_channel_close();
+                                    cancel_shared_turn(&shared_cancel);
                                     continue;
                                 };
 
@@ -5885,16 +5883,7 @@ fn build_tui_secret_readiness_snapshot(
                                         handle_runtime_cancel_command(&mut runtime, &shared_cancel, &events_tx, submitted_by, via);
                                     }
                                     active_worker_command::ActiveWorkerCommand::Lifecycle(command) => {
-                                        match command.for_active_worker() {
-                                            runtime_lifecycle_command::ActiveWorkerLifecycleDisposition::QuitAfterTurn => {}
-                                            runtime_lifecycle_command::ActiveWorkerLifecycleDisposition::DeferInstallUpdate { info, args } => {
-                                                deferred_commands.push_back(tui::TuiCommand::InstallUpdate { info, args });
-                                            }
-                                            runtime_lifecycle_command::ActiveWorkerLifecycleDisposition::RestartAfterTurn { binary, args } => {
-                                                restart_request = Some((binary, args));
-                                            }
-                                        }
-                                        quit_after_turn = true;
+                                        completion_policy.request_lifecycle(command.for_active_worker());
                                         cancel_shared_turn(&shared_cancel);
                                     }
                                     active_worker_command::ActiveWorkerCommand::Defer(other) => deferred_commands.push_back(other),
@@ -5909,8 +5898,19 @@ fn build_tui_secret_readiness_snapshot(
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
                     mark_interactive_session_busy(&agent.dashboard_handles, runtime.is_busy());
 
-                    if quit_after_turn {
-                        break 'interactive;
+                    match completion_policy.finish() {
+                        post_worker_completion::PostWorkerDisposition::PromoteNext => {}
+                        post_worker_completion::PostWorkerDisposition::DispatchDeferred(command) => {
+                            deferred_commands.push_front(command);
+                            break;
+                        }
+                        post_worker_completion::PostWorkerDisposition::Exit => {
+                            break 'interactive;
+                        }
+                        post_worker_completion::PostWorkerDisposition::ExitForRestart { binary, args } => {
+                            restart_request = Some((binary, args));
+                            break 'interactive;
+                        }
                     }
                 }
             }

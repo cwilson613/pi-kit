@@ -93,6 +93,7 @@ pub mod tool_schema;
 mod update;
 mod upstream_errors;
 mod usage;
+mod value_context;
 mod workspace;
 
 mod agent_manifest;

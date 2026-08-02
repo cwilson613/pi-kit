@@ -34,6 +34,7 @@ mod acp_worker;
 mod active_worker_command;
 mod active_worker_completion;
 mod active_worker_run;
+mod active_worker_startup;
 mod active_worker_wait;
 mod auth;
 mod autonomy;
@@ -5778,18 +5779,14 @@ fn build_tui_secret_readiness_snapshot(
 
                 let mut next_active = first_active;
                 while let Some(active) = next_active.take().or_else(|| runtime.maybe_start_next_turn()) {
-                    emit_runtime_queue_snapshot(&runtime, &events_tx);
-                    let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
-                    lifecycle.transition("promoted", runtime.queue_depth(), &events_tx);
-                    let _ = events_tx.send(AgentEvent::RuntimePromptStarted {
-                        runtime_turn_id: active.runtime_turn_id,
-                        text: active.prompt.text.clone(),
-                        image_paths: active.prompt.image_paths.clone(),
-                    });
+                    let mut lifecycle = active_worker_startup::prepare(
+                        &active,
+                        &runtime,
+                        &events_tx,
+                        &agent.dashboard_handles,
+                    );
                     stop_voice_session_if_requested(&active.prompt, &runtime_state.bus, &events_tx)
                         .await;
-                    mark_interactive_session_busy(&agent.dashboard_handles, true);
-                    lifecycle.transition("worker_spawned", runtime.queue_depth(), &events_tx);
 
                     let state_for_turn = runtime_state;
                     let execution = InteractiveTurnExecution::new(

@@ -1,8 +1,9 @@
+use crate::runtime_prompt::RuntimePromptSubmission;
 use crate::tui;
 
 #[derive(Debug)]
 pub(crate) enum ActiveWorkerCommand {
-    Submit(tui::PromptSubmission),
+    Submit(RuntimePromptSubmission),
     Cancel {
         submitted_by: String,
         via: &'static str,
@@ -20,8 +21,13 @@ pub(crate) enum ActiveWorkerCommand {
 }
 
 pub(crate) fn classify(command: tui::TuiCommand) -> ActiveWorkerCommand {
-    match normalize(command) {
-        tui::TuiCommand::SubmitPrompt(prompt) => ActiveWorkerCommand::Submit(prompt),
+    match command {
+        tui::TuiCommand::SubmitPrompt(prompt) => {
+            ActiveWorkerCommand::Submit(RuntimePromptSubmission::from_tui(prompt))
+        }
+        tui::TuiCommand::VoicePrompt { text, metadata } => {
+            ActiveWorkerCommand::Submit(RuntimePromptSubmission::from_voice(text, metadata))
+        }
         tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
             ActiveWorkerCommand::Cancel { submitted_by, via }
         }
@@ -33,24 +39,6 @@ pub(crate) fn classify(command: tui::TuiCommand) -> ActiveWorkerCommand {
             ActiveWorkerCommand::RestartProcess { binary, args }
         }
         other => ActiveWorkerCommand::Defer(other),
-    }
-}
-
-fn normalize(command: tui::TuiCommand) -> tui::TuiCommand {
-    match command {
-        tui::TuiCommand::VoicePrompt { text, metadata } => {
-            tui::TuiCommand::SubmitPrompt(tui::PromptSubmission {
-                text: format!("🎙 {}", text.trim()),
-                image_paths: Vec::new(),
-                submitted_by: "voice".to_string(),
-                via: "voice",
-                queue_mode: tui::PromptQueueMode::UntilReady,
-                metadata: tui::PromptMetadata {
-                    voice: Some(metadata),
-                },
-            })
-        }
-        other => other,
     }
 }
 
@@ -69,9 +57,12 @@ mod tests {
             panic!("voice prompt should become a submission");
         };
         assert_eq!(prompt.text, "🎙 status report");
-        assert_eq!(prompt.submitted_by, "voice");
-        assert_eq!(prompt.via, "voice");
-        assert_eq!(prompt.queue_mode, tui::PromptQueueMode::UntilReady);
+        assert_eq!(prompt.actor.label, "voice");
+        assert_eq!(prompt.via, crate::runtime_prompt::ControlSurface::Internal);
+        assert_eq!(
+            prompt.queue_mode,
+            crate::runtime_prompt::QueueMode::UntilReady
+        );
         assert!(prompt.metadata.voice.is_some());
     }
 

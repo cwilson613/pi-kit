@@ -5945,33 +5945,34 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SubmitPrompt(prompt) => {
-                let actor = RuntimeActor {
-                    kind: runtime_actor_kind_from_via(prompt.via),
-                    label: prompt.submitted_by.clone(),
-                };
-                let via = control_surface_from_via(prompt.via);
-
-                let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
-                        crate::tui::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
-                        crate::tui::PromptQueueMode::UntilReady => QueueMode::UntilReady,
-                        crate::tui::PromptQueueMode::Immediate => QueueMode::Immediate,
-                    }));
-
-                if runtime.is_busy() {
-                    tracing::info!(
+            tui::TuiCommand::SubmitPrompt(submission) => {
+                let submission = RuntimePromptSubmission::from_tui(submission);
+                let submitted_by = submission.actor.display_label().to_string();
+                let via = submission.via.label();
+                let first_active = match runtime.submit(submission) {
+                    RuntimePromptSubmissionOutcome::Queued {
                         prompt_id,
-                        queue_depth = runtime.queue_depth(),
-                        active_turn_id = runtime.turns.current().map(|active| active.runtime_turn_id),
-                        submitted_by = prompt.submitted_by,
-                        via = prompt.via,
-                        "prompt queued behind active interactive turn"
-                    );
-                    emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
-                    continue;
-                }
+                        queue_depth,
+                    } => {
+                        tracing::info!(
+                            prompt_id,
+                            queue_depth,
+                            active_turn_id = runtime
+                                .turns
+                                .current()
+                                .map(|active| active.runtime_turn_id),
+                            submitted_by,
+                            via,
+                            "prompt queued behind active interactive turn"
+                        );
+                        emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
+                        continue;
+                    }
+                    RuntimePromptSubmissionOutcome::Promoted { active, .. } => Some(*active),
+                };
 
-                while let Some(active) = runtime.maybe_start_next_turn() {
+                let mut next_active = first_active;
+                while let Some(active) = next_active.take().or_else(|| runtime.maybe_start_next_turn()) {
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
                     let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
                     lifecycle.transition("promoted", runtime.queue_depth(), &events_tx);
@@ -6066,16 +6067,10 @@ fn build_tui_secret_readiness_snapshot(
 
                                 match active_worker_command::classify(cmd) {
                                     active_worker_command::ActiveWorkerCommand::Submit(prompt) => {
-                                        let actor = RuntimeActor {
-                                            kind: runtime_actor_kind_from_via(prompt.via),
-                                            label: prompt.submitted_by.clone(),
+                                        let prompt_id = match runtime.submit(prompt) {
+                                            RuntimePromptSubmissionOutcome::Queued { prompt_id, .. } => prompt_id,
+                                            RuntimePromptSubmissionOutcome::Promoted { .. } => unreachable!("active worker submission cannot promote"),
                                         };
-                                        let via = control_surface_from_via(prompt.via);
-                                        let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
-                                            crate::tui::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
-                                            crate::tui::PromptQueueMode::UntilReady => QueueMode::UntilReady,
-                                            crate::tui::PromptQueueMode::Immediate => QueueMode::Immediate,
-                                        }));
                                         emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
                                         if let Some(queued_prompt) = runtime.queue.get(prompt_id)
                                             && queued_prompt.requests_voice_close()
@@ -6128,7 +6123,11 @@ fn build_tui_secret_readiness_snapshot(
                     via,
                 );
             }
-            tui::TuiCommand::VoicePrompt { .. } => unreachable!("VoicePrompt is normalized above"),
+            tui::TuiCommand::VoicePrompt { text, metadata } => {
+                deferred_commands.push_front(tui::TuiCommand::SubmitPrompt(
+                    RuntimePromptSubmission::from_voice(text, metadata).into_tui(),
+                ));
+            }
         }
     }
 
@@ -6385,27 +6384,9 @@ fn provider_status_hint(provider: &str) -> &'static str {
 }
 
 use runtime_prompt::{
-    ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimeActorKind,
+    ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimePromptSubmission,
 };
 use runtime_turn::{ActiveTurnMeta, ActiveTurnState, RuntimeTurnLifecycle};
-
-fn runtime_actor_kind_from_via(via: &str) -> RuntimeActorKind {
-    match via {
-        "tui" => RuntimeActorKind::Tui,
-        "ipc" => RuntimeActorKind::IpcClient,
-        "websocket" => RuntimeActorKind::WebClient,
-        _ => RuntimeActorKind::System,
-    }
-}
-
-fn control_surface_from_via(via: &str) -> ControlSurface {
-    match via {
-        "tui" => ControlSurface::Tui,
-        "ipc" => ControlSurface::Ipc,
-        "websocket" => ControlSurface::WebSocket,
-        _ => ControlSurface::Internal,
-    }
-}
 
 fn cancel_shared_turn(shared_cancel: &tui::SharedCancel) {
     if let Ok(guard) = shared_cancel.lock()
@@ -6422,11 +6403,8 @@ fn handle_runtime_cancel_command(
     submitted_by: String,
     via: &'static str,
 ) {
-    let actor = RuntimeActor {
-        kind: runtime_actor_kind_from_via(via),
-        label: submitted_by,
-    };
-    let surface = control_surface_from_via(via);
+    let actor = RuntimeActor::from_submission(submitted_by, via);
+    let surface = ControlSurface::from_via(via);
     let active = runtime.request_cancel(actor, surface);
     if active.is_none() {
         let _ = events_tx.send(AgentEvent::SystemNotification {
@@ -6630,6 +6608,18 @@ async fn stop_voice_session_if_requested(
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum RuntimePromptSubmissionOutcome {
+    Queued {
+        prompt_id: u64,
+        queue_depth: usize,
+    },
+    Promoted {
+        prompt_id: u64,
+        active: Box<ActiveTurnMeta>,
+    },
+}
+
 #[derive(Debug, Default)]
 struct InteractiveRuntimeSupervisor {
     queue: PromptQueue,
@@ -6637,6 +6627,31 @@ struct InteractiveRuntimeSupervisor {
 }
 
 impl InteractiveRuntimeSupervisor {
+    fn submit(&mut self, prompt: RuntimePromptSubmission) -> RuntimePromptSubmissionOutcome {
+        let prompt_id = self.enqueue_prompt(
+            prompt.text,
+            prompt.image_paths,
+            prompt.actor,
+            prompt.via,
+            prompt.metadata,
+            Some(prompt.queue_mode),
+        );
+        if self.is_busy() {
+            RuntimePromptSubmissionOutcome::Queued {
+                prompt_id,
+                queue_depth: self.queue_depth(),
+            }
+        } else {
+            RuntimePromptSubmissionOutcome::Promoted {
+                prompt_id,
+                active: Box::new(
+                    self.maybe_start_next_turn()
+                        .expect("newly queued prompt is promotable while idle"),
+                ),
+            }
+        }
+    }
+
     fn enqueue_prompt(
         &mut self,
         text: String,
@@ -9444,6 +9459,7 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::conversation::ConversationState;
+    use crate::runtime_prompt::RuntimeActorKind;
     use crate::runtime_turn::ActiveTurnPhase;
     use clap::CommandFactory;
     use tempfile::tempdir;
@@ -9928,6 +9944,47 @@ mod tests {
         assert!(!conversation.rollback_last_user_if_text("different prompt"));
 
         assert_eq!(conversation.last_user_prompt(), "keep me");
+    }
+
+    #[test]
+    fn runtime_supervisor_submission_outcomes_distinguish_queue_and_promotion() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        let first = RuntimePromptSubmission {
+            text: "first".into(),
+            image_paths: vec![],
+            actor: RuntimeActor::tui(),
+            via: ControlSurface::Tui,
+            metadata: tui::PromptMetadata::default(),
+            queue_mode: QueueMode::UntilReady,
+        };
+        let RuntimePromptSubmissionOutcome::Promoted { prompt_id, active } =
+            supervisor.submit(first)
+        else {
+            panic!("idle submission should promote immediately");
+        };
+        assert_eq!(prompt_id, 1);
+        assert_eq!(active.prompt.text, "first");
+
+        let second = RuntimePromptSubmission {
+            text: "second".into(),
+            image_paths: vec![],
+            actor: RuntimeActor::auspex(),
+            via: ControlSurface::Ipc,
+            metadata: tui::PromptMetadata::default(),
+            queue_mode: QueueMode::InterruptAfterTurn,
+        };
+        assert_eq!(
+            supervisor.submit(second),
+            RuntimePromptSubmissionOutcome::Queued {
+                prompt_id: 2,
+                queue_depth: 1,
+            }
+        );
+        assert_eq!(supervisor.queue.get(2).unwrap().text, "second");
+        assert_eq!(
+            supervisor.queue.get(2).unwrap().queue_mode,
+            QueueMode::InterruptAfterTurn
+        );
     }
 
     #[test]

@@ -25,6 +25,20 @@ pub(crate) struct RuntimeActor {
 }
 
 impl RuntimeActor {
+    pub(crate) fn from_submission(submitted_by: String, via: &str) -> Self {
+        let kind = match via {
+            "tui" => RuntimeActorKind::Tui,
+            "auspex" => RuntimeActorKind::Auspex,
+            "ipc" => RuntimeActorKind::IpcClient,
+            "websocket" | "http-event-ingress" => RuntimeActorKind::WebClient,
+            _ => RuntimeActorKind::System,
+        };
+        Self {
+            kind,
+            label: submitted_by,
+        }
+    }
+
     pub(crate) fn display_label(&self) -> &str {
         if self.label.is_empty() {
             match self.kind {
@@ -65,6 +79,16 @@ pub(crate) enum ControlSurface {
 }
 
 impl ControlSurface {
+    pub(crate) fn from_via(via: &str) -> Self {
+        match via {
+            "tui" => Self::Tui,
+            "ipc" | "auspex" => Self::Ipc,
+            "websocket" => Self::WebSocket,
+            "http-event-ingress" => Self::HttpEventIngress,
+            _ => Self::Internal,
+        }
+    }
+
     pub(crate) fn label(&self) -> &'static str {
         match self {
             ControlSurface::Tui => "tui",
@@ -85,6 +109,14 @@ pub(crate) enum QueueMode {
 }
 
 impl QueueMode {
+    pub(crate) fn from_tui(mode: tui::PromptQueueMode) -> Self {
+        match mode {
+            tui::PromptQueueMode::InterruptAfterTurn => Self::InterruptAfterTurn,
+            tui::PromptQueueMode::UntilReady => Self::UntilReady,
+            tui::PromptQueueMode::Immediate => Self::Immediate,
+        }
+    }
+
     fn preview_label(self) -> &'static str {
         match self {
             Self::InterruptAfterTurn => "after-turn",
@@ -98,6 +130,57 @@ impl QueueMode {
             Self::InterruptAfterTurn => "interrupt_after_turn",
             Self::UntilReady => "until_ready",
             Self::Immediate => "immediate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimePromptSubmission {
+    pub(crate) text: String,
+    pub(crate) image_paths: Vec<PathBuf>,
+    pub(crate) actor: RuntimeActor,
+    pub(crate) via: ControlSurface,
+    pub(crate) metadata: tui::PromptMetadata,
+    pub(crate) queue_mode: QueueMode,
+}
+
+impl RuntimePromptSubmission {
+    pub(crate) fn from_tui(submission: tui::PromptSubmission) -> Self {
+        Self {
+            text: submission.text,
+            image_paths: submission.image_paths,
+            actor: RuntimeActor::from_submission(submission.submitted_by, submission.via),
+            via: ControlSurface::from_via(submission.via),
+            metadata: submission.metadata,
+            queue_mode: QueueMode::from_tui(submission.queue_mode),
+        }
+    }
+
+    pub(crate) fn from_voice(text: String, metadata: tui::VoicePromptMetadata) -> Self {
+        Self::from_tui(tui::PromptSubmission {
+            text: format!("🎙 {}", text.trim()),
+            image_paths: Vec::new(),
+            submitted_by: "voice".to_string(),
+            via: "voice",
+            queue_mode: tui::PromptQueueMode::UntilReady,
+            metadata: tui::PromptMetadata {
+                voice: Some(metadata),
+            },
+        })
+    }
+
+    pub(crate) fn into_tui(self) -> tui::PromptSubmission {
+        tui::PromptSubmission {
+            text: self.text,
+            image_paths: self.image_paths,
+            submitted_by: self.actor.label,
+            via: self.via.label(),
+            queue_mode: match self.queue_mode {
+                QueueMode::InterruptAfterTurn => tui::PromptQueueMode::InterruptAfterTurn,
+                QueueMode::UntilReady => tui::PromptQueueMode::UntilReady,
+                QueueMode::Immediate => tui::PromptQueueMode::Immediate,
+            },
+            metadata: self.metadata,
         }
     }
 }

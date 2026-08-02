@@ -31,6 +31,7 @@ pub(crate) static GLOBAL_TEST_ENV_LOCK: std::sync::LazyLock<&'static tokio::sync
 mod acp;
 mod acp_plan_tasks;
 mod acp_worker;
+mod active_worker_command;
 mod auth;
 mod autonomy;
 mod backend;
@@ -6063,20 +6064,8 @@ fn build_tui_secret_readiness_snapshot(
                                     continue;
                                 };
 
-                                let cmd = match cmd {
-                                    tui::TuiCommand::VoicePrompt { text, metadata } => tui::TuiCommand::SubmitPrompt(tui::PromptSubmission {
-                                        text: format!("🎙 {}", text.trim()),
-                                        image_paths: Vec::new(),
-                                        submitted_by: "voice".to_string(),
-                                        via: "voice",
-                                        queue_mode: tui::PromptQueueMode::UntilReady,
-                                        metadata: tui::PromptMetadata { voice: Some(metadata) },
-                                    }),
-                                    other => other,
-                                };
-
-                                match cmd {
-                                    tui::TuiCommand::SubmitPrompt(prompt) => {
+                                match active_worker_command::classify(cmd) {
+                                    active_worker_command::ActiveWorkerCommand::Submit(prompt) => {
                                         let actor = RuntimeActor {
                                             kind: runtime_actor_kind_from_via(prompt.via),
                                             label: prompt.submitted_by.clone(),
@@ -6096,44 +6085,24 @@ fn build_tui_secret_readiness_snapshot(
                                             });
                                         }
                                     }
-                                    tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
-                                        handle_runtime_cancel_command(
-                                            &mut runtime,
-                                            &shared_cancel,
-                                            &events_tx,
-                                            submitted_by,
-                                            via,
-                                        );
+                                    active_worker_command::ActiveWorkerCommand::Cancel { submitted_by, via } => {
+                                        handle_runtime_cancel_command(&mut runtime, &shared_cancel, &events_tx, submitted_by, via);
                                     }
-                                    tui::TuiCommand::Quit => {
+                                    active_worker_command::ActiveWorkerCommand::Quit => {
                                         quit_after_turn = true;
-                                        if let Ok(guard) = shared_cancel.lock()
-                                            && let Some(ref cancel) = *guard
-                                        {
-                                            cancel.cancel();
-                                        }
+                                        cancel_shared_turn(&shared_cancel);
                                     }
-                                    tui::TuiCommand::InstallUpdate { info, args } => {
-                                        deferred_commands.push_back(
-                                            tui::TuiCommand::InstallUpdate { info, args },
-                                        );
+                                    active_worker_command::ActiveWorkerCommand::InstallUpdate { info, args } => {
+                                        deferred_commands.push_back(tui::TuiCommand::InstallUpdate { info, args });
                                         quit_after_turn = true;
-                                        if let Ok(guard) = shared_cancel.lock()
-                                            && let Some(ref cancel) = *guard
-                                        {
-                                            cancel.cancel();
-                                        }
+                                        cancel_shared_turn(&shared_cancel);
                                     }
-                                    tui::TuiCommand::RestartProcess { binary, args } => {
+                                    active_worker_command::ActiveWorkerCommand::RestartProcess { binary, args } => {
                                         restart_request = Some((binary, args));
                                         quit_after_turn = true;
-                                        if let Ok(guard) = shared_cancel.lock()
-                                            && let Some(ref cancel) = *guard
-                                        {
-                                            cancel.cancel();
-                                        }
+                                        cancel_shared_turn(&shared_cancel);
                                     }
-                                    other => deferred_commands.push_back(other),
+                                    active_worker_command::ActiveWorkerCommand::Defer(other) => deferred_commands.push_back(other),
                                 }
                             }
                         }
@@ -6438,6 +6407,14 @@ fn control_surface_from_via(via: &str) -> ControlSurface {
     }
 }
 
+fn cancel_shared_turn(shared_cancel: &tui::SharedCancel) {
+    if let Ok(guard) = shared_cancel.lock()
+        && let Some(ref cancel) = *guard
+    {
+        cancel.cancel();
+    }
+}
+
 fn handle_runtime_cancel_command(
     runtime: &mut InteractiveRuntimeSupervisor,
     shared_cancel: &tui::SharedCancel,
@@ -6456,11 +6433,7 @@ fn handle_runtime_cancel_command(
             message: "Cancel requested, but no active turn is running.".to_string(),
         });
     }
-    if let Ok(guard) = shared_cancel.lock()
-        && let Some(ref cancel) = *guard
-    {
-        cancel.cancel();
-    }
+    cancel_shared_turn(shared_cancel);
 }
 
 fn emit_runtime_queue_notification(

@@ -1,6 +1,8 @@
+use crate::post_worker_completion::PostWorkerCompletionPolicy;
 use crate::runtime_lifecycle_command;
 use crate::runtime_prompt::RuntimePromptSubmission;
 use crate::tui;
+use crate::{InteractiveRuntimeSupervisor, RuntimePromptSubmissionOutcome};
 
 #[derive(Debug)]
 pub(crate) enum ActiveWorkerCommand {
@@ -11,6 +13,52 @@ pub(crate) enum ActiveWorkerCommand {
     },
     Lifecycle(runtime_lifecycle_command::RuntimeLifecycleCommand),
     Defer(tui::TuiCommand),
+}
+
+#[derive(Debug)]
+pub(crate) enum ActiveWorkerCommandEffect {
+    PromptQueued {
+        prompt_id: u64,
+        requests_voice_close: bool,
+    },
+    Cancel {
+        submitted_by: String,
+        via: &'static str,
+    },
+    LifecycleRequested,
+    Deferred(tui::TuiCommand),
+}
+
+pub(crate) fn apply(
+    command: ActiveWorkerCommand,
+    runtime: &mut InteractiveRuntimeSupervisor,
+    completion_policy: &mut PostWorkerCompletionPolicy,
+) -> ActiveWorkerCommandEffect {
+    match command {
+        ActiveWorkerCommand::Submit(prompt) => {
+            let prompt_id = match runtime.submit(prompt) {
+                RuntimePromptSubmissionOutcome::Queued { prompt_id, .. } => prompt_id,
+                RuntimePromptSubmissionOutcome::Promoted { .. } => {
+                    unreachable!("active worker submission cannot promote")
+                }
+            };
+            ActiveWorkerCommandEffect::PromptQueued {
+                prompt_id,
+                requests_voice_close: runtime
+                    .queue
+                    .get(prompt_id)
+                    .is_some_and(|prompt| prompt.requests_voice_close()),
+            }
+        }
+        ActiveWorkerCommand::Cancel { submitted_by, via } => {
+            ActiveWorkerCommandEffect::Cancel { submitted_by, via }
+        }
+        ActiveWorkerCommand::Lifecycle(command) => {
+            completion_policy.request_lifecycle(command.for_active_worker());
+            ActiveWorkerCommandEffect::LifecycleRequested
+        }
+        ActiveWorkerCommand::Defer(command) => ActiveWorkerCommandEffect::Deferred(command),
+    }
 }
 
 pub(crate) fn classify(command: tui::TuiCommand) -> ActiveWorkerCommand {
@@ -57,6 +105,59 @@ mod tests {
             crate::runtime_prompt::QueueMode::UntilReady
         );
         assert!(prompt.metadata.voice.is_some());
+    }
+
+    #[test]
+    fn apply_submission_returns_queue_effect_and_voice_close_policy() {
+        let mut runtime = InteractiveRuntimeSupervisor::default();
+        runtime.submit(RuntimePromptSubmission::from_tui(tui::PromptSubmission {
+            text: "active".into(),
+            image_paths: Vec::new(),
+            submitted_by: "operator".into(),
+            via: "tui",
+            queue_mode: tui::PromptQueueMode::UntilReady,
+            metadata: tui::PromptMetadata::default(),
+        }));
+        let mut completion = PostWorkerCompletionPolicy::default();
+        let effect = apply(
+            classify(tui::TuiCommand::VoicePrompt {
+                text: "shutdown".into(),
+                metadata: tui::VoicePromptMetadata {
+                    close_session_requested: Some(true),
+                    radio_cue: Some("over_and_out".into()),
+                    ..Default::default()
+                },
+            }),
+            &mut runtime,
+            &mut completion,
+        );
+        assert!(matches!(
+            effect,
+            ActiveWorkerCommandEffect::PromptQueued {
+                prompt_id: 2,
+                requests_voice_close: true
+            }
+        ));
+        assert_eq!(runtime.queue_depth(), 1);
+    }
+
+    #[test]
+    fn apply_lifecycle_updates_completion_policy_and_requests_cancellation() {
+        let mut runtime = InteractiveRuntimeSupervisor::default();
+        let mut completion = PostWorkerCompletionPolicy::default();
+        let effect = apply(
+            classify(tui::TuiCommand::Quit),
+            &mut runtime,
+            &mut completion,
+        );
+        assert!(matches!(
+            effect,
+            ActiveWorkerCommandEffect::LifecycleRequested
+        ));
+        assert!(matches!(
+            completion.finish(),
+            crate::post_worker_completion::PostWorkerDisposition::Exit
+        ));
     }
 
     #[test]

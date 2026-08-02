@@ -20,7 +20,7 @@ impl App {
     pub(super) fn handle_slash_command(
         &mut self,
         text: &str,
-        tx: &mpsc::Sender<TuiCommand>,
+        tx: &OperatorCommandTx,
     ) -> SlashResult {
         let trimmed = text.trim();
         if !trimmed.starts_with('/') {
@@ -215,11 +215,16 @@ Scroll transcript:
                     // No args → open interactive selector
                     self.open_thinking_selector();
                     SlashResult::Handled
-                } else if let Some(CanonicalSlashCommand::ThinkingView) =
+                } else if let Some(command @ CanonicalSlashCommand::ThinkingView) =
                     canonical_slash_command("think", args)
                 {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(&command)
+                    else {
+                        return SlashResult::Display("Thinking status is unavailable".into());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::ThinkingView,
+                        request,
                         respond_to: None,
                     });
                     SlashResult::Handled
@@ -244,7 +249,7 @@ Scroll transcript:
                     SlashResult::Handled
                 } else if let Some(command) = canonical_slash_command("profile", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -261,7 +266,7 @@ Scroll transcript:
             "permissions" | "permission" | "trust" => {
                 if let Some(command) = canonical_slash_command(cmd, args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -280,7 +285,7 @@ Scroll transcript:
             "automation" | "autonomy" => {
                 if let Some(command) = canonical_slash_command(cmd, args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -305,7 +310,7 @@ Scroll transcript:
                             Err(message) => SlashResult::Display(message),
                         },
                         CanonicalSlashCommand::SkillsHelp => {
-                            SlashResult::Display(crate::control_runtime::skills_help_text().into())
+                            SlashResult::Display(crate::operator_commands::skills_help_text().into())
                         }
                         CanonicalSlashCommand::SkillsReload => {
                             let result = self.refresh_runtime_substrate();
@@ -370,7 +375,7 @@ Scroll transcript:
                         }
                         other => {
                             if let Some(request) =
-                                crate::control_runtime::control_request_from_slash(&other)
+                                crate::operator_commands::control_request_from_slash_command(&other)
                             {
                                 let _ = tx.try_send(TuiCommand::ExecuteControl {
                                     request,
@@ -434,7 +439,7 @@ Scroll transcript:
                             )),
                         }
                     } else if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -458,7 +463,7 @@ Scroll transcript:
             "catalog" => {
                 if let Some(command) = canonical_slash_command("catalog", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -476,7 +481,7 @@ Scroll transcript:
             "plugin" => {
                 if let Some(command) = canonical_slash_command("plugin", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -500,7 +505,7 @@ Scroll transcript:
             "armory" => {
                 if let Some(command) = canonical_slash_command("armory", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -551,7 +556,7 @@ Scroll transcript:
                             )),
                         }
                     } else if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -574,7 +579,7 @@ Scroll transcript:
                 }
                 if let Some(command) = canonical_slash_command("stats", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -633,7 +638,7 @@ Scroll transcript:
             "status" => {
                 if let Some(command) = canonical_slash_command("status", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -653,72 +658,12 @@ Scroll transcript:
                     self.open_workspace_kind_selector();
                     SlashResult::Handled
                 } else {
-                    let request = if let Some(command) = canonical_slash_command("workspace", args)
-                    {
-                        match command {
-                            CanonicalSlashCommand::WorkspaceStatusView => {
-                                crate::control_runtime::ControlRequest::WorkspaceStatusView
-                            }
-                            CanonicalSlashCommand::WorkspaceListView => {
-                                crate::control_runtime::ControlRequest::WorkspaceListView
-                            }
-                            CanonicalSlashCommand::WorkspaceNew(label) => {
-                                crate::control_runtime::ControlRequest::WorkspaceNew {
-                                    label: label.clone(),
-                                }
-                            }
-                            CanonicalSlashCommand::WorkspaceDestroy(target) => {
-                                crate::control_runtime::ControlRequest::WorkspaceDestroy {
-                                    target: target.clone(),
-                                }
-                            }
-                            CanonicalSlashCommand::WorkspaceAdopt => {
-                                crate::control_runtime::ControlRequest::WorkspaceAdopt
-                            }
-                            CanonicalSlashCommand::WorkspaceRelease => {
-                                crate::control_runtime::ControlRequest::WorkspaceRelease
-                            }
-                            CanonicalSlashCommand::WorkspaceArchive => {
-                                crate::control_runtime::ControlRequest::WorkspaceArchive
-                            }
-                            CanonicalSlashCommand::WorkspacePrune => {
-                                crate::control_runtime::ControlRequest::WorkspacePrune
-                            }
-                            CanonicalSlashCommand::WorkspaceBindMilestone(milestone_id) => {
-                                crate::control_runtime::ControlRequest::WorkspaceBindMilestone {
-                                    milestone_id: milestone_id.clone(),
-                                }
-                            }
-                            CanonicalSlashCommand::WorkspaceBindNode(design_node_id) => {
-                                crate::control_runtime::ControlRequest::WorkspaceBindNode {
-                                    design_node_id: design_node_id.clone(),
-                                }
-                            }
-                            CanonicalSlashCommand::WorkspaceBindClear => {
-                                crate::control_runtime::ControlRequest::WorkspaceBindClear
-                            }
-                            CanonicalSlashCommand::WorkspaceRoleView => {
-                                crate::control_runtime::ControlRequest::WorkspaceRoleView
-                            }
-                            CanonicalSlashCommand::WorkspaceRoleSet(role) => {
-                                crate::control_runtime::ControlRequest::WorkspaceRoleSet { role }
-                            }
-                            CanonicalSlashCommand::WorkspaceRoleClear => {
-                                crate::control_runtime::ControlRequest::WorkspaceRoleClear
-                            }
-                            CanonicalSlashCommand::WorkspaceKindView => {
-                                crate::control_runtime::ControlRequest::WorkspaceKindView
-                            }
-                            CanonicalSlashCommand::WorkspaceKindSet(kind) => {
-                                crate::control_runtime::ControlRequest::WorkspaceKindSet { kind }
-                            }
-                            CanonicalSlashCommand::WorkspaceKindClear => {
-                                crate::control_runtime::ControlRequest::WorkspaceKindClear
-                            }
-                            _ => crate::control_runtime::ControlRequest::WorkspaceStatusView,
-                        }
-                    } else {
-                        crate::control_runtime::ControlRequest::WorkspaceStatusView
+                    let command = canonical_slash_command("workspace", args)
+                        .unwrap_or(CanonicalSlashCommand::WorkspaceStatusView);
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(&command)
+                    else {
+                        return SlashResult::Display("Usage: /workspace [status|list|new|destroy|adopt|release|archive|prune|bind|role|kind]".into());
                     };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -750,7 +695,7 @@ Scroll transcript:
                 } else if args == "list" {
                     if let Some(command) = canonical_slash_command("persona", args)
                         && let Some(request) =
-                            crate::control_runtime::control_request_from_slash(&command)
+                            crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -880,21 +825,29 @@ Scroll transcript:
                         Some(CanonicalSlashCommand::ContextRequest { kind, query }) => {
                             let display =
                                 format!("Requesting mediated context pack for {kind}: {query}");
+                            let Some(request) =
+                                crate::operator_commands::control_request_from_slash_command(
+                                    &CanonicalSlashCommand::ContextRequest { kind, query },
+                                )
+                            else {
+                                return SlashResult::Display("Context request is unavailable".into());
+                            };
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
-                                request: crate::control_runtime::ControlRequest::ContextRequest {
-                                    kind,
-                                    query,
-                                },
+                                request,
                                 respond_to: None,
                             });
                             SlashResult::Display(display)
                         }
                         Some(CanonicalSlashCommand::ContextRequestJson(raw)) => {
+                            let Some(request) =
+                                crate::operator_commands::control_request_from_slash_command(
+                                    &CanonicalSlashCommand::ContextRequestJson(raw),
+                                )
+                            else {
+                                return SlashResult::Display("Context JSON request is unavailable".into());
+                            };
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
-                                request:
-                                    crate::control_runtime::ControlRequest::ContextRequestJson {
-                                        raw,
-                                    },
+                                request,
                                 respond_to: None,
                             });
                             SlashResult::Display(
@@ -902,10 +855,15 @@ Scroll transcript:
                             )
                         }
                         Some(CanonicalSlashCommand::SetContextClass(class)) => {
+                            let Some(request) =
+                                crate::operator_commands::control_request_from_slash_command(
+                                    &CanonicalSlashCommand::SetContextClass(class),
+                                )
+                            else {
+                                return SlashResult::Display("Context class update is unavailable".into());
+                            };
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
-                                request: crate::control_runtime::ControlRequest::SetContextClass {
-                                    class,
-                                },
+                                request,
                                 respond_to: None,
                             });
                             SlashResult::Display(format!("Context Policy → {}", class.label()))
@@ -932,10 +890,13 @@ Scroll transcript:
                 if id.is_empty() {
                     SlashResult::Display("Usage: /resume <session-id>".into())
                 } else {
+                    let Some(request) = crate::operator_commands::control_request_from_slash_command(
+                        &CanonicalSlashCommand::ResumeSession(id.to_string()),
+                    ) else {
+                        return SlashResult::Display("Resume is unavailable".into());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::ResumeSession {
-                            id: id.to_string(),
-                        },
+                        request,
                         respond_to: None,
                     });
                     SlashResult::Display(format!("Resuming session {id}…"))
@@ -949,10 +910,13 @@ Scroll transcript:
                 } else {
                     match canonical_slash_command("sessions", args) {
                     Some(CanonicalSlashCommand::ResumeSession(id)) => {
+                        let Some(request) = crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::ResumeSession(id.clone()),
+                        ) else {
+                            return SlashResult::Display("Resume is unavailable".into());
+                        };
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
-                            request: crate::control_runtime::ControlRequest::ResumeSession {
-                                id: id.clone(),
-                            },
+                            request,
                             respond_to: None,
                         });
                         SlashResult::Display(format!("Resuming session {id}…"))
@@ -1255,7 +1219,7 @@ Scroll transcript:
             "delegate" | "subagent" => {
                 if let Some(command) = canonical_slash_command(cmd, args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -1450,7 +1414,7 @@ Scroll transcript:
             "tree" => {
                 if let Some(command) = canonical_slash_command("tree", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -1494,7 +1458,7 @@ Scroll transcript:
                     SlashResult::Handled
                 } else if let Some(command) = canonical_slash_command("vault", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -1576,7 +1540,7 @@ Scroll transcript:
                 }
                 if let Some(command) = canonical_slash_command("note", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -1592,7 +1556,7 @@ Scroll transcript:
             "notes" => {
                 if let Some(command) = canonical_slash_command("notes", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -1608,7 +1572,7 @@ Scroll transcript:
             "checkin" => {
                 if let Some(command) = canonical_slash_command("checkin", args)
                     && let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                 {
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
                         request,
@@ -1625,16 +1589,26 @@ Scroll transcript:
             // ── Aliases ─────────────────────────────────────────────
             "shackle" => {
                 self.apply_ui_preset(UiSurfaces::lean());
+                let Some(request) = crate::operator_commands::control_request_from_slash_command(
+                    &CanonicalSlashCommand::SetRuntimeMode { slim: true },
+                ) else {
+                    return SlashResult::Display("Runtime mode update is unavailable".into());
+                };
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim: true },
+                    request,
                     respond_to: None,
                 });
                 SlashResult::Display("Shackled: om mode active.".into())
             }
             "unshackle" => {
                 self.apply_ui_preset(UiSurfaces::full());
+                let Some(request) = crate::operator_commands::control_request_from_slash_command(
+                    &CanonicalSlashCommand::SetRuntimeMode { slim: false },
+                ) else {
+                    return SlashResult::Display("Runtime mode update is unavailable".into());
+                };
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim: false },
+                    request,
                     respond_to: None,
                 });
                 SlashResult::Display("Unshackled: omegon mode active.".into())
@@ -1647,10 +1621,13 @@ Scroll transcript:
                 } else {
                     UiSurfaces::full()
                 });
+                let Some(request) = crate::operator_commands::control_request_from_slash_command(
+                    &CanonicalSlashCommand::SetRuntimeMode { slim: target_slim },
+                ) else {
+                    return SlashResult::Display("Runtime mode update is unavailable".into());
+                };
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SetRuntimeMode {
-                        slim: target_slim,
-                    },
+                    request,
                     respond_to: None,
                 });
                 SlashResult::Display(if target_slim {
@@ -1798,7 +1775,7 @@ Scroll transcript:
                 }
                 if let Some(command) = canonical_slash_command("cleave", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,

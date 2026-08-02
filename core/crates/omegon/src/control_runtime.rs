@@ -349,6 +349,9 @@ pub fn control_request_from_slash(
             ControlRequest::PermissionTrustRemove { path: path.clone() }
         }
         crate::runtime_commands::CanonicalSlashCommand::StatusView => ControlRequest::StatusView,
+        crate::runtime_commands::CanonicalSlashCommand::SetRuntimeMode { slim } => {
+            ControlRequest::SetRuntimeMode { slim: *slim }
+        }
         crate::runtime_commands::CanonicalSlashCommand::RuntimeInventoryStatus => {
             ControlRequest::RuntimeInventoryStatus
         }
@@ -413,6 +416,11 @@ pub fn control_request_from_slash(
         }
         crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindClear => {
             ControlRequest::WorkspaceKindClear
+        }
+        crate::runtime_commands::CanonicalSlashCommand::SetMaxTurns { max_turns } => {
+            ControlRequest::SetMaxTurns {
+                max_turns: *max_turns,
+            }
         }
         crate::runtime_commands::CanonicalSlashCommand::SessionStatsView => {
             ControlRequest::SessionStatsView

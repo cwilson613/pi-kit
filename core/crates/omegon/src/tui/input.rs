@@ -15,7 +15,7 @@ impl App {
     pub(super) async fn handle_terminal_event(
         &mut self,
         input_event: Event,
-        command_tx: &mpsc::Sender<TuiCommand>,
+        command_tx: &OperatorCommandTx,
     ) -> InputDisposition {
         match input_event {
             // ── Mouse scroll ────────────────────────────────────────
@@ -667,13 +667,23 @@ impl App {
                                     // value is submitted; do not leave it obscuring the TUI.
                                     self.operator_events.clear();
                                     // Store in secrets engine
+                                    let Some(request) =
+                                        crate::operator_commands::control_request_from_slash_command(
+                                            &CanonicalSlashCommand::SecretsSet {
+                                                name: label.clone(),
+                                                value: value.clone(),
+                                            },
+                                        )
+                                    else {
+                                        self.show_command_toast(CommandToast::new(
+                                            "Secret update is unavailable",
+                                            CommandSeverity::Error,
+                                        ));
+                                        return InputDisposition::Continue;
+                                    };
                                     let _ = command_tx
                                         .send(TuiCommand::ExecuteControl {
-                                            request:
-                                                crate::control_runtime::ControlRequest::SecretsSet {
-                                                    name: label.clone(),
-                                                    value: value.clone(),
-                                                },
+                                            request,
                                             respond_to: None,
                                         })
                                         .await;

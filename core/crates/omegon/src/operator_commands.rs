@@ -1,7 +1,28 @@
-//! Surface-neutral operator command channel contracts.
+//! Surface-neutral operator interface boundary.
+//!
+//! Operator-facing frontends such as the native TUI, web sockets, IPC, and
+//! extension ingress couple to this module rather than to coordinator/backend
+//! internals. The boundary is intentionally a semantic command envelope plus a
+//! Tokio channel handle: renderers may be tightly coupled to this contract, but
+//! must not reach behind it to drive runtime state directly.
 
 use crate::runtime_commands::CanonicalSlashCommand;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Producer-side handle for the operator interface boundary.
+///
+/// UI/front-end code should accept this alias instead of spelling a raw
+/// `mpsc::Sender<OperatorCommand>` or importing backend coordinator types. That
+/// keeps the dependency direction explicit: frontends emit semantic operator
+/// commands; the runtime coordinator owns interpretation and side effects.
+pub type OperatorCommandTx = mpsc::Sender<OperatorCommand>;
+
+/// Boundary-owned control request type exposed to interface adapters.
+///
+/// Frontends and their tests should couple to this alias rather than importing
+/// backend control runtime internals directly.
+pub type InterfaceControlRequest = crate::control_runtime::ControlRequest;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VoicePromptMetadata {
@@ -181,6 +202,29 @@ pub enum OperatorCommand {
     AuthUnlock {
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
     },
+}
+
+/// Resolve a canonical slash command into the runtime control request envelope.
+///
+/// Frontend adapters should call this interface-boundary helper instead of
+/// importing `control_runtime` directly. The coordinator remains the owner of
+/// executing the returned request.
+pub fn control_request_from_slash_command(
+    command: &CanonicalSlashCommand,
+) -> Option<crate::control_runtime::ControlRequest> {
+    crate::control_runtime::control_request_from_slash(command)
+}
+
+/// Build the shared skills menu projection behind the operator interface boundary.
+pub fn skills_menu_projection(
+    entries: &[crate::skills::SkillEntry],
+) -> crate::surfaces::menu::MenuProjection {
+    crate::control_runtime::skills_menu_projection(entries)
+}
+
+/// Return renderer-neutral skills command help text.
+pub fn skills_help_text() -> &'static str {
+    crate::control_runtime::skills_help_text()
 }
 
 /// Shared cancellation slot written by operator surfaces and read by the agent loop.

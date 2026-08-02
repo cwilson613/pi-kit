@@ -119,6 +119,28 @@ clippy-changed *args:
 check:
     {{cargo}} check --workspace
 
+# Fast compile boundary for the Omegon daemon/headless matrix.
+# Use this first while working on TUI extraction: it skips the default TUI feature graph.
+check-omegon-headless:
+    {{cargo}} check -p omegon --locked --no-default-features
+
+# Compatibility compile boundary for the default interactive artifact.
+check-omegon-default:
+    {{cargo}} check -p omegon --locked
+
+# Run the two Omegon compile matrices in the signal-first order for TUI extraction.
+check-omegon-matrix:
+    just check-omegon-headless
+    just check-omegon-default
+
+# Assert the no-TUI feature matrix has not retained terminal presentation crates.
+check-omegon-headless-deps:
+    python3 scripts/check_headless_dependency_boundary.py
+
+# Assert the UI InterfaceBoundary contract remains renderer-neutral and backend-internal-free.
+check-interface-boundary:
+    python3 scripts/check_interface_boundary_contract.py
+
 # Full local lint gate for the entire workspace, including examples and tests.
 lint:
     {{cargo}} fmt --all --check

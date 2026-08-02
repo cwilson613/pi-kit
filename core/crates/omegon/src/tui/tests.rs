@@ -107,12 +107,12 @@ fn full_test_app() -> App {
     app
 }
 
-pub(super) fn test_tx() -> mpsc::Sender<TuiCommand> {
+pub(super) fn test_tx() -> OperatorCommandTx {
     let (tx, _rx) = mpsc::channel(16);
     tx
 }
 
-fn test_tx_with_rx() -> (mpsc::Sender<TuiCommand>, mpsc::Receiver<TuiCommand>) {
+fn test_tx_with_rx() -> (OperatorCommandTx, mpsc::Receiver<TuiCommand>) {
     mpsc::channel(16)
 }
 
@@ -3114,7 +3114,7 @@ fn slash_shackle_switches_to_slim_runtime_profile() {
 
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim },
+            request: crate::operator_commands::InterfaceControlRequest::SetRuntimeMode { slim },
             ..
         } => assert!(slim),
         other => panic!("expected SetRuntimeMode slim control request, got {other:?}"),
@@ -3136,7 +3136,7 @@ fn slash_unshackle_switches_to_full_runtime_profile() {
 
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim },
+            request: crate::operator_commands::InterfaceControlRequest::SetRuntimeMode { slim },
             ..
         } => assert!(!slim),
         other => panic!("expected SetRuntimeMode full control request, got {other:?}"),
@@ -3153,7 +3153,7 @@ fn slash_warp_toggles_between_slim_and_full_modes() {
     assert!(app.ui_surfaces.is_compact());
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim },
+            request: crate::operator_commands::InterfaceControlRequest::SetRuntimeMode { slim },
             ..
         } => assert!(slim),
         other => panic!("expected SetRuntimeMode slim control request, got {other:?}"),
@@ -3168,7 +3168,7 @@ fn slash_warp_toggles_between_slim_and_full_modes() {
     assert!(!app.ui_surfaces.is_compact());
     match rx.try_recv().expect("queued control") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SetRuntimeMode { slim },
+            request: crate::operator_commands::InterfaceControlRequest::SetRuntimeMode { slim },
             ..
         } => assert!(!slim),
         other => panic!("expected SetRuntimeMode full control request, got {other:?}"),
@@ -3799,7 +3799,7 @@ fn slash_workspace_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceStatusView,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceStatusView,
             ..
         } => {}
         other => panic!("expected ExecuteControl, got {other:?}"),
@@ -3816,7 +3816,7 @@ fn slash_workspace_list_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceListView,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceListView,
             ..
         } => {}
         other => panic!("expected workspace list request, got {other:?}"),
@@ -3833,7 +3833,7 @@ fn slash_workspace_adopt_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceAdopt,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceAdopt,
             ..
         } => {}
         other => panic!("expected workspace adopt request, got {other:?}"),
@@ -3850,7 +3850,7 @@ fn slash_workspace_release_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceRelease,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceRelease,
             ..
         } => {}
         other => panic!("expected workspace release request, got {other:?}"),
@@ -3867,7 +3867,7 @@ fn slash_workspace_archive_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceArchive,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceArchive,
             ..
         } => {}
         other => panic!("expected workspace archive request, got {other:?}"),
@@ -3884,7 +3884,7 @@ fn slash_workspace_prune_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspacePrune,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspacePrune,
             ..
         } => {}
         other => panic!("expected workspace prune request, got {other:?}"),
@@ -3901,7 +3901,7 @@ fn slash_workspace_destroy_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceDestroy { target },
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceDestroy { target },
             ..
         } if target == "docs-pass" => {}
         other => panic!("expected workspace destroy request, got {other:?}"),
@@ -3918,7 +3918,7 @@ fn slash_workspace_new_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceNew { ref label },
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceNew { ref label },
             ..
         } if label == "docs-pass" => {}
         other => panic!("expected workspace new request, got {other:?}"),
@@ -3958,7 +3958,7 @@ fn workspace_role_selector_confirm_enqueues_execute_control() {
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
             request:
-                crate::control_runtime::ControlRequest::WorkspaceRoleSet {
+                crate::operator_commands::InterfaceControlRequest::WorkspaceRoleSet {
                     role: crate::workspace::types::WorkspaceRole::Release,
                 },
             ..
@@ -3977,7 +3977,7 @@ fn slash_workspace_role_clear_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceRoleClear,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceRoleClear,
             ..
         } => {}
         other => panic!("expected workspace role clear request, got {other:?}"),
@@ -3994,7 +3994,10 @@ fn slash_workspace_bind_milestone_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceBindMilestone { milestone_id },
+            request:
+                crate::operator_commands::InterfaceControlRequest::WorkspaceBindMilestone {
+                    milestone_id,
+                },
             ..
         } if milestone_id == "0.15.10" => {}
         other => panic!("expected workspace bind milestone request, got {other:?}"),
@@ -4011,7 +4014,8 @@ fn slash_workspace_bind_node_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceBindNode { design_node_id },
+            request:
+                crate::operator_commands::InterfaceControlRequest::WorkspaceBindNode { design_node_id },
             ..
         } if design_node_id == "workspace-ownership-model" => {}
         other => panic!("expected workspace bind node request, got {other:?}"),
@@ -4028,7 +4032,7 @@ fn slash_workspace_bind_clear_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceBindClear,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceBindClear,
             ..
         } => {}
         other => panic!("expected workspace bind clear request, got {other:?}"),
@@ -4068,7 +4072,7 @@ fn workspace_kind_selector_confirm_enqueues_execute_control() {
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
             request:
-                crate::control_runtime::ControlRequest::WorkspaceKindSet {
+                crate::operator_commands::InterfaceControlRequest::WorkspaceKindSet {
                     kind: crate::workspace::types::WorkspaceKind::Vault,
                 },
             ..
@@ -4087,7 +4091,7 @@ fn slash_workspace_kind_clear_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::WorkspaceKindClear,
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceKindClear,
             ..
         } => {}
         other => panic!("expected workspace kind clear request, got {other:?}"),
@@ -4115,7 +4119,7 @@ fn slash_stats_returns_session_info() {
         TuiCommand::ExecuteControl { request, .. } => {
             assert!(matches!(
                 request,
-                crate::control_runtime::ControlRequest::SessionStatsView
+                crate::operator_commands::InterfaceControlRequest::SessionStatsView
             ));
         }
         other => panic!("expected ExecuteControl, got {other:?}"),
@@ -4132,7 +4136,7 @@ fn slash_status_returns_bootstrap_panel() {
         TuiCommand::ExecuteControl { request, .. } => {
             assert!(matches!(
                 request,
-                crate::control_runtime::ControlRequest::StatusView
+                crate::operator_commands::InterfaceControlRequest::StatusView
             ));
         }
         other => panic!("expected ExecuteControl, got {other:?}"),
@@ -4193,7 +4197,7 @@ fn context_selector_confirm_enqueues_set_context_class() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SetContextClass { class },
+            request: crate::operator_commands::InterfaceControlRequest::SetContextClass { class },
             ..
         } => assert_eq!(class, crate::settings::ContextClass::Extended),
         other => panic!("expected set-context-class control request, got: {other:?}"),
@@ -4378,7 +4382,7 @@ fn slash_resume_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ResumeSession { id },
+            request: crate::operator_commands::InterfaceControlRequest::ResumeSession { id },
             ..
         } => assert_eq!(id, "2026-session"),
         other => panic!("expected resume session request, got {other:?}"),
@@ -4489,7 +4493,7 @@ fn slash_sessions_resume_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ResumeSession { id },
+            request: crate::operator_commands::InterfaceControlRequest::ResumeSession { id },
             ..
         } => assert_eq!(id, "abc123"),
         other => panic!("expected resume session request, got {other:?}"),
@@ -5487,7 +5491,7 @@ fn slash_plugin_list_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::PluginView,
+            request: crate::operator_commands::InterfaceControlRequest::PluginView,
             ..
         } => {}
         other => panic!("expected plugin view control request, got: {other:?}"),
@@ -5937,7 +5941,7 @@ fn extension_view_preserves_text_readout() {
     assert!(app.active_menu.is_none());
     match rx.try_recv().expect("extension view command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ExtensionView,
+            request: crate::operator_commands::InterfaceControlRequest::ExtensionView,
             ..
         } => {}
         other => panic!("expected extension view request, got {other:?}"),
@@ -5955,7 +5959,7 @@ fn runtime_inventory_status_queues_shared_control() {
     assert!(matches!(
         rx.try_recv(),
         Ok(TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::RuntimeInventoryStatus,
+            request: crate::operator_commands::InterfaceControlRequest::RuntimeInventoryStatus,
             ..
         })
     ));
@@ -6055,7 +6059,7 @@ fn runtime_refresh_menu_action_requires_confirmation() {
     assert!(matches!(
         rx.try_recv(),
         Ok(TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::RuntimeSubstrateRefresh,
+            request: crate::operator_commands::InterfaceControlRequest::RuntimeSubstrateRefresh,
             ..
         })
     ));
@@ -6174,7 +6178,7 @@ fn extension_refresh_aliases_execute_shared_runtime_refresh() {
         assert!(matches!(
             rx.try_recv(),
             Ok(TuiCommand::ExecuteControl {
-                request: crate::control_runtime::ControlRequest::RuntimeSubstrateRefresh,
+                request: crate::operator_commands::InterfaceControlRequest::RuntimeSubstrateRefresh,
                 ..
             })
         ));
@@ -6337,7 +6341,7 @@ fn secrets_menu_status_row_enqueues_execute_control() {
     ));
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SecretsView,
+            request: crate::operator_commands::InterfaceControlRequest::SecretsView,
             ..
         } => {}
         other => panic!("expected secrets view control request, got: {other:?}"),
@@ -6470,7 +6474,7 @@ fn slash_vault_status_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::VaultStatus,
+            request: crate::operator_commands::InterfaceControlRequest::VaultStatus,
             ..
         } => {}
         other => panic!("expected vault status control request, got: {other:?}"),
@@ -6588,7 +6592,7 @@ fn slash_cleave_status_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::CleaveStatus,
+            request: crate::operator_commands::InterfaceControlRequest::CleaveStatus,
             ..
         } => {}
         other => panic!("expected cleave status control request, got: {other:?}"),
@@ -6605,7 +6609,7 @@ fn slash_delegate_status_enqueues_execute_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::DelegateStatus,
+            request: crate::operator_commands::InterfaceControlRequest::DelegateStatus,
             ..
         } => {}
         other => panic!("expected delegate status control request, got: {other:?}"),
@@ -6622,7 +6626,7 @@ fn slash_subagent_status_alias_enqueues_delegate_status_control() {
 
     match rx.try_recv().expect("queued command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::DelegateStatus,
+            request: crate::operator_commands::InterfaceControlRequest::DelegateStatus,
             ..
         } => {}
         other => panic!("expected delegate status control request, got: {other:?}"),
@@ -9001,7 +9005,7 @@ fn profile_view_still_queues_text_readout_command() {
     assert!(matches!(result, SlashResult::Handled));
     match rx.try_recv().expect("profile view command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ProfileView,
+            request: crate::operator_commands::InterfaceControlRequest::ProfileView,
             ..
         } => {}
         other => panic!("expected profile view request, got {other:?}"),
@@ -9017,7 +9021,7 @@ fn settings_profile_shortcuts_queue_existing_profile_commands() {
     match rx.try_recv().expect("save command") {
         TuiCommand::ExecuteControl {
             request:
-                crate::control_runtime::ControlRequest::ProfileCapture {
+                crate::operator_commands::InterfaceControlRequest::ProfileCapture {
                     target: crate::settings::ProfileSaveTarget::ActiveSource,
                 },
             ..
@@ -9028,7 +9032,7 @@ fn settings_profile_shortcuts_queue_existing_profile_commands() {
     app.queue_settings_profile_apply(&tx);
     match rx.try_recv().expect("apply command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ProfileApply,
+            request: crate::operator_commands::InterfaceControlRequest::ProfileApply,
             ..
         } => {}
         other => panic!("expected profile apply, got {other:?}"),
@@ -9289,7 +9293,7 @@ fn settings_menu_max_turns_row_queues_existing_control_request() {
     assert_eq!(message, "Max turns → 100");
     match rx.try_recv().expect("max turns command") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SetMaxTurns { max_turns },
+            request: crate::operator_commands::InterfaceControlRequest::SetMaxTurns { max_turns },
             ..
         } => assert_eq!(max_turns, 100),
         other => panic!("expected max turns control request, got {other:?}"),
@@ -9463,7 +9467,7 @@ fn secrets_set_recipe_still_queues_control_request() {
     assert!(matches!(result, SlashResult::Handled));
     match rx.try_recv().expect("control request") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::SecretsSet { name, value },
+            request: crate::operator_commands::InterfaceControlRequest::SecretsSet { name, value },
             ..
         } => {
             assert_eq!(name, "API_TOKEN");
@@ -10092,7 +10096,7 @@ fn slash_variables_set_get_delete_queue_control_requests() {
     ));
     match rx.try_recv().expect("set request") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::VariablesSet { name, value },
+            request: crate::operator_commands::InterfaceControlRequest::VariablesSet { name, value },
             ..
         } => {
             assert_eq!(name, "PROJECT_ENV");
@@ -10107,7 +10111,7 @@ fn slash_variables_set_get_delete_queue_control_requests() {
     ));
     match rx.try_recv().expect("get request") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::VariablesGet { name },
+            request: crate::operator_commands::InterfaceControlRequest::VariablesGet { name },
             ..
         } => assert_eq!(name, "PROJECT_ENV"),
         other => panic!("expected variables get request, got {other:?}"),
@@ -10119,7 +10123,7 @@ fn slash_variables_set_get_delete_queue_control_requests() {
     ));
     match rx.try_recv().expect("delete request") {
         TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::VariablesDelete { name },
+            request: crate::operator_commands::InterfaceControlRequest::VariablesDelete { name },
             ..
         } => assert_eq!(name, "PROJECT_ENV"),
         other => panic!("expected variables delete request, got {other:?}"),

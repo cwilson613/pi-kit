@@ -37,6 +37,9 @@ pub enum CanonicalSlashCommand {
     PermissionTrustAdd(String),
     PermissionTrustRemove(String),
     StatusView,
+    SetRuntimeMode {
+        slim: bool,
+    },
     RuntimeInventoryStatus,
     RuntimeSubstrateRefresh,
     RuntimeProcessRestart,
@@ -57,6 +60,9 @@ pub enum CanonicalSlashCommand {
     WorkspaceKindView,
     WorkspaceKindSet(crate::workspace::types::WorkspaceKind),
     WorkspaceKindClear,
+    SetMaxTurns {
+        max_turns: u32,
+    },
     SessionStatsView,
     TreeView {
         args: String,

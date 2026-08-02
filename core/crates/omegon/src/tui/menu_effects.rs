@@ -3,14 +3,12 @@
 //! This is the boundary between renderer-neutral `MenuActionProjection` values
 //! and mutations performed by the native TUI `App` adapter.
 
-use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::surfaces::menu::{MenuActionClosePolicy, MenuActionDisposition, MenuActionProjection};
-
-use tokio::sync::mpsc;
 
 use super::slash_commands::SlashResult;
 use super::{
     App, CommandPanel, CommandPanelReturnTarget, CommandSeverity, CommandToast, MenuInput,
+    OperatorCommandTx,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,7 +222,7 @@ impl App {
     pub(super) fn execute_active_menu_action(
         &mut self,
         action: crate::surfaces::menu::MenuActionProjection,
-        tx: &mpsc::Sender<TuiCommand>,
+        tx: &OperatorCommandTx,
     ) -> SlashResult {
         if action.requires_confirmation {
             if self.pending_menu_confirmation.as_deref() != Some(action.id.as_str()) {

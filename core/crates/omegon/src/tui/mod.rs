@@ -131,7 +131,7 @@ use crossterm::terminal::{
 use omegon_traits::{AgentEvent, PermissionPersistence, PermissionRequestKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 use self::auspex::{
     AuspexCompatibility, AuspexHandoffMode, browser_url as dash_browser_url,
@@ -221,8 +221,8 @@ fn get_rss_mb() -> Option<f64> {
 }
 
 use crate::operator_commands::{
-    OperatorCommand as TuiCommand, PromptMetadata, PromptQueueMode, PromptSubmission, SharedCancel,
-    VoicePromptMetadata,
+    OperatorCommand as TuiCommand, OperatorCommandTx, PromptMetadata, PromptQueueMode,
+    PromptSubmission, SharedCancel, VoicePromptMetadata,
 };
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
@@ -3921,16 +3921,21 @@ impl App {
         if entries.is_empty() {
             return Err("No skills found. Run /skills install to install bundled skills.".into());
         }
-        let projection = crate::control_runtime::skills_menu_projection(&entries);
+        let projection = crate::operator_commands::skills_menu_projection(&entries);
         self.open_menu_projection(projection);
         Ok(())
     }
 
-    fn queue_settings_profile_save(&mut self, tx: &mpsc::Sender<TuiCommand>) {
+    fn queue_settings_profile_save(&mut self, tx: &OperatorCommandTx) {
+        let Some(request) = crate::operator_commands::control_request_from_slash_command(
+            &CanonicalSlashCommand::ProfileCapture(
+                crate::settings::ProfileSaveTarget::ActiveSource,
+            ),
+        ) else {
+            return;
+        };
         let _ = tx.try_send(TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ProfileCapture {
-                target: crate::settings::ProfileSaveTarget::ActiveSource,
-            },
+            request,
             respond_to: None,
         });
         self.show_command_toast(CommandToast::new(
@@ -3939,9 +3944,14 @@ impl App {
         ));
     }
 
-    fn queue_settings_profile_apply(&mut self, tx: &mpsc::Sender<TuiCommand>) {
+    fn queue_settings_profile_apply(&mut self, tx: &OperatorCommandTx) {
+        let Some(request) = crate::operator_commands::control_request_from_slash_command(
+            &CanonicalSlashCommand::ProfileApply,
+        ) else {
+            return;
+        };
         let _ = tx.try_send(TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ProfileApply,
+            request,
             respond_to: None,
         });
         self.show_command_toast(CommandToast::new(
@@ -3971,7 +3981,7 @@ impl App {
     fn execute_active_menu_command(
         &mut self,
         command: String,
-        tx: &mpsc::Sender<TuiCommand>,
+        tx: &OperatorCommandTx,
     ) -> MenuCommandOutcome {
         let slash_result = self.handle_slash_command(&command, tx);
         let secret_input = matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. });
@@ -4606,7 +4616,7 @@ warning: {warning}"
         }
     }
 
-    fn confirm_selector(&mut self, tx: &mpsc::Sender<TuiCommand>) -> Option<String> {
+    fn confirm_selector(&mut self, tx: &OperatorCommandTx) -> Option<String> {
         let sel = self.selector.take()?;
         let kind = self.selector_kind.take()?;
         let value = sel.selected_value().to_string();
@@ -4653,8 +4663,15 @@ warning: {warning}"
             SelectorKind::ContextClass => {
                 let outcome = settings_menu::apply_context_class_selection(&value);
                 if let settings_menu::SettingApplyOutcome::ContextClass(class) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::SetContextClass(class),
+                        )
+                    else {
+                        return Some("Context class update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SetContextClass { class },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -4700,9 +4717,11 @@ warning: {warning}"
             }
             SelectorKind::SecretAction => match value.as_str() {
                 "list" => {
-                    if let Some(request) = crate::control_runtime::control_request_from_slash(
-                        &CanonicalSlashCommand::SecretsView,
-                    ) {
+                    if let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::SecretsView,
+                        )
+                    {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
                             respond_to: None,
@@ -4774,12 +4793,14 @@ warning: {warning}"
                     }
                     "github" => {
                         // GitHub uses dynamic resolution via gh CLI
-                        if let Some(request) = crate::control_runtime::control_request_from_slash(
-                            &CanonicalSlashCommand::SecretsSet {
-                                name: "GITHUB_TOKEN".to_string(),
-                                value: "cmd:gh auth token".to_string(),
-                            },
-                        ) {
+                        if let Some(request) =
+                            crate::operator_commands::control_request_from_slash_command(
+                                &CanonicalSlashCommand::SecretsSet {
+                                    name: "GITHUB_TOKEN".to_string(),
+                                    value: "cmd:gh auth token".to_string(),
+                                },
+                            )
+                        {
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
                                 request,
                                 respond_to: None,
@@ -4835,12 +4856,14 @@ warning: {warning}"
                         })
                     } else {
                         // Dynamic recipe — set immediately
-                        if let Some(request) = crate::control_runtime::control_request_from_slash(
-                            &CanonicalSlashCommand::SecretsSet {
-                                name: value.clone(),
-                                value: suggested.to_string(),
-                            },
-                        ) {
+                        if let Some(request) =
+                            crate::operator_commands::control_request_from_slash_command(
+                                &CanonicalSlashCommand::SecretsSet {
+                                    name: value.clone(),
+                                    value: suggested.to_string(),
+                                },
+                            )
+                        {
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
                                 request,
                                 respond_to: None,
@@ -4868,8 +4891,15 @@ warning: {warning}"
             SelectorKind::WorkspaceRole => {
                 let outcome = settings_menu::apply_workspace_role_selection(&value);
                 if let settings_menu::SettingApplyOutcome::WorkspaceRole(role) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::WorkspaceRoleSet(role),
+                        )
+                    else {
+                        return Some("Workspace role update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::WorkspaceRoleSet { role },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -4878,8 +4908,15 @@ warning: {warning}"
             SelectorKind::WorkspaceKind => {
                 let outcome = settings_menu::apply_workspace_kind_selection(&value);
                 if let settings_menu::SettingApplyOutcome::WorkspaceKind(kind) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::WorkspaceKindSet(kind),
+                        )
+                    else {
+                        return Some("Workspace kind update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::WorkspaceKindSet { kind },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -4888,8 +4925,15 @@ warning: {warning}"
             SelectorKind::MaxTurns => {
                 let outcome = settings_menu::apply_max_turns_selection(&value);
                 if let settings_menu::SettingApplyOutcome::MaxTurns(max_turns) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::SetMaxTurns { max_turns },
+                        )
+                    else {
+                        return Some("Max turns update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SetMaxTurns { max_turns },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -5091,13 +5135,15 @@ warning: {warning}"
     }
 
     /// Handle /variables — non-secret runtime configuration.
-    fn handle_variables(&mut self, args: &str, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_variables(&mut self, args: &str, tx: &OperatorCommandTx) -> SlashResult {
         if args.trim().is_empty() {
             self.open_variables_menu();
             return SlashResult::Handled;
         }
         if let Some(command) = canonical_slash_command("variables", args) {
-            if let Some(request) = crate::control_runtime::control_request_from_slash(&command) {
+            if let Some(request) =
+                crate::operator_commands::control_request_from_slash_command(&command)
+            {
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
                     request,
                     respond_to: None,
@@ -5116,7 +5162,7 @@ warning: {warning}"
     }
 
     /// Handle /secrets — interactive secret management.
-    fn handle_secrets(&mut self, args: &str, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_secrets(&mut self, args: &str, tx: &OperatorCommandTx) -> SlashResult {
         let parts: Vec<&str> = args.splitn(3, ' ').collect();
         match parts.first().copied().unwrap_or("") {
             "" => {
@@ -5155,7 +5201,7 @@ warning: {warning}"
                 if recipe_like {
                     if let Some(command) = canonical_slash_command("secrets", args)
                         && let Some(request) =
-                            crate::control_runtime::control_request_from_slash(&command)
+                            crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -5175,7 +5221,7 @@ warning: {warning}"
             _ => {
                 if let Some(command) = canonical_slash_command("secrets", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -5198,7 +5244,7 @@ warning: {warning}"
     }
 
     fn submit_prompt_from_slash(
-        tx: &mpsc::Sender<TuiCommand>,
+        tx: &OperatorCommandTx,
         prompt: PromptSubmission,
     ) -> Result<(), SlashResult> {
         tx.try_send(TuiCommand::SubmitPrompt(prompt)).map_err(|_| {
@@ -5209,7 +5255,7 @@ warning: {warning}"
     }
 
     /// Handle /tutorial — start, resume, or manage the interactive tutorial overlay.
-    fn handle_tutorial(&mut self, args: &str, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_tutorial(&mut self, args: &str, tx: &OperatorCommandTx) -> SlashResult {
         match args.trim() {
             "status" => {
                 if let Some(ref overlay) = self.tutorial_overlay {
@@ -5356,7 +5402,7 @@ warning: {warning}"
     }
 
     /// Advance to the next tutorial step/lesson.
-    fn handle_tutorial_next(&mut self, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_tutorial_next(&mut self, tx: &OperatorCommandTx) -> SlashResult {
         if let Some(ref mut overlay) = self.tutorial_overlay
             && overlay.active
         {
@@ -5397,7 +5443,7 @@ warning: {warning}"
     }
 
     /// Go back to the previous tutorial step/lesson.
-    fn handle_tutorial_prev(&mut self, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_tutorial_prev(&mut self, tx: &OperatorCommandTx) -> SlashResult {
         if let Some(ref mut overlay) = self.tutorial_overlay
             && overlay.active
         {
@@ -5683,7 +5729,7 @@ warning: {warning}"
         }
     }
 
-    async fn submit_editor_buffer(&mut self, command_tx: &mpsc::Sender<TuiCommand>) {
+    async fn submit_editor_buffer(&mut self, command_tx: &OperatorCommandTx) {
         let (raw_text, attachments) = self.editor.take_submission();
         if raw_text.is_empty() && attachments.is_empty() {
             if self.awaiting_continuation && !self.agent_active {
@@ -5744,7 +5790,7 @@ warning: {warning}"
         &mut self,
         raw_text: String,
         attachments: Vec<std::path::PathBuf>,
-        command_tx: &mpsc::Sender<TuiCommand>,
+        command_tx: &OperatorCommandTx,
     ) {
         let (prefix_mode, text) = Self::detect_prompt_prefix(&raw_text);
         let text = text.trim().to_string();
@@ -5855,7 +5901,7 @@ warning: {warning}"
         &mut self,
         text: String,
         _event_id: String,
-        command_tx: &mpsc::Sender<TuiCommand>,
+        command_tx: &OperatorCommandTx,
     ) {
         let text = text.trim();
         if text.is_empty() {
@@ -7144,7 +7190,7 @@ fn handle_editor_command(args: &str) -> String {
 
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
-    command_tx: mpsc::Sender<TuiCommand>,
+    command_tx: OperatorCommandTx,
     config: TuiConfig,
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
@@ -8845,7 +8891,7 @@ mod slash_command_parsing_tests {
 
         match rx.try_recv() {
             Ok(TuiCommand::ExecuteControl {
-                request: crate::control_runtime::ControlRequest::ArmoryInstall { target },
+                request: crate::operator_commands::InterfaceControlRequest::ArmoryInstall { target },
                 respond_to: None,
             }) => assert_eq!(target, "skills/security"),
             other => panic!("expected ArmoryInstall ExecuteControl, got {other:?}"),

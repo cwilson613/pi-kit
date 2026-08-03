@@ -190,6 +190,7 @@ impl SqliteBackend {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         current_conn.backup(DatabaseName::Main, &preserved_current, None)?;
+        drop(current_conn);
 
         let result = (|| -> anyhow::Result<MemoryRollbackResult> {
             let mut target = Connection::open(source_path)?;
@@ -246,6 +247,7 @@ impl SqliteBackend {
         )?;
         source.busy_timeout(std::time::Duration::from_secs(5))?;
         source.backup(DatabaseName::Main, &plan.backup, None)?;
+        drop(source);
 
         let result = (|| -> anyhow::Result<MemoryMigrationResult> {
             let backup_plan = Self::plan_migration(&plan.backup)?;
@@ -299,6 +301,15 @@ impl SqliteBackend {
             }
             let backend = Self::open(&plan.source)?;
             drop(backend);
+            let admitted = Self::inspect_current(&plan.source)?;
+            Self::verify_migration_counts(plan, &admitted)?;
+            if admitted.source_version != MEMORY_SCHEMA_VERSION {
+                anyhow::bail!(
+                    "memory migration post-open verification expected v{}, found v{}",
+                    MEMORY_SCHEMA_VERSION,
+                    admitted.source_version
+                );
+            }
 
             Ok(MemoryMigrationResult {
                 source: plan.source.clone(),
@@ -434,7 +445,7 @@ impl SqliteBackend {
 
             CREATE TABLE IF NOT EXISTS facts (
                 id                  TEXT PRIMARY KEY,
-                mind                TEXT NOT NULL DEFAULT 'default',
+                mind                TEXT NOT NULL DEFAULT 'primensus',
                 section             TEXT NOT NULL,
                 content             TEXT NOT NULL,
                 status              TEXT NOT NULL DEFAULT 'active',
@@ -503,7 +514,7 @@ impl SqliteBackend {
 
             CREATE TABLE IF NOT EXISTS episodes (
                 id          TEXT PRIMARY KEY,
-                mind        TEXT NOT NULL DEFAULT 'default',
+                mind        TEXT NOT NULL DEFAULT 'primensus',
                 title       TEXT NOT NULL,
                 narrative   TEXT NOT NULL,
                 date        TEXT NOT NULL,

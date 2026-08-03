@@ -5,9 +5,72 @@
 //! Bundled sqlite via rusqlite's `bundled` feature.
 
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
+use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+pub const MEMORY_SCHEMA_VERSION: i64 = 7;
+pub const PRIMENSUS_MIND: &str = "primensus";
+pub const LEGACY_MIND: &str = "legacy";
+pub const LEGACY_MEMORY_SCHEMA_VERSIONS: std::ops::RangeInclusive<i64> = 5..=6;
 use std::sync::Mutex;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryMigrationPlan {
+    pub source: PathBuf,
+    pub source_version: i64,
+    pub target_version: i64,
+    pub fact_count: u64,
+    pub mind_count: u64,
+    pub edge_count: u64,
+    pub episode_count: u64,
+    pub integrity_check: String,
+    pub foreign_key_violations: u64,
+    pub backup: PathBuf,
+    pub statements: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryMigrationResult {
+    pub source: PathBuf,
+    pub backup: PathBuf,
+    pub source_version: i64,
+    pub target_version: i64,
+    pub fact_count: u64,
+    pub mind_count: u64,
+    pub edge_count: u64,
+    pub episode_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryStoreStatus {
+    pub path: PathBuf,
+    pub schema_version: i64,
+    pub fact_count: u64,
+    pub mind_count: u64,
+    pub edge_count: u64,
+    pub episode_count: u64,
+    pub integrity_check: String,
+    pub foreign_key_violations: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryRollbackResult {
+    pub source: PathBuf,
+    pub restored_from: PathBuf,
+    pub preserved_current: PathBuf,
+    pub restored_version: i64,
+    pub fact_count: u64,
+    pub episode_count: u64,
+}
+
+impl MemoryMigrationPlan {
+    pub fn is_applicable(&self) -> bool {
+        self.integrity_check == "ok"
+            && self.foreign_key_violations == 0
+            && LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&self.source_version)
+    }
+}
 
 use crate::backend::*;
 use crate::hash;
@@ -20,13 +83,317 @@ pub struct SqliteBackend {
 }
 
 impl SqliteBackend {
+    pub fn plan_migration(path: &Path) -> anyhow::Result<MemoryMigrationPlan> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let source_version = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?;
+        if !LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&source_version) {
+            anyhow::bail!(
+                "memory migration only supports schema v5 or v6 sources; found v{source_version}"
+            );
+        }
+        let integrity_check: String =
+            conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        let foreign_key_violations = {
+            let mut statement = conn.prepare("PRAGMA foreign_key_check")?;
+            let mut rows = statement.query([])?;
+            let mut count = 0;
+            while rows.next()?.is_some() {
+                count += 1;
+            }
+            count
+        };
+        let count = |table: &str| -> anyhow::Result<u64> {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            Ok(conn.query_row(&sql, [], |row| row.get(0))?)
+        };
+        let backup = path.with_extension(format!("v{source_version}.backup.db"));
+        Ok(MemoryMigrationPlan {
+            source: path.to_path_buf(),
+            source_version,
+            target_version: MEMORY_SCHEMA_VERSION,
+            fact_count: count("facts")?,
+            mind_count: count("minds")?,
+            edge_count: count("edges")?,
+            episode_count: count("episodes")?,
+            integrity_check,
+            foreign_key_violations,
+            backup,
+            statements: vec![
+                format!(
+                    "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES ('{PRIMENSUS_MIND}', 'Authoritative ambient memory', datetime('now'))"
+                ),
+                format!(
+                    "INSERT OR IGNORE INTO minds (name, description, status, created_at) VALUES ('{LEGACY_MIND}', 'Quarantined pre-v7 memory', 'quarantined', datetime('now'))"
+                ),
+                format!("UPDATE facts SET mind = '{LEGACY_MIND}' WHERE mind = 'default'"),
+                format!("UPDATE episodes SET mind = '{LEGACY_MIND}' WHERE mind = 'default'"),
+                format!(
+                    "INSERT INTO schema_version (version, applied_at) VALUES ({MEMORY_SCHEMA_VERSION}, datetime('now'))"
+                ),
+            ],
+        })
+    }
+
+    pub fn status(path: &Path) -> anyhow::Result<MemoryStoreStatus> {
+        let inspected = Self::inspect_current(path)?;
+        Ok(MemoryStoreStatus {
+            path: path.to_path_buf(),
+            schema_version: inspected.source_version,
+            fact_count: inspected.fact_count,
+            mind_count: inspected.mind_count,
+            edge_count: inspected.edge_count,
+            episode_count: inspected.episode_count,
+            integrity_check: inspected.integrity_check,
+            foreign_key_violations: inspected.foreign_key_violations,
+        })
+    }
+
+    pub fn rollback_migration(
+        source_path: &Path,
+        backup_path: &Path,
+    ) -> anyhow::Result<MemoryRollbackResult> {
+        if source_path == backup_path {
+            anyhow::bail!("memory rollback backup path must differ from source");
+        }
+        let current = Self::inspect_current(source_path)?;
+        if current.source_version != MEMORY_SCHEMA_VERSION {
+            anyhow::bail!(
+                "memory rollback requires a v{} source; found v{}",
+                MEMORY_SCHEMA_VERSION,
+                current.source_version
+            );
+        }
+        let backup = Self::inspect_current(backup_path)?;
+        if !LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&backup.source_version) {
+            anyhow::bail!(
+                "memory rollback backup must be schema v5 or v6; found v{}",
+                backup.source_version
+            );
+        }
+        Self::verify_migration_counts(&current, &backup)?;
+
+        let preserved_current =
+            source_path.with_extension(format!("v{}.rollback-source.db", current.source_version));
+        if preserved_current.exists() {
+            anyhow::bail!(
+                "memory rollback preservation path already exists at {}; refusing to overwrite it",
+                preserved_current.display()
+            );
+        }
+
+        let current_conn = Connection::open_with_flags(
+            source_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        current_conn.backup(DatabaseName::Main, &preserved_current, None)?;
+
+        let result = (|| -> anyhow::Result<MemoryRollbackResult> {
+            let mut target = Connection::open(source_path)?;
+            target.busy_timeout(std::time::Duration::from_secs(5))?;
+            target.restore(
+                DatabaseName::Main,
+                backup_path,
+                None::<fn(rusqlite::backup::Progress)>,
+            )?;
+            drop(target);
+
+            let restored = Self::inspect_current(source_path)?;
+            Self::verify_migration_counts(&backup, &restored)?;
+            if restored.source_version != backup.source_version {
+                anyhow::bail!(
+                    "memory rollback verification expected v{}, found v{}",
+                    backup.source_version,
+                    restored.source_version
+                );
+            }
+            Ok(MemoryRollbackResult {
+                source: source_path.to_path_buf(),
+                restored_from: backup_path.to_path_buf(),
+                preserved_current: preserved_current.clone(),
+                restored_version: restored.source_version,
+                fact_count: restored.fact_count,
+                episode_count: restored.episode_count,
+            })
+        })();
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&preserved_current);
+        }
+        result
+    }
+
+    pub fn apply_migration(plan: &MemoryMigrationPlan) -> anyhow::Result<MemoryMigrationResult> {
+        if !plan.is_applicable() {
+            anyhow::bail!("memory migration plan failed source verification");
+        }
+        if plan.source == plan.backup {
+            anyhow::bail!("memory migration backup path must differ from source");
+        }
+        if plan.backup.exists() {
+            anyhow::bail!(
+                "memory migration backup already exists at {}; refusing to overwrite it",
+                plan.backup.display()
+            );
+        }
+
+        let source = Connection::open_with_flags(
+            &plan.source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        source.busy_timeout(std::time::Duration::from_secs(5))?;
+        source.backup(DatabaseName::Main, &plan.backup, None)?;
+
+        let result = (|| -> anyhow::Result<MemoryMigrationResult> {
+            let backup_plan = Self::plan_migration(&plan.backup)?;
+            Self::verify_migration_counts(plan, &backup_plan)?;
+
+            let mut target = Connection::open(&plan.source)?;
+            target.busy_timeout(std::time::Duration::from_secs(5))?;
+            let transaction =
+                target.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let current: i64 = transaction.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )?;
+            if current != plan.source_version {
+                anyhow::bail!(
+                    "memory schema changed after planning: expected v{}, found v{current}",
+                    plan.source_version
+                );
+            }
+            transaction.execute(
+                "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES (?1, 'Authoritative ambient memory', datetime('now'))",
+                params![PRIMENSUS_MIND],
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO minds (name, description, status, created_at) VALUES (?1, 'Quarantined pre-v7 memory', 'quarantined', datetime('now'))",
+                params![LEGACY_MIND],
+            )?;
+            transaction.execute(
+                "UPDATE facts SET mind = ?1 WHERE mind = 'default'",
+                params![LEGACY_MIND],
+            )?;
+            transaction.execute(
+                "UPDATE episodes SET mind = ?1 WHERE mind = 'default'",
+                params![LEGACY_MIND],
+            )?;
+            transaction.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?1, datetime('now'))",
+                params![MEMORY_SCHEMA_VERSION],
+            )?;
+            transaction.commit()?;
+
+            let verified = Self::inspect_current(&plan.source)?;
+            Self::verify_migration_counts(plan, &verified)?;
+            if verified.source_version != MEMORY_SCHEMA_VERSION {
+                anyhow::bail!(
+                    "memory migration verification expected v{}, found v{}",
+                    MEMORY_SCHEMA_VERSION,
+                    verified.source_version
+                );
+            }
+            let backend = Self::open(&plan.source)?;
+            drop(backend);
+
+            Ok(MemoryMigrationResult {
+                source: plan.source.clone(),
+                backup: plan.backup.clone(),
+                source_version: plan.source_version,
+                target_version: MEMORY_SCHEMA_VERSION,
+                fact_count: verified.fact_count,
+                mind_count: verified.mind_count,
+                edge_count: verified.edge_count,
+                episode_count: verified.episode_count,
+            })
+        })();
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&plan.backup);
+        }
+        result
+    }
+
+    fn inspect_current(path: &Path) -> anyhow::Result<MemoryMigrationPlan> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let source_version = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?;
+        let integrity_check: String =
+            conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        let foreign_key_violations = {
+            let mut statement = conn.prepare("PRAGMA foreign_key_check")?;
+            let mut rows = statement.query([])?;
+            let mut count = 0;
+            while rows.next()?.is_some() {
+                count += 1;
+            }
+            count
+        };
+        let count = |table: &str| -> anyhow::Result<u64> {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            Ok(conn.query_row(&sql, [], |row| row.get(0))?)
+        };
+        Ok(MemoryMigrationPlan {
+            source: path.to_path_buf(),
+            source_version,
+            target_version: MEMORY_SCHEMA_VERSION,
+            fact_count: count("facts")?,
+            mind_count: count("minds")?,
+            edge_count: count("edges")?,
+            episode_count: count("episodes")?,
+            integrity_check,
+            foreign_key_violations,
+            backup: path.with_extension(format!("v{source_version}.backup.db")),
+            statements: Vec::new(),
+        })
+    }
+
+    fn verify_migration_counts(
+        expected: &MemoryMigrationPlan,
+        actual: &MemoryMigrationPlan,
+    ) -> anyhow::Result<()> {
+        if actual.integrity_check != "ok" || actual.foreign_key_violations != 0 {
+            anyhow::bail!(
+                "memory migration verification failed: integrity={}, foreign_key_violations={}",
+                actual.integrity_check,
+                actual.foreign_key_violations
+            );
+        }
+        let expected_counts = (
+            expected.fact_count,
+            expected.edge_count,
+            expected.episode_count,
+        );
+        let actual_counts = (actual.fact_count, actual.edge_count, actual.episode_count);
+        if expected_counts != actual_counts {
+            anyhow::bail!(
+                "memory migration fact/edge/episode counts changed: expected {expected_counts:?}, found {actual_counts:?}"
+            );
+        }
+        Ok(())
+    }
+
     /// Open or create a sqlite DB at the given path.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
+        let existed = path.exists();
         let conn = Connection::open(path)?;
         let backend = Self {
             conn: Mutex::new(conn),
         };
-        backend.init_schema()?;
+        if let Err(error) = backend.init_schema(existed) {
+            drop(backend);
+            if !existed {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
         Ok(backend)
     }
 
@@ -36,11 +403,11 @@ impl SqliteBackend {
         let backend = Self {
             conn: Mutex::new(conn),
         };
-        backend.init_schema()?;
+        backend.init_schema(false)?;
         Ok(backend)
     }
 
-    fn init_schema(&self) -> anyhow::Result<()> {
+    fn init_schema(&self, existed: bool) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
@@ -62,7 +429,8 @@ impl SqliteBackend {
                 last_sync   TEXT
             );
 
-            INSERT OR IGNORE INTO minds (name, created_at) VALUES ('default', datetime('now'));
+            INSERT OR IGNORE INTO minds (name, description, created_at)
+            VALUES ('primensus', 'Authoritative ambient memory', datetime('now'));
 
             CREATE TABLE IF NOT EXISTS facts (
                 id                  TEXT PRIMARY KEY,
@@ -206,100 +574,21 @@ impl SqliteBackend {
             );
         ")?;
 
-        // Mark schema version 5 (matches TS factstore.ts v5) if not already set
-        let current: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+        let current: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?;
 
-        // Migration: v4 → v5 (align with TS factstore.ts v5)
-        // Adds columns that were in TS but missing from Rust's initial schema:
-        //   facts: created_session, superseded_at, archived_at, jj_change_id
-        //   episodes: session_id, jj_change_id
-        // Also creates episode_facts and episodes_vec tables if missing.
-        if current < 5 {
-            // Add missing columns (idempotent — ignore "duplicate column" errors)
-            for stmt in &[
-                // facts
-                "ALTER TABLE facts ADD COLUMN created_session TEXT",
-                "ALTER TABLE facts ADD COLUMN superseded_at TEXT",
-                "ALTER TABLE facts ADD COLUMN archived_at TEXT",
-                "ALTER TABLE facts ADD COLUMN jj_change_id TEXT",
-                // edges
-                "ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
-                "ALTER TABLE edges ADD COLUMN last_reinforced TEXT",
-                "ALTER TABLE edges ADD COLUMN reinforcement_count INTEGER NOT NULL DEFAULT 1",
-                "ALTER TABLE edges ADD COLUMN decay_rate REAL NOT NULL DEFAULT 0.05",
-                "ALTER TABLE edges ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
-                "ALTER TABLE edges ADD COLUMN created_session TEXT",
-                "ALTER TABLE edges ADD COLUMN source_mind TEXT",
-                "ALTER TABLE edges ADD COLUMN target_mind TEXT",
-                // minds
-                "ALTER TABLE minds ADD COLUMN origin_path TEXT",
-                "ALTER TABLE minds ADD COLUMN origin_url TEXT",
-                "ALTER TABLE minds ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE minds ADD COLUMN parent TEXT",
-                "ALTER TABLE minds ADD COLUMN last_sync TEXT",
-                // episodes
-                "ALTER TABLE episodes ADD COLUMN session_id TEXT",
-                "ALTER TABLE episodes ADD COLUMN jj_change_id TEXT",
-            ] {
-                let _ = conn.execute(stmt, []); // ignore if column already exists
-            }
-
-            // Create tables that may not exist in older Rust DBs
-            conn.execute_batch(
-                "
-                CREATE TABLE IF NOT EXISTS episode_facts (
-                    episode_id TEXT NOT NULL,
-                    fact_id    TEXT NOT NULL,
-                    PRIMARY KEY (episode_id, fact_id),
-                    FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
-                    FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS episodes_vec (
-                    episode_id TEXT PRIMARY KEY,
-                    embedding  BLOB NOT NULL,
-                    model_name TEXT NOT NULL DEFAULT '',
-                    dims       INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_facts_session ON facts(created_session);
-                CREATE INDEX IF NOT EXISTS idx_facts_version ON facts(version DESC);
-            ",
-            )?;
-
+        if current == 0 && !existed {
             conn.execute(
-                "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))",
-                [],
+                "INSERT INTO schema_version (version, applied_at) VALUES (?1, datetime('now'))",
+                params![MEMORY_SCHEMA_VERSION],
             )?;
-        }
-
-        // Migration: v5 → v6 (persona system schema)
-        // Adds columns for persona mind layers, tags, and layer classification.
-        // All nullable/defaulted — existing data reads cleanly without changes.
-        if current < 6 {
-            for stmt in &[
-                "ALTER TABLE facts ADD COLUMN persona_id TEXT",
-                "ALTER TABLE facts ADD COLUMN layer TEXT NOT NULL DEFAULT 'project'",
-                "ALTER TABLE facts ADD COLUMN tags TEXT",
-            ] {
-                let _ = conn.execute(stmt, []);
-            }
-
-            conn.execute_batch("
-                CREATE INDEX IF NOT EXISTS idx_facts_persona ON facts(persona_id) WHERE persona_id IS NOT NULL;
-                CREATE INDEX IF NOT EXISTS idx_facts_layer ON facts(mind, layer) WHERE status = 'active';
-            ")?;
-
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (6, datetime('now'))",
-                [],
-            )?;
+        } else if current != MEMORY_SCHEMA_VERSION {
+            anyhow::bail!(
+                "unsupported memory schema version {current}; Omegon requires exactly v{MEMORY_SCHEMA_VERSION}. Run the documented memory migration workflow before opening this store"
+            );
         }
 
         Ok(())
@@ -532,6 +821,20 @@ impl MemoryBackend for SqliteBackend {
         .map_err(|e| MemoryError::Storage(e.into()))
     }
 
+    async fn dormancy_facts(&self, ids: &[&str]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut transitioned = 0;
+        for id in ids {
+            transitioned += conn
+                .execute(
+                    "UPDATE facts SET status = 'dormant' WHERE id = ?1 AND status = 'active'",
+                    params![id],
+                )
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+        }
+        Ok(transitioned)
+    }
+
     async fn archive_facts(&self, ids: &[&str]) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let mut count = 0usize;
@@ -626,19 +929,32 @@ impl MemoryBackend for SqliteBackend {
             )
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
-        let results: Vec<ScoredFact> = stmt
-            .query_map(params![fts_query, mind, k as i64], |row| {
-                let fact = Self::row_to_fact(row)?;
-                let rank: f64 = row.get("rank")?;
-                Ok(ScoredFact {
-                    similarity: -rank, // FTS5 rank is negative (lower = better)
-                    score: -rank,
-                    fact,
-                })
-            })
+        let mut results: Vec<ScoredFact> = stmt
+            .query_map(
+                params![fts_query, mind, (k.saturating_mul(8).max(k)) as i64],
+                |row| {
+                    let fact = Self::row_to_fact(row)?;
+                    let rank: f64 = row.get("rank")?;
+                    Ok((fact, -rank))
+                },
+            )
             .map_err(|e| MemoryError::Storage(e.into()))?
             .filter_map(|r| r.map_err(|e| tracing::debug!("row deser: {e}")).ok())
+            .filter_map(|(fact, relevance)| {
+                let score = crate::decay::ambient_score(relevance, &fact)?;
+                Some(ScoredFact {
+                    fact,
+                    similarity: relevance,
+                    score,
+                })
+            })
             .collect();
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(k);
 
         Ok(results)
     }
@@ -704,9 +1020,10 @@ impl MemoryBackend for SqliteBackend {
                 if sim < min_similarity {
                     return None;
                 }
+                let score = crate::decay::ambient_score(sim as f64, &fact)?;
                 Some(ScoredFact {
                     similarity: sim as f64,
-                    score: sim as f64,
+                    score,
                     fact,
                 })
             })
@@ -1174,6 +1491,124 @@ mod tests {
     async fn sqlite_backend_passes_all_tests() {
         let backend = SqliteBackend::in_memory().unwrap();
         run_backend_tests(&backend).await;
+    }
+
+    fn create_legacy_fixture(path: &Path, version: i64) {
+        let backend = SqliteBackend::open(path).unwrap();
+        drop(backend);
+        let conn = Connection::open(path).unwrap();
+        conn.execute(
+            "INSERT INTO minds (name, description, created_at) VALUES ('default', 'Default legacy fixture', datetime('now')) ON CONFLICT(name) DO NOTHING",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version, layer) VALUES ('legacy-fact', 'default', 'architecture', 'legacy content', 'active', datetime('now'), 'test', 'legacy-hash', 1.0, datetime('now'), 1, 0.05, 'standard', 1, 'project')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO episodes (id, mind, title, narrative, date, created_at) VALUES ('legacy-episode', 'default', 'legacy', 'legacy narrative', date('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, datetime('now'))",
+            params![version],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrates_representative_v5_and_v6_stores_with_rollback_backup() {
+        for version in LEGACY_MEMORY_SCHEMA_VERSIONS {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(format!("facts-v{version}.db"));
+            create_legacy_fixture(&path, version);
+
+            let plan = SqliteBackend::plan_migration(&path).unwrap();
+            assert!(plan.is_applicable());
+            assert_eq!(plan.fact_count, 1);
+            assert_eq!(plan.episode_count, 1);
+            let result = SqliteBackend::apply_migration(&plan).unwrap();
+            assert_eq!(result.source_version, version);
+            assert_eq!(result.target_version, MEMORY_SCHEMA_VERSION);
+            assert!(result.backup.exists());
+            assert_eq!(
+                SqliteBackend::inspect_current(&result.backup)
+                    .unwrap()
+                    .source_version,
+                version
+            );
+            assert_eq!(
+                SqliteBackend::inspect_current(&path)
+                    .unwrap()
+                    .source_version,
+                MEMORY_SCHEMA_VERSION
+            );
+            drop(SqliteBackend::open(&path).unwrap());
+        }
+    }
+
+    #[test]
+    fn migration_rejects_unsupported_version_and_existing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let unsupported = dir.path().join("unsupported.db");
+        create_legacy_fixture(&unsupported, 4);
+        assert!(SqliteBackend::plan_migration(&unsupported).is_err());
+
+        let path = dir.path().join("facts-v6.db");
+        create_legacy_fixture(&path, 6);
+        let plan = SqliteBackend::plan_migration(&path).unwrap();
+        std::fs::write(&plan.backup, b"do not overwrite").unwrap();
+        let error = SqliteBackend::apply_migration(&plan).unwrap_err();
+        assert!(error.to_string().contains("refusing to overwrite"));
+    }
+
+    #[test]
+    fn migration_rejects_stale_plan_without_leaving_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts-v6.db");
+        create_legacy_fixture(&path, 6);
+        let plan = SqliteBackend::plan_migration(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version, layer) VALUES ('late-fact', 'default', 'architecture', 'late content', 'active', datetime('now'), 'test', 'late-hash', 1.0, datetime('now'), 1, 0.05, 'standard', 2, 'project')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = SqliteBackend::apply_migration(&plan).unwrap_err();
+        assert!(error.to_string().contains("counts changed"));
+        assert!(!plan.backup.exists());
+        assert_eq!(
+            SqliteBackend::inspect_current(&path)
+                .unwrap()
+                .source_version,
+            6
+        );
+    }
+
+    #[test]
+    fn rollback_restores_legacy_snapshot_and_preserves_v7_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts-v6.db");
+        create_legacy_fixture(&path, 6);
+        let plan = SqliteBackend::plan_migration(&path).unwrap();
+        let migrated = SqliteBackend::apply_migration(&plan).unwrap();
+
+        let rolled_back = SqliteBackend::rollback_migration(&path, &migrated.backup).unwrap();
+        assert_eq!(rolled_back.restored_version, 6);
+        assert!(rolled_back.preserved_current.exists());
+        assert_eq!(SqliteBackend::status(&path).unwrap().schema_version, 6);
+        assert_eq!(
+            SqliteBackend::status(&rolled_back.preserved_current)
+                .unwrap()
+                .schema_version,
+            MEMORY_SCHEMA_VERSION
+        );
     }
 
     /// Generate schema-contract.json from the actual Rust schema.

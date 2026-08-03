@@ -46,6 +46,7 @@ impl Section {
 #[serde(rename_all = "snake_case")]
 pub enum FactStatus {
     Active,
+    Dormant,
     Archived,
     Superseded,
 }
@@ -181,6 +182,26 @@ pub struct StoreFact {
     pub section: Section,
     pub decay_profile: DecayProfileName,
     pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaintenanceReport {
+    pub mind: String,
+    pub active_facts: usize,
+    pub candidates: Vec<MaintenanceCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaintenanceCandidate {
+    pub id: String,
+    pub effective_confidence: f64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MaintenanceApplyResult {
+    pub requested: usize,
+    pub transitioned: usize,
 }
 
 /// Result of storing a fact — what happened.

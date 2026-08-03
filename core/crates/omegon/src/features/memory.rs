@@ -35,7 +35,7 @@ pub struct MemoryFeature {
     backend: Arc<dyn MemoryBackend>,
     /// Renderer for context injection
     renderer: MarkdownRenderer,
-    /// Mind identifier (usually "default")
+    /// Mind identifier (normally `primensus` for automatic LLM memory).
     mind: String,
     /// Pinned fact IDs for working memory
     working_memory: Mutex<Vec<String>>,

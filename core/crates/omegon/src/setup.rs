@@ -297,6 +297,36 @@ pub(crate) fn project_memory_dir_if_initialized(project_root: &Path) -> Option<s
     }
 }
 
+pub(crate) fn ensure_project_memory_store_ready(
+    db_path: &Path,
+) -> anyhow::Result<Option<omegon_memory::sqlite::MemoryMigrationResult>> {
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    let status = omegon_memory::sqlite::SqliteBackend::status(db_path)?;
+    match status.schema_version {
+        omegon_memory::sqlite::MEMORY_SCHEMA_VERSION => Ok(None),
+        version if omegon_memory::sqlite::LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&version) => {
+            let plan = omegon_memory::sqlite::SqliteBackend::plan_migration(db_path)?;
+            let result = omegon_memory::sqlite::SqliteBackend::apply_migration(&plan)?;
+            let verified = omegon_memory::sqlite::SqliteBackend::status(db_path)?;
+            if verified.schema_version != omegon_memory::sqlite::MEMORY_SCHEMA_VERSION {
+                anyhow::bail!(
+                    "memory migration verification expected schema v{}, found v{}",
+                    omegon_memory::sqlite::MEMORY_SCHEMA_VERSION,
+                    verified.schema_version
+                );
+            }
+            Ok(Some(result))
+        }
+        version => anyhow::bail!(
+            "unsupported memory schema v{version} at {}; run `omegon memory migrate --status --path {}` and restore a supported v5/v6 backup or upgrade Omegon",
+            db_path.display(),
+            db_path.display()
+        ),
+    }
+}
+
 impl AgentSetup {
     /// Initialize the event bus, tools, memory, lifecycle context, and conversation.
     pub async fn new(
@@ -512,7 +542,7 @@ impl AgentSetup {
             .map(|c| crate::codex_config::resolve_vault_path(&project_root, c));
 
         // ─── Memory ─────────────────────────────────────────────────────
-        let mind = "default".to_string();
+        let mind = omegon_memory::sqlite::PRIMENSUS_MIND.to_string();
         let memory_dir = project_memory_dir_if_initialized(&project_root);
         let db_path = memory_dir.as_ref().map(|dir| dir.join("facts.db"));
         let jsonl_path = memory_dir.as_ref().map(|dir| dir.join("facts.jsonl"));
@@ -536,6 +566,16 @@ impl AgentSetup {
             None;
 
         if let Some(db_path) = db_path.as_ref() {
+            if !is_child && let Some(migration) = ensure_project_memory_store_ready(db_path)? {
+                tracing::warn!(
+                    source_version = migration.source_version,
+                    target_version = migration.target_version,
+                    backup = %migration.backup.display(),
+                    facts = migration.fact_count,
+                    episodes = migration.episode_count,
+                    "migrated legacy project memory store before startup"
+                );
+            }
             match omegon_memory::SqliteBackend::open(db_path) {
                 Ok(backend) => {
                     tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "memory backend loaded");
@@ -2289,6 +2329,57 @@ required = ["OMADA_TEST_SECRET"]
 #[cfg(test)]
 mod init_gating_tests {
     use super::*;
+
+    #[test]
+    fn startup_migrates_supported_legacy_memory_before_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.db");
+        let backend = omegon_memory::SqliteBackend::open(&path).unwrap();
+        drop(backend);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (6, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = ensure_project_memory_store_ready(&path).unwrap().unwrap();
+        assert_eq!(result.source_version, 6);
+        assert_eq!(
+            result.target_version,
+            omegon_memory::sqlite::MEMORY_SCHEMA_VERSION
+        );
+        assert!(result.backup.exists());
+        assert_eq!(
+            omegon_memory::SqliteBackend::status(&path)
+                .unwrap()
+                .schema_version,
+            omegon_memory::sqlite::MEMORY_SCHEMA_VERSION
+        );
+        assert!(ensure_project_memory_store_ready(&path).unwrap().is_none());
+        drop(omegon_memory::SqliteBackend::open(&path).unwrap());
+    }
+
+    #[test]
+    fn startup_rejects_unsupported_memory_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.db");
+        let backend = omegon_memory::SqliteBackend::open(&path).unwrap();
+        drop(backend);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = ensure_project_memory_store_ready(&path).unwrap_err();
+        assert!(error.to_string().contains("unsupported memory schema v4"));
+    }
 
     #[test]
     fn project_memory_dir_absent_without_init_scaffold() {

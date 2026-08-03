@@ -150,6 +150,20 @@ impl MemoryBackend for InMemoryBackend {
         Ok(fact.clone())
     }
 
+    async fn dormancy_facts(&self, ids: &[&str]) -> Result<usize> {
+        let mut state = self.state.lock().unwrap();
+        let mut transitioned = 0;
+        for id in ids {
+            if let Some(fact) = state.facts.get_mut(*id)
+                && fact.status == FactStatus::Active
+            {
+                fact.status = FactStatus::Dormant;
+                transitioned += 1;
+            }
+        }
+        Ok(transitioned)
+    }
+
     async fn archive_facts(&self, ids: &[&str]) -> Result<usize> {
         let mut s = self.state.lock().unwrap();
         let mut count = 0;
@@ -237,10 +251,11 @@ impl MemoryBackend for InMemoryBackend {
                     return None;
                 }
                 let relevance = matches as f64 / terms.len().max(1) as f64;
+                let score = crate::decay::ambient_score(relevance, f)?;
                 Some(ScoredFact {
                     fact: f.clone(),
                     similarity: relevance,
-                    score: relevance, // simplified — no decay weighting in memory backend
+                    score,
                 })
             })
             .collect();
@@ -297,10 +312,11 @@ impl MemoryBackend for InMemoryBackend {
                     return None;
                 }
                 let fact = s.facts.get(&e.fact_id)?.clone();
+                let score = crate::decay::ambient_score(sim as f64, &fact)?;
                 Some(ScoredFact {
                     fact,
                     similarity: sim as f64,
-                    score: sim as f64,
+                    score,
                 })
             })
             .collect();

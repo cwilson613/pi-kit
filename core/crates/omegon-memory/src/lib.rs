@@ -23,6 +23,7 @@ pub mod decay;
 pub mod embedding;
 pub mod hash;
 pub mod inmemory;
+pub mod maintenance;
 #[cfg(feature = "agent")]
 pub mod provider;
 pub mod renderer;

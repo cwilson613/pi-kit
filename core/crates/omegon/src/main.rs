@@ -81,6 +81,7 @@ mod runtime_prompt;
 mod runtime_state;
 mod runtime_turn;
 mod runtime_turn_execution;
+mod session_commands;
 mod session_settings_commands;
 mod shadow_context;
 mod skills;
@@ -481,6 +482,31 @@ enum ProjectRulesAction {
 }
 
 #[derive(Subcommand)]
+enum MemoryAction {
+    /// Inspect, migrate, or roll back the project memory SQLite store.
+    Migrate {
+        /// Print the source inventory and intended operations without mutation.
+        #[arg(long, conflicts_with_all = ["apply", "rollback", "status"])]
+        dry_run: bool,
+        /// Apply a verified v5/v6 to v7 migration.
+        #[arg(long, conflicts_with_all = ["dry_run", "rollback", "status"])]
+        apply: bool,
+        /// Print current store integrity, version, and counts.
+        #[arg(long, conflicts_with_all = ["dry_run", "apply", "rollback"])]
+        status: bool,
+        /// Restore the v5/v6 backup, preserving the current v7 store.
+        #[arg(long, conflicts_with_all = ["dry_run", "apply", "status"])]
+        rollback: bool,
+        /// Override the memory database path.
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+        /// Override the rollback backup path.
+        #[arg(long, value_name = "PATH", requires = "rollback")]
+        backup: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Run interactive TUI session — ratatui-based terminal interface.
     Interactive,
@@ -547,6 +573,12 @@ enum Commands {
         /// Source to migrate from. "auto" detects all available tools.
         #[arg(default_value = "auto")]
         source: String,
+    },
+
+    /// Inspect and migrate the project memory store.
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
     },
 
     /// Evaluate an agent bundle against a test suite. Produces a score card.
@@ -1560,6 +1592,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", report.summary());
             Ok(())
         }
+        Some(Commands::Memory { ref action }) => run_memory_command(&cli, action),
         Some(Commands::Auth { ref action }) => run_auth_command(action).await,
         Some(Commands::Tdd { ref action }) => run_tdd_command(action).await,
         Some(Commands::ProjectRules { ref action }) => run_project_rules_command(&cli, action),
@@ -3733,7 +3766,7 @@ async fn run_embedding_command(action: &EmbeddingAction) -> anyhow::Result<()> {
                 }
             };
 
-            let mind = "default";
+            let mind = omegon_memory::sqlite::PRIMENSUS_MIND;
             let facts = backend
                 .list_facts(mind, omegon_memory::FactFilter::default())
                 .await?;
@@ -5063,39 +5096,21 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ListSessions { respond_to } => {
-                let text = list_sessions_message(&agent.cwd);
-                let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: text.clone(),
-                });
-                let _ = events_tx.send(AgentEvent::AgentEnd);
-                tracing::info!("{text}");
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: true,
-                        output: Some(text),
-                    });
-                }
-            }
-
-            tui::TuiCommand::NewSession { respond_to } => {
-                let response = control_runtime::new_session_response(
-                    &mut runtime_state,
-                    &mut agent,
-                    &CliRuntimeView {
-                        no_session: cli.no_session,
-                        model: &cli.model,
-                        dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+            command if session_commands::is_session_command(&command) => {
+                session_commands::handle(
+                    command,
+                    session_commands::SessionCommandContext {
+                        runtime_state: &mut runtime_state,
+                        agent: &mut agent,
+                        cli: CliRuntimeView {
+                            no_session: cli.no_session,
+                            model: &cli.model,
+                            dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+                        },
+                        events_tx: &events_tx,
                     },
-                    &events_tx,
                 )
                 .await;
-                if let Some(respond_to) = respond_to {
-                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
-                        accepted: response.accepted,
-                        output: response.output,
-                    });
-                }
             }
 
             tui::TuiCommand::AuthStatus { respond_to } => {
@@ -5944,6 +5959,71 @@ fn build_tui_secret_readiness_snapshot(
     Ok(())
         })
         .await
+}
+
+fn resolve_memory_store_path(cwd: &Path, override_path: Option<&Path>) -> PathBuf {
+    if let Some(path) = override_path {
+        return if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+    }
+    let primary = cwd.join("ai/memory/facts.db");
+    if primary.exists() {
+        primary
+    } else {
+        cwd.join(".omegon/memory/facts.db")
+    }
+}
+
+fn run_memory_command(cli: &Cli, action: &MemoryAction) -> anyhow::Result<()> {
+    match action {
+        MemoryAction::Migrate {
+            apply,
+            status,
+            rollback,
+            path,
+            backup,
+            ..
+        } => {
+            let cwd = std::fs::canonicalize(&cli.cwd)?;
+            let store = resolve_memory_store_path(&cwd, path.as_deref());
+            if *status {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&omegon_memory::sqlite::SqliteBackend::status(
+                        &store
+                    )?)?
+                );
+            } else if *rollback {
+                let backup = backup.clone().unwrap_or_else(|| {
+                    store.with_extension(format!(
+                        "v{}.backup.db",
+                        omegon_memory::sqlite::MEMORY_SCHEMA_VERSION - 1
+                    ))
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &omegon_memory::sqlite::SqliteBackend::rollback_migration(&store, &backup)?
+                    )?
+                );
+            } else {
+                let plan = omegon_memory::sqlite::SqliteBackend::plan_migration(&store)?;
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+                if *apply {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(
+                            &omegon_memory::sqlite::SqliteBackend::apply_migration(&plan)?
+                        )?
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 pub(crate) fn mark_interactive_session_busy(

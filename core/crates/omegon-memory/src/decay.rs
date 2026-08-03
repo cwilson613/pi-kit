@@ -84,6 +84,32 @@ pub fn compute_confidence(
     confidence.max(0.0)
 }
 
+pub const AMBIENT_CONFIDENCE_FLOOR: f64 = 0.10;
+
+/// Effective confidence for a stored fact at the current wall-clock time.
+///
+/// The persisted confidence is the fact's evidence/source prior. Temporal
+/// decay is applied at retrieval time so stale rows cannot remain equally
+/// competitive merely because maintenance has not rewritten the database.
+pub fn effective_confidence(fact: &crate::types::Fact) -> f64 {
+    let reinforced = chrono::DateTime::parse_from_rfc3339(&fact.last_reinforced)
+        .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    let elapsed = chrono::Utc::now().signed_duration_since(reinforced);
+    let days = elapsed.num_seconds().max(0) as f64 / 86_400.0;
+    let temporal = compute_confidence(
+        days,
+        fact.reinforcement_count,
+        &resolve_profile(&fact.decay_profile),
+    );
+    (fact.confidence * temporal).clamp(0.0, 1.0)
+}
+
+pub fn ambient_score(relevance: f64, fact: &crate::types::Fact) -> Option<f64> {
+    let confidence = effective_confidence(fact);
+    (confidence >= AMBIENT_CONFIDENCE_FLOOR).then_some(relevance * confidence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +118,37 @@ mod tests {
     fn fresh_fact_has_full_confidence() {
         let c = compute_confidence(0.0, 1, &STANDARD);
         assert!((c - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn persisted_confidence_scales_temporal_confidence() {
+        let fact = crate::types::Fact {
+            id: "fact".into(),
+            mind: "test".into(),
+            content: "content".into(),
+            section: crate::types::Section::Architecture,
+            status: crate::types::FactStatus::Active,
+            confidence: 0.05,
+            reinforcement_count: 1,
+            decay_rate: 0.05,
+            decay_profile: crate::types::DecayProfileName::Standard,
+            last_reinforced: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            version: 1,
+            superseded_by: None,
+            source: Some("test".into()),
+            content_hash: None,
+            last_accessed: None,
+            created_session: None,
+            superseded_at: None,
+            archived_at: None,
+            jj_change_id: None,
+            persona_id: None,
+            layer: "project".into(),
+            tags: vec![],
+        };
+        assert!(effective_confidence(&fact) < AMBIENT_CONFIDENCE_FLOOR);
+        assert!(ambient_score(1.0, &fact).is_none());
     }
 
     #[test]

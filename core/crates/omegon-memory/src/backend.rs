@@ -59,6 +59,10 @@ pub trait MemoryBackend: Send + Sync {
     /// Reinforce a fact — increment reinforcement_count, reset decay timer.
     async fn reinforce_fact(&self, id: &str) -> Result<Fact>;
 
+    /// Transition active facts to dormant. Dormant facts remain stored but are
+    /// excluded from ambient retrieval.
+    async fn dormancy_facts(&self, ids: &[&str]) -> Result<usize>;
+
     /// Archive one or more facts. Soft-delete — still retrievable via filter.
     async fn archive_facts(&self, ids: &[&str]) -> Result<usize>;
 

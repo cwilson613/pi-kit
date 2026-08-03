@@ -1166,7 +1166,7 @@ pub async fn model_list_response() -> SlashCommandResponse {
     }
 }
 
-async fn set_model_intent_control_response(
+pub(crate) async fn set_model_intent_control_response(
     route_controller: Option<Arc<crate::route::RouteController>>,
     cwd: &std::path::Path,
     grade: &str,
@@ -1193,7 +1193,7 @@ async fn set_model_intent_control_response(
     }
 }
 
-async fn set_model_provider_control_response(
+pub(crate) async fn set_model_provider_control_response(
     route_controller: Option<Arc<crate::route::RouteController>>,
     cwd: &std::path::Path,
     provider: &str,
@@ -1218,7 +1218,7 @@ async fn set_model_provider_control_response(
     }
 }
 
-async fn set_model_policy_control_response(
+pub(crate) async fn set_model_policy_control_response(
     route_controller: Option<Arc<crate::route::RouteController>>,
     cwd: &std::path::Path,
     policy: &str,

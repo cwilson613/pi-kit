@@ -241,7 +241,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::ModelView,
+                    request: crate::operator_commands::InterfaceControlRequest::ModelView,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -286,7 +286,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::ModelList,
+                    request: crate::operator_commands::InterfaceControlRequest::ModelList,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -331,7 +331,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SkillsView,
+                    request: crate::operator_commands::InterfaceControlRequest::SkillsView,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -376,7 +376,9 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SkillsInstall { name: None },
+                    request: crate::operator_commands::InterfaceControlRequest::SkillsInstall {
+                        name: None,
+                    },
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -507,7 +509,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::PluginView,
+                    request: crate::operator_commands::InterfaceControlRequest::PluginView,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -569,7 +571,7 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SetModel {
+                        request: crate::operator_commands::InterfaceControlRequest::SetModel {
                             requested_model: model.to_string(),
                         },
                         respond_to: Some(reply_tx),
@@ -635,7 +637,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SwitchDispatcher {
+                    request: crate::operator_commands::InterfaceControlRequest::SwitchDispatcher {
                         request_id: request_id.to_string(),
                         profile: profile.to_string(),
                         model: model.map(|s| s.to_string()),
@@ -687,7 +689,9 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SetThinking { level },
+                        request: crate::operator_commands::InterfaceControlRequest::SetThinking {
+                            level,
+                        },
                         respond_to: Some(reply_tx),
                     })
                     .await
@@ -734,7 +738,7 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::PluginInstall {
+                        request: crate::operator_commands::InterfaceControlRequest::PluginInstall {
                             uri: uri.to_string(),
                         },
                         respond_to: Some(reply_tx),
@@ -783,7 +787,7 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::PluginRemove {
+                        request: crate::operator_commands::InterfaceControlRequest::PluginRemove {
                             name: name.to_string(),
                         },
                         respond_to: Some(reply_tx),
@@ -831,7 +835,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::PluginUpdate {
+                    request: crate::operator_commands::InterfaceControlRequest::PluginUpdate {
                         name: cmd["name"]
                             .as_str()
                             .map(|s| s.to_string())
@@ -881,7 +885,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::SecretsView,
+                    request: crate::operator_commands::InterfaceControlRequest::SecretsView,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -927,7 +931,7 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SecretsSet {
+                        request: crate::operator_commands::InterfaceControlRequest::SecretsSet {
                             name: name.to_string(),
                             value: value.to_string(),
                         },
@@ -977,7 +981,7 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SecretsGet {
+                        request: crate::operator_commands::InterfaceControlRequest::SecretsGet {
                             name: name.to_string(),
                         },
                         respond_to: Some(reply_tx),
@@ -1026,7 +1030,7 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SecretsDelete {
+                        request: crate::operator_commands::InterfaceControlRequest::SecretsDelete {
                             name: name.to_string(),
                         },
                         respond_to: Some(reply_tx),
@@ -1074,7 +1078,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::VaultStatus,
+                    request: crate::operator_commands::InterfaceControlRequest::VaultStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1119,7 +1123,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::VaultUnseal,
+                    request: crate::operator_commands::InterfaceControlRequest::VaultUnseal,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1164,7 +1168,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::VaultLogin,
+                    request: crate::operator_commands::InterfaceControlRequest::VaultLogin,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1209,7 +1213,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::VaultConfigure,
+                    request: crate::operator_commands::InterfaceControlRequest::VaultConfigure,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1254,7 +1258,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::VaultInitPolicy,
+                    request: crate::operator_commands::InterfaceControlRequest::VaultInitPolicy,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1299,7 +1303,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::CleaveStatus,
+                    request: crate::operator_commands::InterfaceControlRequest::CleaveStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1344,7 +1348,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::DelegateStatus,
+                    request: crate::operator_commands::InterfaceControlRequest::DelegateStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1389,7 +1393,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::AuthStatus,
+                    request: crate::operator_commands::InterfaceControlRequest::AuthStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1447,7 +1451,9 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::AuthLogin { provider },
+                    request: crate::operator_commands::InterfaceControlRequest::AuthLogin {
+                        provider,
+                    },
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1505,7 +1511,9 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::AuthLogout { provider },
+                    request: crate::operator_commands::InterfaceControlRequest::AuthLogout {
+                        provider,
+                    },
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1589,7 +1597,7 @@ async fn handle_client_command(
                             .await;
                         return;
                     };
-                    crate::control_runtime::ControlRequest::SetContextClass { class }
+                    crate::operator_commands::InterfaceControlRequest::SetContextClass { class }
                 }
                 "set_presentation_level" => {
                     let Some(level) = cmd["level"].as_str().and_then(|level| {
@@ -1609,11 +1617,13 @@ async fn handle_client_command(
                             .await;
                         return;
                     };
-                    crate::control_runtime::ControlRequest::SetPresentationLevel { level }
+                    crate::operator_commands::InterfaceControlRequest::SetPresentationLevel {
+                        level,
+                    }
                 }
                 "set_runtime_mode" => {
                     let slim = cmd["slim"].as_bool().unwrap_or(false);
-                    crate::control_runtime::ControlRequest::SetRuntimeMode { slim }
+                    crate::operator_commands::InterfaceControlRequest::SetRuntimeMode { slim }
                 }
                 "set_max_turns" => {
                     let Some(raw) = cmd["max_turns"].as_u64() else {
@@ -1640,10 +1650,12 @@ async fn handle_client_command(
                             .await;
                         return;
                     };
-                    crate::control_runtime::ControlRequest::SetMaxTurns { max_turns }
+                    crate::operator_commands::InterfaceControlRequest::SetMaxTurns { max_turns }
                 }
-                "profile_view" => crate::control_runtime::ControlRequest::ProfileView,
-                "profile_export" => crate::control_runtime::ControlRequest::ProfileExport,
+                "profile_view" => crate::operator_commands::InterfaceControlRequest::ProfileView,
+                "profile_export" => {
+                    crate::operator_commands::InterfaceControlRequest::ProfileExport
+                }
                 "profile_capture" => {
                     let target = match cmd["target"].as_str() {
                         Some("project") => crate::settings::ProfileSaveTarget::Project,
@@ -1658,12 +1670,14 @@ async fn handle_client_command(
                         }
                         _ => crate::settings::ProfileSaveTarget::ActiveSource,
                     };
-                    crate::control_runtime::ControlRequest::ProfileCapture { target }
+                    crate::operator_commands::InterfaceControlRequest::ProfileCapture { target }
                 }
-                "profile_apply" => crate::control_runtime::ControlRequest::ProfileApply,
-                "profile_mqtt" => crate::control_runtime::ControlRequest::ProfileSetMqtt {
-                    enabled: cmd["enabled"].as_bool(),
-                },
+                "profile_apply" => crate::operator_commands::InterfaceControlRequest::ProfileApply,
+                "profile_mqtt" => {
+                    crate::operator_commands::InterfaceControlRequest::ProfileSetMqtt {
+                        enabled: cmd["enabled"].as_bool(),
+                    }
+                }
                 "profile_extension_allow" => {
                     let name = cmd["name"].as_str().unwrap_or("").to_string();
                     if name.is_empty() {
@@ -1678,7 +1692,9 @@ async fn handle_client_command(
                             .await;
                         return;
                     }
-                    crate::control_runtime::ControlRequest::ProfileExtensionAllow { name }
+                    crate::operator_commands::InterfaceControlRequest::ProfileExtensionAllow {
+                        name,
+                    }
                 }
                 "profile_extension_deny" => {
                     let name = cmd["name"].as_str().unwrap_or("").to_string();
@@ -1694,24 +1710,28 @@ async fn handle_client_command(
                             .await;
                         return;
                     }
-                    crate::control_runtime::ControlRequest::ProfileExtensionDeny { name }
+                    crate::operator_commands::InterfaceControlRequest::ProfileExtensionDeny { name }
                 }
                 "profile_extension_clear" => {
-                    crate::control_runtime::ControlRequest::ProfileExtensionClear
+                    crate::operator_commands::InterfaceControlRequest::ProfileExtensionClear
                 }
-                "profile_persona" => crate::control_runtime::ControlRequest::ProfileSetPersona {
-                    name: cmd["name"]
-                        .as_str()
-                        .map(str::to_string)
-                        .filter(|s| !s.is_empty()),
-                },
-                "profile_tone" => crate::control_runtime::ControlRequest::ProfileSetTone {
-                    name: cmd["name"]
-                        .as_str()
-                        .map(str::to_string)
-                        .filter(|s| !s.is_empty()),
-                },
-                "persona_list" => crate::control_runtime::ControlRequest::PersonaList,
+                "profile_persona" => {
+                    crate::operator_commands::InterfaceControlRequest::ProfileSetPersona {
+                        name: cmd["name"]
+                            .as_str()
+                            .map(str::to_string)
+                            .filter(|s| !s.is_empty()),
+                    }
+                }
+                "profile_tone" => {
+                    crate::operator_commands::InterfaceControlRequest::ProfileSetTone {
+                        name: cmd["name"]
+                            .as_str()
+                            .map(str::to_string)
+                            .filter(|s| !s.is_empty()),
+                    }
+                }
+                "persona_list" => crate::operator_commands::InterfaceControlRequest::PersonaList,
                 "persona_switch" => {
                     let name = cmd["name"].as_str().unwrap_or("").to_string();
                     if name.is_empty() {
@@ -1726,7 +1746,7 @@ async fn handle_client_command(
                             .await;
                         return;
                     }
-                    crate::control_runtime::ControlRequest::PersonaSwitch { name }
+                    crate::operator_commands::InterfaceControlRequest::PersonaSwitch { name }
                 }
                 _ => unreachable!(),
             };
@@ -1777,7 +1797,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::ContextStatus,
+                    request: crate::operator_commands::InterfaceControlRequest::ContextStatus,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1822,7 +1842,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::ContextCompact,
+                    request: crate::operator_commands::InterfaceControlRequest::ContextCompact,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -1867,7 +1887,7 @@ async fn handle_client_command(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let accepted = command_tx
                 .send(WebCommand::ExecuteControl {
-                    request: crate::control_runtime::ControlRequest::ContextClear,
+                    request: crate::operator_commands::InterfaceControlRequest::ContextClear,
                     respond_to: Some(reply_tx),
                 })
                 .await
@@ -2038,9 +2058,10 @@ async fn handle_client_command(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 let accepted = command_tx
                     .send(WebCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::CleaveCancelChild {
-                            label: label.to_string(),
-                        },
+                        request:
+                            crate::operator_commands::InterfaceControlRequest::CleaveCancelChild {
+                                label: label.to_string(),
+                            },
                         respond_to: Some(reply_tx),
                     })
                     .await
@@ -2614,7 +2635,7 @@ mod tests {
                 respond_to,
             } => {
                 match request {
-                    crate::control_runtime::ControlRequest::SwitchDispatcher {
+                    crate::operator_commands::InterfaceControlRequest::SwitchDispatcher {
                         request_id,
                         profile,
                         model,
@@ -2698,7 +2719,9 @@ mod tests {
                 respond_to,
             } => {
                 match request {
-                    crate::control_runtime::ControlRequest::CleaveCancelChild { label } => {
+                    crate::operator_commands::InterfaceControlRequest::CleaveCancelChild {
+                        label,
+                    } => {
                         assert_eq!(label, "alpha");
                     }
                     other => panic!("wrong request: {other:?}"),
@@ -2749,7 +2772,7 @@ mod tests {
             } => {
                 assert!(matches!(
                     request,
-                    crate::control_runtime::ControlRequest::SecretsView
+                    crate::operator_commands::InterfaceControlRequest::SecretsView
                 ));
                 respond_to
                     .expect("respond_to")
@@ -2797,7 +2820,7 @@ mod tests {
             } => {
                 assert!(matches!(
                     request,
-                    crate::control_runtime::ControlRequest::CleaveStatus
+                    crate::operator_commands::InterfaceControlRequest::CleaveStatus
                 ));
                 respond_to
                     .expect("respond_to")
@@ -2845,7 +2868,7 @@ mod tests {
             } => {
                 assert!(matches!(
                     request,
-                    crate::control_runtime::ControlRequest::DelegateStatus
+                    crate::operator_commands::InterfaceControlRequest::DelegateStatus
                 ));
                 respond_to
                     .expect("respond_to")
@@ -2893,7 +2916,7 @@ mod tests {
             } => {
                 assert!(matches!(
                     request,
-                    crate::control_runtime::ControlRequest::VaultStatus
+                    crate::operator_commands::InterfaceControlRequest::VaultStatus
                 ));
                 respond_to
                     .expect("respond_to")

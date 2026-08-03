@@ -480,24 +480,24 @@ impl IpcConnection {
                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                     let request = match method.as_str() {
                         "context_status" => {
-                            Some(crate::control_runtime::ControlRequest::ContextStatus)
+                            Some(crate::operator_commands::InterfaceControlRequest::ContextStatus)
                         }
                         "context_compact" => {
-                            Some(crate::control_runtime::ControlRequest::ContextCompact)
+                            Some(crate::operator_commands::InterfaceControlRequest::ContextCompact)
                         }
                         "context_clear" => {
-                            Some(crate::control_runtime::ControlRequest::ContextClear)
+                            Some(crate::operator_commands::InterfaceControlRequest::ContextClear)
                         }
-                        "new_session" => Some(crate::control_runtime::ControlRequest::NewSession),
-                        "auth_status" => Some(crate::control_runtime::ControlRequest::AuthStatus),
-                        "model_view" => Some(crate::control_runtime::ControlRequest::ModelView),
-                        "model_list" => Some(crate::control_runtime::ControlRequest::ModelList),
-                        "skills_view" => Some(crate::control_runtime::ControlRequest::SkillsView),
+                        "new_session" => Some(crate::operator_commands::InterfaceControlRequest::NewSession),
+                        "auth_status" => Some(crate::operator_commands::InterfaceControlRequest::AuthStatus),
+                        "model_view" => Some(crate::operator_commands::InterfaceControlRequest::ModelView),
+                        "model_list" => Some(crate::operator_commands::InterfaceControlRequest::ModelList),
+                        "skills_view" => Some(crate::operator_commands::InterfaceControlRequest::SkillsView),
                         "skills_get" => payload
                             .get("name")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
-                            .map(|name| crate::control_runtime::ControlRequest::SkillGet {
+                            .map(|name| crate::operator_commands::InterfaceControlRequest::SkillGet {
                                 name: name.to_string(),
                             }),
                         "skills_install" => {
@@ -506,15 +506,15 @@ impl IpcConnection {
                                 .and_then(|v| v.as_str())
                                 .filter(|s| !s.is_empty())
                                 .map(str::to_string);
-                            Some(crate::control_runtime::ControlRequest::SkillsInstall { name })
+                            Some(crate::operator_commands::InterfaceControlRequest::SkillsInstall { name })
                         }
-                        "plugin_view" => Some(crate::control_runtime::ControlRequest::PluginView),
+                        "plugin_view" => Some(crate::operator_commands::InterfaceControlRequest::PluginView),
                         "plugin_install" => payload
                             .get("uri")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(
-                                |uri| crate::control_runtime::ControlRequest::PluginInstall {
+                                |uri| crate::operator_commands::InterfaceControlRequest::PluginInstall {
                                     uri: uri.to_string(),
                                 },
                             ),
@@ -523,12 +523,12 @@ impl IpcConnection {
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(
-                                |name| crate::control_runtime::ControlRequest::PluginRemove {
+                                |name| crate::operator_commands::InterfaceControlRequest::PluginRemove {
                                     name: name.to_string(),
                                 },
                             ),
                         "plugin_update" => {
-                            Some(crate::control_runtime::ControlRequest::PluginUpdate {
+                            Some(crate::operator_commands::InterfaceControlRequest::PluginUpdate {
                                 name: payload
                                     .get("name")
                                     .and_then(|v| v.as_str())
@@ -536,14 +536,14 @@ impl IpcConnection {
                                     .filter(|s| !s.is_empty()),
                             })
                         }
-                        "secrets_view" => Some(crate::control_runtime::ControlRequest::SecretsView),
+                        "secrets_view" => Some(crate::operator_commands::InterfaceControlRequest::SecretsView),
                         "secrets_set" => {
                             let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
                             let value = payload.get("value").and_then(|v| v.as_str()).unwrap_or("");
                             if name.is_empty() || value.is_empty() {
                                 None
                             } else {
-                                Some(crate::control_runtime::ControlRequest::SecretsSet {
+                                Some(crate::operator_commands::InterfaceControlRequest::SecretsSet {
                                     name: name.to_string(),
                                     value: value.to_string(),
                                 })
@@ -553,7 +553,7 @@ impl IpcConnection {
                             .get("name")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
-                            .map(|name| crate::control_runtime::ControlRequest::SecretsGet {
+                            .map(|name| crate::operator_commands::InterfaceControlRequest::SecretsGet {
                                 name: name.to_string(),
                             }),
                         "secrets_delete" => payload
@@ -561,36 +561,36 @@ impl IpcConnection {
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(
-                                |name| crate::control_runtime::ControlRequest::SecretsDelete {
+                                |name| crate::operator_commands::InterfaceControlRequest::SecretsDelete {
                                     name: name.to_string(),
                                 },
                             ),
-                        "vault_status" => Some(crate::control_runtime::ControlRequest::VaultStatus),
-                        "vault_unseal" => Some(crate::control_runtime::ControlRequest::VaultUnseal),
-                        "vault_login" => Some(crate::control_runtime::ControlRequest::VaultLogin),
+                        "vault_status" => Some(crate::operator_commands::InterfaceControlRequest::VaultStatus),
+                        "vault_unseal" => Some(crate::operator_commands::InterfaceControlRequest::VaultUnseal),
+                        "vault_login" => Some(crate::operator_commands::InterfaceControlRequest::VaultLogin),
                         "vault_configure" => {
-                            Some(crate::control_runtime::ControlRequest::VaultConfigure)
+                            Some(crate::operator_commands::InterfaceControlRequest::VaultConfigure)
                         }
                         "vault_init_policy" => {
-                            Some(crate::control_runtime::ControlRequest::VaultInitPolicy)
+                            Some(crate::operator_commands::InterfaceControlRequest::VaultInitPolicy)
                         }
                         "cleave_status" => {
-                            Some(crate::control_runtime::ControlRequest::CleaveStatus)
+                            Some(crate::operator_commands::InterfaceControlRequest::CleaveStatus)
                         }
                         "cleave_cancel_child" => payload
                             .get("label")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(|label| {
-                                crate::control_runtime::ControlRequest::CleaveCancelChild {
+                                crate::operator_commands::InterfaceControlRequest::CleaveCancelChild {
                                     label: label.to_string(),
                                 }
                             }),
                         "delegate_status" => {
-                            Some(crate::control_runtime::ControlRequest::DelegateStatus)
+                            Some(crate::operator_commands::InterfaceControlRequest::DelegateStatus)
                         }
                         "list_sessions" => {
-                            Some(crate::control_runtime::ControlRequest::ListSessions)
+                            Some(crate::operator_commands::InterfaceControlRequest::ListSessions)
                         }
                         "set_model" => {
                             let model = payload
@@ -625,7 +625,7 @@ impl IpcConnection {
                                     .await;
                                     continue;
                                 }
-                                Some(crate::control_runtime::ControlRequest::SetModel {
+                                Some(crate::operator_commands::InterfaceControlRequest::SetModel {
                                     requested_model: model,
                                 })
                             }
@@ -653,7 +653,7 @@ impl IpcConnection {
                             if req.request_id.trim().is_empty() || req.profile.trim().is_empty() {
                                 None
                             } else {
-                                Some(crate::control_runtime::ControlRequest::SwitchDispatcher {
+                                Some(crate::operator_commands::InterfaceControlRequest::SwitchDispatcher {
                                     request_id: req.request_id,
                                     profile: req.profile,
                                     model: req.model,
@@ -664,7 +664,7 @@ impl IpcConnection {
                             let level_raw =
                                 payload.get("level").and_then(|v| v.as_str()).unwrap_or("");
                             crate::settings::ThinkingLevel::parse(level_raw).map(|level| {
-                                crate::control_runtime::ControlRequest::SetThinking { level }
+                                crate::operator_commands::InterfaceControlRequest::SetThinking { level }
                             })
                         }
                         "set_context_class" => payload
@@ -672,7 +672,7 @@ impl IpcConnection {
                             .and_then(|v| v.as_str())
                             .and_then(crate::settings::ContextClass::parse)
                             .map(
-                                |class| crate::control_runtime::ControlRequest::SetContextClass {
+                                |class| crate::operator_commands::InterfaceControlRequest::SetContextClass {
                                     class,
                                 },
                             ),
@@ -683,7 +683,7 @@ impl IpcConnection {
                                 crate::surfaces::layout::UiPresentationLevel::parse(level).ok()
                             })
                             .map(|level| {
-                                crate::control_runtime::ControlRequest::SetPresentationLevel {
+                                crate::operator_commands::InterfaceControlRequest::SetPresentationLevel {
                                     level,
                                 }
                             }),
@@ -692,20 +692,20 @@ impl IpcConnection {
                                 .get("slim")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                            Some(crate::control_runtime::ControlRequest::SetRuntimeMode { slim })
+                            Some(crate::operator_commands::InterfaceControlRequest::SetRuntimeMode { slim })
                         }
                         "set_max_turns" => payload
                             .get("max_turns")
                             .and_then(|v| v.as_u64())
                             .and_then(|n| u32::try_from(n).ok())
                             .map(
-                                |max_turns| crate::control_runtime::ControlRequest::SetMaxTurns {
+                                |max_turns| crate::operator_commands::InterfaceControlRequest::SetMaxTurns {
                                     max_turns,
                                 },
                             ),
-                        "profile_view" => Some(crate::control_runtime::ControlRequest::ProfileView),
+                        "profile_view" => Some(crate::operator_commands::InterfaceControlRequest::ProfileView),
                         "profile_export" => {
-                            Some(crate::control_runtime::ControlRequest::ProfileExport)
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileExport)
                         }
                         "profile_capture" => {
                             let target = match payload.get("target").and_then(|v| v.as_str()) {
@@ -730,13 +730,13 @@ impl IpcConnection {
                                 }
                                 _ => crate::settings::ProfileSaveTarget::ActiveSource,
                             };
-                            Some(crate::control_runtime::ControlRequest::ProfileCapture { target })
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileCapture { target })
                         }
                         "profile_apply" => {
-                            Some(crate::control_runtime::ControlRequest::ProfileApply)
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileApply)
                         }
                         "profile_mqtt" => {
-                            Some(crate::control_runtime::ControlRequest::ProfileSetMqtt {
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileSetMqtt {
                                 enabled: payload.get("enabled").and_then(|v| v.as_bool()),
                             })
                         }
@@ -745,7 +745,7 @@ impl IpcConnection {
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(|name| {
-                                crate::control_runtime::ControlRequest::ProfileExtensionAllow {
+                                crate::operator_commands::InterfaceControlRequest::ProfileExtensionAllow {
                                     name: name.to_string(),
                                 }
                             }),
@@ -754,15 +754,15 @@ impl IpcConnection {
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(|name| {
-                                crate::control_runtime::ControlRequest::ProfileExtensionDeny {
+                                crate::operator_commands::InterfaceControlRequest::ProfileExtensionDeny {
                                     name: name.to_string(),
                                 }
                             }),
                         "profile_extension_clear" => {
-                            Some(crate::control_runtime::ControlRequest::ProfileExtensionClear)
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileExtensionClear)
                         }
                         "profile_persona" => {
-                            Some(crate::control_runtime::ControlRequest::ProfileSetPersona {
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileSetPersona {
                                 name: payload
                                     .get("name")
                                     .and_then(|v| v.as_str())
@@ -771,7 +771,7 @@ impl IpcConnection {
                             })
                         }
                         "profile_tone" => {
-                            Some(crate::control_runtime::ControlRequest::ProfileSetTone {
+                            Some(crate::operator_commands::InterfaceControlRequest::ProfileSetTone {
                                 name: payload
                                     .get("name")
                                     .and_then(|v| v.as_str())
@@ -779,13 +779,13 @@ impl IpcConnection {
                                     .filter(|s| !s.is_empty()),
                             })
                         }
-                        "persona_list" => Some(crate::control_runtime::ControlRequest::PersonaList),
+                        "persona_list" => Some(crate::operator_commands::InterfaceControlRequest::PersonaList),
                         "persona_switch" => payload
                             .get("name")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(
-                                |name| crate::control_runtime::ControlRequest::PersonaSwitch {
+                                |name| crate::operator_commands::InterfaceControlRequest::PersonaSwitch {
                                     name: name.to_string(),
                                 },
                             ),

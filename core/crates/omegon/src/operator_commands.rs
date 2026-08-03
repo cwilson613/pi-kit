@@ -20,9 +20,247 @@ pub type OperatorCommandTx = mpsc::Sender<OperatorCommand>;
 
 /// Boundary-owned control request type exposed to interface adapters.
 ///
-/// Frontends and their tests should couple to this alias rather than importing
-/// backend control runtime internals directly.
-pub type InterfaceControlRequest = crate::control_runtime::ControlRequest;
+/// Frontends and their tests couple to this enum rather than importing backend
+/// control runtime internals directly. The backend owns execution, not the
+/// operator-facing request shape.
+#[derive(Debug)]
+pub enum InterfaceControlRequest {
+    ModelView,
+    ModelList,
+    SetModel {
+        requested_model: String,
+    },
+    SetModelIntent {
+        grade: String,
+    },
+    SetModelProvider {
+        provider: String,
+    },
+    SetModelPolicy {
+        policy: String,
+    },
+    ClearModelOverride,
+    SwitchDispatcher {
+        request_id: String,
+        profile: String,
+        model: Option<String>,
+    },
+    ThinkingView,
+    SetThinking {
+        level: crate::settings::ThinkingLevel,
+    },
+    ProfileCapture {
+        target: crate::settings::ProfileSaveTarget,
+    },
+    ProfileApply,
+    ProfileUse {
+        id: String,
+        scope: Option<String>,
+    },
+    ProfileSetMqtt {
+        enabled: Option<bool>,
+    },
+    ProfileExtensionAllow {
+        name: String,
+    },
+    ProfileExtensionDeny {
+        name: String,
+    },
+    ProfileExtensionClear,
+    ProfileSetPersona {
+        name: Option<String>,
+    },
+    ProfileSetTone {
+        name: Option<String>,
+    },
+    AutomationView,
+    AutomationSet {
+        level: crate::settings::AutomationLevel,
+    },
+    PermissionsView,
+    PermissionTrustAdd {
+        path: String,
+    },
+    PermissionTrustRemove {
+        path: String,
+    },
+    StatusView,
+    RuntimeInventoryStatus,
+    RuntimeSubstrateRefresh,
+    WorkspaceStatusView,
+    WorkspaceListView,
+    WorkspaceNew {
+        label: String,
+    },
+    WorkspaceDestroy {
+        target: String,
+    },
+    WorkspaceAdopt,
+    WorkspaceRelease,
+    WorkspaceArchive,
+    WorkspacePrune,
+    WorkspaceBindMilestone {
+        milestone_id: String,
+    },
+    WorkspaceBindNode {
+        design_node_id: String,
+    },
+    WorkspaceBindClear,
+    WorkspaceRoleView,
+    WorkspaceRoleSet {
+        role: crate::workspace::types::WorkspaceRole,
+    },
+    WorkspaceRoleClear,
+    WorkspaceKindView,
+    WorkspaceKindSet {
+        kind: crate::workspace::types::WorkspaceKind,
+    },
+    WorkspaceKindClear,
+    SessionStatsView,
+    TreeView {
+        args: String,
+    },
+    NoteAdd {
+        text: String,
+    },
+    NotesView,
+    NotesClear,
+    CheckinView,
+    ContextStatus,
+    ContextCompact,
+    ContextClear,
+    ContextRequest {
+        kind: String,
+        query: String,
+    },
+    ContextRequestJson {
+        raw: String,
+    },
+    SetContextClass {
+        class: crate::settings::ContextClass,
+    },
+    SetRuntimeMode {
+        slim: bool,
+    },
+    /// Semantic three-level presentation request. New clients should use this;
+    /// `SetRuntimeMode` remains a legacy Om/Full compatibility decoder.
+    SetPresentationLevel {
+        level: crate::surfaces::layout::UiPresentationLevel,
+    },
+    NewSession,
+    ListSessions,
+    ResumeSession {
+        id: String,
+    },
+    AuthStatus,
+    AuthUnlock,
+    AuthLogin {
+        provider: String,
+    },
+    AuthLogout {
+        provider: String,
+    },
+    SkillsView,
+    SkillsHelp,
+    SkillsInstall {
+        name: Option<String>,
+    },
+    SkillGet {
+        name: String,
+    },
+    SkillDelete {
+        name: String,
+    },
+    ExtensionView,
+    ExtensionInit {
+        name: String,
+    },
+    ExtensionGet {
+        name: String,
+    },
+    ExtensionInstall {
+        uri: String,
+    },
+    ExtensionRemove {
+        name: String,
+    },
+    ExtensionUpdate {
+        name: Option<String>,
+    },
+    ExtensionEnable {
+        name: String,
+    },
+    ExtensionDisable {
+        name: String,
+    },
+    ExtensionSearch {
+        query: Option<String>,
+    },
+    ArmoryBrowse {
+        query: Option<String>,
+    },
+    ArmoryInstall {
+        target: String,
+    },
+    CatalogView,
+    CatalogInstall,
+    CatalogRemove {
+        id: String,
+    },
+    PluginView,
+    PluginInstall {
+        uri: String,
+    },
+    PluginRemove {
+        name: String,
+    },
+    PluginUpdate {
+        name: Option<String>,
+    },
+    SecretsView,
+    SecretsSet {
+        name: String,
+        value: String,
+    },
+    SecretsGet {
+        name: String,
+    },
+    SecretsDelete {
+        name: String,
+    },
+    VariablesView,
+    VariablesSet {
+        name: String,
+        value: String,
+    },
+    VariablesGet {
+        name: String,
+    },
+    VariablesDelete {
+        name: String,
+    },
+    VaultStatus,
+    VaultUnseal,
+    VaultLogin,
+    VaultConfigure,
+    VaultInitPolicy,
+    CleaveStatus,
+    Smoke(crate::smoke_surface::SmokeCommand),
+    CleaveCancelChild {
+        label: String,
+    },
+    DelegateStatus,
+    // ── Auspex fleet control ────────────────────────────────────────
+    SetMaxTurns {
+        max_turns: u32,
+    },
+    ProfileView,
+    ProfileExport,
+    PersonaList,
+    PersonaSwitch {
+        name: String,
+    },
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VoicePromptMetadata {
@@ -133,7 +371,7 @@ pub enum OperatorCommand {
     },
     /// Execute a canonical control request directly.
     ExecuteControl {
-        request: crate::control_runtime::ControlRequest,
+        request: InterfaceControlRequest,
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
     },
     /// Execute an authenticated Auspex supervisor request against the live delegate feature.
@@ -211,7 +449,7 @@ pub enum OperatorCommand {
 /// executing the returned request.
 pub fn control_request_from_slash_command(
     command: &CanonicalSlashCommand,
-) -> Option<crate::control_runtime::ControlRequest> {
+) -> Option<InterfaceControlRequest> {
     crate::control_runtime::control_request_from_slash(command)
 }
 

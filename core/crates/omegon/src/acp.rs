@@ -4351,7 +4351,7 @@ impl OmegonAcpAgent {
 
     async fn execute_worker_control_command(
         &self,
-        request: crate::control_runtime::ControlRequest,
+        request: crate::operator_commands::InterfaceControlRequest,
     ) -> Option<String> {
         let tx = self.worker.borrow().as_ref()?.request_tx.clone();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();

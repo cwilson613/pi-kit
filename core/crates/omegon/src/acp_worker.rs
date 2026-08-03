@@ -77,7 +77,7 @@ pub enum WorkerRequest {
     /// Execute a normalized control request directly, avoiding reparsing when
     /// the ACP transport has already resolved the canonical command.
     CanonicalControlRequest {
-        request: crate::control_runtime::ControlRequest,
+        request: crate::operator_commands::InterfaceControlRequest,
         response_tx: oneshot::Sender<WorkerResponse>,
     },
     /// Connect MCP servers forwarded by the ACP client.

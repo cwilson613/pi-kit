@@ -4642,7 +4642,7 @@ fn build_tui_secret_readiness_snapshot(
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
                 };
-                let response = control_runtime::execute_control(&mut ctx, request).await;
+                let response = control_runtime::execute_control(&mut ctx, request.into()).await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
                 }
@@ -5229,7 +5229,7 @@ fn build_tui_secret_readiness_snapshot(
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
-                    control_runtime::ControlRequest::ContextCompact,
+                    operator_commands::InterfaceControlRequest::ContextCompact,
                 )
                 .await;
                 if let Some(output) = response.output.clone() {
@@ -5260,7 +5260,7 @@ fn build_tui_secret_readiness_snapshot(
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
-                    control_runtime::ControlRequest::ContextClear,
+                    operator_commands::InterfaceControlRequest::ContextClear,
                 )
                 .await;
                 if let Some(output) = response.output.clone() {
@@ -5480,7 +5480,7 @@ fn build_tui_secret_readiness_snapshot(
                                     web::WebCommand::CancelCleaveChild { label, respond_to } => {
                                         let (control_tx, control_rx) = tokio::sync::oneshot::channel();
                                         if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl {
-                                            request: crate::control_runtime::ControlRequest::CleaveCancelChild {
+                                            request: crate::operator_commands::InterfaceControlRequest::CleaveCancelChild {
                                                 label,
                                             },
                                             respond_to: Some(control_tx),

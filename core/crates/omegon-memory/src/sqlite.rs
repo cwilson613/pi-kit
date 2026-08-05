@@ -138,6 +138,44 @@ impl SqliteBackend {
         })
     }
 
+    /// Repair records written by pre-v7 callers that still used the historical
+    /// `default` mind after the store had already migrated to v7.
+    ///
+    /// Legacy records are moved to `legacy` during migration. Therefore any
+    /// `default` records present in an established v7 store are post-migration
+    /// writes and belong to the authoritative `primensus` mind.
+    pub fn reconcile_v7_default_mind(path: &Path) -> anyhow::Result<u64> {
+        let mut conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let version: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?;
+        if version != MEMORY_SCHEMA_VERSION {
+            anyhow::bail!(
+                "default-mind reconciliation requires schema v{}, found v{version}",
+                MEMORY_SCHEMA_VERSION
+            );
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES (?1, 'Authoritative ambient memory', datetime('now'))",
+            params![PRIMENSUS_MIND],
+        )?;
+        let facts = transaction.execute(
+            "UPDATE facts SET mind = ?1 WHERE mind = 'default'",
+            params![PRIMENSUS_MIND],
+        )?;
+        let episodes = transaction.execute(
+            "UPDATE episodes SET mind = ?1 WHERE mind = 'default'",
+            params![PRIMENSUS_MIND],
+        )?;
+        transaction.commit()?;
+        Ok((facts + episodes) as u64)
+    }
+
     pub fn status(path: &Path) -> anyhow::Result<MemoryStoreStatus> {
         let inspected = Self::inspect_current(path)?;
         Ok(MemoryStoreStatus {
@@ -1560,6 +1598,59 @@ mod tests {
             );
             drop(SqliteBackend::open(&path).unwrap());
         }
+    }
+
+    #[test]
+    fn v7_reconciliation_moves_post_migration_default_records_to_primensus() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.db");
+        let backend = SqliteBackend::open(&path).unwrap();
+        drop(backend);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES ('default', 'Stale post-v7 caller', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version, layer) VALUES ('stray-fact', 'default', 'architecture', 'post-v7 content', 'active', datetime('now'), 'test', 'stray-hash', 1.0, datetime('now'), 1, 0.05, 'standard', 1, 'project')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO episodes (id, mind, title, narrative, date, created_at) VALUES ('stray-episode', 'default', 'post-v7', 'post-v7 narrative', date('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert_eq!(SqliteBackend::reconcile_v7_default_mind(&path).unwrap(), 2);
+        assert_eq!(SqliteBackend::reconcile_v7_default_mind(&path).unwrap(), 0);
+
+        let conn = Connection::open(&path).unwrap();
+        let default_facts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE mind = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let default_episodes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes WHERE mind = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let primensus_records: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM facts WHERE mind = ?1) + (SELECT COUNT(*) FROM episodes WHERE mind = ?1)",
+                params![PRIMENSUS_MIND],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((default_facts, default_episodes), (0, 0));
+        assert_eq!(primensus_records, 2);
     }
 
     #[test]

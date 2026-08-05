@@ -305,7 +305,10 @@ pub(crate) fn ensure_project_memory_store_ready(
     }
     let status = omegon_memory::sqlite::SqliteBackend::status(db_path)?;
     match status.schema_version {
-        omegon_memory::sqlite::MEMORY_SCHEMA_VERSION => Ok(None),
+        omegon_memory::sqlite::MEMORY_SCHEMA_VERSION => {
+            omegon_memory::sqlite::SqliteBackend::reconcile_v7_default_mind(db_path)?;
+            Ok(None)
+        }
         version if omegon_memory::sqlite::LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&version) => {
             let plan = omegon_memory::sqlite::SqliteBackend::plan_migration(db_path)?;
             let result = omegon_memory::sqlite::SqliteBackend::apply_migration(&plan)?;
@@ -2360,6 +2363,37 @@ mod init_gating_tests {
         );
         assert!(ensure_project_memory_store_ready(&path).unwrap().is_none());
         drop(omegon_memory::SqliteBackend::open(&path).unwrap());
+    }
+
+    #[test]
+    fn startup_reconciles_post_migration_default_records_to_primensus() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.db");
+        let backend = omegon_memory::SqliteBackend::open(&path).unwrap();
+        drop(backend);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES ('default', 'Stale post-v7 caller', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO episodes (id, mind, title, narrative, date, created_at) VALUES ('stray-session', 'default', 'session', 'post-migration session', date('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(ensure_project_memory_store_ready(&path).unwrap().is_none());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let mind: String = conn
+            .query_row(
+                "SELECT mind FROM episodes WHERE id = 'stray-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mind, omegon_memory::sqlite::PRIMENSUS_MIND);
     }
 
     #[test]

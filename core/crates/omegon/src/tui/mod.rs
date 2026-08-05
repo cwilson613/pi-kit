@@ -25,6 +25,7 @@ pub mod effects;
 pub mod extension_overlays;
 pub mod footer;
 pub mod footer_projection;
+mod frame_scheduler;
 pub mod glyphs;
 mod history;
 pub mod horizontal_line;
@@ -143,6 +144,7 @@ use self::conversation::{ConversationView, Tab};
 use self::dashboard::{DashboardHandleExt, DashboardState};
 use self::editor::Editor;
 use self::footer::{FooterData, SessionUsageSlice};
+use self::frame_scheduler::{AgentDrainBudget, DrainOutcome, TuiDrawReason, TuiFrameScheduler};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
@@ -7188,6 +7190,36 @@ fn handle_editor_command(args: &str) -> String {
     }
 }
 
+fn drain_agent_events_budgeted(
+    events_rx: &mut broadcast::Receiver<AgentEvent>,
+    app: &mut App,
+    budget: AgentDrainBudget,
+) -> DrainOutcome {
+    let started = std::time::Instant::now();
+    let mut handled = 0;
+
+    while handled < budget.max_events && started.elapsed() < budget.max_duration {
+        match events_rx.try_recv() {
+            Ok(agent_event) => {
+                app.handle_agent_event(agent_event);
+                handled += 1;
+            }
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                return DrainOutcome {
+                    handled,
+                    hit_budget: false,
+                };
+            }
+        }
+    }
+
+    DrainOutcome {
+        handled,
+        hit_budget: handled == budget.max_events || started.elapsed() >= budget.max_duration,
+    }
+}
+
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
     command_tx: OperatorCommandTx,
@@ -7397,6 +7429,8 @@ pub async fn run_tui(
         app.tutorial_overlay = Some(tutorial::Tutorial::new_demo(has_design));
     }
 
+    let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
+
     loop {
         // ── Splash replay (/splash command) ─────────────────────────
         if app.replay_splash {
@@ -7404,10 +7438,33 @@ pub async fn run_tui(
             startup_splash::run_replay_splash(&mut terminal, &mut app).await?;
         }
 
-        // Drain agent events BEFORE drawing — so telemetry counters
-        // (memory_ops, tool_calls) are current when draw reads them
-        while let Ok(agent_event) = events_rx.try_recv() {
-            app.handle_agent_event(agent_event);
+        // Operator input is latency-sensitive. Service a bounded batch before
+        // ingesting producer traffic so streaming cannot starve scrolling,
+        // cancellation, or editor control.
+        let mut handled_input = false;
+        for _ in 0..16 {
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
+            let input_event = event::read()?;
+            handled_input = true;
+            if matches!(
+                app.handle_terminal_event(input_event, &command_tx).await,
+                InputDisposition::SkipLoop
+            ) {
+                break;
+            }
+        }
+        if handled_input {
+            scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+        }
+
+        // Agent traffic is throughput-sensitive. Bound each pass by both event
+        // count and wall time so token streams cannot monopolize the UI task.
+        let agent_drain =
+            drain_agent_events_budgeted(&mut events_rx, &mut app, scheduler.agent_budget());
+        if agent_drain.handled > 0 {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
         }
 
         if let Some(rx) = &app.smoke_event_rx {
@@ -7425,6 +7482,7 @@ pub async fn run_tui(
             }
             for event in smoke_events {
                 app.handle_agent_event(event);
+                scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
             }
             if smoke_disconnected {
                 app.smoke_event_rx = None;
@@ -7445,7 +7503,7 @@ pub async fn run_tui(
                                 widget.label = new_title;
                             }
                             widget.current_data = data;
-                            // Frame will automatically re-render with updated data
+                            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                         }
                     }
                     crate::extensions::WidgetEvent::ShowModal {
@@ -7455,32 +7513,39 @@ pub async fn run_tui(
                     } => {
                         app.active_modal =
                             Some((widget_id, data, auto_dismiss_ms, std::time::Instant::now()));
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                     }
                     crate::extensions::WidgetEvent::ActionRequired { widget_id, actions } => {
                         app.active_action_prompt = Some((widget_id, actions));
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                     }
                 }
             }
         }
 
-        // Draw
-        terminal.draw(|f| app.draw(f))?;
-
-        // Poll for events with timeout (16ms ≈ 60fps)
-        let has_terminal_event = event::poll(Duration::from_millis(16))?;
-
-        if has_terminal_event {
-            let input_event = event::read()?;
-            if matches!(
-                app.handle_terminal_event(input_event, &command_tx).await,
-                InputDisposition::SkipLoop
-            ) {
-                continue;
-            } // match event::read()
-        } // if has_terminal_event
+        // Coalesce background mutations to the frame interval. Operator input
+        // remains urgent and draws immediately.
+        let now = std::time::Instant::now();
+        if scheduler.should_draw(now) {
+            terminal.draw(|f| app.draw(f))?;
+            scheduler.after_draw(now);
+        }
 
         if app.should_quit {
             break;
+        }
+
+        // If the agent budget was exhausted, yield only long enough to service
+        // ready input, then continue draining on the next fair scheduling pass.
+        let poll_timeout = if agent_drain.hit_budget {
+            Duration::ZERO
+        } else {
+            scheduler.idle_poll_timeout(std::time::Instant::now())
+        };
+        if event::poll(poll_timeout)? {
+            let input_event = event::read()?;
+            let _ = app.handle_terminal_event(input_event, &command_tx).await;
+            scheduler.mark_dirty(TuiDrawReason::OperatorInput);
         }
     }
 

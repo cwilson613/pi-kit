@@ -37,8 +37,9 @@ It asserts semantic surfaces stay renderer/backend-neutral and frontend entrypoi
 - `ClientEnvelopeDirection`
 - `ClientEnvelopeKind`
 - `ClientCapabilityHello`
+- `ClientControlRequestDto`
 
-This is intentionally a small versioned envelope with generic JSON payloads. It stabilizes protocol/version/routing semantics before freezing every internal Rust command variant as a public wire DTO.
+This is intentionally a small versioned envelope with generic JSON payloads. It stabilizes protocol/version/routing semantics before freezing every internal Rust command variant as a public wire DTO. Typed DTOs are added selectively behind the envelope, starting with a low-risk control-request subset.
 
 Example control request envelope:
 
@@ -52,6 +53,64 @@ Example control request envelope:
   "kind": "controlRequest",
   "payload": {
     "name": "contextStatus"
+  }
+}
+```
+
+Typed v1 control request payloads currently include:
+
+- `contextStatus`
+- `contextCompact`
+- `contextClear`
+- `newSession`
+- `statusView`
+- `modelView`
+- `modelList`
+- `setPresentationLevel`
+
+Example typed presentation request payload:
+
+```json
+{
+  "name": "setPresentationLevel",
+  "level": "active"
+}
+```
+
+Example surface subscription envelope:
+
+```json
+{
+  "protocolVersion": 1,
+  "envelopeId": "env-2",
+  "sessionId": null,
+  "clientId": "replacement-ui",
+  "direction": "clientToRuntime",
+  "kind": "surfaceSubscription",
+  "payload": {
+    "surfaces": ["conversation", "dashboard", "footer"],
+    "sinceRevision": null,
+    "includeSnapshot": true
+  }
+}
+```
+
+Example surface update envelope:
+
+```json
+{
+  "protocolVersion": 1,
+  "envelopeId": "env-3",
+  "sessionId": "session-1",
+  "clientId": "replacement-ui",
+  "direction": "runtimeToClient",
+  "kind": "surfaceUpdate",
+  "payload": {
+    "surface": "presentation",
+    "revision": 7,
+    "payload": {
+      "level": "active"
+    }
   }
 }
 ```
@@ -75,12 +134,13 @@ A replacement client should:
 1. Negotiate `ClientCapabilityHello`.
 2. Subscribe to semantic surface projections rather than scrape TUI state.
 3. Emit operator intent through versioned `ClientEnvelope` messages.
-4. Use `operator_commands::InterfaceControlRequest` as the in-process semantic target, or a transport-specific DTO that maps into it.
-5. Treat `control_runtime` as runtime execution internals, not a client API.
+4. Decode and validate control envelopes through `decode_client_control_dispatch` instead of duplicating transport-local validation.
+5. Decode and validate subscription envelopes through `decode_client_surface_subscription_envelope`.
+6. Wrap runtime-to-client projections with `encode_client_surface_update_envelope`.
+7. Use the decoded `InterfaceControlRequest` as the in-process semantic target, or a transport-specific DTO that maps into it.
+8. Treat `control_runtime` as runtime execution internals, not a client API.
 
 ## Near-term next slices
 
-1. Add typed DTOs for the most common control requests behind `ClientEnvelopeKind::ControlRequest`.
-2. Add a transport adapter that validates `ClientEnvelope` version/kind before dispatch.
-3. Add golden JSON fixtures for v1 envelopes.
-4. Move mature DTOs toward a dedicated interface crate once the shape stabilizes.
+1. Add typed DTOs for more common control requests behind `ClientEnvelopeKind::ControlRequest`.
+2. Move mature DTOs toward a dedicated interface crate once the shape stabilizes.

@@ -68,6 +68,7 @@ mod inference_discovery;
 mod inference_inventory;
 mod inference_manifest;
 mod inference_runtime;
+mod interactive_turn_execution;
 mod ipc;
 #[cfg(feature = "local-embeddings")]
 mod local_embedding;
@@ -6196,6 +6197,7 @@ fn provider_status_hint(provider: &str) -> &'static str {
     }
 }
 
+use interactive_turn_execution::{InteractiveRuntimeResources, InteractiveTurnExecution};
 #[cfg(test)]
 use runtime_prompt::{ControlSurface, QueueMode, RuntimeActor};
 use runtime_prompt::{PromptEnvelope, RuntimePromptSubmission};
@@ -6259,76 +6261,6 @@ fn split_interactive_agent(
         inference_runtime: agent.inference_runtime,
     };
     (host, state)
-}
-
-#[derive(Clone)]
-struct InteractiveRuntimeResources {
-    cwd: PathBuf,
-    secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
-    context_metrics:
-        std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
-    bridge_model: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    route_controller: Arc<route::RouteController>,
-}
-
-pub(crate) struct InteractiveTurnExecution {
-    loop_config: r#loop::LoopConfig,
-    shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
-    shared_cancel: tui::SharedCancel,
-    context_metrics:
-        std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
-}
-
-impl InteractiveTurnExecution {
-    fn new(
-        runtime: &InteractiveRuntimeResources,
-        shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
-        shared_cancel: tui::SharedCancel,
-        pending_compact: &Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
-        Self {
-            loop_config: build_interactive_loop_config(runtime, &shared_settings, pending_compact),
-            shared_settings,
-            shared_cancel,
-            context_metrics: runtime.context_metrics.clone(),
-        }
-    }
-}
-
-fn build_interactive_loop_config(
-    runtime: &InteractiveRuntimeResources,
-    shared_settings: &Arc<std::sync::Mutex<settings::Settings>>,
-    pending_compact: &Arc<std::sync::atomic::AtomicBool>,
-) -> r#loop::LoopConfig {
-    let model = shared_settings
-        .lock()
-        .map(|s| s.model.clone())
-        .unwrap_or_default();
-
-    let ollama_manager = if providers::infer_provider_id(&model) == "ollama" {
-        Some(ollama::OllamaManager::new())
-    } else {
-        None
-    };
-
-    bootstrap::build_loop_config(
-        shared_settings,
-        &runtime.cwd,
-        &model,
-        bootstrap::LoopConfigOverrides {
-            secrets: Some(runtime.secrets.clone()),
-            force_compact: Some(pending_compact.clone()),
-            allow_commit_nudge: true,
-            ollama_manager,
-            bridge_model: runtime
-                .bridge_model
-                .lock()
-                .ok()
-                .and_then(|guard| guard.clone()),
-            route_controller: Some(runtime.route_controller.clone()),
-            ..Default::default()
-        },
-    )
 }
 
 async fn stop_voice_session_if_requested(
@@ -10647,8 +10579,7 @@ mod tests {
         };
         let pending_compact = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let loop_config =
-            build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
+        let loop_config = runtime.build_loop_config(&shared_settings, &pending_compact);
 
         assert_eq!(loop_config.model, "openai-codex:gpt-5.5");
         assert!(!shared_settings.lock().unwrap().provider_connected);
@@ -10683,8 +10614,7 @@ mod tests {
         };
         let pending_compact = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let loop_config =
-            build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
+        let loop_config = runtime.build_loop_config(&shared_settings, &pending_compact);
 
         assert_eq!(loop_config.model, "openai-codex:gpt-5.5");
         assert_eq!(

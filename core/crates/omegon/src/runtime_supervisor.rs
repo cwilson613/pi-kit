@@ -6,10 +6,13 @@
 
 use std::path::PathBuf;
 
+use crate::AgentEvent;
 use crate::runtime_prompt::{
     ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimePromptSubmission,
 };
 use crate::runtime_turn::{ActiveTurnMeta, ActiveTurnState};
+use crate::tui;
+use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RuntimePromptSubmissionOutcome {
@@ -125,6 +128,56 @@ impl InteractiveRuntimeSupervisor {
 
     pub(crate) fn push_front_prompt(&mut self, prompt: PromptEnvelope) {
         self.queue.push_front(prompt);
+    }
+
+    pub(crate) fn cancel_shared_turn(shared_cancel: &tui::SharedCancel) {
+        if let Ok(guard) = shared_cancel.lock()
+            && let Some(ref cancel) = *guard
+        {
+            cancel.cancel();
+        }
+    }
+
+    pub(crate) fn handle_cancel_command(
+        &mut self,
+        shared_cancel: &tui::SharedCancel,
+        events_tx: &broadcast::Sender<AgentEvent>,
+        submitted_by: String,
+        via: &'static str,
+    ) {
+        let actor = RuntimeActor::from_submission(submitted_by, via);
+        let surface = ControlSurface::from_via(via);
+        if self.request_cancel(actor, surface).is_none() {
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: "Cancel requested, but no active turn is running.".to_string(),
+            });
+        }
+        Self::cancel_shared_turn(shared_cancel);
+    }
+
+    pub(crate) fn emit_queue_notification(
+        &self,
+        events_tx: &broadcast::Sender<AgentEvent>,
+        prompt_id: u64,
+    ) {
+        if let Some(prompt) = self.queue.get(prompt_id) {
+            self.emit_queue_snapshot(events_tx);
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: format!(
+                    "Queued prompt #{} from {} via {}; queue depth {}.",
+                    prompt.id,
+                    prompt.submitted_by.display_label(),
+                    prompt.via.label(),
+                    self.queue_depth()
+                ),
+            });
+        }
+    }
+
+    pub(crate) fn emit_queue_snapshot(&self, events_tx: &broadcast::Sender<AgentEvent>) {
+        let _ = events_tx.send(AgentEvent::RuntimeQueueUpdated {
+            snapshot_json: self.queue_snapshot_json(),
+        });
     }
 
     pub(crate) fn clear_queue(&mut self) {

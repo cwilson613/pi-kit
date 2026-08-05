@@ -78,7 +78,7 @@ pub(crate) fn interpret(
             prompt_id,
             requests_voice_close,
         } => {
-            crate::emit_runtime_queue_notification(runtime, events_tx, prompt_id);
+            runtime.emit_queue_notification(events_tx, prompt_id);
             if requests_voice_close {
                 let _ = events_tx.send(AgentEvent::SystemNotification {
                     message: "Voice requested shutdown after this prompt; it will be stopped when the active turn completes.".to_string(),
@@ -86,16 +86,10 @@ pub(crate) fn interpret(
             }
         }
         ActiveWorkerCommandEffect::Cancel { submitted_by, via } => {
-            crate::handle_runtime_cancel_command(
-                runtime,
-                shared_cancel,
-                events_tx,
-                submitted_by,
-                via,
-            );
+            runtime.handle_cancel_command(shared_cancel, events_tx, submitted_by, via);
         }
         ActiveWorkerCommandEffect::LifecycleRequested => {
-            crate::cancel_shared_turn(shared_cancel);
+            InteractiveRuntimeSupervisor::cancel_shared_turn(shared_cancel);
         }
         ActiveWorkerCommandEffect::Deferred(command) => deferred_commands.push_back(command),
     }

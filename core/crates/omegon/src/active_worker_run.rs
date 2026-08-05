@@ -8,7 +8,7 @@ use crate::active_worker_wait::ActiveWorkerWaitTelemetry;
 use crate::post_worker_completion::PostWorkerCompletionPolicy;
 use crate::runtime_turn::RuntimeTurnLifecycle;
 use crate::tui;
-use crate::{AgentEvent, InteractiveAgentState, InteractiveRuntimeSupervisor, cancel_shared_turn};
+use crate::{AgentEvent, InteractiveAgentState, InteractiveRuntimeSupervisor};
 
 pub(crate) struct ActiveWorkerRunContext<'a> {
     pub(crate) command_rx: &'a mut mpsc::Receiver<tui::TuiCommand>,
@@ -69,7 +69,7 @@ pub(crate) async fn run(
             maybe_cmd = command_rx.recv() => {
                 let Some(cmd) = maybe_cmd else {
                     completion_policy.request_channel_close();
-                    cancel_shared_turn(shared_cancel);
+                    InteractiveRuntimeSupervisor::cancel_shared_turn(shared_cancel);
                     continue;
                 };
                 let effect = active_worker_command::apply(

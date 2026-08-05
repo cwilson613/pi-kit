@@ -5787,7 +5787,7 @@ fn build_tui_secret_readiness_snapshot(
                             via,
                             "prompt queued behind active interactive turn"
                         );
-                        emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
+                        runtime.emit_queue_notification(&events_tx, prompt_id);
                         continue;
                     }
                     RuntimePromptSubmissionOutcome::Promoted { active, .. } => Some(*active),
@@ -5865,13 +5865,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
             tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
-                handle_runtime_cancel_command(
-                    &mut runtime,
-                    &shared_cancel,
-                    &events_tx,
-                    submitted_by,
-                    via,
-                );
+                runtime.handle_cancel_command(&shared_cancel, &events_tx, submitted_by, via);
             }
             tui::TuiCommand::VoicePrompt { text, metadata } => {
                 deferred_commands.push_front(tui::TuiCommand::SubmitPrompt(
@@ -6203,63 +6197,10 @@ fn provider_status_hint(provider: &str) -> &'static str {
 }
 
 #[cfg(test)]
-use runtime_prompt::QueueMode;
-use runtime_prompt::{ControlSurface, PromptEnvelope, RuntimeActor, RuntimePromptSubmission};
+use runtime_prompt::{ControlSurface, QueueMode, RuntimeActor};
+use runtime_prompt::{PromptEnvelope, RuntimePromptSubmission};
 use runtime_supervisor::{InteractiveRuntimeSupervisor, RuntimePromptSubmissionOutcome};
 use runtime_turn::RuntimeTurnLifecycle;
-
-fn cancel_shared_turn(shared_cancel: &tui::SharedCancel) {
-    if let Ok(guard) = shared_cancel.lock()
-        && let Some(ref cancel) = *guard
-    {
-        cancel.cancel();
-    }
-}
-
-fn handle_runtime_cancel_command(
-    runtime: &mut InteractiveRuntimeSupervisor,
-    shared_cancel: &tui::SharedCancel,
-    events_tx: &broadcast::Sender<AgentEvent>,
-    submitted_by: String,
-    via: &'static str,
-) {
-    let actor = RuntimeActor::from_submission(submitted_by, via);
-    let surface = ControlSurface::from_via(via);
-    let active = runtime.request_cancel(actor, surface);
-    if active.is_none() {
-        let _ = events_tx.send(AgentEvent::SystemNotification {
-            message: "Cancel requested, but no active turn is running.".to_string(),
-        });
-    }
-    cancel_shared_turn(shared_cancel);
-}
-
-fn emit_runtime_queue_notification(
-    runtime: &InteractiveRuntimeSupervisor,
-    events_tx: &broadcast::Sender<AgentEvent>,
-    prompt_id: u64,
-) {
-    if let Some(prompt) = runtime.queue.get(prompt_id) {
-        emit_runtime_queue_snapshot(runtime, events_tx);
-        let _ = events_tx.send(AgentEvent::SystemNotification {
-            message: format!(
-                "Queued prompt #{} from {} via {}; queue depth {}.",
-                prompt.id,
-                prompt.submitted_by.display_label(),
-                prompt.via.label(),
-                runtime.queue_depth()
-            ),
-        });
-    }
-}
-
-fn emit_runtime_queue_snapshot(
-    runtime: &InteractiveRuntimeSupervisor,
-    events_tx: &broadcast::Sender<AgentEvent>,
-) {
-    let snapshot_json = runtime.queue_snapshot_json();
-    let _ = events_tx.send(AgentEvent::RuntimeQueueUpdated { snapshot_json });
-}
 
 pub(crate) struct InteractiveAgentState {
     pub(crate) bus: crate::bus::EventBus,
@@ -9736,7 +9677,7 @@ mod tests {
             None,
         );
 
-        emit_runtime_queue_notification(&supervisor, &events_tx, prompt_id);
+        supervisor.emit_queue_notification(&events_tx, prompt_id);
 
         match events_rx.try_recv().expect("queue snapshot") {
             AgentEvent::RuntimeQueueUpdated { snapshot_json } => {

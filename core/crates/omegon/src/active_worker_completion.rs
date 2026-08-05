@@ -1,10 +1,7 @@
 use tokio::sync::broadcast;
 
 use crate::runtime_state::RuntimeStateHandles;
-use crate::{
-    InteractiveRuntimeSupervisor, RuntimeTurnLifecycle, emit_runtime_queue_snapshot,
-    mark_interactive_session_busy,
-};
+use crate::{InteractiveRuntimeSupervisor, RuntimeTurnLifecycle, mark_interactive_session_busy};
 use omegon_traits::AgentEvent;
 
 /// Finalize the supervisor-visible state for a worker that has stopped.
@@ -21,7 +18,7 @@ pub(crate) fn complete(
     lifecycle.transition("supervisor_completing", runtime.queue_depth(), events_tx);
     runtime.complete_active_turn();
     lifecycle.transition("supervisor_completed", runtime.queue_depth(), events_tx);
-    emit_runtime_queue_snapshot(runtime, events_tx);
+    runtime.emit_queue_snapshot(events_tx);
     mark_interactive_session_busy(dashboard_handles, runtime.is_busy());
 }
 

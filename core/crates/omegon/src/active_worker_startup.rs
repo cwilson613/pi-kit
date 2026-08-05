@@ -2,10 +2,7 @@ use tokio::sync::broadcast;
 
 use crate::runtime_state::RuntimeStateHandles;
 use crate::runtime_turn::{ActiveTurnMeta, RuntimeTurnLifecycle};
-use crate::{
-    AgentEvent, InteractiveRuntimeSupervisor, emit_runtime_queue_snapshot,
-    mark_interactive_session_busy,
-};
+use crate::{AgentEvent, InteractiveRuntimeSupervisor, mark_interactive_session_busy};
 
 /// Emit the supervisor-visible startup projections for a promoted turn.
 ///
@@ -18,7 +15,7 @@ pub(crate) fn prepare(
     events_tx: &broadcast::Sender<AgentEvent>,
     dashboard_handles: &RuntimeStateHandles,
 ) -> RuntimeTurnLifecycle {
-    emit_runtime_queue_snapshot(runtime, events_tx);
+    runtime.emit_queue_snapshot(events_tx);
     let mut lifecycle = RuntimeTurnLifecycle::new(active, "promoted");
     lifecycle.transition("promoted", runtime.queue_depth(), events_tx);
     let _ = events_tx.send(AgentEvent::RuntimePromptStarted {

@@ -68,6 +68,7 @@ mod inference_discovery;
 mod inference_inventory;
 mod inference_manifest;
 mod inference_runtime;
+mod interactive_session;
 mod interactive_turn_execution;
 mod ipc;
 #[cfg(feature = "local-embeddings")]
@@ -4512,7 +4513,7 @@ fn build_tui_secret_readiness_snapshot(
     let _mqtt_bridge =
         maybe_start_mqtt_bridge(&agent.cwd, agent.session_id.clone(), events_tx.clone());
 
-    let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+    let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
     let runtime_resources = InteractiveRuntimeResources {
         cwd: agent.cwd.clone(),
@@ -5812,15 +5813,12 @@ fn build_tui_secret_readiness_snapshot(
                         shared_cancel.clone(),
                         &pending_compact,
                     );
-                    let mut turn_task = tokio::task::spawn_local(
-                        runtime_turn_execution::execute(
-                            state_for_turn,
-                            execution,
-                            bridge.clone(),
-                            events_tx.clone(),
-                            active,
-                            lifecycle.clone(),
-                        ),
+                    let mut turn_task = execution.spawn(
+                        state_for_turn,
+                        bridge.clone(),
+                        events_tx.clone(),
+                        active,
+                        lifecycle.clone(),
                     );
                     let (returned_state, completion_policy) = active_worker_run::run(
                         &mut turn_task,
@@ -6197,33 +6195,13 @@ fn provider_status_hint(provider: &str) -> &'static str {
     }
 }
 
+use interactive_session::{InteractiveAgentHost, InteractiveAgentState};
 use interactive_turn_execution::{InteractiveRuntimeResources, InteractiveTurnExecution};
 #[cfg(test)]
 use runtime_prompt::{ControlSurface, QueueMode, RuntimeActor};
 use runtime_prompt::{PromptEnvelope, RuntimePromptSubmission};
 use runtime_supervisor::{InteractiveRuntimeSupervisor, RuntimePromptSubmissionOutcome};
 use runtime_turn::RuntimeTurnLifecycle;
-
-pub(crate) struct InteractiveAgentState {
-    pub(crate) bus: crate::bus::EventBus,
-    pub(crate) context_manager: crate::context::ContextManager,
-    pub(crate) conversation: crate::conversation::ConversationState,
-    pub(crate) inference_runtime: crate::inference_runtime::InferenceRuntimeState,
-}
-
-pub(crate) struct InteractiveAgentHost {
-    pub(crate) session_id: String,
-    pub(crate) instance_id: String,
-    pub(crate) context_metrics:
-        std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
-    pub(crate) cwd: PathBuf,
-    pub(crate) secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
-    pub(crate) web_auth_state: crate::web::WebAuthState,
-    pub(crate) dashboard_handles: crate::runtime_state::RuntimeStateHandles,
-    pub(crate) resume_info: Option<setup::ResumeInfo>,
-    pub(crate) workspace_state: setup::WorkspaceStartupState,
-    pub(crate) runtime_generation: u64,
-}
 
 pub(crate) struct CliRuntimeView<'a> {
     pub(crate) no_session: bool,
@@ -6237,30 +6215,6 @@ fn interactive_resume_mode(cli: &Cli) -> Option<Option<&str>> {
     } else {
         cli.resume.as_ref().map(|r| r.as_deref())
     }
-}
-
-fn split_interactive_agent(
-    agent: setup::AgentSetup,
-) -> (InteractiveAgentHost, InteractiveAgentState) {
-    let host = InteractiveAgentHost {
-        session_id: agent.session_id,
-        instance_id: agent.instance_id,
-        context_metrics: agent.context_metrics,
-        cwd: agent.cwd,
-        secrets: agent.secrets,
-        web_auth_state: agent.web_auth_state,
-        dashboard_handles: agent.dashboard_handles,
-        resume_info: agent.resume_info,
-        workspace_state: agent.workspace_state,
-        runtime_generation: 1,
-    };
-    let state = InteractiveAgentState {
-        bus: agent.bus,
-        context_manager: agent.context_manager,
-        conversation: agent.conversation,
-        inference_runtime: agent.inference_runtime,
-    };
-    (host, state)
 }
 
 async fn stop_voice_session_if_requested(
@@ -9718,7 +9672,7 @@ mod tests {
         let expected_message_count = agent.conversation.message_count();
         let expected_tool_count = agent.bus.tool_definitions().len();
 
-        let (host, runtime_state) = split_interactive_agent(agent);
+        let (host, runtime_state) = interactive_session::split_agent(agent);
 
         assert_eq!(host.session_id, expected_session_id);
         assert_eq!(host.cwd, expected_cwd);
@@ -9740,7 +9694,7 @@ mod tests {
     async fn split_interactive_agent_keeps_runtime_state_mutable_after_split() {
         let agent = test_agent_setup();
         let expected_cwd = agent.cwd.clone();
-        let (host, mut runtime_state) = split_interactive_agent(agent);
+        let (host, mut runtime_state) = interactive_session::split_agent(agent);
 
         runtime_state
             .conversation
@@ -9903,7 +9857,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9939,7 +9893,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9976,7 +9930,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10008,7 +9962,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10045,7 +9999,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10082,7 +10036,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10119,7 +10073,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10156,7 +10110,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10221,7 +10175,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10262,7 +10216,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
+        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10371,7 +10325,7 @@ mod tests {
         } else {
             Cli::try_parse_from(vec!["omegon"]).unwrap()
         };
-        let (agent, runtime_state) = split_interactive_agent(agent);
+        let (agent, runtime_state) = interactive_session::split_agent(agent);
         (
             rt,
             agent,

@@ -6,7 +6,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::{bootstrap, r#loop, ollama, providers, route, settings, tui};
+use crate::bridge::LlmBridge;
+use crate::runtime_turn::{ActiveTurnMeta, RuntimeTurnLifecycle};
+use crate::{
+    AgentEvent, InteractiveAgentState, bootstrap, r#loop, ollama, providers, route, settings, tui,
+};
+use tokio::sync::{RwLock, broadcast};
 
 #[derive(Clone)]
 pub(crate) struct InteractiveRuntimeResources {
@@ -25,6 +30,19 @@ pub(crate) struct InteractiveTurnExecution {
 }
 
 impl InteractiveTurnExecution {
+    pub(crate) fn spawn(
+        self,
+        state: InteractiveAgentState,
+        bridge: Arc<RwLock<Box<dyn LlmBridge>>>,
+        events_tx: broadcast::Sender<AgentEvent>,
+        active: ActiveTurnMeta,
+        lifecycle: RuntimeTurnLifecycle,
+    ) -> tokio::task::JoinHandle<InteractiveAgentState> {
+        tokio::task::spawn_local(crate::runtime_turn_execution::execute(
+            state, self, bridge, events_tx, active, lifecycle,
+        ))
+    }
+
     pub(crate) fn new(
         runtime: &InteractiveRuntimeResources,
         shared_settings: Arc<Mutex<settings::Settings>>,

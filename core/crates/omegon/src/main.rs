@@ -68,6 +68,7 @@ mod inference_discovery;
 mod inference_inventory;
 mod inference_manifest;
 mod inference_runtime;
+mod interactive_coordinator;
 mod interactive_session;
 mod interactive_turn_execution;
 mod ipc;
@@ -4550,26 +4551,14 @@ fn build_tui_secret_readiness_snapshot(
         });
     };
     'interactive: loop {
-        let cmd = if let Some(cmd) = deferred_commands.pop_front() {
-            cmd
-        } else {
-            match command_rx.recv().await {
-                Some(cmd) => cmd,
-                None => break,
-            }
+        let Some(cmd) = interactive_coordinator::next_command(
+            &mut deferred_commands,
+            &mut command_rx,
+        )
+        .await else {
+            break;
         };
-
-        let cmd = match cmd {
-            tui::TuiCommand::VoicePrompt { text, metadata } => tui::TuiCommand::SubmitPrompt(tui::PromptSubmission {
-                text: format!("🎙 {}", text.trim()),
-                image_paths: Vec::new(),
-                submitted_by: "voice".to_string(),
-                via: "voice",
-                queue_mode: tui::PromptQueueMode::UntilReady,
-                metadata: tui::PromptMetadata { voice: Some(metadata) },
-            }),
-            other => other,
-        };
+        let cmd = interactive_coordinator::normalize_ingress(cmd);
 
         if model_commands::is_model_command(&cmd) {
             model_commands::handle(
@@ -5770,96 +5759,31 @@ fn build_tui_secret_readiness_snapshot(
             }
 
             tui::TuiCommand::SubmitPrompt(submission) => {
-                let submission = RuntimePromptSubmission::from_tui(submission);
-                let submitted_by = submission.actor.display_label().to_string();
-                let via = submission.via.label();
-                let first_active = match runtime.submit(submission) {
-                    RuntimePromptSubmissionOutcome::Queued {
-                        prompt_id,
-                        queue_depth,
-                    } => {
-                        tracing::info!(
-                            prompt_id,
-                            queue_depth,
-                            active_turn_id = runtime
-                                .turns
-                                .current()
-                                .map(|active| active.runtime_turn_id),
-                            submitted_by,
-                            via,
-                            "prompt queued behind active interactive turn"
-                        );
-                        runtime.emit_queue_notification(&events_tx, prompt_id);
-                        continue;
+                let (returned_state, disposition) = interactive_coordinator::execute_submission(
+                    RuntimePromptSubmission::from_tui(submission),
+                    runtime_state,
+                    &mut runtime,
+                    &runtime_resources,
+                    shared_settings.clone(),
+                    shared_cancel.clone(),
+                    &pending_compact,
+                    bridge.clone(),
+                    &events_tx,
+                    &agent.dashboard_handles,
+                    &mut command_rx,
+                    &mut deferred_commands,
+                )
+                .await?;
+                runtime_state = returned_state;
+                match disposition {
+                    interactive_coordinator::TurnChainDisposition::Continue => {}
+                    interactive_coordinator::TurnChainDisposition::DispatchDeferred(command) => {
+                        deferred_commands.push_front(command);
                     }
-                    RuntimePromptSubmissionOutcome::Promoted { active, .. } => Some(*active),
-                };
-
-                let mut next_active = first_active;
-                while let Some(active) = next_active.take().or_else(|| runtime.maybe_start_next_turn()) {
-                    let mut lifecycle = active_worker_startup::prepare(
-                        &active,
-                        &runtime,
-                        &events_tx,
-                        &agent.dashboard_handles,
-                    );
-                    stop_voice_session_if_requested(&active.prompt, &runtime_state.bus, &events_tx)
-                        .await;
-
-                    let state_for_turn = runtime_state;
-                    let execution = InteractiveTurnExecution::new(
-                        &runtime_resources,
-                        shared_settings.clone(),
-                        shared_cancel.clone(),
-                        &pending_compact,
-                    );
-                    let mut turn_task = execution.spawn(
-                        state_for_turn,
-                        bridge.clone(),
-                        events_tx.clone(),
-                        active,
-                        lifecycle.clone(),
-                    );
-                    let (returned_state, completion_policy) = active_worker_run::run(
-                        &mut turn_task,
-                        active_worker_run::ActiveWorkerRunContext {
-                            command_rx: &mut command_rx,
-                            runtime: &mut runtime,
-                            shared_cancel: &shared_cancel,
-                            events_tx: &events_tx,
-                            deferred_commands: &mut deferred_commands,
-                            lifecycle: &mut lifecycle,
-                        },
-                    )
-                    .await
-                    .inspect_err(|error| {
-                        mark_interactive_session_busy(&agent.dashboard_handles, false);
-                        let message = error.to_string();
-                        let _ = events_tx.send(AgentEvent::SystemNotification { message });
-                        let _ = events_tx.send(AgentEvent::AgentEnd);
-                    })?;
-                    runtime_state = returned_state;
-
-                    active_worker_completion::complete(
-                        &mut runtime,
-                        &mut lifecycle,
-                        &events_tx,
-                        &agent.dashboard_handles,
-                    );
-
-                    match completion_policy.finish() {
-                        post_worker_completion::PostWorkerDisposition::PromoteNext => {}
-                        post_worker_completion::PostWorkerDisposition::DispatchDeferred(command) => {
-                            deferred_commands.push_front(command);
-                            break;
-                        }
-                        post_worker_completion::PostWorkerDisposition::Exit => {
-                            break 'interactive;
-                        }
-                        post_worker_completion::PostWorkerDisposition::ExitForRestart { binary, args } => {
-                            restart_request = Some((binary, args));
-                            break 'interactive;
-                        }
+                    interactive_coordinator::TurnChainDisposition::Exit => break 'interactive,
+                    interactive_coordinator::TurnChainDisposition::ExitForRestart { binary, args } => {
+                        restart_request = Some((binary, args));
+                        break 'interactive;
                     }
                 }
             }

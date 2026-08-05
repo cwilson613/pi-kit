@@ -6,6 +6,7 @@
 //! `surfaces` remain the outbound semantic state contract.
 
 pub mod actions;
+pub mod client_api;
 pub mod envelope;
 pub mod replay;
 pub mod revision;

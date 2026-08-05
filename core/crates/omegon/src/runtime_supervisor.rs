@@ -28,8 +28,8 @@ pub(crate) enum RuntimePromptSubmissionOutcome {
 
 #[derive(Debug, Default)]
 pub(crate) struct InteractiveRuntimeSupervisor {
-    pub(crate) queue: PromptQueue,
-    pub(crate) turns: ActiveTurnState,
+    queue: PromptQueue,
+    turns: ActiveTurnState,
 }
 
 impl InteractiveRuntimeSupervisor {
@@ -72,6 +72,14 @@ impl InteractiveRuntimeSupervisor {
     ) -> u64 {
         self.queue
             .enqueue(text, image_paths, actor, via, metadata, queue_mode)
+    }
+
+    pub(crate) fn active_turn_id(&self) -> Option<u64> {
+        self.turns.current().map(|active| active.runtime_turn_id)
+    }
+
+    pub(crate) fn queued_prompt(&self, prompt_id: u64) -> Option<&PromptEnvelope> {
+        self.queue.get(prompt_id)
     }
 
     pub(crate) fn queue_depth(&self) -> usize {

@@ -67,7 +67,7 @@ pub(crate) async fn execute_submission(
             tracing::info!(
                 prompt_id,
                 queue_depth,
-                active_turn_id = runtime.turns.current().map(|active| active.runtime_turn_id),
+                active_turn_id = runtime.active_turn_id(),
                 submitted_by,
                 via,
                 "prompt queued behind active interactive turn"

@@ -9433,9 +9433,9 @@ mod tests {
                 queue_depth: 1,
             }
         );
-        assert_eq!(supervisor.queue.get(2).unwrap().text, "second");
+        assert_eq!(supervisor.queued_prompt(2).unwrap().text, "second");
         assert_eq!(
-            supervisor.queue.get(2).unwrap().queue_mode,
+            supervisor.queued_prompt(2).unwrap().queue_mode,
             QueueMode::InterruptAfterTurn
         );
     }

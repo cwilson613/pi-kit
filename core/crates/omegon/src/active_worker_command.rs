@@ -50,8 +50,7 @@ pub(crate) fn apply(
             ActiveWorkerCommandEffect::PromptQueued {
                 prompt_id,
                 requests_voice_close: runtime
-                    .queue
-                    .get(prompt_id)
+                    .queued_prompt(prompt_id)
                     .is_some_and(|prompt| prompt.requests_voice_close()),
             }
         }

@@ -20,6 +20,9 @@ pub enum AuditKind {
     ExploringWithoutQuestions,
     ParentImplementedWithActiveChildren,
     QuestionAppearsAnsweredByDecision,
+    DesignArtifactMalformed,
+    DesignArtifactUnreadable,
+    DuplicateDesignNodeId,
     OpenSpecStateDrift,
 }
 
@@ -32,6 +35,9 @@ impl AuditKind {
             Self::ExploringWithoutQuestions => "exploring_without_questions",
             Self::ParentImplementedWithActiveChildren => "parent_implemented_with_active_children",
             Self::QuestionAppearsAnsweredByDecision => "question_appears_answered_by_decision",
+            Self::DesignArtifactMalformed => "design_artifact_malformed",
+            Self::DesignArtifactUnreadable => "design_artifact_unreadable",
+            Self::DuplicateDesignNodeId => "duplicate_design_node_id",
             Self::OpenSpecStateDrift => "openspec_state_drift",
         }
     }
@@ -47,8 +53,40 @@ pub struct AuditFinding {
 
 pub fn audit_repo(repo_root: &Path) -> Vec<AuditFinding> {
     let docs_dir = repo_root.join("docs");
-    let nodes = design::scan_design_docs(&docs_dir);
-    audit_nodes(&nodes)
+    let scan = design::scan_design_docs_with_findings(&docs_dir);
+    let mut findings = audit_design_artifact_findings(&scan.findings);
+    findings.extend(audit_nodes(&scan.nodes));
+    findings
+}
+
+pub fn audit_design_artifact_findings(
+    findings: &[omegon_opsx::DesignRepositoryFinding],
+) -> Vec<AuditFinding> {
+    findings
+        .iter()
+        .map(|finding| {
+            let kind = match finding.kind {
+                omegon_opsx::DesignRepositoryFindingKind::Malformed => {
+                    AuditKind::DesignArtifactMalformed
+                }
+                omegon_opsx::DesignRepositoryFindingKind::Unreadable => {
+                    AuditKind::DesignArtifactUnreadable
+                }
+                omegon_opsx::DesignRepositoryFindingKind::DuplicateId => {
+                    AuditKind::DuplicateDesignNodeId
+                }
+            };
+            AuditFinding {
+                node_id: finding
+                    .node_id
+                    .clone()
+                    .unwrap_or_else(|| finding.path.display().to_string()),
+                title: finding.path.display().to_string(),
+                kind,
+                detail: finding.message.clone(),
+            }
+        })
+        .collect()
 }
 
 pub fn audit_nodes(nodes: &HashMap<String, DesignNode>) -> Vec<AuditFinding> {

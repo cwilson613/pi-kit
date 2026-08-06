@@ -24,6 +24,8 @@ pub struct DegradedNode {
 pub struct LifecycleContextProvider {
     /// All design nodes, keyed by id.
     nodes: HashMap<String, DesignNode>,
+    /// Repository diagnostics from the latest design scan.
+    design_findings: Vec<omegon_opsx::DesignRepositoryFinding>,
     /// Parsed sections cache (lazy-loaded).
     sections_cache: HashMap<String, DocumentSections>,
     /// Active openspec changes.
@@ -38,17 +40,19 @@ impl LifecycleContextProvider {
     /// Initialize by scanning docs/ and openspec/ directories.
     pub fn new(repo_path: &Path) -> Self {
         let docs_dir = repo_path.join("docs");
-        let nodes = design::scan_design_docs(&docs_dir);
+        let scan = design::scan_design_docs_with_findings(&docs_dir);
         let changes = spec::list_changes(repo_path);
 
         tracing::info!(
-            nodes = nodes.len(),
+            nodes = scan.nodes.len(),
+            design_findings = scan.findings.len(),
             changes = changes.len(),
             "Lifecycle context initialized"
         );
 
         Self {
-            nodes,
+            nodes: scan.nodes,
+            design_findings: scan.findings,
             sections_cache: HashMap::new(),
             changes,
             focused_node: None,
@@ -81,6 +85,10 @@ impl LifecycleContextProvider {
         &self.sections_cache
     }
 
+    pub fn design_findings(&self) -> &[omegon_opsx::DesignRepositoryFinding] {
+        &self.design_findings
+    }
+
     /// Get all active changes.
     /// Degraded nodes — currently a stub, full tracking deferred.
     pub fn degraded_nodes(&self) -> &[DegradedNode] {
@@ -94,7 +102,9 @@ impl LifecycleContextProvider {
     /// Refresh by re-scanning (call after mutations from TS side).
     pub fn refresh(&mut self) {
         let docs_dir = self.repo_path.join("docs");
-        self.nodes = design::scan_design_docs(&docs_dir);
+        let scan = design::scan_design_docs_with_findings(&docs_dir);
+        self.nodes = scan.nodes;
+        self.design_findings = scan.findings;
         self.changes = spec::list_changes(&self.repo_path);
         self.sections_cache.clear();
     }
@@ -162,6 +172,7 @@ mod tests {
     fn provider_returns_none_when_empty() {
         let provider = LifecycleContextProvider {
             nodes: HashMap::new(),
+            design_findings: vec![],
             sections_cache: HashMap::new(),
             changes: vec![],
             focused_node: None,
@@ -194,6 +205,7 @@ mod tests {
 
         let provider = LifecycleContextProvider {
             nodes,
+            design_findings: vec![],
             sections_cache: HashMap::new(),
             changes: vec![],
             focused_node: Some("test".to_string()),
@@ -221,6 +233,7 @@ mod tests {
     fn provider_injects_active_changes() {
         let provider = LifecycleContextProvider {
             nodes: HashMap::new(),
+            design_findings: vec![],
             sections_cache: HashMap::new(),
             changes: vec![ChangeInfo {
                 name: "my-change".into(),

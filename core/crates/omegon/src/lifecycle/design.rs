@@ -433,11 +433,18 @@ fn parse_impl_notes(content: &str, sections: &mut DocumentSections) {
     }
 }
 
-/// Scan a docs/ directory for design documents and build a tree.
-pub fn scan_design_docs(docs_dir: &Path) -> HashMap<String, DesignNode> {
+/// Scan result retaining both valid node projections and repository diagnostics.
+#[derive(Debug, Default)]
+pub struct DesignScanResult {
+    pub nodes: HashMap<String, DesignNode>,
+    pub findings: Vec<omegon_opsx::DesignRepositoryFinding>,
+}
+
+/// Scan design documents through the canonical opsx repository.
+pub fn scan_design_docs_with_findings(docs_dir: &Path) -> DesignScanResult {
     let repo_root = docs_dir.parent().unwrap_or(docs_dir);
-    omegon_opsx::DesignRepository::new(repo_root)
-        .scan()
+    let scan = omegon_opsx::DesignRepository::new(repo_root).scan();
+    let nodes = scan
         .records
         .into_iter()
         .map(|record| {
@@ -469,7 +476,16 @@ pub fn scan_design_docs(docs_dir: &Path) -> HashMap<String, DesignNode> {
             };
             (artifact.id, node)
         })
-        .collect()
+        .collect();
+    DesignScanResult {
+        nodes,
+        findings: scan.findings,
+    }
+}
+
+/// Compatibility projection for callers that only consume valid nodes.
+pub fn scan_design_docs(docs_dir: &Path) -> HashMap<String, DesignNode> {
+    scan_design_docs_with_findings(docs_dir).nodes
 }
 
 /// Get children of a node.

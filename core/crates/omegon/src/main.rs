@@ -2836,6 +2836,34 @@ async fn run_embedded_command(
                             },
                         );
                     }
+                    Some(web::WebCommand::ManagedDelegateControl { method, payload, respond_to }) => {
+                        let reply = match crate::managed_agent_supervisor::parse_operation(&method, &payload) {
+                            Ok((envelope, crate::managed_agent_supervisor::SupervisorOperation::Execute { tool, args })) => {
+                                let session = default_session.lock().await;
+                                match session.as_ref() {
+                                    Some(session) => match session.bus.execute_tool(
+                                        tool,
+                                        "auspex-supervisor",
+                                        args,
+                                        tokio_util::sync::CancellationToken::new(),
+                                    ).await {
+                                        Ok(result) => crate::managed_agent_supervisor::response(&method, &envelope, result)
+                                            .unwrap_or_else(|error| crate::managed_agent_supervisor::error_response(&method, &envelope, &error)),
+                                        Err(error) => crate::managed_agent_supervisor::error_response(&method, &envelope, &error.to_string()),
+                                    },
+                                    None => crate::managed_agent_supervisor::error_response(&method, &envelope, "runtime_busy"),
+                                }
+                            }
+                            Ok((envelope, crate::managed_agent_supervisor::SupervisorOperation::GetObservation { task_id })) => {
+                                match agent_handles.delegate_tasks.as_ref().and_then(|store| store.task_observation(&task_id)) {
+                                    Some(observation) => crate::managed_agent_supervisor::observation_response(&envelope, observation),
+                                    None => crate::managed_agent_supervisor::error_response(&method, &envelope, "unknown_task"),
+                                }
+                            }
+                            Err(error) => serde_json::json!({"type": format!("{method}_result"), "accepted": false, "error": error}),
+                        };
+                        let _ = respond_to.send(reply);
+                    }
                     Some(web::WebCommand::ExecuteControl { request, respond_to }) => {
                         tracing::info!(request = ?request, "daemon: control request");
                         let response = control_runtime::execute_daemon_control(

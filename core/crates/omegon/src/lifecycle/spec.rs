@@ -3,6 +3,7 @@
 //! Parses openspec/ directories to extract change info, spec files,
 //! and Given/When/Then scenarios. No mutation support (Phase 1b).
 
+use crate::filelock::atomic_write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -98,6 +99,44 @@ pub fn get_change(repo_path: &Path, name: &str) -> Option<ChangeInfo> {
         return None;
     }
     read_change(&change_dir, name)
+}
+
+fn write_change_state_metadata(proposal_path: &Path, state: ChangeState) -> anyhow::Result<()> {
+    let content = fs::read_to_string(proposal_path)?;
+    let line = format!("state: {}", state.as_str());
+    let updated = if let Some(rest) = content.strip_prefix("---\n") {
+        let Some((frontmatter, body)) = rest.split_once("\n---\n") else {
+            anyhow::bail!(
+                "malformed proposal frontmatter: {}",
+                proposal_path.display()
+            );
+        };
+        let mut found = false;
+        let mut lines = frontmatter
+            .lines()
+            .map(|existing| {
+                if existing
+                    .split_once(':')
+                    .is_some_and(|(key, _)| key.trim() == "state")
+                {
+                    found = true;
+                    line.clone()
+                } else {
+                    existing.to_string()
+                }
+            })
+            .collect::<Vec<_>>();
+        if !found {
+            lines.push(line);
+        }
+        format!("---\n{}\n---\n{body}", lines.join("\n"))
+    } else {
+        format!("---\n{line}\n---\n{content}")
+    };
+    if updated != content {
+        atomic_write(proposal_path, updated.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn proposal_state(proposal_path: &Path) -> (Option<ChangeState>, Option<String>) {
@@ -786,9 +825,10 @@ pub fn propose_change(
 
     // Write proposal.md
     let proposal = format!(
-        "# {title}\n\n## Intent\n\n{intent}\n\n## Scope\n\n_TBD_\n\n## Constraints\n\n_None identified yet._\n"
+        "---\nstate: proposed\n---\n\n# {title}\n\n## Intent\n\n{intent}\n\n## Scope\n\n_TBD_\n\n## Constraints\n\n_None identified yet._\n"
     );
-    fs::write(change_dir.join("proposal.md"), &proposal)?;
+    atomic_write(&change_dir.join("proposal.md"), proposal.as_bytes())?;
+    write_change_state_metadata(&change_dir.join("proposal.md"), ChangeState::Proposed)?;
 
     Ok(ChangeInfo {
         name: name.to_string(),
@@ -804,6 +844,52 @@ pub fn propose_change(
         task_groups: vec![],
         specs: vec![],
     })
+}
+
+pub fn write_change_state(repo_path: &Path, name: &str, state: ChangeState) -> anyhow::Result<()> {
+    let proposal_path = repo_path
+        .join("openspec/changes")
+        .join(name)
+        .join("proposal.md");
+    let content = fs::read_to_string(&proposal_path)?;
+    let updated = if let Some(rest) = content.strip_prefix("---\n") {
+        let Some((frontmatter, body)) = rest.split_once("\n---\n") else {
+            anyhow::bail!(
+                "malformed proposal frontmatter in {}",
+                proposal_path.display()
+            );
+        };
+        let mut found = false;
+        let mut lines = Vec::new();
+        for line in frontmatter.lines() {
+            if line
+                .split_once(':')
+                .is_some_and(|(key, _)| key.trim() == "state")
+            {
+                lines.push(format!("state: {}", state.as_str()));
+                found = true;
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+        if !found {
+            lines.push(format!("state: {}", state.as_str()));
+        }
+        format!("---\n{}\n---\n{}", lines.join("\n"), body)
+    } else {
+        format!("---\nstate: {}\n---\n\n{}", state.as_str(), content)
+    };
+    atomic_write_text(&proposal_path, &updated)
+}
+
+fn atomic_write_text(path: &Path, content: &str) -> anyhow::Result<()> {
+    let tmp = path.with_extension("md.tmp");
+    fs::write(&tmp, content)?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 /// Add a spec file to an existing change.
@@ -832,7 +918,8 @@ pub fn add_spec(
         specs_dir.join(format!("{domain}.md"))
     };
 
-    fs::write(&spec_path, spec_content)?;
+    atomic_write(&spec_path, spec_content.as_bytes())?;
+    write_change_state_metadata(&change_dir.join("proposal.md"), ChangeState::Specced)?;
     Ok(spec_path)
 }
 

@@ -925,6 +925,7 @@ impl LifecycleFeature {
                 opsx.update_change_progress(name, total_tasks, done_tasks)?;
                 sync::transition_change_if(
                     &mut opsx,
+                    &self.repo_path,
                     name,
                     OpsxChangeState::Specced,
                     OpsxChangeState::Planned,
@@ -1016,6 +1017,7 @@ impl LifecycleFeature {
                 }
                 sync::transition_change_if(
                     &mut opsx,
+                    &self.repo_path,
                     name,
                     OpsxChangeState::Planned,
                     OpsxChangeState::Testing,
@@ -1023,6 +1025,7 @@ impl LifecycleFeature {
                 opsx.add_test_file(name, path)?;
                 sync::transition_change_if(
                     &mut opsx,
+                    &self.repo_path,
                     name,
                     OpsxChangeState::Testing,
                     OpsxChangeState::Implementing,

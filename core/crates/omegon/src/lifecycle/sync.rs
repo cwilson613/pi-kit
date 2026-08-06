@@ -29,6 +29,7 @@ pub struct SyncTransition {
 
 pub fn sync_change_from_info(
     opsx: &mut OpsxLifecycle<JsonFileStore>,
+    repo_path: &Path,
     change: &ChangeInfo,
 ) -> anyhow::Result<SyncReport> {
     let mut report = SyncReport {
@@ -51,6 +52,7 @@ pub fn sync_change_from_info(
 
     transition_if(
         opsx,
+        repo_path,
         &change.name,
         ChangeState::Proposed,
         ChangeState::Specced,
@@ -59,6 +61,7 @@ pub fn sync_change_from_info(
     )?;
     transition_if(
         opsx,
+        repo_path,
         &change.name,
         ChangeState::Specced,
         ChangeState::Planned,
@@ -71,11 +74,12 @@ pub fn sync_change_from_info(
 
 pub fn sync_changes_from_info(
     opsx: &mut OpsxLifecycle<JsonFileStore>,
+    repo_path: &Path,
     changes: &[ChangeInfo],
 ) -> anyhow::Result<SyncReport> {
     let mut combined = SyncReport::default();
     for change in changes {
-        combined.merge(sync_change_from_info(opsx, change)?);
+        combined.merge(sync_change_from_info(opsx, repo_path, change)?);
     }
     Ok(combined)
 }
@@ -87,7 +91,7 @@ pub fn sync_change_by_name(
 ) -> anyhow::Result<(ChangeInfo, SyncReport)> {
     let change = spec::get_change(repo_path, name)
         .ok_or_else(|| anyhow::anyhow!("Change '{name}' not found"))?;
-    let report = sync_change_from_info(opsx, &change)?;
+    let report = sync_change_from_info(opsx, repo_path, &change)?;
     Ok((change, report))
 }
 
@@ -101,12 +105,17 @@ pub fn change_state(opsx: &OpsxLifecycle<JsonFileStore>, name: &str) -> Option<C
 
 pub fn transition_change_if(
     opsx: &mut OpsxLifecycle<JsonFileStore>,
+    repo_path: &Path,
     name: &str,
     from: ChangeState,
     to: ChangeState,
 ) -> anyhow::Result<bool> {
     if change_state(opsx, name) == Some(from) {
-        opsx.transition_change(name, to)?;
+        super::spec::write_change_state(repo_path, name, to)?;
+        if let Err(error) = opsx.transition_change(name, to) {
+            let _ = super::spec::write_change_state(repo_path, name, from);
+            return Err(error.into());
+        }
         return Ok(true);
     }
     Ok(false)
@@ -114,13 +123,14 @@ pub fn transition_change_if(
 
 fn transition_if(
     opsx: &mut OpsxLifecycle<JsonFileStore>,
+    repo_path: &Path,
     name: &str,
     from: ChangeState,
     to: ChangeState,
     condition: bool,
     report: &mut SyncReport,
 ) -> anyhow::Result<()> {
-    if condition && transition_change_if(opsx, name, from, to)? {
+    if condition && transition_change_if(opsx, repo_path, name, from, to)? {
         report.transitions.push(SyncTransition {
             change: name.to_string(),
             from: from.as_str().to_string(),
@@ -178,9 +188,14 @@ mod tests {
     #[test]
     fn sync_creates_change_and_advances_to_specced() {
         let dir = tempfile::tempdir().unwrap();
+        super::spec::propose_change(dir.path(), "demo", "Demo", "intent").unwrap();
         let mut opsx = OpsxLifecycle::load(JsonFileStore::new(dir.path())).unwrap();
-        let report =
-            sync_change_from_info(&mut opsx, &change("demo", vec![spec("demo")], 0, 0)).unwrap();
+        let report = sync_change_from_info(
+            &mut opsx,
+            dir.path(),
+            &change("demo", vec![spec("demo")], 0, 0),
+        )
+        .unwrap();
 
         assert_eq!(report.changes_seen, 1);
         assert_eq!(report.changes_created, 1);
@@ -192,9 +207,14 @@ mod tests {
     #[test]
     fn sync_advances_specced_change_to_planned_when_tasks_exist() {
         let dir = tempfile::tempdir().unwrap();
+        super::spec::propose_change(dir.path(), "demo", "Demo", "intent").unwrap();
         let mut opsx = OpsxLifecycle::load(JsonFileStore::new(dir.path())).unwrap();
-        let report =
-            sync_change_from_info(&mut opsx, &change("demo", vec![spec("demo")], 3, 1)).unwrap();
+        let report = sync_change_from_info(
+            &mut opsx,
+            dir.path(),
+            &change("demo", vec![spec("demo")], 3, 1),
+        )
+        .unwrap();
 
         assert_eq!(change_state(&opsx, "demo"), Some(ChangeState::Planned));
         assert_eq!(report.transitions.len(), 2);

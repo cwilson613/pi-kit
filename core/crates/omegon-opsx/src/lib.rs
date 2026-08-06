@@ -8,6 +8,7 @@ pub mod archive;
 pub mod artifacts;
 pub mod authority;
 pub mod content;
+pub mod design_artifacts;
 mod error;
 pub mod fsm;
 pub mod store;

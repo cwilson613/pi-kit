@@ -72,6 +72,9 @@ impl ChangeArtifactEvidence {
         if self.has_tasks && self.total_tasks > 0 && self.done_tasks >= self.total_tasks {
             return ChangeState::Verifying;
         }
+        if self.has_tasks && self.total_tasks > 0 {
+            return ChangeState::Implementing;
+        }
         if self.has_registered_tests {
             return ChangeState::Implementing;
         }
@@ -258,6 +261,16 @@ mod tests {
         assert_eq!(
             ChangeArtifactEvidence {
                 has_registered_tests: true,
+                ..Default::default()
+            }
+            .derive_state(None),
+            ChangeState::Implementing
+        );
+        assert_eq!(
+            ChangeArtifactEvidence {
+                has_tasks: true,
+                total_tasks: 2,
+                done_tasks: 1,
                 ..Default::default()
             }
             .derive_state(None),

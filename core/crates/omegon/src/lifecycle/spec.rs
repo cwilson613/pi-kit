@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use super::types::*;
 use crate::evidence::EvidenceStore;
 use crate::tdd::{self, EvidenceQuery};
+use omegon_opsx::ChangeArtifactEvidence;
 
 /// Locate the openspec/ directory in a repository.
 pub fn find_openspec_dir(repo_path: &Path) -> Option<PathBuf> {
@@ -131,7 +132,17 @@ fn read_change(change_dir: &Path, name: &str) -> Option<ChangeInfo> {
         vec![]
     };
 
-    let stage = compute_stage(has_proposal, has_specs, has_tasks, total_tasks, done_tasks);
+    let evidence = ChangeArtifactEvidence {
+        has_proposal,
+        has_design,
+        has_specs,
+        has_tasks,
+        total_tasks,
+        done_tasks,
+        has_registered_tests: false,
+    };
+    let stage = ChangeStage::try_from(evidence.derive_state(None))
+        .expect("structural discovery only derives legacy-compatible states");
 
     Some(ChangeInfo {
         name: name.to_string(),
@@ -278,32 +289,6 @@ fn annotate_tdd_evidence(change_dir: &Path, change: &mut ChangeInfo) {
             }
         }
     }
-}
-
-/// Compute the lifecycle stage from file presence and task counts.
-pub fn compute_stage(
-    has_proposal: bool,
-    has_specs: bool,
-    has_tasks: bool,
-    total_tasks: usize,
-    done_tasks: usize,
-) -> ChangeStage {
-    if !has_proposal {
-        return ChangeStage::Proposed;
-    }
-    if !has_specs {
-        return ChangeStage::Proposed;
-    }
-    if !has_tasks {
-        return ChangeStage::Specified;
-    }
-    if total_tasks == 0 {
-        return ChangeStage::Planned;
-    }
-    if done_tasks >= total_tasks {
-        return ChangeStage::Verifying;
-    }
-    ChangeStage::Implementing
 }
 
 /// Count tasks in a tasks.md file.
@@ -1385,31 +1370,6 @@ Then sharedState.cleave.children[i].status becomes running
         assert!(content.lines().count() >= 3);
         assert!(content.contains("- [x] 1.1 Pending task\r\n"));
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn compute_stage_progression() {
-        assert_eq!(
-            compute_stage(false, false, false, 0, 0),
-            ChangeStage::Proposed
-        );
-        assert_eq!(
-            compute_stage(true, false, false, 0, 0),
-            ChangeStage::Proposed
-        );
-        assert_eq!(
-            compute_stage(true, true, false, 0, 0),
-            ChangeStage::Specified
-        );
-        assert_eq!(compute_stage(true, true, true, 0, 0), ChangeStage::Planned);
-        assert_eq!(
-            compute_stage(true, true, true, 5, 2),
-            ChangeStage::Implementing
-        );
-        assert_eq!(
-            compute_stage(true, true, true, 5, 5),
-            ChangeStage::Verifying
-        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ impl TuiFrameScheduler {
     pub(crate) fn new(now: Instant) -> Self {
         Self {
             min_frame_interval: Duration::from_millis(16),
-            max_idle_poll: Duration::from_millis(16),
+            max_idle_poll: Duration::from_secs(1),
             agent_budget: AgentDrainBudget {
                 max_events: 64,
                 max_duration: Duration::from_millis(4),
@@ -117,6 +117,15 @@ mod tests {
             scheduler.idle_poll_timeout(now + Duration::from_millis(16)),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn clean_idle_uses_bounded_background_refresh() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(now);
+
+        assert_eq!(scheduler.idle_poll_timeout(now), Duration::from_secs(1));
     }
 
     #[test]

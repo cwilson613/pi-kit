@@ -423,7 +423,7 @@ impl App {
         if session_area.height > 0 {
             self.session_row.viewport_hint = if self.conversation.conv_state.scroll_offset > 0 {
                 Some(format!(
-                    "view detached ↑{} · End tail",
+                    "Detached · ↑{} · End: latest",
                     self.conversation.conv_state.scroll_offset
                 ))
             } else {

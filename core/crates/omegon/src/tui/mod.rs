@@ -7561,6 +7561,7 @@ pub async fn run_tui(
         // Coalesce background mutations to the frame interval. Operator input
         // remains urgent and draws immediately.
         let now = std::time::Instant::now();
+        scheduler.mark_timer_due(now);
         if scheduler.should_draw(now) {
             let urgent = handled_input;
             let draw_started = std::time::Instant::now();

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 pub(crate) enum TuiDrawReason {
     OperatorInput,
     BackgroundEvent,
+    TimerTick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,13 @@ impl TuiFrameScheduler {
                 .min(self.max_idle_poll)
         } else {
             self.max_idle_poll
+                .saturating_sub(now.duration_since(self.last_draw))
+        }
+    }
+
+    pub(crate) fn mark_timer_due(&mut self, now: Instant) {
+        if !self.dirty && now.duration_since(self.last_draw) >= self.max_idle_poll {
+            self.mark_dirty(TuiDrawReason::TimerTick);
         }
     }
 }
@@ -126,6 +134,27 @@ mod tests {
         scheduler.after_draw(now);
 
         assert_eq!(scheduler.idle_poll_timeout(now), Duration::from_secs(1));
+        assert_eq!(
+            scheduler.idle_poll_timeout(now + Duration::from_millis(750)),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            scheduler.idle_poll_timeout(now + Duration::from_secs(1)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn elapsed_idle_deadline_marks_timer_frame_due() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(now);
+
+        scheduler.mark_timer_due(now + Duration::from_millis(999));
+        assert!(!scheduler.should_draw(now + Duration::from_millis(999)));
+
+        scheduler.mark_timer_due(now + Duration::from_secs(1));
+        assert!(scheduler.should_draw(now + Duration::from_secs(1)));
     }
 
     #[test]

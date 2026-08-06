@@ -293,31 +293,6 @@ pub(crate) struct CliRuntimeView<'a> {
     pub(crate) dangerously_bypass_permissions: bool,
 }
 
-fn restart_args_for_session(mut args: Vec<String>, session_id: &str) -> Vec<String> {
-    let mut filtered = Vec::with_capacity(args.len() + 2);
-    let mut skip_resume_value = false;
-    for arg in args.drain(..) {
-        if skip_resume_value {
-            skip_resume_value = false;
-            continue;
-        }
-        if arg == "--fresh" {
-            continue;
-        }
-        if arg == "--resume" {
-            skip_resume_value = true;
-            continue;
-        }
-        if arg.starts_with("--resume=") {
-            continue;
-        }
-        filtered.push(arg);
-    }
-    filtered.push("--resume".to_string());
-    filtered.push(session_id.to_string());
-    filtered
-}
-
 fn interactive_resume_mode(cli: &Cli) -> Option<Option<&str>> {
     if cli.fresh {
         None
@@ -348,27 +323,6 @@ fn split_interactive_agent(
         inference_runtime: agent.inference_runtime,
     };
     (host, state)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct InteractiveStartupModelDecision {
-    selected_model: String,
-    bridge_model: String,
-    provider_connected: bool,
-    use_null_bridge: bool,
-}
-
-fn decide_interactive_startup_model(
-    selected_model: &str,
-    resolved_model: &str,
-    resolved_available: bool,
-) -> InteractiveStartupModelDecision {
-    InteractiveStartupModelDecision {
-        selected_model: selected_model.to_string(),
-        bridge_model: resolved_model.to_string(),
-        provider_connected: resolved_available,
-        use_null_bridge: !resolved_available,
-    }
 }
 
 #[derive(Clone)]

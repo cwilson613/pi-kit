@@ -163,11 +163,11 @@ impl SyncReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::types::SpecFile;
+    use crate::lifecycle::types::SpecFileProjection;
 
     fn change(
         name: &str,
-        specs: Vec<SpecFile>,
+        specs: Vec<SpecFileProjection>,
         total_tasks: usize,
         done_tasks: usize,
     ) -> ChangeInfo {
@@ -187,10 +187,13 @@ mod tests {
         }
     }
 
-    fn spec(domain: &str) -> SpecFile {
-        SpecFile {
-            domain: domain.to_string(),
-            file_path: std::path::PathBuf::from(format!("specs/{domain}.md")),
+    fn spec(domain: &str) -> SpecFileProjection {
+        SpecFileProjection {
+            content: omegon_opsx::SpecFile {
+                domain: domain.to_string(),
+                file_path: std::path::PathBuf::from(format!("specs/{domain}.md")),
+                requirements: vec![],
+            },
             requirements: vec![],
         }
     }

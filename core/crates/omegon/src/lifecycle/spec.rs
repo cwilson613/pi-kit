@@ -148,7 +148,11 @@ fn read_change_from_artifact(
     })
 }
 
-fn scenario_evidence_ids(domain: &str, _requirement: &str, scenario: &Scenario) -> [String; 2] {
+fn scenario_evidence_ids(
+    domain: &str,
+    _requirement: &str,
+    scenario: &ScenarioProjection,
+) -> [String; 2] {
     [
         scenario.id.clone(),
         format!("{}/{}", domain, scenario.title),
@@ -251,9 +255,11 @@ fn annotate_tdd_evidence(change_dir: &Path, change: &mut ChangeInfo) {
         return;
     };
     for spec in &mut change.specs {
+        let domain = spec.domain.clone();
         for requirement in &mut spec.requirements {
+            let requirement_title = requirement.title.clone();
             for scenario in &mut requirement.scenarios {
-                let ids = scenario_evidence_ids(&spec.domain, &requirement.title, scenario);
+                let ids = scenario_evidence_ids(&domain, &requirement_title, scenario);
                 let status = ids
                     .iter()
                     .find_map(|id| {
@@ -314,102 +320,50 @@ fn parse_task_stable_id_marker(description: &str) -> Option<String> {
 }
 
 /// Parse all spec files in a specs/ directory.
-pub fn parse_specs_dir(specs_dir: &Path) -> Vec<SpecFile> {
-    let mut specs = Vec::new();
-
-    let entries = match fs::read_dir(specs_dir) {
-        Ok(e) => e,
-        Err(_) => return specs,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        let domain = path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let requirements = parse_spec_content_with_domain(&domain, &content);
-        specs.push(SpecFile {
-            domain,
-            file_path: path,
-            requirements,
-        });
-    }
-
-    // Also handle nested directories (e.g., specs/auth/tokens.md → domain "auth/tokens")
-    if let Ok(entries) = fs::read_dir(specs_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let parent_domain = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if let Ok(sub_entries) = fs::read_dir(&path) {
-                    for sub in sub_entries.flatten() {
-                        let sub_path = sub.path();
-                        if sub_path.extension().and_then(|e| e.to_str()) != Some("md") {
-                            continue;
-                        }
-                        let name = sub_path
-                            .file_stem()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
-                        let domain = format!("{parent_domain}/{name}");
-                        let content = match fs::read_to_string(&sub_path) {
-                            Ok(c) => c,
-                            Err(_) => continue,
-                        };
-                        let requirements = parse_spec_content_with_domain(&domain, &content);
-                        specs.push(SpecFile {
-                            domain,
-                            file_path: sub_path,
-                            requirements,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    specs
+pub fn parse_specs_dir(specs_dir: &Path) -> Vec<SpecFileProjection> {
+    omegon_opsx::parse_specs_dir(specs_dir)
+        .into_iter()
+        .map(project_spec_file)
+        .collect()
 }
 
-/// Parse spec content into requirements with scenarios.
-pub fn parse_spec_content(content: &str) -> Vec<Requirement> {
+fn project_spec_file(content: omegon_opsx::SpecFile) -> SpecFileProjection {
+    let requirements = content
+        .requirements
+        .iter()
+        .cloned()
+        .map(project_requirement)
+        .collect();
+    SpecFileProjection {
+        content,
+        requirements,
+    }
+}
+
+fn project_requirement(content: omegon_opsx::Requirement) -> RequirementProjection {
+    let scenarios = content
+        .scenarios
+        .iter()
+        .cloned()
+        .map(|content| ScenarioProjection {
+            content,
+            tdd_evidence: None,
+            evidence_claims: vec![],
+            evidence_support: vec![],
+        })
+        .collect();
+    RequirementProjection { content, scenarios }
+}
+
+/// Parse spec content into canonical requirements and project application evidence.
+pub fn parse_spec_content(content: &str) -> Vec<RequirementProjection> {
     parse_spec_content_with_domain("", content)
 }
 
-pub fn parse_spec_content_with_domain(domain: &str, content: &str) -> Vec<Requirement> {
+pub fn parse_spec_content_with_domain(domain: &str, content: &str) -> Vec<RequirementProjection> {
     omegon_opsx::parse_spec_content_with_domain(domain, content)
         .into_iter()
-        .map(|requirement| Requirement {
-            title: requirement.title,
-            description: requirement.description,
-            scenarios: requirement
-                .scenarios
-                .into_iter()
-                .map(|scenario| Scenario {
-                    id: scenario.id,
-                    title: scenario.title,
-                    given: scenario.given,
-                    when: scenario.when,
-                    then: scenario.then,
-                    and_clauses: scenario.and_clauses,
-                    tdd_evidence: None,
-                    evidence_claims: vec![],
-                    evidence_support: vec![],
-                })
-                .collect(),
-        })
+        .map(project_requirement)
         .collect()
 }
 
@@ -952,25 +906,22 @@ Then sharedState.cleave.children[i].status becomes running
             total_tasks: 10,
             done_tasks: 7,
             task_groups: vec![],
-            specs: vec![SpecFile {
+            specs: vec![project_spec_file(omegon_opsx::SpecFile {
                 domain: "auth".into(),
                 file_path: PathBuf::new(),
-                requirements: vec![Requirement {
+                requirements: vec![omegon_opsx::Requirement {
                     title: "Auth".into(),
                     description: String::new(),
-                    scenarios: vec![Scenario {
+                    scenarios: vec![omegon_opsx::Scenario {
                         id: "auth/auth/login".into(),
                         title: "Login".into(),
                         given: "user".into(),
                         when: "login".into(),
                         then: "success".into(),
                         and_clauses: vec![],
-                        tdd_evidence: None,
-                        evidence_claims: Vec::new(),
-                        evidence_support: Vec::new(),
                     }],
                 }],
-            }],
+            })],
         }];
 
         let injection = build_context_injection(&changes);

@@ -290,46 +290,57 @@ impl TryFrom<ChangeState> for ChangeStage {
     }
 }
 
-/// A Given/When/Then scenario.
+/// Application projection over one canonical parsed OpenSpec scenario.
+///
+/// Markdown content remains owned by `omegon-opsx`; the binary adds only
+/// runtime evidence that is not part of the artifact model.
 #[derive(Debug, Clone)]
-pub struct Scenario {
-    pub id: String,
-    pub title: String,
-    pub given: String,
-    pub when: String,
-    pub then: String,
-    pub and_clauses: Vec<String>,
+pub struct ScenarioProjection {
+    pub content: omegon_opsx::Scenario,
     pub tdd_evidence: Option<TddEvidenceStatus>,
     pub evidence_claims: Vec<String>,
     pub evidence_support: Vec<ClaimEvidenceSupport>,
 }
 
-/// Provider-neutral support summary for a claim referenced by OpenSpec content.
-#[derive(Debug, Clone)]
-pub struct ClaimEvidenceSupport {
-    pub claim_id: String,
-    pub status: crate::evidence::ClaimSupportStatus,
-    pub supports: usize,
-    pub refutes: usize,
-    pub stale: usize,
-    pub supersedes: usize,
+impl std::ops::Deref for ScenarioProjection {
+    type Target = omegon_opsx::Scenario;
+
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
 }
 
-/// A requirement grouping scenarios.
+/// Application projection over a canonical parsed requirement.
 #[derive(Debug, Clone)]
-pub struct Requirement {
-    pub title: String,
-    pub description: String,
-    pub scenarios: Vec<Scenario>,
+pub struct RequirementProjection {
+    pub content: omegon_opsx::Requirement,
+    pub scenarios: Vec<ScenarioProjection>,
 }
 
-/// A parsed spec file.
-#[derive(Debug, Clone)]
-pub struct SpecFile {
-    pub domain: String,
-    pub file_path: PathBuf,
-    pub requirements: Vec<Requirement>,
+impl std::ops::Deref for RequirementProjection {
+    type Target = omegon_opsx::Requirement;
+
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
 }
+
+/// Application projection over a canonical parsed spec file.
+#[derive(Debug, Clone)]
+pub struct SpecFileProjection {
+    pub content: omegon_opsx::SpecFile,
+    pub requirements: Vec<RequirementProjection>,
+}
+
+impl std::ops::Deref for SpecFileProjection {
+    type Target = omegon_opsx::SpecFile;
+
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+
+pub use omegon_opsx::{TaskGroup, TaskLine};
 
 /// Full status of an OpenSpec change.
 #[derive(Debug, Clone)]
@@ -347,24 +358,18 @@ pub struct ChangeInfo {
     pub total_tasks: usize,
     pub done_tasks: usize,
     pub task_groups: Vec<TaskGroup>,
-    pub specs: Vec<SpecFile>,
+    pub specs: Vec<SpecFileProjection>,
 }
 
-/// A task group parsed from an OpenSpec tasks.md file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskGroup {
-    pub title: String,
-    pub specs: Vec<String>,
-    pub tasks: Vec<TaskLine>,
-}
-
-/// A single checkbox task parsed from an OpenSpec tasks.md file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskLine {
-    pub id: String,
-    pub stable_id: Option<String>,
-    pub description: String,
-    pub done: bool,
+/// Provider-neutral support summary for a claim referenced by OpenSpec content.
+#[derive(Debug, Clone)]
+pub struct ClaimEvidenceSupport {
+    pub claim_id: String,
+    pub status: crate::evidence::ClaimSupportStatus,
+    pub supports: usize,
+    pub refutes: usize,
+    pub stale: usize,
+    pub supersedes: usize,
 }
 
 #[cfg(test)]

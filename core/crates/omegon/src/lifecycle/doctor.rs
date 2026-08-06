@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use omegon_opsx::ChangeState;
+use omegon_opsx::{ArtifactDrift, ArtifactDriftKind, ArtifactState, ChangeState};
 
 use super::design;
 use super::types::{ChangeInfo, DesignNode, NodeStatus};
@@ -164,30 +164,39 @@ pub fn audit_openspec_changes(
     let mut findings = Vec::new();
 
     for change in changes {
-        let expected: ChangeState = change.stage.into();
-        let Some(actual) = opsx_states.get(&change.name).copied() else {
-            findings.push(AuditFinding {
-                node_id: change.name.clone(),
-                title: change.name.clone(),
-                kind: AuditKind::OpenSpecStateDrift,
-                detail: "OpenSpec change exists on disk but has no omegon-opsx change record"
-                    .into(),
-            });
+        let artifact_state = ArtifactState::Change(change.stage.into());
+        let ledger_state = opsx_states
+            .get(&change.name)
+            .copied()
+            .map(ArtifactState::Change);
+        let Some(drift) = ArtifactDrift::compare(&change.name, artifact_state, ledger_state) else {
             continue;
         };
 
-        if actual != expected {
-            findings.push(AuditFinding {
-                node_id: change.name.clone(),
-                title: change.name.clone(),
-                kind: AuditKind::OpenSpecStateDrift,
-                detail: format!(
-                    "OpenSpec file stage is {}, but omegon-opsx state is {}",
-                    change.stage.as_str(),
-                    actual.as_str()
-                ),
-            });
-        }
+        let detail = match drift.kind {
+            ArtifactDriftKind::MissingLedgerRecord => {
+                "OpenSpec change exists on disk but has no omegon-opsx change record".into()
+            }
+            ArtifactDriftKind::StateMismatch => {
+                let actual = match drift.ledger_state {
+                    Some(ArtifactState::Change(state)) => state.as_str(),
+                    _ => unreachable!("change audit compares change states"),
+                };
+                format!(
+                    "OpenSpec file stage is {}, but omegon-opsx state is {actual}",
+                    change.stage.as_str()
+                )
+            }
+            ArtifactDriftKind::LedgerRecordWithoutArtifact => {
+                unreachable!("active artifact comparison cannot produce an orphan ledger record")
+            }
+        };
+        findings.push(AuditFinding {
+            node_id: change.name.clone(),
+            title: change.name.clone(),
+            kind: AuditKind::OpenSpecStateDrift,
+            detail,
+        });
     }
 
     findings.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -261,8 +270,24 @@ fn overlaps_meaningfully(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::types::DesignNode;
+    use crate::lifecycle::types::{ChangeStage, DesignNode};
     use std::path::PathBuf;
+
+    fn change(name: &str, stage: ChangeStage) -> ChangeInfo {
+        ChangeInfo {
+            name: name.into(),
+            path: PathBuf::from(format!("openspec/changes/{name}")),
+            stage,
+            has_proposal: true,
+            has_design: false,
+            has_specs: false,
+            has_tasks: false,
+            total_tasks: 0,
+            done_tasks: 0,
+            task_groups: vec![],
+            specs: vec![],
+        }
+    }
 
     fn node(id: &str, status: NodeStatus) -> DesignNode {
         DesignNode {
@@ -283,6 +308,30 @@ mod tests {
             archived_at: None,
             file_path: PathBuf::from(format!("docs/{id}.md")),
         }
+    }
+
+    #[test]
+    fn openspec_audit_uses_typed_authority_drift() {
+        let changes = vec![
+            change("missing", ChangeStage::Specified),
+            change("mismatch", ChangeStage::Planned),
+        ];
+        let states = HashMap::from([("mismatch".into(), ChangeState::Testing)]);
+
+        let findings = audit_openspec_changes(&changes, &states);
+
+        assert_eq!(findings.len(), 2);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.detail.contains("no omegon-opsx change record"))
+        );
+        let mismatch = findings
+            .iter()
+            .find(|finding| finding.node_id == "mismatch")
+            .unwrap();
+        assert!(mismatch.detail.contains("file stage is planned"));
+        assert!(mismatch.detail.contains("state is testing"));
     }
 
     #[test]

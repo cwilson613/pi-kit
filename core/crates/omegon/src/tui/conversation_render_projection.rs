@@ -74,18 +74,27 @@ pub struct ToolCardChrome {
 pub fn tool_display_name(name: &str, detail_args: Option<&str>) -> String {
     crate::surfaces::conversation::tool_visual_identity(name, detail_args).label
 }
+
+pub fn tool_display_name_with_provenance(
+    name: &str,
+    detail_args: Option<&str>,
+    provenance: &omegon_traits::ToolProvenance,
+) -> String {
+    match provenance {
+        omegon_traits::ToolProvenance::BuiltIn => tool_display_name(name, detail_args),
+        omegon_traits::ToolProvenance::Extension { name: extension } => {
+            let identity = crate::surfaces::conversation::tool_visual_identity(name, detail_args);
+            format!("{} ({extension})", identity.label)
+        }
+    }
+}
+
 pub fn tool_display_label(
     name: &str,
     detail_args: Option<&str>,
     provenance: &omegon_traits::ToolProvenance,
 ) -> String {
-    let display_name = tool_display_name(name, detail_args);
-    match provenance {
-        omegon_traits::ToolProvenance::BuiltIn => display_name,
-        omegon_traits::ToolProvenance::Extension { name: extension } => {
-            format!("{display_name} ({extension})")
-        }
-    }
+    tool_display_name_with_provenance(name, detail_args, provenance)
 }
 
 pub fn tool_card_chrome(
@@ -334,13 +343,13 @@ mod tests {
         );
         assert_eq!(
             tool_display_label(
-                "bash",
-                Some("cargo check"),
+                "nex_devenv_inspect",
+                None,
                 &omegon_traits::ToolProvenance::Extension {
-                    name: "recro-coe-agent".into(),
+                    name: "omegon-nex".into(),
                 },
             ),
-            "cargo (recro-coe-agent)"
+            "tool (omegon-nex)"
         );
     }
 

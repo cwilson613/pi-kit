@@ -59,37 +59,47 @@ impl NexSubstrateProvider {
         };
         Ok(path)
     }
+
+    fn unavailable(&self, tool_name: &str) -> anyhow::Result<ToolResult> {
+        let (description, parameters) = unavailable_contract(tool_name)
+            .ok_or_else(|| anyhow::anyhow!("unsupported Nex compatibility tool: {tool_name}"))?;
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "{description} is unavailable because the default omegon-nex extension is not installed or enabled. Run `just install-default-extensions` from an Omegon checkout or install omegon-nex explicitly."
+                ),
+            }],
+            details: json!({
+                "is_error": true,
+                "blocked": true,
+                "reason": "nex_extension_unavailable",
+                "tool": tool_name,
+                "parameters": parameters,
+                "extension": "omegon-nex",
+            }),
+        })
+    }
 }
 
 #[async_trait]
 impl ToolProvider for NexSubstrateProvider {
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: reg::NEX_SUBSTRATE.into(),
-            label: reg::NEX_SUBSTRATE.into(),
-            description: "Read-only Nex substrate inspection. Calls Nex to inspect project devenv/SecretSpec substrate facts and returns an advisory Omegon policy overlay without mutating tools, profiles, or secrets.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["inspect"],
-                        "description": "Read-only substrate action to perform"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Project directory to inspect; defaults to the current workspace root"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["devenv"],
-                        "description": "Substrate report family; first slice supports only devenv"
-                    }
-                },
-                "required": ["action"]
-            }),
-            capabilities: vec![omegon_traits::ToolCapability::RepoInspection],
-        }]
+        let mut tools = Vec::new();
+        if !self
+            .delegations
+            .iter()
+            .any(|delegation| delegation.tool == "nex_capability")
+        {
+            tools.push(unavailable_definition(reg::NEX_CAPABILITY));
+        }
+        if !self
+            .delegations
+            .iter()
+            .any(|delegation| delegation.tool == "nex_substrate")
+        {
+            tools.push(unavailable_definition(reg::NEX_SUBSTRATE));
+        }
+        tools
     }
 
     async fn execute(
@@ -99,8 +109,14 @@ impl ToolProvider for NexSubstrateProvider {
         args: Value,
         _cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        if tool_name == reg::NEX_CAPABILITY {
+            return self.unavailable(tool_name);
+        }
         if tool_name != reg::NEX_SUBSTRATE {
-            anyhow::bail!("unsupported Nex substrate tool: {tool_name}");
+            anyhow::bail!("unsupported Nex compatibility tool: {tool_name}");
+        }
+        if self.executor.is_none() {
+            return self.unavailable(tool_name);
         }
         let action = args["action"]
             .as_str()
@@ -149,6 +165,48 @@ impl ToolProvider for NexSubstrateProvider {
             }],
             details: serde_json::to_value(&report)?,
         })
+    }
+}
+
+fn unavailable_definition(tool_name: &str) -> ToolDefinition {
+    let (description, parameters) =
+        unavailable_contract(tool_name).expect("known Nex compatibility tool");
+    ToolDefinition {
+        name: tool_name.into(),
+        label: tool_name.into(),
+        description: format!("{description} Requires the default omegon-nex extension."),
+        parameters,
+        capabilities: vec![omegon_traits::ToolCapability::RepoInspection],
+    }
+}
+
+fn unavailable_contract(tool_name: &str) -> Option<(&'static str, Value)> {
+    match tool_name {
+        reg::NEX_CAPABILITY => Some((
+            "Read-only Nex capability resolution",
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["check", "resolve"]},
+                    "capability": {"type": "string"},
+                    "profile": {"type": "string"}
+                },
+                "required": ["action", "capability"]
+            }),
+        )),
+        reg::NEX_SUBSTRATE => Some((
+            "Read-only Nex substrate inspection",
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["inspect"]},
+                    "path": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["devenv"]}
+                },
+                "required": ["action"]
+            }),
+        )),
+        _ => None,
     }
 }
 
@@ -209,66 +267,21 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn rejects_paths_outside_workspace_boundary() {
-        let dir = tempfile::tempdir().unwrap();
-        let provider = NexSubstrateProvider::new(dir.path().to_path_buf())
-            .with_boundary(WorkspaceBoundary::new(dir.path().to_path_buf()));
-        let result = provider
-            .execute(
-                reg::NEX_SUBSTRATE,
-                "test",
-                json!({"action": "inspect", "path": "/etc"}),
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("PERMISSION REQUIRED")
-        );
-    }
-
-    #[tokio::test]
-    async fn initializes_tool_and_returns_degraded_report_without_delegation_or_nex() {
-        let _env_guard = crate::test_support::env::lock_async().await;
-        let original_path = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", "") };
-
+    async fn compatibility_tools_are_deterministically_unavailable_without_extension() {
         let dir = tempfile::tempdir().unwrap();
         let provider = NexSubstrateProvider::new(dir.path().to_path_buf());
-        assert_eq!(provider.tools().len(), 1);
+        assert_eq!(provider.tools().len(), 2);
 
-        let result = provider
-            .execute(
-                reg::NEX_SUBSTRATE,
-                "test",
-                json!({"action": "inspect"}),
-                CancellationToken::new(),
-            )
-            .await;
-
-        match original_path {
-            Some(path) => unsafe { std::env::set_var("PATH", path) },
-            None => unsafe { std::env::remove_var("PATH") },
+        for tool in [reg::NEX_CAPABILITY, reg::NEX_SUBSTRATE] {
+            let result = provider
+                .execute(tool, "test", json!({}), CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(result.details["is_error"], true);
+            assert_eq!(result.details["reason"], "nex_extension_unavailable");
+            assert!(
+                matches!(result.content.first(), Some(ContentBlock::Text { text }) if text.contains("omegon-nex") && text.contains("unavailable"))
+            );
         }
-
-        let result = result.expect("missing Nex should degrade, not fail the tool call");
-        assert!(
-            matches!(result.content.first(), Some(ContentBlock::Text { text }) if text.contains("Nex substrate inspection: unavailable"))
-        );
-        assert_eq!(
-            result.details["schema"],
-            crate::nex::substrate::REPORT_SCHEMA
-        );
-        assert_eq!(result.details["nex_available"], false);
-        assert_eq!(result.details["policy"]["enforcement"], "advisory");
-        let findings = result.details["policy"]["findings"].as_array().unwrap();
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding["code"] == "nex_unavailable")
-        );
     }
 }

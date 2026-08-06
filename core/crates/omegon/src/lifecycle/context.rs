@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use omegon_opsx::ChangeState;
 use omegon_traits::{ContextInjection, ContextProvider, ContextSignals};
 
 use super::design;
@@ -130,7 +131,7 @@ impl ContextProvider for LifecycleContextProvider {
         let active: Vec<_> = self
             .changes
             .iter()
-            .filter(|c| matches!(c.stage, ChangeStage::Implementing | ChangeStage::Verifying))
+            .filter(|c| matches!(c.state, ChangeState::Implementing | ChangeState::Verifying))
             .collect();
         if !active.is_empty() {
             let injection =
@@ -224,7 +225,8 @@ mod tests {
             changes: vec![ChangeInfo {
                 name: "my-change".into(),
                 path: PathBuf::new(),
-                stage: ChangeStage::Implementing,
+                state: ChangeState::Implementing,
+                artifact_health: omegon_opsx::ArtifactHealth::Healthy,
                 has_proposal: true,
                 has_design: true,
                 has_specs: true,

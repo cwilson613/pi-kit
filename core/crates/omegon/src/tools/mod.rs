@@ -106,7 +106,7 @@ pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
                 completed: change.done_tasks,
                 total: change.total_tasks,
             },
-            resume_hint: Some(format!("OpenSpec · {}", change.stage.as_str())),
+            resume_hint: Some(format!("OpenSpec · {}", change.state.as_str())),
         });
         if change.has_tasks {
             let tasks_path = change.path.join("tasks.md");
@@ -308,7 +308,7 @@ pub fn render_lifecycle_plan_list(repo_root: &Path) -> String {
         lines.push(format!(
             "- {} · {} · {}/{}",
             change.name,
-            change.stage.as_str(),
+            change.state.as_str(),
             change.done_tasks,
             change.total_tasks
         ));

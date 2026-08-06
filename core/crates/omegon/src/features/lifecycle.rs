@@ -796,12 +796,12 @@ impl LifecycleFeature {
                         let state = opsx_states
                             .get(&c.name)
                             .cloned()
-                            .unwrap_or_else(|| c.stage.as_str().to_string());
+                            .unwrap_or_else(|| c.state.as_str().to_string());
                         json!({
                             "name": c.name,
                             "state": state,
                             "stage": state,
-                            "file_stage": c.stage.as_str(),
+                            "file_stage": c.state.as_str(),
                             "has_proposal": c.has_proposal,
                             "has_specs": c.has_specs,
                             "has_tasks": c.has_tasks,
@@ -823,13 +823,13 @@ impl LifecycleFeature {
                     .opsx_change_states()
                     .get(name)
                     .cloned()
-                    .unwrap_or_else(|| change.stage.as_str().to_string());
+                    .unwrap_or_else(|| change.state.as_str().to_string());
 
                 let result = json!({
                     "name": change.name,
                     "state": state,
                     "stage": state,
-                    "file_stage": change.stage.as_str(),
+                    "file_stage": change.state.as_str(),
                     "has_proposal": change.has_proposal,
                     "has_design": change.has_design,
                     "has_specs": change.has_specs,
@@ -1886,7 +1886,7 @@ mod tests {
         let change: Value = serde_json::from_str(text).unwrap();
         assert_eq!(change["state"].as_str(), Some("specced"));
         assert_eq!(change["stage"].as_str(), Some("specced"));
-        assert_eq!(change["file_stage"].as_str(), Some("specified"));
+        assert_eq!(change["file_stage"].as_str(), Some("specced"));
     }
 
     #[test]
@@ -1908,9 +1908,9 @@ mod tests {
         let text = result.content[0].as_text().unwrap();
         let changes: Vec<Value> = serde_json::from_str(text).unwrap();
         assert_eq!(changes[0]["name"].as_str(), Some("legacy-change"));
-        assert_eq!(changes[0]["state"].as_str(), Some("specified"));
-        assert_eq!(changes[0]["stage"].as_str(), Some("specified"));
-        assert_eq!(changes[0]["file_stage"].as_str(), Some("specified"));
+        assert_eq!(changes[0]["state"].as_str(), Some("specced"));
+        assert_eq!(changes[0]["stage"].as_str(), Some("specced"));
+        assert_eq!(changes[0]["file_stage"].as_str(), Some("specced"));
     }
 
     #[test]

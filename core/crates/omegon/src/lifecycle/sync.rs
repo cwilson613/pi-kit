@@ -143,7 +143,7 @@ impl SyncReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::types::{ChangeStage, SpecFile};
+    use crate::lifecycle::types::SpecFile;
 
     fn change(
         name: &str,
@@ -154,7 +154,8 @@ mod tests {
         ChangeInfo {
             name: name.to_string(),
             path: std::path::PathBuf::from("openspec/changes").join(name),
-            stage: ChangeStage::Proposed,
+            state: ChangeState::Proposed,
+            artifact_health: omegon_opsx::ArtifactHealth::Healthy,
             has_proposal: true,
             has_design: false,
             has_specs: !specs.is_empty(),

@@ -224,7 +224,7 @@ impl LifecycleReadHandle {
                     if archived_on_disk {
                         "archived".to_string()
                     } else {
-                        change.stage.as_str().to_string()
+                        change.state.as_str().to_string()
                     }
                 });
             if !opts.include_archived && (state == "archived" || archived_on_disk) {
@@ -303,7 +303,7 @@ fn project_change(
     OpenSpecChangeProjection {
         name: change.name.clone(),
         lifecycle_state: lifecycle_state.to_string(),
-        file_stage: change.stage.as_str().to_string(),
+        file_stage: change.state.as_str().to_string(),
         has_proposal: change.has_proposal,
         has_design: change.has_design,
         has_specs: change.has_specs,
@@ -358,8 +358,8 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.changes.len(), 1);
         assert_eq!(snapshot.changes[0].name, "snapshot-change");
-        assert_eq!(snapshot.changes[0].lifecycle_state, "specified");
-        assert_eq!(snapshot.changes[0].file_stage, "specified");
+        assert_eq!(snapshot.changes[0].lifecycle_state, "specced");
+        assert_eq!(snapshot.changes[0].file_stage, "specced");
         assert!(
             handle.opsx.lock().unwrap().state().changes.is_empty(),
             "read-model snapshots must not write opsx state"
@@ -395,7 +395,7 @@ mod tests {
             .openspec_snapshot(SnapshotOptions::default())
             .unwrap();
         assert_eq!(snapshot.changes.len(), 1);
-        assert_eq!(snapshot.changes[0].lifecycle_state, "proposed");
+        assert_eq!(snapshot.changes[0].lifecycle_state, "implementing");
         assert!(handle.opsx.lock().unwrap().state().changes.is_empty());
     }
 
@@ -419,7 +419,7 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.changes.len(), 1);
         assert_eq!(snapshot.changes[0].name, "discovered-change");
-        assert_eq!(snapshot.changes[0].lifecycle_state, "proposed");
+        assert_eq!(snapshot.changes[0].lifecycle_state, "implementing");
         assert!(
             !repo.join("ai/lifecycle/state.json").exists(),
             "read-only snapshot must not write lifecycle state"

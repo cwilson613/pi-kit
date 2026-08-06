@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use super::types::*;
 use crate::evidence::EvidenceStore;
 use crate::tdd::{self, EvidenceQuery};
-use omegon_opsx::ChangeArtifactEvidence;
+use omegon_opsx::{
+    ArtifactHealth, ChangeArtifactEvidence, ChangeState, parse_declared_change_state,
+};
 
 /// Locate the openspec/ directory in a repository.
 pub fn find_openspec_dir(repo_path: &Path) -> Option<PathBuf> {
@@ -79,7 +81,7 @@ pub fn list_archived_changes(repo_path: &Path) -> Vec<ChangeInfo> {
         };
 
         if let Some(mut info) = read_change(&path, &name) {
-            info.stage = ChangeStage::Archived;
+            info.state = ChangeState::Archived;
             changes.push(info);
         }
     }
@@ -96,6 +98,28 @@ pub fn get_change(repo_path: &Path, name: &str) -> Option<ChangeInfo> {
         return None;
     }
     read_change(&change_dir, name)
+}
+
+fn proposal_state(proposal_path: &Path) -> (Option<ChangeState>, Option<String>) {
+    let Ok(content) = fs::read_to_string(proposal_path) else {
+        return (None, None);
+    };
+    let Some(frontmatter) = content.strip_prefix("---\n").and_then(|rest| {
+        rest.split_once("\n---\n")
+            .map(|(frontmatter, _)| frontmatter)
+    }) else {
+        return (None, None);
+    };
+    let Some(value) = frontmatter.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim() == "state").then(|| value.trim().trim_matches(['\'', '"']))
+    }) else {
+        return (None, None);
+    };
+    match parse_declared_change_state(value) {
+        Ok(state) => (Some(state), None),
+        Err(error) => (None, Some(error)),
+    }
 }
 
 fn read_change(change_dir: &Path, name: &str) -> Option<ChangeInfo> {
@@ -141,13 +165,18 @@ fn read_change(change_dir: &Path, name: &str) -> Option<ChangeInfo> {
         done_tasks,
         has_registered_tests: false,
     };
-    let stage = ChangeStage::try_from(evidence.derive_state(None))
-        .expect("structural discovery only derives legacy-compatible states");
+    let (declared_state, metadata_error) = proposal_state(&change_dir.join("proposal.md"));
+    let state = evidence.derive_state(declared_state);
+    let artifact_health = metadata_error.map_or_else(
+        || evidence.assess_health(state),
+        |detail| ArtifactHealth::Malformed { detail },
+    );
 
     Some(ChangeInfo {
         name: name.to_string(),
         path: change_dir.to_path_buf(),
-        stage,
+        state,
+        artifact_health,
         has_proposal,
         has_design,
         has_specs,
@@ -660,13 +689,15 @@ pub fn build_context_injection(changes: &[ChangeInfo]) -> String {
     lines.push("[OpenSpec — active changes]".to_string());
 
     for change in changes {
-        let icon = match change.stage {
-            ChangeStage::Proposed => "◌",
-            ChangeStage::Specified => "◐",
-            ChangeStage::Planned => "▸",
-            ChangeStage::Implementing => "⟳",
-            ChangeStage::Verifying => "◉",
-            ChangeStage::Archived => "✓",
+        let icon = match change.state {
+            ChangeState::Proposed => "◌",
+            ChangeState::Specced => "◐",
+            ChangeState::Planned => "▸",
+            ChangeState::Testing => "⊢",
+            ChangeState::Implementing => "⟳",
+            ChangeState::Verifying => "◉",
+            ChangeState::Archived => "✓",
+            ChangeState::Abandoned => "×",
         };
         let progress = if change.total_tasks > 0 {
             format!(" ({}/{})", change.done_tasks, change.total_tasks)
@@ -676,13 +707,13 @@ pub fn build_context_injection(changes: &[ChangeInfo]) -> String {
         lines.push(format!(
             "  {icon} {} — {}{progress}",
             change.name,
-            change.stage.as_str()
+            change.state.as_str()
         ));
 
         // Include scenario summaries for implementing/verifying changes
         if matches!(
-            change.stage,
-            ChangeStage::Implementing | ChangeStage::Verifying
+            change.state,
+            ChangeState::Implementing | ChangeState::Verifying
         ) {
             for spec in &change.specs {
                 let scenario_count: usize =
@@ -762,7 +793,8 @@ pub fn propose_change(
     Ok(ChangeInfo {
         name: name.to_string(),
         path: change_dir,
-        stage: ChangeStage::Proposed,
+        state: ChangeState::Proposed,
+        artifact_health: ArtifactHealth::Healthy,
         has_proposal: true,
         has_design: false,
         has_specs: false,
@@ -1377,7 +1409,8 @@ Then sharedState.cleave.children[i].status becomes running
         let changes = vec![ChangeInfo {
             name: "test-change".into(),
             path: PathBuf::new(),
-            stage: ChangeStage::Implementing,
+            state: ChangeState::Implementing,
+            artifact_health: omegon_opsx::ArtifactHealth::Healthy,
             has_proposal: true,
             has_design: true,
             has_specs: true,
@@ -1489,7 +1522,7 @@ mod mutation_tests {
 
         let change = propose_change(repo, "my-change", "My Change", "Do things").unwrap();
         assert_eq!(change.name, "my-change");
-        assert_eq!(change.stage, ChangeStage::Proposed);
+        assert_eq!(change.state, ChangeState::Proposed);
         assert!(change.has_proposal);
         assert!(change.path.join("proposal.md").exists());
 
@@ -1560,7 +1593,7 @@ mod mutation_tests {
         let changes = list_changes(dir.path());
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].name, "listed");
-        assert_eq!(changes[0].stage, ChangeStage::Proposed);
+        assert_eq!(changes[0].state, ChangeState::Proposed);
     }
 
     #[test]
@@ -1728,7 +1761,7 @@ mod mutation_tests {
 
         let changes = list_changes(dir.path());
         assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].stage, ChangeStage::Specified);
+        assert_eq!(changes[0].state, ChangeState::Specced);
         assert!(changes[0].has_specs);
     }
 }

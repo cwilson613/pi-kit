@@ -6,7 +6,7 @@
 //!
 //! Phase 1a: read-only structs for parsing. Phase 1b: mutation methods.
 
-use omegon_opsx::{ChangeState, NodeState};
+use omegon_opsx::{ArtifactHealth, ChangeState, NodeState};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -336,7 +336,10 @@ pub struct SpecFile {
 pub struct ChangeInfo {
     pub name: String,
     pub path: PathBuf,
-    pub stage: ChangeStage,
+    /// Canonical semantic state derived from git-native artifacts.
+    pub state: ChangeState,
+    /// Structural/metadata health is independent from semantic state.
+    pub artifact_health: ArtifactHealth,
     pub has_proposal: bool,
     pub has_design: bool,
     pub has_specs: bool,

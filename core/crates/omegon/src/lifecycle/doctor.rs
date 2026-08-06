@@ -164,7 +164,7 @@ pub fn audit_openspec_changes(
     let mut findings = Vec::new();
 
     for change in changes {
-        let artifact_state = ArtifactState::Change(change.stage.into());
+        let artifact_state = ArtifactState::Change(change.state);
         let ledger_state = opsx_states
             .get(&change.name)
             .copied()
@@ -184,7 +184,7 @@ pub fn audit_openspec_changes(
                 };
                 format!(
                     "OpenSpec file stage is {}, but omegon-opsx state is {actual}",
-                    change.stage.as_str()
+                    change.state.as_str()
                 )
             }
             ArtifactDriftKind::LedgerRecordWithoutArtifact => {
@@ -270,14 +270,15 @@ fn overlaps_meaningfully(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::types::{ChangeStage, DesignNode};
+    use crate::lifecycle::types::DesignNode;
     use std::path::PathBuf;
 
-    fn change(name: &str, stage: ChangeStage) -> ChangeInfo {
+    fn change(name: &str, state: ChangeState) -> ChangeInfo {
         ChangeInfo {
             name: name.into(),
             path: PathBuf::from(format!("openspec/changes/{name}")),
-            stage,
+            state,
+            artifact_health: omegon_opsx::ArtifactHealth::Healthy,
             has_proposal: true,
             has_design: false,
             has_specs: false,
@@ -313,8 +314,8 @@ mod tests {
     #[test]
     fn openspec_audit_uses_typed_authority_drift() {
         let changes = vec![
-            change("missing", ChangeStage::Specified),
-            change("mismatch", ChangeStage::Planned),
+            change("missing", ChangeState::Specced),
+            change("mismatch", ChangeState::Planned),
         ];
         let states = HashMap::from([("mismatch".into(), ChangeState::Testing)]);
 

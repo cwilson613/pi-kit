@@ -17,10 +17,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::lifecycle::context::LifecycleContextProvider;
 use crate::lifecycle::design;
-use crate::lifecycle::types::ChangeStage;
 use crate::settings::{Settings, SharedSettings};
 use crate::shadow_context::{ContextKind, EntryBody, ShadowContext, ShadowEntry};
 use crate::tui::TuiCommand;
+use omegon_opsx::ChangeState;
 
 fn dispatch_command(command_tx: &SharedCommandTx, command: TuiCommand) -> bool {
     if let Ok(guard) = command_tx.lock()
@@ -403,11 +403,11 @@ impl ContextProvider {
 
         for change in provider.changes().iter().filter(|c| {
             matches!(
-                c.stage,
-                ChangeStage::Implementing
-                    | ChangeStage::Verifying
-                    | ChangeStage::Planned
-                    | ChangeStage::Specified
+                c.state,
+                ChangeState::Implementing
+                    | ChangeState::Verifying
+                    | ChangeState::Planned
+                    | ChangeState::Specced
             )
         }) {
             for spec in &change.specs {

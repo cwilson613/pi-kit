@@ -6,6 +6,7 @@
 //! instead of collapsing artifact state and ledger state into one enum.
 
 use crate::{ChangeState, NodeState};
+use std::collections::BTreeSet;
 
 /// Declares which representation owns lifecycle content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +45,85 @@ impl ArtifactHealth {
     pub fn is_healthy(&self) -> bool {
         matches!(self, Self::Healthy)
     }
+}
+
+/// Renderer-neutral evidence discovered from one OpenSpec change directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChangeArtifactEvidence {
+    pub has_proposal: bool,
+    pub has_design: bool,
+    pub has_specs: bool,
+    pub has_tasks: bool,
+    pub total_tasks: usize,
+    pub done_tasks: usize,
+    pub has_registered_tests: bool,
+}
+
+impl ChangeArtifactEvidence {
+    /// Derive semantic lifecycle state from git-native artifact evidence.
+    ///
+    /// `declared_state` is explicit artifact metadata and therefore takes
+    /// precedence over structural inference. This is how canonical-only states
+    /// such as `testing` and `abandoned` remain representable.
+    pub fn derive_state(self, declared_state: Option<ChangeState>) -> ChangeState {
+        if let Some(state) = declared_state {
+            return state;
+        }
+        if self.has_tasks && self.total_tasks > 0 && self.done_tasks >= self.total_tasks {
+            return ChangeState::Verifying;
+        }
+        if self.has_registered_tests {
+            return ChangeState::Implementing;
+        }
+        if self.has_tasks {
+            return ChangeState::Planned;
+        }
+        if self.has_specs {
+            return ChangeState::Specced;
+        }
+        ChangeState::Proposed
+    }
+
+    /// Assess missing structure required by the derived semantic state.
+    pub fn assess_health(self, state: ChangeState) -> ArtifactHealth {
+        let mut missing = BTreeSet::new();
+        if !self.has_proposal {
+            missing.insert("proposal.md".to_string());
+        }
+        match state {
+            ChangeState::Proposed | ChangeState::Abandoned => {}
+            ChangeState::Specced | ChangeState::Testing => {
+                if !self.has_specs {
+                    missing.insert("specs".to_string());
+                }
+            }
+            ChangeState::Planned | ChangeState::Implementing | ChangeState::Verifying => {
+                if !self.has_specs {
+                    missing.insert("specs".to_string());
+                }
+                if !self.has_design {
+                    missing.insert("design.md".to_string());
+                }
+                if !self.has_tasks {
+                    missing.insert("tasks.md".to_string());
+                }
+            }
+            ChangeState::Archived => {}
+        }
+        if missing.is_empty() {
+            ArtifactHealth::Healthy
+        } else {
+            ArtifactHealth::Incomplete {
+                missing: missing.into_iter().collect(),
+            }
+        }
+    }
+}
+
+/// Parse explicit canonical change-state metadata without accepting legacy
+/// aliases such as `specified`.
+pub fn parse_declared_change_state(value: &str) -> Result<ChangeState, String> {
+    ChangeState::parse(value).ok_or_else(|| format!("unknown change state: {value}"))
 }
 
 /// Why artifact-derived state and the opsx enforcement ledger disagree.
@@ -131,6 +211,93 @@ mod tests {
             ArtifactState::Change(ChangeState::Planned),
             ArtifactState::Change(ChangeState::Planned)
         );
+    }
+
+    #[test]
+    fn explicit_testing_and_abandoned_override_structural_inference() {
+        let evidence = ChangeArtifactEvidence {
+            has_proposal: true,
+            has_specs: true,
+            has_tasks: true,
+            total_tasks: 3,
+            done_tasks: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            evidence.derive_state(Some(ChangeState::Testing)),
+            ChangeState::Testing
+        );
+        assert_eq!(
+            evidence.derive_state(Some(ChangeState::Abandoned)),
+            ChangeState::Abandoned
+        );
+    }
+
+    #[test]
+    fn structural_evidence_derives_legacy_change_progression() {
+        assert_eq!(
+            ChangeArtifactEvidence::default().derive_state(None),
+            ChangeState::Proposed
+        );
+        assert_eq!(
+            ChangeArtifactEvidence {
+                has_specs: true,
+                ..Default::default()
+            }
+            .derive_state(None),
+            ChangeState::Specced
+        );
+        assert_eq!(
+            ChangeArtifactEvidence {
+                has_tasks: true,
+                ..Default::default()
+            }
+            .derive_state(None),
+            ChangeState::Planned
+        );
+        assert_eq!(
+            ChangeArtifactEvidence {
+                has_registered_tests: true,
+                ..Default::default()
+            }
+            .derive_state(None),
+            ChangeState::Implementing
+        );
+        assert_eq!(
+            ChangeArtifactEvidence {
+                has_tasks: true,
+                total_tasks: 2,
+                done_tasks: 2,
+                ..Default::default()
+            }
+            .derive_state(None),
+            ChangeState::Verifying
+        );
+    }
+
+    #[test]
+    fn health_reports_state_required_structure_separately() {
+        let health = ChangeArtifactEvidence {
+            has_proposal: true,
+            has_specs: true,
+            ..Default::default()
+        }
+        .assess_health(ChangeState::Planned);
+        assert_eq!(
+            health,
+            ArtifactHealth::Incomplete {
+                missing: vec!["design.md".into(), "tasks.md".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn declared_state_parser_rejects_legacy_alias() {
+        assert_eq!(
+            parse_declared_change_state("testing"),
+            Ok(ChangeState::Testing)
+        );
+        assert!(parse_declared_change_state("specified").is_err());
     }
 
     #[test]

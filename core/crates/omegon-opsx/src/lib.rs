@@ -13,6 +13,7 @@ pub mod types;
 // Re-exports for convenience
 pub use authority::{
     ArtifactAuthority, ArtifactDrift, ArtifactDriftKind, ArtifactHealth, ArtifactState,
+    ChangeArtifactEvidence, parse_declared_change_state,
 };
 pub use error::OpsxError;
 pub use fsm::Lifecycle;

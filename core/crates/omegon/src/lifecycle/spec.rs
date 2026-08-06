@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 use super::types::*;
 use crate::evidence::EvidenceStore;
 use crate::tdd::{self, EvidenceQuery};
-use omegon_opsx::{
-    ArtifactHealth, ChangeArtifactEvidence, ChangeState, parse_declared_change_state,
-};
+use omegon_opsx::{ChangeArtifactRecord, ChangeState, OpenSpecRepository};
 
 /// Locate the openspec/ directory in a repository.
 pub fn find_openspec_dir(repo_path: &Path) -> Option<PathBuf> {
@@ -101,127 +99,45 @@ pub fn get_change(repo_path: &Path, name: &str) -> Option<ChangeInfo> {
     read_change(&change_dir, name)
 }
 
-fn write_change_state_metadata(proposal_path: &Path, state: ChangeState) -> anyhow::Result<()> {
-    let content = fs::read_to_string(proposal_path)?;
-    let line = format!("state: {}", state.as_str());
-    let updated = if let Some(rest) = content.strip_prefix("---\n") {
-        let Some((frontmatter, body)) = rest.split_once("\n---\n") else {
-            anyhow::bail!(
-                "malformed proposal frontmatter: {}",
-                proposal_path.display()
-            );
-        };
-        let mut found = false;
-        let mut lines = frontmatter
-            .lines()
-            .map(|existing| {
-                if existing
-                    .split_once(':')
-                    .is_some_and(|(key, _)| key.trim() == "state")
-                {
-                    found = true;
-                    line.clone()
-                } else {
-                    existing.to_string()
-                }
-            })
-            .collect::<Vec<_>>();
-        if !found {
-            lines.push(line);
-        }
-        format!("---\n{}\n---\n{body}", lines.join("\n"))
-    } else {
-        format!("---\n{line}\n---\n{content}")
-    };
-    if updated != content {
-        atomic_write(proposal_path, updated.as_bytes())?;
-    }
-    Ok(())
-}
-
-fn proposal_state(proposal_path: &Path) -> (Option<ChangeState>, Option<String>) {
-    let Ok(content) = fs::read_to_string(proposal_path) else {
-        return (None, None);
-    };
-    let Some(frontmatter) = content.strip_prefix("---\n").and_then(|rest| {
-        rest.split_once("\n---\n")
-            .map(|(frontmatter, _)| frontmatter)
-    }) else {
-        return (None, None);
-    };
-    let Some(value) = frontmatter.lines().find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        (key.trim() == "state").then(|| value.trim().trim_matches(['\'', '"']))
-    }) else {
-        return (None, None);
-    };
-    match parse_declared_change_state(value) {
-        Ok(state) => (Some(state), None),
-        Err(error) => (None, Some(error)),
-    }
-}
-
 fn read_change(change_dir: &Path, name: &str) -> Option<ChangeInfo> {
-    let has_proposal = change_dir.join("proposal.md").exists();
-    let has_design = change_dir.join("design.md").exists();
-    let specs_dir = change_dir.join("specs");
-    let has_specs = specs_dir.is_dir()
-        && fs::read_dir(&specs_dir)
-            .ok()
-            .map(|e| {
-                e.flatten()
-                    .any(|f| f.path().extension().and_then(|e| e.to_str()) == Some("md"))
-            })
-            .unwrap_or(false);
+    let artifact = OpenSpecRepository::new(
+        change_dir
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .unwrap_or(change_dir),
+    )
+    .inspect_change_dir(change_dir, name, false);
+    read_change_from_artifact(change_dir, artifact)
+}
+
+fn read_change_from_artifact(
+    change_dir: &Path,
+    artifact: ChangeArtifactRecord,
+) -> Option<ChangeInfo> {
     let tasks_path = change_dir.join("tasks.md");
-    let has_tasks = tasks_path.exists();
-
-    let (total_tasks, done_tasks, task_groups) = if has_tasks {
-        let task_groups = parse_task_groups(&tasks_path);
-        let total_tasks = task_groups.iter().map(|group| group.tasks.len()).sum();
-        let done_tasks = task_groups
-            .iter()
-            .flat_map(|group| &group.tasks)
-            .filter(|task| task.done)
-            .count();
-        (total_tasks, done_tasks, task_groups)
+    let task_groups = if artifact.evidence.has_tasks {
+        parse_task_groups(&tasks_path)
     } else {
-        (0, 0, Vec::new())
+        Vec::new()
     };
-
-    let specs = if has_specs {
-        parse_specs_dir(&specs_dir)
+    let specs = if artifact.evidence.has_specs {
+        parse_specs_dir(&change_dir.join("specs"))
     } else {
         vec![]
     };
 
-    let evidence = ChangeArtifactEvidence {
-        has_proposal,
-        has_design,
-        has_specs,
-        has_tasks,
-        total_tasks,
-        done_tasks,
-        has_registered_tests: false,
-    };
-    let (declared_state, metadata_error) = proposal_state(&change_dir.join("proposal.md"));
-    let state = evidence.derive_state(declared_state);
-    let artifact_health = metadata_error.map_or_else(
-        || evidence.assess_health(state),
-        |detail| ArtifactHealth::Malformed { detail },
-    );
-
     Some(ChangeInfo {
-        name: name.to_string(),
-        path: change_dir.to_path_buf(),
-        state,
-        artifact_health,
-        has_proposal,
-        has_design,
-        has_specs,
-        has_tasks,
-        total_tasks,
-        done_tasks,
+        name: artifact.name,
+        path: artifact.path,
+        state: artifact.state,
+        artifact_health: artifact.health,
+        has_proposal: artifact.evidence.has_proposal,
+        has_design: artifact.evidence.has_design,
+        has_specs: artifact.evidence.has_specs,
+        has_tasks: artifact.evidence.has_tasks,
+        total_tasks: artifact.evidence.total_tasks,
+        done_tasks: artifact.evidence.done_tasks,
         task_groups,
         specs,
     })
@@ -833,7 +749,7 @@ pub fn propose_change(
         name: name.to_string(),
         path: change_dir,
         state: ChangeState::Proposed,
-        artifact_health: ArtifactHealth::Healthy,
+        artifact_health: omegon_opsx::ArtifactHealth::Healthy,
         has_proposal: true,
         has_design: false,
         has_specs: false,
@@ -846,49 +762,9 @@ pub fn propose_change(
 }
 
 pub fn write_change_state(repo_path: &Path, name: &str, state: ChangeState) -> anyhow::Result<()> {
-    let proposal_path = repo_path
-        .join("openspec/changes")
-        .join(name)
-        .join("proposal.md");
-    let content = fs::read_to_string(&proposal_path)?;
-    let updated = if let Some(rest) = content.strip_prefix("---\n") {
-        let Some((frontmatter, body)) = rest.split_once("\n---\n") else {
-            anyhow::bail!(
-                "malformed proposal frontmatter in {}",
-                proposal_path.display()
-            );
-        };
-        let mut found = false;
-        let mut lines = Vec::new();
-        for line in frontmatter.lines() {
-            if line
-                .split_once(':')
-                .is_some_and(|(key, _)| key.trim() == "state")
-            {
-                lines.push(format!("state: {}", state.as_str()));
-                found = true;
-            } else {
-                lines.push(line.to_string());
-            }
-        }
-        if !found {
-            lines.push(format!("state: {}", state.as_str()));
-        }
-        format!("---\n{}\n---\n{}", lines.join("\n"), body)
-    } else {
-        format!("---\nstate: {}\n---\n\n{}", state.as_str(), content)
-    };
-    atomic_write_text(&proposal_path, &updated)
-}
-
-fn atomic_write_text(path: &Path, content: &str) -> anyhow::Result<()> {
-    let tmp = path.with_extension("md.tmp");
-    fs::write(&tmp, content)?;
-    if let Err(error) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(error.into());
-    }
-    Ok(())
+    OpenSpecRepository::new(repo_path)
+        .write_active_state(name, state)
+        .map_err(Into::into)
 }
 
 /// Add a spec file to an existing change.
@@ -918,7 +794,7 @@ pub fn add_spec(
     };
 
     atomic_write(&spec_path, spec_content.as_bytes())?;
-    write_change_state_metadata(&change_dir.join("proposal.md"), ChangeState::Specced)?;
+    OpenSpecRepository::new(repo_path).write_active_state(change_name, ChangeState::Specced)?;
     Ok(spec_path)
 }
 

@@ -4,6 +4,7 @@
 //! and release milestones. JSON file state store for git-native
 //! persistence (jj/git IS the transaction log).
 
+pub mod artifacts;
 pub mod authority;
 mod error;
 pub mod fsm;
@@ -11,6 +12,7 @@ pub mod store;
 pub mod types;
 
 // Re-exports for convenience
+pub use artifacts::{ChangeArtifactRecord, OpenSpecRepository};
 pub use authority::{
     ArtifactAuthority, ArtifactDrift, ArtifactDriftKind, ArtifactHealth, ArtifactState,
     ChangeArtifactEvidence, parse_declared_change_state,

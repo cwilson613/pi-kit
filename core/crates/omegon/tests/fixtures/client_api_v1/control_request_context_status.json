@@ -1,0 +1,11 @@
+{
+  "protocolVersion": 1,
+  "envelopeId": "env-control-1",
+  "sessionId": "session-1",
+  "clientId": "replacement-ui",
+  "direction": "clientToRuntime",
+  "kind": "controlRequest",
+  "payload": {
+    "name": "contextStatus"
+  }
+}

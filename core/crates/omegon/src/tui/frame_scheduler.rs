@@ -163,7 +163,7 @@ mod tests {
     /// stream plus operator scroll input without requiring an inaccessible TUI.
     #[test]
     #[ignore = "run with `just bench-tui-scroll-stream`"]
-    fn deterministic_streaming_scroll_profile() {
+    fn deterministic_streaming_scroll_trace() {
         let origin = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(origin);
         scheduler.after_draw(origin);

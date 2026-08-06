@@ -7,6 +7,7 @@
 //! Phase 3: Native LLM provider clients.
 
 use crate::conversation::PlanAction;
+#[cfg(feature = "tui")]
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "tui")]

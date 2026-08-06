@@ -1,8 +1,8 @@
-//! Nex manifest — TOML on-disk format for profile definitions.
+//! Sandbox manifest — TOML on-disk format for profile definitions.
 //!
-//! Operators write `.omegon/nex/my-profile.toml` or
-//! `~/.config/omegon/nex/shared-profile.toml`. The manifest is parsed
-//! into a [`NexProfile`] with a content-addressed hash for identity.
+//! Operators write `.omegon/sandbox/my-profile.toml` or
+//! `~/.config/omegon/sandbox/shared-profile.toml`. The manifest is parsed
+//! into a [`SandboxProfile`] with a content-addressed hash for identity.
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -10,13 +10,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::profile::{
-    NexCapabilities, NexDomain, NexEgressFilter, NexNetworkPolicy, NexOverlay, NexPortMapping,
-    NexPortProtocol, NexProfile, NexResourceLimits,
+    SandboxCapabilities, SandboxDomain, SandboxEgressFilter, SandboxNetworkPolicy, SandboxOverlay,
+    SandboxPortMapping, SandboxPortProtocol, SandboxProfile, SandboxResourceLimits,
 };
 
-/// On-disk TOML manifest. Parsed then converted to a [`NexProfile`].
+/// On-disk TOML manifest. Parsed then converted to a [`SandboxProfile`].
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct NexManifest {
+pub struct SandboxManifest {
     pub profile: ManifestProfile,
     #[serde(default)]
     pub overlays: BTreeMap<String, ManifestOverlay>,
@@ -31,7 +31,7 @@ pub struct NexManifest {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ManifestProfile {
     pub name: String,
-    /// Base domain name — must match a NexDomain variant or custom image.
+    /// Base domain name — must match a SandboxDomain variant or custom image.
     pub base: String,
     /// Explicit OCI image override. If set, bypasses domain-based resolution.
     #[serde(default)]
@@ -129,23 +129,23 @@ pub struct ManifestCapabilities {
     pub denied_tools: Vec<String>,
 }
 
-impl NexManifest {
+impl SandboxManifest {
     /// Parse a manifest from a TOML file on disk.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read nex manifest: {}", path.display()))?;
+            .with_context(|| format!("failed to read sandbox manifest: {}", path.display()))?;
         Self::from_toml(&content)
     }
 
     /// Parse a manifest from a TOML string.
     pub fn from_toml(content: &str) -> Result<Self> {
-        toml::from_str(content).context("failed to parse nex manifest")
+        toml::from_str(content).context("failed to parse sandbox manifest")
     }
 
-    /// Convert this manifest into a resolved [`NexProfile`].
+    /// Convert this manifest into a resolved [`SandboxProfile`].
     ///
     /// The profile hash is computed from the canonicalized manifest content.
-    pub fn into_profile(self) -> NexProfile {
+    pub fn into_profile(self) -> SandboxProfile {
         let profile_hash = compute_manifest_hash(&self);
 
         let base_domain = parse_domain(&self.profile.base);
@@ -153,13 +153,13 @@ impl NexManifest {
         let overlays = self
             .overlays
             .into_iter()
-            .map(|(name, overlay)| NexOverlay {
+            .map(|(name, overlay)| SandboxOverlay {
                 name,
                 packages: overlay.packages,
             })
             .collect();
 
-        let resource_limits = NexResourceLimits {
+        let resource_limits = SandboxResourceLimits {
             memory_mb: self.resources.memory_mb,
             cpu_shares: self.resources.cpu_shares,
             pids_limit: self.resources.pids_limit,
@@ -168,8 +168,8 @@ impl NexManifest {
 
         let network = parse_network_policy(&self.network);
 
-        let defaults = NexCapabilities::default();
-        let capabilities = NexCapabilities {
+        let defaults = SandboxCapabilities::default();
+        let capabilities = SandboxCapabilities {
             filesystem_write: self
                 .capabilities
                 .filesystem_write
@@ -182,7 +182,7 @@ impl NexManifest {
             denied_tools: self.capabilities.denied_tools,
         };
 
-        NexProfile {
+        SandboxProfile {
             name: self.profile.name,
             profile_hash,
             base_domain,
@@ -195,51 +195,51 @@ impl NexManifest {
     }
 }
 
-fn parse_domain(s: &str) -> NexDomain {
+fn parse_domain(s: &str) -> SandboxDomain {
     match s {
-        "chat" => NexDomain::Chat,
-        "coding" => NexDomain::Coding,
-        "coding-python" => NexDomain::CodingPython,
-        "coding-node" => NexDomain::CodingNode,
-        "coding-rust" => NexDomain::CodingRust,
-        "infra" => NexDomain::Infra,
-        "full" => NexDomain::Full,
-        other => NexDomain::Custom(other.into()),
+        "chat" => SandboxDomain::Chat,
+        "coding" => SandboxDomain::Coding,
+        "coding-python" => SandboxDomain::CodingPython,
+        "coding-node" => SandboxDomain::CodingNode,
+        "coding-rust" => SandboxDomain::CodingRust,
+        "infra" => SandboxDomain::Infra,
+        "full" => SandboxDomain::Full,
+        other => SandboxDomain::Custom(other.into()),
     }
 }
 
-fn parse_network_policy(manifest: &ManifestNetwork) -> NexNetworkPolicy {
+fn parse_network_policy(manifest: &ManifestNetwork) -> SandboxNetworkPolicy {
     let policy_str = manifest.policy.as_deref().unwrap_or("isolated");
 
     match policy_str {
-        "isolated" | "none" => NexNetworkPolicy::Isolated,
+        "isolated" | "none" => SandboxNetworkPolicy::Isolated,
         "egress" => {
-            let filter = manifest.egress.as_ref().map(|e| NexEgressFilter {
+            let filter = manifest.egress.as_ref().map(|e| SandboxEgressFilter {
                 allow_hosts: e.allow_hosts.clone(),
                 allow_cidrs: e.allow_cidrs.clone(),
                 allow_ports: e.allow_ports.clone(),
                 deny_private: e.deny_private,
                 deny_metadata: e.deny_metadata,
             });
-            NexNetworkPolicy::Egress { filter }
+            SandboxNetworkPolicy::Egress { filter }
         }
         "bridge" => {
             let ports = manifest
                 .ports
                 .iter()
-                .map(|p| NexPortMapping {
+                .map(|p| SandboxPortMapping {
                     host: p.host,
                     container: p.container,
                     protocol: match p.protocol.as_deref() {
-                        Some("udp") => NexPortProtocol::Udp,
-                        _ => NexPortProtocol::Tcp,
+                        Some("udp") => SandboxPortProtocol::Udp,
+                        _ => SandboxPortProtocol::Tcp,
                     },
                 })
                 .collect();
-            NexNetworkPolicy::Bridge { ports }
+            SandboxNetworkPolicy::Bridge { ports }
         }
-        "host" => NexNetworkPolicy::Host,
-        other => NexNetworkPolicy::Custom(other.into()),
+        "host" => SandboxNetworkPolicy::Host,
+        other => SandboxNetworkPolicy::Custom(other.into()),
     }
 }
 
@@ -249,7 +249,7 @@ fn parse_network_policy(manifest: &ManifestNetwork) -> NexNetworkPolicy {
 /// resource limits, image override, and every capability. Two profiles
 /// that differ in any security-relevant dimension produce different hashes.
 /// BTreeMap ensures deterministic overlay order.
-fn compute_manifest_hash(manifest: &NexManifest) -> String {
+fn compute_manifest_hash(manifest: &SandboxManifest) -> String {
     let mut hasher = Sha256::new();
 
     // Profile identity
@@ -371,7 +371,7 @@ allowed_tools = ["bash", "read_file", "write_file"]
 
     #[test]
     fn parse_sample_manifest() {
-        let manifest = NexManifest::from_toml(SAMPLE_MANIFEST).unwrap();
+        let manifest = SandboxManifest::from_toml(SAMPLE_MANIFEST).unwrap();
         assert_eq!(manifest.profile.name, "test-project");
         assert_eq!(manifest.profile.base, "coding-python");
         assert_eq!(manifest.overlays.len(), 1);
@@ -381,21 +381,21 @@ allowed_tools = ["bash", "read_file", "write_file"]
 
     #[test]
     fn manifest_to_profile() {
-        let manifest = NexManifest::from_toml(SAMPLE_MANIFEST).unwrap();
+        let manifest = SandboxManifest::from_toml(SAMPLE_MANIFEST).unwrap();
         let profile = manifest.into_profile();
         assert_eq!(profile.name, "test-project");
-        assert_eq!(profile.base_domain, NexDomain::CodingPython);
+        assert_eq!(profile.base_domain, SandboxDomain::CodingPython);
         assert_eq!(profile.overlays.len(), 1);
         assert_eq!(profile.resource_limits.memory_mb, Some(2048));
         assert!(profile.capabilities.filesystem_write);
-        assert_eq!(profile.capabilities.network, NexNetworkPolicy::Isolated);
+        assert_eq!(profile.capabilities.network, SandboxNetworkPolicy::Isolated);
         assert!(!profile.profile_hash.is_empty());
     }
 
     #[test]
     fn hash_is_deterministic() {
-        let m1 = NexManifest::from_toml(SAMPLE_MANIFEST).unwrap();
-        let m2 = NexManifest::from_toml(SAMPLE_MANIFEST).unwrap();
+        let m1 = SandboxManifest::from_toml(SAMPLE_MANIFEST).unwrap();
+        let m2 = SandboxManifest::from_toml(SAMPLE_MANIFEST).unwrap();
         let p1 = m1.into_profile();
         let p2 = m2.into_profile();
         assert_eq!(p1.profile_hash, p2.profile_hash);
@@ -408,8 +408,8 @@ allowed_tools = ["bash", "read_file", "write_file"]
 name = "minimal"
 base = "coding"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
-        assert_eq!(profile.base_domain, NexDomain::Coding);
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
+        assert_eq!(profile.base_domain, SandboxDomain::Coding);
         assert!(profile.overlays.is_empty());
         assert!(profile.resource_limits.readonly_rootfs);
     }
@@ -441,8 +441,8 @@ allow_hosts = ["api.anthropic.com"]
 [capabilities]
 filesystem_write = true
 "#;
-        let p1 = NexManifest::from_toml(locked).unwrap().into_profile();
-        let p2 = NexManifest::from_toml(open).unwrap().into_profile();
+        let p1 = SandboxManifest::from_toml(locked).unwrap().into_profile();
+        let p2 = SandboxManifest::from_toml(open).unwrap().into_profile();
         assert_ne!(
             p1.profile_hash, p2.profile_hash,
             "profiles with different capabilities must have different hashes"
@@ -465,9 +465,9 @@ allow_ports = [443]
 deny_private = true
 deny_metadata = true
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         match &profile.capabilities.network {
-            NexNetworkPolicy::Egress { filter: Some(f) } => {
+            SandboxNetworkPolicy::Egress { filter: Some(f) } => {
                 assert_eq!(f.allow_hosts, vec!["api.anthropic.com", "api.openai.com"]);
                 assert_eq!(f.allow_ports, vec![443]);
                 assert!(f.deny_private);
@@ -496,9 +496,9 @@ host = 5432
 container = 5432
 protocol = "tcp"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         match &profile.capabilities.network {
-            NexNetworkPolicy::Bridge { ports } => {
+            SandboxNetworkPolicy::Bridge { ports } => {
                 assert_eq!(ports.len(), 2);
                 assert_eq!(ports[0].host, 3000);
                 assert_eq!(ports[0].container, 3000);
@@ -518,9 +518,9 @@ base = "coding"
 [network]
 policy = "egress"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         match &profile.capabilities.network {
-            NexNetworkPolicy::Egress { filter: None } => {}
+            SandboxNetworkPolicy::Egress { filter: None } => {}
             other => panic!("expected Egress without filter, got {:?}", other),
         }
     }
@@ -539,8 +539,8 @@ name = "test"
 base = "coding"
 image = "ghcr.io/evil/image:v1"
 "#;
-        let p1 = NexManifest::from_toml(a).unwrap().into_profile();
-        let p2 = NexManifest::from_toml(b).unwrap().into_profile();
+        let p1 = SandboxManifest::from_toml(a).unwrap().into_profile();
+        let p2 = SandboxManifest::from_toml(b).unwrap().into_profile();
         assert_ne!(p1.profile_hash, p2.profile_hash);
     }
 }

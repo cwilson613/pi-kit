@@ -1675,7 +1675,7 @@ Scroll transcript:
                 match sub {
                     "on" | "enable" => {
                         // Check for container runtime before enabling
-                        let runtime = crate::nex::spawn::detect_container_runtime_public();
+                        let runtime = crate::container_runtime::detect();
                         if let Some(ref rt) = runtime {
                             let cwd = self.cwd().to_path_buf();
                             if let Ok(mut s) = self.settings.lock() {
@@ -1725,7 +1725,7 @@ Scroll transcript:
                             .ok()
                             .map(|s| s.sandbox)
                             .unwrap_or(false);
-                        let runtime = crate::nex::spawn::detect_container_runtime_public();
+                        let runtime = crate::container_runtime::detect();
                         let rt_str = runtime.as_deref().unwrap_or("not found");
                         let status = if enabled { "enabled" } else { "disabled" };
                         SlashResult::Display(format!(

@@ -11,7 +11,6 @@ pub mod codebase_search;
 pub mod edit;
 pub mod local_inference;
 pub mod native_cmd;
-pub mod nex_substrate;
 pub mod openapi;
 pub mod openapi_config;
 pub mod openapi_resolve;
@@ -389,7 +388,7 @@ impl std::error::Error for OperatorWaitRequired {}
 ///
 /// Checks whether a path is inside the workspace or a trusted directory.
 /// If not, returns a `PathPermissionError`. This is Tier 1 enforcement:
-/// defense-in-depth for non-sandboxed operation. The Nex container sandbox
+/// defense-in-depth for non-sandboxed operation. The container sandbox
 /// (Tier 3) provides the hard kernel-level boundary.
 ///
 /// `Clone` via `Arc` so it can be passed to CoreTools, ViewProvider,
@@ -632,7 +631,6 @@ pub struct CoreTools {
     /// Workspace boundary enforcer — shared with other tool providers.
     boundary: WorkspaceBoundary,
     terminal_tool_enabled: bool,
-    nex_delegations: Vec<crate::nex::substrate::NexSubstrateDelegation>,
 }
 
 impl CoreTools {
@@ -643,7 +641,6 @@ impl CoreTools {
             repo_model: None,
             boundary,
             terminal_tool_enabled: true,
-            nex_delegations: Vec::new(),
         }
     }
 
@@ -658,7 +655,6 @@ impl CoreTools {
             repo_model: Some(repo_model),
             boundary,
             terminal_tool_enabled: true,
-            nex_delegations: Vec::new(),
         }
     }
 
@@ -666,15 +662,6 @@ impl CoreTools {
     pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
         self.terminal_tool_enabled = settings.lock().map(|s| s.terminal_tool).unwrap_or(true);
         self.boundary = self.boundary.with_settings(settings);
-        self
-    }
-
-    /// Attach read-only Nex delegations discovered from extension metadata.
-    pub fn with_nex_delegations(
-        mut self,
-        delegations: Vec<crate::nex::substrate::NexSubstrateDelegation>,
-    ) -> Self {
-        self.nex_delegations = delegations;
         self
     }
 

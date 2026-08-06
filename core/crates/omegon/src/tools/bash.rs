@@ -164,7 +164,7 @@ pub async fn execute_streaming(
     // ─── Workspace boundary heuristic scan ─────────────────────────
     // Best-effort scan for filesystem write patterns targeting paths outside
     // the workspace boundary. This is not a complete shell sandbox — shell
-    // variable expansion, subshells, and programmatic I/O require the Nex
+    // variable expansion, subshells, and programmatic I/O require a hardened
     // container boundary — but detected violations must flow through the same
     // typed permission mediation path as read/write/edit instead of becoming
     // ad hoc bash-local blocks that the agent can route around.
@@ -657,7 +657,7 @@ fn truncate_tail(output: &str) -> Truncated {
 // - Does not analyze shell variables, subshells, heredocs, or command substitution
 // - Does not catch programmatic I/O (python -c "open('/x','w')")
 // - Trivially bypassable via indirection
-// - The Nex container sandbox is the security boundary
+// - The container sandbox is the security boundary
 
 /// Paths that are always allowed regardless of workspace boundary.
 const ALLOWED_PATHS: &[&str] = &[

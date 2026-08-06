@@ -33,10 +33,10 @@ pub struct ChildAgentRuntimeProfile {
     #[serde(default)]
     pub slim: bool,
 
-    /// Nex profile name — when set, the child spawns inside an OCI container
+    /// Sandbox profile name — when set, the child spawns inside an OCI container
     /// with sandbox isolation defined by the named profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nex_profile: Option<String>,
+    pub sandbox_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,7 +72,7 @@ impl ChildAgentBoundary {
             writable_paths: scope,
             disabled_tools: runtime.disabled_tools.clone(),
             enabled_tools: runtime.enabled_tools.clone(),
-            sandbox_profile: runtime.nex_profile.clone(),
+            sandbox_profile: runtime.sandbox_profile.clone(),
             dangerously_bypass_permissions,
             notes: Vec::new(),
         }
@@ -409,19 +409,19 @@ pub fn spawn_sandboxed_child_agent(
     preferred_profile: Option<&str>,
 ) -> anyhow::Result<(Child, u32)> {
     let home = dirs::home_dir().unwrap_or_default().join(".omegon");
-    let registry = crate::nex::NexRegistry::load(&home, Some(cwd))?;
+    let registry = crate::sandbox_runtime::SandboxRegistry::load(&home, Some(cwd))?;
     let workspace_profile = cwd.file_name().and_then(|name| name.to_str());
     let profile_name =
         resolve_child_sandbox_profile_name(preferred_profile, workspace_profile, |name| {
             registry.resolve(name).is_some()
         })
-        .ok_or_else(|| anyhow::anyhow!("no nex profile available for child sandbox"))?;
+        .ok_or_else(|| anyhow::anyhow!("no sandbox profile available for child sandbox"))?;
     let profile = registry
         .resolve(&profile_name)
         .expect("resolved profile exists")
         .clone();
 
-    crate::nex::spawn_containerized_child_agent(config, &profile, cwd, prompt_file)
+    crate::sandbox_runtime::spawn_containerized_child_agent(config, &profile, cwd, prompt_file)
 }
 
 pub fn spawn_headless_child_agent(
@@ -562,7 +562,7 @@ mod boundary_tests {
             "preloadedFiles": ["docs/spec.md"],
             "persona": "reviewer",
             "slim": true,
-            "nexProfile": "delegate-sandbox"
+            "sandboxProfile": "delegate-sandbox"
         }"#;
 
         let runtime: ChildAgentRuntimeProfile = serde_json::from_str(json).unwrap();
@@ -577,7 +577,7 @@ mod boundary_tests {
         assert_eq!(runtime.preloaded_files, vec!["docs/spec.md"]);
         assert_eq!(runtime.persona.as_deref(), Some("reviewer"));
         assert!(runtime.slim);
-        assert_eq!(runtime.nex_profile.as_deref(), Some("delegate-sandbox"));
+        assert_eq!(runtime.sandbox_profile.as_deref(), Some("delegate-sandbox"));
     }
 
     #[test]
@@ -586,7 +586,7 @@ mod boundary_tests {
             preloaded_files: vec!["src/lib.rs".into()],
             enabled_tools: vec!["read".into(), "bash".into()],
             disabled_tools: vec!["delegate".into(), "cleave_run".into()],
-            nex_profile: Some("delegate-sandbox".into()),
+            sandbox_profile: Some("delegate-sandbox".into()),
             ..Default::default()
         };
         let boundary = ChildAgentBoundary::from_runtime_with_safety(

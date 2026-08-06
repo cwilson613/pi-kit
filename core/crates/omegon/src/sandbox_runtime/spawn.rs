@@ -1,7 +1,7 @@
 //! Container-aware child agent spawning.
 //!
 //! Parallels `spawn_headless_child_agent()` in child_agent.rs but runs
-//! the child inside an OCI container defined by a NexProfile.
+//! the child inside an OCI container defined by a SandboxProfile.
 
 use std::path::Path;
 
@@ -9,12 +9,12 @@ use anyhow::{Context, Result};
 use tokio::process::Child;
 
 use super::container::materialize_container;
-use super::profile::NexProfile;
+use super::profile::SandboxProfile;
 use crate::child_agent::ChildAgentSpawnConfig;
 
 /// Spawn a child agent inside an OCI container.
 ///
-/// The container is configured from the `NexProfile`:
+/// The container is configured from the `SandboxProfile`:
 /// - Workspace mounted at `/work`
 /// - Resource limits (memory, CPU, PIDs, read-only rootfs)
 /// - Network isolation per profile capabilities
@@ -24,12 +24,12 @@ use crate::child_agent::ChildAgentSpawnConfig;
 /// Returns the child process handle and its PID.
 pub fn spawn_containerized_child_agent(
     config: &ChildAgentSpawnConfig,
-    profile: &NexProfile,
+    profile: &SandboxProfile,
     cwd: &Path,
     prompt_file: &Path,
 ) -> Result<(Child, u32)> {
     let runtime = detect_container_runtime()
-        .context("nex profile requires a container runtime (podman or docker)")?;
+        .context("sandbox profile requires a container runtime (podman or docker)")?;
 
     let (agent_args, env) = container_child_args_and_env(config, profile, cwd, prompt_file);
 
@@ -66,7 +66,7 @@ pub fn spawn_containerized_child_agent(
 
 fn container_child_args_and_env(
     config: &ChildAgentSpawnConfig,
-    profile: &NexProfile,
+    profile: &SandboxProfile,
     cwd: &Path,
     prompt_file: &Path,
 ) -> (Vec<String>, Vec<(String, String)>) {
@@ -183,7 +183,7 @@ fn detect_container_runtime() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use crate::child_agent::{ChildAgentRuntimeProfile, ChildAgentSpawnConfig};
-    use crate::nex::NexManifest;
+    use crate::sandbox_runtime::SandboxManifest;
 
     #[test]
     fn bypass_config_reaches_container_args_and_env() {
@@ -217,7 +217,7 @@ image = "ghcr.io/styrene-lab/omegon:0.27.0"
 mount_cwd = true
 filesystem_write = true
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let temp = tempfile::TempDir::new().unwrap();
         let prompt = temp.path().join("prompt.md");
         std::fs::write(&prompt, "test").unwrap();
@@ -233,7 +233,7 @@ filesystem_write = true
 
         let (agent_args, env) =
             super::container_child_args_and_env(&config, &profile, temp.path(), &prompt);
-        let cmd = crate::nex::materialize_container(
+        let cmd = crate::sandbox_runtime::materialize_container(
             &profile,
             "podman",
             temp.path(),

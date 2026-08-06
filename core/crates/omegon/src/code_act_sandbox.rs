@@ -17,7 +17,7 @@ pub struct SandboxConfig {
 
 impl SandboxConfig {
     pub fn detect() -> Option<Self> {
-        let runtime = crate::nex::spawn::detect_container_runtime_public()?;
+        let runtime = crate::container_runtime::detect()?;
         let image =
             std::env::var("OMEGON_CODE_ACT_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string());
         Some(Self { runtime, image })

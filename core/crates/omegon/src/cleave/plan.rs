@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(runtime.enabled_extensions, vec!["scribe-rpc"]);
         assert_eq!(runtime.disabled_extensions, vec!["legacy-http"]);
         assert_eq!(runtime.preloaded_files, vec!["docs/spec.md"]);
-        assert_eq!(runtime.nex_profile.as_deref(), Some("sandboxed"));
+        assert_eq!(runtime.sandbox_profile.as_deref(), Some("sandboxed"));
         assert!(runtime.slim);
     }
 

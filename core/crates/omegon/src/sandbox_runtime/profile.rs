@@ -1,15 +1,15 @@
-//! Core Nex profile types.
+//! Core Sandbox profile types.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// A Nex profile — declarative environment specification for agent sandboxing.
+/// A Sandbox profile — declarative environment specification for agent sandboxing.
 ///
 /// Deterministic: same profile_hash = same OCI image.
 /// Identity-bound: signed_by links to a Styrene Identity principal.
 /// Materializable: resolves to an OCI image reference for container execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NexProfile {
+pub struct SandboxProfile {
     /// Human-readable name (e.g., "coding-python", "infra-k8s-prod").
     pub name: String,
 
@@ -18,19 +18,19 @@ pub struct NexProfile {
     pub profile_hash: String,
 
     /// Base domain from nix/profiles.nix this inherits from.
-    pub base_domain: NexDomain,
+    pub base_domain: SandboxDomain,
 
     /// Additional package layers on top of the base domain.
     #[serde(default)]
-    pub overlays: Vec<NexOverlay>,
+    pub overlays: Vec<SandboxOverlay>,
 
     /// Resource constraints for the container.
     #[serde(default)]
-    pub resource_limits: NexResourceLimits,
+    pub resource_limits: SandboxResourceLimits,
 
     /// Capability grants — what this profile is allowed to do.
     #[serde(default)]
-    pub capabilities: NexCapabilities,
+    pub capabilities: SandboxCapabilities,
 
     /// OCI image reference. Populated after build/resolve.
     /// e.g. "ghcr.io/styrene-lab/omegon-coding-python:0.17.6"
@@ -39,13 +39,13 @@ pub struct NexProfile {
 
     /// Identity binding — who created/signed this profile.
     #[serde(default)]
-    pub signed_by: Option<NexIdentityBinding>,
+    pub signed_by: Option<SandboxIdentityBinding>,
 }
 
 /// Base domain — maps to nix/profiles.nix domain definitions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum NexDomain {
+pub enum SandboxDomain {
     Chat,
     Coding,
     CodingPython,
@@ -56,7 +56,7 @@ pub enum NexDomain {
     Custom(String),
 }
 
-impl NexDomain {
+impl SandboxDomain {
     /// Default OCI image tag suffix for this domain.
     pub fn image_suffix(&self) -> &str {
         match self {
@@ -77,7 +77,7 @@ impl NexDomain {
     }
 }
 
-impl std::fmt::Display for NexDomain {
+impl std::fmt::Display for SandboxDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chat => write!(f, "chat"),
@@ -94,7 +94,7 @@ impl std::fmt::Display for NexDomain {
 
 /// Named package overlay layered on top of the base domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NexOverlay {
+pub struct SandboxOverlay {
     pub name: String,
     /// Nix packages to add (e.g., "python312Packages.torch").
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct NexOverlay {
 
 /// Container resource constraints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NexResourceLimits {
+pub struct SandboxResourceLimits {
     /// Memory limit in megabytes. None = unlimited.
     #[serde(default)]
     pub memory_mb: Option<u64>,
@@ -121,7 +121,7 @@ pub struct NexResourceLimits {
     pub readonly_rootfs: bool,
 }
 
-impl Default for NexResourceLimits {
+impl Default for SandboxResourceLimits {
     fn default() -> Self {
         Self {
             memory_mb: None,
@@ -138,7 +138,7 @@ impl Default for NexResourceLimits {
 /// with a single coherent policy that supports filtered egress.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "lowercase")]
-pub enum NexNetworkPolicy {
+pub enum SandboxNetworkPolicy {
     /// No network stack at all (default — safest for agent sandboxing).
     /// Maps to `--network=none`.
     #[default]
@@ -149,7 +149,7 @@ pub enum NexNetworkPolicy {
     /// Maps to `--network=bridge` + optional iptables rules.
     Egress {
         #[serde(default)]
-        filter: Option<NexEgressFilter>,
+        filter: Option<SandboxEgressFilter>,
     },
 
     /// Standard bridge network with optional inbound port mappings.
@@ -157,7 +157,7 @@ pub enum NexNetworkPolicy {
     /// Maps to `--network=bridge` + `--publish` per port.
     Bridge {
         #[serde(default)]
-        ports: Vec<NexPortMapping>,
+        ports: Vec<SandboxPortMapping>,
     },
 
     /// Host network namespace — maximum access, minimum isolation.
@@ -168,7 +168,7 @@ pub enum NexNetworkPolicy {
     Custom(String),
 }
 
-impl NexNetworkPolicy {
+impl SandboxNetworkPolicy {
     /// Container `--network=` flag value.
     pub fn network_flag(&self) -> &str {
         match self {
@@ -198,7 +198,7 @@ impl NexNetworkPolicy {
     }
 }
 
-impl std::fmt::Display for NexNetworkPolicy {
+impl std::fmt::Display for SandboxNetworkPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_label())
     }
@@ -209,7 +209,7 @@ impl std::fmt::Display for NexNetworkPolicy {
 /// When attached to an `Egress` policy, only traffic matching at least one
 /// allow rule is permitted. Everything else is dropped via iptables.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NexEgressFilter {
+pub struct SandboxEgressFilter {
     /// Allowed destination hostnames/domains.
     /// Supports leading wildcard: `*.example.com` matches `api.example.com`.
     /// Resolved to IPs at container start via DNS.
@@ -235,7 +235,7 @@ pub struct NexEgressFilter {
     pub deny_metadata: bool,
 }
 
-impl Default for NexEgressFilter {
+impl Default for SandboxEgressFilter {
     fn default() -> Self {
         Self {
             allow_hosts: Vec::new(),
@@ -249,20 +249,20 @@ impl Default for NexEgressFilter {
 
 /// Port mapping for bridge network mode — exposes container ports to host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NexPortMapping {
+pub struct SandboxPortMapping {
     /// Port on the host.
     pub host: u16,
     /// Port inside the container.
     pub container: u16,
     /// Protocol (defaults to TCP).
     #[serde(default)]
-    pub protocol: NexPortProtocol,
+    pub protocol: SandboxPortProtocol,
 }
 
 /// Port mapping protocol.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum NexPortProtocol {
+pub enum SandboxPortProtocol {
     #[default]
     Tcp,
     Udp,
@@ -270,7 +270,7 @@ pub enum NexPortProtocol {
 
 /// Capability grants scoping what the sandboxed agent can do.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NexCapabilities {
+pub struct SandboxCapabilities {
     /// Allow writing to the mounted workspace filesystem.
     #[serde(default = "default_true")]
     pub filesystem_write: bool,
@@ -278,7 +278,7 @@ pub struct NexCapabilities {
     /// Network isolation policy — graduated from total isolation to full host access.
     /// Defaults to `Isolated` (no network stack).
     #[serde(default)]
-    pub network: NexNetworkPolicy,
+    pub network: SandboxNetworkPolicy,
 
     /// Mount the operator's current working directory into the container.
     #[serde(default = "default_true")]
@@ -301,11 +301,11 @@ pub struct NexCapabilities {
     pub denied_tools: Vec<String>,
 }
 
-impl Default for NexCapabilities {
+impl Default for SandboxCapabilities {
     fn default() -> Self {
         Self {
             filesystem_write: true,
-            network: NexNetworkPolicy::Isolated,
+            network: SandboxNetworkPolicy::Isolated,
             mount_cwd: true,
             mount_paths: Vec::new(),
             env_passthrough: Vec::new(),
@@ -320,7 +320,7 @@ impl Default for NexCapabilities {
 /// In Phase 4, `signature` will be populated via Styrene Identity Ed25519.
 /// Until then, the principal fields provide traceability without crypto.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NexIdentityBinding {
+pub struct SandboxIdentityBinding {
     /// Principal who created/signed this profile.
     pub principal_id: String,
 
@@ -333,10 +333,10 @@ pub struct NexIdentityBinding {
     pub signature: Option<String>,
 }
 
-impl NexProfile {
+impl SandboxProfile {
     /// Bind this profile to the current operator identity.
     pub fn bind_identity(&mut self, identity: &crate::settings::RuntimeIdentity) {
-        self.signed_by = Some(NexIdentityBinding {
+        self.signed_by = Some(SandboxIdentityBinding {
             principal_id: identity
                 .principal_id
                 .clone()
@@ -353,20 +353,20 @@ impl NexProfile {
             caps.push("fs:write".into());
         }
         match &self.capabilities.network {
-            NexNetworkPolicy::Isolated => {}
-            NexNetworkPolicy::Egress { filter: Some(_) } => {
+            SandboxNetworkPolicy::Isolated => {}
+            SandboxNetworkPolicy::Egress { filter: Some(_) } => {
                 caps.push("net:egress-filtered".into());
             }
-            NexNetworkPolicy::Egress { filter: None } => {
+            SandboxNetworkPolicy::Egress { filter: None } => {
                 caps.push("net:egress".into());
             }
-            NexNetworkPolicy::Bridge { .. } => {
+            SandboxNetworkPolicy::Bridge { .. } => {
                 caps.push("net:bridge".into());
             }
-            NexNetworkPolicy::Host => {
+            SandboxNetworkPolicy::Host => {
                 caps.push("net:host".into());
             }
-            NexNetworkPolicy::Custom(name) => {
+            SandboxNetworkPolicy::Custom(name) => {
                 caps.push(format!("net:custom:{name}"));
             }
         }
@@ -380,7 +380,7 @@ impl NexProfile {
             ));
         }
         crate::settings::AuthorizationContext {
-            roles: vec!["nex-agent".into()],
+            roles: vec!["sandbox-agent".into()],
             capabilities: caps,
             trust_domain: self.signed_by.as_ref().and_then(|b| b.issuer.clone()),
         }
@@ -398,79 +398,79 @@ mod tests {
     #[test]
     fn domain_image_suffix() {
         assert_eq!(
-            NexDomain::CodingPython.image_suffix(),
+            SandboxDomain::CodingPython.image_suffix(),
             "omegon-coding-python"
         );
-        assert_eq!(NexDomain::Coding.image_suffix(), "omegon");
+        assert_eq!(SandboxDomain::Coding.image_suffix(), "omegon");
     }
 
     #[test]
     fn default_resource_limits_are_restrictive() {
-        let limits = NexResourceLimits::default();
+        let limits = SandboxResourceLimits::default();
         assert!(limits.readonly_rootfs);
     }
 
     #[test]
     fn default_capabilities_isolate_network() {
-        let caps = NexCapabilities::default();
+        let caps = SandboxCapabilities::default();
         assert!(caps.filesystem_write);
-        assert_eq!(caps.network, NexNetworkPolicy::Isolated);
+        assert_eq!(caps.network, SandboxNetworkPolicy::Isolated);
         assert!(!caps.network.has_network_access());
         assert!(caps.mount_cwd);
     }
 
     #[test]
     fn network_policy_flags() {
-        assert_eq!(NexNetworkPolicy::Isolated.network_flag(), "none");
+        assert_eq!(SandboxNetworkPolicy::Isolated.network_flag(), "none");
         assert_eq!(
-            NexNetworkPolicy::Egress { filter: None }.network_flag(),
+            SandboxNetworkPolicy::Egress { filter: None }.network_flag(),
             "bridge"
         );
-        assert_eq!(NexNetworkPolicy::Host.network_flag(), "host");
+        assert_eq!(SandboxNetworkPolicy::Host.network_flag(), "host");
         assert_eq!(
-            NexNetworkPolicy::Bridge { ports: vec![] }.network_flag(),
+            SandboxNetworkPolicy::Bridge { ports: vec![] }.network_flag(),
             "bridge"
         );
         assert_eq!(
-            NexNetworkPolicy::Custom("mynet".into()).network_flag(),
+            SandboxNetworkPolicy::Custom("mynet".into()).network_flag(),
             "mynet"
         );
     }
 
     #[test]
     fn network_policy_access() {
-        assert!(!NexNetworkPolicy::Isolated.has_network_access());
-        assert!(NexNetworkPolicy::Egress { filter: None }.has_network_access());
+        assert!(!SandboxNetworkPolicy::Isolated.has_network_access());
+        assert!(SandboxNetworkPolicy::Egress { filter: None }.has_network_access());
         assert!(
-            NexNetworkPolicy::Egress {
-                filter: Some(NexEgressFilter::default()),
+            SandboxNetworkPolicy::Egress {
+                filter: Some(SandboxEgressFilter::default()),
             }
             .has_network_access()
         );
-        assert!(NexNetworkPolicy::Bridge { ports: vec![] }.has_network_access());
-        assert!(NexNetworkPolicy::Host.has_network_access());
+        assert!(SandboxNetworkPolicy::Bridge { ports: vec![] }.has_network_access());
+        assert!(SandboxNetworkPolicy::Host.has_network_access());
     }
 
     #[test]
     fn network_policy_display() {
-        assert_eq!(NexNetworkPolicy::Isolated.display_label(), "isolated");
+        assert_eq!(SandboxNetworkPolicy::Isolated.display_label(), "isolated");
         assert_eq!(
-            NexNetworkPolicy::Egress { filter: None }.display_label(),
+            SandboxNetworkPolicy::Egress { filter: None }.display_label(),
             "egress"
         );
         assert_eq!(
-            NexNetworkPolicy::Egress {
-                filter: Some(NexEgressFilter::default())
+            SandboxNetworkPolicy::Egress {
+                filter: Some(SandboxEgressFilter::default())
             }
             .display_label(),
             "egress (filtered)"
         );
-        assert_eq!(NexNetworkPolicy::Host.display_label(), "host");
+        assert_eq!(SandboxNetworkPolicy::Host.display_label(), "host");
     }
 
     #[test]
     fn egress_filter_defaults_deny_private_and_metadata() {
-        let filter = NexEgressFilter::default();
+        let filter = SandboxEgressFilter::default();
         assert!(filter.deny_private);
         assert!(filter.deny_metadata);
         assert!(filter.allow_hosts.is_empty());

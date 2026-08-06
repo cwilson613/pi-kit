@@ -4425,7 +4425,7 @@ warning: {warning}"
             return;
         }
 
-        let runtime = crate::nex::spawn::detect_container_runtime_public();
+        let runtime = crate::container_runtime::detect();
         if let Some(rt) = runtime {
             self.update_and_persist(|s| s.sandbox = true);
             self.show_command_toast(CommandToast::new(

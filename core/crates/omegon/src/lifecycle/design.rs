@@ -435,54 +435,41 @@ fn parse_impl_notes(content: &str, sections: &mut DocumentSections) {
 
 /// Scan a docs/ directory for design documents and build a tree.
 pub fn scan_design_docs(docs_dir: &Path) -> HashMap<String, DesignNode> {
-    let mut nodes = HashMap::new();
-
-    let entries = match fs::read_dir(docs_dir) {
-        Ok(entries) => entries,
-        Err(_) => return nodes,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        if let Some(fm) = parse_frontmatter(&content)
-            && let Some(node) = node_from_frontmatter(&fm, path)
-        {
-            nodes.insert(node.id.clone(), node);
-        }
-    }
-
-    // Also scan docs/design/ subdirectory if it exists
-    let design_dir = docs_dir.join("design");
-    if design_dir.is_dir()
-        && let Ok(entries) = fs::read_dir(&design_dir)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
+    let repo_root = docs_dir.parent().unwrap_or(docs_dir);
+    omegon_opsx::DesignRepository::new(repo_root)
+        .scan()
+        .records
+        .into_iter()
+        .map(|record| {
+            let parsed = record.artifact;
+            let artifact = parsed.artifact;
+            let node = DesignNode {
+                id: artifact.id.clone(),
+                title: artifact.title,
+                status: NodeStatus::from(artifact.state),
+                parent: artifact.parent,
+                tags: artifact.tags,
+                dependencies: artifact.dependencies,
+                related: artifact.related,
+                open_questions: artifact.open_questions,
+                branches: artifact.branches,
+                openspec_change: artifact.openspec_change,
+                issue_type: artifact.issue_type.map(|kind| match kind {
+                    omegon_opsx::design_artifacts::IssueType::Epic => IssueType::Epic,
+                    omegon_opsx::design_artifacts::IssueType::Feature => IssueType::Feature,
+                    omegon_opsx::design_artifacts::IssueType::Task => IssueType::Task,
+                    omegon_opsx::design_artifacts::IssueType::Bug => IssueType::Bug,
+                    omegon_opsx::design_artifacts::IssueType::Chore => IssueType::Chore,
+                }),
+                priority: artifact.priority,
+                archive_reason: artifact.archive_reason,
+                superseded_by: artifact.superseded_by,
+                archived_at: artifact.archived_at,
+                file_path: parsed.source_path,
             };
-            if let Some(fm) = parse_frontmatter(&content)
-                && let Some(node) = node_from_frontmatter(&fm, path)
-            {
-                nodes.insert(node.id.clone(), node);
-            }
-        }
-    }
-
-    nodes
+            (artifact.id, node)
+        })
+        .collect()
 }
 
 /// Get children of a node.

@@ -4648,7 +4648,7 @@ fn build_tui_secret_readiness_snapshot(
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
                 };
-                let response = control_runtime::execute_control(&mut ctx, request.into()).await;
+                let response = control_runtime::execute_control(&mut ctx, request).await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
                 }

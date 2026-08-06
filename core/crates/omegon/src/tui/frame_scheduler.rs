@@ -59,10 +59,14 @@ impl TuiFrameScheduler {
         self.dirty && (self.urgent || now.duration_since(self.last_draw) >= self.min_frame_interval)
     }
 
-    pub(crate) fn after_draw(&mut self, now: Instant) {
+    pub(crate) fn is_urgent(&self) -> bool {
+        self.urgent
+    }
+
+    pub(crate) fn after_draw(&mut self, completed_at: Instant) {
         self.dirty = false;
         self.urgent = false;
-        self.last_draw = now;
+        self.last_draw = completed_at;
     }
 
     pub(crate) fn idle_poll_timeout(&self, now: Instant) -> Duration {
@@ -96,6 +100,31 @@ mod tests {
         scheduler.mark_dirty(TuiDrawReason::OperatorInput);
 
         assert!(scheduler.should_draw(now + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn operator_urgency_survives_until_the_draw() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(now);
+        scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+
+        assert!(scheduler.is_urgent());
+        scheduler.after_draw(now + Duration::from_millis(1));
+        assert!(!scheduler.is_urgent());
+    }
+
+    #[test]
+    fn draw_completion_restarts_idle_deadline() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(now + Duration::from_millis(40));
+
+        assert_eq!(
+            scheduler.idle_poll_timeout(now + Duration::from_millis(40)),
+            Duration::from_secs(1)
+        );
     }
 
     #[test]

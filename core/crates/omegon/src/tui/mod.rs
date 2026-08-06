@@ -7563,7 +7563,7 @@ pub async fn run_tui(
         let now = std::time::Instant::now();
         scheduler.mark_timer_due(now);
         if scheduler.should_draw(now) {
-            let urgent = handled_input;
+            let urgent = scheduler.is_urgent();
             let draw_started = std::time::Instant::now();
             let mut callback_elapsed = Duration::ZERO;
             terminal.draw(|f| {
@@ -7590,7 +7590,7 @@ pub async fn run_tui(
                 });
                 trace.flush_if_due(draw_finished, runtime_contention_snapshot(&app));
             }
-            scheduler.after_draw(now);
+            scheduler.after_draw(draw_finished);
         } else if let Some(trace) = &mut runtime_trace {
             trace.record_dirty_without_draw();
             trace.flush_if_due(now, runtime_contention_snapshot(&app));

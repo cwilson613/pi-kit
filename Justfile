@@ -141,6 +141,10 @@ check-omegon-headless-deps:
 check-interface-boundary:
     python3 scripts/check_interface_boundary_contract.py
 
+# Deterministic virtual-time TUI stream/scroll scheduler benchmark.
+bench-tui-scroll-stream:
+    {{cargo}} test -p omegon deterministic_streaming_scroll_profile --locked -- --ignored --nocapture
+
 # Full local lint gate for the entire workspace, including examples and tests.
 lint:
     {{cargo}} fmt --all --check

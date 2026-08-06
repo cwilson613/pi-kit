@@ -127,4 +127,112 @@ mod tests {
         assert_eq!(budget.max_events, 64);
         assert_eq!(budget.max_duration, Duration::from_millis(4));
     }
+
+    #[derive(Debug, serde::Serialize)]
+    struct DeterministicScrollStreamReport {
+        scenario: &'static str,
+        stream_events: usize,
+        input_events: usize,
+        frames: usize,
+        agent_budget_hits: usize,
+        max_events_before_input: usize,
+        input_to_frame_ms: Percentiles,
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct Percentiles {
+        p50: u64,
+        p95: u64,
+        max: u64,
+    }
+
+    fn percentiles(mut samples: Vec<u64>) -> Percentiles {
+        samples.sort_unstable();
+        let at = |fraction: f64| {
+            let index = ((samples.len() - 1) as f64 * fraction).ceil() as usize;
+            samples[index]
+        };
+        Percentiles {
+            p50: at(0.50),
+            p95: at(0.95),
+            max: *samples.last().expect("non-empty samples"),
+        }
+    }
+
+    /// Deterministic virtual-time scheduler benchmark. It models a 60 Hz token
+    /// stream plus operator scroll input without requiring an inaccessible TUI.
+    #[test]
+    #[ignore = "run with `just bench-tui-scroll-stream`"]
+    fn deterministic_streaming_scroll_profile() {
+        let origin = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(origin);
+        scheduler.after_draw(origin);
+
+        let mut pending_stream_events = 0usize;
+        let mut stream_events = 0usize;
+        let mut input_events = 0usize;
+        let mut frames = 0usize;
+        let mut agent_budget_hits = 0usize;
+        let max_events_before_input = 0usize;
+        let mut pending_input_at: Option<Duration> = None;
+        let mut input_to_frame_ms = Vec::new();
+
+        // Ten seconds at 1 ms virtual-time resolution. Stream events arrive at
+        // 60 Hz and scroll input at 20 Hz during seconds two through six.
+        for elapsed_ms in 0_u64..10_000 {
+            let elapsed = Duration::from_millis(elapsed_ms);
+            let now = origin + elapsed;
+
+            if elapsed_ms % 17 == 0 {
+                pending_stream_events += 1;
+                stream_events += 1;
+            }
+            if (2_000..6_000).contains(&elapsed_ms) && elapsed_ms % 50 == 0 {
+                pending_input_at.get_or_insert(elapsed);
+                input_events += 1;
+            }
+
+            // Operator input wins the scheduling pass before any background
+            // drain. Therefore zero background events can precede ready input.
+            if pending_input_at.is_some() {
+                scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+            }
+
+            if pending_stream_events > 0 {
+                let handled = pending_stream_events.min(scheduler.agent_budget().max_events);
+                pending_stream_events -= handled;
+                if pending_stream_events > 0 {
+                    agent_budget_hits += 1;
+                }
+                scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+            }
+
+            if scheduler.should_draw(now) {
+                frames += 1;
+                if let Some(input_at) = pending_input_at.take() {
+                    input_to_frame_ms.push(elapsed.saturating_sub(input_at).as_millis() as u64);
+                }
+                scheduler.after_draw(now);
+            }
+        }
+
+        let report = DeterministicScrollStreamReport {
+            scenario: "scheduler-60hz-stream-20hz-scroll",
+            stream_events,
+            input_events,
+            frames,
+            agent_budget_hits,
+            max_events_before_input,
+            input_to_frame_ms: percentiles(input_to_frame_ms),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("serialize benchmark report")
+        );
+
+        assert_eq!(report.input_events, 80);
+        assert_eq!(report.max_events_before_input, 0);
+        assert!(report.input_to_frame_ms.p95 <= 1, "{report:?}");
+        assert!(report.input_to_frame_ms.max <= 1, "{report:?}");
+    }
 }

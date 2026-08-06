@@ -6916,6 +6916,7 @@ pub struct TuiConfig {
     /// Shared handles for live dashboard updates during the session.
     pub dashboard_handles: dashboard::DashboardHandles,
     /// Initial prompt to queue after startup (sent automatically, TUI stays open).
+    pub debug_tui: bool,
     pub initial_prompt: Option<String>,
     /// Start with tutorial overlay active (--tutorial flag).
     pub start_tutorial: bool,
@@ -7224,6 +7225,26 @@ fn drain_agent_events_budgeted(
     }
 }
 
+fn runtime_contention_snapshot(app: &App) -> runtime_trace::RuntimeContentionSnapshot {
+    let terminal_sessions = crate::tools::terminal::execution_session_snapshots();
+    runtime_trace::RuntimeContentionSnapshot {
+        process_rss_mb: get_rss_mb().unwrap_or_default().round() as u64,
+        managed_terminal_sessions: terminal_sessions.len() as u64,
+        running_terminal_sessions: terminal_sessions
+            .iter()
+            .filter(|session| {
+                session.state == crate::tools::terminal::ExecutionSessionState::Running
+            })
+            .count() as u64,
+        extension_widgets: app.runtime_inventory.extension_widgets as u64,
+        extension_rpc_handles: app.runtime_inventory.extension_rpc_handles as u64,
+        extension_polling_handles: (app.runtime_inventory.vox_polling_handles
+            + app.runtime_inventory.voice_polling_handles)
+            as u64,
+        widget_receivers: app.runtime_inventory.widget_receivers as u64,
+    }
+}
+
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
     command_tx: OperatorCommandTx,
@@ -7434,7 +7455,7 @@ pub async fn run_tui(
     }
 
     let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
-    let mut runtime_trace = runtime_trace::TuiRuntimeTrace::from_env();
+    let mut runtime_trace = runtime_trace::TuiRuntimeTrace::new(config.debug_tui);
 
     loop {
         // ── Splash replay (/splash command) ─────────────────────────
@@ -7555,23 +7576,23 @@ pub async fn run_tui(
                 let scroll_offset = app.conversation.conv_state.scroll_offset;
                 let streaming = app.conversation.is_streaming();
                 let detached = app.conversation.conv_state.user_scrolled || scroll_offset > 0;
-                trace.record_draw(
+                trace.record_draw(runtime_trace::DrawObservation {
                     urgent,
-                    draw_finished.duration_since(draw_started),
+                    elapsed: draw_finished.duration_since(draw_started),
                     callback_elapsed,
-                    app.last_draw_phase_timings,
-                    draw_finished,
-                    segments,
+                    phases: app.last_draw_phase_timings,
+                    completed_at: draw_finished,
+                    conversation_segments: segments,
                     scroll_offset,
                     streaming,
                     detached,
-                );
-                trace.flush_if_due(draw_finished);
+                });
+                trace.flush_if_due(draw_finished, runtime_contention_snapshot(&app));
             }
             scheduler.after_draw(now);
         } else if let Some(trace) = &mut runtime_trace {
             trace.record_dirty_without_draw();
-            trace.flush_if_due(now);
+            trace.flush_if_due(now, runtime_contention_snapshot(&app));
         }
 
         if app.should_quit {

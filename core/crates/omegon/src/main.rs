@@ -201,6 +201,10 @@ struct Cli {
     #[arg(short, long, default_value = ".", global = true)]
     cwd: PathBuf,
 
+    /// Enable low-overhead TUI diagnostics for wild-session capture.
+    #[arg(long, global = true)]
+    debug_tui: bool,
+
     /// Model identifier (provider:model format)
     #[arg(
         short,
@@ -2046,6 +2050,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut bench_cli = Cli {
                     command: None,
                     cwd: cli.cwd.clone(),
+                    debug_tui: cli.debug_tui,
                     model: cli.model.clone(),
                     prompt: Some(prompt.clone()),
                     prompt_file: None,
@@ -4446,6 +4451,7 @@ fn build_tui_secret_readiness_snapshot(
         secret_readiness: build_tui_secret_readiness_snapshot(&agent, None),
         startup_skill_activation_events,
         dashboard_handles: agent.dashboard_handles.clone(),
+        debug_tui: cli.debug_tui,
         initial_prompt,
         start_tutorial: cli.tutorial,
         resume_info: agent.resume_info.clone(),
@@ -9417,6 +9423,12 @@ mod tests {
     fn interactive_resume_mode_defaults_to_fresh_session() {
         let cli = Cli::parse_from(["omegon"]);
         assert!(interactive_resume_mode(&cli).is_none());
+    }
+
+    #[test]
+    fn debug_tui_is_an_explicit_global_diagnostic_switch() {
+        assert!(!Cli::parse_from(["omegon"]).debug_tui);
+        assert!(Cli::parse_from(["omegon", "--debug-tui"]).debug_tui);
     }
 
     #[test]

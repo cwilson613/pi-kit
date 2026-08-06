@@ -18,6 +18,18 @@ pub(crate) struct DrawPhaseTimings {
     pub(crate) conversation_render: Duration,
 }
 
+pub(crate) struct DrawObservation {
+    pub(crate) urgent: bool,
+    pub(crate) elapsed: Duration,
+    pub(crate) callback_elapsed: Duration,
+    pub(crate) phases: DrawPhaseTimings,
+    pub(crate) completed_at: Instant,
+    pub(crate) conversation_segments: usize,
+    pub(crate) scroll_offset: u16,
+    pub(crate) streaming: bool,
+    pub(crate) detached: bool,
+}
+
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Distribution {
@@ -96,9 +108,26 @@ struct TraceWindow {
     conversation_scroll_offset: Distribution,
     streaming_frames: u64,
     detached_frames: u64,
+    process_rss_mb: u64,
+    managed_terminal_sessions: u64,
+    running_terminal_sessions: u64,
+    extension_widgets: u64,
+    extension_rpc_handles: u64,
+    extension_polling_handles: u64,
+    widget_receivers: u64,
     slow_frames_over_16ms: u64,
     slow_frames_over_33ms: u64,
     slow_frames_over_100ms: u64,
+}
+
+pub(crate) struct RuntimeContentionSnapshot {
+    pub(crate) process_rss_mb: u64,
+    pub(crate) managed_terminal_sessions: u64,
+    pub(crate) running_terminal_sessions: u64,
+    pub(crate) extension_widgets: u64,
+    pub(crate) extension_rpc_handles: u64,
+    pub(crate) extension_polling_handles: u64,
+    pub(crate) widget_receivers: u64,
 }
 
 pub(crate) struct TuiRuntimeTrace {
@@ -137,12 +166,14 @@ pub(crate) struct TuiRuntimeTrace {
 }
 
 impl TuiRuntimeTrace {
-    pub(crate) fn from_env() -> Option<Self> {
-        let enabled = std::env::var(ENABLED_ENV).ok()?;
-        if !matches!(
-            enabled.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ) {
+    pub(crate) fn new(debug_tui: bool) -> Option<Self> {
+        let env_enabled = std::env::var(ENABLED_ENV).ok().is_some_and(|enabled| {
+            matches!(
+                enabled.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
+        if !debug_tui && !env_enabled {
             return None;
         }
         let path = std::env::var_os(PATH_ENV)
@@ -208,18 +239,18 @@ impl TuiRuntimeTrace {
         self.dirty_passes_without_draw += 1;
     }
 
-    pub(crate) fn record_draw(
-        &mut self,
-        urgent: bool,
-        elapsed: Duration,
-        callback_elapsed: Duration,
-        phases: DrawPhaseTimings,
-        now: Instant,
-        conversation_segments: usize,
-        scroll_offset: u16,
-        streaming: bool,
-        detached: bool,
-    ) {
+    pub(crate) fn record_draw(&mut self, observation: DrawObservation) {
+        let DrawObservation {
+            urgent,
+            elapsed,
+            callback_elapsed,
+            phases,
+            completed_at,
+            conversation_segments,
+            scroll_offset,
+            streaming,
+            detached,
+        } = observation;
         self.frames += 1;
         self.urgent_frames += u64::from(urgent);
         self.background_frames += u64::from(!urgent);
@@ -251,11 +282,11 @@ impl TuiRuntimeTrace {
         self.detached_frames += u64::from(detached);
         if let Some(input_at) = self.pending_input.take() {
             self.input_to_frame_us
-                .push(now.saturating_duration_since(input_at).as_micros() as u64);
+                .push(completed_at.saturating_duration_since(input_at).as_micros() as u64);
         }
     }
 
-    pub(crate) fn flush_if_due(&mut self, now: Instant) {
+    pub(crate) fn flush_if_due(&mut self, now: Instant, contention: RuntimeContentionSnapshot) {
         if now.duration_since(self.started) < self.window {
             return;
         }
@@ -296,6 +327,13 @@ impl TuiRuntimeTrace {
             )),
             streaming_frames: self.streaming_frames,
             detached_frames: self.detached_frames,
+            process_rss_mb: contention.process_rss_mb,
+            managed_terminal_sessions: contention.managed_terminal_sessions,
+            running_terminal_sessions: contention.running_terminal_sessions,
+            extension_widgets: contention.extension_widgets,
+            extension_rpc_handles: contention.extension_rpc_handles,
+            extension_polling_handles: contention.extension_polling_handles,
+            widget_receivers: contention.widget_receivers,
             slow_frames_over_16ms: self.slow_frames_over_16ms,
             slow_frames_over_33ms: self.slow_frames_over_33ms,
             slow_frames_over_100ms: self.slow_frames_over_100ms,
@@ -388,5 +426,20 @@ mod tests {
         assert_eq!(summary.p50, 30);
         assert_eq!(summary.p95, 40);
         assert_eq!(summary.max, 40);
+    }
+
+    #[test]
+    fn contention_snapshot_serializes_wild_session_correlates() {
+        let snapshot = RuntimeContentionSnapshot {
+            process_rss_mb: 512,
+            managed_terminal_sessions: 3,
+            running_terminal_sessions: 2,
+            extension_widgets: 4,
+            extension_rpc_handles: 1,
+            extension_polling_handles: 2,
+            widget_receivers: 4,
+        };
+        assert_eq!(snapshot.running_terminal_sessions, 2);
+        assert_eq!(snapshot.extension_polling_handles, 2);
     }
 }

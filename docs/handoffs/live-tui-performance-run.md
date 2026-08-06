@@ -138,6 +138,33 @@ The input timestamp is captured before terminal-event handling, so `inputToFrame
 
 These fields permit correlation among history size, live streaming, detached scrolling, and draw latency.
 
+### Draw phases and runtime contention (schema v3)
+
+- `drawCallbackUs`, `backendUs`
+- `preparationUs`, `backgroundFillUs`
+- `conversationProjectionUs`, `conversationRenderUs`, `remainingRenderUs`
+- `processRssMb`
+- `managedTerminalSessions`, `runningTerminalSessions`
+- `extensionWidgets`, `extensionRpcHandles`, `extensionPollingHandles`, `widgetReceivers`
+
+The contention values are sampled only when a trace window is flushed, keeping the diagnostic path low overhead. They identify correlation, not causation: a high terminal or extension count beside a slow window narrows the next investigation but does not prove that subsystem caused the stall.
+
+## Wild-session debug configuration
+
+Installed or normal development binaries can collect the same trace without using the checkout-specific `just trace-tui` recipe:
+
+```bash
+omegon --debug-tui
+```
+
+The trace is appended to `.omegon/debug/tui-runtime.jsonl` under the session working directory. Remove or archive an old trace before a new investigation when process-level provenance must be unambiguous. The equivalent environment activation remains available:
+
+```bash
+OMEGON_TUI_TRACE=1 omegon
+```
+
+This configuration records bounded five-second summaries; it does not capture terminal contents, prompts, tool arguments, or extension payloads.
+
 ## First commands after the run
 
 Verify the file exists and inspect provenance:

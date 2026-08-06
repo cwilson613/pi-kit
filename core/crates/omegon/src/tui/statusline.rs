@@ -182,35 +182,19 @@ impl SessionRow {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut used = 0usize;
 
-        // Web-search liveness is persistent chrome, not a transient nag.
-        // Missing readiness data and an all-empty keyed set are both degraded:
-        // DDG scraping is a fallback floor, not an acceptable configured state.
-        let configured = self
-            .web_search_providers
-            .iter()
-            .filter(|(_, configured)| *configured)
-            .count();
-        let (label, color) = if configured == 0 {
-            ("WEB! ddg-only".to_string(), t.warning())
-        } else {
-            let ticks: String = self
-                .web_search_providers
-                .iter()
-                .map(|(_, configured)| if *configured { '●' } else { '○' })
-                .collect();
-            (format!("WEB {ticks}"), t.success())
-        };
-        let field = Span::styled(label, Style::default().fg(color));
-        let cost = sect.width() + field.width();
-        if used + cost < w {
-            spans.push(sect.clone());
-            spans.push(field);
-            used += cost;
+        // Explicit turn state is the primary compact-status signal. Operators
+        // should see what Omegon is doing before subsystem diagnostics.
+        if let Some(ref state) = self.turn_state {
+            let field = Span::styled(turn_state_field(state), Style::default().fg(t.warning()));
+            let cost = field.width();
+            if used + cost < w {
+                spans.push(field);
+                used += cost;
+            }
         }
 
-        // Detached conversation viewport. This is deliberately near the left
-        // pinned fields: when Slim auto-pins a long answer at its start, the
-        // operator must be able to tell that more transcript exists below.
+        // Detached transcript state requires operator awareness and therefore
+        // follows active turn state ahead of passive runtime health.
         if let Some(ref hint) = self.viewport_hint {
             let field = Span::styled(hint.clone(), Style::default().fg(t.warning()));
             let cost = sect.width() + field.width();
@@ -221,10 +205,9 @@ impl SessionRow {
             }
         }
 
-        // Explicit turn state: makes "done vs still running vs waiting"
-        // visible without requiring the operator to infer it from scrollback.
-        if let Some(ref state) = self.turn_state {
-            let field = Span::styled(turn_state_field(state), Style::default().fg(t.warning()));
+        // Contextual operator hints are actionable and outrank diagnostics.
+        if let Some(ref hint) = self.operator_hint {
+            let field = Span::styled(hint.clone(), Style::default().fg(t.accent_muted()));
             let cost = sect.width() + field.width();
             if used + cost < w {
                 spans.push(sect.clone());
@@ -233,13 +216,19 @@ impl SessionRow {
             }
         }
 
-        // Contextual operator hint. This is fed from real session/profile state
-        // in the TUI draw pass and sheds before activity metadata.
-        if let Some(ref hint) = self.operator_hint {
-            let field = Span::styled(hint.clone(), Style::default().fg(t.accent_muted()));
-            let cost = sect.width() + field.width();
+        // Search configuration is diagnostics, not permanent healthy chrome.
+        // Surface only explicit degraded keyed-provider state, and only once
+        // wider terminals have room after operator-relevant status.
+        let configured = self
+            .web_search_providers
+            .iter()
+            .filter(|(_, configured)| *configured)
+            .count();
+        if w >= 90 && !self.web_search_providers.is_empty() && configured == 0 {
+            let field = Span::styled("Search degraded", Style::default().fg(t.warning()));
+            let cost = sep.width() + field.width();
             if used + cost < w {
-                spans.push(sect.clone());
+                spans.push(sep.clone());
                 spans.push(field);
                 used += cost;
             }
@@ -480,6 +469,17 @@ fn file_activity_label(read: usize, modified: usize, width: usize) -> String {
 mod tests {
     use super::*;
 
+    fn render_session_row(row: &SessionRow, width: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| row.render(frame.area(), frame, &super::super::theme::Alpharius))
+            .unwrap();
+        (0..width)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect()
+    }
+
     #[test]
     fn fmt_tokens_ranges() {
         assert_eq!(fmt_tokens(0), "0");
@@ -640,21 +640,15 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_web_search_readiness_is_rendered_as_degraded() {
+    fn unavailable_web_search_readiness_is_hidden_without_inventory() {
         let sl = SessionRow {
             provider_connected: true,
             ..Default::default()
         };
 
-        let backend = ratatui::backend::TestBackend::new(160, 1);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| sl.render(frame.area(), frame, &super::super::theme::Alpharius))
-            .unwrap();
-        let text = (0..160)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
-            .collect::<String>();
-        assert!(text.contains("WEB! ddg-only"), "{text}");
+        let text = render_session_row(&sl, 160);
+        assert!(!text.contains("Search"), "{text}");
+        assert!(!text.contains("WEB"), "{text}");
     }
 
     #[test]
@@ -670,15 +664,8 @@ mod tests {
             ..Default::default()
         };
 
-        let backend = ratatui::backend::TestBackend::new(160, 1);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| sl.render(frame.area(), frame, &super::super::theme::Alpharius))
-            .unwrap();
-        let text = (0..160)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
-            .collect::<String>();
-        assert!(text.contains("WEB! ddg-only"), "{text}");
+        let text = render_session_row(&sl, 160);
+        assert!(text.contains("Search degraded"), "{text}");
     }
 
     #[test]
@@ -694,16 +681,9 @@ mod tests {
             ..Default::default()
         };
 
-        let backend = ratatui::backend::TestBackend::new(160, 1);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| sl.render(frame.area(), frame, &super::super::theme::Alpharius))
-            .unwrap();
-        let text = (0..160)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
-            .collect::<String>();
-        assert!(text.contains("WEB ○○●○"), "{text}");
-        assert!(!text.contains("ddg-only"), "{text}");
+        let text = render_session_row(&sl, 160);
+        assert!(!text.contains("WEB"), "{text}");
+        assert!(!text.contains("Search"), "{text}");
     }
 
     #[test]

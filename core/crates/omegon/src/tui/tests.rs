@@ -1887,7 +1887,7 @@ fn slim_status_line_marks_detached_conversation_viewport() {
     app.conversation.conv_state.user_scrolled = true;
 
     let text = render_app_to_string(&mut app, 120, 18);
-    assert!(text.contains("view detached ↑12 · End tail"), "{text}");
+    assert!(text.contains("Detached · ↑12 · End: latest"), "{text}");
 }
 
 #[test]

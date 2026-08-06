@@ -8,6 +8,22 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_REASON_BYTES: usize = 1024;
 
+pub const AGENTS_STATUS_TOOL: &str = "agents_status";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentsStatusBody {
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct AgentsStatusResponse {
+    pub schema_version: u32,
+    pub managed_run_id: String,
+    pub worker_id: String,
+    pub status: Value,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Envelope<T> {
     pub schema_version: u32,
@@ -297,6 +313,14 @@ pub fn parse_operation(
     validate_identity(&envelope)?;
     let body = &envelope.body;
     let operation = match method {
+        "agents_status" => {
+            let body: AgentsStatusBody = serde_json::from_value(body.clone())
+                .map_err(|e| format!("invalid_agents_status_request:{e}"))?;
+            SupervisorOperation::Execute {
+                tool: AGENTS_STATUS_TOOL,
+                args: serde_json::json!({"run_id": body.run_id}),
+            }
+        }
         "delegate_dispatch" => {
             let body: DispatchBody = serde_json::from_value(body.clone())
                 .map_err(|e| format!("invalid_dispatch:{e}"))?;
@@ -407,6 +431,19 @@ pub fn response(
         return Err("oversized_result".into());
     }
     let response = match method {
+        "agents_status" => {
+            let status = details
+                .get("run")
+                .or_else(|| details.get("managed_run"))
+                .cloned()
+                .unwrap_or(details);
+            serde_json::to_value(AgentsStatusResponse {
+                schema_version: SCHEMA_VERSION,
+                managed_run_id: envelope.managed_run_id.clone(),
+                worker_id: envelope.worker_id.clone(),
+                status,
+            })
+        }
         "delegate_dispatch" => serde_json::to_value(DelegateDispatchResponse {
             schema_version: SCHEMA_VERSION,
             managed_run_id: envelope.managed_run_id.clone(),

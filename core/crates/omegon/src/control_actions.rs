@@ -72,6 +72,7 @@ pub enum CanonicalAction {
     CleaveView,
     CleaveCancelChild,
     DelegateStatus,
+    AgentsStatus,
     MaxTurnsSet,
     ProfileView,
     ProfileExport,
@@ -235,6 +236,7 @@ pub fn classify_ipc_set_model_request(
 pub fn classify_web_method(method: &str) -> ClassifiedAction {
     let (action, role, remote_safe) = match method {
         "request_snapshot" => (CanonicalAction::StatusView, ControlRole::Read, true),
+        "agents_status" => (CanonicalAction::AgentsStatus, ControlRole::Read, true),
         "user_prompt" => (CanonicalAction::PromptSubmit, ControlRole::Edit, true),
         "cancel" => (CanonicalAction::TurnCancel, ControlRole::Edit, true),
         "new_session" => (CanonicalAction::SessionNew, ControlRole::Edit, true),

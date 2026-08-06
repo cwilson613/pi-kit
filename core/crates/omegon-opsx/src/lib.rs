@@ -4,12 +4,16 @@
 //! and release milestones. JSON file state store for git-native
 //! persistence (jj/git IS the transaction log).
 
-pub mod error;
+pub mod authority;
+mod error;
 pub mod fsm;
 pub mod store;
 pub mod types;
 
 // Re-exports for convenience
+pub use authority::{
+    ArtifactAuthority, ArtifactDrift, ArtifactDriftKind, ArtifactHealth, ArtifactState,
+};
 pub use error::OpsxError;
 pub use fsm::Lifecycle;
 pub use store::{JsonFileStore, LifecycleState, MemoryStore, StateStore};

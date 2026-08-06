@@ -6,6 +6,7 @@
 //!
 //! Phase 1a: read-only structs for parsing. Phase 1b: mutation methods.
 
+use omegon_opsx::{ChangeState, NodeState};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -69,6 +70,38 @@ impl NodeStatus {
             Self::Blocked => "✕",
             Self::Deferred => "◑",
             Self::Archived => "🗄",
+        }
+    }
+}
+
+impl From<NodeStatus> for NodeState {
+    fn from(status: NodeStatus) -> Self {
+        match status {
+            NodeStatus::Seed => Self::Seed,
+            NodeStatus::Exploring => Self::Exploring,
+            NodeStatus::Resolved => Self::Resolved,
+            NodeStatus::Decided => Self::Decided,
+            NodeStatus::Implementing => Self::Implementing,
+            NodeStatus::Implemented => Self::Implemented,
+            NodeStatus::Blocked => Self::Blocked,
+            NodeStatus::Deferred => Self::Deferred,
+            NodeStatus::Archived => Self::Archived,
+        }
+    }
+}
+
+impl From<NodeState> for NodeStatus {
+    fn from(state: NodeState) -> Self {
+        match state {
+            NodeState::Seed => Self::Seed,
+            NodeState::Exploring => Self::Exploring,
+            NodeState::Resolved => Self::Resolved,
+            NodeState::Decided => Self::Decided,
+            NodeState::Implementing => Self::Implementing,
+            NodeState::Implemented => Self::Implemented,
+            NodeState::Blocked => Self::Blocked,
+            NodeState::Deferred => Self::Deferred,
+            NodeState::Archived => Self::Archived,
         }
     }
 }
@@ -225,6 +258,38 @@ impl ChangeStage {
     }
 }
 
+impl From<ChangeStage> for ChangeState {
+    fn from(stage: ChangeStage) -> Self {
+        match stage {
+            ChangeStage::Proposed => Self::Proposed,
+            ChangeStage::Specified => Self::Specced,
+            ChangeStage::Planned => Self::Planned,
+            ChangeStage::Implementing => Self::Implementing,
+            ChangeStage::Verifying => Self::Verifying,
+            ChangeStage::Archived => Self::Archived,
+        }
+    }
+}
+
+/// Artifact discovery cannot infer every canonical state from the legacy file
+/// layout. In particular, `Testing` and `Abandoned` require explicit metadata
+/// before this conversion can become total.
+impl TryFrom<ChangeState> for ChangeStage {
+    type Error = ChangeState;
+
+    fn try_from(state: ChangeState) -> Result<Self, Self::Error> {
+        match state {
+            ChangeState::Proposed => Ok(Self::Proposed),
+            ChangeState::Specced => Ok(Self::Specified),
+            ChangeState::Planned => Ok(Self::Planned),
+            ChangeState::Implementing => Ok(Self::Implementing),
+            ChangeState::Verifying => Ok(Self::Verifying),
+            ChangeState::Archived => Ok(Self::Archived),
+            ChangeState::Testing | ChangeState::Abandoned => Err(state),
+        }
+    }
+}
+
 /// A Given/When/Then scenario.
 #[derive(Debug, Clone)]
 pub struct Scenario {
@@ -302,6 +367,47 @@ pub struct TaskLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_status_round_trips_through_canonical_state() {
+        for status in [
+            NodeStatus::Seed,
+            NodeStatus::Exploring,
+            NodeStatus::Resolved,
+            NodeStatus::Decided,
+            NodeStatus::Implementing,
+            NodeStatus::Implemented,
+            NodeStatus::Blocked,
+            NodeStatus::Deferred,
+            NodeStatus::Archived,
+        ] {
+            assert_eq!(NodeStatus::from(NodeState::from(status)), status);
+        }
+    }
+
+    #[test]
+    fn change_stage_maps_legacy_specified_to_canonical_specced() {
+        assert_eq!(
+            ChangeState::from(ChangeStage::Specified),
+            ChangeState::Specced
+        );
+        assert_eq!(
+            ChangeStage::try_from(ChangeState::Specced),
+            Ok(ChangeStage::Specified)
+        );
+    }
+
+    #[test]
+    fn canonical_only_change_states_require_explicit_artifact_metadata() {
+        assert_eq!(
+            ChangeStage::try_from(ChangeState::Testing),
+            Err(ChangeState::Testing)
+        );
+        assert_eq!(
+            ChangeStage::try_from(ChangeState::Abandoned),
+            Err(ChangeState::Abandoned)
+        );
+    }
 
     #[test]
     fn node_status_round_trip() {

@@ -10,7 +10,7 @@ use std::path::Path;
 use omegon_opsx::ChangeState;
 
 use super::design;
-use super::types::{ChangeInfo, ChangeStage, DesignNode, NodeStatus};
+use super::types::{ChangeInfo, DesignNode, NodeStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditKind {
@@ -164,7 +164,7 @@ pub fn audit_openspec_changes(
     let mut findings = Vec::new();
 
     for change in changes {
-        let expected = opsx_state_for_stage(change.stage);
+        let expected: ChangeState = change.stage.into();
         let Some(actual) = opsx_states.get(&change.name).copied() else {
             findings.push(AuditFinding {
                 node_id: change.name.clone(),
@@ -237,17 +237,6 @@ pub fn audit_openspec_archives(
 
     findings.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     findings
-}
-
-fn opsx_state_for_stage(stage: ChangeStage) -> ChangeState {
-    match stage {
-        ChangeStage::Proposed => ChangeState::Proposed,
-        ChangeStage::Specified => ChangeState::Specced,
-        ChangeStage::Planned => ChangeState::Planned,
-        ChangeStage::Implementing => ChangeState::Implementing,
-        ChangeStage::Verifying => ChangeState::Verifying,
-        ChangeStage::Archived => ChangeState::Archived,
-    }
 }
 
 fn normalize(s: &str) -> String {

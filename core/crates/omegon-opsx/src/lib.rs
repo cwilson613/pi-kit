@@ -4,6 +4,7 @@
 //! and release milestones. JSON file state store for git-native
 //! persistence (jj/git IS the transaction log).
 
+pub mod archive;
 pub mod artifacts;
 pub mod authority;
 pub mod content;

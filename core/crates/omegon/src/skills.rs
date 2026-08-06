@@ -1076,7 +1076,6 @@ mod tests {
         bundled_names.sort();
 
         assert_eq!(bundled_names, directory_names);
-
     }
 
     #[test]

@@ -182,7 +182,8 @@ async fn handle_client_command(
     let caller_role = websocket_caller_role(cmd, state);
 
     match cmd_type {
-        "delegate_dispatch" | "delegate_get" | "delegate_result" | "delegate_cancel" => {
+        "agents_status" | "delegate_dispatch" | "delegate_get" | "delegate_result"
+        | "delegate_cancel" => {
             let classified = crate::control_actions::classify_web_method(cmd_type);
             if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {
                 let _ = snapshot_tx.send(json!({"type": format!("{cmd_type}_result"), "accepted": false, "error": "insufficient_role"})).await;
@@ -2534,6 +2535,44 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handle_client_command_forwards_agents_status_for_monitor_role() {
+        let (events_tx, _) = tokio::sync::broadcast::channel(4);
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(4);
+        let mut state = WebState::new(
+            crate::runtime_state::RuntimeStateHandles::default(),
+            events_tx,
+        );
+        state.web_role = styrene_rbac::Role::Monitor;
+        let cmd = serde_json::json!({
+            "type": "agents_status",
+            "schema_version": 1,
+            "managed_run_id": "run-1",
+            "worker_id": "worker-1"
+        });
+
+        let handler = tokio::spawn(async move {
+            handle_client_command(&cmd, &command_tx, &state, &snapshot_tx).await;
+        });
+        match command_rx.recv().await.expect("managed control command") {
+            WebCommand::ManagedDelegateControl {
+                method, respond_to, ..
+            } => {
+                assert_eq!(method, "agents_status");
+                respond_to
+                    .send(serde_json::json!({"type": "agents_status_result", "accepted": true}))
+                    .unwrap();
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        handler.await.unwrap();
+        assert_eq!(
+            snapshot_rx.recv().await.unwrap()["type"],
+            "agents_status_result"
+        );
+    }
 
     #[tokio::test]
     async fn handle_client_command_rejects_user_prompt_for_monitor_default_role() {

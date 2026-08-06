@@ -501,10 +501,19 @@ impl<S: StateStore> Lifecycle<S> {
             _ => {}
         }
 
+        let previous_updated_at = self.state.changes[idx].updated_at.clone();
         let from_str = from.as_str().to_string();
         self.state.changes[idx].state = target;
         self.state.changes[idx].updated_at = iso_now();
-        self.audit_and_save("change", name, &from_str, target.as_str(), None, false)
+        if let Err(error) =
+            self.audit_and_save("change", name, &from_str, target.as_str(), None, false)
+        {
+            self.state.changes[idx].state = from;
+            self.state.changes[idx].updated_at = previous_updated_at;
+            self.state.audit_log.pop();
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Archive a change while performing the content-store archive step as
@@ -906,6 +915,24 @@ mod tests {
         }
     }
 
+    struct ToggleSaveStore {
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    impl StateStore for ToggleSaveStore {
+        fn load(&self) -> Result<LifecycleState, OpsxError> {
+            Ok(LifecycleState::default())
+        }
+
+        fn save(&self, _state: &LifecycleState) -> Result<(), OpsxError> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(OpsxError::StoreError("forced save failure".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     fn test_lifecycle() -> (TempDir, Lifecycle<JsonFileStore>) {
         let tmp = TempDir::new().unwrap();
         let store = JsonFileStore::new(tmp.path());
@@ -1126,6 +1153,28 @@ mod tests {
             .find(|c| c.name == "my-change")
             .unwrap();
         assert_eq!(change.state, ChangeState::Archived);
+    }
+
+    #[test]
+    fn failed_change_transition_save_restores_in_memory_state_and_audit() {
+        let store = ToggleSaveStore {
+            fail: std::sync::atomic::AtomicBool::new(false),
+        };
+        let mut lc = Lifecycle::load(store).unwrap();
+        lc.create_change("demo", "Demo", None).unwrap();
+        lc.add_spec("demo", "core").unwrap();
+        let audit_len = lc.audit_log().len();
+        lc.store
+            .fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let error = lc
+            .transition_change("demo", ChangeState::Specced)
+            .unwrap_err();
+
+        assert!(matches!(error, OpsxError::StoreError(_)));
+        assert_eq!(lc.state().changes[0].state, ChangeState::Proposed);
+        assert_eq!(lc.audit_log().len(), audit_len);
     }
 
     #[test]

@@ -828,7 +828,6 @@ pub fn propose_change(
         "---\nstate: proposed\n---\n\n# {title}\n\n## Intent\n\n{intent}\n\n## Scope\n\n_TBD_\n\n## Constraints\n\n_None identified yet._\n"
     );
     atomic_write(&change_dir.join("proposal.md"), proposal.as_bytes())?;
-    write_change_state_metadata(&change_dir.join("proposal.md"), ChangeState::Proposed)?;
 
     Ok(ChangeInfo {
         name: name.to_string(),

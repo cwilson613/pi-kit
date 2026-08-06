@@ -111,10 +111,20 @@ pub fn transition_change_if(
     to: ChangeState,
 ) -> anyhow::Result<bool> {
     if change_state(opsx, name) == Some(from) {
+        let proposal_path = repo_path
+            .join("openspec/changes")
+            .join(name)
+            .join("proposal.md");
+        let previous_proposal = std::fs::read(&proposal_path)?;
         super::spec::write_change_state(repo_path, name, to)?;
         if let Err(error) = opsx.transition_change(name, to) {
-            let _ = super::spec::write_change_state(repo_path, name, from);
-            return Err(error.into());
+            let rollback = crate::filelock::atomic_write(&proposal_path, &previous_proposal);
+            return match rollback {
+                Ok(()) => Err(error.into()),
+                Err(rollback_error) => Err(anyhow::anyhow!(
+                    "lifecycle ledger transition failed ({error}); artifact rollback also failed ({rollback_error})"
+                )),
+            };
         }
         return Ok(true);
     }

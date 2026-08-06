@@ -6,6 +6,7 @@
 
 pub mod artifacts;
 pub mod authority;
+pub mod content;
 mod error;
 pub mod fsm;
 pub mod store;
@@ -16,6 +17,11 @@ pub use artifacts::{ChangeArtifactRecord, OpenSpecRepository};
 pub use authority::{
     ArtifactAuthority, ArtifactDrift, ArtifactDriftKind, ArtifactHealth, ArtifactState,
     ChangeArtifactEvidence, parse_declared_change_state,
+};
+pub use content::{
+    Requirement, Scenario, SpecFile, TaskGroup, TaskLine, parse_spec_content,
+    parse_spec_content_with_domain, parse_specs_dir, parse_task_groups, parse_task_groups_content,
+    parse_task_stable_id_marker,
 };
 pub use error::OpsxError;
 pub use fsm::Lifecycle;

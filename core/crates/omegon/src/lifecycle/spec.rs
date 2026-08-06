@@ -289,119 +289,28 @@ fn count_tasks(path: &Path) -> (usize, usize) {
 }
 
 /// Parse OpenSpec tasks.md into groups and checkbox task lines.
-fn parse_task_stable_id_marker(description: &str) -> Option<String> {
-    let marker_start = description.find("<!-- task-id:")?;
-    let rest = &description[marker_start + "<!-- task-id:".len()..];
-    let marker_end = rest.find("-->")?;
-    let id = rest[..marker_end].trim();
-    (!id.is_empty()).then(|| id.to_string())
-}
-
-fn strip_task_stable_id_marker(description: &str) -> String {
-    let Some(marker_start) = description.find("<!-- task-id:") else {
-        return description.trim().to_string();
-    };
-    let rest = &description[marker_start + "<!-- task-id:".len()..];
-    let Some(marker_end) = rest.find("-->") else {
-        return description.trim().to_string();
-    };
-    let after = marker_start + "<!-- task-id:".len() + marker_end + "-->".len();
-    format!(
-        "{}{}",
-        description[..marker_start].trim_end(),
-        description[after..].trim_start()
-    )
-    .trim()
-    .to_string()
-}
-
 pub fn parse_task_groups(path: &Path) -> Vec<TaskGroup> {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+    omegon_opsx::parse_task_groups(path)
+        .into_iter()
+        .map(|group| TaskGroup {
+            title: group.title,
+            specs: group.specs,
+            tasks: group
+                .tasks
+                .into_iter()
+                .map(|task| TaskLine {
+                    id: task.id,
+                    stable_id: task.stable_id,
+                    description: task.description,
+                    done: task.done,
+                })
+                .collect(),
+        })
+        .collect()
+}
 
-    let mut groups = Vec::new();
-    let mut current: Option<TaskGroup> = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(title) = trimmed.strip_prefix("## ") {
-            if let Some(group) = current.take() {
-                groups.push(group);
-            }
-            current = Some(TaskGroup {
-                title: title.trim().to_string(),
-                specs: Vec::new(),
-                tasks: Vec::new(),
-            });
-            continue;
-        }
-
-        if let Some(specs) = trimmed
-            .strip_prefix("<!-- specs:")
-            .and_then(|rest| rest.strip_suffix("-->"))
-        {
-            if let Some(group) = current.as_mut() {
-                group.specs = specs
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            continue;
-        }
-
-        let done = if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
-            Some(true)
-        } else if trimmed.starts_with("- [ ]") {
-            Some(false)
-        } else {
-            None
-        };
-
-        if let Some(done) = done {
-            let description = trimmed
-                .strip_prefix("- [x]")
-                .or_else(|| trimmed.strip_prefix("- [X]"))
-                .or_else(|| trimmed.strip_prefix("- [ ]"))
-                .unwrap_or(trimmed)
-                .trim()
-                .to_string();
-            let stable_id = parse_task_stable_id_marker(&description);
-            let description_without_marker = strip_task_stable_id_marker(&description);
-            let id = description_without_marker
-                .split_whitespace()
-                .next()
-                .filter(|token| token.chars().all(|ch| ch.is_ascii_digit() || ch == '.'))
-                .map(|token| token.trim_end_matches('.').to_string())
-                .unwrap_or_else(|| {
-                    description_without_marker
-                        .to_ascii_lowercase()
-                        .replace(' ', "-")
-                });
-            current.get_or_insert_with(|| TaskGroup {
-                title: "Tasks".to_string(),
-                specs: Vec::new(),
-                tasks: Vec::new(),
-            });
-            if let Some(group) = current.as_mut() {
-                group.tasks.push(TaskLine {
-                    id,
-                    stable_id,
-                    description: description_without_marker,
-                    done,
-                });
-            }
-        }
-    }
-
-    if let Some(group) = current {
-        groups.push(group);
-    }
-
-    groups
+fn parse_task_stable_id_marker(description: &str) -> Option<String> {
+    omegon_opsx::parse_task_stable_id_marker(description)
 }
 
 /// Parse all spec files in a specs/ directory.
@@ -475,163 +384,33 @@ pub fn parse_specs_dir(specs_dir: &Path) -> Vec<SpecFile> {
 }
 
 /// Parse spec content into requirements with scenarios.
-/// Format:
-///   ### Requirement: <title>
-///   <description>
-///   #### Scenario: <title>
-///   Given <precondition>
-///   When <action>
-///   Then <expected>
-///   And <additional>
 pub fn parse_spec_content(content: &str) -> Vec<Requirement> {
     parse_spec_content_with_domain("", content)
 }
 
 pub fn parse_spec_content_with_domain(domain: &str, content: &str) -> Vec<Requirement> {
-    let mut requirements = Vec::new();
-    let mut current_req: Option<(String, String, Vec<Scenario>)> = None;
-    let mut current_scenario: Option<ScenarioBuilder> = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // New requirement: "### Requirement: <title>" or bare "### <title>" (without ####)
-        if trimmed.starts_with("### ") && !trimmed.starts_with("#### ") {
-            let rest = &trimmed[4..];
-            let title = rest.strip_prefix("Requirement:").unwrap_or(rest).trim();
-            // Flush previous
-            let req_title = current_req
-                .as_ref()
-                .map(|r| r.0.clone())
-                .unwrap_or_default();
-            flush_scenario(
-                &mut current_scenario,
-                current_req.as_mut().map(|r| &mut r.2),
-                domain,
-                &req_title,
-            );
-            if let Some((t, d, s)) = current_req.take() {
-                requirements.push(Requirement {
-                    title: t,
-                    description: d.trim().to_string(),
-                    scenarios: s,
-                });
-            }
-            current_req = Some((title.to_string(), String::new(), Vec::new()));
-            continue;
-        }
-
-        // New scenario: "#### Scenario: <title>" or bare "#### <title>"
-        if let Some(after) = trimmed.strip_prefix("#### ") {
-            let rest = after.strip_prefix("Scenario:").unwrap_or(after).trim();
-            let req_title = current_req
-                .as_ref()
-                .map(|r| r.0.clone())
-                .unwrap_or_default();
-            flush_scenario(
-                &mut current_scenario,
-                current_req.as_mut().map(|r| &mut r.2),
-                domain,
-                &req_title,
-            );
-            current_scenario = Some(ScenarioBuilder {
-                id: None,
-                title: rest.trim().to_string(),
-                given: String::new(),
-                when: String::new(),
-                then: String::new(),
-                and_clauses: Vec::new(),
-            });
-            continue;
-        }
-
-        if let Some(ref mut builder) = current_scenario {
-            if let Some(id) = trimmed
-                .strip_prefix("<!-- id:")
-                .and_then(|rest| rest.strip_suffix("-->"))
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                builder.id = Some(id.to_string());
-            } else if let Some(claim) = evidence_claim_id_from_line(trimmed) {
-                builder.and_clauses.push(format!("evidence-claim: {claim}"));
-            } else if let Some(rest) = trimmed.strip_prefix("Given ") {
-                builder.given = rest.to_string();
-            } else if let Some(rest) = trimmed.strip_prefix("When ") {
-                builder.when = rest.to_string();
-            } else if let Some(rest) = trimmed.strip_prefix("Then ") {
-                builder.then = rest.to_string();
-            } else if let Some(rest) = trimmed.strip_prefix("And ") {
-                builder.and_clauses.push(rest.to_string());
-            }
-        } else if let Some(ref mut req) = current_req {
-            // Description lines (between requirement header and first scenario)
-            if let Some(claim) = evidence_claim_id_from_line(trimmed) {
-                req.1.push_str("evidence-claim: ");
-                req.1.push_str(&claim);
-                req.1.push('\n');
-            } else if !trimmed.is_empty() {
-                req.1.push_str(trimmed);
-                req.1.push('\n');
-            }
-        }
-    }
-
-    // Flush final
-    let req_title = current_req
-        .as_ref()
-        .map(|r| r.0.clone())
-        .unwrap_or_default();
-    flush_scenario(
-        &mut current_scenario,
-        current_req.as_mut().map(|r| &mut r.2),
-        domain,
-        &req_title,
-    );
-    if let Some((t, d, s)) = current_req {
-        requirements.push(Requirement {
-            title: t,
-            description: d.trim().to_string(),
-            scenarios: s,
-        });
-    }
-
-    requirements
-}
-
-struct ScenarioBuilder {
-    id: Option<String>,
-    title: String,
-    given: String,
-    when: String,
-    then: String,
-    and_clauses: Vec<String>,
-}
-
-fn flush_scenario(
-    builder: &mut Option<ScenarioBuilder>,
-    target: Option<&mut Vec<Scenario>>,
-    domain: &str,
-    requirement_title: &str,
-) {
-    if let Some(b) = builder.take()
-        && (!b.given.is_empty() || !b.when.is_empty() || !b.then.is_empty())
-        && let Some(scenarios) = target
-    {
-        let id =
-            b.id.unwrap_or_else(|| stable_scenario_id(domain, requirement_title, &b.title));
-        scenarios.push(Scenario {
-            id,
-            title: b.title,
-            given: b.given,
-            when: b.when,
-            then: b.then,
-            and_clauses: b.and_clauses,
-            tdd_evidence: None,
-            evidence_claims: Vec::new(),
-            evidence_support: Vec::new(),
-        });
-    }
+    omegon_opsx::parse_spec_content_with_domain(domain, content)
+        .into_iter()
+        .map(|requirement| Requirement {
+            title: requirement.title,
+            description: requirement.description,
+            scenarios: requirement
+                .scenarios
+                .into_iter()
+                .map(|scenario| Scenario {
+                    id: scenario.id,
+                    title: scenario.title,
+                    given: scenario.given,
+                    when: scenario.when,
+                    then: scenario.then,
+                    and_clauses: scenario.and_clauses,
+                    tdd_evidence: None,
+                    evidence_claims: vec![],
+                    evidence_support: vec![],
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Build a context injection string for relevant OpenSpec changes.

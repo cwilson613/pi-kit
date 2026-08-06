@@ -135,6 +135,135 @@ pub struct ParsedDesignArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignRepositoryRecord {
+    pub artifact: ParsedDesignArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesignRepositoryFindingKind {
+    Unreadable,
+    Malformed,
+    DuplicateId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignRepositoryFinding {
+    pub kind: DesignRepositoryFindingKind,
+    pub path: PathBuf,
+    pub node_id: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DesignRepositoryScan {
+    pub records: Vec<DesignRepositoryRecord>,
+    pub findings: Vec<DesignRepositoryFinding>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DesignRepository {
+    repo_root: PathBuf,
+}
+
+impl DesignRepository {
+    pub fn new(repo_root: impl Into<PathBuf>) -> Self {
+        Self {
+            repo_root: repo_root.into(),
+        }
+    }
+
+    pub fn scan(&self) -> DesignRepositoryScan {
+        let mut scan = DesignRepositoryScan::default();
+        let mut paths = self.candidate_paths(&mut scan.findings);
+        paths.sort();
+        let mut seen = BTreeMap::<String, PathBuf>::new();
+        for path in paths {
+            let source = match std::fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(error) => {
+                    scan.findings.push(DesignRepositoryFinding {
+                        kind: DesignRepositoryFindingKind::Unreadable,
+                        path,
+                        node_id: None,
+                        message: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if !looks_like_design_artifact(&source) {
+                continue;
+            }
+            match parse_design_artifact(&source, &path) {
+                Ok(artifact) => {
+                    if let Some(first_path) = seen.get(&artifact.artifact.id) {
+                        scan.findings.push(DesignRepositoryFinding {
+                            kind: DesignRepositoryFindingKind::DuplicateId,
+                            path: path.clone(),
+                            node_id: Some(artifact.artifact.id.clone()),
+                            message: format!(
+                                "duplicate design node id '{}' first declared at {}",
+                                artifact.artifact.id,
+                                first_path.display()
+                            ),
+                        });
+                        continue;
+                    }
+                    seen.insert(artifact.artifact.id.clone(), path);
+                    scan.records.push(DesignRepositoryRecord { artifact });
+                }
+                Err(error) => scan.findings.push(DesignRepositoryFinding {
+                    kind: DesignRepositoryFindingKind::Malformed,
+                    path,
+                    node_id: None,
+                    message: error.to_string(),
+                }),
+            }
+        }
+        scan
+    }
+
+    fn candidate_paths(&self, findings: &mut Vec<DesignRepositoryFinding>) -> Vec<PathBuf> {
+        let docs = self.repo_root.join("docs");
+        let mut paths = Vec::new();
+        for directory in [docs.clone(), docs.join("design")] {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    findings.push(DesignRepositoryFinding {
+                        kind: DesignRepositoryFindingKind::Unreadable,
+                        path: directory,
+                        node_id: None,
+                        message: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    }
+}
+
+fn looks_like_design_artifact(source: &str) -> bool {
+    split_frontmatter(source).is_some_and(|(_, frontmatter, _)| {
+        frontmatter.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("id:")
+                || line.starts_with("status:")
+                || line.starts_with("id =")
+                || line.starts_with("status =")
+                || line == "[data]"
+        })
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Value {
     Scalar(String),
     List(Vec<String>),
@@ -603,6 +732,57 @@ mod tests {
             canonical,
             render_design_artifact(&reparsed.artifact, &reparsed.sections)
         );
+    }
+
+    #[test]
+    fn repository_scans_declared_scope_and_reports_duplicate_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let docs = temp.path().join("docs");
+        std::fs::create_dir_all(docs.join("design/nested")).unwrap();
+        std::fs::write(docs.join("plain.md"), "# Plain\n").unwrap();
+        std::fs::write(docs.join("one.md"), canonical_source("same", "One")).unwrap();
+        std::fs::write(docs.join("design/two.md"), canonical_source("same", "Two")).unwrap();
+        std::fs::write(
+            docs.join("design/nested/ignored.md"),
+            canonical_source("nested", "Ignored"),
+        )
+        .unwrap();
+
+        let scan = DesignRepository::new(temp.path()).scan();
+        assert_eq!(scan.records.len(), 1);
+        assert_eq!(scan.records[0].artifact.artifact.id, "same");
+        assert_eq!(scan.findings.len(), 1);
+        assert_eq!(
+            scan.findings[0].kind,
+            DesignRepositoryFindingKind::DuplicateId
+        );
+    }
+
+    #[test]
+    fn repository_reports_malformed_design_but_ignores_plain_markdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let docs = temp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("plain.md"), "---\ntitle: Note\n---\n# Note\n").unwrap();
+        std::fs::write(
+            docs.join("bad.md"),
+            "---\nid: bad\nstatus: impossible\n---\n# Bad\n",
+        )
+        .unwrap();
+
+        let scan = DesignRepository::new(temp.path()).scan();
+        assert!(scan.records.is_empty());
+        assert_eq!(scan.findings.len(), 1);
+        assert_eq!(
+            scan.findings[0].kind,
+            DesignRepositoryFindingKind::Malformed
+        );
+    }
+
+    fn canonical_source(id: &str, title: &str) -> String {
+        format!(
+            "---\nid: {id}\ntitle: {title}\nstatus: seed\ntags: []\ndependencies: []\nrelated: []\nopen_questions: []\nbranches: []\n---\n# {title}\n\n## Overview\n\nOverview.\n\n## Research\n\n## Decisions\n\n## Implementation Notes\n\n### File Scope\n\n_None identified._\n\n### Constraints\n\n_None identified._\n\n## Open Questions\n\n_None._\n"
+        )
     }
 
     #[test]

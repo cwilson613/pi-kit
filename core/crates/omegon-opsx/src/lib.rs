@@ -28,6 +28,11 @@ pub use content::{
     parse_spec_content_with_domain, parse_specs_dir, parse_task_groups, parse_task_groups_content,
     parse_task_stable_id_marker,
 };
+pub use design_artifacts::{
+    DesignDiagnostic, DesignDiagnosticKind, DesignRepository, DesignRepositoryFinding,
+    DesignRepositoryFindingKind, DesignRepositoryRecord, DesignRepositoryScan, FrontmatterFormat,
+    ParsedDesignArtifact, RewriteSafety, parse_design_artifact, render_design_artifact,
+};
 pub use error::OpsxError;
 pub use fsm::Lifecycle;
 pub use store::{JsonFileStore, LifecycleState, MemoryStore, StateStore};

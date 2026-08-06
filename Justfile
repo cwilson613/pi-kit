@@ -576,12 +576,28 @@ link-tag tag:
 build-release:
     {{cargo}} build --release -p omegon
 
-# Run this workspace's dev-release binary directly after rebuilding it from current source
+# Run this workspace's dev-release binary directly after rebuilding it from current source.
+# OMEGON_EXPECTED_CHECKOUT lets diagnostics prove this process came from this checkout.
 run *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    checkout="$(pwd -P)"
     {{cargo}} build --profile dev-release -p omegon
-    exec ./target/dev-release/omegon {{args}}
+    binary="$checkout/target/dev-release/omegon"
+    test -x "$binary"
+    export OMEGON_EXPECTED_CHECKOUT="$checkout"
+    exec "$binary" {{args}}
+
+# Run this checkout with live TUI performance tracing enabled.
+trace-tui *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    checkout="$(pwd -P)"
+    trace_path="$checkout/.omegon/debug/tui-runtime.jsonl"
+    rm -f "$trace_path"
+    export OMEGON_TUI_TRACE=1
+    export OMEGON_TUI_TRACE_PATH="$trace_path"
+    just run {{args}}
 
 # ─── Release ─────────────────────────────────────────────────
 

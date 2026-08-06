@@ -40,6 +40,7 @@ pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
 mod render;
+mod runtime_trace;
 pub mod segment_components;
 pub mod segment_detail;
 pub mod segments;
@@ -427,6 +428,8 @@ struct App {
     dashboard_area: Option<Rect>,
     /// Last on-screen conversation area for mouse hit-testing.
     conversation_area: Option<Rect>,
+    /// Phase timings captured by the most recent draw callback.
+    last_draw_phase_timings: runtime_trace::DrawPhaseTimings,
     /// Last on-screen editor area for mouse hit-testing.
     editor_area: Option<Rect>,
     /// Last on-screen workbench area for mouse hit-testing.
@@ -878,6 +881,7 @@ impl App {
             dashboard: DashboardState::default(),
             dashboard_area: None,
             conversation_area: None,
+            last_draw_phase_timings: runtime_trace::DrawPhaseTimings::default(),
             editor_area: None,
             workbench_area: None,
             footer_data: FooterData {
@@ -7430,6 +7434,7 @@ pub async fn run_tui(
     }
 
     let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
+    let mut runtime_trace = runtime_trace::TuiRuntimeTrace::from_env();
 
     loop {
         // ── Splash replay (/splash command) ─────────────────────────
@@ -7442,12 +7447,15 @@ pub async fn run_tui(
         // ingesting producer traffic so streaming cannot starve scrolling,
         // cancellation, or editor control.
         let mut handled_input = false;
+        let mut handled_input_count = 0_u64;
+        let input_started = std::time::Instant::now();
         for _ in 0..16 {
             if !event::poll(Duration::ZERO)? {
                 break;
             }
             let input_event = event::read()?;
             handled_input = true;
+            handled_input_count += 1;
             if matches!(
                 app.handle_terminal_event(input_event, &command_tx).await,
                 InputDisposition::SkipLoop
@@ -7457,6 +7465,9 @@ pub async fn run_tui(
         }
         if handled_input {
             scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+            if let Some(trace) = &mut runtime_trace {
+                trace.record_input(handled_input_count, input_started);
+            }
         }
 
         // Agent traffic is throughput-sensitive. Bound each pass by both event
@@ -7465,6 +7476,9 @@ pub async fn run_tui(
             drain_agent_events_budgeted(&mut events_rx, &mut app, scheduler.agent_budget());
         if agent_drain.handled > 0 {
             scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        }
+        if let Some(trace) = &mut runtime_trace {
+            trace.record_agent_drain(agent_drain.handled, agent_drain.hit_budget);
         }
 
         if let Some(rx) = &app.smoke_event_rx {
@@ -7527,8 +7541,37 @@ pub async fn run_tui(
         // remains urgent and draws immediately.
         let now = std::time::Instant::now();
         if scheduler.should_draw(now) {
-            terminal.draw(|f| app.draw(f))?;
+            let urgent = handled_input;
+            let draw_started = std::time::Instant::now();
+            let mut callback_elapsed = Duration::ZERO;
+            terminal.draw(|f| {
+                let callback_started = std::time::Instant::now();
+                app.draw(f);
+                callback_elapsed = callback_started.elapsed();
+            })?;
+            let draw_finished = std::time::Instant::now();
+            if let Some(trace) = &mut runtime_trace {
+                let segments = app.conversation.segments().len();
+                let scroll_offset = app.conversation.conv_state.scroll_offset;
+                let streaming = app.conversation.is_streaming();
+                let detached = app.conversation.conv_state.user_scrolled || scroll_offset > 0;
+                trace.record_draw(
+                    urgent,
+                    draw_finished.duration_since(draw_started),
+                    callback_elapsed,
+                    app.last_draw_phase_timings,
+                    draw_finished,
+                    segments,
+                    scroll_offset,
+                    streaming,
+                    detached,
+                );
+                trace.flush_if_due(draw_finished);
+            }
             scheduler.after_draw(now);
+        } else if let Some(trace) = &mut runtime_trace {
+            trace.record_dirty_without_draw();
+            trace.flush_if_due(now);
         }
 
         if app.should_quit {
@@ -7544,8 +7587,12 @@ pub async fn run_tui(
         };
         if event::poll(poll_timeout)? {
             let input_event = event::read()?;
+            let input_at = std::time::Instant::now();
             let _ = app.handle_terminal_event(input_event, &command_tx).await;
             scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+            if let Some(trace) = &mut runtime_trace {
+                trace.record_input(1, input_at);
+            }
         }
     }
 

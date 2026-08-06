@@ -9,7 +9,30 @@ use std::sync::{Arc, Mutex};
 use crate::features::cleave::CleaveProgress;
 use crate::features::delegate::{DelegateProgress, DelegateResultStore};
 use crate::lifecycle::read_model::LifecycleReadHandle;
+use crate::lifecycle::types::NodeStatus;
 use crate::status::HarnessStatus;
+
+/// Renderer-neutral summary of the currently focused design node.
+#[derive(Clone)]
+pub struct FocusedNodeSummary {
+    pub id: String,
+    pub title: String,
+    pub status: NodeStatus,
+    pub open_questions: usize,
+    pub assumptions: usize,
+    pub decisions: usize,
+    pub readiness: f32,
+    pub openspec_change: Option<String>,
+}
+
+/// Renderer-neutral summary of an active OpenSpec change.
+#[derive(Clone)]
+pub struct ChangeSummary {
+    pub name: String,
+    pub stage: String,
+    pub done_tasks: usize,
+    pub total_tasks: usize,
+}
 
 /// Shared session counters written by the interactive runtime and read by
 /// operator surfaces.

@@ -4,7 +4,7 @@ use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-use super::{dashboard, theme};
+use super::theme;
 use crate::features::delegate::DelegateProgress;
 use crate::surfaces::layout::UiPresentationLevel;
 use crate::surfaces::operations::{
@@ -721,8 +721,8 @@ pub struct SlimPlanContext {
 impl SlimPlanContext {
     pub fn from_dashboard(
         active: bool,
-        active_changes: &[dashboard::ChangeSummary],
-        focused_node: Option<&dashboard::FocusedNodeSummary>,
+        active_changes: &[crate::runtime_state::ChangeSummary],
+        focused_node: Option<&crate::runtime_state::FocusedNodeSummary>,
     ) -> Self {
         Self {
             active,

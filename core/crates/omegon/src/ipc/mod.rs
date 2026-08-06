@@ -30,8 +30,8 @@ use tracing::{debug, info, warn};
 
 use omegon_traits::{AgentEvent, IpcEnvelope, IpcErrorCode};
 
+use crate::operator_commands::{OperatorCommand as TuiCommand, SharedCancel};
 use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
-use crate::tui::{SharedCancel, TuiCommand};
 
 use connection::{ConnectionConfig, IpcConnection};
 use wire::encode_envelope;

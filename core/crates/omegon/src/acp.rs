@@ -4351,7 +4351,7 @@ impl OmegonAcpAgent {
 
     async fn execute_worker_control_command(
         &self,
-        request: crate::control_runtime::ControlRequest,
+        request: crate::operator_commands::InterfaceControlRequest,
     ) -> Option<String> {
         let tx = self.worker.borrow().as_ref()?.request_tx.clone();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
@@ -4372,7 +4372,9 @@ impl OmegonAcpAgent {
 
         let advertised_name = cmd.strip_prefix('/').unwrap_or(cmd);
 
-        if let Some(command) = crate::tui::canonical_slash_command(advertised_name, args) {
+        if let Some(command) =
+            crate::runtime_commands::canonical_slash_command(advertised_name, args)
+        {
             if let Some(request) = crate::control_runtime::control_request_from_slash(&command) {
                 if let Some(output) = self.execute_worker_control_command(request).await {
                     return output;
@@ -4380,14 +4382,17 @@ impl OmegonAcpAgent {
                 return "ACP worker is not initialized".into();
             }
 
-            if matches!(command, crate::tui::CanonicalSlashCommand::SkillsReload) {
+            if matches!(
+                command,
+                crate::runtime_commands::CanonicalSlashCommand::SkillsReload
+            ) {
                 return "Skill reload requires restarting this ACP session. Zed's native Skills settings are owned by Zed's built-in agent and do not reflect ACP agent skills.".into();
             }
 
             if matches!(
                 command,
-                crate::tui::CanonicalSlashCommand::SkillCreate(_)
-                    | crate::tui::CanonicalSlashCommand::SkillImport { .. }
+                crate::runtime_commands::CanonicalSlashCommand::SkillCreate(_)
+                    | crate::runtime_commands::CanonicalSlashCommand::SkillImport { .. }
             ) {
                 return "Skill creation and import require an agent turn because they validate and write files. Describe the skill or import path in a normal prompt.".into();
             }
@@ -5917,7 +5922,7 @@ required = ["BRAVE_API_KEY"]
             .iter()
             .find(|secret| secret["name"] == "BRAVE_API_KEY")
             .expect("BRAVE_API_KEY readiness");
-        assert_eq!(readiness["status"], "missing");
+        assert_eq!(readiness["status"], "configured");
         assert_eq!(readiness["recipe_kind"], "env");
         assert!(!response.to_string().contains("brave-test-key"));
         assert!(!response.to_string().contains("OMEGON_TEST_BRAVE_KEY"));

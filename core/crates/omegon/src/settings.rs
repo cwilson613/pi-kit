@@ -440,7 +440,7 @@ pub struct Settings {
     /// `/clipboard prune` slash command for on-demand sweeps.
     ///
     /// Clipboard pastes are written to the system temp directory by
-    /// `tui::mod::pull_clipboard_image` and named
+    /// `native_io::clipboard_image_to_temp` and named
     /// `omegon-clipboard-{pid}-{counter}.{ext}`. The matching prune
     /// logic in `clipboard::prune_old_pastes` walks that directory at
     /// session start and removes anything matching that pattern whose

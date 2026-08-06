@@ -1,10 +1,12 @@
 use omegon_traits::SlashCommandResponse;
 
 static SESSION_VARIABLES: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+    std::sync::Mutex<std::collections::BTreeMap<String, crate::value_context::ValueRecord>>,
 > = std::sync::OnceLock::new();
 
-fn session_variables() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, String>> {
+fn session_variables()
+-> &'static std::sync::Mutex<std::collections::BTreeMap<String, crate::value_context::ValueRecord>>
+{
     SESSION_VARIABLES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
 }
 
@@ -34,12 +36,28 @@ pub fn variables_snapshot() -> Vec<(String, String)> {
         .lock()
         .expect("variables lock")
         .iter()
-        .map(|(name, value)| (name.clone(), value.clone()))
+        .map(|(name, record)| (name.clone(), record.value.clone()))
         .collect()
 }
 
 pub fn variable_name_has_sensitive_hint(name: &str) -> bool {
     variable_name_looks_secret(name)
+}
+
+fn variable_diagnostic_summary(record: &crate::value_context::ValueRecord) -> String {
+    let unavailable = crate::value_context::ValueConsumer::DIAGNOSTIC_CONSUMERS
+        .into_iter()
+        .filter_map(|consumer| {
+            let diagnostic = record.diagnostic_for(consumer);
+            (diagnostic.availability != crate::value_context::ValueAvailability::Available)
+                .then(|| consumer.label())
+        })
+        .collect::<Vec<_>>();
+    if unavailable.is_empty() {
+        "available to all diagnosed consumers".to_string()
+    } else {
+        format!("not propagated to: {}", unavailable.join(", "))
+    }
 }
 
 pub async fn variables_view_response() -> SlashCommandResponse {
@@ -49,13 +67,17 @@ pub async fn variables_view_response() -> SlashCommandResponse {
         out.push_str("No session variables set.\n");
     } else {
         out.push_str(&format!("⚙ Variables ({}) — session scope\n\n", vars.len()));
-        for (name, value) in vars.iter() {
+        for (name, record) in vars.iter() {
             let warning = if variable_name_looks_secret(name) {
                 "  ⚠ name looks sensitive; consider /secrets"
             } else {
                 ""
             };
-            out.push_str(&format!("  {name:<24} {value}{warning}\n"));
+            out.push_str(&format!(
+                "  {name:<24} {}{warning}\n    {}\n",
+                record.value,
+                variable_diagnostic_summary(record)
+            ));
         }
     }
     out.push_str("\nVariables are non-secret runtime config and may be displayed. Use /secrets for sensitive values.\n");
@@ -85,10 +107,10 @@ pub async fn variables_set_response(name: &str, value: &str) -> SlashCommandResp
     } else {
         String::new()
     };
-    session_variables()
-        .lock()
-        .expect("variables lock")
-        .insert(name.to_string(), value.to_string());
+    session_variables().lock().expect("variables lock").insert(
+        name.to_string(),
+        crate::value_context::ValueRecord::public_control_plane(name, value),
+    );
     SlashCommandResponse {
         accepted: true,
         output: Some(format!(
@@ -100,7 +122,7 @@ pub async fn variables_set_response(name: &str, value: &str) -> SlashCommandResp
 pub async fn variables_get_response(name: &str) -> SlashCommandResponse {
     let vars = session_variables().lock().expect("variables lock");
     match vars.get(name) {
-        Some(value) => {
+        Some(record) => {
             let warning = if variable_name_looks_secret(name) {
                 format!(
                     "\n⚠ '{name}' looks sensitive. Variables are printable; credentials belong in /secrets."
@@ -110,7 +132,11 @@ pub async fn variables_get_response(name: &str) -> SlashCommandResponse {
             };
             SlashCommandResponse {
                 accepted: true,
-                output: Some(format!("{name}={value}\n(scope: session){warning}")),
+                output: Some(format!(
+                    "{name}={}\n({}){warning}",
+                    record.value,
+                    variable_diagnostic_summary(record)
+                )),
             }
         }
         None => SlashCommandResponse {

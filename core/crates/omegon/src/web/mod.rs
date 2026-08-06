@@ -782,7 +782,7 @@ pub enum WebCommand {
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::SlashCommandResponse>>,
     },
     ExecuteControl {
-        request: crate::control_runtime::ControlRequest,
+        request: crate::operator_commands::InterfaceControlRequest,
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
     },
     ManagedDelegateControl {
@@ -1357,31 +1357,31 @@ pub(crate) async fn process_next_daemon_event(state: &WebState) -> anyhow::Resul
             }),
         "cancel" => Some(WebCommand::Cancel),
         "new-session" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::NewSession,
+            request: crate::operator_commands::InterfaceControlRequest::NewSession,
             respond_to: None,
         }),
         "context-status" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ContextStatus,
+            request: crate::operator_commands::InterfaceControlRequest::ContextStatus,
             respond_to: None,
         }),
         "context-compact" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ContextCompact,
+            request: crate::operator_commands::InterfaceControlRequest::ContextCompact,
             respond_to: None,
         }),
         "context-clear" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ContextClear,
+            request: crate::operator_commands::InterfaceControlRequest::ContextClear,
             respond_to: None,
         }),
         "auth-status" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::AuthStatus,
+            request: crate::operator_commands::InterfaceControlRequest::AuthStatus,
             respond_to: None,
         }),
         "model-view" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ModelView,
+            request: crate::operator_commands::InterfaceControlRequest::ModelView,
             respond_to: None,
         }),
         "model-list" => Some(WebCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ModelList,
+            request: crate::operator_commands::InterfaceControlRequest::ModelList,
             respond_to: None,
         }),
         "set-model" => event
@@ -1389,7 +1389,7 @@ pub(crate) async fn process_next_daemon_event(state: &WebState) -> anyhow::Resul
             .get("model")
             .and_then(|value| value.as_str())
             .map(|model| WebCommand::ExecuteControl {
-                request: crate::control_runtime::ControlRequest::SetModel {
+                request: crate::operator_commands::InterfaceControlRequest::SetModel {
                     requested_model: model.to_string(),
                 },
                 respond_to: None,
@@ -1400,7 +1400,7 @@ pub(crate) async fn process_next_daemon_event(state: &WebState) -> anyhow::Resul
             .and_then(|value| value.as_str())
             .and_then(crate::settings::ThinkingLevel::parse)
             .map(|level| WebCommand::ExecuteControl {
-                request: crate::control_runtime::ControlRequest::SetThinking { level },
+                request: crate::operator_commands::InterfaceControlRequest::SetThinking { level },
                 respond_to: None,
             }),
         "shutdown" => Some(WebCommand::Shutdown),
@@ -1834,7 +1834,7 @@ mod tests {
         let command = command_rx.recv().await.unwrap();
         match command {
             WebCommand::ExecuteControl {
-                request: crate::control_runtime::ControlRequest::NewSession,
+                request: crate::operator_commands::InterfaceControlRequest::NewSession,
                 respond_to: None,
             } => {}
             other => panic!("wrong command: {other:?}"),

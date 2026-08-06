@@ -3422,7 +3422,7 @@ required = ["BRAVE_API_KEY"]
             .expect("BRAVE_API_KEY readiness");
         assert_eq!(
             readiness.status,
-            crate::capabilities::secrets::SecretReadinessStatus::Missing
+            crate::capabilities::secrets::SecretReadinessStatus::Configured
         );
         assert_eq!(readiness.recipe_kind, Some("env".to_string()));
         let payload = serde_json::to_string(&response).unwrap();

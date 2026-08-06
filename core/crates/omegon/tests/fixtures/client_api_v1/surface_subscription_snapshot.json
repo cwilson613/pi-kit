@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 1,
+  "envelopeId": "env-subscribe-1",
+  "sessionId": null,
+  "clientId": "replacement-ui",
+  "direction": "clientToRuntime",
+  "kind": "surfaceSubscription",
+  "payload": {
+    "surfaces": ["conversation", "dashboard", "footer"],
+    "sinceRevision": null,
+    "includeSnapshot": true
+  }
+}

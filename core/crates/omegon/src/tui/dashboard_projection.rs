@@ -1,10 +1,8 @@
 //! TUI backing-state adapter for the shared dashboard surface projection.
 
-use super::dashboard::{
-    ChangeSummary, DashboardState, DegradedNodeSummary, FocusedNodeSummary, NodeSummary,
-    StatusCounts,
-};
+use super::dashboard::{DashboardState, DegradedNodeSummary, NodeSummary, StatusCounts};
 use crate::lifecycle::types::{IssueType, NodeStatus};
+use crate::runtime_state::{ChangeSummary, FocusedNodeSummary};
 use crate::surfaces::dashboard::{
     ChangeProjection, DashboardContextProjection, DashboardProjection, DashboardSessionProjection,
     DegradedNodeProjection, FocusedNodeProjection, NodeProjection, ProjectDashboardSurface,

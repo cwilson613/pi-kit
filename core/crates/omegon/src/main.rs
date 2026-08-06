@@ -9,11 +9,16 @@
 use crate::conversation::PlanAction;
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
+#[cfg(feature = "tui")]
 use crossterm::ExecutableCommand;
+#[cfg(feature = "tui")]
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+#[cfg(feature = "tui")]
 use crossterm::terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
+#[cfg(feature = "tui")]
 use std::io;
+#[cfg(feature = "tui")]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,16 +36,12 @@ pub(crate) static GLOBAL_TEST_ENV_LOCK: std::sync::LazyLock<&'static tokio::sync
 mod acp;
 mod acp_plan_tasks;
 mod acp_worker;
-mod active_worker_command;
-mod active_worker_completion;
-mod active_worker_run;
-mod active_worker_startup;
-mod active_worker_wait;
 mod auth;
 mod autonomy;
 mod backend;
 mod behavior;
 mod bootstrap;
+mod bootstrap_projection;
 mod bridge;
 pub mod bus;
 mod capacity;
@@ -68,24 +69,17 @@ mod inference_discovery;
 mod inference_inventory;
 mod inference_manifest;
 mod inference_runtime;
-mod interactive_coordinator;
-mod interactive_session;
-mod interactive_turn_execution;
 mod ipc;
 #[cfg(feature = "local-embeddings")]
 mod local_embedding;
 mod migrate;
 mod observation;
+mod operator_commands;
 #[cfg(test)]
 mod recro_coe_integration_tests;
+mod runtime_commands;
 mod runtime_composition;
-mod runtime_lifecycle_command;
-mod runtime_prompt;
 mod runtime_state;
-mod runtime_supervisor;
-mod runtime_turn;
-mod runtime_turn_execution;
-mod session_commands;
 mod session_settings_commands;
 mod shadow_context;
 mod skills;
@@ -99,6 +93,7 @@ pub mod tool_schema;
 mod update;
 mod upstream_errors;
 mod usage;
+mod value_context;
 mod workspace;
 
 mod agent_manifest;
@@ -117,9 +112,10 @@ mod github_copilot;
 mod lifecycle;
 mod r#loop;
 mod managed_agent_supervisor;
-mod model_commands;
+mod model_catalog;
 mod model_registry;
 mod mqtt_bridge;
+mod native_io;
 mod ollama;
 mod packages;
 mod paths;
@@ -128,7 +124,6 @@ mod pkl_modules;
 mod plan;
 mod plugin_cli;
 mod plugins;
-mod post_worker_completion;
 mod project_rules;
 mod prompt;
 mod prompts;
@@ -150,6 +145,7 @@ mod task_tree;
 pub mod tool_registry;
 mod tools;
 mod triggers;
+#[cfg(feature = "tui")]
 mod tui;
 mod ui_runtime;
 pub mod util;
@@ -204,6 +200,10 @@ struct Cli {
     /// Working directory
     #[arg(short, long, default_value = ".", global = true)]
     cwd: PathBuf,
+
+    /// Enable low-overhead TUI diagnostics for wild-session capture.
+    #[arg(long, global = true)]
+    debug_tui: bool,
 
     /// Model identifier (provider:model format)
     #[arg(
@@ -486,31 +486,6 @@ enum ProjectRulesAction {
 }
 
 #[derive(Subcommand)]
-enum MemoryAction {
-    /// Inspect, migrate, or roll back the project memory SQLite store.
-    Migrate {
-        /// Print the source inventory and intended operations without mutation.
-        #[arg(long, conflicts_with_all = ["apply", "rollback", "status"])]
-        dry_run: bool,
-        /// Apply a verified v5/v6 to v7 migration.
-        #[arg(long, conflicts_with_all = ["dry_run", "rollback", "status"])]
-        apply: bool,
-        /// Print current store integrity, version, and counts.
-        #[arg(long, conflicts_with_all = ["dry_run", "apply", "rollback"])]
-        status: bool,
-        /// Restore the v5/v6 backup, preserving the current v7 store.
-        #[arg(long, conflicts_with_all = ["dry_run", "apply", "status"])]
-        rollback: bool,
-        /// Override the memory database path.
-        #[arg(long, value_name = "PATH")]
-        path: Option<PathBuf>,
-        /// Override the rollback backup path.
-        #[arg(long, value_name = "PATH", requires = "rollback")]
-        backup: Option<PathBuf>,
-    },
-}
-
-#[derive(Subcommand)]
 enum Commands {
     /// Run interactive TUI session — ratatui-based terminal interface.
     Interactive,
@@ -577,12 +552,6 @@ enum Commands {
         /// Source to migrate from. "auto" detects all available tools.
         #[arg(default_value = "auto")]
         source: String,
-    },
-
-    /// Inspect and migrate the project memory store.
-    Memory {
-        #[command(subcommand)]
-        action: MemoryAction,
     },
 
     /// Evaluate an agent bundle against a test suite. Produces a score card.
@@ -1235,7 +1204,7 @@ fn parse_csv_env(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) async fn resolve_current_model_intent_route(
+async fn resolve_current_model_intent_route(
     route_controller: &std::sync::Arc<route::RouteController>,
     inference_runtime: &crate::inference_runtime::InferenceRuntimeState,
 ) -> Option<route::RouteSnapshot> {
@@ -1596,7 +1565,6 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", report.summary());
             Ok(())
         }
-        Some(Commands::Memory { ref action }) => run_memory_command(&cli, action),
         Some(Commands::Auth { ref action }) => run_auth_command(action).await,
         Some(Commands::Tdd { ref action }) => run_tdd_command(action).await,
         Some(Commands::ProjectRules { ref action }) => run_project_rules_command(&cli, action),
@@ -1636,7 +1604,16 @@ async fn main() -> anyhow::Result<()> {
             } else if let Some(ver) = version {
                 switch::switch_to_version(&ver).await
             } else {
-                switch::interactive_picker().await
+                #[cfg(feature = "tui")]
+                {
+                    switch::interactive_picker().await
+                }
+                #[cfg(not(feature = "tui"))]
+                {
+                    anyhow::bail!(
+                        "interactive version selection was not compiled; pass an explicit version or use --list, --latest, or --latest-rc"
+                    )
+                }
             }
         }
         Some(Commands::Acp {
@@ -2073,6 +2050,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut bench_cli = Cli {
                     command: None,
                     cwd: cli.cwd.clone(),
+                    debug_tui: cli.debug_tui,
                     model: cli.model.clone(),
                     prompt: Some(prompt.clone()),
                     prompt_file: None,
@@ -2605,11 +2583,12 @@ async fn run_embedded_command(
     }
 
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
-    let (ipc_cmd_tx, mut ipc_cmd_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(32);
+    let (ipc_cmd_tx, mut ipc_cmd_rx) =
+        tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(32);
     {
         let ipc_cfg =
             ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), &agent.session_id);
-        let shared_cancel: tui::SharedCancel =
+        let shared_cancel: operator_commands::SharedCancel =
             Arc::new(std::sync::Mutex::new(Some(global_cancel.clone())));
         ipc::start_ipc_server(
             ipc_cfg,
@@ -2941,7 +2920,7 @@ async fn run_embedded_command(
             }
             ipc_cmd = ipc_cmd_rx.recv() => {
                 match ipc_cmd {
-                    Some(tui::TuiCommand::SubmitPrompt(submission)) => {
+                    Some(operator_commands::OperatorCommand::SubmitPrompt(submission)) => {
                         tracing::info!(prompt_len = submission.text.len(), "daemon: IPC prompt");
                         let session = default_session.clone();
                         let events_tx = events_tx.clone();
@@ -2977,10 +2956,10 @@ async fn run_embedded_command(
                             },
                         );
                     }
-                    Some(tui::TuiCommand::ManagedDelegateControl { method, respond_to, .. }) => {
+                    Some(operator_commands::OperatorCommand::ManagedDelegateControl { method, respond_to, .. }) => {
                         let _ = respond_to.send(serde_json::json!({"type": format!("{method}_result"), "accepted": false, "error": "managed delegation requires the interactive runtime"}));
                     }
-                    Some(tui::TuiCommand::ExecuteControl { request, respond_to }) => {
+                    Some(operator_commands::OperatorCommand::ExecuteControl { request, respond_to }) => {
                         tracing::info!(request = ?request, "daemon: IPC control request");
                         let response = control_runtime::execute_daemon_control(
                             request,
@@ -2995,7 +2974,7 @@ async fn run_embedded_command(
                             let _ = tx.send(response);
                         }
                     }
-                    Some(tui::TuiCommand::UpdatePlan { respond_to, .. }) => {
+                    Some(operator_commands::OperatorCommand::UpdatePlan { respond_to, .. }) => {
                         let response = omegon_traits::ControlOutputResponse {
                             accepted: false,
                             output: Some(
@@ -3006,7 +2985,7 @@ async fn run_embedded_command(
                             let _ = tx.send(response);
                         }
                     }
-                    Some(tui::TuiCommand::RunSlashCommand { name, args, respond_to }) => {
+                    Some(operator_commands::OperatorCommand::RunSlashCommand { name, args, respond_to }) => {
                         tracing::info!(command = %name, "daemon: IPC slash command → prompt");
                         let prompt = if args.is_empty() {
                             format!("/{name}")
@@ -3052,7 +3031,7 @@ async fn run_embedded_command(
                             },
                         );
                     }
-                    Some(tui::TuiCommand::Quit) => {
+                    Some(operator_commands::OperatorCommand::Quit) => {
                         tracing::info!("daemon: IPC shutdown requested");
                         break;
                     }
@@ -3770,7 +3749,7 @@ async fn run_embedding_command(action: &EmbeddingAction) -> anyhow::Result<()> {
                 }
             };
 
-            let mind = omegon_memory::sqlite::PRIMENSUS_MIND;
+            let mind = "default";
             let facts = backend
                 .list_facts(mind, omegon_memory::FactFilter::default())
                 .await?;
@@ -3993,6 +3972,37 @@ fn cli_prefers_slim_mode(cli: &Cli) -> bool {
     cli.slim
 }
 
+#[cfg(feature = "tui")]
+fn secret_readiness_inputs(
+    secrets: &omegon_secrets::SecretsManager,
+) -> crate::capabilities::secrets::SecretReadinessInputs {
+    crate::capabilities::secrets::SecretReadinessInputs {
+        session_diagnostics: secrets
+            .session_diagnostics()
+            .into_iter()
+            .map(
+                |diag| crate::capabilities::secrets::SecretSessionDiagnostic {
+                    name: diag.name,
+                    warmed: diag.warmed,
+                },
+            )
+            .collect(),
+        recipe_descriptors: secrets
+            .list_recipe_descriptors()
+            .into_iter()
+            .map(
+                |descriptor| crate::capabilities::secrets::SecretRecipeDescriptorSummary {
+                    name: descriptor.name,
+                    source: (descriptor.kind == "env").then_some(descriptor.payload),
+                    kind: descriptor.kind,
+                },
+            )
+            .collect(),
+        checked_names: Vec::new(),
+    }
+}
+
+#[cfg(feature = "tui")]
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -4252,7 +4262,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         ));
         agent.bus.finalize();
     }
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<tui::TuiCommand>(16);
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 
     // Wire command_tx to ContextProvider for tool dispatch
     if let Ok(mut shared_tx) = agent.command_tx.lock() {
@@ -4310,7 +4320,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
     }
 
-    let shared_cancel: tui::SharedCancel = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let shared_cancel: operator_commands::SharedCancel = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     // The route matrix is a static fallback. The /v1/models endpoint
     // returns the real context window for the selected model.
@@ -4364,7 +4374,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             tracing::info!(class = %class_str, "requested context class policy applied");
         }
 
-    let initial = agent.initial_tui_state();
+    let initial = agent.interactive_initial_state();
     // Extract bus command definitions for the TUI command palette
     let bus_commands: Vec<omegon_traits::CommandDefinition> = agent
         .bus
@@ -4388,6 +4398,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let runtime_generation = 1;
     let extension_widgets = std::mem::take(&mut agent.extension_widgets);
     let widget_receivers = std::mem::take(&mut agent.widget_receivers);
+
 fn build_tui_secret_readiness_snapshot(
     agent: &setup::AgentSetup,
     active_agent: Option<&crate::capabilities::agents::AgentBundleSummary>,
@@ -4402,49 +4413,15 @@ fn build_tui_secret_readiness_snapshot(
     })
     .ok()?;
     let active_agents: Vec<_> = active_agent.iter().cloned().cloned().collect();
-    let build_secret_inputs = |checked_names: Vec<String>| {
-        crate::capabilities::secrets::SecretReadinessInputs {
-            session_diagnostics: agent
-                .secrets
-                .session_diagnostics()
-                .into_iter()
-                .map(|diag| crate::capabilities::secrets::SecretSessionDiagnostic {
-                    name: diag.name,
-                    warmed: diag.warmed,
-                })
-                .collect(),
-            recipe_descriptors: agent
-                .secrets
-                .list_recipe_descriptors()
-                .into_iter()
-                .map(|descriptor| crate::capabilities::secrets::SecretRecipeDescriptorSummary {
-                    name: descriptor.name,
-                    source: (descriptor.kind == "env").then_some(descriptor.payload),
-                            kind: descriptor.kind,
-                })
-                .collect(),
-            checked_names,
-        }
-    };
-    let preliminary = crate::capabilities::secrets::build_secret_readiness_snapshot(
-        &extensions,
-        &active_agents,
-        build_secret_inputs(Vec::new()),
-    );
-    let known_secret_names: Vec<String> = preliminary
-        .secrets
-        .iter()
-        .map(|secret| secret.name.clone())
-        .collect();
-    for name in &known_secret_names {
-        agent
-            .secrets
-            .warm_secret(name, omegon_secrets::SecretUse::Other, false);
-    }
+    // Startup readiness is a metadata projection, not a credential-use boundary.
+    // Resolving here causes one macOS authorization dialog per legacy Keychain
+    // item after every ad-hoc development rebuild. Actual provider, extension,
+    // and tool operations resolve their required credentials on first use.
+    let inputs = secret_readiness_inputs(&agent.secrets);
     Some(crate::capabilities::secrets::build_secret_readiness_snapshot(
         &extensions,
         &active_agents,
-        build_secret_inputs(known_secret_names),
+        inputs,
     ))
 }
 
@@ -4474,6 +4451,7 @@ fn build_tui_secret_readiness_snapshot(
         secret_readiness: build_tui_secret_readiness_snapshot(&agent, None),
         startup_skill_activation_events,
         dashboard_handles: agent.dashboard_handles.clone(),
+        debug_tui: cli.debug_tui,
         initial_prompt,
         start_tutorial: cli.tutorial,
         resume_info: agent.resume_info.clone(),
@@ -4514,7 +4492,7 @@ fn build_tui_secret_readiness_snapshot(
     let _mqtt_bridge =
         maybe_start_mqtt_bridge(&agent.cwd, agent.session_id.clone(), events_tx.clone());
 
-    let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+    let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
     let runtime_resources = InteractiveRuntimeResources {
         cwd: agent.cwd.clone(),
@@ -4551,47 +4529,50 @@ fn build_tui_secret_readiness_snapshot(
         });
     };
     'interactive: loop {
-        let Some(cmd) = interactive_coordinator::next_command(
-            &mut deferred_commands,
-            &mut command_rx,
-        )
-        .await else {
-            break;
+        let cmd = if let Some(cmd) = deferred_commands.pop_front() {
+            cmd
+        } else {
+            match command_rx.recv().await {
+                Some(cmd) => cmd,
+                None => break,
+            }
         };
-        let cmd = interactive_coordinator::normalize_ingress(cmd);
 
-        if model_commands::is_model_command(&cmd) {
-            model_commands::handle(
-                cmd,
-                model_commands::ModelCommandContext {
-                    agent: &mut agent,
-                    shared_settings: &shared_settings,
-                    bridge: &bridge,
-                    route_controller: &route_controller,
-                    inference_runtime: &runtime_state.inference_runtime,
-                    bridge_model: &runtime_resources.bridge_model,
-                    events_tx: &events_tx,
-                },
-            )
-            .await;
-            continue;
-        }
+        let cmd = match cmd {
+            operator_commands::OperatorCommand::VoicePrompt { text, metadata } => operator_commands::OperatorCommand::SubmitPrompt(operator_commands::PromptSubmission {
+                text: format!("🎙 {}", text.trim()),
+                image_paths: Vec::new(),
+                submitted_by: "voice".to_string(),
+                via: "voice",
+                queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                metadata: operator_commands::PromptMetadata { voice: Some(metadata) },
+            }),
+            other => other,
+        };
 
         match cmd {
-            tui::TuiCommand::Quit => break,
-            tui::TuiCommand::InstallUpdate { info, args } => {
+            operator_commands::OperatorCommand::Quit => break,
+            operator_commands::OperatorCommand::InstallUpdate { info, args } => {
                 let latest = info.latest.clone();
-                let mut lifecycle = runtime_lifecycle_command::update_download_snapshot(
-                    &agent.session_id,
-                    &latest,
-                );
+                let operation_id = uuid::Uuid::new_v4().to_string();
+                let mut lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
+                    operation_id,
+                    kind: omegon_traits::RuntimeLifecycleKind::UpdateInstall,
+                    phase: omegon_traits::RuntimeLifecyclePhase::Downloading,
+                    message: "Downloading and verifying update".into(),
+                    session_id: Some(agent.session_id.clone()),
+                    target_version: Some(latest.clone()),
+                    reconnect_required: false,
+                };
                 emit_lifecycle(lifecycle.clone());
                 let _ = events_tx.send(AgentEvent::SystemNotification {
                     message: format!("Downloading and verifying Omegon v{latest}…"),
                 });
                 match crate::update::download_and_replace(&info).await {
                     Ok(binary) => {
-                        runtime_lifecycle_command::mark_update_restarting(&mut lifecycle);
+                        lifecycle.phase = omegon_traits::RuntimeLifecyclePhase::Restarting;
+                        lifecycle.message = "Update installed; saving session and restarting".into();
+                        lifecycle.reconnect_required = true;
                         emit_lifecycle(lifecycle);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
                             message: format!(
@@ -4602,7 +4583,11 @@ fn build_tui_secret_readiness_snapshot(
                         break;
                     }
                     Err(error) => {
-                        runtime_lifecycle_command::mark_update_failed(&mut lifecycle, &error);
+                        lifecycle.phase = omegon_traits::RuntimeLifecyclePhase::Failed;
+                        lifecycle.message = format!(
+                            "Update failed; current version still running: {error}"
+                        );
+                        lifecycle.reconnect_required = false;
                         emit_lifecycle(lifecycle);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
                             message: format!(
@@ -4612,13 +4597,22 @@ fn build_tui_secret_readiness_snapshot(
                     }
                 }
             }
-            tui::TuiCommand::RestartProcess { binary, args } => {
-                emit_lifecycle(runtime_lifecycle_command::restart_snapshot(&agent.session_id));
+            operator_commands::OperatorCommand::RestartProcess { binary, args } => {
+                let lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                    kind: omegon_traits::RuntimeLifecycleKind::Restart,
+                    phase: omegon_traits::RuntimeLifecyclePhase::Restarting,
+                    message: "Saving session and restarting".into(),
+                    session_id: Some(agent.session_id.clone()),
+                    target_version: None,
+                    reconnect_required: true,
+                };
+                emit_lifecycle(lifecycle);
                 restart_request = Some((binary, args));
                 break;
             }
 
-            tui::TuiCommand::ManagedDelegateControl { method, payload, respond_to } => {
+            operator_commands::OperatorCommand::ManagedDelegateControl { method, payload, respond_to } => {
                 let reply = match crate::managed_agent_supervisor::parse_operation(&method, &payload) {
                     Ok((envelope, operation)) => match operation {
                         crate::managed_agent_supervisor::SupervisorOperation::GetObservation { task_id } => {
@@ -4639,7 +4633,7 @@ fn build_tui_secret_readiness_snapshot(
                 let _ = respond_to.send(reply);
             }
 
-            tui::TuiCommand::ExecuteControl { request, respond_to } => {
+            operator_commands::OperatorCommand::ExecuteControl { request, respond_to } => {
                 let mut ctx = control_runtime::ControlContext {
                     runtime_state: &mut runtime_state,
                     agent: &mut agent,
@@ -4666,7 +4660,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::UpdatePlan {
+            operator_commands::OperatorCommand::UpdatePlan {
                 command,
                 respond_to,
             } => {
@@ -4689,7 +4683,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::RunShellCommand { command, respond_to } => {
+            operator_commands::OperatorCommand::RunShellCommand { command, respond_to } => {
                 // Spawn so the command loop stays unblocked — operator can
                 // submit new prompts / commands while this is in-flight.
                 let cwd = agent.cwd.clone();
@@ -4788,7 +4782,7 @@ fn build_tui_secret_readiness_snapshot(
                     };
                     let (committed_tx, committed_rx) = tokio::sync::oneshot::channel();
                     if completion_tx
-                        .send(tui::TuiCommand::OperatorShellCompleted {
+                        .send(operator_commands::OperatorCommand::OperatorShellCompleted {
                             observation,
                             committed: committed_tx,
                         })
@@ -4820,7 +4814,7 @@ fn build_tui_secret_readiness_snapshot(
                 });
             }
 
-            tui::TuiCommand::OperatorShellCompleted {
+            operator_commands::OperatorCommand::OperatorShellCompleted {
                 observation,
                 committed,
             } => {
@@ -4839,7 +4833,8 @@ fn build_tui_secret_readiness_snapshot(
                 let _ = committed.send(());
             }
 
-            tui::TuiCommand::ShellHandoff { keyboard_enhancement } => {
+            #[cfg(feature = "tui")]
+            operator_commands::OperatorCommand::ShellHandoff { keyboard_enhancement } => {
                 if runtime.is_busy() {
                     let _ = events_tx.send(AgentEvent::SystemNotification {
                         message: "Shell handoff refused while a turn is active. Cancel first.".into(),
@@ -4897,23 +4892,220 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            command if model_commands::is_model_command(&command) => {
-                model_commands::handle(
-                    command,
-                    model_commands::ModelCommandContext {
-                        agent: &mut agent,
-                        shared_settings: &shared_settings,
-                        bridge: &bridge,
-                        route_controller: &route_controller,
-                        inference_runtime: &runtime_state.inference_runtime,
-                        bridge_model: &runtime_resources.bridge_model,
-                        events_tx: &events_tx,
-                    },
-                )
-                .await;
+            operator_commands::OperatorCommand::ModelView { respond_to } => {
+                let response = control_runtime::model_view_response(&shared_settings).await;
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
             }
 
-            tui::TuiCommand::Compact => {
+            operator_commands::OperatorCommand::ModelList { respond_to } => {
+                let response = control_runtime::model_list_response().await;
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::SetModel { model, respond_to } => {
+                let response = control_runtime::set_model_response(
+                    &mut agent,
+                    &shared_settings,
+                    &bridge,
+                    Some(route_controller.clone()),
+                    &model,
+                )
+                .await;
+                if let Some(output) = response.output.clone() {
+                    for line in output.split('\n') {
+                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                            message: line.to_string(),
+                        });
+                    }
+                }
+                if response.accepted {
+                    if let Ok(mut bridge_model) = runtime_resources.bridge_model.lock() {
+                        *bridge_model = None;
+                    }
+                    let snapshot = route_controller.snapshot().await;
+                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
+                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
+                    }
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::SetModelGrade { grade, respond_to } => {
+                let response = if let Some(parsed) = crate::route::ModelGrade::parse(&grade) {
+                    let snapshot = route_controller
+                        .set_model_intent(crate::route::ModelIntent::with_grade(parsed))
+                        .await;
+                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
+                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
+                    }
+                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let active = resolved
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.serving_model())
+                        .or_else(|| snapshot.serving_model())
+                        .unwrap_or("disconnected");
+                    omegon_traits::SlashCommandResponse {
+                        accepted: true,
+                        output: Some(format!(
+                            "Model intent updated — {}. Active route: {}",
+                            snapshot.intent.summary(),
+                            active
+                        )),
+                    }
+                } else {
+                    omegon_traits::SlashCommandResponse {
+                        accepted: false,
+                        output: Some(format!(
+                            "Invalid model grade: {grade}. Use F, D, C, B, A, or S. Use /model provider local for local endpoints."
+                        )),
+                    }
+                };
+                if let Some(output) = response.output.clone() {
+                    for line in output.split('\n') {
+                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                            message: line.to_string(),
+                        });
+                    }
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::SetModelProvider { provider, respond_to } => {
+                let response = if let Some(selection) = crate::route::ProviderSelection::parse(&provider) {
+                    let snapshot = route_controller.set_provider_selection(selection).await;
+                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
+                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
+                    }
+                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let active = resolved
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.serving_model())
+                        .or_else(|| snapshot.serving_model())
+                        .unwrap_or("disconnected");
+                    omegon_traits::SlashCommandResponse {
+                        accepted: true,
+                        output: Some(format!(
+                            "Model provider intent updated — {}. Active route: {}",
+                            snapshot.intent.summary(),
+                            active
+                        )),
+                    }
+                } else {
+                    omegon_traits::SlashCommandResponse {
+                        accepted: false,
+                        output: Some("Invalid model provider selector. Use auto, local, upstream, or an endpoint id.".into()),
+                    }
+                };
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::SetModelPolicy { policy, respond_to } => {
+                let response = if let Some(parsed) = crate::route::GradePolicy::parse(&policy) {
+                    let snapshot = route_controller.set_grade_policy(parsed).await;
+                    if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
+                        let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
+                    }
+                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let active = resolved
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.serving_model())
+                        .or_else(|| snapshot.serving_model())
+                        .unwrap_or("disconnected");
+                    omegon_traits::SlashCommandResponse {
+                        accepted: true,
+                        output: Some(format!(
+                            "Model policy intent updated — {}. Active route: {}",
+                            snapshot.intent.summary(),
+                            active
+                        )),
+                    }
+                } else {
+                    omegon_traits::SlashCommandResponse {
+                        accepted: false,
+                        output: Some("Invalid model policy. Use exact, minimum, or nearest.".into()),
+                    }
+                };
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::ModelUnpin { respond_to } => {
+                let snapshot = route_controller.clear_exact_model_override().await;
+                if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
+                }
+                let output = format!(
+                    "Model exact override cleared — {}. Active route unchanged: {}",
+                    snapshot.intent.summary(),
+                    snapshot.serving_model().unwrap_or("disconnected")
+                );
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: output.clone(),
+                });
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: true,
+                        output: Some(output),
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::SetThinking { level, respond_to } => {
+                let response =
+                    control_runtime::set_thinking_response(&shared_settings, &agent.cwd, level).await;
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::Compact => {
                 tracing::info!("manual compaction requested");
 
                 let bridge_guard = bridge.read().await;
@@ -5013,7 +5205,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ContextStatus { respond_to } => {
+            operator_commands::OperatorCommand::ContextStatus { respond_to } => {
                 let response = control_runtime::context_status_response(&runtime_state, &shared_settings).await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -5026,7 +5218,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ContextCompact { respond_to } => {
+            operator_commands::OperatorCommand::ContextCompact { respond_to } => {
                 let mut ctx = control_runtime::ControlContext {
                     runtime_state: &mut runtime_state,
                     agent: &mut agent,
@@ -5043,7 +5235,7 @@ fn build_tui_secret_readiness_snapshot(
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
-                    control_runtime::ControlRequest::ContextCompact,
+                    operator_commands::InterfaceControlRequest::ContextCompact,
                 )
                 .await;
                 if let Some(output) = response.output.clone() {
@@ -5057,7 +5249,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::ContextClear { respond_to } => {
+            operator_commands::OperatorCommand::ContextClear { respond_to } => {
                 let mut ctx = control_runtime::ControlContext {
                     runtime_state: &mut runtime_state,
                     agent: &mut agent,
@@ -5074,7 +5266,7 @@ fn build_tui_secret_readiness_snapshot(
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
-                    control_runtime::ControlRequest::ContextClear,
+                    operator_commands::InterfaceControlRequest::ContextClear,
                 )
                 .await;
                 if let Some(output) = response.output.clone() {
@@ -5088,24 +5280,42 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            command if session_commands::is_session_command(&command) => {
-                session_commands::handle(
-                    command,
-                    session_commands::SessionCommandContext {
-                        runtime_state: &mut runtime_state,
-                        agent: &mut agent,
-                        cli: CliRuntimeView {
-                            no_session: cli.no_session,
-                            model: &cli.model,
-                            dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
-                        },
-                        events_tx: &events_tx,
-                    },
-                )
-                .await;
+            operator_commands::OperatorCommand::ListSessions { respond_to } => {
+                let text = list_sessions_message(&agent.cwd);
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: text.clone(),
+                });
+                let _ = events_tx.send(AgentEvent::AgentEnd);
+                tracing::info!("{text}");
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: true,
+                        output: Some(text),
+                    });
+                }
             }
 
-            tui::TuiCommand::AuthStatus { respond_to } => {
+            operator_commands::OperatorCommand::NewSession { respond_to } => {
+                let response = control_runtime::new_session_response(
+                    &mut runtime_state,
+                    &mut agent,
+                    &CliRuntimeView {
+                        no_session: cli.no_session,
+                        model: &cli.model,
+                        dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+                    },
+                    &events_tx,
+                )
+                .await;
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::AuthStatus { respond_to } => {
                 let response = control_runtime::auth_status_response().await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -5118,7 +5328,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthLogin { provider, respond_to } => {
+            operator_commands::OperatorCommand::AuthLogin { provider, respond_to } => {
                 let response = control_runtime::auth_login_response(
                     &shared_settings,
                     &bridge,
@@ -5141,7 +5351,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthLogout { provider, respond_to } => {
+            operator_commands::OperatorCommand::AuthLogout { provider, respond_to } => {
                 let response = control_runtime::auth_logout_response(&provider).await;
                 if response.accepted {
                     // Evict provider credentials from the secrets session cache
@@ -5187,7 +5397,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::AuthUnlock { respond_to } => {
+            operator_commands::OperatorCommand::AuthUnlock { respond_to } => {
                 let response = control_runtime::auth_unlock_response().await;
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
@@ -5200,7 +5410,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::StartWebDashboard => {
+            operator_commands::OperatorCommand::StartWebDashboard => {
                 let web_state = web::WebState::with_auth_state_and_secrets(
                     agent.dashboard_handles.clone(),
                     events_tx.clone(),
@@ -5214,7 +5424,7 @@ fn build_tui_secret_readiness_snapshot(
                                 events_tx.send(AgentEvent::WebDashboardStarted { startup_json });
                         }
                         let url = format!("http://{}/?token={}", startup.addr, startup.token);
-                        tui::open_browser(&url);
+                        native_io::open_browser(&url);
                         let _ = events_tx.send(AgentEvent::SystemNotification {
                             message: format!(
                                 "Dashboard started at {url} (auth: {} via {})",
@@ -5228,7 +5438,7 @@ fn build_tui_secret_readiness_snapshot(
                             while let Some(web_cmd) = rx.recv().await {
                                 let tui_cmd = match web_cmd {
                                     web::WebCommand::UserPrompt { text, image_paths } => {
-                                        tui::TuiCommand::SubmitPrompt(crate::tui::PromptSubmission {
+                                        operator_commands::OperatorCommand::SubmitPrompt(crate::operator_commands::PromptSubmission {
                                             text,
                                             image_paths: image_paths
                                                 .into_iter()
@@ -5236,8 +5446,8 @@ fn build_tui_secret_readiness_snapshot(
                                                 .collect(),
                                             submitted_by: "web-dashboard".to_string(),
                                             via: "websocket",
-                                            queue_mode: crate::tui::PromptQueueMode::InterruptAfterTurn,
-                                            metadata: crate::tui::PromptMetadata::default(),
+                                            queue_mode: crate::operator_commands::PromptQueueMode::InterruptAfterTurn,
+                                            metadata: crate::operator_commands::PromptMetadata::default(),
                                         })
                                     }
                                     web::WebCommand::SlashCommand {
@@ -5245,38 +5455,38 @@ fn build_tui_secret_readiness_snapshot(
                                         args,
                                         respond_to,
                                     } => {
-                                        tui::TuiCommand::RunSlashCommand {
+                                        operator_commands::OperatorCommand::RunSlashCommand {
                                             name,
                                             args,
                                             respond_to,
                                         }
                                     }
-                                    web::WebCommand::Cancel => tui::TuiCommand::CancelActiveTurn {
+                                    web::WebCommand::Cancel => operator_commands::OperatorCommand::CancelActiveTurn {
                                         submitted_by: "web-dashboard".to_string(),
                                         via: "websocket",
                                     },
                                     web::WebCommand::ExecuteControl { request, respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ExecuteControl { request, respond_to }).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl { request, respond_to }).await.is_err() {
                                             break;
                                         }
                                         continue;
                                     }
                                     web::WebCommand::ManagedDelegateControl { method, payload, respond_to } => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::ManagedDelegateControl { method, payload, respond_to }).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ManagedDelegateControl { method, payload, respond_to }).await.is_err() {
                                             break;
                                         }
                                         continue;
                                     }
                                     web::WebCommand::Shutdown => {
-                                        if cmd_tx_clone.send(tui::TuiCommand::Quit).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::Quit).await.is_err() {
                                             break;
                                         }
                                         continue;
                                     }
                                     web::WebCommand::CancelCleaveChild { label, respond_to } => {
                                         let (control_tx, control_rx) = tokio::sync::oneshot::channel();
-                                        if cmd_tx_clone.send(tui::TuiCommand::ExecuteControl {
-                                            request: crate::control_runtime::ControlRequest::CleaveCancelChild {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl {
+                                            request: crate::operator_commands::InterfaceControlRequest::CleaveCancelChild {
                                                 label,
                                             },
                                             respond_to: Some(control_tx),
@@ -5318,20 +5528,20 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::RunSlashCommand {
+            operator_commands::OperatorCommand::RunSlashCommand {
                 name,
                 args,
                 respond_to,
             } => {
-                let lifecycle_command = crate::tui::canonical_slash_command(&name, &args);
+                let lifecycle_command = crate::runtime_commands::canonical_slash_command(&name, &args);
                 if matches!(
                     lifecycle_command,
-                    Some(crate::tui::CanonicalSlashCommand::RuntimeProcessRestart)
+                    Some(crate::runtime_commands::CanonicalSlashCommand::RuntimeProcessRestart)
                 ) {
                     let binary = std::env::current_exe()
                         .and_then(|path| path.canonicalize())
                         .unwrap_or_else(|_| std::path::PathBuf::from("omegon"));
-                    deferred_commands.push_back(tui::TuiCommand::RestartProcess {
+                    deferred_commands.push_back(operator_commands::OperatorCommand::RestartProcess {
                         binary,
                         args: std::env::args().skip(1).collect(),
                     });
@@ -5348,8 +5558,8 @@ fn build_tui_secret_readiness_snapshot(
                 }
                 if matches!(
                     lifecycle_command,
-                    Some(crate::tui::CanonicalSlashCommand::RuntimeSubstrateRefresh)
-                        | Some(crate::tui::CanonicalSlashCommand::SkillsReload)
+                    Some(crate::runtime_commands::CanonicalSlashCommand::RuntimeSubstrateRefresh)
+                        | Some(crate::runtime_commands::CanonicalSlashCommand::SkillsReload)
                 ) {
                     let response = control_runtime::runtime_substrate_refresh_response(
                         &mut runtime_state,
@@ -5378,7 +5588,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::BusCommand { name, args } => {
+            operator_commands::OperatorCommand::BusCommand { name, args } => {
                 if is_capacity_slash_command(&name) {
                     let body =
                         capacity_report(&runtime_state, &shared_settings, &name, &args).await;
@@ -5758,44 +5968,217 @@ fn build_tui_secret_readiness_snapshot(
                 }
             }
 
-            tui::TuiCommand::SubmitPrompt(submission) => {
-                let (returned_state, disposition) = interactive_coordinator::execute_submission(
-                    RuntimePromptSubmission::from_tui(submission),
-                    runtime_state,
-                    &mut runtime,
-                    &runtime_resources,
-                    shared_settings.clone(),
-                    shared_cancel.clone(),
-                    &pending_compact,
-                    bridge.clone(),
-                    &events_tx,
-                    &agent.dashboard_handles,
-                    &mut command_rx,
-                    &mut deferred_commands,
-                )
-                .await?;
-                runtime_state = returned_state;
-                match disposition {
-                    interactive_coordinator::TurnChainDisposition::Continue => {}
-                    interactive_coordinator::TurnChainDisposition::DispatchDeferred(command) => {
-                        deferred_commands.push_front(command);
+            operator_commands::OperatorCommand::SubmitPrompt(prompt) => {
+                let actor = RuntimeActor {
+                    kind: runtime_actor_kind_from_via(prompt.via),
+                    label: prompt.submitted_by.clone(),
+                };
+                let via = control_surface_from_via(prompt.via);
+
+                let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
+                        crate::operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
+                        crate::operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
+                        crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
+                    }));
+
+                if runtime.is_busy() {
+                    tracing::info!(
+                        prompt_id,
+                        queue_depth = runtime.queue_depth(),
+                        active_turn_id = runtime.active_turn.as_ref().map(|active| active.runtime_turn_id),
+                        submitted_by = prompt.submitted_by,
+                        via = prompt.via,
+                        "prompt queued behind active interactive turn"
+                    );
+                    emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
+                    continue;
+                }
+
+                while let Some(active) = runtime.maybe_start_next_turn() {
+                    emit_runtime_queue_snapshot(&runtime, &events_tx);
+                    let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
+                    lifecycle.transition("promoted", runtime.queue_depth(), &events_tx);
+                    let _ = events_tx.send(AgentEvent::RuntimePromptStarted {
+                        runtime_turn_id: active.runtime_turn_id,
+                        text: active.prompt.text.clone(),
+                        image_paths: active.prompt.image_paths.clone(),
+                    });
+                    stop_voice_session_if_requested(&active.prompt, &runtime_state.bus, &events_tx)
+                        .await;
+                    mark_interactive_session_busy(&agent.dashboard_handles, true);
+                    lifecycle.transition("worker_spawned", runtime.queue_depth(), &events_tx);
+
+                    let mut quit_after_turn = false;
+                    let state_for_turn = runtime_state;
+                    let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
+                        state_for_turn,
+                        runtime_resources.clone(),
+                        bridge.clone(),
+                        shared_settings.clone(),
+                        shared_cancel.clone(),
+                        pending_compact.clone(),
+                        events_tx.clone(),
+                        active,
+                        lifecycle.clone(),
+                    ));
+                    let active_wait_started_at = std::time::Instant::now();
+                    let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+                    let mut slow_turn_notifications: u32 = 0;
+                    let mut notified_blocked_prompt_queue = false;
+
+                    loop {
+                        tokio::select! {
+                            turn_result = &mut turn_task => {
+                                runtime_state = match turn_result {
+                                    Ok(runtime_state) => {
+                                        lifecycle.transition("worker_returned", runtime.queue_depth(), &events_tx);
+                                        runtime_state
+                                    }
+                                    Err(join_err) => {
+                                        let message = format_interactive_turn_task_failure(&join_err);
+                                        tracing::error!("interactive turn task failed: {join_err}");
+                                        mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                                            message: message.clone(),
+                                        });
+                                        let _ = events_tx.send(AgentEvent::AgentEnd);
+                                        return Err(anyhow::anyhow!(message));
+                                    }
+                                };
+                                break;
+                            }
+                            _ = &mut slow_turn_probe => {
+                                slow_turn_notifications = slow_turn_notifications.saturating_add(1);
+                                let elapsed = active_wait_started_at.elapsed();
+                                tracing::warn!(
+                                    elapsed_secs = elapsed.as_secs(),
+                                    queued_prompts = runtime.queue_depth(),
+                                    lifecycle = %lifecycle.snapshot(runtime.queue_depth()),
+                                    slow_turn_notifications,
+                                    "interactive active turn worker is still running after visible turn start; queued prompts remain blocked until worker returns"
+                                );
+                                if runtime.queue_depth() > 0 && !notified_blocked_prompt_queue {
+                                    notified_blocked_prompt_queue = true;
+                                    let _ = events_tx.send(AgentEvent::RuntimeTurnLifecycleUpdated {
+                                        snapshot_json: lifecycle.snapshot(runtime.queue_depth()),
+                                    });
+                                    let _ = events_tx.send(AgentEvent::SystemNotification {
+                                        message: format!(
+                                            "Prompt queued behind active turn after {}s. Latest lifecycle state is recorded in the agent log; queued prompts will start when this turn's worker returns.",
+                                            elapsed.as_secs()
+                                        ),
+                                    });
+                                }
+                                slow_turn_probe.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
+                            }
+                            maybe_cmd = command_rx.recv() => {
+                                let Some(cmd) = maybe_cmd else {
+                                    quit_after_turn = true;
+                                    if let Ok(guard) = shared_cancel.lock()
+                                        && let Some(ref cancel) = *guard
+                                    {
+                                        cancel.cancel();
+                                    }
+                                    continue;
+                                };
+
+                                let cmd = match cmd {
+                                    operator_commands::OperatorCommand::VoicePrompt { text, metadata } => operator_commands::OperatorCommand::SubmitPrompt(operator_commands::PromptSubmission {
+                                        text: format!("🎙 {}", text.trim()),
+                                        image_paths: Vec::new(),
+                                        submitted_by: "voice".to_string(),
+                                        via: "voice",
+                                        queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                        metadata: operator_commands::PromptMetadata { voice: Some(metadata) },
+                                    }),
+                                    other => other,
+                                };
+
+                                match cmd {
+                                    operator_commands::OperatorCommand::SubmitPrompt(prompt) => {
+                                        let actor = RuntimeActor {
+                                            kind: runtime_actor_kind_from_via(prompt.via),
+                                            label: prompt.submitted_by.clone(),
+                                        };
+                                        let via = control_surface_from_via(prompt.via);
+                                        let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
+                                            crate::operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
+                                            crate::operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
+                                            crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
+                                        }));
+                                        emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
+                                        if let Some(queued_prompt) = runtime.queue.iter().find(|queued| queued.id == prompt_id)
+                                            && queued_prompt.requests_voice_close()
+                                        {
+                                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                                message: "Voice requested shutdown after this prompt; it will be stopped when the active turn completes.".to_string(),
+                                            });
+                                        }
+                                    }
+                                    operator_commands::OperatorCommand::CancelActiveTurn { submitted_by, via } => {
+                                        handle_runtime_cancel_command(
+                                            &mut runtime,
+                                            &shared_cancel,
+                                            &events_tx,
+                                            submitted_by,
+                                            via,
+                                        );
+                                    }
+                                    operator_commands::OperatorCommand::Quit => {
+                                        quit_after_turn = true;
+                                        if let Ok(guard) = shared_cancel.lock()
+                                            && let Some(ref cancel) = *guard
+                                        {
+                                            cancel.cancel();
+                                        }
+                                    }
+                                    operator_commands::OperatorCommand::InstallUpdate { info, args } => {
+                                        deferred_commands.push_back(
+                                            operator_commands::OperatorCommand::InstallUpdate { info, args },
+                                        );
+                                        quit_after_turn = true;
+                                        if let Ok(guard) = shared_cancel.lock()
+                                            && let Some(ref cancel) = *guard
+                                        {
+                                            cancel.cancel();
+                                        }
+                                    }
+                                    operator_commands::OperatorCommand::RestartProcess { binary, args } => {
+                                        restart_request = Some((binary, args));
+                                        quit_after_turn = true;
+                                        if let Ok(guard) = shared_cancel.lock()
+                                            && let Some(ref cancel) = *guard
+                                        {
+                                            cancel.cancel();
+                                        }
+                                    }
+                                    other => deferred_commands.push_back(other),
+                                }
+                            }
+                        }
                     }
-                    interactive_coordinator::TurnChainDisposition::Exit => break 'interactive,
-                    interactive_coordinator::TurnChainDisposition::ExitForRestart { binary, args } => {
-                        restart_request = Some((binary, args));
+
+                    lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
+                    runtime.complete_active_turn();
+                    lifecycle.transition("supervisor_completed", runtime.queue_depth(), &events_tx);
+                    emit_runtime_queue_snapshot(&runtime, &events_tx);
+                    mark_interactive_session_busy(&agent.dashboard_handles, runtime.is_busy());
+
+                    if quit_after_turn {
                         break 'interactive;
                     }
                 }
             }
-            tui::TuiCommand::CancelActiveTurn { submitted_by, via } => {
-                runtime.handle_cancel_command(&shared_cancel, &events_tx, submitted_by, via);
+            operator_commands::OperatorCommand::CancelActiveTurn { submitted_by, via } => {
+                handle_runtime_cancel_command(
+                    &mut runtime,
+                    &shared_cancel,
+                    &events_tx,
+                    submitted_by,
+                    via,
+                );
             }
-            tui::TuiCommand::VoicePrompt { text, metadata } => {
-                deferred_commands.push_front(tui::TuiCommand::SubmitPrompt(
-                    RuntimePromptSubmission::from_voice(text, metadata).into_tui(),
-                ));
-            }
-            _ => unreachable!("model commands were handled before idle dispatch"),
+            operator_commands::OperatorCommand::VoicePrompt { .. } => unreachable!("VoicePrompt is normalized above"),
         }
     }
 
@@ -5879,75 +6262,7 @@ fn build_tui_secret_readiness_snapshot(
         .await
 }
 
-fn resolve_memory_store_path(cwd: &Path, override_path: Option<&Path>) -> PathBuf {
-    if let Some(path) = override_path {
-        return if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            cwd.join(path)
-        };
-    }
-    let primary = cwd.join("ai/memory/facts.db");
-    if primary.exists() {
-        primary
-    } else {
-        cwd.join(".omegon/memory/facts.db")
-    }
-}
-
-fn run_memory_command(cli: &Cli, action: &MemoryAction) -> anyhow::Result<()> {
-    match action {
-        MemoryAction::Migrate {
-            apply,
-            status,
-            rollback,
-            path,
-            backup,
-            ..
-        } => {
-            let cwd = std::fs::canonicalize(&cli.cwd)?;
-            let store = resolve_memory_store_path(&cwd, path.as_deref());
-            if *status {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&omegon_memory::sqlite::SqliteBackend::status(
-                        &store
-                    )?)?
-                );
-            } else if *rollback {
-                let backup = backup.clone().unwrap_or_else(|| {
-                    store.with_extension(format!(
-                        "v{}.backup.db",
-                        omegon_memory::sqlite::MEMORY_SCHEMA_VERSION - 1
-                    ))
-                });
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &omegon_memory::sqlite::SqliteBackend::rollback_migration(&store, &backup)?
-                    )?
-                );
-            } else {
-                let plan = omegon_memory::sqlite::SqliteBackend::plan_migration(&store)?;
-                println!("{}", serde_json::to_string_pretty(&plan)?);
-                if *apply {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(
-                            &omegon_memory::sqlite::SqliteBackend::apply_migration(&plan)?
-                        )?
-                    );
-                }
-            }
-            Ok(())
-        }
-    }
-}
-
-pub(crate) fn mark_interactive_session_busy(
-    handles: &crate::runtime_state::RuntimeStateHandles,
-    busy: bool,
-) {
+fn mark_interactive_session_busy(handles: &crate::runtime_state::RuntimeStateHandles, busy: bool) {
     handles.session().set_busy(busy);
 }
 
@@ -6119,65 +6434,9 @@ fn provider_status_hint(provider: &str) -> &'static str {
     }
 }
 
-use interactive_session::{InteractiveAgentHost, InteractiveAgentState};
-use interactive_turn_execution::{InteractiveRuntimeResources, InteractiveTurnExecution};
-#[cfg(test)]
-use runtime_prompt::{ControlSurface, QueueMode, RuntimeActor};
-use runtime_prompt::{PromptEnvelope, RuntimePromptSubmission};
-use runtime_supervisor::{InteractiveRuntimeSupervisor, RuntimePromptSubmissionOutcome};
-use runtime_turn::RuntimeTurnLifecycle;
-
-pub(crate) struct CliRuntimeView<'a> {
-    pub(crate) no_session: bool,
-    pub(crate) model: &'a str,
-    pub(crate) dangerously_bypass_permissions: bool,
-}
-
-fn interactive_resume_mode(cli: &Cli) -> Option<Option<&str>> {
-    if cli.fresh {
-        None
-    } else {
-        cli.resume.as_ref().map(|r| r.as_deref())
-    }
-}
-
-async fn stop_voice_session_if_requested(
-    prompt: &PromptEnvelope,
-    bus: &crate::bus::EventBus,
-    events_tx: &tokio::sync::broadcast::Sender<AgentEvent>,
-) {
-    if !prompt.requests_voice_close() {
-        return;
-    }
-
-    if !bus.has_tool("voice_session_stop") {
-        let _ = events_tx.send(AgentEvent::SystemNotification {
-            message: "Voice requested shutdown after this prompt, but no voice_session_stop tool is available.".to_string(),
-        });
-        return;
-    }
-
-    match bus
-        .execute_tool(
-            "voice_session_stop",
-            "voice-over-and-out-stop",
-            serde_json::json!({}),
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await
-    {
-        Ok(_) => {
-            let _ = events_tx.send(AgentEvent::SystemNotification {
-                message: "Voice session stop requested after over and out.".to_string(),
-            });
-        }
-        Err(err) => {
-            let _ = events_tx.send(AgentEvent::SystemNotification {
-                message: format!("Voice requested shutdown, but voice_session_stop failed: {err}"),
-            });
-        }
-    }
-}
+// Keep coordinator items in the binary composition module for now; the source is
+// isolated so its dependency boundary can be tightened incrementally.
+include!("interactive_coordinator.rs");
 
 async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
     eprintln!("omegon {} — smoke test mode", env!("CARGO_PKG_VERSION"));
@@ -7106,7 +7365,7 @@ async fn run_discovery_probe_command() -> anyhow::Result<()> {
             println!("  - {diagnostic}");
         }
     }
-    let catalog = tui::model_catalog::ModelCatalog::discover();
+    let catalog = model_catalog::ModelCatalog::discover();
     if !catalog.freshness.is_empty() {
         println!("Catalog freshness:");
         for (provider, state) in &catalog.freshness {
@@ -7294,7 +7553,7 @@ async fn execute_remote_slash_command(
     name: &str,
     args: &str,
 ) -> omegon_traits::SlashCommandResponse {
-    use crate::tui::canonical_slash_command;
+    use crate::runtime_commands::canonical_slash_command;
     use omegon_traits::SlashCommandResponse;
 
     if is_capacity_slash_command(name) {
@@ -7340,22 +7599,22 @@ async fn execute_remote_slash_command(
 
     if matches!(
         command,
-        crate::tui::CanonicalSlashCommand::PlanView
-            | crate::tui::CanonicalSlashCommand::PlanSet(_)
-            | crate::tui::CanonicalSlashCommand::PlanList
-            | crate::tui::CanonicalSlashCommand::PlanShow(_)
-            | crate::tui::CanonicalSlashCommand::PlanSwitch(_)
-            | crate::tui::CanonicalSlashCommand::PlanResume(_)
-            | crate::tui::CanonicalSlashCommand::PlanBackground(_)
-            | crate::tui::CanonicalSlashCommand::PlanDetach(_)
-            | crate::tui::CanonicalSlashCommand::PlanPromote(_)
-            | crate::tui::CanonicalSlashCommand::PlanBind(_)
-            | crate::tui::CanonicalSlashCommand::PlanLedger(_)
-            | crate::tui::CanonicalSlashCommand::PlanApprove
-            | crate::tui::CanonicalSlashCommand::PlanExecute
-            | crate::tui::CanonicalSlashCommand::PlanAdvance
-            | crate::tui::CanonicalSlashCommand::PlanSkip
-            | crate::tui::CanonicalSlashCommand::PlanClear
+        crate::runtime_commands::CanonicalSlashCommand::PlanView
+            | crate::runtime_commands::CanonicalSlashCommand::PlanSet(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanList
+            | crate::runtime_commands::CanonicalSlashCommand::PlanShow(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanSwitch(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanResume(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanBackground(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanDetach(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanPromote(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanBind(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanLedger(_)
+            | crate::runtime_commands::CanonicalSlashCommand::PlanApprove
+            | crate::runtime_commands::CanonicalSlashCommand::PlanExecute
+            | crate::runtime_commands::CanonicalSlashCommand::PlanAdvance
+            | crate::runtime_commands::CanonicalSlashCommand::PlanSkip
+            | crate::runtime_commands::CanonicalSlashCommand::PlanClear
     ) {
         return execute_plan_slash_command(runtime_state, command);
     }
@@ -7381,7 +7640,7 @@ enum RemoteBuiltinPolicy {
 
 fn reject_remote_builtin_command(
     name: &str,
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
     cli: &Cli,
 ) -> Option<omegon_traits::SlashCommandResponse> {
     use omegon_traits::SlashCommandResponse;
@@ -7406,7 +7665,7 @@ fn reject_remote_builtin_command(
 
 fn remote_builtin_policy(
     name: &str,
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> RemoteBuiltinPolicy {
     let registry_name = remote_registry_name_for_command(name, command);
     let Some(definition) = crate::command_registry::builtin_command_definitions()
@@ -7418,15 +7677,19 @@ fn remote_builtin_policy(
 
     if registry_name == "skills" {
         return match command {
-            crate::tui::CanonicalSlashCommand::SkillsView
-            | crate::tui::CanonicalSlashCommand::SkillsHelp
-            | crate::tui::CanonicalSlashCommand::SkillGet(_) => RemoteBuiltinPolicy::Allow,
-            crate::tui::CanonicalSlashCommand::SkillsInstall(_)
-            | crate::tui::CanonicalSlashCommand::SkillDelete(_) => {
+            crate::runtime_commands::CanonicalSlashCommand::SkillsView
+            | crate::runtime_commands::CanonicalSlashCommand::SkillsHelp
+            | crate::runtime_commands::CanonicalSlashCommand::SkillGet(_) => {
+                RemoteBuiltinPolicy::Allow
+            }
+            crate::runtime_commands::CanonicalSlashCommand::SkillsInstall(_)
+            | crate::runtime_commands::CanonicalSlashCommand::SkillDelete(_) => {
                 RemoteBuiltinPolicy::RequiresBypass
             }
-            crate::tui::CanonicalSlashCommand::SkillCreate(_)
-            | crate::tui::CanonicalSlashCommand::SkillImport { .. } => RemoteBuiltinPolicy::Deny,
+            crate::runtime_commands::CanonicalSlashCommand::SkillCreate(_)
+            | crate::runtime_commands::CanonicalSlashCommand::SkillImport { .. } => {
+                RemoteBuiltinPolicy::Deny
+            }
             _ => RemoteBuiltinPolicy::Deny,
         };
     }
@@ -7436,11 +7699,13 @@ fn remote_builtin_policy(
     }
 
     match command {
-        crate::tui::CanonicalSlashCommand::AuthView
-        | crate::tui::CanonicalSlashCommand::AuthStatus => RemoteBuiltinPolicy::Allow,
-        crate::tui::CanonicalSlashCommand::AuthUnlock
-        | crate::tui::CanonicalSlashCommand::AuthLogin(_) => RemoteBuiltinPolicy::RequiresBypass,
-        crate::tui::CanonicalSlashCommand::AuthLogout(_) => RemoteBuiltinPolicy::Allow,
+        crate::runtime_commands::CanonicalSlashCommand::AuthView
+        | crate::runtime_commands::CanonicalSlashCommand::AuthStatus => RemoteBuiltinPolicy::Allow,
+        crate::runtime_commands::CanonicalSlashCommand::AuthUnlock
+        | crate::runtime_commands::CanonicalSlashCommand::AuthLogin(_) => {
+            RemoteBuiltinPolicy::RequiresBypass
+        }
+        crate::runtime_commands::CanonicalSlashCommand::AuthLogout(_) => RemoteBuiltinPolicy::Allow,
         _ if definition.safety.requires_confirmation => RemoteBuiltinPolicy::RequiresBypass,
         _ => RemoteBuiltinPolicy::Allow,
     }
@@ -7448,45 +7713,45 @@ fn remote_builtin_policy(
 
 fn remote_registry_name_for_command<'a>(
     name: &'a str,
-    command: &crate::tui::CanonicalSlashCommand,
+    command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> &'a str {
     match command {
-        crate::tui::CanonicalSlashCommand::AutomationView
-        | crate::tui::CanonicalSlashCommand::AutomationSet(_) => "automation",
-        crate::tui::CanonicalSlashCommand::AuthView
-        | crate::tui::CanonicalSlashCommand::AuthStatus
-        | crate::tui::CanonicalSlashCommand::AuthUnlock
-        | crate::tui::CanonicalSlashCommand::AuthLogin(_)
-        | crate::tui::CanonicalSlashCommand::AuthLogout(_) => "auth",
-        crate::tui::CanonicalSlashCommand::SkillsView
-        | crate::tui::CanonicalSlashCommand::SkillsHelp
-        | crate::tui::CanonicalSlashCommand::SkillsReload
-        | crate::tui::CanonicalSlashCommand::SkillsInstall(_)
-        | crate::tui::CanonicalSlashCommand::SkillCreate(_)
-        | crate::tui::CanonicalSlashCommand::SkillImport { .. }
-        | crate::tui::CanonicalSlashCommand::SkillGet(_)
-        | crate::tui::CanonicalSlashCommand::SkillDelete(_) => "skills",
-        crate::tui::CanonicalSlashCommand::NoteAdd { .. }
-        | crate::tui::CanonicalSlashCommand::NotesView
-        | crate::tui::CanonicalSlashCommand::NotesClear
-        | crate::tui::CanonicalSlashCommand::CheckinView => "notes",
-        crate::tui::CanonicalSlashCommand::WorkspaceStatusView
-        | crate::tui::CanonicalSlashCommand::WorkspaceListView
-        | crate::tui::CanonicalSlashCommand::WorkspaceNew(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceDestroy(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceAdopt
-        | crate::tui::CanonicalSlashCommand::WorkspaceRelease
-        | crate::tui::CanonicalSlashCommand::WorkspaceArchive
-        | crate::tui::CanonicalSlashCommand::WorkspacePrune
-        | crate::tui::CanonicalSlashCommand::WorkspaceBindMilestone(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceBindNode(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceBindClear
-        | crate::tui::CanonicalSlashCommand::WorkspaceRoleView
-        | crate::tui::CanonicalSlashCommand::WorkspaceRoleSet(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceRoleClear
-        | crate::tui::CanonicalSlashCommand::WorkspaceKindView
-        | crate::tui::CanonicalSlashCommand::WorkspaceKindSet(_)
-        | crate::tui::CanonicalSlashCommand::WorkspaceKindClear => "status",
+        crate::runtime_commands::CanonicalSlashCommand::AutomationView
+        | crate::runtime_commands::CanonicalSlashCommand::AutomationSet(_) => "automation",
+        crate::runtime_commands::CanonicalSlashCommand::AuthView
+        | crate::runtime_commands::CanonicalSlashCommand::AuthStatus
+        | crate::runtime_commands::CanonicalSlashCommand::AuthUnlock
+        | crate::runtime_commands::CanonicalSlashCommand::AuthLogin(_)
+        | crate::runtime_commands::CanonicalSlashCommand::AuthLogout(_) => "auth",
+        crate::runtime_commands::CanonicalSlashCommand::SkillsView
+        | crate::runtime_commands::CanonicalSlashCommand::SkillsHelp
+        | crate::runtime_commands::CanonicalSlashCommand::SkillsReload
+        | crate::runtime_commands::CanonicalSlashCommand::SkillsInstall(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillCreate(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillImport { .. }
+        | crate::runtime_commands::CanonicalSlashCommand::SkillGet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::SkillDelete(_) => "skills",
+        crate::runtime_commands::CanonicalSlashCommand::NoteAdd { .. }
+        | crate::runtime_commands::CanonicalSlashCommand::NotesView
+        | crate::runtime_commands::CanonicalSlashCommand::NotesClear
+        | crate::runtime_commands::CanonicalSlashCommand::CheckinView => "notes",
+        crate::runtime_commands::CanonicalSlashCommand::WorkspaceStatusView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceListView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceNew(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceDestroy(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceAdopt
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRelease
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceArchive
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspacePrune
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindMilestone(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindNode(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceBindClear
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleSet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceRoleClear
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindView
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindSet(_)
+        | crate::runtime_commands::CanonicalSlashCommand::WorkspaceKindClear => "status",
         _ => name,
     }
 }
@@ -7543,9 +7808,9 @@ fn execute_registered_remote_command(
 
 fn execute_plan_slash_command(
     runtime_state: &mut InteractiveAgentState,
-    command: crate::tui::CanonicalSlashCommand,
+    command: crate::runtime_commands::CanonicalSlashCommand,
 ) -> omegon_traits::SlashCommandResponse {
-    use crate::tui::CanonicalSlashCommand;
+    use crate::runtime_commands::CanonicalSlashCommand;
     use omegon_traits::SlashCommandResponse;
 
     let intent = &mut runtime_state.conversation.intent;
@@ -8912,8 +9177,6 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::conversation::ConversationState;
-    use crate::runtime_prompt::RuntimeActorKind;
-    use crate::runtime_turn::ActiveTurnPhase;
     use clap::CommandFactory;
     use tempfile::tempdir;
 
@@ -9163,6 +9426,12 @@ mod tests {
     }
 
     #[test]
+    fn debug_tui_is_an_explicit_global_diagnostic_switch() {
+        assert!(!Cli::parse_from(["omegon"]).debug_tui);
+        assert!(Cli::parse_from(["omegon", "--debug-tui"]).debug_tui);
+    }
+
+    #[test]
     fn interactive_resume_mode_resumes_most_recent_when_requested() {
         let cli = Cli::parse_from(["omegon", "--resume"]);
         assert_eq!(interactive_resume_mode(&cli), Some(None));
@@ -9207,8 +9476,8 @@ mod tests {
             image_paths: Vec::new(),
             submitted_by: RuntimeActor::tui(),
             via: ControlSurface::Tui,
-            metadata: tui::PromptMetadata {
-                voice: Some(tui::VoicePromptMetadata {
+            metadata: operator_commands::PromptMetadata {
+                voice: Some(operator_commands::VoicePromptMetadata {
                     event_id: "u-close".to_string(),
                     duration_s: None,
                     radio_cue: Some("over_and_out".to_string()),
@@ -9222,8 +9491,8 @@ mod tests {
         assert!(prompt.requests_voice_close());
 
         let malformed_close = PromptEnvelope {
-            metadata: tui::PromptMetadata {
-                voice: Some(tui::VoicePromptMetadata {
+            metadata: operator_commands::PromptMetadata {
+                voice: Some(operator_commands::VoicePromptMetadata {
                     event_id: "u-close".to_string(),
                     duration_s: None,
                     radio_cue: Some("over".to_string()),
@@ -9239,8 +9508,8 @@ mod tests {
     #[test]
     fn interactive_runtime_supervisor_preserves_prompt_metadata() {
         let mut supervisor = InteractiveRuntimeSupervisor::default();
-        let metadata = tui::PromptMetadata {
-            voice: Some(tui::VoicePromptMetadata {
+        let metadata = operator_commands::PromptMetadata {
+            voice: Some(operator_commands::VoicePromptMetadata {
                 event_id: "u-close".to_string(),
                 duration_s: Some(2.1),
                 radio_cue: Some("over_and_out".to_string()),
@@ -9269,7 +9538,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -9277,7 +9546,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -9300,7 +9569,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.maybe_start_next_turn().expect("active turn");
@@ -9328,7 +9597,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.maybe_start_next_turn().expect("active turn");
@@ -9349,7 +9618,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -9357,7 +9626,7 @@ mod tests {
             vec![PathBuf::from("/tmp/paste.png")],
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -9400,47 +9669,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_supervisor_submission_outcomes_distinguish_queue_and_promotion() {
-        let mut supervisor = InteractiveRuntimeSupervisor::default();
-        let first = RuntimePromptSubmission {
-            text: "first".into(),
-            image_paths: vec![],
-            actor: RuntimeActor::tui(),
-            via: ControlSurface::Tui,
-            metadata: tui::PromptMetadata::default(),
-            queue_mode: QueueMode::UntilReady,
-        };
-        let RuntimePromptSubmissionOutcome::Promoted { prompt_id, active } =
-            supervisor.submit(first)
-        else {
-            panic!("idle submission should promote immediately");
-        };
-        assert_eq!(prompt_id, 1);
-        assert_eq!(active.prompt.text, "first");
-
-        let second = RuntimePromptSubmission {
-            text: "second".into(),
-            image_paths: vec![],
-            actor: RuntimeActor::auspex(),
-            via: ControlSurface::Ipc,
-            metadata: tui::PromptMetadata::default(),
-            queue_mode: QueueMode::InterruptAfterTurn,
-        };
-        assert_eq!(
-            supervisor.submit(second),
-            RuntimePromptSubmissionOutcome::Queued {
-                prompt_id: 2,
-                queue_depth: 1,
-            }
-        );
-        assert_eq!(supervisor.queued_prompt(2).unwrap().text, "second");
-        assert_eq!(
-            supervisor.queued_prompt(2).unwrap().queue_mode,
-            QueueMode::InterruptAfterTurn
-        );
-    }
-
-    #[test]
     fn interactive_runtime_supervisor_cancel_then_complete_starts_next_queued_turn() {
         let mut supervisor = InteractiveRuntimeSupervisor::default();
         supervisor.enqueue_prompt(
@@ -9448,7 +9676,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -9456,7 +9684,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -9483,11 +9711,11 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
-        supervisor.emit_queue_notification(&events_tx, prompt_id);
+        emit_runtime_queue_notification(&supervisor, &events_tx, prompt_id);
 
         match events_rx.try_recv().expect("queue snapshot") {
             AgentEvent::RuntimeQueueUpdated { snapshot_json } => {
@@ -9518,7 +9746,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -9526,7 +9754,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor
@@ -9556,7 +9784,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         supervisor.enqueue_prompt(
@@ -9564,7 +9792,7 @@ mod tests {
             Vec::new(),
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
 
@@ -9587,6 +9815,34 @@ mod tests {
         assert_eq!(snapshot["active"]["prompt_id"], 2);
     }
 
+    #[test]
+    fn startup_secret_readiness_inputs_do_not_resolve_declared_recipes() {
+        let dir = tempdir().expect("temp dir");
+        let marker = dir.path().join("recipe-resolved");
+        let secrets = omegon_secrets::SecretsManager::new(dir.path()).expect("secrets manager");
+        secrets
+            .set_recipe(
+                "BRAVE_API_KEY",
+                &format!("cmd:touch {} && printf secret", marker.display()),
+            )
+            .expect("set deferred recipe");
+
+        let inputs = secret_readiness_inputs(&secrets);
+
+        assert!(
+            !marker.exists(),
+            "startup readiness executed a secret recipe"
+        );
+        assert!(inputs.checked_names.is_empty());
+        assert!(
+            inputs
+                .recipe_descriptors
+                .iter()
+                .any(|descriptor| descriptor.name == "BRAVE_API_KEY" && descriptor.kind == "cmd")
+        );
+        assert_eq!(secrets.resolve_cached("BRAVE_API_KEY"), None);
+    }
+
     #[tokio::test]
     async fn split_interactive_agent_moves_runtime_state_and_preserves_host_metadata() {
         let agent = test_agent_setup();
@@ -9596,7 +9852,7 @@ mod tests {
         let expected_message_count = agent.conversation.message_count();
         let expected_tool_count = agent.bus.tool_definitions().len();
 
-        let (host, runtime_state) = interactive_session::split_agent(agent);
+        let (host, runtime_state) = split_interactive_agent(agent);
 
         assert_eq!(host.session_id, expected_session_id);
         assert_eq!(host.cwd, expected_cwd);
@@ -9618,7 +9874,7 @@ mod tests {
     async fn split_interactive_agent_keeps_runtime_state_mutable_after_split() {
         let agent = test_agent_setup();
         let expected_cwd = agent.cwd.clone();
-        let (host, mut runtime_state) = interactive_session::split_agent(agent);
+        let (host, mut runtime_state) = split_interactive_agent(agent);
 
         runtime_state
             .conversation
@@ -9740,29 +9996,38 @@ mod tests {
     #[test]
     fn remote_auth_status_is_allowed_but_nested_auth_side_effects_require_bypass() {
         assert_eq!(
-            remote_builtin_policy("auth", &crate::tui::CanonicalSlashCommand::AuthStatus,),
-            RemoteBuiltinPolicy::Allow
-        );
-        assert_eq!(
-            remote_builtin_policy("auth", &crate::tui::CanonicalSlashCommand::AuthView,),
+            remote_builtin_policy(
+                "auth",
+                &crate::runtime_commands::CanonicalSlashCommand::AuthStatus,
+            ),
             RemoteBuiltinPolicy::Allow
         );
         assert_eq!(
             remote_builtin_policy(
                 "auth",
-                &crate::tui::CanonicalSlashCommand::AuthLogin("anthropic".into()),
+                &crate::runtime_commands::CanonicalSlashCommand::AuthView,
+            ),
+            RemoteBuiltinPolicy::Allow
+        );
+        assert_eq!(
+            remote_builtin_policy(
+                "auth",
+                &crate::runtime_commands::CanonicalSlashCommand::AuthLogin("anthropic".into()),
             ),
             RemoteBuiltinPolicy::RequiresBypass
         );
         assert_eq!(
             remote_builtin_policy(
                 "auth",
-                &crate::tui::CanonicalSlashCommand::AuthLogout("anthropic".into()),
+                &crate::runtime_commands::CanonicalSlashCommand::AuthLogout("anthropic".into()),
             ),
             RemoteBuiltinPolicy::Allow
         );
         assert_eq!(
-            remote_builtin_policy("auth", &crate::tui::CanonicalSlashCommand::AuthUnlock,),
+            remote_builtin_policy(
+                "auth",
+                &crate::runtime_commands::CanonicalSlashCommand::AuthUnlock,
+            ),
             RemoteBuiltinPolicy::RequiresBypass
         );
     }
@@ -9781,7 +10046,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9817,7 +10082,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9854,7 +10119,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9886,7 +10151,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9923,7 +10188,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9960,7 +10225,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -9997,7 +10262,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10034,7 +10299,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10099,7 +10364,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10140,7 +10405,7 @@ mod tests {
         let login_prompt_tx = std::sync::Arc::new(tokio::sync::Mutex::new(None));
         let cli = Cli::try_parse_from(vec!["omegon"]).unwrap();
 
-        let (mut agent, mut runtime_state) = interactive_session::split_agent(agent);
+        let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
         let response = rt.block_on(execute_remote_slash_command(
             &mut runtime_state,
@@ -10249,7 +10514,7 @@ mod tests {
         } else {
             Cli::try_parse_from(vec!["omegon"]).unwrap()
         };
-        let (agent, runtime_state) = interactive_session::split_agent(agent);
+        let (agent, runtime_state) = split_interactive_agent(agent);
         (
             rt,
             agent,
@@ -10457,7 +10722,8 @@ mod tests {
         };
         let pending_compact = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let loop_config = runtime.build_loop_config(&shared_settings, &pending_compact);
+        let loop_config =
+            build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
 
         assert_eq!(loop_config.model, "openai-codex:gpt-5.5");
         assert!(!shared_settings.lock().unwrap().provider_connected);
@@ -10492,7 +10758,8 @@ mod tests {
         };
         let pending_compact = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let loop_config = runtime.build_loop_config(&shared_settings, &pending_compact);
+        let loop_config =
+            build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
 
         assert_eq!(loop_config.model, "openai-codex:gpt-5.5");
         assert_eq!(
@@ -10524,7 +10791,7 @@ mod tests {
 
         let response = execute_plan_slash_command(
             &mut runtime_state,
-            crate::tui::CanonicalSlashCommand::PlanView,
+            crate::runtime_commands::CanonicalSlashCommand::PlanView,
         );
 
         assert!(response.accepted);

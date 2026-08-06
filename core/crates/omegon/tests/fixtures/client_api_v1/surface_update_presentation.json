@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 1,
+  "envelopeId": "env-surface-1",
+  "sessionId": "session-1",
+  "clientId": "replacement-ui",
+  "direction": "runtimeToClient",
+  "kind": "surfaceUpdate",
+  "payload": {
+    "surface": "presentation",
+    "revision": 7,
+    "payload": {
+      "level": "active"
+    }
+  }
+}

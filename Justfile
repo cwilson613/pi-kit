@@ -122,6 +122,32 @@ clippy-changed *args:
 check:
     {{cargo}} check --workspace
 
+# Fast compile boundary for the Omegon daemon/headless matrix.
+# Use this first while working on TUI extraction: it skips the default TUI feature graph.
+check-omegon-headless:
+    {{cargo}} check -p omegon --locked --no-default-features
+
+# Compatibility compile boundary for the default interactive artifact.
+check-omegon-default:
+    {{cargo}} check -p omegon --locked
+
+# Run the two Omegon compile matrices in the signal-first order for TUI extraction.
+check-omegon-matrix:
+    just check-omegon-headless
+    just check-omegon-default
+
+# Assert the no-TUI feature matrix has not retained terminal presentation crates.
+check-omegon-headless-deps:
+    python3 scripts/check_headless_dependency_boundary.py
+
+# Assert the UI InterfaceBoundary contract remains renderer-neutral and backend-internal-free.
+check-interface-boundary:
+    python3 scripts/check_interface_boundary_contract.py
+
+# Deterministic virtual-time TUI stream/scroll scheduler benchmark.
+bench-tui-scroll-stream:
+    {{cargo}} test -p omegon deterministic_streaming_scroll_trace --locked -- --ignored --nocapture
+
 # Full local lint gate for the entire workspace, including examples and tests.
 lint:
     {{cargo}} fmt --all --check
@@ -553,12 +579,28 @@ link-tag tag:
 build-release:
     {{cargo}} build --release -p omegon
 
-# Run this workspace's dev-release binary directly after rebuilding it from current source
+# Run this workspace's dev-release binary directly after rebuilding it from current source.
+# OMEGON_EXPECTED_CHECKOUT lets diagnostics prove this process came from this checkout.
 run *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    checkout="$(pwd -P)"
     {{cargo}} build --profile dev-release -p omegon
-    exec ./target/dev-release/omegon {{args}}
+    binary="$checkout/target/dev-release/omegon"
+    test -x "$binary"
+    export OMEGON_EXPECTED_CHECKOUT="$checkout"
+    exec "$binary" {{args}}
+
+# Run this checkout with live TUI performance tracing enabled.
+trace-tui *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    checkout="$(pwd -P)"
+    trace_path="$checkout/.omegon/debug/tui-runtime.jsonl"
+    rm -f "$trace_path"
+    export OMEGON_TUI_TRACE=1
+    export OMEGON_TUI_TRACE_PATH="$trace_path"
+    just run {{args}}
 
 # ─── Release ─────────────────────────────────────────────────
 

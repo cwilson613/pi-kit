@@ -12,7 +12,7 @@
 
 mod agent_events;
 mod auspex;
-pub mod bootstrap;
+mod auth_menu_projection;
 pub mod command_surfaces;
 pub mod conv_widget;
 pub mod conversation;
@@ -25,25 +25,28 @@ pub mod effects;
 pub mod extension_overlays;
 pub mod footer;
 pub mod footer_projection;
+mod frame_scheduler;
 pub mod glyphs;
+mod history;
 pub mod horizontal_line;
 pub mod image;
 pub mod inline_render;
 mod input;
 pub mod instruments;
 pub mod layout_projection;
+mod menu_effects;
 pub(crate) mod menu_surface;
-pub mod model_catalog;
-pub mod native_io;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
 mod render;
+mod runtime_trace;
 pub mod segment_components;
 pub mod segment_detail;
 pub mod segments;
 pub mod selector;
 pub(crate) mod settings_menu;
+mod settings_menu_projection;
 mod slash_commands;
 pub mod spinner;
 pub mod splash;
@@ -54,6 +57,7 @@ pub mod theme;
 pub mod tool_inspection;
 pub mod turn_tool_projection;
 pub mod tutorial;
+mod tutorial_state;
 mod ui_actions;
 pub mod widget_renderer;
 pub mod widgets;
@@ -129,8 +133,7 @@ use crossterm::terminal::{
 use omegon_traits::{AgentEvent, PermissionPersistence, PermissionRequestKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use tokio::sync::{broadcast, mpsc};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::broadcast;
 
 use self::auspex::{
     AuspexCompatibility, AuspexHandoffMode, browser_url as dash_browser_url,
@@ -142,17 +145,23 @@ use self::conversation::{ConversationView, Tab};
 use self::dashboard::{DashboardHandleExt, DashboardState};
 use self::editor::Editor;
 use self::footer::{FooterData, SessionUsageSlice};
+use self::frame_scheduler::{AgentDrainBudget, DrainOutcome, TuiDrawReason, TuiFrameScheduler};
 use self::input::InputDisposition;
 use self::instruments::InstrumentPanel;
 use self::layout_projection::{TuiLayoutInputs, plan_tui_layout};
+use self::menu_effects::{
+    MenuCommandOutcome, MenuRefreshTarget, SettingsRowAction, SettingsRowTarget,
+};
 use self::menu_surface::{ActiveMenu, MenuMode};
 use self::permission_lane::{format_permission_prompt, permission_response_for_key};
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
 use self::settings_menu::SelectorKind;
 #[cfg(test)]
-use self::slash_commands::SkillCreateScope;
+use self::settings_menu_projection::settings_profile_source_line;
 use self::slash_commands::SlashResult;
-pub(crate) use self::slash_commands::{CanonicalSlashCommand, canonical_slash_command};
+use self::tutorial_state::TutorialState;
+#[cfg(test)]
+use self::tutorial_state::parse_lesson;
 use self::workbench::{
     PlanDisplaySnapshot, SlimPlanContext, SlimPlanHintState, SlimTurnState, WorkbenchState,
     WorkbenchWorkspaceContext, active_plan_workspace_context_height, active_workbench_snapshot,
@@ -161,6 +170,9 @@ use self::workbench::{
     workbench_preferred_height_for_level,
 };
 use self::workspace_context::{git_branch, repo_display_name, workspace_dir_basename};
+#[cfg(test)]
+use crate::runtime_commands::SkillCreateScope;
+use crate::runtime_commands::{CanonicalSlashCommand, canonical_slash_command};
 use crate::surfaces::command::{
     CommandPanel, CommandPanelReturnTarget, CommandPrompt, CommandPromptAction, CommandSeverity,
     CommandToast,
@@ -211,37 +223,12 @@ fn get_rss_mb() -> Option<f64> {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct VoicePromptMetadata {
-    pub event_id: String,
-    pub duration_s: Option<f64>,
-    pub radio_cue: Option<String>,
-    pub end_of_turn: Option<bool>,
-    pub close_session_requested: Option<bool>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PromptMetadata {
-    pub voice: Option<VoicePromptMetadata>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PromptSubmission {
-    pub text: String,
-    pub image_paths: Vec<std::path::PathBuf>,
-    pub submitted_by: String,
-    pub via: &'static str,
-    pub queue_mode: PromptQueueMode,
-    pub metadata: PromptMetadata,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PromptQueueMode {
-    InterruptAfterTurn,
-    #[default]
-    UntilReady,
-    Immediate,
-}
+use crate::operator_commands::{
+    OperatorCommand as TuiCommand, OperatorCommandTx, PromptMetadata, PromptQueueMode,
+    PromptSubmission, SharedCancel, VoicePromptMetadata,
+};
+#[cfg(test)]
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptPrefixMode {
@@ -256,158 +243,6 @@ enum UpdateSeverity {
     Available,
     StaleMinor,
 }
-
-/// Messages from TUI to the agent coordinator.
-#[derive(Debug)]
-pub enum TuiCommand {
-    /// User submitted a prompt with optional image attachments.
-    SubmitPrompt(PromptSubmission),
-    /// Request cancellation of the active runtime turn.
-    CancelActiveTurn {
-        submitted_by: String,
-        via: &'static str,
-    },
-    /// Execute a local shell command directly without LLM mediation.
-    RunShellCommand {
-        command: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Internal completion returned by a spawned operator shell execution so
-    /// canonical conversation state remains single-owner.
-    OperatorShellCompleted {
-        observation: crate::conversation::OperatorToolObservation,
-        committed: tokio::sync::oneshot::Sender<()>,
-    },
-    /// Temporarily hand terminal control to the operator's real shell.
-    /// Carries the keyboard-enhancement flag so the handler can pop/push
-    /// the Kitty protocol around the subprocess without querying the
-    /// terminal again (which can fail if stdin is redirected).
-    ShellHandoff { keyboard_enhancement: bool },
-    /// User wants to quit (double Ctrl+C, or /exit).
-    Quit,
-    /// Download and verify an update, then enter the graceful restart lifecycle.
-    InstallUpdate {
-        info: crate::update::UpdateInfo,
-        args: Vec<String>,
-    },
-    /// Gracefully save and shut down, then re-exec the current process.
-    RestartProcess {
-        binary: std::path::PathBuf,
-        args: Vec<String>,
-    },
-    /// Show current model/provider posture.
-    ModelView {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Show available models.
-    ModelList {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Switch the model for the next turn.
-    SetModel {
-        model: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Switch model intent to a provider-neutral capability grade.
-    SetModelGrade {
-        grade: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Switch provider/endpoint selection intent.
-    SetModelProvider {
-        provider: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Switch model grade policy intent.
-    SetModelPolicy {
-        policy: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Clear exact model override and resume grade/provider intent routing.
-    ModelUnpin {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Set the thinking level.
-    SetThinking {
-        level: crate::settings::ThinkingLevel,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Execute a canonical control request directly.
-    ExecuteControl {
-        request: crate::control_runtime::ControlRequest,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Execute an authenticated Auspex supervisor request against the live delegate feature.
-    ManagedDelegateControl {
-        method: String,
-        payload: serde_json::Value,
-        respond_to: tokio::sync::oneshot::Sender<serde_json::Value>,
-    },
-    /// Execute canonical slash semantics from a non-TUI caller.
-    RunSlashCommand {
-        name: String,
-        args: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::SlashCommandResponse>>,
-    },
-    /// Update the session plan stored in the runtime conversation state.
-    UpdatePlan {
-        command: CanonicalSlashCommand,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Dispatch a bus command from a feature (name, args).
-    BusCommand { name: String, args: String },
-    /// Trigger manual compaction.
-    Compact,
-    /// Show context usage and status.
-    ContextStatus {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Compress context and clear history.
-    ContextCompact {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Clear context completely (fresh start).
-    ContextClear {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// List saved sessions.
-    ListSessions {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Start the local browser surface server used by Auspex compatibility flows.
-    StartWebDashboard,
-    /// Discard the current session and start fresh (saves current first).
-    NewSession {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Probe and report auth/provider status.
-    AuthStatus {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Voice transcription submitted by a process-local voice extension.
-    VoicePrompt {
-        text: String,
-        metadata: VoicePromptMetadata,
-    },
-    /// Start provider login flow.
-    AuthLogin {
-        provider: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Log out a provider.
-    AuthLogout {
-        provider: String,
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-    /// Unlock secrets/auth backend.
-    AuthUnlock {
-        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
-    },
-}
-
-/// Shared cancel token — the TUI writes it on Escape/Ctrl+C,
-/// the agent loop checks it. Arc so both tasks can access it.
-pub type SharedCancel = std::sync::Arc<std::sync::Mutex<Option<CancellationToken>>>;
 
 struct OperatorEvent {
     message: String,
@@ -593,6 +428,8 @@ struct App {
     dashboard_area: Option<Rect>,
     /// Last on-screen conversation area for mouse hit-testing.
     conversation_area: Option<Rect>,
+    /// Phase timings captured by the most recent draw callback.
+    last_draw_phase_timings: runtime_trace::DrawPhaseTimings,
     /// Last on-screen editor area for mouse hit-testing.
     editor_area: Option<Rect>,
     /// Last on-screen workbench area for mouse hit-testing.
@@ -831,18 +668,6 @@ fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
     (editor_rows + 2).clamp(3, max_editor) // +2 for border
 }
 
-fn settings_profile_source_line(source: &crate::settings::ProfileSource) -> String {
-    match source {
-        crate::settings::ProfileSource::Project(path) => {
-            format!("profile: project · file: {}", path.display())
-        }
-        crate::settings::ProfileSource::User(path) => {
-            format!("profile: user · file: {}", path.display())
-        }
-        crate::settings::ProfileSource::BuiltInDefault => "profile: built-in defaults".to_string(),
-    }
-}
-
 impl App {
     fn displayed_model_grade(model_provider: &str, model_id: &str, fallback: &str) -> String {
         let model = model_id
@@ -1056,6 +881,7 @@ impl App {
             dashboard: DashboardState::default(),
             dashboard_area: None,
             conversation_area: None,
+            last_draw_phase_timings: runtime_trace::DrawPhaseTimings::default(),
             editor_area: None,
             workbench_area: None,
             footer_data: FooterData {
@@ -1285,7 +1111,7 @@ impl App {
         let current = self.settings().model.clone();
 
         // Build selector options from the unified model catalog
-        let catalog = self::model_catalog::ModelCatalog::discover();
+        let catalog = crate::model_catalog::ModelCatalog::discover();
         let mut options: Vec<selector::SelectOption> = Vec::new();
 
         // Group models by provider for visual organization
@@ -3707,7 +3533,17 @@ impl App {
             loaded_profile.source,
             &settings,
         );
-        let source_line = settings_profile_source_line(&drift.source);
+        let source_line = match &drift.source {
+            crate::settings::ProfileSource::Project(path) => {
+                format!("profile: project · file: {}", path.display())
+            }
+            crate::settings::ProfileSource::User(path) => {
+                format!("profile: user · file: {}", path.display())
+            }
+            crate::settings::ProfileSource::BuiltInDefault => {
+                "profile: built-in defaults".to_string()
+            }
+        };
         let drift_value = if drift.changed_count > 0 {
             format!("Δ{}", drift.changed_count)
         } else {
@@ -4071,12 +3907,6 @@ impl App {
     }
 
     fn settings_menu_projection(&self) -> crate::surfaces::menu::MenuProjection {
-        use crate::surfaces::menu::{
-            MenuActionProjection, MenuBadgeProjection, MenuBadgeTone, MenuGroupProjection,
-            MenuProjection, MenuRowKind, MenuRowProjection, MenuTabProjection,
-        };
-        use crate::surfaces::settings::{SettingsEditorProjection, SettingsStatusProjection};
-
         let settings = self.settings_projection();
         let settings_snapshot = self.settings();
         let loaded_profile = crate::settings::Profile::load_with_source(self.cwd());
@@ -4086,216 +3916,9 @@ impl App {
                 loaded_profile.source,
                 &settings_snapshot,
             );
-        let profile_source_line = settings_profile_source_line(&profile_drift.source);
-        let drift_line = if profile_drift.changed_count > 0 {
-            format!(
-                "runtime drift: Δ{} · /profile save or /profile apply · {profile_source_line}",
-                profile_drift.changed_count
-            )
-        } else {
-            format!("runtime drift: clean · {profile_source_line}")
-        };
-        let mut menu = MenuProjection::new("settings", "Settings");
-        menu.summary = Some(format!(
-            "Universal configuration entrypoint for runtime and capability settings. Enter opens or edits the selected area.\n{drift_line}"
-        ));
-        menu.footer = Some("↑/↓ navigate · Tab switch tabs · / filter · Enter open/edit · s save · a apply · n save named · Esc close".into());
-        let configuration_rows = [
-            (
-                "runtime",
-                "Runtime",
-                "Edit runtime, workspace, and inference defaults here.",
-                "/settings runtime",
-            ),
-            (
-                "model",
-                "Model & inference",
-                "Select model routes, providers, grades, and routing policy.",
-                "/model",
-            ),
-            (
-                "auth",
-                "Authentication",
-                "Manage provider credentials, login state, and vault unlock.",
-                "/auth",
-            ),
-            (
-                "skills",
-                "Skills",
-                "Install, inspect, refresh, and remove operator skills.",
-                "/skills",
-            ),
-            (
-                "extensions",
-                "Extensions",
-                "Install, enable, disable, update, and inspect extensions.",
-                "/extension",
-            ),
-            (
-                "ui",
-                "UI & presentation",
-                "Configure Om, Active, Full, and individual interface surfaces.",
-                "/ui",
-            ),
-            (
-                "context",
-                "Context",
-                "Configure context class and manage context lifecycle.",
-                "/context",
-            ),
-            (
-                "memory",
-                "Memory",
-                "Inspect memory configuration and current memory state.",
-                "/memory",
-            ),
-            (
-                "profile",
-                "Profiles",
-                "Inspect, apply, and persist project or user defaults.",
-                "/profile",
-            ),
-            (
-                "secrets",
-                "Secrets",
-                "Manage named secrets and credential values.",
-                "/secrets",
-            ),
-            (
-                "sandbox",
-                "Sandbox & permissions",
-                "Configure child isolation and workspace access policy.",
-                "/sandbox",
-            ),
-            (
-                "updates",
-                "Updates",
-                "Configure the release channel and install available updates.",
-                "/update",
-            ),
-        ]
-        .into_iter()
-        .map(|(id, label, description, command)| MenuRowProjection {
-            id: format!("settings.area.{id}"),
-            label: label.into(),
-            description: description.into(),
-            value: Some(command.into()),
-            kind: MenuRowKind::Action,
-            badges: Vec::new(),
-            metadata: vec!["configuration area".into(), command.into()],
-            primary_action: Some(MenuActionProjection::command(
-                format!("settings.area.{id}.open"),
-                "Open",
-                command,
-            )),
-            actions: Vec::new(),
-            safety: None,
-            availability: None,
-        })
-        .collect();
-        let configuration_tab = MenuTabProjection {
-            id: "configuration".into(),
-            label: "Configuration".into(),
-            groups: vec![MenuGroupProjection {
-                id: "settings.configuration".into(),
-                label: "Configuration areas".into(),
-                description: Some(
-                    "Canonical entrances for every operator-configurable capability.".into(),
-                ),
-                rows: configuration_rows,
-            }],
-        };
-        menu.tabs
-            .extend(settings.tabs.into_iter().map(|tab| MenuTabProjection {
-                id: tab.id.clone(),
-                label: tab.label.clone(),
-                groups: vec![MenuGroupProjection {
-                    id: format!("settings.{}", tab.id),
-                    label: tab.label,
-                    description: None,
-                    rows: tab
-                        .rows
-                        .into_iter()
-                        .map(|row| {
-                            let tone = match row.status {
-                                SettingsStatusProjection::Normal => MenuBadgeTone::Neutral,
-                                SettingsStatusProjection::Warning => MenuBadgeTone::Warning,
-                                SettingsStatusProjection::Error => MenuBadgeTone::Danger,
-                                SettingsStatusProjection::Disabled => MenuBadgeTone::Info,
-                            };
-                            let editor = match row.editor {
-                                SettingsEditorProjection::Choice => "choice",
-                                SettingsEditorProjection::Toggle => "toggle",
-                                SettingsEditorProjection::Text => "text",
-                                SettingsEditorProjection::Number => "number",
-                                SettingsEditorProjection::Action => "action",
-                                SettingsEditorProjection::ReadOnly => "read only",
-                            };
-                            let mut metadata =
-                                vec![row.persistence.label().to_string(), editor.to_string()];
-                            if let Some(profile) = row.profile {
-                                metadata.push(format!("profile: {}", profile.profile_value));
-                            }
-                            let row_id = row.id.clone();
-                            MenuRowProjection {
-                                id: row.id,
-                                label: row.label,
-                                description: row.description,
-                                value: Some(row.value),
-                                kind: MenuRowKind::Object,
-                                badges: vec![MenuBadgeProjection {
-                                    label: format!("{:?}", row.status).to_lowercase(),
-                                    tone,
-                                }],
-                                metadata,
-                                primary_action: Some(MenuActionProjection::open_settings_row(
-                                    format!("settings.{row_id}.open"),
-                                    "Edit",
-                                    row_id,
-                                )),
-                                actions: Vec::new(),
-                                safety: None,
-                                availability: None,
-                            }
-                        })
-                        .collect(),
-                }],
-            }));
-        menu.tabs.push(configuration_tab);
-        menu.actions = vec![
-            {
-                let mut action =
-                    MenuActionProjection::command("settings.save", "Save profile", "/profile save");
-                action.key = Some("s".into());
-                action
-            },
-            {
-                let mut action = MenuActionProjection::command(
-                    "settings.apply",
-                    "Apply profile",
-                    "/profile apply",
-                );
-                action.key = Some("a".into());
-                action
-            },
-            {
-                let mut action = MenuActionProjection::prime_editor(
-                    "settings.save_named_user",
-                    "Save as named (user)",
-                    "/profile save --name ",
-                    "Type the profile name and press Enter — saved to ~/.omegon/profiles/<name>.json",
-                );
-                action.key = Some("n".into());
-                action
-            },
-            MenuActionProjection::prime_editor(
-                "settings.save_named_project",
-                "Save as named (project)",
-                "/profile save --name ",
-                "Type the profile name followed by ' --project' and press Enter — saved to .omegon/profiles/<name>.json",
-            ),
-        ];
-        menu
+        settings_menu_projection::build_settings_menu_projection(
+            settings_menu_projection::SettingsMenuInputs::new(settings, profile_drift),
+        )
     }
 
     fn open_skills_menu(&mut self) -> Result<(), String> {
@@ -4304,16 +3927,21 @@ impl App {
         if entries.is_empty() {
             return Err("No skills found. Run /skills install to install bundled skills.".into());
         }
-        let projection = crate::control_runtime::skills_menu_projection(&entries);
+        let projection = crate::operator_commands::skills_menu_projection(&entries);
         self.open_menu_projection(projection);
         Ok(())
     }
 
-    fn queue_settings_profile_save(&mut self, tx: &mpsc::Sender<TuiCommand>) {
+    fn queue_settings_profile_save(&mut self, tx: &OperatorCommandTx) {
+        let Some(request) = crate::operator_commands::control_request_from_slash_command(
+            &CanonicalSlashCommand::ProfileCapture(
+                crate::settings::ProfileSaveTarget::ActiveSource,
+            ),
+        ) else {
+            return;
+        };
         let _ = tx.try_send(TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ProfileCapture {
-                target: crate::settings::ProfileSaveTarget::ActiveSource,
-            },
+            request,
             respond_to: None,
         });
         self.show_command_toast(CommandToast::new(
@@ -4322,9 +3950,14 @@ impl App {
         ));
     }
 
-    fn queue_settings_profile_apply(&mut self, tx: &mpsc::Sender<TuiCommand>) {
+    fn queue_settings_profile_apply(&mut self, tx: &OperatorCommandTx) {
+        let Some(request) = crate::operator_commands::control_request_from_slash_command(
+            &CanonicalSlashCommand::ProfileApply,
+        ) else {
+            return;
+        };
         let _ = tx.try_send(TuiCommand::ExecuteControl {
-            request: crate::control_runtime::ControlRequest::ProfileApply,
+            request,
             respond_to: None,
         });
         self.show_command_toast(CommandToast::new(
@@ -4333,204 +3966,39 @@ impl App {
         ));
     }
 
-    fn rebuild_active_menu(&mut self, menu_id: &str) -> bool {
-        let projection = match menu_id {
-            "ui" => self.ui_menu_projection(),
-            "extension-runtime" => self.extension_runtime_menu_projection(),
-            id if id.starts_with("extension-detail:") => {
-                let Some(projection) = self
-                    .extension_detail_menu_projection(id.trim_start_matches("extension-detail:"))
+    fn rebuild_active_menu(&mut self, target: MenuRefreshTarget) -> bool {
+        let projection = match target {
+            MenuRefreshTarget::Ui => self.ui_menu_projection(),
+            MenuRefreshTarget::ExtensionRuntime => self.extension_runtime_menu_projection(),
+            MenuRefreshTarget::ExtensionDetail(extension_name) => {
+                let Some(projection) = self.extension_detail_menu_projection(&extension_name)
                 else {
                     return false;
                 };
                 projection
             }
-            _ => return false,
+            MenuRefreshTarget::Unsupported(_) => return false,
         };
         self.active_menu = Some(ActiveMenu::new(projection));
         self.pending_menu_confirmation = None;
         true
     }
 
-    fn execute_active_menu_action(
-        &mut self,
-        action: crate::surfaces::menu::MenuActionProjection,
-        tx: &mpsc::Sender<TuiCommand>,
-    ) -> SlashResult {
-        if action.requires_confirmation {
-            if self.pending_menu_confirmation.as_deref() != Some(action.id.as_str()) {
-                self.pending_menu_confirmation = Some(action.id.clone());
-                self.show_command_toast(CommandToast::new(
-                    format!("Press Enter/shortcut again to confirm {}", action.label),
-                    CommandSeverity::Warning,
-                ));
-                return SlashResult::Handled;
-            }
-            self.pending_menu_confirmation = None;
-        } else {
-            self.pending_menu_confirmation = None;
-        }
-        match action.disposition {
-            crate::surfaces::menu::MenuActionDisposition::FocusRow => {
-                if let Some(target_row_id) = action.target_row_id
-                    && let Some(menu) = self.active_menu.as_mut()
-                {
-                    menu.state
-                        .select_row_by_id(&menu.projection, &target_row_id);
-                }
-                SlashResult::Handled
-            }
-            crate::surfaces::menu::MenuActionDisposition::PrimeEditor => {
-                self.active_menu = None;
-                if let Some(text) = action.editor_text {
-                    self.editor.set_text(&text);
-                }
-                if let Some(message) = action.message {
-                    self.show_command_toast(CommandToast::new(message, CommandSeverity::Info));
-                }
-                SlashResult::Handled
-            }
-            crate::surfaces::menu::MenuActionDisposition::InlineInput => {
-                if let Some(command_prefix) = action.editor_text {
-                    let original_footer = self
-                        .active_menu
-                        .as_ref()
-                        .and_then(|menu| menu.projection.footer.clone());
-                    self.menu_input = Some(MenuInput {
-                        action_label: action.label,
-                        command_prefix,
-                        value: String::new(),
-                        original_footer,
-                    });
-                    if let Some(menu) = self.active_menu.as_mut() {
-                        menu.projection.footer =
-                            Some("Type value · Enter execute · Esc cancel".into());
-                    }
-                }
-                SlashResult::Handled
-            }
-            crate::surfaces::menu::MenuActionDisposition::OpenSelector => {
-                self.active_menu = None;
-                self.pending_menu_confirmation = None;
-                match action.target_row_id.as_deref() {
-                    Some("context.class") => self.open_context_selector(),
-                    Some("model.current") => self.open_model_selector(),
-                    Some("model.grade") => self.open_model_grade_selector(),
-                    Some("model.provider") => self.open_model_provider_selector(),
-                    Some("model.policy") => self.open_model_policy_selector(),
-                    Some("secrets.name") => self.open_secret_name_selector(),
-                    _ => self.show_command_toast(CommandToast::new(
-                        format!("No selector registered for {}", action.label),
-                        CommandSeverity::Warning,
-                    )),
-                }
-                SlashResult::Handled
-            }
-            crate::surfaces::menu::MenuActionDisposition::OpenExtensionDetail => {
-                if let Some(extension_name) = action.target_row_id.as_deref() {
-                    self.open_extension_detail_menu(extension_name);
-                } else {
-                    self.show_command_toast(CommandToast::new(
-                        "Extension detail target is unavailable",
-                        CommandSeverity::Warning,
-                    ));
-                }
-                SlashResult::Handled
-            }
-            crate::surfaces::menu::MenuActionDisposition::OpenSettingsRow => {
-                if let Some(row_id) = action.target_row_id.as_deref() {
-                    self.open_settings_row_by_id(row_id);
-                } else {
-                    self.show_command_toast(CommandToast::new(
-                        format!("No settings row registered for {}", action.label),
-                        CommandSeverity::Warning,
-                    ));
-                }
-                SlashResult::Handled
-            }
-            crate::surfaces::menu::MenuActionDisposition::RunCommand => {
-                if let Some(command) = action.command {
-                    let menu_id = self
-                        .active_menu
-                        .as_ref()
-                        .map(|menu| menu.projection.id.clone());
-                    let result = self.execute_active_menu_command(command, tx);
-                    if matches!(result, SlashResult::Handled)
-                        && matches!(
-                            action.close_policy,
-                            crate::surfaces::menu::MenuActionClosePolicy::RefreshMenu
-                        )
-                        && let Some(menu_id) = menu_id.as_deref()
-                        && self.rebuild_active_menu(menu_id)
-                    {
-                        return SlashResult::Handled;
-                    }
-                    result
-                } else {
-                    SlashResult::Handled
-                }
-            }
-        }
-    }
-
     fn execute_active_menu_command(
         &mut self,
         command: String,
-        tx: &mpsc::Sender<TuiCommand>,
-    ) -> SlashResult {
-        match self.handle_slash_command(&command, tx) {
-            SlashResult::Display(response) => {
-                self.history.push(command.clone());
-                self.exit_history_recall();
-                if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
-                    self.active_menu = None;
-                    self.show_command_toast(CommandToast::new(response, CommandSeverity::Info));
-                } else {
-                    self.open_command_panel(
-                        CommandPanel::from_slash(&command, response)
-                            .with_return_target(CommandPanelReturnTarget::Menu),
-                    );
-                }
-                SlashResult::Handled
-            }
-            SlashResult::Handled => {
-                self.active_menu = None;
-                self.history.push(command);
-                self.exit_history_recall();
-                SlashResult::Handled
-            }
-            SlashResult::Quit => {
-                self.active_menu = None;
-                self.history.push(command);
-                self.exit_history_recall();
-                self.should_quit = true;
-                SlashResult::Quit
-            }
-            SlashResult::NotACommand => SlashResult::Handled,
-        }
+        tx: &OperatorCommandTx,
+    ) -> MenuCommandOutcome {
+        let slash_result = self.handle_slash_command(&command, tx);
+        let secret_input = matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. });
+        let outcome = MenuCommandOutcome::from_slash_result(slash_result, secret_input);
+
+        self.apply_menu_command_outcome(&command, &outcome);
+
+        outcome
     }
 
-    fn provider_status_rows(
-        &self,
-        row_prefix: &str,
-    ) -> Vec<crate::surfaces::menu::MenuRowProjection> {
-        use crate::surfaces::menu::{
-            MenuActionProjection, MenuBadgeProjection, MenuBadgeTone, MenuRowKind,
-            MenuRowProjection,
-        };
-        let provider_ids: Vec<&str> = if row_prefix == "auth.provider" {
-            crate::auth::operator_auth_provider_ids()
-        } else {
-            vec![
-                "anthropic",
-                "openai-codex",
-                "github-copilot",
-                "openai",
-                "openrouter",
-                "google",
-                "ollama",
-            ]
-        };
+    fn provider_route_snapshot(&self) -> auth_menu_projection::ProviderRouteSnapshot {
         let settings_model = self.settings().model.clone();
         let selected_provider = self
             .route_selected_model
@@ -4545,132 +4013,54 @@ impl App {
                     .then_some(self.footer_data.model_id.as_str())
             })
             .map(crate::providers::infer_provider_id);
-        provider_ids
-            .into_iter()
-            .map(|provider| {
-                let status = crate::surfaces::menu::ProviderStatusProjection::from_credential_probe(
-                    provider,
-                );
-                let login_command = status
-                    .remediation_command
-                    .clone()
-                    .unwrap_or_else(|| format!("/login {provider}"));
-                let logout_command = format!("/logout {provider}");
-                let mut badges = vec![MenuBadgeProjection {
-                    label: status.badge_label().into(),
-                    tone: status.badge_tone(),
-                }];
-                let mut metadata = vec![
-                    login_command.clone(),
-                    logout_command.clone(),
-                    format!("provider: {}", status.provider_id),
-                ];
-                if selected_provider.as_deref() == Some(provider) {
-                    badges.push(MenuBadgeProjection {
-                        label: "selected".into(),
-                        tone: MenuBadgeTone::Info,
-                    });
-                    metadata.push("route: selected".into());
-                }
-                if serving_provider.as_deref() == Some(provider) {
-                    badges.push(MenuBadgeProjection {
-                        label: "serving".into(),
-                        tone: MenuBadgeTone::Success,
-                    });
-                    metadata.push("route: serving".into());
-                    if self.route_state.as_deref() == Some("fallback")
-                        && selected_provider
-                            .as_deref()
-                            .is_some_and(|selected| selected != provider)
-                    {
-                        badges.push(MenuBadgeProjection {
-                            label: "fallback".into(),
-                            tone: MenuBadgeTone::Warning,
-                        });
-                        metadata.push("route: fallback serving".into());
-                    }
-                }
-                MenuRowProjection {
-                    id: format!("{row_prefix}.{provider}"),
-                    label: status.display_name.clone(),
-                    description: status.credential_state.clone(),
-                    value: Some(status.provider_id.clone()),
-                    kind: MenuRowKind::Object,
-                    badges,
-                    metadata,
-                    primary_action: Some(MenuActionProjection::command(
-                        format!("{row_prefix}.{provider}.login"),
-                        "Login",
-                        login_command.clone(),
-                    )),
-                    actions: vec![
-                        {
-                            let mut action = MenuActionProjection::command(
-                                format!("{row_prefix}.{provider}.login.action"),
-                                "Login",
-                                login_command,
-                            );
-                            action.key = Some("l".into());
-                            action
-                        },
-                        {
-                            let mut action = MenuActionProjection::command(
-                                format!("{row_prefix}.{provider}.logout.action"),
-                                "Logout",
-                                logout_command,
-                            );
-                            action.key = Some("o".into());
-                            action
-                        },
-                    ],
-                    safety: None,
-                    availability: None,
-                }
-            })
-            .collect()
+        auth_menu_projection::ProviderRouteSnapshot {
+            selected_provider,
+            serving_provider,
+            route_state: self.route_state.clone(),
+        }
+    }
+
+    fn provider_status_rows(
+        &self,
+        row_prefix: &str,
+    ) -> Vec<crate::surfaces::menu::MenuRowProjection> {
+        let provider_ids: Vec<&str> = if row_prefix == "auth.provider" {
+            crate::auth::operator_auth_provider_ids()
+        } else {
+            vec![
+                "anthropic",
+                "openai-codex",
+                "github-copilot",
+                "openai",
+                "openrouter",
+                "google",
+                "ollama",
+            ]
+        };
+        auth_menu_projection::build_provider_status_rows(
+            row_prefix,
+            provider_ids
+                .into_iter()
+                .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+                .collect(),
+            &self.provider_route_snapshot(),
+        )
     }
 
     fn open_auth_menu(&mut self) {
-        use crate::surfaces::menu::{MenuGroupProjection, MenuProjection, MenuTabProjection};
-        let mut menu = MenuProjection::new("auth", "Authentication");
-        let mut summary = "Provider authentication status. Enter logs into the selected provider; l login; o logout; / filters providers.".to_string();
-        if self.route_state.is_some()
-            || self.route_selected_model.is_some()
-            || self.route_serving_model.is_some()
-            || self.footer_data.route_warning.is_some()
-        {
-            let route_state = self.route_state.as_deref().unwrap_or("unknown");
-            summary.push_str(&format!(
-                "
-route: {route_state}"
-            ));
-            if let Some(selected) = self.route_selected_model.as_deref() {
-                summary.push_str(&format!(" · selected: {selected}"));
-            }
-            if let Some(serving) = self.route_serving_model.as_deref() {
-                summary.push_str(&format!(" · serving: {serving}"));
-            }
-            if let Some(warning) = self.footer_data.route_warning.as_deref() {
-                summary.push_str(&format!(
-                    "
-warning: {warning}"
-                ));
-            }
-        }
-        menu.summary = Some(summary);
-        menu.footer = Some(
-            "↑/↓ navigate · Enter login · l login · o logout · / filter · Esc close · /auth status for text readout".into(),
+        let providers = crate::auth::operator_auth_provider_ids()
+            .into_iter()
+            .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+            .collect();
+        let menu = auth_menu_projection::build_authentication_menu(
+            auth_menu_projection::AuthenticationMenuInputs {
+                providers,
+                route: self.provider_route_snapshot(),
+                selected_model: self.route_selected_model.clone(),
+                serving_model: self.route_serving_model.clone(),
+                route_warning: self.footer_data.route_warning.clone(),
+            },
         );
-        menu.tabs = vec![MenuTabProjection {
-            id: "providers".into(),
-            label: "Providers".into(),
-            groups: vec![MenuGroupProjection {
-                id: "auth.providers".into(),
-                label: "Provider credentials".into(),
-                description: Some("Credential probe status and login/logout actions.".into()),
-                rows: self.provider_status_rows("auth.provider"),
-            }],
-        }];
         self.open_menu_projection(menu);
     }
 
@@ -4916,7 +4306,10 @@ warning: {warning}"
         self.open_menu_projection(menu);
     }
 
-    fn open_settings_row_by_id(&mut self, row_id: &str) {
+    fn open_settings_row(&mut self, target: SettingsRowTarget) {
+        let Some(row_id) = target.id() else {
+            return;
+        };
         let projection = self.settings_projection();
         let Some(row) = projection
             .tabs
@@ -4953,20 +4346,20 @@ warning: {warning}"
             return;
         }
 
-        match row_id.as_str() {
-            "runtime.model" => {
+        match target.action() {
+            SettingsRowAction::OpenModelSelector => {
                 self.active_menu = None;
                 self.pending_menu_confirmation = None;
                 self.open_model_selector();
             }
-            "runtime.max_turns" => {
+            SettingsRowAction::OpenMaxTurnsSelector => {
                 self.active_menu = None;
                 self.pending_menu_confirmation = None;
                 self.open_max_turns_selector();
             }
-            "workspace.sandbox" => self.toggle_settings_sandbox(),
-            "updates.auto_update" => self.toggle_settings_auto_update(),
-            "workspace.trusted_directories" => {
+            SettingsRowAction::ToggleSandbox => self.toggle_settings_sandbox(),
+            SettingsRowAction::ToggleAutoUpdate => self.toggle_settings_auto_update(),
+            SettingsRowAction::ExplainTrustedDirectories => {
                 let settings = self.settings();
                 if settings.trusted_directories.is_empty() {
                     self.show_command_toast(CommandToast::new(
@@ -4980,7 +4373,7 @@ warning: {warning}"
                     ));
                 }
             }
-            _ => self.show_command_toast(CommandToast::new(
+            SettingsRowAction::ProjectedEditor => self.show_command_toast(CommandToast::new(
                 format!("No editor registered for {}", row.label),
                 CommandSeverity::Warning,
             )),
@@ -5229,7 +4622,7 @@ warning: {warning}"
         }
     }
 
-    fn confirm_selector(&mut self, tx: &mpsc::Sender<TuiCommand>) -> Option<String> {
+    fn confirm_selector(&mut self, tx: &OperatorCommandTx) -> Option<String> {
         let sel = self.selector.take()?;
         let kind = self.selector_kind.take()?;
         let value = sel.selected_value().to_string();
@@ -5276,8 +4669,15 @@ warning: {warning}"
             SelectorKind::ContextClass => {
                 let outcome = settings_menu::apply_context_class_selection(&value);
                 if let settings_menu::SettingApplyOutcome::ContextClass(class) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::SetContextClass(class),
+                        )
+                    else {
+                        return Some("Context class update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SetContextClass { class },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -5323,9 +4723,11 @@ warning: {warning}"
             }
             SelectorKind::SecretAction => match value.as_str() {
                 "list" => {
-                    if let Some(request) = crate::control_runtime::control_request_from_slash(
-                        &CanonicalSlashCommand::SecretsView,
-                    ) {
+                    if let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::SecretsView,
+                        )
+                    {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
                             respond_to: None,
@@ -5397,12 +4799,14 @@ warning: {warning}"
                     }
                     "github" => {
                         // GitHub uses dynamic resolution via gh CLI
-                        if let Some(request) = crate::control_runtime::control_request_from_slash(
-                            &CanonicalSlashCommand::SecretsSet {
-                                name: "GITHUB_TOKEN".to_string(),
-                                value: "cmd:gh auth token".to_string(),
-                            },
-                        ) {
+                        if let Some(request) =
+                            crate::operator_commands::control_request_from_slash_command(
+                                &CanonicalSlashCommand::SecretsSet {
+                                    name: "GITHUB_TOKEN".to_string(),
+                                    value: "cmd:gh auth token".to_string(),
+                                },
+                            )
+                        {
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
                                 request,
                                 respond_to: None,
@@ -5458,12 +4862,14 @@ warning: {warning}"
                         })
                     } else {
                         // Dynamic recipe — set immediately
-                        if let Some(request) = crate::control_runtime::control_request_from_slash(
-                            &CanonicalSlashCommand::SecretsSet {
-                                name: value.clone(),
-                                value: suggested.to_string(),
-                            },
-                        ) {
+                        if let Some(request) =
+                            crate::operator_commands::control_request_from_slash_command(
+                                &CanonicalSlashCommand::SecretsSet {
+                                    name: value.clone(),
+                                    value: suggested.to_string(),
+                                },
+                            )
+                        {
                             let _ = tx.try_send(TuiCommand::ExecuteControl {
                                 request,
                                 respond_to: None,
@@ -5491,8 +4897,15 @@ warning: {warning}"
             SelectorKind::WorkspaceRole => {
                 let outcome = settings_menu::apply_workspace_role_selection(&value);
                 if let settings_menu::SettingApplyOutcome::WorkspaceRole(role) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::WorkspaceRoleSet(role),
+                        )
+                    else {
+                        return Some("Workspace role update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::WorkspaceRoleSet { role },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -5501,8 +4914,15 @@ warning: {warning}"
             SelectorKind::WorkspaceKind => {
                 let outcome = settings_menu::apply_workspace_kind_selection(&value);
                 if let settings_menu::SettingApplyOutcome::WorkspaceKind(kind) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::WorkspaceKindSet(kind),
+                        )
+                    else {
+                        return Some("Workspace kind update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::WorkspaceKindSet { kind },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -5511,8 +4931,15 @@ warning: {warning}"
             SelectorKind::MaxTurns => {
                 let outcome = settings_menu::apply_max_turns_selection(&value);
                 if let settings_menu::SettingApplyOutcome::MaxTurns(max_turns) = outcome {
+                    let Some(request) =
+                        crate::operator_commands::control_request_from_slash_command(
+                            &CanonicalSlashCommand::SetMaxTurns { max_turns },
+                        )
+                    else {
+                        return Some("Max turns update is unavailable".to_string());
+                    };
                     let _ = tx.try_send(TuiCommand::ExecuteControl {
-                        request: crate::control_runtime::ControlRequest::SetMaxTurns { max_turns },
+                        request,
                         respond_to: None,
                     });
                 }
@@ -5714,13 +5141,15 @@ warning: {warning}"
     }
 
     /// Handle /variables — non-secret runtime configuration.
-    fn handle_variables(&mut self, args: &str, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_variables(&mut self, args: &str, tx: &OperatorCommandTx) -> SlashResult {
         if args.trim().is_empty() {
             self.open_variables_menu();
             return SlashResult::Handled;
         }
         if let Some(command) = canonical_slash_command("variables", args) {
-            if let Some(request) = crate::control_runtime::control_request_from_slash(&command) {
+            if let Some(request) =
+                crate::operator_commands::control_request_from_slash_command(&command)
+            {
                 let _ = tx.try_send(TuiCommand::ExecuteControl {
                     request,
                     respond_to: None,
@@ -5739,7 +5168,7 @@ warning: {warning}"
     }
 
     /// Handle /secrets — interactive secret management.
-    fn handle_secrets(&mut self, args: &str, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_secrets(&mut self, args: &str, tx: &OperatorCommandTx) -> SlashResult {
         let parts: Vec<&str> = args.splitn(3, ' ').collect();
         match parts.first().copied().unwrap_or("") {
             "" => {
@@ -5778,7 +5207,7 @@ warning: {warning}"
                 if recipe_like {
                     if let Some(command) = canonical_slash_command("secrets", args)
                         && let Some(request) =
-                            crate::control_runtime::control_request_from_slash(&command)
+                            crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -5798,7 +5227,7 @@ warning: {warning}"
             _ => {
                 if let Some(command) = canonical_slash_command("secrets", args) {
                     if let Some(request) =
-                        crate::control_runtime::control_request_from_slash(&command)
+                        crate::operator_commands::control_request_from_slash_command(&command)
                     {
                         let _ = tx.try_send(TuiCommand::ExecuteControl {
                             request,
@@ -5821,7 +5250,7 @@ warning: {warning}"
     }
 
     fn submit_prompt_from_slash(
-        tx: &mpsc::Sender<TuiCommand>,
+        tx: &OperatorCommandTx,
         prompt: PromptSubmission,
     ) -> Result<(), SlashResult> {
         tx.try_send(TuiCommand::SubmitPrompt(prompt)).map_err(|_| {
@@ -5832,7 +5261,7 @@ warning: {warning}"
     }
 
     /// Handle /tutorial — start, resume, or manage the interactive tutorial overlay.
-    fn handle_tutorial(&mut self, args: &str, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_tutorial(&mut self, args: &str, tx: &OperatorCommandTx) -> SlashResult {
         match args.trim() {
             "status" => {
                 if let Some(ref overlay) = self.tutorial_overlay {
@@ -5979,7 +5408,7 @@ warning: {warning}"
     }
 
     /// Advance to the next tutorial step/lesson.
-    fn handle_tutorial_next(&mut self, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_tutorial_next(&mut self, tx: &OperatorCommandTx) -> SlashResult {
         if let Some(ref mut overlay) = self.tutorial_overlay
             && overlay.active
         {
@@ -6020,7 +5449,7 @@ warning: {warning}"
     }
 
     /// Go back to the previous tutorial step/lesson.
-    fn handle_tutorial_prev(&mut self, tx: &mpsc::Sender<TuiCommand>) -> SlashResult {
+    fn handle_tutorial_prev(&mut self, tx: &OperatorCommandTx) -> SlashResult {
         if let Some(ref mut overlay) = self.tutorial_overlay
             && overlay.active
         {
@@ -6306,7 +5735,7 @@ warning: {warning}"
         }
     }
 
-    async fn submit_editor_buffer(&mut self, command_tx: &mpsc::Sender<TuiCommand>) {
+    async fn submit_editor_buffer(&mut self, command_tx: &OperatorCommandTx) {
         let (raw_text, attachments) = self.editor.take_submission();
         if raw_text.is_empty() && attachments.is_empty() {
             if self.awaiting_continuation && !self.agent_active {
@@ -6367,7 +5796,7 @@ warning: {warning}"
         &mut self,
         raw_text: String,
         attachments: Vec<std::path::PathBuf>,
-        command_tx: &mpsc::Sender<TuiCommand>,
+        command_tx: &OperatorCommandTx,
     ) {
         let (prefix_mode, text) = Self::detect_prompt_prefix(&raw_text);
         let text = text.trim().to_string();
@@ -6478,7 +5907,7 @@ warning: {warning}"
         &mut self,
         text: String,
         _event_id: String,
-        command_tx: &mpsc::Sender<TuiCommand>,
+        command_tx: &OperatorCommandTx,
     ) {
         let text = text.trim();
         if text.is_empty() {
@@ -6777,7 +6206,7 @@ warning: {warning}"
     }
 
     fn try_paste_clipboard_image(&mut self) {
-        if let Some(path) = native_io::clipboard_image_to_temp() {
+        if let Some(path) = crate::native_io::clipboard_image_to_temp() {
             self.show_toast(
                 "📎 Image pasted — send a message to include it",
                 ratatui_toaster::ToastType::Info,
@@ -6787,7 +6216,7 @@ warning: {warning}"
     }
 
     fn copy_text_to_clipboard(&self, text: &str) -> bool {
-        native_io::copy_text_to_clipboard(text)
+        crate::native_io::copy_text_to_clipboard(text)
     }
 
     fn copy_selected_conversation_segment_with_mode(&mut self, mode: SegmentExportMode) {
@@ -7411,36 +6840,6 @@ warning: {warning}"
         self.at_picker = Some(selector::Selector::new("Reference project file", options));
     }
 
-    /// Load editor history from disk.
-    fn load_history(cwd: &str) -> Vec<String> {
-        let path = history_path(cwd);
-        match std::fs::read_to_string(&path) {
-            Ok(content) => content
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
-    /// Save editor history to disk.
-    fn save_history(&self) {
-        let path = history_path(&self.footer_data.cwd);
-        if self.history.is_empty() {
-            return;
-        }
-        // Keep last 500 entries
-        let start = self.history.len().saturating_sub(500);
-        let content = self.history[start..].join("\n");
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&path, content) {
-            tracing::debug!("Failed to save history: {e}");
-        }
-    }
-
     fn handle_mouse_scroll_up(&mut self, column: u16, row: u16) {
         let over_dashboard = self.mouse_capture_enabled
             && self.dashboard_area.is_some_and(|area| {
@@ -7488,56 +6887,6 @@ warning: {warning}"
             self.editor.move_down();
         }
     }
-
-    fn history_up(&mut self) {
-        if self.history.is_empty() {
-            return;
-        }
-        if self.history_idx.is_none() {
-            self.history_draft = Some(self.editor.render_text());
-        }
-        let idx = match self.history_idx {
-            None => self.history.len().saturating_sub(1),
-            Some(i) => i.saturating_sub(1),
-        };
-        self.history_idx = Some(idx);
-        self.editor.set_text(&self.history[idx]);
-    }
-
-    fn history_down(&mut self) {
-        match self.history_idx {
-            None => {}
-            Some(i) => {
-                if i + 1 < self.history.len() {
-                    self.history_idx = Some(i + 1);
-                    self.editor.set_text(&self.history[i + 1]);
-                } else {
-                    self.history_idx = None;
-                    let draft = self.history_draft.take().unwrap_or_default();
-                    self.editor.set_text(&draft);
-                }
-            }
-        }
-    }
-
-    fn exit_history_recall(&mut self) {
-        self.history_idx = None;
-        self.history_draft = None;
-    }
-
-    fn history_recall_up(&mut self) {
-        self.pending_history_preload = None;
-        if self.history_idx.is_some() || self.editor.is_empty() {
-            self.history_up();
-        }
-    }
-
-    fn history_recall_down(&mut self) {
-        self.pending_history_preload = None;
-        if self.history_idx.is_some() {
-            self.history_down();
-        }
-    }
 }
 
 /// Run the interactive TUI. Returns when the user quits.
@@ -7551,7 +6900,7 @@ pub struct TuiConfig {
     /// Present when a prior session was resumed; retained for runtime context.
     pub resume_info: Option<crate::setup::ResumeInfo>,
     /// Pre-populated initial state so the first frame isn't empty.
-    pub initial: TuiInitialState,
+    pub initial: crate::setup::InteractiveInitialState,
     /// Skip the splash animation on startup.
     pub no_splash: bool,
     /// Command definitions from bus features — shown in command palette.
@@ -7567,6 +6916,7 @@ pub struct TuiConfig {
     /// Shared handles for live dashboard updates during the session.
     pub dashboard_handles: dashboard::DashboardHandles,
     /// Initial prompt to queue after startup (sent automatically, TUI stays open).
+    pub debug_tui: bool,
     pub initial_prompt: Option<String>,
     /// Start with tutorial overlay active (--tutorial flag).
     pub start_tutorial: bool,
@@ -7583,24 +6933,6 @@ pub struct TuiConfig {
         Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
     /// Voice idle notification pumps — one per voice-capable extension.
     pub voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
-}
-
-/// Initial state snapshot gathered during setup, before the TUI event loop starts.
-/// Populates footer cards and dashboard on the very first frame.
-#[derive(Default)]
-pub struct TuiInitialState {
-    pub total_facts: usize,
-    pub focused_node: Option<dashboard::FocusedNodeSummary>,
-    pub active_changes: Vec<dashboard::ChangeSummary>,
-    pub workspace_status: Option<String>,
-}
-
-/// Open a URL in the default browser (cross-platform).
-pub use native_io::open_browser;
-
-fn history_path(cwd: &str) -> std::path::PathBuf {
-    let project_root = crate::setup::find_project_root(std::path::Path::new(cwd));
-    project_root.join(".omegon").join("history")
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -7622,169 +6954,6 @@ fn save_milestones(
 ) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(milestones)?;
     std::fs::write(path, json)
-}
-
-/// A single tutorial lesson.
-#[derive(Debug, Clone)]
-struct TutorialLesson {
-    /// Filename (e.g. "01-cockpit.md")
-    filename: String,
-    /// Title from frontmatter
-    title: String,
-    /// The lesson prompt content (body after frontmatter)
-    content: String,
-}
-
-/// Tutorial runner state — tracks lessons and progress.
-#[derive(Debug)]
-struct TutorialState {
-    lessons: Vec<TutorialLesson>,
-    current: usize, // 0-indexed
-    tutorial_dir: std::path::PathBuf,
-}
-
-/// Persisted tutorial progress.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct TutorialProgress {
-    current_lesson: usize,
-    completed: Vec<usize>,
-}
-
-impl TutorialState {
-    /// Load tutorial lessons from a directory.
-    fn load(tutorial_dir: &std::path::Path) -> Option<Self> {
-        if !tutorial_dir.is_dir() {
-            return None;
-        }
-
-        let mut entries: Vec<_> = std::fs::read_dir(tutorial_dir)
-            .ok()?
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                name.ends_with(".md") && name.chars().next().is_some_and(|c| c.is_ascii_digit())
-            })
-            .collect();
-        entries.sort_by_key(|e| e.file_name());
-
-        let mut lessons = Vec::new();
-        for entry in entries {
-            let filename = entry.file_name().to_string_lossy().to_string();
-            let raw = std::fs::read_to_string(entry.path()).ok()?;
-            let (title, content) = parse_lesson(&raw, &filename);
-            lessons.push(TutorialLesson {
-                filename,
-                title,
-                content,
-            });
-        }
-
-        if lessons.is_empty() {
-            return None;
-        }
-
-        // Load progress
-        let progress = load_tutorial_progress(tutorial_dir);
-        let current = progress.current_lesson.min(lessons.len().saturating_sub(1));
-
-        Some(Self {
-            lessons,
-            current,
-            tutorial_dir: tutorial_dir.to_path_buf(),
-        })
-    }
-
-    fn current_lesson(&self) -> &TutorialLesson {
-        &self.lessons[self.current]
-    }
-
-    fn total(&self) -> usize {
-        self.lessons.len()
-    }
-
-    fn is_last(&self) -> bool {
-        self.current >= self.lessons.len() - 1
-    }
-
-    fn advance(&mut self) -> bool {
-        if self.current < self.lessons.len() - 1 {
-            self.current += 1;
-            self.save_progress();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn go_back(&mut self) -> bool {
-        if self.current > 0 {
-            self.current -= 1;
-            self.save_progress();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn reset(&mut self) {
-        self.current = 0;
-        let progress_path = self.tutorial_dir.join("progress.json");
-        let _ = std::fs::remove_file(progress_path);
-    }
-
-    fn save_progress(&self) {
-        let progress = TutorialProgress {
-            current_lesson: self.current,
-            completed: (0..self.current).collect(),
-        };
-        let progress_path = self.tutorial_dir.join("progress.json");
-        if let Ok(json) = serde_json::to_string_pretty(&progress) {
-            let _ = std::fs::write(progress_path, json);
-        }
-    }
-
-    fn status_line(&self) -> String {
-        let lesson = self.current_lesson();
-        format!(
-            "Tutorial: lesson {}/{} — \"{}\"{}",
-            self.current + 1,
-            self.total(),
-            lesson.title,
-            if self.is_last() { " (final)" } else { "" }
-        )
-    }
-}
-
-fn parse_lesson(raw: &str, filename: &str) -> (String, String) {
-    // Extract title from frontmatter if present
-    let mut title = filename.trim_end_matches(".md").to_string();
-    let content;
-
-    if let Some(rest) = raw.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---") {
-            let frontmatter = &rest[..end];
-            for line in frontmatter.lines() {
-                if let Some(t) = line.strip_prefix("title:") {
-                    title = t.trim().trim_matches('"').trim_matches('\'').to_string();
-                }
-            }
-            content = rest[end + 4..].trim().to_string();
-        } else {
-            content = raw.to_string();
-        }
-    } else {
-        content = raw.to_string();
-    }
-
-    (title, content)
-}
-
-fn load_tutorial_progress(tutorial_dir: &std::path::Path) -> TutorialProgress {
-    let path = tutorial_dir.join("progress.json");
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
 }
 
 fn merge_zed_agent_server(
@@ -8026,9 +7195,59 @@ fn handle_editor_command(args: &str) -> String {
     }
 }
 
+fn drain_agent_events_budgeted(
+    events_rx: &mut broadcast::Receiver<AgentEvent>,
+    app: &mut App,
+    budget: AgentDrainBudget,
+) -> DrainOutcome {
+    let started = std::time::Instant::now();
+    let mut handled = 0;
+
+    while handled < budget.max_events && started.elapsed() < budget.max_duration {
+        match events_rx.try_recv() {
+            Ok(agent_event) => {
+                app.handle_agent_event(agent_event);
+                handled += 1;
+            }
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                return DrainOutcome {
+                    handled,
+                    hit_budget: false,
+                };
+            }
+        }
+    }
+
+    DrainOutcome {
+        handled,
+        hit_budget: handled == budget.max_events || started.elapsed() >= budget.max_duration,
+    }
+}
+
+fn runtime_contention_snapshot(app: &App) -> runtime_trace::RuntimeContentionSnapshot {
+    let terminal_sessions = crate::tools::terminal::execution_session_snapshots();
+    runtime_trace::RuntimeContentionSnapshot {
+        process_rss_mb: get_rss_mb().unwrap_or_default().round() as u64,
+        managed_terminal_sessions: terminal_sessions.len() as u64,
+        running_terminal_sessions: terminal_sessions
+            .iter()
+            .filter(|session| {
+                session.state == crate::tools::terminal::ExecutionSessionState::Running
+            })
+            .count() as u64,
+        extension_widgets: app.runtime_inventory.extension_widgets as u64,
+        extension_rpc_handles: app.runtime_inventory.extension_rpc_handles as u64,
+        extension_polling_handles: (app.runtime_inventory.vox_polling_handles
+            + app.runtime_inventory.voice_polling_handles)
+            as u64,
+        widget_receivers: app.runtime_inventory.widget_receivers as u64,
+    }
+}
+
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
-    command_tx: mpsc::Sender<TuiCommand>,
+    command_tx: OperatorCommandTx,
     config: TuiConfig,
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
@@ -8235,6 +7454,9 @@ pub async fn run_tui(
         app.tutorial_overlay = Some(tutorial::Tutorial::new_demo(has_design));
     }
 
+    let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
+    let mut runtime_trace = runtime_trace::TuiRuntimeTrace::new(config.debug_tui);
+
     loop {
         // ── Splash replay (/splash command) ─────────────────────────
         if app.replay_splash {
@@ -8242,10 +7464,42 @@ pub async fn run_tui(
             startup_splash::run_replay_splash(&mut terminal, &mut app).await?;
         }
 
-        // Drain agent events BEFORE drawing — so telemetry counters
-        // (memory_ops, tool_calls) are current when draw reads them
-        while let Ok(agent_event) = events_rx.try_recv() {
-            app.handle_agent_event(agent_event);
+        // Operator input is latency-sensitive. Service a bounded batch before
+        // ingesting producer traffic so streaming cannot starve scrolling,
+        // cancellation, or editor control.
+        let mut handled_input = false;
+        let mut handled_input_count = 0_u64;
+        let input_started = std::time::Instant::now();
+        for _ in 0..16 {
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
+            let input_event = event::read()?;
+            handled_input = true;
+            handled_input_count += 1;
+            if matches!(
+                app.handle_terminal_event(input_event, &command_tx).await,
+                InputDisposition::SkipLoop
+            ) {
+                break;
+            }
+        }
+        if handled_input {
+            scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+            if let Some(trace) = &mut runtime_trace {
+                trace.record_input(handled_input_count, input_started);
+            }
+        }
+
+        // Agent traffic is throughput-sensitive. Bound each pass by both event
+        // count and wall time so token streams cannot monopolize the UI task.
+        let agent_drain =
+            drain_agent_events_budgeted(&mut events_rx, &mut app, scheduler.agent_budget());
+        if agent_drain.handled > 0 {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        }
+        if let Some(trace) = &mut runtime_trace {
+            trace.record_agent_drain(agent_drain.handled, agent_drain.hit_budget);
         }
 
         if let Some(rx) = &app.smoke_event_rx {
@@ -8263,6 +7517,7 @@ pub async fn run_tui(
             }
             for event in smoke_events {
                 app.handle_agent_event(event);
+                scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
             }
             if smoke_disconnected {
                 app.smoke_event_rx = None;
@@ -8283,7 +7538,7 @@ pub async fn run_tui(
                                 widget.label = new_title;
                             }
                             widget.current_data = data;
-                            // Frame will automatically re-render with updated data
+                            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                         }
                     }
                     crate::extensions::WidgetEvent::ShowModal {
@@ -8293,32 +7548,72 @@ pub async fn run_tui(
                     } => {
                         app.active_modal =
                             Some((widget_id, data, auto_dismiss_ms, std::time::Instant::now()));
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                     }
                     crate::extensions::WidgetEvent::ActionRequired { widget_id, actions } => {
                         app.active_action_prompt = Some((widget_id, actions));
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                     }
                 }
             }
         }
 
-        // Draw
-        terminal.draw(|f| app.draw(f))?;
-
-        // Poll for events with timeout (16ms ≈ 60fps)
-        let has_terminal_event = event::poll(Duration::from_millis(16))?;
-
-        if has_terminal_event {
-            let input_event = event::read()?;
-            if matches!(
-                app.handle_terminal_event(input_event, &command_tx).await,
-                InputDisposition::SkipLoop
-            ) {
-                continue;
-            } // match event::read()
-        } // if has_terminal_event
+        // Coalesce background mutations to the frame interval. Operator input
+        // remains urgent and draws immediately.
+        let now = std::time::Instant::now();
+        if scheduler.should_draw(now) {
+            let urgent = handled_input;
+            let draw_started = std::time::Instant::now();
+            let mut callback_elapsed = Duration::ZERO;
+            terminal.draw(|f| {
+                let callback_started = std::time::Instant::now();
+                app.draw(f);
+                callback_elapsed = callback_started.elapsed();
+            })?;
+            let draw_finished = std::time::Instant::now();
+            if let Some(trace) = &mut runtime_trace {
+                let segments = app.conversation.segments().len();
+                let scroll_offset = app.conversation.conv_state.scroll_offset;
+                let streaming = app.conversation.is_streaming();
+                let detached = app.conversation.conv_state.user_scrolled || scroll_offset > 0;
+                trace.record_draw(runtime_trace::DrawObservation {
+                    urgent,
+                    elapsed: draw_finished.duration_since(draw_started),
+                    callback_elapsed,
+                    phases: app.last_draw_phase_timings,
+                    completed_at: draw_finished,
+                    conversation_segments: segments,
+                    scroll_offset,
+                    streaming,
+                    detached,
+                });
+                trace.flush_if_due(draw_finished, runtime_contention_snapshot(&app));
+            }
+            scheduler.after_draw(now);
+        } else if let Some(trace) = &mut runtime_trace {
+            trace.record_dirty_without_draw();
+            trace.flush_if_due(now, runtime_contention_snapshot(&app));
+        }
 
         if app.should_quit {
             break;
+        }
+
+        // If the agent budget was exhausted, yield only long enough to service
+        // ready input, then continue draining on the next fair scheduling pass.
+        let poll_timeout = if agent_drain.hit_budget {
+            Duration::ZERO
+        } else {
+            scheduler.idle_poll_timeout(std::time::Instant::now())
+        };
+        if event::poll(poll_timeout)? {
+            let input_event = event::read()?;
+            let input_at = std::time::Instant::now();
+            let _ = app.handle_terminal_event(input_event, &command_tx).await;
+            scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+            if let Some(trace) = &mut runtime_trace {
+                trace.record_input(1, input_at);
+            }
         }
     }
 
@@ -8475,7 +7770,6 @@ mod slash_command_parsing_tests {
     use super::SlashResult;
     use super::TuiCommand;
     use super::canonical_slash_command;
-    use super::dashboard;
     use super::permission_lane::{
         format_permission_prompt, permission_persist_scope_label, permission_response_for_key,
     };
@@ -9006,13 +8300,13 @@ mod slash_command_parsing_tests {
 
     #[test]
     fn workbench_context_labels_active_tracking_and_lifecycle_links() {
-        let changes = vec![dashboard::ChangeSummary {
+        let changes = vec![crate::runtime_state::ChangeSummary {
             name: "rollup".into(),
             stage: "implementing".into(),
             done_tasks: 1,
             total_tasks: 3,
         }];
-        let focused = dashboard::FocusedNodeSummary {
+        let focused = crate::runtime_state::FocusedNodeSummary {
             id: "node".into(),
             title: "Node".into(),
             status: NodeStatus::Exploring,
@@ -9730,7 +9024,7 @@ mod slash_command_parsing_tests {
 
         match rx.try_recv() {
             Ok(TuiCommand::ExecuteControl {
-                request: crate::control_runtime::ControlRequest::ArmoryInstall { target },
+                request: crate::operator_commands::InterfaceControlRequest::ArmoryInstall { target },
                 respond_to: None,
             }) => assert_eq!(target, "skills/security"),
             other => panic!("expected ArmoryInstall ExecuteControl, got {other:?}"),

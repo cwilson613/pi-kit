@@ -8,6 +8,8 @@ use super::*;
 
 impl App {
     pub(super) fn draw(&mut self, frame: &mut Frame) {
+        let draw_started = std::time::Instant::now();
+        let mut draw_phases = runtime_trace::DrawPhaseTimings::default();
         self.refresh_at_picker();
         let area = frame.area();
         frame.render_widget(Clear, area);
@@ -74,6 +76,8 @@ impl App {
         }
 
         let area = frame.area();
+        draw_phases.preparation = draw_started.elapsed();
+        let background_started = std::time::Instant::now();
 
         // ── Global background fill ──────────────────────────────────
         // Fill the entire frame with our theme background BEFORE any widgets
@@ -91,6 +95,7 @@ impl App {
                 cell.set_fg(fg);
             }
         }
+        draw_phases.background_fill = background_started.elapsed();
 
         // ── Main surface layout ────────────────────────────────────
         let live_cleave = self
@@ -269,6 +274,7 @@ impl App {
         // Render content based on active tab
         if self.conversation.tabs.is_conversation_active() {
             // Render conversation widget (can mutate conv_state via frame.render_stateful_widget)
+            let projection_started = std::time::Instant::now();
             let density = self.settings().tool_detail;
             let conversation_projection = conversation_projection::project_conversation(
                 self.conversation.segments(),
@@ -287,6 +293,8 @@ impl App {
                     .and_then(|canonical| {
                         conversation_projection.projected_index_for_canonical(canonical)
                     });
+            draw_phases.conversation_projection = projection_started.elapsed();
+            let conversation_render_started = std::time::Instant::now();
             let (_, conv_state, image_cache) = self.conversation.segments_state_and_image_cache();
             let conv_widget = conv_widget::ConversationWidget::new(projected_segments, t.as_ref())
                 .with_mode(if self.ui_presentation.level == UiPresentationLevel::Full {
@@ -314,6 +322,7 @@ impl App {
                     image::render_image(image_area, frame, protocol);
                 }
             }
+            draw_phases.conversation_render = conversation_render_started.elapsed();
         } else {
             // Render extension widget with schema-aware formatting
             if let Tab::Extension { widget_id, .. } = self.conversation.tabs.active()
@@ -1089,5 +1098,6 @@ impl App {
                 actions,
             );
         }
+        self.last_draw_phase_timings = draw_phases;
     }
 }

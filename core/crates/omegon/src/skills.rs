@@ -66,6 +66,7 @@ use omegon_skills::{
     validate_activation_metadata, validate_project_signal,
 };
 
+#[cfg(any(feature = "tui", test))]
 pub use omegon_skills::skill_builder_prompt;
 
 /// All skills bundled into the binary at compile time.

@@ -10,7 +10,7 @@ impl App {
     pub(super) async fn handle_ui_action(
         &mut self,
         action: UiAction,
-        command_tx: &mpsc::Sender<TuiCommand>,
+        command_tx: &OperatorCommandTx,
     ) -> UiActionOutcome {
         match action {
             UiAction::SubmitPrompt(action) => {

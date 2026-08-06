@@ -893,7 +893,8 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("spec_content required"))?;
 
-                let path = spec::add_spec(&self.repo_path, name, domain, content)?;
+                let path = omegon_opsx::OpenSpecRepository::new(&self.repo_path)
+                    .add_spec(name, domain, content)?;
                 {
                     let mut opsx = self.opsx.lock().unwrap();
                     sync::sync_change_by_name(&mut opsx, &self.repo_path, name)?;

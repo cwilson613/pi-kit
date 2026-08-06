@@ -109,8 +109,8 @@ pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
             resume_hint: Some(format!("OpenSpec · {}", change.state.as_str())),
         });
         if change.has_tasks {
-            let tasks_path = change.path.join("tasks.md");
-            if let Ok(report) = crate::lifecycle::spec::validate_task_stable_ids(&tasks_path) {
+            let repository = omegon_opsx::OpenSpecRepository::new(repo_root);
+            if let Ok(report) = repository.validate_task_stable_ids(&change.name) {
                 task_identity_findings.extend(report.findings);
             }
         }

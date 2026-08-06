@@ -13,7 +13,10 @@ pub mod store;
 pub mod types;
 
 // Re-exports for convenience
-pub use artifacts::{ChangeArtifactRecord, OpenSpecRepository};
+pub use artifacts::{
+    ChangeArtifactRecord, OpenSpecRepository, TaskCheckboxStatus, TaskStableIdFinding,
+    TaskStableIdValidationReport, TaskWriteReport,
+};
 pub use authority::{
     ArtifactAuthority, ArtifactDrift, ArtifactDriftKind, ArtifactHealth, ArtifactState,
     ChangeArtifactEvidence, parse_declared_change_state,

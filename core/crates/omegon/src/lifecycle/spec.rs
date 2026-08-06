@@ -546,134 +546,19 @@ pub fn write_change_state(repo_path: &Path, name: &str, state: ChangeState) -> a
         .map_err(Into::into)
 }
 
-/// Add a spec file to an existing change.
-pub fn add_spec(
+#[cfg(test)]
+fn add_spec(
     repo_path: &Path,
     change_name: &str,
     domain: &str,
-    spec_content: &str,
+    content: &str,
 ) -> anyhow::Result<PathBuf> {
-    let change_dir = repo_path.join("openspec/changes").join(change_name);
-
-    if !change_dir.exists() {
-        anyhow::bail!("Change '{change_name}' does not exist");
-    }
-
-    let specs_dir = change_dir.join("specs");
-    fs::create_dir_all(&specs_dir)?;
-
-    // domain can be "auth" or "auth/tokens" — create subdirs as needed
-    let spec_path = if domain.contains('/') {
-        let parts: Vec<&str> = domain.rsplitn(2, '/').collect();
-        let subdir = specs_dir.join(parts[1]);
-        fs::create_dir_all(&subdir)?;
-        subdir.join(format!("{}.md", parts[0]))
-    } else {
-        specs_dir.join(format!("{domain}.md"))
-    };
-
-    atomic_write(&spec_path, spec_content.as_bytes())?;
-    OpenSpecRepository::new(repo_path).write_active_state(change_name, ChangeState::Specced)?;
-    Ok(spec_path)
+    OpenSpecRepository::new(repo_path)
+        .add_spec(change_name, domain, content)
+        .map_err(Into::into)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCheckboxStatus {
-    Pending,
-    Done,
-}
-
-impl TaskCheckboxStatus {
-    fn marker(self) -> &'static str {
-        match self {
-            Self::Pending => "[ ]",
-            Self::Done => "[x]",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskWriteReport {
-    pub path: PathBuf,
-    pub line: usize,
-    pub change: String,
-    pub group: String,
-    pub task_id: String,
-    pub previous_done: bool,
-    pub new_done: bool,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskStableIdValidationReport {
-    pub path: PathBuf,
-    pub findings: Vec<TaskStableIdFinding>,
-}
-
-impl TaskStableIdValidationReport {
-    pub fn is_ok(&self) -> bool {
-        self.findings.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
-pub struct TaskStableIdFinding {
-    pub line: usize,
-    pub task_id: String,
-    pub stable_id: String,
-    pub message: String,
-}
-
-pub fn validate_task_stable_ids(path: &Path) -> anyhow::Result<TaskStableIdValidationReport> {
-    let content = fs::read_to_string(path)?;
-    let mut seen: std::collections::BTreeMap<String, (usize, String)> =
-        std::collections::BTreeMap::new();
-    let mut findings = Vec::new();
-
-    for (idx, line) in content.lines().enumerate() {
-        let Some((_, task_id, description, _, _)) = parse_task_line_for_write(line) else {
-            continue;
-        };
-        let Some(stable_id) = parse_task_stable_id_marker(&description) else {
-            continue;
-        };
-        if !is_valid_task_stable_id(&stable_id) {
-            findings.push(TaskStableIdFinding {
-                line: idx + 1,
-                task_id: task_id.clone(),
-                stable_id: stable_id.clone(),
-                message:
-                    "task-id marker must contain only ASCII letters, digits, '.', '_', ':' or '-'"
-                        .to_string(),
-            });
-        }
-        if let Some((first_line, first_task_id)) =
-            seen.insert(stable_id.clone(), (idx + 1, task_id.clone()))
-        {
-            findings.push(TaskStableIdFinding {
-                line: idx + 1,
-                task_id,
-                stable_id: stable_id.clone(),
-                message: format!(
-                    "duplicate task-id marker also used by task {first_task_id} on line {first_line}"
-                ),
-            });
-        }
-    }
-
-    Ok(TaskStableIdValidationReport {
-        path: path.to_path_buf(),
-        findings,
-    })
-}
-
-fn is_valid_task_stable_id(stable_id: &str) -> bool {
-    !stable_id.is_empty()
-        && stable_id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '-'))
-}
-
+pub use omegon_opsx::{TaskCheckboxStatus, TaskStableIdFinding, TaskWriteReport};
 pub fn set_task_checkbox_status(
     repo_path: &Path,
     change_name: &str,
@@ -681,105 +566,9 @@ pub fn set_task_checkbox_status(
     task_id: &str,
     status: TaskCheckboxStatus,
 ) -> anyhow::Result<TaskWriteReport> {
-    let path = repo_path
-        .join("openspec/changes")
-        .join(change_name)
-        .join("tasks.md");
-    let content = fs::read_to_string(&path)?;
-    let newline = if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let mut lines: Vec<String> = content
-        .split_inclusive(['\n'])
-        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-        .collect();
-    if content.ends_with(newline) && lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-
-    let mut current_group: Option<String> = None;
-    let mut group_matches = 0usize;
-    let mut task_matches = Vec::new();
-
-    for (idx, line) in lines.iter().enumerate() {
-        if let Some(title) = markdown_heading_title(line) {
-            current_group = Some(title.to_string());
-            if title == group_title {
-                group_matches += 1;
-            }
-            continue;
-        }
-        if current_group.as_deref() != Some(group_title) {
-            continue;
-        }
-        if let Some((done, id, description, marker_start, marker_end)) =
-            parse_task_line_for_write(line)
-            && id == task_id
-        {
-            task_matches.push((idx, done, description, marker_start, marker_end));
-        }
-    }
-
-    if group_matches == 0 {
-        anyhow::bail!("OpenSpec task group '{group_title}' not found in change '{change_name}'");
-    }
-    if group_matches > 1 {
-        anyhow::bail!("OpenSpec task group '{group_title}' is ambiguous in change '{change_name}'");
-    }
-    if task_matches.is_empty() {
-        anyhow::bail!("OpenSpec task id '{task_id}' not found in group '{group_title}'");
-    }
-    if task_matches.len() > 1 {
-        anyhow::bail!("OpenSpec task id '{task_id}' is ambiguous in group '{group_title}'");
-    }
-
-    let (idx, previous_done, description, marker_start, marker_end) = task_matches.remove(0);
-    let new_done = matches!(status, TaskCheckboxStatus::Done);
-    lines[idx].replace_range(marker_start..marker_end, status.marker());
-    fs::write(&path, lines.join(newline) + newline)?;
-
-    Ok(TaskWriteReport {
-        path,
-        line: idx + 1,
-        change: change_name.to_string(),
-        group: group_title.to_string(),
-        task_id: task_id.to_string(),
-        previous_done,
-        new_done,
-        description,
-    })
-}
-
-fn markdown_heading_title(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start();
-    let rest = trimmed.strip_prefix("##")?;
-    if rest.starts_with('#') {
-        return None;
-    }
-    Some(rest.trim())
-}
-
-fn parse_task_line_for_write(line: &str) -> Option<(bool, String, String, usize, usize)> {
-    let marker_start = line
-        .find("[ ")
-        .or_else(|| line.find("[x]"))
-        .or_else(|| line.find("[X]"))?;
-    let marker = line.get(marker_start..marker_start + 3)?;
-    let done = matches!(marker, "[x]" | "[X]");
-    let after = line.get(marker_start + 3..)?.trim_start();
-    let (id, description) = after.split_once(' ')?;
-    if !id.chars().all(|c| c.is_ascii_digit() || c == '.') || !id.contains('.') {
-        return None;
-    }
-    Some((
-        done,
-        id.to_string(),
-        description.trim().to_string(),
-        marker_start,
-        marker_start + 3,
-    ))
+    OpenSpecRepository::new(repo_path)
+        .set_task_checkbox_status(change_name, group_title, task_id, status)
+        .map_err(Into::into)
 }
 
 /// Policy decision for OpenSpec evidence claim gates.
@@ -954,7 +743,9 @@ Then sharedState.cleave.children[i].status becomes running
     #[test]
     fn validate_task_stable_ids_reports_duplicates_and_invalid_markers() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tasks.md");
+        let task_dir = dir.path().join("openspec/changes/stable-id-validation");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        let path = task_dir.join("tasks.md");
         std::fs::write(
             &path,
             "## 1. Group
@@ -965,7 +756,9 @@ Then sharedState.cleave.children[i].status becomes running
 ",
         )
         .unwrap();
-        let report = validate_task_stable_ids(&path).unwrap();
+        let report = OpenSpecRepository::new(dir.path())
+            .validate_task_stable_ids("stable-id-validation")
+            .unwrap();
         assert!(!report.is_ok());
         assert_eq!(report.findings.len(), 2);
         assert!(

@@ -120,15 +120,24 @@ fn compact_tool_schema(def: &ToolDefinition) -> ToolDefinition {
 
 /// Default tool execution timeout (5 minutes).
 const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
-/// Absolute ceiling — no tool may run longer than 10 minutes, matching the
-/// bash tool schema's max timeout (600000ms). Prevents infinite hangs even
-/// if the model requests an absurd value.
-const MAX_TOOL_TIMEOUT: Duration = Duration::from_secs(600);
+const BASH_TOOL_NAME: &str = "bash";
 
 fn requested_tool_timeout(args: &Value) -> Option<u64> {
     args.get("timeout_secs")
         .and_then(Value::as_u64)
         .or_else(|| args.get("timeout").and_then(Value::as_u64))
+}
+
+fn effective_tool_timeout(
+    tool_name: &str,
+    args: &Value,
+    default_timeout: Duration,
+) -> Option<Duration> {
+    match requested_tool_timeout(args) {
+        Some(seconds) => Some(Duration::from_secs(seconds.saturating_add(5))),
+        None if tool_name == BASH_TOOL_NAME => None,
+        None => Some(default_timeout),
+    }
 }
 
 /// The event bus — owns all features and dispatches events to them.
@@ -577,29 +586,22 @@ impl EventBus {
             .copied()
             .unwrap_or(DEFAULT_TOOL_TIMEOUT);
 
-        // Honor the canonical timeout_secs argument and the legacy timeout
-        // alias. Add a cleanup grace so the tool's own deadline can terminate
-        // descendants and report the authoritative timeout first.
-        let timeout = requested_tool_timeout(&args)
-            .map(|secs| Duration::from_secs(secs.saturating_add(5)).min(MAX_TOOL_TIMEOUT))
-            .filter(|t| *t > default_timeout)
-            .unwrap_or(default_timeout);
+        let timeout = effective_tool_timeout(tool_name, &args, default_timeout);
 
         for (idx, def) in &self.tool_defs {
             if def.name == tool_name {
-                return match tokio::time::timeout(
-                    timeout,
-                    self.features[*idx].execute_with_context(
-                        tool_name,
-                        call_id,
-                        args,
-                        cancel,
-                        sink,
-                        omegon_traits::ToolExecutionContext::default(),
-                    ),
-                )
-                .await
-                {
+                let execution = self.features[*idx].execute_with_context(
+                    tool_name,
+                    call_id,
+                    args,
+                    cancel,
+                    sink,
+                    omegon_traits::ToolExecutionContext::default(),
+                );
+                let Some(timeout) = timeout else {
+                    return execution.await;
+                };
+                return match tokio::time::timeout(timeout, execution).await {
                     Ok(result) => result,
                     Err(_elapsed) => {
                         tracing::error!(
@@ -641,20 +643,16 @@ impl EventBus {
             .get(tool_name)
             .copied()
             .unwrap_or(DEFAULT_TOOL_TIMEOUT);
-        let timeout = requested_tool_timeout(&args)
-            .map(|secs| Duration::from_secs(secs.saturating_add(5)).min(MAX_TOOL_TIMEOUT))
-            .filter(|t| *t > default_timeout)
-            .unwrap_or(default_timeout);
+        let timeout = effective_tool_timeout(tool_name, &args, default_timeout);
 
         for (idx, def) in &self.tool_defs {
             if def.name == tool_name {
-                return match tokio::time::timeout(
-                    timeout,
-                    self.features[*idx]
-                        .execute_with_context(tool_name, call_id, args, cancel, sink, context),
-                )
-                .await
-                {
+                let execution = self.features[*idx]
+                    .execute_with_context(tool_name, call_id, args, cancel, sink, context);
+                let Some(timeout) = timeout else {
+                    return execution.await;
+                };
+                return match tokio::time::timeout(timeout, execution).await {
                     Ok(result) => result,
                     Err(_elapsed) => Ok(omegon_traits::ToolResult {
                         content: vec![omegon_traits::ContentBlock::Text {
@@ -1020,6 +1018,30 @@ mod tests {
 
         let result = bus.dispatch_command("nonexistent", "");
         assert!(matches!(result, CommandResult::NotHandled));
+    }
+
+    #[test]
+    fn bash_outer_timeout_preserves_explicit_deadlines_and_unbounded_default() {
+        assert_eq!(
+            effective_tool_timeout("bash", &json!({}), DEFAULT_TOOL_TIMEOUT),
+            None
+        );
+        assert_eq!(
+            effective_tool_timeout("bash", &json!({"timeout_secs": 900}), DEFAULT_TOOL_TIMEOUT),
+            Some(Duration::from_secs(905))
+        );
+        assert_eq!(
+            effective_tool_timeout("bash", &json!({"timeout": 42}), DEFAULT_TOOL_TIMEOUT),
+            Some(Duration::from_secs(47))
+        );
+    }
+
+    #[test]
+    fn non_bash_tools_keep_default_outer_timeout() {
+        assert_eq!(
+            effective_tool_timeout("count", &json!({}), DEFAULT_TOOL_TIMEOUT),
+            Some(DEFAULT_TOOL_TIMEOUT)
+        );
     }
 
     #[tokio::test]

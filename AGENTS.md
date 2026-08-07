@@ -43,7 +43,7 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 ## Key conventions
 
 - **Conventional commits** — `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`. See `skills/git/SKILL.md`.
-- **Internal branch policy** — focused maintainer/agent changes may commit directly to `main`; use feature branches for multi-session work. External contributors work on branches in forks and open pull requests. Release hardening happens on `release/X.Y`; stable fixes merge forward with `just merge-release-forward`.
+- **Internal branch policy** — do not start maintainer/agent implementation work directly on `main`. Create a focused feature/fix branch before editing code or docs, even for small changes. External contributors work on branches in forks and open pull requests. Release hardening happens on `release/X.Y`; stable fixes merge forward with `just merge-release-forward`.
 - **Read before editing** — `edit` requires an exact current-text match. Read the target first and make the smallest justified replacement.
 - **Test after changes** — run the narrowest relevant test while iterating, then the landing gate appropriate to the change. Do not claim a full gate passed unless it actually ran.
 - **Cargo test filters** — Cargo accepts only one positional test-name filter per invocation. Use one shared substring, separate invocations, or a loop such as `for f in test_one test_two; do cargo test -p omegon "$f" --locked || exit 1; done`.

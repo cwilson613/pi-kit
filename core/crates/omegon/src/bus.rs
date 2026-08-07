@@ -125,6 +125,12 @@ const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 /// if the model requests an absurd value.
 const MAX_TOOL_TIMEOUT: Duration = Duration::from_secs(600);
 
+fn requested_tool_timeout(args: &Value) -> Option<u64> {
+    args.get("timeout_secs")
+        .and_then(Value::as_u64)
+        .or_else(|| args.get("timeout").and_then(Value::as_u64))
+}
+
 /// The event bus — owns all features and dispatches events to them.
 pub struct EventBus {
     features: Vec<Box<dyn Feature>>,
@@ -571,17 +577,11 @@ impl EventBus {
             .copied()
             .unwrap_or(DEFAULT_TOOL_TIMEOUT);
 
-        // If the tool call includes a timeout parameter (bash: seconds),
-        // use it instead of the hardcoded default — clamped to MAX_TOOL_TIMEOUT
-        // so a runaway tool can't hang the agent forever. The tool's internal
-        // timeout still applies (and should fire first for graceful cleanup),
-        // but the bus layer must not silently kill the tool before the requested
-        // timeout expires. Add 5s grace so the tool's own timeout fires first
-        // with a clean error message rather than the bus's blunt cancellation.
-        let timeout = args
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .map(|secs| Duration::from_secs(secs + 5).min(MAX_TOOL_TIMEOUT))
+        // Honor the canonical timeout_secs argument and the legacy timeout
+        // alias. Add a cleanup grace so the tool's own deadline can terminate
+        // descendants and report the authoritative timeout first.
+        let timeout = requested_tool_timeout(&args)
+            .map(|secs| Duration::from_secs(secs.saturating_add(5)).min(MAX_TOOL_TIMEOUT))
             .filter(|t| *t > default_timeout)
             .unwrap_or(default_timeout);
 
@@ -641,10 +641,8 @@ impl EventBus {
             .get(tool_name)
             .copied()
             .unwrap_or(DEFAULT_TOOL_TIMEOUT);
-        let timeout = args
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .map(|secs| Duration::from_secs(secs + 5).min(MAX_TOOL_TIMEOUT))
+        let timeout = requested_tool_timeout(&args)
+            .map(|secs| Duration::from_secs(secs.saturating_add(5)).min(MAX_TOOL_TIMEOUT))
             .filter(|t| *t > default_timeout)
             .unwrap_or(default_timeout);
 

@@ -12,6 +12,7 @@ Confirmed or operator-observed defects deferred from the main Omegon work. Entri
 - [Inactive-provider credential expiry notifications](inactive-provider-credential-expiry-notifications.md) — relevance-aware severity, status, and notification deduplication.
 - [Bash timeout policy and failure reporting](bash-timeout-policy-and-failure-reporting.md) — layered deadline audit and typed cross-surface execution outcomes.
 - [Background process and terminal lifecycle leaks](background-process-and-terminal-lifecycle-leaks.md) — evidence-first process ownership, diagnostics, reconciliation, and cleanup audit.
+- [GitHub Copilot GPT-5.6 API contract](github-copilot-gpt-5-6-api-contract.md) — route exact and suffixed GPT-5.6 offerings through Copilot's Responses API and preserve useful upstream errors.
 
 ## Inactive-provider credential expiry produces misleading notifications
 

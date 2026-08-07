@@ -11,6 +11,7 @@ use omegon_traits::{
     ToolDefinition, ToolResult,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How often to check for credential expiry (in turns).
@@ -24,6 +25,9 @@ pub struct AuthFeature {
     cached_providers: Vec<crate::status::ProviderStatus>,
     /// Timestamp when providers were last probed.
     last_probe_time: Option<SystemTime>,
+    /// Providers already warned at their current expiry condition. Entries are
+    /// cleared once the credential becomes healthy or route-irrelevant.
+    notified_expiry: BTreeSet<String>,
     /// Shared runtime settings used to scope interruptive auth notifications
     /// to the active provider route.
     settings: Option<crate::settings::SharedSettings>,
@@ -41,6 +45,7 @@ impl AuthFeature {
             last_expiry_check: 0,
             cached_providers: Vec::new(),
             last_probe_time: None,
+            notified_expiry: BTreeSet::new(),
             settings: None,
         }
     }
@@ -50,21 +55,24 @@ impl AuthFeature {
         self
     }
 
-    fn active_provider_id(&self) -> Option<String> {
+    fn relevant_provider_ids(&self) -> Option<BTreeSet<String>> {
         let settings = self.settings.as_ref()?;
-        settings
-            .lock()
-            .ok()
-            .map(|settings| crate::providers::infer_provider_id(&settings.model))
+        settings.lock().ok().map(|settings| {
+            std::iter::once(crate::providers::infer_provider_id(&settings.model))
+                .chain(settings.fallback_providers.iter().cloned())
+                .collect()
+        })
     }
 
     fn provider_matches_active_route(&self, provider: &crate::status::ProviderStatus) -> bool {
-        let Some(active_provider) = self.active_provider_id() else {
+        let Some(relevant_providers) = self.relevant_provider_ids() else {
             return true;
         };
-        provider.name.eq_ignore_ascii_case(&active_provider)
-            || crate::auth::provider_by_id(&active_provider)
-                .is_some_and(|credential| provider.name == credential.display_name)
+        relevant_providers.iter().any(|provider_id| {
+            provider.name.eq_ignore_ascii_case(provider_id)
+                || crate::auth::provider_by_id(provider_id)
+                    .is_some_and(|credential| provider.name == credential.display_name)
+        })
     }
 
     /// Probe all providers with caching (5 min TTL).
@@ -384,14 +392,18 @@ impl Feature for AuthFeature {
 
 impl AuthFeature {
     /// Check for expiring OAuth credentials and emit warnings.
-    fn check_expiring_credentials(&self) -> Vec<BusRequest> {
+    fn check_expiring_credentials(&mut self) -> Vec<BusRequest> {
         let mut requests = Vec::new();
+        let relevant = self.relevant_provider_ids();
 
         for provider in &self.cached_providers {
+            let notification_key = provider.name.to_ascii_lowercase();
             if !self.provider_matches_active_route(provider) {
+                self.notified_expiry.remove(&notification_key);
                 continue;
             }
 
+            let mut warning = None;
             if provider.auth_method.as_deref() == Some("oauth") && provider.authenticated {
                 let provider_lower = provider.name.to_lowercase();
                 let auth_key = crate::auth::auth_json_key(&provider_lower);
@@ -401,28 +413,45 @@ impl AuthFeature {
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-
-                    let remaining_ms = creds.expires.saturating_sub(now_ms);
-                    let remaining_hours = remaining_ms / (1000 * 60 * 60);
-
-                    if creds.is_expired() {
-                        requests.push(BusRequest::Notify {
-                            message: format!("{} OAuth token has expired", provider.name),
-                            level: NotifyLevel::Warning,
-                        });
+                    let remaining_hours = creds.expires.saturating_sub(now_ms) / (1000 * 60 * 60);
+                    warning = if creds.is_expired() {
+                        Some((
+                            format!("{} OAuth token has expired", provider.name),
+                            NotifyLevel::Warning,
+                        ))
                     } else if remaining_hours < 24 {
-                        requests.push(BusRequest::Notify {
-                            message: format!(
+                        Some((
+                            format!(
                                 "{} OAuth token expires in {}h",
                                 provider.name, remaining_hours
                             ),
-                            level: NotifyLevel::Info,
-                        });
-                    }
+                            NotifyLevel::Info,
+                        ))
+                    } else {
+                        None
+                    };
                 }
+            }
+
+            if let Some((message, level)) = warning {
+                if self.notified_expiry.insert(notification_key.clone()) {
+                    requests.push(BusRequest::Notify { message, level });
+                }
+            } else {
+                self.notified_expiry.remove(&notification_key);
             }
         }
 
+        if let Some(relevant) = relevant {
+            self.notified_expiry.retain(|provider| {
+                relevant.iter().any(|provider_id| {
+                    provider.eq_ignore_ascii_case(provider_id)
+                        || crate::auth::provider_by_id(provider_id).is_some_and(|credential| {
+                            provider.eq_ignore_ascii_case(credential.display_name)
+                        })
+                })
+            });
+        }
         requests
     }
 }

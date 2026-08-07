@@ -130,7 +130,7 @@ mod tests {
                         "enabledExtensions": ["scribe-rpc"],
                         "disabledExtensions": ["legacy-http"],
                         "preloadedFiles": ["docs/spec.md"],
-                        "nexProfile": "sandboxed",
+                        "sandboxProfile": "sandboxed",
                         "slim": true
                     }
                 }

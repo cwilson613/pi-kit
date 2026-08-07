@@ -69,7 +69,7 @@ pub struct CleaveConfig {
     pub progress_sink: SharedProgressSink,
     /// Optional workflow template for per-phase configuration.
     pub workflow: Option<crate::workflow::WorkflowTemplate>,
-    /// When true, spawn children inside OCI containers via Nex profiles.
+    /// When true, spawn children inside OCI containers via sandbox profiles.
     pub sandbox: bool,
     /// Propagate parent --dangerously-bypass-permissions into child Omegon processes.
     pub dangerously_bypass_permissions: bool,
@@ -831,7 +831,7 @@ struct ChildDispatchConfig {
     injected_env: Vec<(String, String)>,
     runtime: CleaveChildRuntimeProfile,
     progress_sink: SharedProgressSink,
-    /// When true, spawn children inside OCI containers via Nex profile.
+    /// When true, spawn children inside OCI containers via sandbox profile.
     sandbox: bool,
     pub dangerously_bypass_permissions: bool,
 }

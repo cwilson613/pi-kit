@@ -1004,7 +1004,6 @@ impl AgentSetup {
             voice_polling_handles,
             extension_metadata,
             extension_rpc_handles,
-            nex_delegation_executor,
         ) = match discover_and_register_extensions(&cwd, &mut bus, std::sync::Arc::clone(&secrets))
             .await
         {
@@ -1016,7 +1015,6 @@ impl AgentSetup {
                 voice_handles,
                 metadata,
                 rpc_handles,
-                nex_executor,
             )) => (
                 widgets,
                 receivers,
@@ -1025,7 +1023,6 @@ impl AgentSetup {
                 voice_handles,
                 metadata,
                 rpc_handles,
-                nex_executor,
             ),
             Err(e) => {
                 tracing::warn!("extension discovery failed: {}", e);
@@ -1037,7 +1034,6 @@ impl AgentSetup {
                     vec![],
                     Default::default(),
                     Default::default(),
-                    None,
                 )
             }
         };
@@ -1053,23 +1049,9 @@ impl AgentSetup {
         } else {
             core_tools
         };
-        let nex_delegations = crate::nex::substrate::read_only_delegations(&extension_metadata);
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "core-tools",
             Box::new(core_tools),
-        )));
-        bus.register(Box::new(features::adapter::ToolAdapter::new(
-            "nex-substrate",
-            Box::new({
-                let provider = tools::nex_substrate::NexSubstrateProvider::new(cwd.clone())
-                    .with_boundary(boundary.clone())
-                    .with_delegations(nex_delegations);
-                if let Some(executor) = nex_delegation_executor {
-                    provider.with_executor(executor)
-                } else {
-                    provider
-                }
-            }),
         )));
         // Register internal tools that the dispatch layer calls but the LLM never sees.
         bus.register_internal_tool(crate::tool_registry::core::TRUST_DIRECTORY, "core-tools");
@@ -1903,7 +1885,6 @@ async fn discover_and_register_extensions(
     Vec<crate::extensions::ExtensionPollingHandle>,
     std::collections::BTreeMap<String, serde_json::Value>,
     std::collections::BTreeMap<String, crate::extensions::ExtensionPollingHandle>,
-    Option<std::sync::Arc<dyn crate::tools::nex_substrate::NexDelegationExecutor>>,
 )> {
     let ext_dir = crate::paths::omegon_home()?.join("extensions");
 
@@ -1917,7 +1898,6 @@ async fn discover_and_register_extensions(
             vec![],
             Default::default(),
             Default::default(),
-            None,
         ));
     }
 
@@ -1932,9 +1912,6 @@ async fn discover_and_register_extensions(
     let mut voice_polling_handles = vec![];
     let mut extension_metadata = std::collections::BTreeMap::new();
     let mut extension_rpc_handles = std::collections::BTreeMap::new();
-    let mut nex_delegation_executor: Option<
-        std::sync::Arc<dyn crate::tools::nex_substrate::NexDelegationExecutor>,
-    > = None;
     for entry in std::fs::read_dir(&ext_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -2005,14 +1982,6 @@ async fn discover_and_register_extensions(
                     ),
                 );
                 extension_rpc_handles.insert(ext_name.to_string(), spawned.rpc_polling_handle);
-                if nex_delegation_executor.is_none() {
-                    nex_delegation_executor = spawned.nex_delegation_executor.map(|executor| {
-                        executor
-                            as std::sync::Arc<
-                                dyn crate::tools::nex_substrate::NexDelegationExecutor,
-                            >
-                    });
-                }
                 bus.register(spawned.feature);
                 // Collect widgets and receivers for TUI
                 extension_widgets.extend(spawned.widgets);
@@ -2046,7 +2015,6 @@ async fn discover_and_register_extensions(
         voice_polling_handles,
         extension_metadata,
         extension_rpc_handles,
-        nex_delegation_executor,
     ))
 }
 

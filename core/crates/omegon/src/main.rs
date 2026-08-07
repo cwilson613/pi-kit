@@ -7,6 +7,7 @@
 //! Phase 3: Native LLM provider clients.
 
 use crate::conversation::PlanAction;
+#[cfg(feature = "tui")]
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "tui")]
@@ -53,6 +54,7 @@ pub mod code_act_proxy;
 pub mod code_act_sandbox;
 mod codex_config;
 mod command_registry;
+mod container_runtime;
 mod context;
 mod control;
 mod control_actions;
@@ -152,7 +154,7 @@ pub mod util;
 mod web;
 mod workflow;
 
-pub mod nex;
+pub mod sandbox_runtime;
 
 use anyhow::Context;
 use bridge::LlmBridge;
@@ -784,12 +786,6 @@ enum Commands {
         #[command(subcommand)]
         action: TaskAction,
     },
-
-    /// Manage Nex sandbox profiles — init, list, inspect.
-    Nex {
-        #[command(subcommand)]
-        action: NexAction,
-    },
 }
 
 #[derive(Clone, Debug, Default, Args)]
@@ -828,38 +824,6 @@ impl ControlTlsArgs {
             _ => anyhow::bail!("--rpc-tls-cert and --rpc-tls-key must be provided together"),
         }
     }
-}
-
-#[derive(Subcommand)]
-enum NexAction {
-    /// Generate a starter .omegon/nex/project.toml for this project.
-    Init,
-    /// List available sandbox profiles (built-in + custom).
-    List,
-    /// Show details of a specific profile.
-    Inspect {
-        /// Profile name or hash prefix.
-        name: String,
-    },
-    /// Export a profile as a docker-compose.yml service definition.
-    Compose {
-        /// Profile name or hash prefix.
-        name: String,
-        /// Service name in the compose file (defaults to profile name).
-        #[arg(long)]
-        service: Option<String>,
-    },
-    /// Export a Kubernetes/Cilium NetworkPolicy for egress filtering.
-    /// Use in clusters where iptables is unavailable (eBPF CNI, service mesh).
-    #[command(name = "networkpolicy")]
-    NetworkPolicy {
-        /// Profile name (uses its egress filter), or "sandboxed" for the
-        /// default --sandboxed allowlist.
-        #[arg(default_value = "sandboxed")]
-        source: String,
-    },
-    /// Check container runtime availability.
-    Status,
 }
 
 #[derive(Subcommand)]
@@ -2037,10 +2001,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Nex { ref action }) => {
-            nex_cli(action);
-            std::process::exit(0);
-        }
+
         Some(Commands::Bench { ref action }) => match action {
             BenchAction::RunTask {
                 prompt,
@@ -8643,314 +8604,6 @@ async fn run_bounded_task(
     std::process::exit(exit_code);
 }
 
-fn nex_cli(action: &NexAction) {
-    let cwd = std::env::current_dir().unwrap_or_default();
-
-    match action {
-        NexAction::Init => {
-            let nex_dir = cwd.join(".omegon").join("nex");
-            let profile_path = nex_dir.join("project.toml");
-            if profile_path.exists() {
-                eprintln!("  .omegon/nex/project.toml already exists");
-                std::process::exit(1);
-            }
-            let _ = std::fs::create_dir_all(&nex_dir);
-            let project_name = cwd
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project");
-            let template = format!(
-                r#"# Nex sandbox profile for {project_name}
-# Docs: https://omegon.styrene.io/docs/sandbox
-
-[profile]
-name = "{project_name}"
-base = "coding"
-# image = "ghcr.io/styrene-lab/omegon:latest"  # explicit image override
-
-# [overlays.custom]
-# packages = ["python312Packages.requests"]
-
-[resources]
-memory_mb = 2048
-# cpu_shares = 1024
-# pids_limit = 256
-readonly_rootfs = true
-
-# Network isolation policy: isolated | egress | bridge | host
-[network]
-policy = "isolated"
-
-# Filtered egress — uncomment to allow specific API endpoints only:
-# [network]
-# policy = "egress"
-# [network.egress]
-# allow_hosts = ["api.anthropic.com", "api.openai.com"]
-# allow_ports = [443]
-# deny_private = true
-# deny_metadata = true
-
-# Bridge with port mappings — uncomment for dev servers:
-# [network]
-# policy = "bridge"
-# [[network.ports]]
-# host = 3000
-# container = 3000
-
-[capabilities]
-mount_cwd = true
-filesystem_write = true
-# env_passthrough = ["DATABASE_URL"]
-# allowed_tools = ["bash", "read_file", "write_file", "edit_file"]
-# denied_tools = ["web_search"]
-"#
-            );
-            if let Err(e) = std::fs::write(&profile_path, template) {
-                eprintln!("  Failed to write {}: {e}", profile_path.display());
-                std::process::exit(1);
-            }
-            eprintln!("  Created .omegon/nex/project.toml");
-            eprintln!("  Enable with: /sandbox on (in TUI) or edit the profile to customize");
-        }
-        NexAction::List => {
-            let home = dirs::home_dir().unwrap_or_default().join(".omegon");
-            let registry = nex::NexRegistry::load(&home, Some(&cwd)).unwrap_or_else(|e| {
-                eprintln!("  Failed to load profiles: {e}");
-                std::process::exit(1);
-            });
-            let profiles = registry.list();
-            if profiles.is_empty() {
-                eprintln!("  No profiles found.");
-                return;
-            }
-            eprintln!("  {} profile(s):\n", profiles.len());
-            for p in &profiles {
-                let hash_short = if p.profile_hash.len() > 12 {
-                    &p.profile_hash[..12]
-                } else {
-                    &p.profile_hash
-                };
-                let image = p.image_ref.as_deref().unwrap_or("(needs build)");
-                eprintln!("  {:<20} {:<14} {}", p.name, hash_short, image);
-            }
-        }
-        NexAction::Inspect { name } => {
-            let home = dirs::home_dir().unwrap_or_default().join(".omegon");
-            let registry = nex::NexRegistry::load(&home, Some(&cwd)).unwrap_or_else(|e| {
-                eprintln!("  Failed to load profiles: {e}");
-                std::process::exit(1);
-            });
-            match registry.resolve(name) {
-                Some(p) => {
-                    eprintln!("  Profile: {}", p.name);
-                    eprintln!("  Hash:    {}", p.profile_hash);
-                    eprintln!("  Domain:  {}", p.base_domain);
-                    if let Some(ref img) = p.image_ref {
-                        eprintln!("  Image:   {img}");
-                    }
-                    eprintln!("\n  Resources:");
-                    if let Some(mem) = p.resource_limits.memory_mb {
-                        eprintln!("    memory:   {mem} MB");
-                    }
-                    eprintln!("    readonly: {}", p.resource_limits.readonly_rootfs);
-                    eprintln!("\n  Network:");
-                    eprintln!("    policy:  {}", p.capabilities.network.display_label());
-                    if let nex::NexNetworkPolicy::Egress {
-                        filter: Some(ref f),
-                    } = p.capabilities.network
-                    {
-                        if !f.allow_hosts.is_empty() {
-                            eprintln!("    hosts:   {}", f.allow_hosts.join(", "));
-                        }
-                        if !f.allow_cidrs.is_empty() {
-                            eprintln!("    cidrs:   {}", f.allow_cidrs.join(", "));
-                        }
-                        if !f.allow_ports.is_empty() {
-                            let ports: Vec<String> =
-                                f.allow_ports.iter().map(|p| p.to_string()).collect();
-                            eprintln!("    ports:   {}", ports.join(", "));
-                        }
-                        eprintln!("    deny_private:  {}", f.deny_private);
-                        eprintln!("    deny_metadata: {}", f.deny_metadata);
-                    }
-                    if let nex::NexNetworkPolicy::Bridge { ref ports } = p.capabilities.network {
-                        for pm in ports {
-                            eprintln!("    publish: {}:{}", pm.host, pm.container);
-                        }
-                    }
-                    eprintln!("\n  Capabilities:");
-                    eprintln!("    fs_write:  {}", p.capabilities.filesystem_write);
-                    eprintln!("    mount_cwd: {}", p.capabilities.mount_cwd);
-                    if !p.capabilities.allowed_tools.is_empty() {
-                        eprintln!("    allowed:   {}", p.capabilities.allowed_tools.join(", "));
-                    }
-                    if !p.capabilities.denied_tools.is_empty() {
-                        eprintln!("    denied:    {}", p.capabilities.denied_tools.join(", "));
-                    }
-                }
-                None => {
-                    eprintln!("  Profile '{}' not found.", name);
-                    eprintln!("  Run 'omegon nex list' to see available profiles.");
-                    std::process::exit(1);
-                }
-            }
-        }
-        NexAction::Compose { name, service } => {
-            let home = dirs::home_dir().unwrap_or_default().join(".omegon");
-            let registry = nex::NexRegistry::load(&home, Some(&cwd)).unwrap_or_else(|e| {
-                eprintln!("  Failed to load profiles: {e}");
-                std::process::exit(1);
-            });
-            match registry.resolve(name) {
-                Some(p) => {
-                    let output = nex::compose::to_compose_file(p, service.as_deref());
-                    // Write to stdout (not stderr) so it can be piped/redirected
-                    print!("{output}");
-                }
-                None => {
-                    eprintln!("  Profile '{}' not found.", name);
-                    eprintln!("  Run 'omegon nex list' to see available profiles.");
-                    std::process::exit(1);
-                }
-            }
-        }
-        NexAction::NetworkPolicy { source } => {
-            let hosts = if source == "sandboxed" {
-                // Default --sandboxed allowlist
-                vec![
-                    "api.anthropic.com",
-                    "api.openai.com",
-                    "openrouter.ai",
-                    "api.groq.com",
-                    "api.x.ai",
-                    "api.mistral.ai",
-                    "api.cerebras.ai",
-                    "api.moonshot.ai",
-                    "api.perplexity.ai",
-                    "generativelanguage.googleapis.com",
-                    "cloudcode-pa.googleapis.com",
-                    "router.huggingface.co",
-                    "ollama.com",
-                    "opencode.ai",
-                    "github.com",
-                    "api.github.com",
-                    "ghcr.io",
-                ]
-            } else {
-                eprintln!("  Custom profile egress → NetworkPolicy not yet implemented.");
-                eprintln!("  Use 'sandboxed' for the default allowlist.");
-                std::process::exit(1);
-            };
-
-            // Emit both Kubernetes NetworkPolicy and CiliumNetworkPolicy
-            let k8s_rules: Vec<String> = hosts
-                .iter()
-                .map(|h| format!(
-                    "    - to:\n        - ipBlock:\n            cidr: 0.0.0.0/0  # resolved from {h}\n      ports:\n        - protocol: TCP\n          port: 443"
-                ))
-                .collect();
-
-            let cilium_rules: Vec<String> = hosts
-                .iter()
-                .map(|h| format!("      - matchPattern: \"{h}\""))
-                .collect();
-
-            print!(
-                r#"# Generated by omegon nex networkpolicy
-# Apply with: kubectl apply -f <this-file>
-#
-# For clusters using Cilium CNI, use the CiliumNetworkPolicy below.
-# For vanilla Kubernetes, use the NetworkPolicy (requires DNS-based
-# egress support or manual IP resolution).
-#
-# Set OMEGON_EGRESS_MODE=external in the container env to skip
-# iptables and rely on this policy instead.
-
----
-# Kubernetes NetworkPolicy (vanilla)
-# NOTE: K8s NetworkPolicy doesn't support FQDN-based egress natively.
-# You'll need to resolve these hostnames to IPs or use a CNI that
-# supports FQDN policies (Cilium, Calico Enterprise).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: omegon-egress
-  labels:
-    app.kubernetes.io/name: omegon
-    sh.styrene.omegon.policy: egress-filter
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: omegon
-  policyTypes:
-    - Egress
-  egress:
-    # Allow DNS
-    - to: []
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # Allow LLM API endpoints (port 443)
-{rules}
-
----
-# CiliumNetworkPolicy (recommended for Cilium CNI)
-# Supports FQDN-based egress natively — no IP resolution needed.
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: omegon-egress
-  labels:
-    app.kubernetes.io/name: omegon
-    sh.styrene.omegon.policy: egress-filter
-spec:
-  endpointSelector:
-    matchLabels:
-      app.kubernetes.io/name: omegon
-  egress:
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-    - toFQDNs:
-{cilium_fqdns}
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-"#,
-                rules = k8s_rules.join("\n"),
-                cilium_fqdns = cilium_rules.join("\n"),
-            );
-        }
-        NexAction::Status => {
-            let runtime = nex::spawn::detect_container_runtime_public();
-            match runtime {
-                Some(rt) => {
-                    eprintln!("  Container runtime: {rt}");
-                    eprintln!("  Sandbox ready.");
-                    eprintln!("\n  Enable with: /sandbox on (in TUI)");
-                }
-                None => {
-                    eprintln!("  No container runtime found.");
-                    eprintln!("\n  Install podman (recommended) or docker:");
-                    eprintln!("    macOS:  brew install podman");
-                    eprintln!("    Linux:  apt install podman");
-                    eprintln!("    NixOS:  nix-env -i podman");
-                }
-            }
-        }
-    }
-}
-
 // ── Sandboxed re-exec ────────────────────────────────────────────────────
 //
 // When `--sandboxed` is passed, re-exec the entire omegon session inside
@@ -8964,7 +8617,7 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
         .oci_runtime
         .clone()
         .or_else(|| std::env::var("OMEGON_OCI_RUNTIME").ok())
-        .or_else(nex::spawn::detect_container_runtime_public)
+        .or_else(container_runtime::detect)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "--oci/--sandboxed requires a container runtime.\n\

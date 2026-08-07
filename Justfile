@@ -311,6 +311,37 @@ link channel="default":
     "$HOME/.local/bin/omegon" --which
     just install-skills
     just install-catalog
+    just install-default-extensions
+
+# Build and link default first-party extensions when their sibling checkout exists.
+# OMEGON_EXTENSIONS_ROOT overrides the conventional ../omegon-extensions path.
+install-default-extensions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    extensions_root="${OMEGON_EXTENSIONS_ROOT:-$(cd "$(pwd)/.." && pwd)/omegon-extensions}"
+    nex_root="$extensions_root/omegon-nex"
+    if [ ! -f "$nex_root/manifest.toml" ] || [ ! -f "$nex_root/Cargo.toml" ]; then
+        echo "  default extension omegon-nex unavailable at $nex_root — skipping"
+        exit 0
+    fi
+    manifest_name=$(awk -F ' *= *' '/^name *=/ { gsub(/["[:space:]]/, "", $2); print $2; exit }' "$nex_root/manifest.toml")
+    if [ "$manifest_name" != "omegon-nex" ]; then
+        echo "default extension manifest mismatch: expected omegon-nex, found ${manifest_name:-missing}" >&2
+        exit 1
+    fi
+    echo "── Building default extension omegon-nex ──"
+    cargo build --release --manifest-path "$nex_root/Cargo.toml"
+    destination="$HOME/.omegon/extensions/omegon-nex"
+    mkdir -p "$HOME/.omegon/extensions"
+    if [ -L "$destination" ]; then
+        rm "$destination"
+    elif [ -e "$destination" ]; then
+        echo "default extension destination already contains an operator-managed install: $destination" >&2
+        echo "remove it explicitly before replacing it with the bundled development link" >&2
+        exit 1
+    fi
+    ln -s "$(cd "$nex_root" && pwd)" "$destination"
+    echo "✓ default extension omegon-nex → $destination"
 
 
 # Diagnose Omegon launcher/channel resolution for this machine.

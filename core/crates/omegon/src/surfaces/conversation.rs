@@ -779,7 +779,7 @@ pub enum ToolFamily {
     Settings,
     Identity,
     Secrets,
-    Nex,
+    Extension,
     Reader,
     Network,
     Browser,
@@ -920,7 +920,9 @@ pub fn tool_visual_identity(name: &str, detail_args: Option<&str>) -> ToolVisual
             (ToolRealm::Orchestration, ToolFamily::Engagement, "engage")
         }
         name if name.starts_with("secret_") => (ToolRealm::Harness, ToolFamily::Secrets, "secret"),
-        name if name.starts_with("nex_") => (ToolRealm::Harness, ToolFamily::Nex, "nex"),
+        name if name.starts_with("extension_") => {
+            (ToolRealm::Harness, ToolFamily::Extension, "extension")
+        }
         name if name.starts_with("reader_") => (ToolRealm::Harness, ToolFamily::Reader, "reader"),
         name if name.starts_with("lipstyk_") => {
             (ToolRealm::Diagnostics, ToolFamily::SecurityScan, "scan")

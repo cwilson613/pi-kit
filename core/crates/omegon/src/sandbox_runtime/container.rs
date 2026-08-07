@@ -1,9 +1,9 @@
-//! Container materialization — resolve a NexProfile to a runnable container command.
+//! Container materialization — resolve a SandboxProfile to a runnable container command.
 
 use std::path::Path;
 use std::process::Command;
 
-use super::profile::NexProfile;
+use super::profile::SandboxProfile;
 
 /// Validate an environment variable key — alphanumeric + underscore only.
 /// Prevents injection of container flags via crafted env var names.
@@ -11,13 +11,13 @@ fn is_valid_env_key(key: &str) -> bool {
     !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Build a container runtime command from a Nex profile.
+/// Build a container runtime command from a Sandbox profile.
 ///
 /// The returned `Command` is ready to spawn via `tokio::process::Command::from(std)`.
 /// Applies resource limits, network policy, mount policy, and env passthrough
 /// from the profile.
 pub fn materialize_container(
-    profile: &NexProfile,
+    profile: &SandboxProfile,
     runtime: &str,
     cwd: &Path,
     prompt_file: &Path,
@@ -55,11 +55,11 @@ pub fn materialize_container(
     cmd.arg(format!("--network={}", network_policy.network_flag()));
 
     // Port mappings for bridge mode
-    if let super::profile::NexNetworkPolicy::Bridge { ports } = network_policy {
+    if let super::profile::SandboxNetworkPolicy::Bridge { ports } = network_policy {
         for mapping in ports {
             let proto = match mapping.protocol {
-                super::profile::NexPortProtocol::Tcp => "tcp",
-                super::profile::NexPortProtocol::Udp => "udp",
+                super::profile::SandboxPortProtocol::Tcp => "tcp",
+                super::profile::SandboxPortProtocol::Udp => "udp",
             };
             cmd.arg(format!(
                 "--publish={}:{}/{}",
@@ -71,7 +71,7 @@ pub fn materialize_container(
     // Filtered egress — inject iptables rules via entrypoint wrapper.
     // Requires NET_ADMIN capability inside the container (scoped to the
     // container's own network namespace, not the host).
-    if let super::profile::NexNetworkPolicy::Egress {
+    if let super::profile::SandboxNetworkPolicy::Egress {
         filter: Some(filter),
     } = network_policy
     {
@@ -120,12 +120,12 @@ pub fn materialize_container(
             cmd.arg("-e");
             cmd.arg(format!("{}={}", key, value));
         } else {
-            tracing::warn!(key = %key, "skipping env var with invalid key in nex container");
+            tracing::warn!(key = %key, "skipping env var with invalid key in sandbox container");
         }
     }
     for key in &profile.capabilities.env_passthrough {
         if !is_valid_env_key(key) {
-            tracing::warn!(key = %key, "skipping invalid env_passthrough key in nex profile");
+            tracing::warn!(key = %key, "skipping invalid env_passthrough key in sandbox profile");
             continue;
         }
         if let Ok(value) = std::env::var(key) {
@@ -164,7 +164,7 @@ pub fn materialize_container(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nex::manifest::NexManifest;
+    use crate::sandbox_runtime::manifest::SandboxManifest;
     use std::path::PathBuf;
 
     #[test]
@@ -195,7 +195,7 @@ policy = "isolated"
 mount_cwd = true
 filesystem_write = true
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cwd = PathBuf::from("/tmp/test-project");
         let prompt = cwd.join(".cleave-prompt.md");
 
@@ -231,7 +231,7 @@ base = "coding"
 [network]
 policy = "egress"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
             &profile,
             "podman",
@@ -263,7 +263,7 @@ policy = "egress"
 allow_hosts = ["api.anthropic.com"]
 allow_ports = [443]
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
             &profile,
             "podman",
@@ -300,7 +300,7 @@ host = 8080
 container = 80
 protocol = "tcp"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
             &profile,
             "podman",
@@ -328,7 +328,7 @@ base = "coding"
 [network]
 policy = "isolated"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
             &profile,
             "podman",
@@ -354,7 +354,7 @@ base = "infra"
 [network]
 policy = "host"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
             &profile,
             "podman",
@@ -377,7 +377,7 @@ policy = "host"
 name = "test"
 base = "coding"
 "#;
-        let profile = NexManifest::from_toml(toml).unwrap().into_profile();
+        let profile = SandboxManifest::from_toml(toml).unwrap().into_profile();
         let cmd = materialize_container(
             &profile,
             "podman",

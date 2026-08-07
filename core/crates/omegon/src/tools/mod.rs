@@ -11,7 +11,6 @@ pub mod codebase_search;
 pub mod edit;
 pub mod local_inference;
 pub mod native_cmd;
-pub mod nex_substrate;
 pub mod openapi;
 pub mod openapi_config;
 pub mod openapi_resolve;
@@ -389,7 +388,7 @@ impl std::error::Error for OperatorWaitRequired {}
 ///
 /// Checks whether a path is inside the workspace or a trusted directory.
 /// If not, returns a `PathPermissionError`. This is Tier 1 enforcement:
-/// defense-in-depth for non-sandboxed operation. The Nex container sandbox
+/// defense-in-depth for non-sandboxed operation. The container sandbox
 /// (Tier 3) provides the hard kernel-level boundary.
 ///
 /// `Clone` via `Arc` so it can be passed to CoreTools, ViewProvider,
@@ -632,7 +631,6 @@ pub struct CoreTools {
     /// Workspace boundary enforcer — shared with other tool providers.
     boundary: WorkspaceBoundary,
     terminal_tool_enabled: bool,
-    nex_delegations: Vec<crate::nex::substrate::NexSubstrateDelegation>,
 }
 
 impl CoreTools {
@@ -643,7 +641,6 @@ impl CoreTools {
             repo_model: None,
             boundary,
             terminal_tool_enabled: true,
-            nex_delegations: Vec::new(),
         }
     }
 
@@ -658,7 +655,6 @@ impl CoreTools {
             repo_model: Some(repo_model),
             boundary,
             terminal_tool_enabled: true,
-            nex_delegations: Vec::new(),
         }
     }
 
@@ -666,15 +662,6 @@ impl CoreTools {
     pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
         self.terminal_tool_enabled = settings.lock().map(|s| s.terminal_tool).unwrap_or(true);
         self.boundary = self.boundary.with_settings(settings);
-        self
-    }
-
-    /// Attach read-only Nex delegations discovered from extension metadata.
-    pub fn with_nex_delegations(
-        mut self,
-        delegations: Vec<crate::nex::substrate::NexSubstrateDelegation>,
-    ) -> Self {
-        self.nex_delegations = delegations;
         self
     }
 
@@ -1156,31 +1143,6 @@ impl ToolProvider for CoreTools {
                 }),
                 capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
-            ToolDefinition {
-                name: reg::NEX_CAPABILITY.into(),
-                label: reg::NEX_CAPABILITY.into(),
-                description: "Read-only Nex capability resolver. Checks whether a binary or extension capability is available and recommends host/Nex profile/extension routes without mutating the machine.".into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["check", "resolve"],
-                            "description": "Read-only action to perform"
-                        },
-                        "capability": {
-                            "type": "string",
-                            "description": "Capability key such as binary:d2, d2, extension:scratchpad, or omegon-voice"
-                        },
-                        "profile": {
-                            "type": "string",
-                            "description": "Optional Nex profile name to include as evidence"
-                        }
-                    },
-                    "required": ["action", "capability"]
-                }),
-                capabilities: vec![omegon_traits::ToolCapability::RepoInspection],
-            },
             // trust_directory is NOT in the tool schema — it's internal harness
             // plumbing called via bus.execute_internal() by the permission
             // dispatch layer. The handler is in CoreTools::execute().
@@ -1551,32 +1513,6 @@ impl ToolProvider for CoreTools {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'action' argument"))?;
                 terminal::execute(action, &args, &self.cwd, Some(self.boundary.clone())).await
-            }
-            reg::NEX_CAPABILITY => {
-                let action = args["action"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing 'action' argument"))?;
-                let capability = args["capability"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing 'capability' argument"))?;
-                let profile = args["profile"].as_str().map(str::to_string);
-                let resolver = crate::nex::capabilities::CapabilityResolver::bundled()?;
-                let context = crate::nex::capabilities::CapabilityContext {
-                    path: None,
-                    profile,
-                };
-                let resolution = match action {
-                    "check" => resolver.check(capability, context, None),
-                    "resolve" => resolver.resolve(capability, context, None),
-                    other => anyhow::bail!(
-                        "unsupported nex_capability action: {other}; MVP is read-only and supports only check|resolve"
-                    ),
-                };
-                let text = serde_json::to_string_pretty(&resolution)?;
-                Ok(ToolResult {
-                    content: vec![ContentBlock::Text { text }],
-                    details: serde_json::to_value(&resolution)?,
-                })
             }
             reg::TRUST_DIRECTORY => {
                 let path_str = args["path"]
@@ -2194,13 +2130,13 @@ open_questions:
         assert!(!tool_names.contains("list_local_models"));
         assert!(!tool_names.contains("manage_ollama"));
 
-        // 14 registered core tools. trust_directory is internal-only and not in
+        // 13 registered core tools. trust_directory is internal-only and not in
         // tool_defs; change is registered for harness batching but hidden from
         // the model-facing tool surface by EventBus filtering.
         assert_eq!(
             tool_names.len(),
-            14,
-            "Expected 14 registered core tools, got {}",
+            13,
+            "Expected 13 registered core tools, got {}",
             tool_names.len()
         );
     }

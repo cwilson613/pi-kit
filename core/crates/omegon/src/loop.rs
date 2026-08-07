@@ -549,6 +549,14 @@ pub async fn run(
             conversation.push_user(operator_correction_recovery_message());
         }
 
+        if crate::conversation::is_continuance_approval(conversation.last_user_prompt()) {
+            let (repo_root, branch) = current_repo_identity(&config.cwd);
+            let resolution = conversation
+                .intent
+                .resolve_pending_action(repo_root.as_deref(), branch.as_deref());
+            conversation.push_user(continuation_resolution_message(resolution));
+        }
+
         let _ = events.send(AgentEvent::TurnStart { turn });
         bus.emit(&omegon_traits::BusEvent::TurnStart { turn });
 
@@ -4065,6 +4073,47 @@ fn counts_as_real_work_for_dead_mouse(call: &ToolCall) -> bool {
                 .unwrap_or(false))
 }
 
+fn continuation_resolution_message(
+    resolution: crate::conversation::PendingActionResolution,
+) -> String {
+    match resolution {
+        crate::conversation::PendingActionResolution::Ready(action) => format!(
+            "[System: Operator continuance approval is bound to pending_action_id={} from turn {}: {}. Execute that bound action now; do not resume any older Workbench plan item unless it matches this pending action.]",
+            action.id, action.source_turn, action.summary
+        ),
+        crate::conversation::PendingActionResolution::Missing =>
+            "[System: The operator used continuance approval language, but there is no bound pending_action_id. Resolve the latest explicit operator directive from the live conversation; do not resume stale Workbench plan state.]"
+                .to_string(),
+        crate::conversation::PendingActionResolution::BranchMismatch {
+            action,
+            current_branch,
+        } => format!(
+            "[System: Continuance approval rejected for pending_action_id={}: branch mismatch. Pending action was bound to branch {:?}, current branch is {:?}. Do not mutate until the action is explicitly rebound or the checkout is reconciled.]",
+            action.id, action.branch, current_branch
+        ),
+        crate::conversation::PendingActionResolution::RepoMismatch {
+            action,
+            current_repo_root,
+        } => format!(
+            "[System: Continuance approval rejected for pending_action_id={}: repository mismatch. Pending action was bound to repo {:?}, current repo is {:?}. Do not mutate until the action is explicitly rebound or the workspace is reconciled.]",
+            action.id, action.repo_root, current_repo_root
+        ),
+    }
+}
+
+fn current_repo_identity(cwd: &std::path::Path) -> (Option<std::path::PathBuf>, Option<String>) {
+    let Ok(repo) = git2::Repository::discover(cwd) else {
+        return (None, None);
+    };
+    let repo_root = repo.workdir().map(std::path::Path::to_path_buf);
+    let branch = repo.head().ok().and_then(|head| {
+        head.is_branch()
+            .then(|| head.shorthand().map(str::to_string))
+            .flatten()
+    });
+    (repo_root, branch)
+}
+
 fn should_continue_text_only_turn(
     automation_level: crate::settings::AutomationLevel,
     user_prompt: &str,
@@ -4183,16 +4232,7 @@ fn looks_like_continuation_request(text: &str) -> bool {
 }
 
 fn user_prompt_is_continue_or_proceed(text: &str) -> bool {
-    let lower = text.trim().to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "continue" | "proceed" | "go ahead" | "do it" | "make it so"
-    ) || lower.contains("get it done")
-        || lower.contains("do it already")
-        || lower.contains("stop talking")
-        || lower.contains("make it so")
-        || lower.contains("go ahead")
-        || lower.contains("continue on")
+    crate::conversation::is_continuance_approval(text)
 }
 
 fn user_prompt_expects_concrete_action(text: &str) -> bool {
@@ -6917,6 +6957,90 @@ mod tests {
         ));
         assert!(!looks_like_completion("I'll write the fix next."));
         assert!(!looks_like_completion("short")); // too short
+    }
+
+    #[test]
+    fn continuation_resolution_message_binds_ready_action() {
+        let action = crate::conversation::PendingAction {
+            id: "pending-action-4-abcd".into(),
+            source_turn: 4,
+            directive_digest: "abcd".into(),
+            summary: "Open PR #167".into(),
+            repo_root: None,
+            branch: None,
+            created_at_ms: 1,
+            kind: crate::conversation::PendingActionKind::Continuation,
+        };
+
+        let message = continuation_resolution_message(
+            crate::conversation::PendingActionResolution::Ready(action),
+        );
+
+        assert!(message.contains("pending_action_id=pending-action-4-abcd"));
+        assert!(message.contains("Open PR #167"));
+        assert!(message.contains("do not resume any older Workbench plan item"));
+    }
+
+    #[test]
+    fn continuation_resolution_message_blocks_branch_mismatch() {
+        let action = crate::conversation::PendingAction {
+            id: "pending-action-9-deadbeef".into(),
+            source_turn: 9,
+            directive_digest: "deadbeef".into(),
+            summary: "Merge PR".into(),
+            repo_root: None,
+            branch: Some("feature/pr".into()),
+            created_at_ms: 1,
+            kind: crate::conversation::PendingActionKind::PlanExecution,
+        };
+
+        let message = continuation_resolution_message(
+            crate::conversation::PendingActionResolution::BranchMismatch {
+                action,
+                current_branch: Some("main".into()),
+            },
+        );
+
+        assert!(message.contains("branch mismatch"));
+        assert!(message.contains("Do not mutate"));
+        assert!(message.contains("feature/pr"));
+        assert!(message.contains("main"));
+    }
+
+    #[test]
+    fn continuation_resolution_message_blocks_repo_mismatch() {
+        let action = crate::conversation::PendingAction {
+            id: "pending-action-10-feedface".into(),
+            source_turn: 10,
+            directive_digest: "feedface".into(),
+            summary: "Finish release prep".into(),
+            repo_root: Some(std::path::PathBuf::from("/repo/a")),
+            branch: Some("release/0.29".into()),
+            created_at_ms: 1,
+            kind: crate::conversation::PendingActionKind::PlanExecution,
+        };
+
+        let message = continuation_resolution_message(
+            crate::conversation::PendingActionResolution::RepoMismatch {
+                action,
+                current_repo_root: Some(std::path::PathBuf::from("/repo/b")),
+            },
+        );
+
+        assert!(message.contains("repository mismatch"));
+        assert!(message.contains("Do not mutate"));
+        assert!(message.contains("/repo/a"));
+        assert!(message.contains("/repo/b"));
+    }
+
+    #[test]
+    fn continuation_resolution_message_handles_missing_action() {
+        let message =
+            continuation_resolution_message(crate::conversation::PendingActionResolution::Missing);
+
+        assert!(message.contains("no bound pending_action_id"));
+        assert!(message.contains("live conversation"));
+        assert!(message.contains("stale Workbench plan state"));
     }
 
     #[test]

@@ -1562,6 +1562,21 @@ impl CleaveFeature {
         }))
     }
 
+    fn resolve_run_args_from_approval_id(&self, args: &Value, background: bool) -> Option<Value> {
+        if args.get("directive").is_some() || args.get("plan_json").is_some() {
+            return None;
+        }
+        let approval_id = args.get("approval_id")?.as_str()?.trim();
+        if approval_id.is_empty() {
+            return None;
+        }
+        let mut approved_args = self.approved_run_args_for_pending_approval(approval_id)?;
+        if let Some(map) = approved_args.as_object_mut() {
+            map.insert("background".into(), Value::Bool(background));
+        }
+        Some(approved_args)
+    }
+
     fn approval_command_response(&self, action: &str, rest: &str) -> CommandResult {
         let (id, tail) = rest.split_once(' ').unwrap_or((rest, ""));
         let id = id.trim();
@@ -1680,6 +1695,14 @@ Directive: {}{}",
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let approved_args;
+        let args = if let Some(resolved) = self.resolve_run_args_from_approval_id(args, background)
+        {
+            approved_args = resolved;
+            &approved_args
+        } else {
+            args
+        };
         if !background {
             return self.execute_run_attached(args, cancel, None).await;
         }
@@ -2299,7 +2322,7 @@ impl Feature for CleaveFeature {
                             "description": "Pending cleave approval identifier from the menu gate, when available"
                         }
                     },
-                    "required": ["directive", "plan_json"]
+                    "required": []
                 }),
                 capabilities: vec![
                     omegon_traits::ToolCapability::StateChanging,
@@ -3090,6 +3113,49 @@ mod tests {
             "plan_json": plan_json,
             "max_parallel": 1
         })));
+    }
+
+    #[test]
+    fn approved_approval_id_resolves_exact_run_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
+        let plan_json = r#"{"children":[{"label":"one","description":"first","scope":["a.rs"]}]}"#;
+        feature.record_pending_approval("cleave_resume", "do resumable work", plan_json, 1, 1);
+        feature.update_pending_approval_state("cleave_resume", CleaveApprovalState::Approved);
+
+        let args = feature
+            .resolve_run_args_from_approval_id(&json!({"approval_id": "cleave_resume"}), true)
+            .expect("approved approval id should resolve to run args");
+
+        assert_eq!(args["directive"], "do resumable work");
+        assert_eq!(args["plan_json"], plan_json);
+        assert_eq!(args["max_parallel"], 1);
+        assert_eq!(args["background"], true);
+        assert_eq!(args["approved"], true);
+        assert_eq!(args["approval_id"], "cleave_resume");
+        assert!(feature.cleave_run_has_approved_gate(&args));
+    }
+
+    #[test]
+    fn approval_id_only_resume_rejects_unapproved_or_ambiguous_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let feature = CleaveFeature::new(dir.path(), vec![], false);
+        let plan_json = r#"{"children":[{"label":"one","description":"first","scope":["a.rs"]}]}"#;
+        feature.record_pending_approval("cleave_blocked", "do blocked work", plan_json, 1, 1);
+
+        assert!(
+            feature
+                .resolve_run_args_from_approval_id(&json!({"approval_id": "cleave_blocked"}), true)
+                .is_none()
+        );
+        assert!(
+            feature
+                .resolve_run_args_from_approval_id(
+                    &json!({"approval_id": "cleave_blocked", "directive": "changed"}),
+                    true
+                )
+                .is_none()
+        );
     }
 
     #[test]

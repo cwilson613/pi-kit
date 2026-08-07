@@ -2322,6 +2322,31 @@ enum CopilotWireContract {
     Responses,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopilotModelCapability {
+    Chat,
+    Embedding,
+    Unknown,
+}
+
+impl CopilotModelCapability {
+    fn from_model_id(model: &str) -> Self {
+        let model = model.trim().to_ascii_lowercase();
+        if model.contains("embedding") || model.starts_with("embed-") {
+            Self::Embedding
+        } else if [
+            "gpt-", "o1", "o3", "o4", "claude-", "gemini-", "grok-", "kimi-", "mai-",
+        ]
+        .iter()
+        .any(|prefix| model.starts_with(prefix))
+        {
+            Self::Chat
+        } else {
+            Self::Unknown
+        }
+    }
+}
+
 impl CopilotWireContract {
     fn for_model(model: &str) -> Self {
         let normalized = model.trim().to_ascii_lowercase();
@@ -4563,6 +4588,24 @@ impl LlmBridge for AntigravityClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copilot_model_capability_excludes_non_chat_models() {
+        let cases = [
+            ("gpt-5.6-sol", CopilotModelCapability::Chat),
+            ("claude-sonnet-4.6", CopilotModelCapability::Chat),
+            ("text-embedding-3-large", CopilotModelCapability::Embedding),
+            ("embed-multilingual-v3", CopilotModelCapability::Embedding),
+            ("future-model", CopilotModelCapability::Unknown),
+        ];
+        for (model, expected) in cases {
+            assert_eq!(
+                CopilotModelCapability::from_model_id(model),
+                expected,
+                "wrong capability classification for {model}"
+            );
+        }
+    }
 
     #[test]
     fn copilot_wire_contract_covers_aggregated_model_roster() {

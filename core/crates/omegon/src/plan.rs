@@ -673,6 +673,20 @@ pub enum PlanAction {
     Clear,
 }
 
+fn current_repo_identity_for_plan() -> (Option<std::path::PathBuf>, Option<String>) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let Ok(repo) = git2::Repository::discover(cwd) else {
+        return (None, None);
+    };
+    let repo_root = repo.workdir().map(std::path::Path::to_path_buf);
+    let branch = repo.head().ok().and_then(|head| {
+        head.is_branch()
+            .then(|| head.shorthand().map(str::to_string))
+            .flatten()
+    });
+    (repo_root, branch)
+}
+
 impl crate::conversation::IntentDocument {
     fn next_ephemeral_plan_id(&mut self) -> String {
         self.next_plan_index = self.next_plan_index.saturating_add(1);
@@ -747,6 +761,74 @@ impl crate::conversation::IntentDocument {
         self.sync_visible_plan_from_legacy();
     }
 
+    pub fn bind_pending_action(
+        &mut self,
+        source_turn: u32,
+        summary: impl Into<String>,
+        repo_root: Option<std::path::PathBuf>,
+        branch: Option<String>,
+        kind: crate::conversation::PendingActionKind,
+    ) -> crate::conversation::PendingAction {
+        use std::hash::{Hash, Hasher};
+
+        let summary = summary.into();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        source_turn.hash(&mut hasher);
+        summary.hash(&mut hasher);
+        repo_root.hash(&mut hasher);
+        branch.hash(&mut hasher);
+        kind.hash(&mut hasher);
+        let digest = format!("{:016x}", hasher.finish());
+        let created_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+        let action = crate::conversation::PendingAction {
+            id: format!("pending-action-{source_turn}-{digest}"),
+            source_turn,
+            directive_digest: digest,
+            summary,
+            repo_root,
+            branch,
+            created_at_ms,
+            kind,
+        };
+        self.pending_action = Some(action.clone());
+        action
+    }
+
+    pub fn resolve_pending_action(
+        &self,
+        current_repo_root: Option<&std::path::Path>,
+        current_branch: Option<&str>,
+    ) -> crate::conversation::PendingActionResolution {
+        let Some(action) = self.pending_action.clone() else {
+            return crate::conversation::PendingActionResolution::Missing;
+        };
+        if let Some(bound_repo) = action.repo_root.as_deref() {
+            let repo_matches = current_repo_root.is_some_and(|current| current == bound_repo);
+            if !repo_matches {
+                return crate::conversation::PendingActionResolution::RepoMismatch {
+                    action,
+                    current_repo_root: current_repo_root.map(std::path::Path::to_path_buf),
+                };
+            }
+        }
+        if let Some(bound_branch) = action.branch.as_deref()
+            && current_branch != Some(bound_branch)
+        {
+            return crate::conversation::PendingActionResolution::BranchMismatch {
+                action,
+                current_branch: current_branch.map(str::to_string),
+            };
+        }
+        crate::conversation::PendingActionResolution::Ready(action)
+    }
+
+    pub fn clear_pending_action(&mut self) {
+        self.pending_action = None;
+    }
+
     fn set_work_plan_inner(&mut self, items: Vec<String>) {
         let replacing_session = self
             .visible_plan
@@ -791,6 +873,25 @@ impl crate::conversation::IntentDocument {
     fn approve_work_plan_inner(&mut self) {
         if !self.work_plan.is_empty() && !self.work_plan_complete() {
             self.plan_mode = PlanMode::Approved;
+            let summary = self
+                .work_plan
+                .iter()
+                .find(|item| item.status == WorkItemStatus::Active)
+                .or_else(|| {
+                    self.work_plan
+                        .iter()
+                        .find(|item| item.status == WorkItemStatus::Pending)
+                })
+                .map(|item| item.description.clone())
+                .unwrap_or_else(|| "Execute approved work plan".to_string());
+            let (repo_root, branch) = current_repo_identity_for_plan();
+            self.bind_pending_action(
+                self.stats.turns,
+                summary,
+                repo_root,
+                branch,
+                crate::conversation::PendingActionKind::PlanExecution,
+            );
         }
     }
 
@@ -802,6 +903,7 @@ impl crate::conversation::IntentDocument {
     fn execute_work_plan_inner(&mut self) {
         if !self.work_plan.is_empty() && !self.work_plan_complete() {
             self.plan_mode = PlanMode::Executing;
+            self.clear_pending_action();
             if !self
                 .work_plan
                 .iter()

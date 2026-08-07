@@ -230,6 +230,13 @@ pub struct IntentDocument {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completion_ledger: Vec<CompletionLedgerEntry>,
 
+    /// Current continuation target for bare operator approvals such as
+    /// "continue", "proceed", or "make it so". This binds approval to a
+    /// concrete action identity instead of allowing stale plan state to capture
+    /// an ambiguous continuance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_action: Option<PendingAction>,
+
     pub constraints_discovered: Vec<String>,
     pub failed_approaches: Vec<FailedApproach>,
     pub open_questions: Vec<String>,
@@ -360,6 +367,43 @@ impl EvidenceLedger {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct PendingAction {
+    pub id: String,
+    pub source_turn: u32,
+    pub directive_digest: String,
+    pub summary: String,
+    pub repo_root: Option<PathBuf>,
+    pub branch: Option<String>,
+    pub created_at_ms: u64,
+    pub kind: PendingActionKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingActionKind {
+    #[default]
+    Continuation,
+    PlanExecution,
+    ToolApproval,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingActionResolution {
+    Ready(PendingAction),
+    Missing,
+    BranchMismatch {
+        action: PendingAction,
+        current_branch: Option<String>,
+    },
+    RepoMismatch {
+        action: PendingAction,
+        current_repo_root: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItem {
     pub description: String,
@@ -480,8 +524,8 @@ impl PlanMode {
             Self::Planning => {
                 "Planning gate active: keep work to read/search/design until /plan approve."
             }
-            Self::Approved => "Plan approved: use /plan execute before mutation-heavy work.",
-            Self::Executing => "Plan executing: update progress with /plan advance or /plan skip.",
+            Self::Approved => "Plan approved: the agent may begin the bound action.",
+            Self::Executing => "Plan executing: keep Workbench progress current.",
             Self::Complete => "Plan complete: use /plan clear or set a new plan.",
         }
     }
@@ -613,7 +657,10 @@ impl IntentDocument {
                     self.apply_plan_action(PlanAction::Complete { index });
                 }
                 "skip" => self.apply_plan_action(PlanAction::Skip),
-                "clear" => self.apply_plan_action(PlanAction::Clear),
+                "clear" => {
+                    self.apply_plan_action(PlanAction::Clear);
+                    self.clear_pending_action();
+                }
                 "list" | "status" => self.apply_plan_action(PlanAction::View),
                 _ => {}
             }
@@ -631,6 +678,13 @@ impl IntentDocument {
 
     /// Auto-populate current_task from the first user message if not set.
     pub fn set_task_from_prompt(&mut self, prompt: &str) {
+        // Bare continuance approvals are authority grants against the pending
+        // action, not replacement task directives. Keeping the prior task here
+        // prevents "proceed" from erasing the directive it is approving.
+        if is_continuance_approval(prompt) {
+            return;
+        }
+
         // Always update to the latest user prompt — the user's most recent
         // instruction supersedes whatever was set before. Stale current_task
         // caused the first prompt to be delegated verbatim for the entire session.
@@ -668,6 +722,27 @@ impl IntentDocument {
             self.open_questions.push(normalized.to_string());
         }
     }
+}
+
+pub fn is_continuance_approval(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "continue"
+            | "proceed"
+            | "please proceed"
+            | "go ahead"
+            | "do it"
+            | "do it already"
+            | "make it so"
+            | "get moving"
+            | "get it done"
+            | "stop talking"
+            | "stop talking and do it"
+    ) || lower.starts_with("continue on ")
+        || lower.starts_with("go ahead and ")
+        || lower.starts_with("please proceed with ")
+        || lower.starts_with("make it so: ")
 }
 
 const SESSION_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
@@ -953,6 +1028,15 @@ impl ConversationState {
         }
         if let Some(approach) = &intent.approach {
             lines.push(format!("Approach: {approach}"));
+        }
+        if let Some(action) = &intent.pending_action {
+            lines.push(format!(
+                "Pending action: {} [{}] from turn {}",
+                action.summary, action.id, action.source_turn
+            ));
+            if let Some(branch) = &action.branch {
+                lines.push(format!("Pending action branch: {branch}"));
+            }
         }
         if !intent.files_modified.is_empty() {
             let files: Vec<_> = intent
@@ -4577,6 +4661,30 @@ mod tests {
     }
 
     #[test]
+    fn continuance_approval_does_not_replace_current_task() {
+        let mut intent = IntentDocument::default();
+        intent.set_task_from_prompt("Open PR #167 from feature branch");
+        intent.set_task_from_prompt("proceed");
+
+        assert_eq!(
+            intent.current_task.as_deref(),
+            Some("Open PR #167 from feature branch")
+        );
+    }
+
+    #[test]
+    fn continuance_approval_detection_avoids_substring_false_positives() {
+        assert!(is_continuance_approval("please proceed"));
+        assert!(is_continuance_approval("go ahead and patch it"));
+        assert!(!is_continuance_approval(
+            "Before we go ahead, inspect the diff"
+        ));
+        assert!(!is_continuance_approval(
+            "Do not proceed until validation finishes"
+        ));
+    }
+
+    #[test]
     fn work_plan_set_and_advance() {
         let mut intent = IntentDocument::default();
         intent.set_work_plan(vec!["Read code".into(), "Patch".into(), "Implement".into()]);
@@ -4672,6 +4780,87 @@ mod tests {
         intent.clear_work_plan();
         assert_eq!(intent.plan_mode, PlanMode::Off);
         assert!(intent.work_plan.is_empty());
+    }
+
+    #[test]
+    fn approving_work_plan_binds_pending_plan_execution_action() {
+        let mut intent = IntentDocument::default();
+        intent.stats.turns = 12;
+        intent.set_work_plan(vec![
+            "Inspect plan system".into(),
+            "Patch authority binding".into(),
+        ]);
+
+        intent.approve_work_plan();
+
+        let action = intent
+            .pending_action
+            .as_ref()
+            .expect("pending action bound");
+        assert_eq!(action.source_turn, 12);
+        assert_eq!(action.summary, "Inspect plan system");
+        assert_eq!(action.kind, PendingActionKind::PlanExecution);
+        assert_eq!(intent.plan_mode, PlanMode::Approved);
+    }
+
+    #[test]
+    fn executing_work_plan_consumes_pending_plan_action() {
+        let mut intent = IntentDocument::default();
+        intent.set_work_plan(vec!["Inspect".into()]);
+        intent.approve_work_plan();
+        assert!(intent.pending_action.is_some());
+
+        intent.execute_work_plan();
+
+        assert_eq!(intent.plan_mode, PlanMode::Executing);
+        assert!(intent.pending_action.is_none());
+    }
+
+    #[test]
+    fn pending_action_resolution_enforces_branch_affinity() {
+        let mut intent = IntentDocument::default();
+        let repo = PathBuf::from("/repo");
+        let action = intent.bind_pending_action(
+            7,
+            "Open PR #167",
+            Some(repo.clone()),
+            Some("feature/pr".into()),
+            PendingActionKind::Continuation,
+        );
+
+        assert_eq!(
+            intent.resolve_pending_action(Some(&repo), Some("feature/pr")),
+            PendingActionResolution::Ready(action.clone())
+        );
+        assert_eq!(
+            intent.resolve_pending_action(Some(&repo), Some("main")),
+            PendingActionResolution::BranchMismatch {
+                action,
+                current_branch: Some("main".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn pending_action_resolution_enforces_repo_affinity() {
+        let mut intent = IntentDocument::default();
+        let repo = PathBuf::from("/repo");
+        let other = PathBuf::from("/other");
+        let action = intent.bind_pending_action(
+            3,
+            "Continue current task",
+            Some(repo),
+            Some("feature/work".into()),
+            PendingActionKind::PlanExecution,
+        );
+
+        assert_eq!(
+            intent.resolve_pending_action(Some(&other), Some("feature/work")),
+            PendingActionResolution::RepoMismatch {
+                action,
+                current_repo_root: Some(other),
+            }
+        );
     }
 
     #[test]

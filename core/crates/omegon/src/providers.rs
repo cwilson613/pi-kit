@@ -2205,17 +2205,16 @@ impl LlmBridge for GithubCopilotClient {
                     }
                 };
             let header_profile = crate::github_copilot::GithubCopilotHeaderProfile::from_env();
-            let use_responses_api = copilot_model_requires_responses_api(&model);
-            let body = if use_responses_api {
-                build_copilot_responses_body(&model, &wire_msgs, &wire_tools)
-            } else {
-                build_copilot_chat_completions_body(&model, &wire_msgs, &wire_tools)
+            let wire_contract = CopilotWireContract::for_model(&model);
+            let body = match wire_contract {
+                CopilotWireContract::Responses => {
+                    build_copilot_responses_body(&model, &wire_msgs, &wire_tools)
+                }
+                CopilotWireContract::ChatCompletions => {
+                    build_copilot_chat_completions_body(&model, &wire_msgs, &wire_tools)
+                }
             };
-            let endpoint_path = if use_responses_api {
-                "responses"
-            } else {
-                "chat/completions"
-            };
+            let endpoint_path = wire_contract.endpoint_path();
             let url = format!("{}/{endpoint_path}", base_url.trim_end_matches('/'));
             let request = client
                 .post(url)
@@ -2261,10 +2260,9 @@ impl LlmBridge for GithubCopilotClient {
                     return;
                 }
             };
-            let parsed_completion = match if use_responses_api {
-                parse_copilot_responses_completion(&parsed)
-            } else {
-                parse_copilot_chat_completion(&parsed)
+            let parsed_completion = match match wire_contract {
+                CopilotWireContract::Responses => parse_copilot_responses_completion(&parsed),
+                CopilotWireContract::ChatCompletions => parse_copilot_chat_completion(&parsed),
             } {
                 Ok(completion) => completion,
                 Err(error) => {
@@ -2318,8 +2316,38 @@ struct CopilotParsedCompletion {
     output_tokens: u64,
 }
 
-fn copilot_model_requires_responses_api(model: &str) -> bool {
-    matches!(model.trim(), "gpt-5.5")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopilotWireContract {
+    ChatCompletions,
+    Responses,
+}
+
+impl CopilotWireContract {
+    fn for_model(model: &str) -> Self {
+        let normalized = model.trim().to_ascii_lowercase();
+        if ["gpt-5.5", "gpt-5.6"]
+            .iter()
+            .any(|family| model_belongs_to_family(&normalized, family))
+        {
+            Self::Responses
+        } else {
+            Self::ChatCompletions
+        }
+    }
+
+    fn endpoint_path(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat/completions",
+            Self::Responses => "responses",
+        }
+    }
+}
+
+fn model_belongs_to_family(model: &str, family: &str) -> bool {
+    model == family
+        || model
+            .strip_prefix(family)
+            .is_some_and(|suffix| suffix.starts_with(['-', '.', '_']))
 }
 
 fn build_copilot_chat_completions_body(
@@ -4537,6 +4565,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn copilot_wire_contract_covers_aggregated_model_roster() {
+        let cases = [
+            ("gpt-5.5", CopilotWireContract::Responses),
+            ("gpt-5.5-codex", CopilotWireContract::Responses),
+            ("GPT-5.6", CopilotWireContract::Responses),
+            ("gpt-5.6-sol", CopilotWireContract::Responses),
+            ("gpt-5.60", CopilotWireContract::ChatCompletions),
+            ("gpt-5.4-mini", CopilotWireContract::ChatCompletions),
+            ("claude-opus-4.8", CopilotWireContract::ChatCompletions),
+            ("gemini-3.5-flash", CopilotWireContract::ChatCompletions),
+            ("grok-code-fast-1", CopilotWireContract::ChatCompletions),
+            ("kimi-k2.5", CopilotWireContract::ChatCompletions),
+            ("mai-ds-r1", CopilotWireContract::ChatCompletions),
+            ("future-model", CopilotWireContract::ChatCompletions),
+        ];
+        for (model, expected) in cases {
+            let actual = CopilotWireContract::for_model(model);
+            assert_eq!(actual, expected, "wrong Copilot contract for {model}");
+            assert_eq!(
+                actual.endpoint_path(),
+                match expected {
+                    CopilotWireContract::Responses => "responses",
+                    CopilotWireContract::ChatCompletions => "chat/completions",
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn copilot_gpt_5_6_responses_body_uses_input_contract() {
+        let body = build_copilot_responses_body(
+            "gpt-5.6-sol",
+            &[json!({"role": "user", "content": "hello"})],
+            &[],
+        );
+        assert_eq!(body["model"], "gpt-5.6-sol");
+        assert!(body.get("input").is_some());
+        assert!(body.get("messages").is_none());
+    }
+
+    #[test]
     fn sse_phase_gate_defaults_to_reasoning() {
         // Pre-first-token and reasoning phases must use the generous budget,
         // so the gate must start in the reasoning phase.
@@ -4613,8 +4682,14 @@ mod tests {
 
     #[test]
     fn copilot_gpt_5_5_uses_responses_api_body() {
-        assert!(copilot_model_requires_responses_api("gpt-5.5"));
-        assert!(!copilot_model_requires_responses_api("gpt-5.4"));
+        assert_eq!(
+            CopilotWireContract::for_model("gpt-5.5"),
+            CopilotWireContract::Responses
+        );
+        assert_eq!(
+            CopilotWireContract::for_model("gpt-5.4"),
+            CopilotWireContract::ChatCompletions
+        );
         let messages = vec![
             json!({"role": "system", "content": "sys"}),
             json!({"role": "user", "content": "hello"}),

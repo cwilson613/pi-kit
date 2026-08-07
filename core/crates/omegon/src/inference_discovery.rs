@@ -273,6 +273,35 @@ pub fn parse_google(body: &Value) -> Vec<DiscoveredModel> {
 }
 
 /// GitHub Copilot `{copilot_base}/models`: `{"data": [{"id", "name", "capabilities": {"limits": {"max_context_window_tokens", "max_output_tokens"}, "supports": {...}}, "model_picker_enabled"}]}`.
+/// Chat-route capability asserted or conservatively inferred for a discovered model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveredModelCapability {
+    Chat,
+    NonChat,
+    Unknown,
+}
+
+impl DiscoveredModelCapability {
+    pub fn for_copilot(model_id: &str, declared_type: Option<&str>) -> Self {
+        match declared_type.map(|value| value.trim().to_ascii_lowercase()) {
+            Some(kind) if kind == "chat" => {
+                if classify_non_chat(model_id) {
+                    Self::NonChat
+                } else {
+                    Self::Chat
+                }
+            }
+            Some(_) => Self::NonChat,
+            None if classify_non_chat(model_id) => Self::NonChat,
+            None => Self::Unknown,
+        }
+    }
+
+    pub fn is_chat(self) -> bool {
+        matches!(self, Self::Chat)
+    }
+}
+
 pub fn parse_copilot(body: &Value) -> Vec<DiscoveredModel> {
     let Some(entries) = body.get("data").and_then(Value::as_array) else {
         return Vec::new();
@@ -306,7 +335,7 @@ pub fn parse_copilot(body: &Value) -> Vec<DiscoveredModel> {
                 }
             }
             let model_type = entry.pointer("/capabilities/type").and_then(Value::as_str);
-            let non_chat = classify_non_chat(&id) || matches!(model_type, Some(t) if t != "chat");
+            let non_chat = !DiscoveredModelCapability::for_copilot(&id, model_type).is_chat();
             Some(DiscoveredModel {
                 id,
                 display_name,
@@ -723,6 +752,7 @@ mod tests {
              "capabilities": {"type": "chat", "limits": {}, "supports": {"tool_calls": true}}},
             {"id": "text-embedding-3-small-inference",
              "capabilities": {"type": "embeddings", "limits": {}}},
+            {"id": "future-model-without-type", "name": "Future"},
             {"id": "trajectory-compaction",
              "capabilities": {"type": "chat", "limits": {}}}
         ]})
@@ -731,7 +761,7 @@ mod tests {
     #[test]
     fn copilot_parser_extracts_limits_and_capabilities() {
         let models = parse_copilot(&copilot_fixture());
-        assert_eq!(models.len(), 7);
+        assert_eq!(models.len(), 8);
         let opus = &models[0];
         assert_eq!(opus.id, "claude-opus-4.8");
         assert_eq!(opus.context_input, Some(200000));
@@ -746,7 +776,11 @@ mod tests {
             assert!(!model.non_chat);
         }
         assert!(models[5].non_chat, "embeddings type is non-chat");
-        assert!(models[6].non_chat, "internal aux model is non-chat");
+        assert!(
+            models[6].non_chat,
+            "models without a declared chat type are not admitted"
+        );
+        assert!(models[7].non_chat, "internal aux model is non-chat");
     }
 
     #[test]

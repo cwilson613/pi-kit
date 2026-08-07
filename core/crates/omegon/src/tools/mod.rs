@@ -750,9 +750,16 @@ impl ToolProvider for CoreTools {
                             "type": "string",
                             "description": "Bash command to execute"
                         },
+                        "timeout_secs": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Wall-clock timeout in seconds (optional). Values above 600 are honored by the native runtime; provider or transport layers may impose a shorter call deadline. Use terminal sessions for commands expected to exceed 10 minutes."
+                        },
                         "timeout": {
-                            "type": "number",
-                            "description": "Timeout in seconds (optional). Values above 600 are honored by the native runtime; provider or transport layers may impose a shorter call deadline. Use terminal sessions for commands expected to exceed 10 minutes."
+                            "type": "integer",
+                            "minimum": 1,
+                            "deprecated": true,
+                            "description": "Deprecated alias for timeout_secs. Do not provide both fields with different values."
                         }
                     },
                     "required": ["command"]
@@ -1169,7 +1176,7 @@ impl ToolProvider for CoreTools {
                 let command = args["command"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
-                let timeout = args["timeout"].as_u64();
+                let timeout = parse_bash_timeout_secs(&args)?;
 
                 warn_git_mutation_via_bash(self.repo_model.is_some(), command);
 
@@ -1585,7 +1592,7 @@ impl ToolProvider for CoreTools {
             let command = args["command"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
-            let timeout = args["timeout"].as_u64();
+            let timeout = parse_bash_timeout_secs(&args)?;
 
             warn_git_mutation_via_bash(self.repo_model.is_some(), command);
 
@@ -1601,6 +1608,31 @@ impl ToolProvider for CoreTools {
         }
 
         self.execute(tool_name, call_id, args, cancel).await
+    }
+}
+
+fn parse_bash_timeout_secs(args: &Value) -> anyhow::Result<Option<u64>> {
+    fn parse_field(args: &Value, name: &str) -> anyhow::Result<Option<u64>> {
+        let Some(value) = args.get(name) else {
+            return Ok(None);
+        };
+        let seconds = value.as_u64().ok_or_else(|| {
+            anyhow::anyhow!("'{name}' must be a positive integer number of seconds")
+        })?;
+        if seconds == 0 {
+            anyhow::bail!("'{name}' must be greater than zero");
+        }
+        Ok(Some(seconds))
+    }
+
+    let canonical = parse_field(args, "timeout_secs")?;
+    let legacy = parse_field(args, "timeout")?;
+    match (canonical, legacy) {
+        (Some(canonical), Some(legacy)) if canonical != legacy => anyhow::bail!(
+            "conflicting bash timeout values: timeout_secs={canonical}, timeout={legacy}"
+        ),
+        (Some(seconds), _) | (_, Some(seconds)) => Ok(Some(seconds)),
+        (None, None) => Ok(None),
     }
 }
 
@@ -1626,6 +1658,36 @@ fn warn_git_mutation_via_bash(has_repo_model: bool, command: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bash_timeout_args_use_canonical_name_and_accept_legacy_alias() {
+        assert_eq!(parse_bash_timeout_secs(&json!({})).unwrap(), None);
+        assert_eq!(
+            parse_bash_timeout_secs(&json!({"timeout_secs": 42})).unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            parse_bash_timeout_secs(&json!({"timeout": 42})).unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            parse_bash_timeout_secs(&json!({"timeout_secs": 42, "timeout": 42})).unwrap(),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn bash_timeout_args_reject_invalid_or_conflicting_values() {
+        for args in [
+            json!({"timeout_secs": 0}),
+            json!({"timeout_secs": -1}),
+            json!({"timeout_secs": 1.5}),
+            json!({"timeout_secs": "10"}),
+            json!({"timeout_secs": 10, "timeout": 11}),
+        ] {
+            assert!(parse_bash_timeout_secs(&args).is_err(), "accepted {args}");
+        }
+    }
 
     #[test]
     fn lifecycle_plan_projection_projects_openspec_tasks() {

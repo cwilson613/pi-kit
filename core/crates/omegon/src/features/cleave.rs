@@ -315,7 +315,7 @@ fn cleave_assessment_approval(legacy_decision: &str, strategy: &Value) -> Value 
         "surface": Value::Null,
         "workbench_role": Value::Null,
         "reason": if recommended {
-            "Assessment recommends cleave. Invoke cleave_run to create a pending operator approval request; no approval menu exists yet."
+            "Assessment recommends cleave. Invoke cleave_run to create a pending operator approval request in the approval menu/action backend."
         } else {
             "Assessment does not recommend cleave execution; no approval request exists."
         },
@@ -2734,7 +2734,7 @@ mod tests {
             assessment["reason"]
                 .as_str()
                 .unwrap()
-                .contains("no approval menu exists yet")
+                .contains("approval menu/action backend")
         );
     }
 
@@ -3030,6 +3030,7 @@ mod tests {
         })));
     }
 
+    #[test]
     fn cleave_modify_records_change_request_and_evidence_reports_it() {
         let dir = tempfile::tempdir().unwrap();
         let mut feature = CleaveFeature::new(dir.path(), vec![], false);

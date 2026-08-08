@@ -108,6 +108,13 @@ impl SecretStore {
             .ok_or_else(|| anyhow::anyhow!("keyring read failed: no entry"))?;
         let key = hex_to_key(&hex_key)?;
 
+        // Keyring entries can disappear or be replaced independently of the
+        // SQLite store (notably across Linux Secret Service session changes).
+        // Verify the retrieved key before returning a usable handle; otherwise
+        // writes would succeed with the wrong key and create a mixed-key store.
+        Self::verify_canary(&db, &key)
+            .map_err(|e| anyhow::anyhow!("keyring store key is unavailable or invalid: {e}"))?;
+
         Ok(Self {
             db,
             key,
@@ -504,6 +511,9 @@ fn hex_to_key(hex_str: &str) -> anyhow::Result<[u8; KEY_LENGTH]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static KEYRING_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn temp_store_path() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -531,6 +541,33 @@ mod tests {
             store.get("API_KEY").unwrap().unwrap().expose_secret(),
             "identity-bound-secret"
         );
+    }
+
+    #[test]
+    fn keyring_open_rejects_replaced_store_key_before_writes() {
+        let _guard = KEYRING_TEST_LOCK.lock().unwrap();
+        let (_dir, path) = temp_store_path();
+        crate::resolve::keyring_delete("sh.styrene.omegon", "store-key").unwrap();
+
+        let store = SecretStore::init_keyring(&path).unwrap();
+        store
+            .put("SECRET", &SecretString::from("original-value"))
+            .unwrap();
+        drop(store);
+
+        crate::resolve::keyring_set(
+            "sh.styrene.omegon",
+            "store-key",
+            &hex::encode([9u8; KEY_LENGTH]),
+        )
+        .unwrap();
+
+        let error = SecretStore::open_keyring(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("keyring store key is unavailable or invalid"),
+            "unexpected error: {error}"
+        );
+        crate::resolve::keyring_delete("sh.styrene.omegon", "store-key").unwrap();
     }
 
     #[test]

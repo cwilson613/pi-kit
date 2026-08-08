@@ -152,7 +152,12 @@ pub(crate) fn keyring_get(service: &str, name: &str) -> Result<Option<String>, k
 #[cfg(not(test))]
 pub(crate) fn keyring_set(service: &str, name: &str, value: &str) -> Result<(), keyring::Error> {
     if keyring_suppressed() {
-        return Ok(());
+        return Err(keyring::Error::NoStorageAccess(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "keyring access is suppressed; refusing to report a non-persistent write",
+            ),
+        )));
     }
     let entry = keyring::Entry::new(service, name)?;
     entry.set_password(value)

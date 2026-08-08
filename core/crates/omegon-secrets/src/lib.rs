@@ -525,6 +525,21 @@ impl SecretsManager {
         self.with_managed_store(|store| store.get(name))
     }
 
+    /// Resolve a managed-store secret while preserving store/keyring failures.
+    pub fn resolve_managed_secret(&self, name: &str) -> anyhow::Result<Option<String>> {
+        let is_managed = self
+            .recipes
+            .read()
+            .unwrap()
+            .get(name)
+            .is_some_and(|recipe| recipe.as_string() == "store:");
+        if !is_managed {
+            return Ok(None);
+        }
+        self.load_managed_secret(name)
+            .map(|secret| secret.map(|value| value.expose_secret().to_string()))
+    }
+
     /// Resolve a secret by name. Checks in-memory caches first, then falls back
     /// to recipe resolution. Call only at an explicit operation boundary: a
     /// cache miss may execute Keychain, file, shell, or environment I/O.
@@ -790,6 +805,11 @@ impl SecretsManager {
     }
 
     /// Store a raw value in Omegon's encrypted store and create a `store:` recipe.
+    ///
+    /// If an existing store cannot be opened, this returns the underlying
+    /// keyring/decryption error. It never silently recreates the database:
+    /// doing so would discard other managed secrets. Recovery must be an
+    /// explicit store reset operation.
     pub fn set_managed_secret(&self, name: &str, value: &str) -> anyhow::Result<()> {
         let secret = SecretString::from(value.to_string());
         self.with_managed_store(|store| store.put(name, &secret))?;

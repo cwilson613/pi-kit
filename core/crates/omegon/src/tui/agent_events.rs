@@ -102,6 +102,10 @@ impl App {
     }
 
     pub(super) fn handle_agent_event(&mut self, event: AgentEvent) {
+        let decision = self.stream_presentation.classify(event.clone());
+        if !decision.apply_now {
+            return;
+        }
         match event {
             AgentEvent::TurnStart { turn } => {
                 self.agent_active = true;

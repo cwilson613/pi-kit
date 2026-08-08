@@ -30,6 +30,9 @@ target_for_root() {
     local dev="$root/target/dev-release/omegon"
     local rel_mtime=0 dev_mtime=0
 
+    # `just link` builds release while `just run` builds dev-release. When both
+    # artifacts remain in one checkout, recency is the only profile-neutral
+    # indication of which build the operator most recently requested.
     if is_executable_target "$rel"; then
         rel_mtime="$(stat -c %Y "$rel" 2>/dev/null || stat -f %m "$rel")"
     fi

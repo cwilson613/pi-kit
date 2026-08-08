@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed checkout-local launcher resolution when both optimized build profiles exist. The stable launcher now selects the most recently built executable instead of always preferring `target/release`, preventing an old linked release artifact from shadowing a fresh `just run` development build.
+
 ## [0.29.0] - 2026-08-08
 
 ### Added

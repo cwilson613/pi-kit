@@ -239,6 +239,9 @@ impl App {
             AgentEvent::MessageStart { .. } => {
                 self.slim_turn_state = SlimTurnState::OpeningStream;
             }
+            AgentEvent::MessageEnd => {
+                self.conversation.finalize_message();
+            }
             AgentEvent::MessageChunk { text } => {
                 self.slim_turn_state = SlimTurnState::Responding;
                 let was_streaming = self.conversation.is_streaming();

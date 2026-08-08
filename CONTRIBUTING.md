@@ -96,10 +96,9 @@ Expect maintainers to explain blocking requests, distinguish required changes fr
 ```bash
 just bootstrap --check
 just build
-just test-rust
 ```
 
-The repository is a Cargo workspace rooted at this directory. The main binary is `core/crates/omegon`, and `cargo` commands are run from the repo root unless a recipe says otherwise.
+The repository is a Cargo workspace rooted at this directory. The main binary is `core/crates/omegon`, and `cargo` commands are run from the repo root unless a recipe says otherwise. Use the focused validation table above while iterating; reserve `just test-rust` for broad or release-hardening gates.
 
 `just link` installs the local build for development by writing `~/.omegon/dev-alias.sh` and wiring the current shell profile. Source that file in the current shell if you need the alias immediately:
 
@@ -111,7 +110,53 @@ It deliberately does not overwrite `/usr/local/bin`, `/opt/homebrew/bin`, or pac
 
 ## Development Model
 
-**Trunk-based development** on `main`. Direct commits for small, self-contained changes. Feature branches for multi-file or multi-session work.
+Omegon uses trunk-based development, but `main` is no longer a casual working branch. All implementation work should start from a focused branch and land through a pull request unless it falls under the direct-to-main exception policy below.
+
+### Branch Policy
+
+External contributors should work from a fork and open a pull request. Maintainers with repository access should also use a topic branch for ordinary work.
+
+| Scenario | Approach |
+|---|---|
+| Ordinary bug fix, feature, refactor, docs update, or workflow change | Create `fix/<name>`, `feature/<name>`, `refactor/<name>`, `docs/<name>`, or `chore/<name>` and open a PR to `main` |
+| Multi-session work | Push a topic branch regularly and keep the PR draft until ready |
+| Cleave-dispatched parallel tasks | Use automatic `cleave/*` worktree branches; merge through the parent topic branch |
+| Stable-line hardening | Branch from and target `release/X.Y` |
+| Release preparation or version-state changes | Use a dedicated release-prep branch; see [Version and Release Authority](#version-and-release-authority) |
+
+Do not start maintainer or agent implementation work directly on `main`. Pull `main`, create the focused branch, then edit.
+
+### Direct-to-main Exceptions
+
+Direct commits to `main` are reserved for exceptional maintainer operations:
+
+- reverting a bad merge when a PR would prolong a broken trunk;
+- emergency repository/CI repair that blocks all PR validation;
+- administrative metadata that cannot practically be routed through PR;
+- explicitly authorized post-merge housekeeping.
+
+Even then, keep the commit focused, use a Conventional Commit message, run the narrowest relevant validation, and follow up with a PR if the emergency commit leaves policy, docs, tests, or release state incomplete.
+
+### Branch Naming
+
+Use `<type>/<short-description>`:
+
+```text
+feature/design-tree
+fix/memory-zombie-resurrection
+refactor/rename-diffuse-to-render
+docs/contributing-branch-policy
+chore/open-0.30-dev-line
+release-prep/v0.29.0
+```
+
+### Pull Requests and Merging
+
+- Open a PR for ordinary work, including maintainer-authored work.
+- Keep PRs focused; split generated state, rustfmt-only churn, and release/version state into separate commits when possible.
+- Fill in the validation section honestly. "Not run" is acceptable when paired with a reason.
+- Merge commits, squash merges, and rebase merges are all enabled by GitHub; choose the method that preserves the useful review/history shape. Do not rebase branches that touch union-merged memory transport files.
+- Delete topic branches after merge unless they are long-lived release branches.
 
 ### Happy Development Loop (Maintainers and Large Changes)
 
@@ -122,7 +167,7 @@ Use this loop for substantial changes to Omegon itself:
 1. **Inspect** — establish the current repository, runtime, and Workbench state from evidence before changing anything.
 2. **Design** — identify the smallest coherent change, record durable decisions when the work has architectural consequences, and surface unresolved assumptions instead of coding through them.
 3. **Implement** — make bounded edits against code already read; keep interfaces and ownership explicit.
-4. **Test** — run focused checks while iterating, then the required landing gates. For Rust behavior changes, this means `just lint` and `just test-rust` before commit.
+4. **Test** — run focused checks while iterating, then the required landing gates. For isolated Rust behavior changes, use the crate-specific gate plus `just clippy-changed`; use `just test-commit` for multi-crate/shared-contract changes and reserve `just lint` plus serialized `just test-rust` for broad or high-risk work and release hardening.
 5. **Commit** — update `[Unreleased]` for operator-visible behavior or workflow changes and create a focused Conventional Commit.
 6. **Rebuild and install** — run `just link` so the executable and bundled assets used by the development environment match the committed source.
 7. **Exercise the real harness** — launch the installed/current Omegon through the normal operator path and verify the behavior in its actual TUI, process, and tool environment rather than relying only on unit tests.
@@ -140,34 +185,62 @@ A timeout or cancellation must terminate the full process group, not only its im
 
 The final runtime exercise complements automated validation; it does not replace it. If the harness cannot be exercised in the current environment, record that limitation explicitly rather than treating a successful build as equivalent evidence.
 
-### When Maintainers Branch
+## Version and Release Authority
 
-The table below describes branches created inside the main repository. External contributors should normally create any topic branch in their fork and open a pull request.
+SemVer and release state must come from a branch whose name and target make release intent explicit. Do not edit release authority files directly on `main`.
 
-| Scenario | Approach |
-|---|---|
-| Single-file fix, typo, config tweak | Commit directly to `main` |
-| Multi-file feature or refactor | `feature/<name>` or `refactor/<name>` branch |
-| Multi-session work (spans days) | Feature branch, push regularly |
-| Cleave-dispatched parallel tasks | Automatic `cleave/*` worktree branches (ephemeral) |
+Release authority files are:
 
-### Branch Naming
+- workspace-version declarations in root and crate `Cargo.toml` files
+- the workspace-version updates propagated into `Cargo.lock`
+- `.omegon/milestones.json`
+- versioned release sections in `CHANGELOG.md`
+- release manifests or packaging metadata when a release workflow explicitly consumes them
 
-Follow `<type>/<short-description>` per the [git skill](skills/git/SKILL.md):
+Ordinary dependency changes may update dependency entries in `Cargo.toml` and `Cargo.lock` on a normal focused `chore/` or dependency-update branch. They become release-authority changes only when they alter the workspace/package version or release-generated metadata.
 
+### Trunk Version
+
+`main` carries the active development line, such as `0.29.0-dev`. Normal feature and fix PRs should not change the workspace version. Operator-visible behavior, public docs, tooling, packaging, API behavior, or contributor workflow changes should update `[Unreleased]` in `CHANGELOG.md` instead.
+
+### Release Branches
+
+Stable releases are cut from `release/X.Y` branches. Release branches own stable tags for that line; trunk owns normal development and nightly/dev builds.
+
+Use the existing release helpers rather than hand-rolling branch/version mechanics:
+
+```bash
+just branch-release
+just merge-release-forward
 ```
-feature/design-tree
-fix/memory-zombie-resurrection
-refactor/rename-diffuse-to-render
-chore/bump-dependencies
+
+Release hardening fixes target `release/X.Y` first, then merge forward to `main` with `just merge-release-forward` so trunk receives the stable-line fix without pulling version state backward.
+
+### Release-prep PRs
+
+Version bumps and release-state changes should be isolated in a dedicated PR. Use a branch such as:
+
+```text
+release-prep/vX.Y.Z
+chore/release-vX.Y.Z
+chore/open-X.Y-dev-line
 ```
 
-### Merging
+A release-prep PR may move `[Unreleased]` entries into an exact version section, update release authority files, refresh `Cargo.lock`, and adjust release metadata. It should not bundle unrelated feature work.
 
-- **Merge commits** (not squash, not rebase) for feature branches — preserves full history
-- **Fast-forward** is fine for single-commit branches
-- **Never rebase branches that touch `facts.jsonl`** — see [Memory Sync](#memory-sync) below
-- Delete the branch after merge (local and remote)
+### Opening the Next Development Line
+
+After cutting `release/X.Y`, trunk must open the next development line through a PR, for example `chore/open-0.30-dev-line`. This keeps `origin/main` from advertising an older version than the active release branch and matches the invariant enforced by the release scripts.
+
+### Stable Hotfixes
+
+Stable hotfixes should:
+
+1. branch from `release/X.Y`;
+2. target the PR to `release/X.Y`;
+3. update the exact release changelog section as needed;
+4. pass release-appropriate validation;
+5. merge forward to `main` after the release branch PR lands.
 
 ## Commits
 
@@ -278,12 +351,14 @@ Lifecycle artifacts under `docs/` and `openspec/` are also treated as durable pr
 
 By contrast, transient cleave runtime artifacts such as machine-local workspaces and worktrees remain optional and should live outside the durable lifecycle paths. If something is experimental or disposable, do not leave it under `docs/` or `openspec/`.
 
-The standard validation path enforces this policy:
+The broad validation path enforces this policy:
 
 ```bash
 just lint
 just test-rust
 ```
+
+Focused changes may use the narrower landing gates described under [Rust Workspace](#rust-workspace).
 
 If it reports untracked lifecycle artifacts, either:
 - `git add` the durable files under `docs/` / `openspec/`, or
@@ -294,29 +369,36 @@ If it reports untracked lifecycle artifacts, either:
 | Crate | Purpose |
 |---|---|
 | `omegon` | Main binary: TUI, agent loop, providers, tools, ACP, daemon/control plane |
-| `omegon-codescan` | Code scanning helpers |
-| `omegon-extension` | Extension SDK and protocol types |
-| `omegon-git` | Git and worktree operations |
-| `omegon-memory` | Project memory runtime |
-| `omegon-opsx` | OpenSpec/lifecycle engine |
-| `omegon-secrets` | Secret resolution and redaction |
-| `omegon-traits` | Shared protocol and event types |
-| `omegon-web` | Web dashboard and web-facing support code |
+| `omegon-codescan` | Code and knowledge indexing |
+| `omegon-git` | Repository, commit, merge, worktree, and submodule operations |
+| `omegon-memory` | Fact storage, decay, search, injection, and vault synchronization |
+| `omegon-opsx` | OpenSpec and design lifecycle state machine |
+| `omegon-rbac` | Omegon capability vocabulary mapped onto Styrene RBAC |
+| `omegon-secrets` | Secret resolution, redaction, and tool guards |
+| `omegon-skills` | Skill parsing, inventory, activation, and suggestion policy |
+| `omegon-traits` | Shared protocol, feature, command, tool, and event contracts |
+| `omegon-web` | Web search and content extraction |
+| `styrene-work-model` | Provider-neutral work-item contracts |
+| `styrene-work-runtime` | Work-source refresh and immutable aggregate snapshots |
 
 Use focused validation while developing:
 
 ```bash
 just test-crate omegon-memory
 just test-filter "vault_sync"
-cargo test -p omegon-extension
+just test-secrets
 ```
 
-Before landing a code change, run:
+Before landing a focused single-crate code change, run the crate-specific gate plus changed-crate Clippy; use broader gates when the change crosses crate or contract boundaries:
 
 ```bash
-just lint
-just test-rust
+just test-crate <crate>
+just clippy-changed
+# For multi-crate/shared-contract changes:
+just test-commit
 ```
+
+Reserve `just lint` and serialized `just test-rust` for broad or high-risk changes and release hardening.
 
 For documentation-only changes, run the relevant site checks instead of the full Rust suite when the code was untouched:
 

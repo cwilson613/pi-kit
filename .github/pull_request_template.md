@@ -21,7 +21,9 @@
 ## Contributor checklist
 
 - [ ] The change is focused and does not include unrelated generated or local-state files.
+- [ ] This PR follows the branch, direct-to-main exception, and release authority rules in `CONTRIBUTING.md`.
 - [ ] Operator-visible behavior, public docs, tooling, packaging, API behavior, or contributor workflow is noted under `[Unreleased]` in `CHANGELOG.md` (or this is a trivial typo/internal-only change).
+- [ ] If this changes workspace/package versions, `.omegon/milestones.json`, versioned `CHANGELOG.md` sections, or release-generated packaging metadata, it is on an allowed release-prep, trunk-open, or `release/X.Y` branch.
 - [ ] No secrets, credentials, private repository content, or machine-specific paths are included.
 
 <!--

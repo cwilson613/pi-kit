@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Changed
+
+- Documented the stricter branch and release authority policy in `CONTRIBUTING.md`, making focused PR branches the default for maintainer and agent work and reserving direct-to-main commits for exceptional unblockers.
+
 ### Fixed
 
 - Fixed checkout-local launcher resolution when both optimized build profiles exist. The stable launcher now selects the most recently built executable instead of always preferring `target/release`, preventing an old linked release artifact from shadowing a fresh `just run` development build.

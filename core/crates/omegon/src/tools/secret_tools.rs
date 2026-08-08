@@ -178,20 +178,17 @@ impl ToolProvider for SecretToolsProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
-
-    static SUPPRESS_HOST_KEYRING: Once = Once::new();
 
     fn provider() -> SecretToolsProvider {
-        SUPPRESS_HOST_KEYRING.call_once(|| {
-            // Tests in this crate compile omegon-secrets as a normal dependency,
-            // so its #[cfg(test)] in-memory keyring backend is not active. Force
-            // runtime suppression before constructing SecretsManager so validation
-            // never prompts the operator's real macOS Keychain.
-            unsafe { std::env::set_var("OMEGON_NO_KEYRING", "1") };
-        });
         let dir = tempfile::tempdir().unwrap();
-        let secrets = Arc::new(omegon_secrets::SecretsManager::new(dir.path()).unwrap());
+        let store = omegon_secrets::SecretStore::init_passphrase(
+            &dir.path().join("secrets.db"),
+            "secret-tools-test-passphrase",
+        )
+        .unwrap();
+        let secrets = Arc::new(
+            omegon_secrets::SecretsManager::new_with_managed_store(dir.path(), store).unwrap(),
+        );
         SecretToolsProvider::new(secrets)
     }
 

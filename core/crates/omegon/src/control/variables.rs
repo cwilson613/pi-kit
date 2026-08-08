@@ -207,7 +207,7 @@ mod variables_tests {
         let output = list.output.unwrap();
         assert!(output.contains(&name));
         assert!(output.contains("staging"));
-        assert!(output.contains("non-secret"));
+        assert!(output.contains("printable process-local control-plane values"));
 
         let delete = variables_delete_response(&name).await;
         assert!(delete.accepted);

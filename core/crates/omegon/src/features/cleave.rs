@@ -2705,10 +2705,19 @@ mod tests {
     use super::*;
     use omegon_traits::OperationKind;
 
+    fn test_secrets_manager(config_dir: &std::path::Path) -> omegon_secrets::SecretsManager {
+        let store = omegon_secrets::SecretStore::init_passphrase(
+            &config_dir.join("secrets.db"),
+            "cleave-test-passphrase",
+        )
+        .expect("test managed store");
+        omegon_secrets::SecretsManager::new_with_managed_store(config_dir, store).expect("manager")
+    }
+
     #[test]
     fn cleave_child_secret_env_reads_live_manager_state() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let secrets = Arc::new(omegon_secrets::SecretsManager::new(temp.path()).expect("manager"));
+        let secrets = Arc::new(test_secrets_manager(temp.path()));
         let feature = CleaveFeature::new(temp.path(), vec![], false).with_secrets(secrets.clone());
 
         assert!(feature.child_secret_env().is_empty());

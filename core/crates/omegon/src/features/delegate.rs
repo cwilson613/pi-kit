@@ -2761,10 +2761,19 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn test_secrets_manager(config_dir: &std::path::Path) -> omegon_secrets::SecretsManager {
+        let store = omegon_secrets::SecretStore::init_passphrase(
+            &config_dir.join("secrets.db"),
+            "delegate-test-passphrase",
+        )
+        .expect("test managed store");
+        omegon_secrets::SecretsManager::new_with_managed_store(config_dir, store).expect("manager")
+    }
+
     #[test]
     fn delegate_runner_reads_live_secret_environment() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let secrets = Arc::new(omegon_secrets::SecretsManager::new(temp.path()).expect("manager"));
+        let secrets = Arc::new(test_secrets_manager(temp.path()));
         let runner = DelegateRunner::new_with_safety(
             temp.path().to_path_buf(),
             Arc::new(DelegateResultStore::new()),

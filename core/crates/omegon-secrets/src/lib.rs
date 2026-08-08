@@ -172,6 +172,20 @@ impl SecretsManager {
         Ok(mgr)
     }
 
+    /// Create a secrets manager with an already initialized managed store.
+    ///
+    /// This is primarily an injection seam for tests and embedded runtimes that
+    /// cannot access the host keyring. Normal applications should use [`Self::new`].
+    #[doc(hidden)]
+    pub fn new_with_managed_store(
+        config_dir: &std::path::Path,
+        managed_store: SecretStore,
+    ) -> anyhow::Result<Self> {
+        let manager = Self::new(config_dir)?;
+        *manager.managed_store.lock().unwrap() = Some(managed_store);
+        Ok(manager)
+    }
+
     /// Initialize Vault client if configuration is found.
     ///
     /// **Fail-closed**: only stores `Some(client)` when authentication succeeds.

@@ -4349,6 +4349,11 @@ fn looks_like_completion(text: &str) -> bool {
         "changes are complete",
         "implementation is complete",
         "task is complete",
+        "merged and complete",
+        "has been merged",
+        "is merged",
+        "main is clean and synchronized",
+        "post-merge ci",
         "done!",
         "not committed yet",
     ];
@@ -4415,15 +4420,28 @@ fn plan_open_fingerprint(intent: &IntentDocument) -> u64 {
     hash
 }
 
-fn should_nudge_plan_reconciliation(intent: &IntentDocument, _assistant_text: &str) -> bool {
+fn should_nudge_plan_reconciliation(intent: &IntentDocument, assistant_text: &str) -> bool {
     if plan_open_items(intent).is_empty() {
+        return false;
+    }
+    // Completion prose while the operator-visible plan is still open is a
+    // state-machine violation, not ordinary stale-state noise. Do not let the
+    // per-fingerprint budget convert "done" into AssistantCompleted while the
+    // Workbench still has active/todo rows.
+    if looks_like_completion(assistant_text) {
+        return true;
+    }
+    // A genuinely blocked response must reach the operator even when an old
+    // plan remains open. Blocking it here would turn plan reconciliation into
+    // a livelock and hide the decision the operator needs to make.
+    if looks_like_blocked_response(assistant_text) {
         return false;
     }
     // A new or changed stale-plan state always re-arms the nudge.
     if intent.plan_reconciliation_fingerprint != Some(plan_open_fingerprint(intent)) {
         return true;
     }
-    // Identical stale state: nudge a bounded number of times.
+    // Identical non-completion stale state: nudge a bounded number of times.
     intent.plan_reconciliation_nudges < MAX_PLAN_RECONCILIATION_NUDGES
 }
 
@@ -5970,17 +5988,17 @@ mod tests {
     }
 
     #[test]
-    fn plan_reconciliation_nudge_is_bounded_then_rearms_on_progress() {
+    fn plan_reconciliation_nudge_is_bounded_for_non_completion_then_rearms_on_progress() {
         let mut intent = IntentDocument::default();
         intent.set_work_plan(vec!["Inspect".into(), "Patch".into()]);
-        let done = "Done! The patch is validated.";
+        let progress = "I am still working through the validation details.";
 
-        // Simulate the loop's caller bookkeeping for an unchanged stale state:
-        // it nudges up to MAX_PLAN_RECONCILIATION_NUDGES times, then stops —
-        // bounding livelock without the old one-shot disarm.
+        // Simulate the loop's caller bookkeeping for unchanged non-completion
+        // prose: it nudges up to MAX_PLAN_RECONCILIATION_NUDGES times, then
+        // stops to bound livelock when the model truthfully leaves work open.
         for _ in 0..MAX_PLAN_RECONCILIATION_NUDGES {
             assert!(
-                should_nudge_plan_reconciliation(&intent, done),
+                should_nudge_plan_reconciliation(&intent, progress),
                 "should nudge while under the per-state budget"
             );
             let fp = plan_open_fingerprint(&intent);
@@ -5991,20 +6009,53 @@ mod tests {
                 intent.plan_reconciliation_nudges = 1;
             }
         }
-        // Budget for this exact stale state is now spent.
         assert!(
-            !should_nudge_plan_reconciliation(&intent, done),
-            "unchanged stale state must stop nudging after the budget"
+            !should_nudge_plan_reconciliation(&intent, progress),
+            "unchanged non-completion state must stop nudging after the budget"
         );
 
-        // Genuine progress changes the open-plan fingerprint and re-arms — the
-        // regression this fixes: a single early nudge no longer disarms
-        // reconciliation for the rest of the session.
+        // Genuine progress changes the open-plan fingerprint and re-arms.
         intent.advance_work_plan();
         assert!(
-            should_nudge_plan_reconciliation(&intent, done),
+            should_nudge_plan_reconciliation(&intent, progress),
             "progress (changed fingerprint) must re-arm the nudge"
         );
+    }
+
+    #[test]
+    fn completion_claim_cannot_exhaust_plan_reconciliation_budget() {
+        let mut intent = IntentDocument::default();
+        intent.set_work_plan(vec!["Inspect".into(), "Patch".into()]);
+        intent.plan_reconciliation_fingerprint = Some(plan_open_fingerprint(&intent));
+        intent.plan_reconciliation_nudges = MAX_PLAN_RECONCILIATION_NUDGES;
+
+        assert!(should_nudge_plan_reconciliation(
+            &intent,
+            "All done! The patch is validated and merged."
+        ));
+
+        intent.advance_work_plan();
+        intent.advance_work_plan();
+        assert!(!should_nudge_plan_reconciliation(
+            &intent,
+            "All done! The patch is validated and merged."
+        ));
+    }
+
+    #[test]
+    fn operational_merge_completion_cannot_exhaust_plan_reconciliation_budget() {
+        let mut intent = IntentDocument::default();
+        intent.set_work_plan(vec![
+            "Add RBAC classification and regression tests".into(),
+            "Run validation, commit, submit, and merge the PR".into(),
+        ]);
+        intent.plan_reconciliation_fingerprint = Some(plan_open_fingerprint(&intent));
+        intent.plan_reconciliation_nudges = MAX_PLAN_RECONCILIATION_NUDGES;
+
+        assert!(should_nudge_plan_reconciliation(
+            &intent,
+            "35a62758 fix(variables): classify control actions precisely (#173)\n\nmain is clean and synchronized with origin/main. Post-merge CI is running."
+        ));
     }
 
     #[test]
@@ -6941,6 +6992,12 @@ mod tests {
         ));
         assert!(looks_like_completion(
             "All set — the implementation is complete."
+        ));
+        assert!(looks_like_completion(
+            "35a62758 fix(variables): classify control actions precisely (#173)\n\nmain is clean and synchronized with origin/main. Post-merge CI is running."
+        ));
+        assert!(looks_like_completion(
+            "The pull request has been merged and the branch is clean."
         ));
     }
 

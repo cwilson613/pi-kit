@@ -1694,7 +1694,7 @@
     {
       "name": "inference-discovery-producers",
       "title": "Discovery-layer producers and model catalog unification",
-      "state": "verifying",
+      "state": "archived",
       "bound_node": null,
       "specs": [
         "inference-discovery",
@@ -1708,7 +1708,7 @@
       "tasks_total": 21,
       "tasks_done": 21,
       "created_at": "2026-07-14T13:03:44Z",
-      "updated_at": "2026-07-14T16:16:57Z"
+      "updated_at": "2026-08-08T03:00:00Z"
     },
     {
       "name": "evidence-backed-model-admission",

@@ -65,6 +65,10 @@ pub enum CanonicalAction {
     SecretsSet,
     SecretsGet,
     SecretsDelete,
+    VariablesView,
+    VariablesSet,
+    VariablesGet,
+    VariablesDelete,
     PluginView,
     PluginInstall,
     PluginRemove,
@@ -450,11 +454,11 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
         "login" => (CanonicalAction::AuthLogin, ControlRole::Admin, false),
         "logout" => (CanonicalAction::AuthLogout, ControlRole::Admin, false),
         "variables" | "vars" => match args.split_whitespace().next().unwrap_or("") {
-            "" | "list" | "status" | "get" => {
-                (CanonicalAction::StatusView, ControlRole::Read, true)
-            }
-            "set" | "delete" | "remove" | "rm" => {
-                (CanonicalAction::RuntimeModeSet, ControlRole::Edit, true)
+            "" | "list" | "status" => (CanonicalAction::VariablesView, ControlRole::Read, false),
+            "get" => (CanonicalAction::VariablesGet, ControlRole::Read, false),
+            "set" => (CanonicalAction::VariablesSet, ControlRole::Edit, false),
+            "delete" | "remove" | "rm" => {
+                (CanonicalAction::VariablesDelete, ControlRole::Edit, false)
             }
             _ => (CanonicalAction::Unknown, ControlRole::Admin, false),
         },
@@ -516,6 +520,33 @@ pub fn classify_remote_slash_command(name: &str, args: &str) -> ClassifiedAction
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variable_actions_have_precise_non_remote_classification() {
+        for (args, action, role) in [
+            ("", CanonicalAction::VariablesView, ControlRole::Read),
+            (
+                "get PROJECT_ENV",
+                CanonicalAction::VariablesGet,
+                ControlRole::Read,
+            ),
+            (
+                "set PROJECT_ENV staging",
+                CanonicalAction::VariablesSet,
+                ControlRole::Edit,
+            ),
+            (
+                "delete PROJECT_ENV",
+                CanonicalAction::VariablesDelete,
+                ControlRole::Edit,
+            ),
+        ] {
+            let classified = classify_slash_command("vars", args);
+            assert_eq!(classified.action, action);
+            assert_eq!(classified.role, role);
+            assert!(!classified.remote_safe);
+        }
+    }
 
     #[test]
     fn remote_runtime_lifecycle_actions_require_admin_and_are_explicitly_safe() {

@@ -138,6 +138,58 @@ def test_paths_with_spaces_work_for_dev_root_and_channel():
         assert same_target(res.stdout, channel / "target/release/omegon")
 
 
+def test_newer_dev_release_wins_over_stale_release_under_checkout():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td); home = base / "home"; home.mkdir()
+        checkout = base / "checkout"; nested = checkout / "nested"; nested.mkdir(parents=True)
+        (checkout / "core/crates/omegon").mkdir(parents=True); (checkout / "Cargo.toml").write_text("[workspace]\n")
+        release = checkout / "target/release/omegon"
+        dev_release = checkout / "target/dev-release/omegon"
+        make_bin(release, "stale release")
+        os.utime(release, (1, 1))
+        make_bin(dev_release, "fresh dev-release")
+        os.utime(dev_release, (2, 2))
+        res = run(["--which"], nested, home)
+        assert res.returncode == 0, res.stderr
+        assert "reason: nearest-checkout" in res.stdout
+        assert same_target(res.stdout, dev_release)
+        assert "omegon test fresh dev-release" in res.stdout
+
+
+def test_newer_release_wins_over_stale_dev_release_under_checkout():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td); home = base / "home"; home.mkdir()
+        checkout = base / "checkout"; nested = checkout / "nested"; nested.mkdir(parents=True)
+        (checkout / "core/crates/omegon").mkdir(parents=True); (checkout / "Cargo.toml").write_text("[workspace]\n")
+        release = checkout / "target/release/omegon"
+        dev_release = checkout / "target/dev-release/omegon"
+        make_bin(dev_release, "stale dev-release")
+        os.utime(dev_release, (1, 1))
+        make_bin(release, "fresh release")
+        os.utime(release, (2, 2))
+        res = run(["--which"], nested, home)
+        assert res.returncode == 0, res.stderr
+        assert same_target(res.stdout, release)
+        assert "omegon test fresh release" in res.stdout
+
+
+def test_equal_mtimes_prefer_release_under_checkout():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td); home = base / "home"; home.mkdir()
+        checkout = base / "checkout"; nested = checkout / "nested"; nested.mkdir(parents=True)
+        (checkout / "core/crates/omegon").mkdir(parents=True); (checkout / "Cargo.toml").write_text("[workspace]\n")
+        release = checkout / "target/release/omegon"
+        dev_release = checkout / "target/dev-release/omegon"
+        make_bin(release, "release tie winner")
+        make_bin(dev_release, "dev-release tie loser")
+        os.utime(release, (1, 1))
+        os.utime(dev_release, (1, 1))
+        res = run(["--which"], nested, home)
+        assert res.returncode == 0, res.stderr
+        assert same_target(res.stdout, release)
+        assert "omegon test release tie winner" in res.stdout
+
+
 def test_dev_release_fallback_under_checkout():
     with tempfile.TemporaryDirectory() as td:
         base = Path(td); home = base / "home"; home.mkdir()

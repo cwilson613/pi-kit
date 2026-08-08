@@ -447,10 +447,18 @@ fn web_readiness_glyph(configured: bool) -> &'static str {
 }
 
 fn omegon_version_label() -> String {
-    if env!("OMEGON_GIT_DESCRIBE").is_empty() && !env!("OMEGON_GIT_SHA").contains("-dirty") {
-        concat!("v", env!("CARGO_PKG_VERSION")).to_string()
-    } else {
-        format!("v{} {}", env!("CARGO_PKG_VERSION"), env!("OMEGON_GIT_SHA"))
+    #[cfg(test)]
+    {
+        "v<build>".to_string()
+    }
+
+    #[cfg(not(test))]
+    {
+        if env!("OMEGON_GIT_DESCRIBE").is_empty() && !env!("OMEGON_GIT_SHA").contains("-dirty") {
+            concat!("v", env!("CARGO_PKG_VERSION")).to_string()
+        } else {
+            format!("v{} {}", env!("CARGO_PKG_VERSION"), env!("OMEGON_GIT_SHA"))
+        }
     }
 }
 
@@ -494,7 +502,7 @@ mod tests {
                 row.render_for_level(level, frame.area(), frame, &super::super::theme::Alpharius)
             })
             .unwrap();
-        let rendered = (0..height)
+        (0..height)
             .map(|y| {
                 (0..width)
                     .map(|x| terminal.backend().buffer()[(x, y)].symbol())
@@ -503,21 +511,7 @@ mod tests {
                     .to_string()
             })
             .collect::<Vec<_>>()
-            .join("\n");
-        normalize_snapshot_version(&rendered)
-    }
-
-    fn normalize_snapshot_version(rendered: &str) -> String {
-        let Some(version_start) = rendered.find("v0.29.0-dev") else {
-            return rendered.to_string();
-        };
-        let suffix_start = version_start + "v0.29.0-dev".len();
-        let line_end = rendered[suffix_start..]
-            .find('\n')
-            .map(|offset| suffix_start + offset)
-            .unwrap_or(rendered.len());
-        let prefix = rendered[..version_start].trim_end();
-        format!("{prefix}  v0.29.0-dev <build>{}", &rendered[line_end..])
+            .join("\n")
     }
 
     fn presentation_fixture() -> SessionRow {

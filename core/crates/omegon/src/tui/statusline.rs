@@ -516,18 +516,8 @@ mod tests {
             .find('\n')
             .map(|offset| suffix_start + offset)
             .unwrap_or(rendered.len());
-        let suffix = &rendered[suffix_start..line_end];
-        let normalized = if suffix.trim().is_empty() {
-            "v0.29.0-dev"
-        } else {
-            "v0.29.0-dev <build>"
-        };
-        format!(
-            "{}{}{}",
-            &rendered[..version_start],
-            normalized,
-            &rendered[line_end..]
-        )
+        let prefix = rendered[..version_start].trim_end();
+        format!("{prefix}  v0.29.0-dev <build>{}", &rendered[line_end..])
     }
 
     fn presentation_fixture() -> SessionRow {

@@ -16,14 +16,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
-### Changed
-
-- Documented the stricter branch and release authority policy in `CONTRIBUTING.md`, making focused PR branches the default for maintainer and agent work and reserving direct-to-main commits for exceptional unblockers.
-
-### Fixed
-
-- Fixed checkout-local launcher resolution when both optimized build profiles exist. The stable launcher now selects the most recently built executable instead of always preferring `target/release`, preventing an old linked release artifact from shadowing a fresh `just run` development build.
-
 ## [0.29.0] - 2026-08-08
 
 ### Added
@@ -43,6 +35,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Fixed checkout-local launcher resolution when both optimized build profiles exist. The stable launcher now selects the most recently built executable instead of always preferring `target/release`, preventing an old linked release artifact from shadowing a fresh `just run` development build.
 - Changed `@` project-file selection from eager byte injection to an explicit artifact reference: text, source, PDF, unsupported image formats, and other non-image selections now tell the agent which path to inspect with harness tooling, while provider-supported PNG, JPEG, GIF, and WebP files remain multimodal attachments. The composer preserves the filename as an `@ filename` token, and the picker now presents concise filenames, parent paths, and the on-demand inspection contract instead of generic “inject” language. The runtime also validates image bytes instead of trusting or relabelling filename extensions, and Codex HTTP 400 responses are classified as non-retryable bad requests, preventing malformed attachment payloads from masquerading as upstream 5xx retries.
 
 - Moved operator-surface presentation into command metadata. `CommandDefinition` now carries a `surface` field (`Inline` or `Panel`) that commands declare at their definition site — `/usage` and `/limits` in the usage feature, `/prompt` in the prompt feature, `/skills`, `/skill`, and `/think` in the builtin registry. The TUI resolves presentation by lookup instead of holding its own list of command names, so adding a panel-owning command no longer requires a matching edit in the renderer. Unknown commands have no declaration and still fall back to content-shape heuristics.
@@ -55,6 +48,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Documented the stricter branch and release authority policy in `CONTRIBUTING.md`, making focused PR branches the default for maintainer and agent work and reserving direct-to-main commits for exceptional unblockers.
 - Added persistent jittered overload recovery for interactive Codex turns. Provider-capacity failures no longer abandon recoverable work after the generic ten-minute transient envelope; retries retain capped exponential backoff with deterministic jitter, while bounded worker runs keep their explicit attempt cap.
 - Validation command timeouts and bash-tool timeout/cancellation now terminate the command's entire process group, preventing descendants such as `rustc` from surviving as orphaned processes.
 - Added a release-preflight target override so a matching `X.Y.Z-dev` workspace can be validated against its intended stable `X.Y.Z` release while rejecting mismatched targets.

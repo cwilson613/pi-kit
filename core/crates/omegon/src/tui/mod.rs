@@ -5040,6 +5040,10 @@ warning: {warning}"
             self.handle_agent_event(event);
             released = true;
         }
+        debug_assert!(
+            !self.stream_presentation.has_blocked_events(),
+            "drawn deferred events must drain completely"
+        );
         released
     }
 

@@ -175,6 +175,10 @@ impl StreamingPresentationController {
             None
         }
     }
+
+    pub(super) fn has_blocked_events(&self) -> bool {
+        !self.blocked_events.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +317,29 @@ mod tests {
             Some(AgentEvent::MessageAbort { reason }) if reason.as_deref() == Some("second")
         ));
         assert!(controller.take_drawn_event().is_none());
+        assert!(!controller.has_blocked_events());
+    }
+
+    #[test]
+    fn released_event_does_not_overtake_the_remaining_backlog() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageChunk {
+            text: "first".into(),
+        });
+        controller.classify(AgentEvent::MessageEnd);
+        controller.classify(AgentEvent::MessageAbort {
+            reason: Some("second".into()),
+        });
+        publish_and_draw(&mut controller);
+
+        let released = controller.take_drawn_event().expect("released completion");
+        assert!(matches!(released, AgentEvent::MessageEnd));
+        assert!(controller.has_blocked_events());
+        assert!(matches!(
+            controller.take_drawn_event(),
+            Some(AgentEvent::MessageAbort { reason }) if reason.as_deref() == Some("second")
+        ));
+        assert!(!controller.has_blocked_events());
     }
 
     #[test]

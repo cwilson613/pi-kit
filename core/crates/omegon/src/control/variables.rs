@@ -10,10 +10,16 @@ fn session_variables()
     SESSION_VARIABLES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
 }
 
+pub const MAX_VARIABLE_NAME_BYTES: usize = 128;
+pub const MAX_VARIABLE_VALUE_BYTES: usize = 16 * 1024;
+pub const MAX_VARIABLE_ENTRIES: usize = 256;
+
 fn valid_variable_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
-        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    !name.is_empty() && name.len() <= MAX_VARIABLE_NAME_BYTES && {
+        let mut chars = name.chars();
+        matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+            && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    }
 }
 
 fn variable_name_looks_secret(name: &str) -> bool {
@@ -66,7 +72,10 @@ pub async fn variables_view_response() -> SlashCommandResponse {
     if vars.is_empty() {
         out.push_str("No session variables set.\n");
     } else {
-        out.push_str(&format!("⚙ Variables ({}) — session scope\n\n", vars.len()));
+        out.push_str(&format!(
+            "⚙ Variables ({}) — process-local control-plane scope\n\n",
+            vars.len()
+        ));
         for (name, record) in vars.iter() {
             let warning = if variable_name_looks_secret(name) {
                 "  ⚠ name looks sensitive; consider /secrets"
@@ -80,7 +89,7 @@ pub async fn variables_view_response() -> SlashCommandResponse {
             ));
         }
     }
-    out.push_str("\nVariables are non-secret runtime config and may be displayed. Use /secrets for sensitive values.\n");
+    out.push_str("\nVariables are printable process-local control-plane values. They are not injected into commands or child processes unless a consumer explicitly binds them. Use /secrets for sensitive values.\n");
     out.push_str(
         "Commands:\n  /variables set NAME VALUE\n  /variables get NAME\n  /variables delete NAME",
     );
@@ -99,6 +108,14 @@ pub async fn variables_set_response(name: &str, value: &str) -> SlashCommandResp
             )),
         };
     }
+    if value.len() > MAX_VARIABLE_VALUE_BYTES {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(format!(
+                "Variable value is too large (maximum {MAX_VARIABLE_VALUE_BYTES} bytes)."
+            )),
+        };
+    }
     let warning = if variable_name_looks_secret(name) {
         format!(
             "
@@ -107,14 +124,23 @@ pub async fn variables_set_response(name: &str, value: &str) -> SlashCommandResp
     } else {
         String::new()
     };
-    session_variables().lock().expect("variables lock").insert(
+    let mut variables = session_variables().lock().expect("variables lock");
+    if !variables.contains_key(name) && variables.len() >= MAX_VARIABLE_ENTRIES {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(format!(
+                "Variable store is full (maximum {MAX_VARIABLE_ENTRIES} entries)."
+            )),
+        };
+    }
+    variables.insert(
         name.to_string(),
         crate::value_context::ValueRecord::public_control_plane(name, value),
     );
     SlashCommandResponse {
         accepted: true,
         output: Some(format!(
-            "✓ Variable {name} set in session scope.\n  Value: {value}{warning}"
+            "✓ Variable {name} set in process-local control-plane scope.\n  Value: {value}{warning}"
         )),
     }
 }
@@ -155,7 +181,7 @@ pub async fn variables_delete_response(name: &str) -> SlashCommandResponse {
     SlashCommandResponse {
         accepted: true,
         output: Some(if removed {
-            format!("✓ Variable '{name}' deleted from session scope.")
+            format!("✓ Variable '{name}' deleted from process-local control-plane scope.")
         } else {
             format!("Variable '{name}' was not set.")
         }),
@@ -213,5 +239,20 @@ mod variables_tests {
         let response = variables_set_response("1BAD", "value").await;
         assert!(!response.accepted);
         assert!(response.output.unwrap().contains("Invalid variable name"));
+    }
+
+    #[tokio::test]
+    async fn variables_reject_oversized_values() {
+        let value = "x".repeat(MAX_VARIABLE_VALUE_BYTES + 1);
+        let response = variables_set_response("OVERSIZED_VALUE", &value).await;
+        assert!(!response.accepted);
+        assert!(response.output.unwrap().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn variables_view_states_non_propagating_contract() {
+        let output = variables_view_response().await.output.unwrap();
+        assert!(output.contains("process-local control-plane"));
+        assert!(output.contains("not injected into commands or child processes"));
     }
 }

@@ -449,6 +449,15 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
         },
         "login" => (CanonicalAction::AuthLogin, ControlRole::Admin, false),
         "logout" => (CanonicalAction::AuthLogout, ControlRole::Admin, false),
+        "variables" | "vars" => match args.split_whitespace().next().unwrap_or("") {
+            "" | "list" | "status" | "get" => {
+                (CanonicalAction::StatusView, ControlRole::Read, true)
+            }
+            "set" | "delete" | "remove" | "rm" => {
+                (CanonicalAction::RuntimeModeSet, ControlRole::Edit, true)
+            }
+            _ => (CanonicalAction::Unknown, ControlRole::Admin, false),
+        },
         "secrets" => match args.split_whitespace().next().unwrap_or("") {
             "" | "list" => (CanonicalAction::SecretsView, ControlRole::Edit, false),
             "set" => (CanonicalAction::SecretsSet, ControlRole::Edit, false),

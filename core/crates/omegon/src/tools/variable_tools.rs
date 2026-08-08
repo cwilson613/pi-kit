@@ -1,6 +1,6 @@
-//! Agent-callable printable session variable tools.
+//! Agent-callable printable process-local control-plane variable tools.
 //!
-//! Variables are non-secret runtime configuration. Values are intentionally
+//! Variables are non-secret control-plane configuration. Values are intentionally
 //! visible in tool output; sensitive values belong in `/secrets` instead.
 
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ impl ToolProvider for VariableToolsProvider {
             ToolDefinition {
                 name: crate::tool_registry::variables::VARIABLE_SET.into(),
                 label: "Variable Set".into(),
-                description: "Set a printable session-scoped runtime variable. Values are visible in outputs; use secret_set for credentials.".into(),
+                description: "Set a printable process-local control-plane variable. Values are visible in outputs, are not automatically injected into child processes, and credentials must use secret_set.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -32,7 +32,7 @@ impl ToolProvider for VariableToolsProvider {
             ToolDefinition {
                 name: crate::tool_registry::variables::VARIABLE_LIST.into(),
                 label: "Variable List".into(),
-                description: "List printable session variables and values.".into(),
+                description: "List printable process-local control-plane variables and values.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {},
@@ -41,9 +41,23 @@ impl ToolProvider for VariableToolsProvider {
                 capabilities: vec![ToolCapability::Orientation],
             },
             ToolDefinition {
+                name: crate::tool_registry::variables::VARIABLE_GET.into(),
+                label: "Variable Get".into(),
+                description: "Read one printable process-local control-plane variable without disclosing every variable.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Variable name to read" }
+                    },
+                    "required": ["name"],
+                    "additionalProperties": false
+                }),
+                capabilities: vec![ToolCapability::Orientation],
+            },
+            ToolDefinition {
                 name: crate::tool_registry::variables::VARIABLE_DELETE.into(),
                 label: "Variable Delete".into(),
-                description: "Delete a printable session-scoped runtime variable.".into(),
+                description: "Delete a printable process-local control-plane variable.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -74,6 +88,16 @@ impl ToolProvider for VariableToolsProvider {
                     .get("value")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("missing 'value' argument"))?;
+                if crate::control::variables::variable_name_has_sensitive_hint(name) {
+                    return Ok(ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!(
+                                "'{name}' looks like a secret name; use secret_set for credentials"
+                            ),
+                        }],
+                        details: json!({ "error": true }),
+                    });
+                }
                 let response = crate::control::variables::variables_set_response(name, value).await;
                 Ok(response_to_tool_result(
                     response,
@@ -94,6 +118,29 @@ impl ToolProvider for VariableToolsProvider {
                         })).collect::<Vec<_>>()
                     }),
                 ))
+            }
+            crate::tool_registry::variables::VARIABLE_GET => {
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing 'name' argument"))?;
+                let value = crate::control::variables::variables_snapshot()
+                    .into_iter()
+                    .find_map(|(candidate, value)| (candidate == name).then_some(value));
+                match value {
+                    Some(value) => Ok(ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!("{name}={value}"),
+                        }],
+                        details: json!({ "name": name, "value": value }),
+                    }),
+                    None => Ok(ToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!("Variable '{name}' is not set."),
+                        }],
+                        details: json!({ "error": true }),
+                    }),
+                }
             }
             crate::tool_registry::variables::VARIABLE_DELETE => {
                 let name = args

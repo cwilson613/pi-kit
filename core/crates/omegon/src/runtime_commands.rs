@@ -724,24 +724,25 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         }
 
         "variables" | "vars" => {
-            let parts: Vec<&str> = args.splitn(3, ' ').collect();
-            match parts.first().copied().unwrap_or("") {
-                "" | "list" | "status" => Some(CanonicalSlashCommand::VariablesView),
-                "set" if parts.len() >= 3 && !parts[1].trim().is_empty() => {
-                    Some(CanonicalSlashCommand::VariablesSet {
-                        name: parts[1].trim().to_string(),
-                        value: parts[2].trim().to_string(),
-                    })
-                }
-                "get" if parts.len() >= 2 && !parts[1].trim().is_empty() => Some(
-                    CanonicalSlashCommand::VariablesGet(parts[1].trim().to_string()),
-                ),
-                "delete" | "remove" | "rm" if parts.len() >= 2 && !parts[1].trim().is_empty() => {
-                    Some(CanonicalSlashCommand::VariablesDelete(
-                        parts[1].trim().to_string(),
-                    ))
-                }
-                _ => None,
+            let args = args.trim();
+            if args.is_empty() || matches!(args, "list" | "status") {
+                Some(CanonicalSlashCommand::VariablesView)
+            } else if let Some(rest) = args.strip_prefix("set").and_then(strip_command_separator) {
+                let (name, value) = split_name_and_remainder(rest)?;
+                Some(CanonicalSlashCommand::VariablesSet {
+                    name: name.to_string(),
+                    value: value.to_string(),
+                })
+            } else if let Some(rest) = args.strip_prefix("get").and_then(strip_command_separator) {
+                single_name(rest).map(|name| CanonicalSlashCommand::VariablesGet(name.to_string()))
+            } else if let Some(rest) = ["delete", "remove", "rm"]
+                .into_iter()
+                .find_map(|verb| args.strip_prefix(verb).and_then(strip_command_separator))
+            {
+                single_name(rest)
+                    .map(|name| CanonicalSlashCommand::VariablesDelete(name.to_string()))
+            } else {
+                None
             }
         }
         "secrets" => {
@@ -797,10 +798,51 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
     }
 }
 
+fn strip_command_separator(value: &str) -> Option<&str> {
+    value
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then(|| value.trim_start())
+}
+
+fn split_name_and_remainder(value: &str) -> Option<(&str, &str)> {
+    let separator = value.find(char::is_whitespace)?;
+    let name = &value[..separator];
+    let remainder = value[separator..].trim();
+    (!name.is_empty() && !remainder.is_empty()).then_some((name, remainder))
+}
+
+fn single_name(value: &str) -> Option<&str> {
+    let mut parts = value.split_whitespace();
+    let name = parts.next()?;
+    (parts.next().is_none()).then_some(name)
+}
+
 fn split_plan_items(raw: &str) -> Vec<String> {
     raw.split('|')
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+#[cfg(test)]
+mod variable_command_tests {
+    use super::*;
+
+    #[test]
+    fn variables_parser_accepts_general_whitespace_and_preserves_value_words() {
+        assert!(matches!(
+            canonical_slash_command("vars", "set\tPROJECT_ENV\tlocal dev"),
+            Some(CanonicalSlashCommand::VariablesSet { name, value })
+                if name == "PROJECT_ENV" && value == "local dev"
+        ));
+    }
+
+    #[test]
+    fn variables_parser_rejects_trailing_arguments_for_single_name_commands() {
+        assert!(canonical_slash_command("vars", "get ONE TWO").is_none());
+        assert!(canonical_slash_command("variables", "delete ONE TWO").is_none());
+    }
 }

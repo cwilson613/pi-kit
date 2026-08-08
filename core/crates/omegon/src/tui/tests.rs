@@ -6554,6 +6554,23 @@ fn slash_secrets_set_name_enters_hidden_secret_input_without_command_panel() {
 }
 
 #[test]
+fn slash_secrets_set_provider_key_does_not_claim_or_trigger_browser_acquisition() {
+    let mut app = test_app();
+    let tx = test_tx();
+
+    let result = app.handle_slash_command("/secrets set BRAVE_API_KEY", &tx);
+    let SlashResult::Display(message) = result else {
+        panic!("secret entry should return compact guidance");
+    };
+
+    assert_eq!(message, "Paste BRAVE_API_KEY — input hidden");
+    assert_eq!(
+        app.editor.secret_display().map(|(label, _)| label),
+        Some("BRAVE_API_KEY")
+    );
+}
+
+#[test]
 fn secret_name_selector_confirm_starts_hidden_secret_input() {
     let mut app = test_app();
     let tx = test_tx();

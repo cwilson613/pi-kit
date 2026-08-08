@@ -5178,19 +5178,8 @@ warning: {warning}"
             // /secrets set NAME → enter hidden input mode for arbitrary operator secrets.
             "set" if parts.len() == 2 && !parts[1].trim().is_empty() => {
                 let name = parts[1].trim();
-                let acquisition = crate::capabilities::secrets::secret_console_url(name);
-                if let Some(url) = acquisition {
-                    let url = url.to_string();
-                    std::thread::spawn(move || {
-                        let _ = open::that(url);
-                    });
-                }
                 self.editor.start_secret_input(name);
-                SlashResult::Display(if acquisition.is_some() {
-                    format!("Paste {name} — input hidden; provider console opened")
-                } else {
-                    format!("Paste {name} — input hidden")
-                })
+                SlashResult::Display(format!("Paste {name} — input hidden"))
             }
             // /secrets configure and /secrets set with no name/value → open shared menu
             "configure" | "set" if parts.len() < 3 => {

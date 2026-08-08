@@ -6443,7 +6443,7 @@ mod tests {
         let calls = vec![ToolCall {
             id: "prompt-bash".into(),
             name: crate::tool_registry::core::BASH.into(),
-            arguments: serde_json::json!({"command":"printf prompt-created"}),
+            arguments: serde_json::json!({"command":"printf prompt-created > prompt-created.txt"}),
         }];
 
         let dispatch_fut = dispatch_tools(
@@ -6464,7 +6464,7 @@ mod tests {
                 event = events_rx.recv() => {
                     if let Ok(AgentEvent::PermissionRequest { tool_name, path, kind, persistence, grant_path, respond }) = event {
                         assert_eq!(tool_name, crate::tool_registry::core::BASH);
-                        assert!(path.contains("printf prompt-created"), "prompt subject should include command: {path}");
+                        assert!(path.contains("printf prompt-created > prompt-created.txt"), "prompt subject should include command: {path}");
                         assert_eq!(kind, omegon_traits::PermissionRequestKind::Policy);
                         assert_eq!(persistence, omegon_traits::PermissionPersistence::None);
                         assert!(grant_path.is_none());
@@ -6485,13 +6485,10 @@ mod tests {
         let dispatch = dispatch_fut.await;
         assert_eq!(dispatch.results.len(), 1);
         assert!(!dispatch.results[0].is_error);
-        assert!(
-            dispatch.results[0].content[0]
-                .as_text()
-                .unwrap()
-                .contains("prompt-created"),
-            "dispatch result: {:?}",
-            dispatch.results[0].content
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompt-created.txt")).unwrap(),
+            "prompt-created",
+            "approved command must execute after the prompt"
         );
         assert_eq!(dispatch.permission_decisions.len(), 1);
         assert_eq!(dispatch.permission_decisions[0].decision, "allow");

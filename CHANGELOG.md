@@ -16,6 +16,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-08
+
 ### Added
 
 - Added an opt-in `styrene-identity` secret-store backend that derives the local AES-256-GCM store key from a Styrene Identity root using domain-separated HKDF-SHA256; opening with a different identity fails authenticated canary verification.

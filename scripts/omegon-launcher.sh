@@ -28,15 +28,23 @@ target_for_root() {
     local root="$1"
     local rel="$root/target/release/omegon"
     local dev="$root/target/dev-release/omegon"
+    local rel_mtime=0 dev_mtime=0
+
     if is_executable_target "$rel"; then
-        printf '%s\n' "$rel"
-        return 0
+        rel_mtime="$(stat -c %Y "$rel" 2>/dev/null || stat -f %m "$rel")"
     fi
     if is_executable_target "$dev"; then
-        printf '%s\n' "$dev"
-        return 0
+        dev_mtime="$(stat -c %Y "$dev" 2>/dev/null || stat -f %m "$dev")"
     fi
-    return 1
+
+    if (( rel_mtime == 0 && dev_mtime == 0 )); then
+        return 1
+    fi
+    if (( dev_mtime > rel_mtime )); then
+        printf '%s\n' "$dev"
+    else
+        printf '%s\n' "$rel"
+    fi
 }
 
 resolve_target() {

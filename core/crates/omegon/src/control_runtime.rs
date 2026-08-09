@@ -5217,6 +5217,81 @@ pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn active_harness_dispatch_responds_without_waiting_for_inference() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let blocked_worker = tokio::spawn(std::future::pending::<()>());
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            execute_active_harness_command(
+                &context,
+                crate::operator_commands::OperatorCommand::SetThinking {
+                    level: settings::ThinkingLevel::High,
+                    respond_to: Some(reply_tx),
+                },
+                &events_tx,
+            ),
+        )
+        .await
+        .expect("harness control must not wait for inference");
+
+        assert!(matches!(result, ActiveHarnessCommandResult::Handled));
+        let response = tokio::time::timeout(std::time::Duration::from_millis(250), reply_rx)
+            .await
+            .expect("response must arrive while worker remains active")
+            .unwrap();
+        assert!(response.accepted);
+        assert!(!blocked_worker.is_finished());
+        assert_eq!(
+            settings.lock().unwrap().thinking,
+            settings::ThinkingLevel::High
+        );
+        blocked_worker.abort();
+    }
+
+    #[tokio::test]
+    async fn unsupported_active_command_is_returned_intact_instead_of_disappearing() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+        let result = execute_active_harness_command(
+            &context,
+            crate::operator_commands::OperatorCommand::Compact,
+            &events_tx,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            ActiveHarnessCommandResult::Unsupported(
+                crate::operator_commands::OperatorCommand::Compact
+            )
+        ));
+    }
+
     #[test]
     fn secret_response_functions_stay_in_control_secrets_module() {
         let source = include_str!("control_runtime.rs");

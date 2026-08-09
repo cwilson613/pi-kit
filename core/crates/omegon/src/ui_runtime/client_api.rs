@@ -108,9 +108,10 @@ impl ClientCapabilityHello {
 
 /// Stable v1 subset of client-addressable control requests.
 ///
-/// This is intentionally smaller than `InterfaceControlRequest`: v1 starts with
-/// operationally useful, low-risk commands and grows by adding explicit DTO
-/// variants rather than exposing every internal runtime capability at once.
+/// V1 includes operational commands plus read-only runtime-resource inventory.
+/// Mutating profile, workspace, permission, skill, extension, and package
+/// operations remain intentionally excluded until their revision and approval
+/// contracts are stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "name", rename_all = "camelCase")]
 pub enum ClientControlRequestDto {
@@ -121,6 +122,16 @@ pub enum ClientControlRequestDto {
     StatusView,
     ModelView,
     ModelList,
+    RuntimeInventoryStatus,
+    ProfileView,
+    WorkspaceStatusView,
+    WorkspaceListView,
+    SkillsView,
+    ExtensionView,
+    ArmoryBrowse,
+    CatalogView,
+    PluginView,
+    PermissionsView,
     SetPresentationLevel { level: UiPresentationLevel },
 }
 
@@ -134,6 +145,16 @@ impl ClientControlRequestDto {
             Self::StatusView => InterfaceControlRequest::StatusView,
             Self::ModelView => InterfaceControlRequest::ModelView,
             Self::ModelList => InterfaceControlRequest::ModelList,
+            Self::RuntimeInventoryStatus => InterfaceControlRequest::RuntimeInventoryStatus,
+            Self::ProfileView => InterfaceControlRequest::ProfileView,
+            Self::WorkspaceStatusView => InterfaceControlRequest::WorkspaceStatusView,
+            Self::WorkspaceListView => InterfaceControlRequest::WorkspaceListView,
+            Self::SkillsView => InterfaceControlRequest::SkillsView,
+            Self::ExtensionView => InterfaceControlRequest::ExtensionView,
+            Self::ArmoryBrowse => InterfaceControlRequest::ArmoryBrowse { query: None },
+            Self::CatalogView => InterfaceControlRequest::CatalogView,
+            Self::PluginView => InterfaceControlRequest::PluginView,
+            Self::PermissionsView => InterfaceControlRequest::PermissionsView,
             Self::SetPresentationLevel { level } => {
                 InterfaceControlRequest::SetPresentationLevel { level }
             }
@@ -362,6 +383,46 @@ mod tests {
                 level: UiPresentationLevel::Active,
             }
         );
+    }
+
+    #[test]
+    fn v1_read_only_inventory_requests_map_to_interface_boundary() {
+        let cases = [
+            (
+                ClientControlRequestDto::RuntimeInventoryStatus,
+                "runtimeInventoryStatus",
+            ),
+            (ClientControlRequestDto::ProfileView, "profileView"),
+            (
+                ClientControlRequestDto::WorkspaceStatusView,
+                "workspaceStatusView",
+            ),
+            (
+                ClientControlRequestDto::WorkspaceListView,
+                "workspaceListView",
+            ),
+            (ClientControlRequestDto::SkillsView, "skillsView"),
+            (ClientControlRequestDto::ExtensionView, "extensionView"),
+            (ClientControlRequestDto::ArmoryBrowse, "armoryBrowse"),
+            (ClientControlRequestDto::CatalogView, "catalogView"),
+            (ClientControlRequestDto::PluginView, "pluginView"),
+            (ClientControlRequestDto::PermissionsView, "permissionsView"),
+        ];
+        for (request, wire_name) in cases {
+            let payload =
+                encode_client_control_request(&request).expect("encode inventory request");
+            assert_eq!(payload["name"], wire_name);
+            let decoded = decode_client_control_request(payload).expect("decode inventory request");
+            assert_eq!(decoded, request);
+        }
+        assert!(matches!(
+            ClientControlRequestDto::RuntimeInventoryStatus.into_interface_request(),
+            InterfaceControlRequest::RuntimeInventoryStatus
+        ));
+        assert!(matches!(
+            ClientControlRequestDto::ArmoryBrowse.into_interface_request(),
+            InterfaceControlRequest::ArmoryBrowse { query: None }
+        ));
     }
 
     #[test]

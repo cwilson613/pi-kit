@@ -7286,13 +7286,16 @@ pub async fn run_tui(
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
 ) -> io::Result<()> {
+    let terminal_guard = terminal_session::TerminalSessionGuard::new();
     enable_raw_mode()?;
+    terminal_guard.mark_raw();
 
     // Initialize image protocol detection AFTER raw mode (suppresses echo)
     // but BEFORE alt screen (picker queries need the primary screen).
     image::init_picker();
 
     io::stdout().execute(EnterAlternateScreen)?;
+    terminal_guard.mark_alternate_screen();
     // Set the terminal's own background color to our theme bg.
     // This ensures the alternate screen buffer is filled with our color,
     // not the user's terminal profile background. Without this, crossterm's
@@ -7311,7 +7314,9 @@ pub async fn run_tui(
     // `/mouse off` remains the guaranteed passthrough fallback for terminals
     // that do not implement the Shift override.
     io::stdout().execute(EnableMouseCapture)?;
+    terminal_guard.mark_mouse_capture();
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
+    terminal_guard.mark_bracketed_paste();
 
     // Enable Kitty keyboard protocol when the terminal supports it.
     // This lets crossterm distinguish Shift+Enter from Enter, which is
@@ -7323,18 +7328,15 @@ pub async fn run_tui(
         io::stdout().execute(PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         ))?;
+        terminal_guard.mark_keyboard_enhancement();
     }
-    let terminal_guard = terminal_session::TerminalSessionGuard::new(has_keyboard_enhancement);
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    // Install panic hook that restores terminal
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        terminal_session::restore_terminal(has_keyboard_enhancement);
-        original_hook(info);
-    }));
+    // Restore the terminal before forwarding any panic to the process hook.
+    // The hook guard reinstates the prior hook when this TUI session ends.
+    let panic_hook_guard = terminal_guard.install_panic_hook();
 
     // Initialise spinner: seed from process start time for variety across
     // sessions, and load user extras from ~/.config/omegon/spinner-verbs.txt.
@@ -7645,6 +7647,10 @@ pub async fn run_tui(
         tokio::select! {
             signal = terminal_session::termination_signal() => {
                 signal?;
+                // Terminal restoration alone must not leave the coordinator
+                // running headless while IPC/other sender clones keep the
+                // command channel open.
+                let _ = command_tx.send(TuiCommand::Quit).await;
                 break;
             }
             polled = async { event::poll(poll_timeout) } => {
@@ -7670,6 +7676,7 @@ pub async fn run_tui(
 
     // Restore every terminal mode through the same idempotent path used for
     // errors, panics, and signal-driven shutdown.
+    drop(panic_hook_guard);
     drop(terminal_guard);
     Ok(())
 }

@@ -66,6 +66,16 @@ Typed v1 control request payloads currently include:
 - `statusView`
 - `modelView`
 - `modelList`
+- `runtimeInventoryStatus`
+- `profileView`
+- `workspaceStatusView`
+- `workspaceListView`
+- `skillsView`
+- `extensionView`
+- `armoryBrowse`
+- `catalogView`
+- `pluginView`
+- `permissionsView`
 - `setPresentationLevel`
 
 Example typed presentation request payload:

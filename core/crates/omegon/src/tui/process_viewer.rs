@@ -25,21 +25,33 @@ impl ProcessViewerState {
         }
     }
 
-    pub(crate) fn scroll_up(&mut self) {
+    /// Move away from the live tail by `lines` visual rows.
+    /// `scroll` is an offset from the bottom, so new output cannot move a
+    /// detached operator's viewport.
+    pub(crate) fn scroll_up(&mut self, lines: u16) {
         self.follow = false;
-        self.scroll = self.scroll.saturating_sub(1);
+        self.scroll = self.scroll.saturating_add(lines);
     }
 
-    pub(crate) fn scroll_down(&mut self) {
-        self.scroll = self.scroll.saturating_add(1);
-    }
-
-    pub(crate) fn toggle_follow(&mut self) {
-        self.confirm_stop = false;
-        self.follow = !self.follow;
-        if self.follow {
-            self.scroll = 0;
+    /// Move toward the live tail by `lines` visual rows. Reaching the tail
+    /// resumes follow mode so subsequent output remains visible.
+    pub(crate) fn scroll_down(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_sub(lines);
+        if self.scroll == 0 {
+            self.follow = true;
         }
+    }
+
+    pub(crate) fn follow_tail(&mut self) {
+        self.confirm_stop = false;
+        self.follow = true;
+        self.scroll = 0;
+    }
+
+    pub(crate) fn jump_to_top(&mut self) {
+        self.confirm_stop = false;
+        self.follow = false;
+        self.scroll = u16::MAX;
     }
 
     pub(crate) fn switch_session(&mut self, delta: isize) {
@@ -73,6 +85,13 @@ impl ProcessViewerState {
     }
 }
 
+pub(crate) fn process_viewer_page_size(area: Rect) -> u16 {
+    super::command_surfaces::command_modal_area(area)
+        .height
+        .saturating_sub(4)
+        .max(1)
+}
+
 pub(crate) fn render_process_viewer(
     frame: &mut Frame,
     area: Rect,
@@ -98,9 +117,9 @@ pub(crate) fn render_process_viewer(
                 if state.confirm_stop {
                     "Press x again to stop this process · Esc cancel"
                 } else if snapshot.capabilities.stop {
-                    "←/→ switch · ↑/↓ scroll · f follow · x stop · Esc close · read-only"
+                    "←/→ switch · ↑/↓ line · PgUp/PgDn page · Home top · End/f follow · x stop · Esc close"
                 } else {
-                    "←/→ switch · ↑/↓ scroll · Esc close · completed"
+                    "←/→ switch · ↑/↓ line · PgUp/PgDn page · Home top · End/f follow · Esc close"
                 },
             )
         }
@@ -130,7 +149,7 @@ pub(crate) fn render_process_viewer(
     let scroll = if state.follow {
         max_scroll
     } else {
-        state.scroll.min(max_scroll)
+        max_scroll.saturating_sub(state.scroll.min(max_scroll))
     };
     frame.render_widget(
         Paragraph::new(body)
@@ -239,10 +258,10 @@ mod tests {
     fn viewer_state_disables_follow_when_scrolling_up() {
         let mut state = ProcessViewerState::new("session");
         state.scroll = 3;
-        state.scroll_up();
+        state.scroll_up(2);
         assert!(!state.follow);
-        assert_eq!(state.scroll, 2);
-        state.toggle_follow();
+        assert_eq!(state.scroll, 5);
+        state.follow_tail();
         assert!(state.follow);
         assert_eq!(state.scroll, 0);
     }

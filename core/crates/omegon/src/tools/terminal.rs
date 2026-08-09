@@ -1293,21 +1293,27 @@ mod tests {
     }
 
     async fn start_completion_test(command: &str) -> omegon_traits::BackgroundOperationCompletion {
-        cleanup_session_terminals();
         let cwd = tempfile::tempdir().unwrap();
         let mut completions = subscribe_completions();
-        execute(
+        let result = execute(
             "start",
-            &json!({"name": "completion-event-test", "command": command}),
+            &json!({"name": format!("completion-event-test-{}", uuid::Uuid::new_v4()), "command": command}),
             cwd.path(),
             Some(WorkspaceBoundary::new(cwd.path().to_path_buf())),
         )
         .await
         .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), completions.recv())
-            .await
-            .expect("completion should wake receiver")
-            .expect("completion channel remains open")
+        let operation_id = result.details["session_id"].as_str().unwrap().to_string();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let completion = tokio::time::timeout_at(deadline, completions.recv())
+                .await
+                .expect("completion should wake receiver")
+                .expect("completion channel remains open");
+            if completion.operation_id == operation_id {
+                return completion;
+            }
+        }
     }
 
     #[tokio::test]
@@ -1330,30 +1336,39 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_exit_emits_only_one_completion() {
-        cleanup_session_terminals();
         let cwd = tempfile::tempdir().unwrap();
         let mut completions = subscribe_completions();
         let result = execute(
             "start",
-            &json!({"name": "completion-dedup-test", "command": "exit 0"}),
+            &json!({"name": format!("completion-dedup-test-{}", uuid::Uuid::new_v4()), "command": "exit 0"}),
             cwd.path(),
             Some(WorkspaceBoundary::new(cwd.path().to_path_buf())),
         )
         .await
         .unwrap();
         let id = result.details["session_id"].as_str().unwrap();
-        let first = tokio::time::timeout(Duration::from_secs(5), completions.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let first = loop {
+            let completion = tokio::time::timeout(Duration::from_secs(5), completions.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if completion.operation_id == id {
+                break completion;
+            }
+        };
         assert_eq!(first.operation_id, id);
         let session = requested_session(&json!({"session_id": id})).unwrap();
         assert!(!session_alive(&session));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(250), completions.recv())
-                .await
-                .is_err()
-        );
+        let duplicate = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let completion = completions.recv().await.unwrap();
+                if completion.operation_id == id {
+                    return completion;
+                }
+            }
+        })
+        .await;
+        assert!(duplicate.is_err());
     }
 
     #[tokio::test]

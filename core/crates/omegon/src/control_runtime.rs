@@ -508,6 +508,88 @@ pub struct HarnessControlContext<'a> {
     pub route_controller: Option<Arc<crate::route::RouteController>>,
 }
 
+pub enum ActiveHarnessCommandResult {
+    Handled,
+    Unsupported(crate::operator_commands::OperatorCommand),
+}
+
+/// Execute an inference-independent typed command while an agent worker is
+/// active. Unsupported commands are returned intact so the coordinator can
+/// preserve ordering without duplicating response plumbing.
+pub async fn execute_active_harness_command(
+    ctx: &HarnessControlContext<'_>,
+    command: crate::operator_commands::OperatorCommand,
+    events_tx: &broadcast::Sender<AgentEvent>,
+) -> ActiveHarnessCommandResult {
+    use crate::operator_commands::{InterfaceControlRequest, OperatorCommand};
+
+    let (request, respond_to) = match command {
+        OperatorCommand::ModelView { respond_to } => {
+            (InterfaceControlRequest::ModelView, respond_to)
+        }
+        OperatorCommand::ModelList { respond_to } => {
+            (InterfaceControlRequest::ModelList, respond_to)
+        }
+        OperatorCommand::ModelUnpin { respond_to } => {
+            (InterfaceControlRequest::ClearModelOverride, respond_to)
+        }
+        OperatorCommand::SetModelGrade { grade, respond_to } => (
+            InterfaceControlRequest::SetModelIntent { grade },
+            respond_to,
+        ),
+        OperatorCommand::SetModelProvider {
+            provider,
+            respond_to,
+        } => (
+            InterfaceControlRequest::SetModelProvider { provider },
+            respond_to,
+        ),
+        OperatorCommand::SetModelPolicy { policy, respond_to } => (
+            InterfaceControlRequest::SetModelPolicy { policy },
+            respond_to,
+        ),
+        OperatorCommand::SetThinking { level, respond_to } => {
+            (InterfaceControlRequest::SetThinking { level }, respond_to)
+        }
+        OperatorCommand::ExecuteControl {
+            request,
+            respond_to,
+        } => {
+            let Some(response) = execute_harness_control(ctx, &request).await else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::ExecuteControl {
+                    request,
+                    respond_to,
+                });
+            };
+            finish_active_harness_response(response, respond_to, events_tx);
+            return ActiveHarnessCommandResult::Handled;
+        }
+        other => return ActiveHarnessCommandResult::Unsupported(other),
+    };
+
+    let response = execute_harness_control(ctx, &request)
+        .await
+        .expect("typed harness command must have a supervisor-owned handler");
+    finish_active_harness_response(response, respond_to, events_tx);
+    ActiveHarnessCommandResult::Handled
+}
+
+fn finish_active_harness_response(
+    response: SlashCommandResponse,
+    respond_to: Option<oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    events_tx: &broadcast::Sender<AgentEvent>,
+) {
+    if let Some(output) = response.output.clone() {
+        let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+    }
+    if let Some(reply) = respond_to {
+        let _ = reply.send(omegon_traits::ControlOutputResponse {
+            accepted: response.accepted,
+            output: response.output,
+        });
+    }
+}
+
 /// Execute controls whose dependencies are entirely supervisor-owned and do
 /// not require conversation, context, or an inference worker.
 pub async fn execute_harness_control(

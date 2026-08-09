@@ -6205,162 +6205,27 @@ fn build_tui_secret_readiness_snapshot(
                                             cancel.cancel();
                                         }
                                     }
-                                    operator_commands::OperatorCommand::ModelView { respond_to } => {
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &operator_commands::InterfaceControlRequest::ModelView,
-                                        ).await.expect("model view is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::ModelList { respond_to } => {
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &operator_commands::InterfaceControlRequest::ModelList,
-                                        ).await.expect("model list is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::ModelUnpin { respond_to } => {
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &operator_commands::InterfaceControlRequest::ClearModelOverride,
-                                        ).await.expect("model unpin is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::SetModelGrade { grade, respond_to } => {
-                                        let request = operator_commands::InterfaceControlRequest::SetModelIntent { grade };
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &request,
-                                        ).await.expect("model grade is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::SetModelProvider { provider, respond_to } => {
-                                        let request = operator_commands::InterfaceControlRequest::SetModelProvider { provider };
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &request,
-                                        ).await.expect("model provider is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::SetModelPolicy { policy, respond_to } => {
-                                        let request = operator_commands::InterfaceControlRequest::SetModelPolicy { policy };
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &request,
-                                        ).await.expect("model policy is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::SetThinking { level, respond_to } => {
-                                        let request = operator_commands::InterfaceControlRequest::SetThinking { level };
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &request,
-                                        ).await.expect("thinking is harness-owned");
-                                        if let Some(output) = response.output.clone() {
-                                            let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
-                                        }
-                                        if let Some(reply) = respond_to {
-                                            let _ = reply.send(omegon_traits::ControlOutputResponse { accepted: response.accepted, output: response.output });
-                                        }
-                                    }
-                                    operator_commands::OperatorCommand::ExecuteControl { request, respond_to } => {
-                                        let response = control_runtime::execute_harness_control(
-                                            &control_runtime::HarnessControlContext {
-                                                shared_settings: &shared_settings,
-                                                secrets: &agent.secrets,
-                                                cwd: &agent.cwd,
-                                                dashboard_handles: &agent.dashboard_handles,
-                                                route_controller: Some(route_controller.clone()),
-                                            },
-                                            &request,
-                                        ).await;
-                                        if let Some(response) = response {
-                                            if let Some(output) = response.output.clone() {
-                                                let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                                    other => {
+                                        let harness_context = control_runtime::HarnessControlContext {
+                                            shared_settings: &shared_settings,
+                                            secrets: &agent.secrets,
+                                            cwd: &agent.cwd,
+                                            dashboard_handles: &agent.dashboard_handles,
+                                            route_controller: Some(route_controller.clone()),
+                                        };
+                                        match control_runtime::execute_active_harness_command(
+                                            &harness_context,
+                                            other,
+                                            &events_tx,
+                                        )
+                                        .await
+                                        {
+                                            control_runtime::ActiveHarnessCommandResult::Handled => {}
+                                            control_runtime::ActiveHarnessCommandResult::Unsupported(command) => {
+                                                deferred_commands.push_back(command);
                                             }
-                                            if let Some(reply) = respond_to {
-                                                let _ = reply.send(omegon_traits::ControlOutputResponse {
-                                                    accepted: response.accepted,
-                                                    output: response.output,
-                                                });
-                                            }
-                                        } else {
-                                            deferred_commands.push_back(operator_commands::OperatorCommand::ExecuteControl { request, respond_to });
                                         }
-                                    }
-                                    other => deferred_commands.push_back(other),
+                                    },
                                 }
                             }
                         }

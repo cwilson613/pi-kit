@@ -180,6 +180,27 @@ impl App {
                 }
             }
             Event::Key(key) => {
+                // The process viewer is passive and must always yield operator
+                // agency, even while another responder-backed prompt changes
+                // state or the viewed process terminalizes in the background.
+                // Handle dismissal before permission/wait ownership and
+                // interrupt debounce can consume Escape.
+                if self.process_viewer.is_some()
+                    && matches!(
+                        key.code,
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
+                    )
+                {
+                    let cancelled = self
+                        .process_viewer
+                        .as_mut()
+                        .is_some_and(|viewer| viewer.cancel_confirmation());
+                    if !cancelled {
+                        self.process_viewer = None;
+                    }
+                    return InputDisposition::SkipLoop;
+                }
+
                 // Blocking responder-backed prompts own input before passive panels,
                 // scrollback controls, selectors, or editor actions.
                 if self.pending_operator_wait.is_some() {

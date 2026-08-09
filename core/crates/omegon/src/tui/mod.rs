@@ -7653,6 +7653,18 @@ pub async fn run_tui(
                 let _ = command_tx.send(TuiCommand::Quit).await;
                 break;
             }
+            event = events_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        app.handle_agent_event(event);
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
             polled = async { event::poll(poll_timeout) } => {
                 if polled? {
                     let input_event = event::read()?;

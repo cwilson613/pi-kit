@@ -4,6 +4,12 @@
 //! CLI, ACP, and future clients) should project from these registry-shaped rows
 //! instead of maintaining surface-local slash-command tables.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandExecutionOwner {
+    Harness,
+    Agent,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BuiltinCommandSpec {
     pub(crate) name: &'static str,
@@ -12,6 +18,7 @@ pub(crate) struct BuiltinCommandSpec {
     pub(crate) availability: omegon_traits::CommandAvailability,
     pub(crate) safety: omegon_traits::CommandSafety,
     pub(crate) surface: omegon_traits::CommandSurface,
+    pub(crate) owner: CommandExecutionOwner,
 }
 
 impl BuiltinCommandSpec {
@@ -48,7 +55,13 @@ impl BuiltinCommandSpec {
             availability,
             safety,
             surface: omegon_traits::CommandSurface::Inline,
+            owner: CommandExecutionOwner::Harness,
         }
+    }
+
+    const fn agent_owned(mut self) -> Self {
+        self.owner = CommandExecutionOwner::Agent;
+        self
     }
 
     /// Declare that this command's output owns a panel surface rather than a
@@ -301,6 +314,42 @@ pub(crate) fn builtin_command_definitions() -> Vec<omegon_traits::CommandDefinit
         .copied()
         .map(BuiltinCommandSpec::to_definition)
         .collect()
+}
+
+pub(crate) fn command_execution_owner(name: &str) -> CommandExecutionOwner {
+    BUILTIN_COMMANDS
+        .iter()
+        .find(|command| command.name == name)
+        .map(|command| command.owner)
+        .unwrap_or(CommandExecutionOwner::Agent)
+}
+
+pub(crate) fn is_harness_owned_command(
+    command: &crate::operator_commands::OperatorCommand,
+) -> bool {
+    match command {
+        crate::operator_commands::OperatorCommand::RunSlashCommand { name, .. } => {
+            command_execution_owner(name) == CommandExecutionOwner::Harness
+        }
+        crate::operator_commands::OperatorCommand::CancelActiveTurn { .. }
+        | crate::operator_commands::OperatorCommand::Quit
+        | crate::operator_commands::OperatorCommand::ModelView { .. }
+        | crate::operator_commands::OperatorCommand::ModelList { .. }
+        | crate::operator_commands::OperatorCommand::SetModel { .. }
+        | crate::operator_commands::OperatorCommand::SetModelGrade { .. }
+        | crate::operator_commands::OperatorCommand::SetModelProvider { .. }
+        | crate::operator_commands::OperatorCommand::SetModelPolicy { .. }
+        | crate::operator_commands::OperatorCommand::ModelUnpin { .. }
+        | crate::operator_commands::OperatorCommand::SetThinking { .. }
+        | crate::operator_commands::OperatorCommand::ExecuteControl { .. }
+        | crate::operator_commands::OperatorCommand::ManagedDelegateControl { .. }
+        | crate::operator_commands::OperatorCommand::RunShellCommand { .. }
+        | crate::operator_commands::OperatorCommand::ShellHandoff { .. }
+        | crate::operator_commands::OperatorCommand::InstallUpdate { .. }
+        | crate::operator_commands::OperatorCommand::RestartProcess { .. }
+        | crate::operator_commands::OperatorCommand::ContextStatus { .. } => true,
+        _ => false,
+    }
 }
 
 /// Built-in slash command registry rows. Feature/user commands are merged with
@@ -658,6 +707,29 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn every_builtin_command_is_harness_owned_and_inference_independent() {
+        // Built-ins are control-plane operations. Some mutate session state or
+        // launch work, but none require an LLM to interpret or execute them.
+        // If a future command is genuinely agent-facing, it must opt in with
+        // `.agent_owned()` and add a focused justification test.
+        for command in BUILTIN_COMMANDS {
+            assert_eq!(
+                command_execution_owner(command.name),
+                CommandExecutionOwner::Harness,
+                "/{} must not wait for inference",
+                command.name
+            );
+        }
+
+        // Feature/user commands have no ownership declaration in the built-in
+        // registry, so retain the conservative agent-owned fallback.
+        assert_eq!(
+            command_execution_owner("unknown-feature-command"),
+            CommandExecutionOwner::Agent
+        );
+    }
 
     #[test]
     fn builtin_command_names_are_unique() {

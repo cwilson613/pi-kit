@@ -60,6 +60,7 @@ struct TerminalSession {
     exit_recorded: Mutex<bool>,
     transcript_truncated: Mutex<bool>,
     resume_agent: bool,
+    reader_done: std::sync::atomic::AtomicBool,
 }
 
 static COMPLETIONS: OnceLock<
@@ -231,6 +232,7 @@ pub async fn start_host_terminal(
         exit_recorded: Mutex::new(false),
         transcript_truncated: Mutex::new(false),
         resume_agent: false,
+        reader_done: std::sync::atomic::AtomicBool::new(false),
     });
 
     spawn_reader(session.clone(), reader);
@@ -482,12 +484,16 @@ async fn start(
         exit_recorded: Mutex::new(false),
         transcript_truncated: Mutex::new(false),
         resume_agent: true,
+        reader_done: std::sync::atomic::AtomicBool::new(false),
     });
 
     spawn_reader(session.clone(), reader);
-    spawn_exit_watcher(session.clone());
 
-    registry().lock().unwrap().insert(id.clone(), session);
+    registry()
+        .lock()
+        .unwrap()
+        .insert(id.clone(), session.clone());
+    spawn_exit_watcher(session);
 
     Ok(ToolResult {
         content: vec![ContentBlock::Text {
@@ -806,6 +812,16 @@ fn spawn_exit_watcher(session: Arc<TerminalSession>) {
                 child.try_wait().ok().flatten()
             };
             if let Some(status) = status {
+                // The PTY reader owns output capture. Give it a bounded chance
+                // to consume EOF before snapshotting completion evidence.
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !session
+                    .reader_done
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
                 record_exit_status(&session, &status);
                 break;
             }
@@ -830,6 +846,9 @@ where
                 Err(_) => break,
             }
         }
+        session
+            .reader_done
+            .store(true, std::sync::atomic::Ordering::Release);
     });
 }
 
@@ -1271,6 +1290,70 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         false
+    }
+
+    async fn start_completion_test(command: &str) -> omegon_traits::BackgroundOperationCompletion {
+        cleanup_session_terminals();
+        let cwd = tempfile::tempdir().unwrap();
+        let mut completions = subscribe_completions();
+        execute(
+            "start",
+            &json!({"name": "completion-event-test", "command": command}),
+            cwd.path(),
+            Some(WorkspaceBoundary::new(cwd.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), completions.recv())
+            .await
+            .expect("completion should wake receiver")
+            .expect("completion channel remains open")
+    }
+
+    #[tokio::test]
+    async fn terminal_exit_emits_success_without_status_polling() {
+        let completion = start_completion_test("printf success-evidence").await;
+        assert!(completion.success);
+        assert_eq!(completion.exit_code, Some(0));
+        assert!(completion.output_tail.contains("success-evidence"));
+        assert!(completion.resume_agent);
+    }
+
+    #[tokio::test]
+    async fn terminal_exit_emits_failure_without_status_polling() {
+        let completion = start_completion_test("printf failure-evidence; exit 23").await;
+        assert!(!completion.success);
+        assert_eq!(completion.exit_code, Some(23));
+        assert!(completion.output_tail.contains("failure-evidence"));
+        assert!(completion.resume_agent);
+    }
+
+    #[tokio::test]
+    async fn terminal_exit_emits_only_one_completion() {
+        cleanup_session_terminals();
+        let cwd = tempfile::tempdir().unwrap();
+        let mut completions = subscribe_completions();
+        let result = execute(
+            "start",
+            &json!({"name": "completion-dedup-test", "command": "exit 0"}),
+            cwd.path(),
+            Some(WorkspaceBoundary::new(cwd.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let id = result.details["session_id"].as_str().unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(5), completions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.operation_id, id);
+        let session = requested_session(&json!({"session_id": id})).unwrap();
+        assert!(!session_alive(&session));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), completions.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

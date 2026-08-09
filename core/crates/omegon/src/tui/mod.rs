@@ -55,6 +55,7 @@ mod startup_splash;
 pub mod statusline;
 mod streaming_presentation;
 pub mod tab_bar;
+mod terminal_session;
 pub mod theme;
 pub mod tool_inspection;
 pub mod turn_tool_projection;
@@ -7323,6 +7324,7 @@ pub async fn run_tui(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         ))?;
     }
+    let terminal_guard = terminal_session::TerminalSessionGuard::new(has_keyboard_enhancement);
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -7330,13 +7332,7 @@ pub async fn run_tui(
     // Install panic hook that restores terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
-        let _ = io::stdout().execute(DisableMouseCapture);
-        if has_keyboard_enhancement {
-            let _ = io::stdout().execute(PopKeyboardEnhancementFlags);
-        }
-        let _ = disable_raw_mode();
-        let _ = io::stdout().execute(LeaveAlternateScreen);
+        terminal_session::restore_terminal(has_keyboard_enhancement);
         original_hook(info);
     }));
 
@@ -7646,13 +7642,21 @@ pub async fn run_tui(
         } else {
             scheduler.idle_poll_timeout(std::time::Instant::now())
         };
-        if event::poll(poll_timeout)? {
-            let input_event = event::read()?;
-            let input_at = std::time::Instant::now();
-            let _ = app.handle_terminal_event(input_event, &command_tx).await;
-            scheduler.mark_dirty(TuiDrawReason::OperatorInput);
-            if let Some(trace) = &mut runtime_trace {
-                trace.record_input(1, input_at);
+        tokio::select! {
+            signal = terminal_session::termination_signal() => {
+                signal?;
+                break;
+            }
+            polled = async { event::poll(poll_timeout) } => {
+                if polled? {
+                    let input_event = event::read()?;
+                    let input_at = std::time::Instant::now();
+                    let _ = app.handle_terminal_event(input_event, &command_tx).await;
+                    scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+                    if let Some(trace) = &mut runtime_trace {
+                        trace.record_input(1, input_at);
+                    }
+                }
             }
         }
     }
@@ -7664,14 +7668,9 @@ pub async fn run_tui(
     // Save history before restoring terminal
     app.save_history();
 
-    // Restore terminal
-    io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
-    io::stdout().execute(DisableMouseCapture)?;
-    if app.keyboard_enhancement {
-        io::stdout().execute(PopKeyboardEnhancementFlags)?;
-    }
-    disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
+    // Restore every terminal mode through the same idempotent path used for
+    // errors, panics, and signal-driven shutdown.
+    drop(terminal_guard);
     Ok(())
 }
 

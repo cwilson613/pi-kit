@@ -2583,6 +2583,75 @@ fn turn_terminal_reasons_release_active_gate_and_remain_visible() {
 }
 
 #[test]
+fn supervisor_completion_terminalizes_tui_when_agent_end_is_missing() {
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::RuntimePromptStarted {
+        runtime_turn_id: 41,
+        text: "do work".into(),
+        image_paths: Vec::new(),
+    });
+    app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
+    app.handle_agent_event(AgentEvent::MessageStart {
+        role: "assistant".into(),
+    });
+    app.handle_agent_event(AgentEvent::MessageChunk {
+        text: "finished response".into(),
+    });
+
+    assert!(app.agent_active);
+
+    app.handle_agent_event(AgentEvent::RuntimeTurnLifecycleUpdated {
+        snapshot_json: serde_json::json!({
+            "phase": "supervisor_completed",
+            "turn_id": 41,
+        }),
+    });
+
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
+    assert_eq!(app.runtime_turn_id, None);
+    assert_eq!(app.slim_turn_state, SlimTurnState::Ready);
+    let rendered = render_app_to_string(&mut app, 140, 18);
+    assert!(!rendered.contains("active turn"), "{rendered}");
+    assert!(!rendered.contains("streaming answer"), "{rendered}");
+
+    // A delayed duplicate AgentEnd must remain harmless.
+    app.handle_agent_event(AgentEvent::AgentEnd);
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
+}
+
+#[test]
+fn authoritative_idle_queue_snapshot_recovers_missed_terminal_events() {
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::RuntimePromptStarted {
+        runtime_turn_id: 73,
+        text: "do work".into(),
+        image_paths: Vec::new(),
+    });
+    app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
+    app.handle_agent_event(AgentEvent::MessageStart {
+        role: "assistant".into(),
+    });
+    app.handle_agent_event(AgentEvent::MessageChunk {
+        text: "finished response".into(),
+    });
+
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "items": [],
+            "previews": [],
+        }),
+    });
+
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
+    assert_eq!(app.runtime_turn_id, None);
+}
+
+#[test]
 fn stream_idle_provider_failure_and_lifecycle_events_project_into_tui() {
     let mut app = active_test_app();
     app.handle_agent_event(AgentEvent::StreamIdle {

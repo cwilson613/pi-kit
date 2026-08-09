@@ -500,17 +500,200 @@ pub(crate) async fn execute_stateless_control(
     Some(resp)
 }
 
+pub struct HarnessControlContext<'a> {
+    pub shared_settings: &'a settings::SharedSettings,
+    pub secrets: &'a Arc<omegon_secrets::SecretsManager>,
+    pub cwd: &'a Path,
+    pub dashboard_handles: &'a crate::runtime_state::RuntimeStateHandles,
+    pub route_controller: Option<Arc<crate::route::RouteController>>,
+}
+
+pub enum ActiveHarnessCommandResult {
+    Handled,
+    Unsupported(crate::operator_commands::OperatorCommand),
+}
+
+/// Execute an inference-independent typed command while an agent worker is
+/// active. Unsupported commands are returned intact so the coordinator can
+/// preserve ordering without duplicating response plumbing.
+pub async fn execute_active_harness_command(
+    ctx: &HarnessControlContext<'_>,
+    command: crate::operator_commands::OperatorCommand,
+    events_tx: &broadcast::Sender<AgentEvent>,
+) -> ActiveHarnessCommandResult {
+    use crate::operator_commands::{InterfaceControlRequest, OperatorCommand};
+
+    let (request, respond_to) = match command {
+        OperatorCommand::ModelView { respond_to } => {
+            (InterfaceControlRequest::ModelView, respond_to)
+        }
+        OperatorCommand::ModelList { respond_to } => {
+            (InterfaceControlRequest::ModelList, respond_to)
+        }
+        OperatorCommand::ModelUnpin { respond_to } => {
+            (InterfaceControlRequest::ClearModelOverride, respond_to)
+        }
+        OperatorCommand::SetModelGrade { grade, respond_to } => (
+            InterfaceControlRequest::SetModelIntent { grade },
+            respond_to,
+        ),
+        OperatorCommand::SetModelProvider {
+            provider,
+            respond_to,
+        } => (
+            InterfaceControlRequest::SetModelProvider { provider },
+            respond_to,
+        ),
+        OperatorCommand::SetModelPolicy { policy, respond_to } => (
+            InterfaceControlRequest::SetModelPolicy { policy },
+            respond_to,
+        ),
+        OperatorCommand::SetThinking { level, respond_to } => {
+            (InterfaceControlRequest::SetThinking { level }, respond_to)
+        }
+        OperatorCommand::RunSlashCommand {
+            name,
+            args,
+            respond_to,
+        } => {
+            let Some(canonical) = crate::runtime_commands::canonical_slash_command(&name, &args)
+            else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::RunSlashCommand {
+                    name,
+                    args,
+                    respond_to,
+                });
+            };
+            let Some(request) = control_request_from_slash(&canonical) else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::RunSlashCommand {
+                    name,
+                    args,
+                    respond_to,
+                });
+            };
+            let Some(response) = execute_harness_control(ctx, &request).await else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::RunSlashCommand {
+                    name,
+                    args,
+                    respond_to,
+                });
+            };
+            if let Some(output) = response.output.clone() {
+                let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+            }
+            if let Some(reply) = respond_to {
+                let _ = reply.send(response);
+            }
+            return ActiveHarnessCommandResult::Handled;
+        }
+        OperatorCommand::ExecuteControl {
+            request,
+            respond_to,
+        } => {
+            let Some(response) = execute_harness_control(ctx, &request).await else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::ExecuteControl {
+                    request,
+                    respond_to,
+                });
+            };
+            finish_active_harness_response(response, respond_to, events_tx);
+            return ActiveHarnessCommandResult::Handled;
+        }
+        other => return ActiveHarnessCommandResult::Unsupported(other),
+    };
+
+    let response = execute_harness_control(ctx, &request)
+        .await
+        .expect("typed harness command must have a supervisor-owned handler");
+    finish_active_harness_response(response, respond_to, events_tx);
+    ActiveHarnessCommandResult::Handled
+}
+
+fn finish_active_harness_response(
+    response: SlashCommandResponse,
+    respond_to: Option<oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+    events_tx: &broadcast::Sender<AgentEvent>,
+) {
+    if let Some(output) = response.output.clone() {
+        let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+    }
+    if let Some(reply) = respond_to {
+        let _ = reply.send(omegon_traits::ControlOutputResponse {
+            accepted: response.accepted,
+            output: response.output,
+        });
+    }
+}
+
+/// Execute controls whose dependencies are entirely supervisor-owned and do
+/// not require conversation, context, or an inference worker.
+pub async fn execute_harness_control(
+    ctx: &HarnessControlContext<'_>,
+    request: &ControlRequest,
+) -> Option<SlashCommandResponse> {
+    if let Some(response) = execute_stateless_control(
+        request,
+        ctx.shared_settings,
+        ctx.secrets,
+        ctx.cwd,
+        ctx.dashboard_handles,
+    )
+    .await
+    {
+        return Some(response);
+    }
+
+    Some(match request {
+        ControlRequest::SetModelIntent { grade } => {
+            set_model_intent_control_response(ctx.route_controller.clone(), ctx.cwd, grade).await
+        }
+        ControlRequest::SetModelProvider { provider } => {
+            set_model_provider_control_response(ctx.route_controller.clone(), ctx.cwd, provider)
+                .await
+        }
+        ControlRequest::SetModelPolicy { policy } => {
+            set_model_policy_control_response(ctx.route_controller.clone(), ctx.cwd, policy).await
+        }
+        ControlRequest::SetThinking { level } => {
+            set_thinking_response(ctx.shared_settings, ctx.cwd, *level).await
+        }
+        ControlRequest::ClearModelOverride => {
+            let controller = ctx.route_controller.as_ref()?;
+            let snapshot = controller.clear_exact_model_override().await;
+            if let Err(error) = settings::persist_model_intent(ctx.cwd, &snapshot.intent) {
+                return Some(SlashCommandResponse {
+                    accepted: false,
+                    output: Some(format!(
+                        "Model override cleared in memory but persistence failed: {error}"
+                    )),
+                });
+            }
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format!(
+                    "Model exact override cleared — {}",
+                    snapshot.intent.summary()
+                )),
+            }
+        }
+        _ => return None,
+    })
+}
+
 pub async fn execute_control(
     ctx: &mut ControlContext<'_>,
     request: ControlRequest,
 ) -> SlashCommandResponse {
     // Try stateless handlers first (shared with daemon mode).
-    if let Some(resp) = execute_stateless_control(
+    if let Some(resp) = execute_harness_control(
+        &HarnessControlContext {
+            shared_settings: ctx.shared_settings,
+            secrets: &ctx.agent.secrets,
+            cwd: &ctx.agent.cwd,
+            dashboard_handles: &ctx.agent.dashboard_handles,
+            route_controller: ctx.route_controller.clone(),
+        },
         &request,
-        ctx.shared_settings,
-        &ctx.agent.secrets,
-        &ctx.agent.cwd,
-        &ctx.agent.dashboard_handles,
     )
     .await
     {
@@ -5068,6 +5251,154 @@ pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn active_harness_dispatch_responds_without_waiting_for_inference() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let blocked_worker = tokio::spawn(std::future::pending::<()>());
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            execute_active_harness_command(
+                &context,
+                crate::operator_commands::OperatorCommand::SetThinking {
+                    level: settings::ThinkingLevel::High,
+                    respond_to: Some(reply_tx),
+                },
+                &events_tx,
+            ),
+        )
+        .await
+        .expect("harness control must not wait for inference");
+
+        assert!(matches!(result, ActiveHarnessCommandResult::Handled));
+        let response = tokio::time::timeout(std::time::Duration::from_millis(250), reply_rx)
+            .await
+            .expect("response must arrive while worker remains active")
+            .unwrap();
+        assert!(response.accepted);
+        assert!(!blocked_worker.is_finished());
+        assert_eq!(
+            settings.lock().unwrap().thinking,
+            settings::ThinkingLevel::High
+        );
+        blocked_worker.abort();
+    }
+
+    #[test]
+    fn active_turn_harness_command_contract_covers_operator_controls() {
+        for (name, args) in [
+            ("model", "list"),
+            ("think", "high"),
+            ("secrets", ""),
+            ("variables", ""),
+        ] {
+            let canonical = crate::runtime_commands::canonical_slash_command(name, args)
+                .unwrap_or_else(|| panic!("/{name} {args} must be canonical"));
+            let request = control_request_from_slash(&canonical)
+                .unwrap_or_else(|| panic!("/{name} {args} must remain inference-independent"));
+            assert!(
+                matches!(
+                    request,
+                    ControlRequest::ModelView
+                        | ControlRequest::ModelList
+                        | ControlRequest::SetThinking { .. }
+                        | ControlRequest::SecretsView
+                        | ControlRequest::VariablesView
+                ),
+                "/{name} {args} mapped to unexpected request: {request:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn active_slash_command_responds_while_worker_remains_active() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let blocked_worker = tokio::spawn(std::future::pending::<()>());
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            execute_active_harness_command(
+                &context,
+                crate::operator_commands::OperatorCommand::RunSlashCommand {
+                    name: "think".into(),
+                    args: "high".into(),
+                    respond_to: Some(reply_tx),
+                },
+                &events_tx,
+            ),
+        )
+        .await
+        .expect("slash control must not wait for inference");
+
+        assert!(matches!(result, ActiveHarnessCommandResult::Handled));
+        let response = tokio::time::timeout(std::time::Duration::from_millis(250), reply_rx)
+            .await
+            .expect("slash response must arrive while worker remains active")
+            .unwrap();
+        assert!(response.accepted);
+        assert!(!blocked_worker.is_finished());
+        assert_eq!(
+            settings.lock().unwrap().thinking,
+            settings::ThinkingLevel::High
+        );
+        blocked_worker.abort();
+    }
+
+    #[tokio::test]
+    async fn unsupported_active_command_is_returned_intact_instead_of_disappearing() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+        let result = execute_active_harness_command(
+            &context,
+            crate::operator_commands::OperatorCommand::Compact,
+            &events_tx,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            ActiveHarnessCommandResult::Unsupported(
+                crate::operator_commands::OperatorCommand::Compact
+            )
+        ));
+    }
 
     #[test]
     fn secret_response_functions_stay_in_control_secrets_module() {

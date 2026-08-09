@@ -428,14 +428,15 @@ pub(crate) fn should_inject_execution_pressure(
 
 // ProgressSignal is now defined in omegon-traits and imported above.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum EvidenceSufficiency {
+    #[default]
     None,
     Targeted,
     Actionable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct EvidenceAssessment {
     pub local: EvidenceSufficiency,
     pub global: EvidenceSufficiency,
@@ -476,6 +477,9 @@ pub(crate) struct ControllerState {
     pub targeted_evidence_streak: u32,
     pub local_evidence_sufficient_streak: u32,
     pub evidence_sufficient_streak: u32,
+    /// Consecutive tool-continuation turns without mutation, validation,
+    /// constraint discovery, commit, completion, or substantive visible prose.
+    pub no_progress_continuation_streak: u32,
 }
 
 /// Minimum trimmed length for interleaved assistant prose to count as
@@ -521,14 +525,28 @@ impl ControllerState {
                 self.reset();
                 return;
             }
-            ProgressSignal::TargetedValidation | ProgressSignal::ConstraintDiscovery => {
+            ProgressSignal::TargetedValidation
+            | ProgressSignal::BroadValidation
+            | ProgressSignal::ConstraintDiscovery => {
+                self.no_progress_continuation_streak = 0;
                 self.consecutive_tool_continuations /= 2;
                 self.orientation_churn_streak /= 2;
                 self.repeated_action_failure_streak = 0;
                 self.validation_thrash_streak = 0;
                 self.closure_stall_streak /= 2;
             }
-            ProgressSignal::BroadValidation | ProgressSignal::None => {}
+            ProgressSignal::None => {
+                if matches!(
+                    turn_end_reason,
+                    omegon_traits::TurnEndReason::ToolContinuation
+                ) && !substantive_prose
+                {
+                    self.no_progress_continuation_streak =
+                        self.no_progress_continuation_streak.saturating_add(1);
+                } else {
+                    self.no_progress_continuation_streak = 0;
+                }
+            }
         }
 
         if matches!(
@@ -1100,6 +1118,57 @@ mod tests {
         assert!(message.contains("self-criticize"));
         assert!(message.contains("mirror operator frustration"));
         assert!(message.contains("explain your process"));
+    }
+
+    #[test]
+    fn no_progress_continuation_streak_is_bounded_and_reset_by_progress() {
+        let mut controller = ControllerState::default();
+        let evidence = EvidenceAssessment::default();
+
+        for expected in 1..=8 {
+            controller.observe_turn(
+                omegon_traits::TurnEndReason::ToolContinuation,
+                None,
+                ProgressSignal::None,
+                evidence,
+                false,
+            );
+            assert_eq!(controller.no_progress_continuation_streak, expected);
+        }
+
+        controller.observe_turn(
+            omegon_traits::TurnEndReason::ToolContinuation,
+            None,
+            ProgressSignal::TargetedValidation,
+            evidence,
+            false,
+        );
+        assert_eq!(controller.no_progress_continuation_streak, 0);
+
+        controller.observe_turn(
+            omegon_traits::TurnEndReason::ToolContinuation,
+            None,
+            ProgressSignal::None,
+            evidence,
+            true,
+        );
+        assert_eq!(controller.no_progress_continuation_streak, 0);
+    }
+
+    #[test]
+    fn non_continuation_turn_clears_no_progress_streak() {
+        let mut controller = ControllerState {
+            no_progress_continuation_streak: 4,
+            ..Default::default()
+        };
+        controller.observe_turn(
+            omegon_traits::TurnEndReason::Blocked,
+            None,
+            ProgressSignal::None,
+            EvidenceAssessment::default(),
+            false,
+        );
+        assert_eq!(controller.no_progress_continuation_streak, 0);
     }
 
     #[test]

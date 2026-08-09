@@ -22,6 +22,7 @@ use crate::tools::permissions::{
 };
 
 const MAX_TAIL_BYTES: usize = 64 * 1024;
+const MAX_COMPLETION_TAIL_BYTES: usize = 8 * 1024;
 const DEFAULT_READ_BYTES: usize = 16 * 1024;
 const MAX_SESSIONS: usize = 8;
 const MAX_COMMAND_BYTES: usize = 8 * 1024;
@@ -58,6 +59,22 @@ struct TerminalSession {
     tail: Mutex<String>,
     exit_recorded: Mutex<bool>,
     transcript_truncated: Mutex<bool>,
+    resume_agent: bool,
+    reader_done: std::sync::atomic::AtomicBool,
+}
+
+static COMPLETIONS: OnceLock<
+    tokio::sync::broadcast::Sender<omegon_traits::BackgroundOperationCompletion>,
+> = OnceLock::new();
+
+fn completion_sender()
+-> &'static tokio::sync::broadcast::Sender<omegon_traits::BackgroundOperationCompletion> {
+    COMPLETIONS.get_or_init(|| tokio::sync::broadcast::channel(64).0)
+}
+
+pub fn subscribe_completions()
+-> tokio::sync::broadcast::Receiver<omegon_traits::BackgroundOperationCompletion> {
+    completion_sender().subscribe()
 }
 
 /// Input for host-action terminal creation. Unlike the direct terminal tool,
@@ -214,9 +231,12 @@ pub async fn start_host_terminal(
         tail: Mutex::new(String::new()),
         exit_recorded: Mutex::new(false),
         transcript_truncated: Mutex::new(false),
+        resume_agent: false,
+        reader_done: std::sync::atomic::AtomicBool::new(false),
     });
 
     spawn_reader(session.clone(), reader);
+    spawn_exit_watcher(session.clone());
     registry().lock().unwrap().insert(id.clone(), session);
 
     let inspect_hint = format!(
@@ -463,11 +483,17 @@ async fn start(
         tail: Mutex::new(String::new()),
         exit_recorded: Mutex::new(false),
         transcript_truncated: Mutex::new(false),
+        resume_agent: true,
+        reader_done: std::sync::atomic::AtomicBool::new(false),
     });
 
     spawn_reader(session.clone(), reader);
 
-    registry().lock().unwrap().insert(id.clone(), session);
+    registry()
+        .lock()
+        .unwrap()
+        .insert(id.clone(), session.clone());
+    spawn_exit_watcher(session);
 
     Ok(ToolResult {
         content: vec![ContentBlock::Text {
@@ -778,6 +804,32 @@ fn running_session_count() -> usize {
         .count()
 }
 
+fn spawn_exit_watcher(session: Arc<TerminalSession>) {
+    std::thread::spawn(move || {
+        loop {
+            let status = {
+                let mut child = session.child.lock().unwrap();
+                child.try_wait().ok().flatten()
+            };
+            if let Some(status) = status {
+                // The PTY reader owns output capture. Give it a bounded chance
+                // to consume EOF before snapshotting completion evidence.
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !session
+                    .reader_done
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                record_exit_status(&session, &status);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+}
+
 fn spawn_reader<R>(session: Arc<TerminalSession>, mut reader: R)
 where
     R: Read + Send + 'static,
@@ -794,6 +846,9 @@ where
                 Err(_) => break,
             }
         }
+        session
+            .reader_done
+            .store(true, std::sync::atomic::Ordering::Release);
     });
 }
 
@@ -896,6 +951,23 @@ fn record_exit_status(session: &TerminalSession, status: &portable_pty::ExitStat
             chrono::Utc::now().to_rfc3339()
         ),
     );
+    let _ = completion_sender().send(omegon_traits::BackgroundOperationCompletion {
+        operation_id: session.id.clone(),
+        kind: "terminal".to_string(),
+        name: session.name.clone(),
+        success: status.signal().is_none() && status.exit_code() == 0,
+        exit_code: (status.signal().is_none()).then(|| status.exit_code()),
+        signal: status.signal().map(str::to_string),
+        output_tail: tail_bytes(&session.tail.lock().unwrap(), MAX_COMPLETION_TAIL_BYTES),
+        transcript_path: session.transcript_path.display().to_string(),
+        elapsed_ms: session
+            .started
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        resume_agent: session.resume_agent,
+    });
 }
 
 fn terminal_dir() -> PathBuf {
@@ -1218,6 +1290,85 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         false
+    }
+
+    async fn start_completion_test(command: &str) -> omegon_traits::BackgroundOperationCompletion {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut completions = subscribe_completions();
+        let result = execute(
+            "start",
+            &json!({"name": format!("completion-event-test-{}", uuid::Uuid::new_v4()), "command": command}),
+            cwd.path(),
+            Some(WorkspaceBoundary::new(cwd.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let operation_id = result.details["session_id"].as_str().unwrap().to_string();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let completion = tokio::time::timeout_at(deadline, completions.recv())
+                .await
+                .expect("completion should wake receiver")
+                .expect("completion channel remains open");
+            if completion.operation_id == operation_id {
+                return completion;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_exit_emits_success_without_status_polling() {
+        let completion = start_completion_test("printf success-evidence").await;
+        assert!(completion.success);
+        assert_eq!(completion.exit_code, Some(0));
+        assert!(completion.output_tail.contains("success-evidence"));
+        assert!(completion.resume_agent);
+    }
+
+    #[tokio::test]
+    async fn terminal_exit_emits_failure_without_status_polling() {
+        let completion = start_completion_test("printf failure-evidence; exit 23").await;
+        assert!(!completion.success);
+        assert_eq!(completion.exit_code, Some(23));
+        assert!(completion.output_tail.contains("failure-evidence"));
+        assert!(completion.resume_agent);
+    }
+
+    #[tokio::test]
+    async fn terminal_exit_emits_only_one_completion() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut completions = subscribe_completions();
+        let result = execute(
+            "start",
+            &json!({"name": format!("completion-dedup-test-{}", uuid::Uuid::new_v4()), "command": "exit 0"}),
+            cwd.path(),
+            Some(WorkspaceBoundary::new(cwd.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let id = result.details["session_id"].as_str().unwrap();
+        let first = loop {
+            let completion = tokio::time::timeout(Duration::from_secs(5), completions.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if completion.operation_id == id {
+                break completion;
+            }
+        };
+        assert_eq!(first.operation_id, id);
+        let session = requested_session(&json!({"session_id": id})).unwrap();
+        assert!(!session_alive(&session));
+        let duplicate = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let completion = completions.recv().await.unwrap();
+                if completion.operation_id == id {
+                    return completion;
+                }
+            }
+        })
+        .await;
+        assert!(duplicate.is_err());
     }
 
     #[tokio::test]

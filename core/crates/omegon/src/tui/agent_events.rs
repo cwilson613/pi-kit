@@ -6,6 +6,34 @@
 use super::*;
 
 impl App {
+    /// Reconcile TUI-local activity with an authoritative runtime terminal edge.
+    /// This is deliberately idempotent because TurnEnd, AgentEnd, lifecycle,
+    /// and queue snapshots can all report the same completion.
+    fn terminalize_runtime_turn(&mut self) {
+        let was_active = self.agent_active || self.conversation.is_streaming();
+        self.expire_running_activity_tools(Duration::from_millis(2200));
+        self.agent_active = false;
+        self.runtime_turn_id = None;
+        if !matches!(self.slim_turn_state, SlimTurnState::Finished(_)) {
+            self.slim_turn_state = SlimTurnState::Ready;
+        }
+        if self.interrupt_pending {
+            self.editor.clear_line();
+            self.interrupt_pending = false;
+            self.suppress_editor_input_for(Duration::from_millis(500));
+        }
+        self.dashboard_handles.session().set_busy(false);
+        self.conversation.finalize_message();
+        self.effects.stop_spinner_glow();
+        self.effects.stop_border_pulse();
+        if was_active {
+            self.effects.sweep_turn_complete();
+            if let Some(ref mut overlay) = self.tutorial_overlay {
+                overlay.on_agent_turn_complete();
+            }
+        }
+    }
+
     pub(super) fn prune_activity_tools(&mut self, now: std::time::Instant) {
         self.activity_tools.retain(|tool| {
             tool.expires_at
@@ -102,8 +130,15 @@ impl App {
     }
 
     pub(super) fn handle_agent_event(&mut self, event: AgentEvent) {
+        // Runtime authority events must bypass stream-presentation buffering:
+        // buffering a terminal supervisor/queue snapshot can strand the TUI in
+        // a locally active state after the worker has already returned.
+        let authoritative_runtime_event = matches!(
+            event,
+            AgentEvent::RuntimeTurnLifecycleUpdated { .. } | AgentEvent::RuntimeQueueUpdated { .. }
+        );
         let decision = self.stream_presentation.classify(event.clone());
-        if !decision.apply_now {
+        if !decision.apply_now && !authoritative_runtime_event {
             return;
         }
         match event {
@@ -576,29 +611,7 @@ impl App {
                 }
             }
             AgentEvent::AgentEnd => {
-                self.expire_running_activity_tools(Duration::from_millis(2200));
-                self.agent_active = false;
-                if !matches!(self.slim_turn_state, SlimTurnState::Finished(_)) {
-                    self.slim_turn_state = SlimTurnState::Ready;
-                }
-                if self.interrupt_pending {
-                    self.editor.clear_line();
-                    self.interrupt_pending = false;
-                    self.suppress_editor_input_for(Duration::from_millis(500));
-                }
-                self.dashboard_handles.session().set_busy(false);
-                self.conversation.finalize_message();
-                // Keep completed turns anchored at the live tail. The old long-response
-                // active-plan heuristic rewound compact sessions to the start of the final
-                // assistant segment, which made every completed GPT-5.5 turn land tens
-                // of lines above the composer and forced a manual End/scroll recovery.
-                self.effects.stop_spinner_glow();
-                self.effects.stop_border_pulse();
-                self.effects.sweep_turn_complete();
-                // Advance tutorial overlay if an AutoPrompt step just completed
-                if let Some(ref mut overlay) = self.tutorial_overlay {
-                    overlay.on_agent_turn_complete();
-                }
+                self.terminalize_runtime_turn();
             }
             AgentEvent::PhaseChanged { phase } => {
                 self.conversation
@@ -672,7 +685,13 @@ impl App {
                 self.show_toast(&message, ratatui_toaster::ToastType::Info);
             }
             AgentEvent::RuntimeQueueUpdated { snapshot_json } => {
+                let runtime_idle = snapshot_json
+                    .get("active")
+                    .is_some_and(serde_json::Value::is_null);
                 self.runtime_queue_snapshot = Some(snapshot_json);
+                if runtime_idle && self.runtime_turn_id.is_some() {
+                    self.terminalize_runtime_turn();
+                }
             }
             AgentEvent::RuntimePromptStarted {
                 runtime_turn_id,
@@ -726,6 +745,50 @@ impl App {
                 // Provenance-routed: identical policy to a keyboard-submitted
                 // slash command, because it is the same command.
                 self.show_slash_response(&command, &body);
+            }
+            AgentEvent::BackgroundOperationCompleted { completion } => {
+                let elapsed = completion.elapsed_ms as f64 / 1000.0;
+                let outcome = if completion.success {
+                    format!(
+                        "succeeded · exit {}",
+                        completion.exit_code.unwrap_or_default()
+                    )
+                } else {
+                    completion
+                        .signal
+                        .as_deref()
+                        .map(|signal| format!("failed · {signal}"))
+                        .or_else(|| {
+                            completion
+                                .exit_code
+                                .map(|code| format!("failed · exit {code}"))
+                        })
+                        .unwrap_or_else(|| "failed · unknown reason".to_string())
+                };
+                let summary = format!("{outcome} · {elapsed:.1}s · Enter to inspect output");
+                self.conversation.push_tool_start(
+                    &completion.operation_id,
+                    "terminal",
+                    Some(&completion.name),
+                    None,
+                );
+                self.conversation.push_tool_end(
+                    &completion.operation_id,
+                    !completion.success,
+                    Some(&format!(
+                        "Terminal session '{}' ({}) {summary}",
+                        completion.name, completion.operation_id
+                    )),
+                );
+                let toast = format!("terminal · {} · {outcome} · {elapsed:.1}s", completion.name);
+                self.show_toast(
+                    &toast,
+                    if completion.success {
+                        ratatui_toaster::ToastType::Success
+                    } else {
+                        ratatui_toaster::ToastType::Error
+                    },
+                );
             }
             AgentEvent::SystemNotification { message } => {
                 if let Some(detail) = upstream_retry_hint(&message) {
@@ -781,9 +844,13 @@ impl App {
                 let phase = snapshot_json
                     .get("phase")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or("active")
-                    .replace('_', " ");
-                self.slim_turn_state = SlimTurnState::Lifecycle(format!("turn {phase}"));
+                    .unwrap_or("active");
+                if phase == "supervisor_completed" {
+                    self.terminalize_runtime_turn();
+                } else {
+                    self.slim_turn_state =
+                        SlimTurnState::Lifecycle(format!("turn {}", phase.replace('_', " ")));
+                }
             }
             AgentEvent::PlanUpdated { projection } => {
                 if WorkbenchState::is_workstream_only_projection(&projection) {

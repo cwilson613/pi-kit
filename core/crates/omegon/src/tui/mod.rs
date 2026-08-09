@@ -55,6 +55,7 @@ mod startup_splash;
 pub mod statusline;
 mod streaming_presentation;
 pub mod tab_bar;
+mod terminal_session;
 pub mod theme;
 pub mod tool_inspection;
 pub mod turn_tool_projection;
@@ -7242,7 +7243,13 @@ fn drain_agent_events_budgeted(
                 app.handle_agent_event(agent_event);
                 handled += 1;
             }
-            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                // Lag advances the receiver cursor and is therefore progress.
+                // Count it against this pass so a producer that continuously
+                // overruns the channel cannot keep this loop spinning without
+                // yielding to terminal input.
+                handled += 1;
+            }
             Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
                 return DrainOutcome {
                     handled,
@@ -7285,13 +7292,16 @@ pub async fn run_tui(
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
 ) -> io::Result<()> {
+    let terminal_guard = terminal_session::TerminalSessionGuard::new();
     enable_raw_mode()?;
+    terminal_guard.mark_raw();
 
     // Initialize image protocol detection AFTER raw mode (suppresses echo)
     // but BEFORE alt screen (picker queries need the primary screen).
     image::init_picker();
 
     io::stdout().execute(EnterAlternateScreen)?;
+    terminal_guard.mark_alternate_screen();
     // Set the terminal's own background color to our theme bg.
     // This ensures the alternate screen buffer is filled with our color,
     // not the user's terminal profile background. Without this, crossterm's
@@ -7310,7 +7320,9 @@ pub async fn run_tui(
     // `/mouse off` remains the guaranteed passthrough fallback for terminals
     // that do not implement the Shift override.
     io::stdout().execute(EnableMouseCapture)?;
+    terminal_guard.mark_mouse_capture();
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
+    terminal_guard.mark_bracketed_paste();
 
     // Enable Kitty keyboard protocol when the terminal supports it.
     // This lets crossterm distinguish Shift+Enter from Enter, which is
@@ -7322,23 +7334,15 @@ pub async fn run_tui(
         io::stdout().execute(PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         ))?;
+        terminal_guard.mark_keyboard_enhancement();
     }
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    // Install panic hook that restores terminal
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
-        let _ = io::stdout().execute(DisableMouseCapture);
-        if has_keyboard_enhancement {
-            let _ = io::stdout().execute(PopKeyboardEnhancementFlags);
-        }
-        let _ = disable_raw_mode();
-        let _ = io::stdout().execute(LeaveAlternateScreen);
-        original_hook(info);
-    }));
+    // Restore the terminal before forwarding any panic to the process hook.
+    // The hook guard reinstates the prior hook when this TUI session ends.
+    let panic_hook_guard = terminal_guard.install_panic_hook();
 
     // Initialise spinner: seed from process start time for variety across
     // sessions, and load user extras from ~/.config/omegon/spinner-verbs.txt.
@@ -7641,18 +7645,49 @@ pub async fn run_tui(
 
         // If the agent budget was exhausted, yield only long enough to service
         // ready input, then continue draining on the next fair scheduling pass.
+        // `crossterm::event::poll` is synchronous even when wrapped in an
+        // async block, so it cannot be pre-empted by the other select arms.
+        // Cap the blocking interval and never use a zero timeout after a
+        // saturated drain: zero caused a hot loop, while a long idle timeout
+        // delayed authoritative runtime events and signal handling.
         let poll_timeout = if agent_drain.hit_budget {
-            Duration::ZERO
+            Duration::from_millis(1)
         } else {
-            scheduler.idle_poll_timeout(std::time::Instant::now())
+            scheduler
+                .idle_poll_timeout(std::time::Instant::now())
+                .min(Duration::from_millis(16))
         };
-        if event::poll(poll_timeout)? {
-            let input_event = event::read()?;
-            let input_at = std::time::Instant::now();
-            let _ = app.handle_terminal_event(input_event, &command_tx).await;
-            scheduler.mark_dirty(TuiDrawReason::OperatorInput);
-            if let Some(trace) = &mut runtime_trace {
-                trace.record_input(1, input_at);
+        tokio::select! {
+            signal = terminal_session::termination_signal() => {
+                signal?;
+                // Terminal restoration alone must not leave the coordinator
+                // running headless while IPC/other sender clones keep the
+                // command channel open.
+                let _ = command_tx.send(TuiCommand::Quit).await;
+                break;
+            }
+            event = events_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        app.handle_agent_event(event);
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            polled = async { event::poll(poll_timeout) } => {
+                if polled? {
+                    let input_event = event::read()?;
+                    let input_at = std::time::Instant::now();
+                    let _ = app.handle_terminal_event(input_event, &command_tx).await;
+                    scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+                    if let Some(trace) = &mut runtime_trace {
+                        trace.record_input(1, input_at);
+                    }
+                }
             }
         }
     }
@@ -7664,14 +7699,10 @@ pub async fn run_tui(
     // Save history before restoring terminal
     app.save_history();
 
-    // Restore terminal
-    io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
-    io::stdout().execute(DisableMouseCapture)?;
-    if app.keyboard_enhancement {
-        io::stdout().execute(PopKeyboardEnhancementFlags)?;
-    }
-    disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
+    // Restore every terminal mode through the same idempotent path used for
+    // errors, panics, and signal-driven shutdown.
+    drop(panic_hook_guard);
+    drop(terminal_guard);
     Ok(())
 }
 

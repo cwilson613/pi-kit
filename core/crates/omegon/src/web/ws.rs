@@ -2280,6 +2280,11 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             }
             payload
         }
+        AgentEvent::BackgroundOperationCompleted { completion } => json!({
+            "type": "background_operation_completed",
+            "event_name": "background_operation.completed",
+            "completion": completion,
+        }),
         AgentEvent::ToolEnd {
             id,
             name,
@@ -3242,6 +3247,7 @@ mod tests {
             AgentEvent::ToolStart { .. } => {}
             AgentEvent::ToolUpdate { .. } => {}
             AgentEvent::ToolEnd { .. } => {}
+            AgentEvent::BackgroundOperationCompleted { .. } => {}
             AgentEvent::AgentEnd => {}
             AgentEvent::PhaseChanged { .. } => {}
             AgentEvent::DecompositionStarted { .. } => {}

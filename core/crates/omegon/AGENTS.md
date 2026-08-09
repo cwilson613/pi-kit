@@ -22,6 +22,7 @@ This crate is the integration binary. It owns agent-loop composition, providers,
 - Keep provider identity explicit. Normalize tool schemas through `tool_schema.rs`; do not silently infer unsupported provider capabilities.
 - Process timeout/cancellation must clean up the entire owned process tree. Never replace argument-array spawning with shell interpolation.
 - Keep producer/provenance distinct from rendered content. Do not route operator surfaces by sniffing formatted body text.
+- **Operator-agency invariant:** a completed runtime turn must release every frontend's local active/streaming gate even when advisory events such as `AgentEnd` are delayed, coalesced, or lost. Treat supervisor lifecycle and queue snapshots as authoritative reconciliation inputs; never subject them to presentation buffering or filtering. Any change to agent-event scheduling, stream presentation, runtime lifecycle projection, or queue handling must retain regression coverage for (1) `supervisor_completed` without `AgentEnd`, (2) an idle authoritative queue snapshot recovering missed terminal events, and (3) successful submission of a second turn after completion. A UI that renders the answer but remains locally busy is an operator-agency failure, not cosmetic staleness.
 - Permission decisions must preserve raw intent, path dialect/environment context, and the workspace boundary; avoid eager conversion that destroys Windows/WSL path meaning.
 
 ## Validation

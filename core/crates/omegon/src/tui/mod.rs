@@ -7243,7 +7243,13 @@ fn drain_agent_events_budgeted(
                 app.handle_agent_event(agent_event);
                 handled += 1;
             }
-            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                // Lag advances the receiver cursor and is therefore progress.
+                // Count it against this pass so a producer that continuously
+                // overruns the channel cannot keep this loop spinning without
+                // yielding to terminal input.
+                handled += 1;
+            }
             Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
                 return DrainOutcome {
                     handled,
@@ -7639,10 +7645,17 @@ pub async fn run_tui(
 
         // If the agent budget was exhausted, yield only long enough to service
         // ready input, then continue draining on the next fair scheduling pass.
+        // `crossterm::event::poll` is synchronous even when wrapped in an
+        // async block, so it cannot be pre-empted by the other select arms.
+        // Cap the blocking interval and never use a zero timeout after a
+        // saturated drain: zero caused a hot loop, while a long idle timeout
+        // delayed authoritative runtime events and signal handling.
         let poll_timeout = if agent_drain.hit_budget {
-            Duration::ZERO
+            Duration::from_millis(1)
         } else {
-            scheduler.idle_poll_timeout(std::time::Instant::now())
+            scheduler
+                .idle_poll_timeout(std::time::Instant::now())
+                .min(Duration::from_millis(16))
         };
         tokio::select! {
             signal = terminal_session::termination_signal() => {
@@ -7652,6 +7665,18 @@ pub async fn run_tui(
                 // command channel open.
                 let _ = command_tx.send(TuiCommand::Quit).await;
                 break;
+            }
+            event = events_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        app.handle_agent_event(event);
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
             polled = async { event::poll(poll_timeout) } => {
                 if polled? {

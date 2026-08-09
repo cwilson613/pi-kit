@@ -162,6 +162,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
             id: id.clone(),
             partial: partial.clone(),
         }),
+        AgentEvent::BackgroundOperationCompleted { .. } => None,
         AgentEvent::ToolEnd {
             id,
             name,

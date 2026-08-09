@@ -382,7 +382,7 @@ async fn run_interactive_command(_cli: &Cli) -> anyhow::Result<()> {
 #[cfg(feature = "tui")]
 #[allow(clippy::too_many_arguments)]
 async fn run_interactive_active_turn(
-    mut runtime_state: InteractiveAgentState,
+    runtime_state: Arc<tokio::sync::Mutex<InteractiveAgentState>>,
     runtime: InteractiveRuntimeResources,
     bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     shared_settings: Arc<std::sync::Mutex<settings::Settings>>,
@@ -391,7 +391,9 @@ async fn run_interactive_active_turn(
     events_tx: broadcast::Sender<AgentEvent>,
     active: ActiveTurnMeta,
     lifecycle: RuntimeTurnLifecycle,
-) -> InteractiveAgentState {
+    cancel: CancellationToken,
+) {
+    let mut runtime_state = runtime_state.lock().await;
     let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut loop_config =
         build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
@@ -433,7 +435,6 @@ async fn run_interactive_active_turn(
 
     lifecycle.emit_phase("conversation_updated", 0, 0, &events_tx, "worker");
 
-    let cancel = CancellationToken::new();
     if let Ok(mut guard) = shared_cancel.lock() {
         *guard = Some(cancel.clone());
     }
@@ -442,11 +443,12 @@ async fn run_interactive_active_turn(
     lifecycle.emit_phase("loop_running", 0, 0, &events_tx, "worker");
     let run_result = {
         let bridge_guard = bridge.read().await;
+        let state = &mut *runtime_state;
         let mut run = std::pin::pin!(r#loop::run(
             bridge_guard.as_ref(),
-            &mut runtime_state.bus,
-            &mut runtime_state.context_manager,
-            &mut runtime_state.conversation,
+            &mut state.bus,
+            &mut state.context_manager,
+            &mut state.conversation,
             &events_tx,
             cancel.clone(),
             &loop_config,
@@ -676,8 +678,6 @@ async fn run_interactive_active_turn(
         &events_tx,
         "worker",
     );
-
-    runtime_state
 }
 
 async fn stop_voice_session_if_requested(

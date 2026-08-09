@@ -37,6 +37,9 @@ fn agent_event_kind(event: &omegon_traits::AgentEvent) -> &'static str {
         omegon_traits::AgentEvent::ToolStart { .. } => "tool_start",
         omegon_traits::AgentEvent::ToolUpdate { .. } => "tool_update",
         omegon_traits::AgentEvent::ToolEnd { .. } => "tool_end",
+        omegon_traits::AgentEvent::BackgroundOperationCompleted { .. } => {
+            "background_operation_completed"
+        }
         omegon_traits::AgentEvent::PermissionRequest { .. } => "permission_request",
         omegon_traits::AgentEvent::OperatorWaitRequest { .. } => "operator_wait_request",
         omegon_traits::AgentEvent::TurnEnd(_) => "turn_end",

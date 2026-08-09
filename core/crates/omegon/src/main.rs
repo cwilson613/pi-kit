@@ -4253,6 +4253,52 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     }
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 
+    // Bridge terminal completion into both the renderer-neutral event stream
+    // and the coordinator queue. Success and failure use the same continuation
+    // contract so the next turn can verify output or diagnose the failure.
+    let mut background_completions = tools::terminal::subscribe_completions();
+    let completion_events = events_tx.clone();
+    let completion_commands = command_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            match background_completions.recv().await {
+                Ok(completion) => {
+                    let _ = completion_events.send(AgentEvent::BackgroundOperationCompleted {
+                        completion: completion.clone(),
+                    });
+                    if completion.resume_agent {
+                        let outcome = if completion.success { "succeeded" } else { "failed" };
+                        let evidence = format!(
+                            "[Background terminal completed]\nOperation: {} ({})\nOutcome: {}\nExit code: {:?}\nSignal: {:?}\nElapsed: {} ms\nTranscript: {}\nOutput tail:\n{}\n\nInspect this completion evidence and continue the pending task. If it failed, diagnose and fix the failure; do not treat process exit as success.",
+                            completion.name,
+                            completion.operation_id,
+                            outcome,
+                            completion.exit_code,
+                            completion.signal,
+                            completion.elapsed_ms,
+                            completion.transcript_path,
+                            completion.output_tail,
+                        );
+                        let _ = completion_commands
+                            .send(operator_commands::OperatorCommand::SubmitPrompt(
+                                operator_commands::PromptSubmission {
+                                    text: evidence,
+                                    image_paths: Vec::new(),
+                                    submitted_by: "background-operation".to_string(),
+                                    via: "background_operation",
+                                    queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                    metadata: operator_commands::PromptMetadata::default(),
+                                },
+                            ))
+                            .await;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     // Wire command_tx to ContextProvider for tool dispatch
     if let Ok(mut shared_tx) = agent.command_tx.lock() {
         *shared_tx = Some(command_tx.clone());

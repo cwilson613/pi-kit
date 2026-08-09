@@ -727,6 +727,32 @@ impl App {
                 // slash command, because it is the same command.
                 self.show_slash_response(&command, &body);
             }
+            AgentEvent::BackgroundOperationCompleted { completion } => {
+                let elapsed = completion.elapsed_ms as f64 / 1000.0;
+                let message = if completion.success {
+                    format!("✓ terminal · {} succeeded · {elapsed:.1}s", completion.name)
+                } else {
+                    let reason = completion
+                        .signal
+                        .as_deref()
+                        .map(|signal| format!("signal {signal}"))
+                        .or_else(|| completion.exit_code.map(|code| format!("exit {code}")))
+                        .unwrap_or_else(|| "unknown failure".to_string());
+                    format!(
+                        "✗ terminal · {} failed ({reason}) · {elapsed:.1}s",
+                        completion.name
+                    )
+                };
+                self.conversation.push_system(&message);
+                self.show_toast(
+                    &message,
+                    if completion.success {
+                        ratatui_toaster::ToastType::Success
+                    } else {
+                        ratatui_toaster::ToastType::Error
+                    },
+                );
+            }
             AgentEvent::SystemNotification { message } => {
                 if let Some(detail) = upstream_retry_hint(&message) {
                     self.slim_turn_state = SlimTurnState::UpstreamRetrying(detail);

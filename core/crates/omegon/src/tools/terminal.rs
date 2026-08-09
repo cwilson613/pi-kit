@@ -58,6 +58,21 @@ struct TerminalSession {
     tail: Mutex<String>,
     exit_recorded: Mutex<bool>,
     transcript_truncated: Mutex<bool>,
+    resume_agent: bool,
+}
+
+static COMPLETIONS: OnceLock<
+    tokio::sync::broadcast::Sender<omegon_traits::BackgroundOperationCompletion>,
+> = OnceLock::new();
+
+fn completion_sender()
+-> &'static tokio::sync::broadcast::Sender<omegon_traits::BackgroundOperationCompletion> {
+    COMPLETIONS.get_or_init(|| tokio::sync::broadcast::channel(64).0)
+}
+
+pub fn subscribe_completions()
+-> tokio::sync::broadcast::Receiver<omegon_traits::BackgroundOperationCompletion> {
+    completion_sender().subscribe()
 }
 
 /// Input for host-action terminal creation. Unlike the direct terminal tool,
@@ -214,6 +229,7 @@ pub async fn start_host_terminal(
         tail: Mutex::new(String::new()),
         exit_recorded: Mutex::new(false),
         transcript_truncated: Mutex::new(false),
+        resume_agent: false,
     });
 
     spawn_reader(session.clone(), reader);
@@ -463,6 +479,7 @@ async fn start(
         tail: Mutex::new(String::new()),
         exit_recorded: Mutex::new(false),
         transcript_truncated: Mutex::new(false),
+        resume_agent: true,
     });
 
     spawn_reader(session.clone(), reader);
@@ -896,6 +913,23 @@ fn record_exit_status(session: &TerminalSession, status: &portable_pty::ExitStat
             chrono::Utc::now().to_rfc3339()
         ),
     );
+    let _ = completion_sender().send(omegon_traits::BackgroundOperationCompletion {
+        operation_id: session.id.clone(),
+        kind: "terminal".to_string(),
+        name: session.name.clone(),
+        success: status.signal().is_none() && status.exit_code() == 0,
+        exit_code: (status.signal().is_none()).then(|| status.exit_code()),
+        signal: status.signal().map(str::to_string),
+        output_tail: session.tail.lock().unwrap().clone(),
+        transcript_path: session.transcript_path.display().to_string(),
+        elapsed_ms: session
+            .started
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        resume_agent: session.resume_agent,
+    });
 }
 
 fn terminal_dir() -> PathBuf {

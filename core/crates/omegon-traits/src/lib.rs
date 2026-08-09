@@ -2764,6 +2764,23 @@ impl ClipboardCopyStatus {
     }
 }
 
+/// Terminal outcome emitted when managed background work reaches a terminal state.
+/// The bounded output is evidence for renderers and automatic continuation; the
+/// transcript remains the authoritative full record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundOperationCompletion {
+    pub operation_id: String,
+    pub kind: String,
+    pub name: String,
+    pub success: bool,
+    pub exit_code: Option<u32>,
+    pub signal: Option<String>,
+    pub elapsed_ms: u64,
+    pub output_tail: String,
+    pub transcript_path: String,
+    pub resume_agent: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     TurnStart {
@@ -2798,6 +2815,11 @@ pub enum AgentEvent {
         result: ToolResult,
         is_error: bool,
         provenance: ToolProvenance,
+    },
+    /// Managed background work reached success or failure. Runtime coordinators
+    /// may use this to resume a pending task without operator mediation.
+    BackgroundOperationCompleted {
+        completion: BackgroundOperationCompletion,
     },
     /// The agent needs operator permission before executing a tool operation.
     /// The operator surface renders a blocking permission prompt and sends

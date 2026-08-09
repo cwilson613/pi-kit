@@ -6055,6 +6055,13 @@ fn build_tui_secret_readiness_snapshot(
 
                     let mut quit_after_turn = false;
                     let state_for_turn = runtime_state;
+                    // The supervisor owns the exact token used by the agent loop.
+                    // This closes the pre-spawn race where Ctrl+C could arrive
+                    // before the worker published its cancellation handle.
+                    let turn_cancel = CancellationToken::new();
+                    if let Ok(mut guard) = shared_cancel.lock() {
+                        *guard = Some(turn_cancel.clone());
+                    }
                     let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
                         state_for_turn,
                         runtime_resources.clone(),
@@ -6065,6 +6072,7 @@ fn build_tui_secret_readiness_snapshot(
                         events_tx.clone(),
                         active,
                         lifecycle.clone(),
+                        turn_cancel.clone(),
                     ));
                     let active_wait_started_at = std::time::Instant::now();
                     let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));

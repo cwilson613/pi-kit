@@ -391,6 +391,7 @@ async fn run_interactive_active_turn(
     events_tx: broadcast::Sender<AgentEvent>,
     active: ActiveTurnMeta,
     lifecycle: RuntimeTurnLifecycle,
+    cancel: CancellationToken,
 ) -> InteractiveAgentState {
     let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut loop_config =
@@ -433,7 +434,6 @@ async fn run_interactive_active_turn(
 
     lifecycle.emit_phase("conversation_updated", 0, 0, &events_tx, "worker");
 
-    let cancel = CancellationToken::new();
     if let Ok(mut guard) = shared_cancel.lock() {
         *guard = Some(cancel.clone());
     }

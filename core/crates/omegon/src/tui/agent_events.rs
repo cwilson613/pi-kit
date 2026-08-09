@@ -748,23 +748,41 @@ impl App {
             }
             AgentEvent::BackgroundOperationCompleted { completion } => {
                 let elapsed = completion.elapsed_ms as f64 / 1000.0;
-                let message = if completion.success {
-                    format!("✓ terminal · {} succeeded · {elapsed:.1}s", completion.name)
+                let outcome = if completion.success {
+                    format!(
+                        "succeeded · exit {}",
+                        completion.exit_code.unwrap_or_default()
+                    )
                 } else {
-                    let reason = completion
+                    completion
                         .signal
                         .as_deref()
-                        .map(|signal| format!("signal {signal}"))
-                        .or_else(|| completion.exit_code.map(|code| format!("exit {code}")))
-                        .unwrap_or_else(|| "unknown failure".to_string());
-                    format!(
-                        "✗ terminal · {} failed ({reason}) · {elapsed:.1}s",
-                        completion.name
-                    )
+                        .map(|signal| format!("failed · {signal}"))
+                        .or_else(|| {
+                            completion
+                                .exit_code
+                                .map(|code| format!("failed · exit {code}"))
+                        })
+                        .unwrap_or_else(|| "failed · unknown reason".to_string())
                 };
-                self.conversation.push_system(&message);
+                let summary = format!("{outcome} · {elapsed:.1}s · Enter to inspect output");
+                self.conversation.push_tool_start(
+                    &completion.operation_id,
+                    "terminal",
+                    Some(&completion.name),
+                    None,
+                );
+                self.conversation.push_tool_end(
+                    &completion.operation_id,
+                    !completion.success,
+                    Some(&format!(
+                        "Terminal session '{}' ({}) {summary}",
+                        completion.name, completion.operation_id
+                    )),
+                );
+                let toast = format!("terminal · {} · {outcome} · {elapsed:.1}s", completion.name);
                 self.show_toast(
-                    &message,
+                    &toast,
                     if completion.success {
                         ratatui_toaster::ToastType::Success
                     } else {

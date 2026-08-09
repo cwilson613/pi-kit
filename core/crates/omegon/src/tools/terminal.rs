@@ -22,6 +22,7 @@ use crate::tools::permissions::{
 };
 
 const MAX_TAIL_BYTES: usize = 64 * 1024;
+const MAX_COMPLETION_TAIL_BYTES: usize = 8 * 1024;
 const DEFAULT_READ_BYTES: usize = 16 * 1024;
 const MAX_SESSIONS: usize = 8;
 const MAX_COMMAND_BYTES: usize = 8 * 1024;
@@ -233,6 +234,7 @@ pub async fn start_host_terminal(
     });
 
     spawn_reader(session.clone(), reader);
+    spawn_exit_watcher(session.clone());
     registry().lock().unwrap().insert(id.clone(), session);
 
     let inspect_hint = format!(
@@ -483,6 +485,7 @@ async fn start(
     });
 
     spawn_reader(session.clone(), reader);
+    spawn_exit_watcher(session.clone());
 
     registry().lock().unwrap().insert(id.clone(), session);
 
@@ -795,6 +798,22 @@ fn running_session_count() -> usize {
         .count()
 }
 
+fn spawn_exit_watcher(session: Arc<TerminalSession>) {
+    std::thread::spawn(move || {
+        loop {
+            let status = {
+                let mut child = session.child.lock().unwrap();
+                child.try_wait().ok().flatten()
+            };
+            if let Some(status) = status {
+                record_exit_status(&session, &status);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+}
+
 fn spawn_reader<R>(session: Arc<TerminalSession>, mut reader: R)
 where
     R: Read + Send + 'static,
@@ -920,7 +939,7 @@ fn record_exit_status(session: &TerminalSession, status: &portable_pty::ExitStat
         success: status.signal().is_none() && status.exit_code() == 0,
         exit_code: (status.signal().is_none()).then(|| status.exit_code()),
         signal: status.signal().map(str::to_string),
-        output_tail: session.tail.lock().unwrap().clone(),
+        output_tail: tail_bytes(&session.tail.lock().unwrap(), MAX_COMPLETION_TAIL_BYTES),
         transcript_path: session.transcript_path.display().to_string(),
         elapsed_ms: session
             .started

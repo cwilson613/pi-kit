@@ -6054,7 +6054,9 @@ fn build_tui_secret_readiness_snapshot(
                     lifecycle.transition("worker_spawned", runtime.queue_depth(), &events_tx);
 
                     let mut quit_after_turn = false;
-                    let state_for_turn = runtime_state;
+                    // Durable interactive state remains supervisor-owned even if
+                    // a non-cooperative worker must be aborted.
+                    let state_for_turn = Arc::new(tokio::sync::Mutex::new(runtime_state));
                     // The supervisor owns the exact token used by the agent loop.
                     // This closes the pre-spawn race where Ctrl+C could arrive
                     // before the worker published its cancellation handle.
@@ -6063,7 +6065,7 @@ fn build_tui_secret_readiness_snapshot(
                         *guard = Some(turn_cancel.clone());
                     }
                     let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
-                        state_for_turn,
+                        state_for_turn.clone(),
                         runtime_resources.clone(),
                         bridge.clone(),
                         shared_settings.clone(),
@@ -6078,26 +6080,46 @@ fn build_tui_secret_readiness_snapshot(
                     let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
                     let mut slow_turn_notifications: u32 = 0;
                     let mut notified_blocked_prompt_queue = false;
+                    let mut cancellation_deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
 
                     loop {
                         tokio::select! {
                             turn_result = &mut turn_task => {
-                                runtime_state = match turn_result {
-                                    Ok(runtime_state) => {
-                                        lifecycle.transition("worker_returned", runtime.queue_depth(), &events_tx);
-                                        runtime_state
-                                    }
-                                    Err(join_err) => {
-                                        let message = format_interactive_turn_task_failure(&join_err);
-                                        tracing::error!("interactive turn task failed: {join_err}");
-                                        mark_interactive_session_busy(&agent.dashboard_handles, false);
-                                        let _ = events_tx.send(AgentEvent::SystemNotification {
-                                            message: message.clone(),
-                                        });
-                                        let _ = events_tx.send(AgentEvent::AgentEnd);
-                                        return Err(anyhow::anyhow!(message));
-                                    }
-                                };
+                                if let Err(join_err) = turn_result {
+                                    let message = format_interactive_turn_task_failure(&join_err);
+                                    tracing::error!("interactive turn task failed: {join_err}");
+                                    mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                    let _ = events_tx.send(AgentEvent::SystemNotification {
+                                        message,
+                                    });
+                                    let _ = events_tx.send(AgentEvent::AgentEnd);
+                                } else {
+                                    lifecycle.transition("worker_returned", runtime.queue_depth(), &events_tx);
+                                }
+                                runtime_state = Arc::try_unwrap(state_for_turn)
+                                    .map_err(|_| anyhow::anyhow!("interactive worker retained durable state after completion"))?
+                                    .into_inner();
+                                break;
+                            }
+                            _ = async {
+                                if let Some(deadline) = cancellation_deadline.as_mut() {
+                                    deadline.await;
+                                } else {
+                                    std::future::pending::<()>().await;
+                                }
+                            } => {
+                                turn_task.abort();
+                                let _ = (&mut turn_task).await;
+                                if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
+                                lifecycle.transition("worker_aborted", runtime.queue_depth(), &events_tx);
+                                mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                let _ = events_tx.send(AgentEvent::SystemNotification {
+                                    message: "The active turn ignored cancellation and was stopped after a 2s grace period. Queued prompts were preserved.".to_string(),
+                                });
+                                let _ = events_tx.send(AgentEvent::AgentEnd);
+                                runtime_state = Arc::try_unwrap(state_for_turn)
+                                    .map_err(|_| anyhow::anyhow!("aborted worker retained durable state"))?
+                                    .into_inner();
                                 break;
                             }
                             _ = &mut slow_turn_probe => {
@@ -6176,6 +6198,9 @@ fn build_tui_secret_readiness_snapshot(
                                             submitted_by,
                                             via,
                                         );
+                                        if cancellation_deadline.is_none() {
+                                            cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
+                                        }
                                     }
                                     operator_commands::OperatorCommand::Quit => {
                                         quit_after_turn = true;

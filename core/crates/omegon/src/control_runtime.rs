@@ -551,6 +551,41 @@ pub async fn execute_active_harness_command(
         OperatorCommand::SetThinking { level, respond_to } => {
             (InterfaceControlRequest::SetThinking { level }, respond_to)
         }
+        OperatorCommand::RunSlashCommand {
+            name,
+            args,
+            respond_to,
+        } => {
+            let Some(canonical) = crate::runtime_commands::canonical_slash_command(&name, &args)
+            else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::RunSlashCommand {
+                    name,
+                    args,
+                    respond_to,
+                });
+            };
+            let Some(request) = control_request_from_slash(&canonical) else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::RunSlashCommand {
+                    name,
+                    args,
+                    respond_to,
+                });
+            };
+            let Some(response) = execute_harness_control(ctx, &request).await else {
+                return ActiveHarnessCommandResult::Unsupported(OperatorCommand::RunSlashCommand {
+                    name,
+                    args,
+                    respond_to,
+                });
+            };
+            if let Some(output) = response.output.clone() {
+                let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+            }
+            if let Some(reply) = respond_to {
+                let _ = reply.send(response);
+            }
+            return ActiveHarnessCommandResult::Handled;
+        }
         OperatorCommand::ExecuteControl {
             request,
             respond_to,
@@ -5253,6 +5288,79 @@ mod tests {
         let response = tokio::time::timeout(std::time::Duration::from_millis(250), reply_rx)
             .await
             .expect("response must arrive while worker remains active")
+            .unwrap();
+        assert!(response.accepted);
+        assert!(!blocked_worker.is_finished());
+        assert_eq!(
+            settings.lock().unwrap().thinking,
+            settings::ThinkingLevel::High
+        );
+        blocked_worker.abort();
+    }
+
+    #[test]
+    fn active_turn_harness_command_contract_covers_operator_controls() {
+        for (name, args) in [
+            ("model", "list"),
+            ("think", "high"),
+            ("secrets", ""),
+            ("variables", ""),
+        ] {
+            let canonical = crate::runtime_commands::canonical_slash_command(name, args)
+                .unwrap_or_else(|| panic!("/{name} {args} must be canonical"));
+            let request = control_request_from_slash(&canonical)
+                .unwrap_or_else(|| panic!("/{name} {args} must remain inference-independent"));
+            assert!(
+                matches!(
+                    request,
+                    ControlRequest::ModelView
+                        | ControlRequest::ModelList
+                        | ControlRequest::SetThinking { .. }
+                        | ControlRequest::SecretsView
+                        | ControlRequest::VariablesView
+                ),
+                "/{name} {args} mapped to unexpected request: {request:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn active_slash_command_responds_while_worker_remains_active() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let blocked_worker = tokio::spawn(std::future::pending::<()>());
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            execute_active_harness_command(
+                &context,
+                crate::operator_commands::OperatorCommand::RunSlashCommand {
+                    name: "think".into(),
+                    args: "high".into(),
+                    respond_to: Some(reply_tx),
+                },
+                &events_tx,
+            ),
+        )
+        .await
+        .expect("slash control must not wait for inference");
+
+        assert!(matches!(result, ActiveHarnessCommandResult::Handled));
+        let response = tokio::time::timeout(std::time::Duration::from_millis(250), reply_rx)
+            .await
+            .expect("slash response must arrive while worker remains active")
             .unwrap();
         assert!(response.accepted);
         assert!(!blocked_worker.is_finished());

@@ -500,17 +500,83 @@ pub(crate) async fn execute_stateless_control(
     Some(resp)
 }
 
+pub struct HarnessControlContext<'a> {
+    pub shared_settings: &'a settings::SharedSettings,
+    pub secrets: &'a Arc<omegon_secrets::SecretsManager>,
+    pub cwd: &'a Path,
+    pub dashboard_handles: &'a crate::runtime_state::RuntimeStateHandles,
+    pub route_controller: Option<Arc<crate::route::RouteController>>,
+}
+
+/// Execute controls whose dependencies are entirely supervisor-owned and do
+/// not require conversation, context, or an inference worker.
+pub async fn execute_harness_control(
+    ctx: &HarnessControlContext<'_>,
+    request: &ControlRequest,
+) -> Option<SlashCommandResponse> {
+    if let Some(response) = execute_stateless_control(
+        request,
+        ctx.shared_settings,
+        ctx.secrets,
+        ctx.cwd,
+        ctx.dashboard_handles,
+    )
+    .await
+    {
+        return Some(response);
+    }
+
+    Some(match request {
+        ControlRequest::SetModelIntent { grade } => {
+            set_model_intent_control_response(ctx.route_controller.clone(), ctx.cwd, grade).await
+        }
+        ControlRequest::SetModelProvider { provider } => {
+            set_model_provider_control_response(ctx.route_controller.clone(), ctx.cwd, provider)
+                .await
+        }
+        ControlRequest::SetModelPolicy { policy } => {
+            set_model_policy_control_response(ctx.route_controller.clone(), ctx.cwd, policy).await
+        }
+        ControlRequest::SetThinking { level } => {
+            set_thinking_response(ctx.shared_settings, ctx.cwd, *level).await
+        }
+        ControlRequest::ClearModelOverride => {
+            let controller = ctx.route_controller.as_ref()?;
+            let snapshot = controller.clear_exact_model_override().await;
+            if let Err(error) = settings::persist_model_intent(ctx.cwd, &snapshot.intent) {
+                return Some(SlashCommandResponse {
+                    accepted: false,
+                    output: Some(format!(
+                        "Model override cleared in memory but persistence failed: {error}"
+                    )),
+                });
+            }
+            SlashCommandResponse {
+                accepted: true,
+                output: Some(format!(
+                    "Model exact override cleared — {}",
+                    snapshot.intent.summary()
+                )),
+            }
+        }
+        _ => return None,
+    })
+}
+
 pub async fn execute_control(
     ctx: &mut ControlContext<'_>,
     request: ControlRequest,
 ) -> SlashCommandResponse {
     // Try stateless handlers first (shared with daemon mode).
-    if let Some(resp) = execute_stateless_control(
+    if let Some(resp) = execute_harness_control(
+        &HarnessControlContext {
+            shared_settings: ctx.shared_settings,
+            secrets: &ctx.agent.secrets,
+            cwd: &ctx.agent.cwd,
+            dashboard_handles: &ctx.agent.dashboard_handles,
+            route_controller: ctx.route_controller.clone(),
+        },
         &request,
-        ctx.shared_settings,
-        &ctx.agent.secrets,
-        &ctx.agent.cwd,
-        &ctx.agent.dashboard_handles,
     )
     .await
     {

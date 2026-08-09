@@ -1197,7 +1197,7 @@ pub async fn run(
                 }
             }
 
-            if turn < config.max_turns
+            if (config.max_turns == 0 || turn < config.max_turns)
                 && dead_mouse_nudges < 3
                 && should_continue_text_only_turn(
                     config
@@ -1268,7 +1268,7 @@ pub async fn run(
                 && in_task_mode
                 && !user_asked_question
                 && !last_assistant_substantial
-                && turn < config.max_turns
+                && (config.max_turns == 0 || turn < config.max_turns)
                 && dead_mouse_nudges < 3
             {
                 dead_mouse_nudges += 1;
@@ -1507,6 +1507,24 @@ pub async fn run(
             evidence,
             behavior::is_substantive_interleaved_prose(&assistant_msg.text),
         );
+        const MAX_NO_PROGRESS_TOOL_CONTINUATIONS: u32 = 8;
+        let no_progress_stop =
+            controller.no_progress_continuation_streak >= MAX_NO_PROGRESS_TOOL_CONTINUATIONS;
+        if no_progress_stop {
+            tracing::warn!(
+                streak = controller.no_progress_continuation_streak,
+                "Stopping autonomous continuation after repeated no-progress tool turns"
+            );
+            conversation.push_assistant(AssistantMessage {
+                text: "I stopped after repeated tool turns produced no measurable progress. Review the latest tool results or provide a narrower direction before continuing."
+                    .into(),
+                thinking: None,
+                tool_calls: Vec::new(),
+                raw: serde_json::Value::Null,
+                provider_tokens: (0, 0, 0, 0),
+                provider_telemetry: None,
+            });
+        }
         let behavior = behavioral_tier(config);
         let continuation_tier = continuation_pressure_tier(
             config,
@@ -1804,7 +1822,11 @@ pub async fn run(
         });
         let _ = events.send(AgentEvent::TurnEnd(Box::new(AgentEventTurnEnd {
             turn,
-            turn_end_reason: TurnEndReason::ToolContinuation,
+            turn_end_reason: if no_progress_stop {
+                TurnEndReason::Blocked
+            } else {
+                TurnEndReason::ToolContinuation
+            },
             model: Some(active_model.clone()),
             provider: Some(crate::providers::infer_provider_id(&active_model).to_string()),
             estimated_tokens,
@@ -1825,6 +1847,10 @@ pub async fn run(
             stats_tool_calls: conversation.intent.stats.tool_calls,
             streaks: controller.streaks(),
         })));
+
+        if no_progress_stop {
+            break;
+        }
 
         if reconciled_visible_plan {
             tracing::info!(
@@ -7429,6 +7455,7 @@ This is the right first slice."#;
             targeted_evidence_streak: 6,
             local_evidence_sufficient_streak: 4,
             evidence_sufficient_streak: 5,
+            no_progress_continuation_streak: 8,
         };
         let snapshot = controller.streaks();
         assert_eq!(snapshot.orientation_churn, 4);
@@ -8377,6 +8404,7 @@ This is the right first slice."#;
             targeted_evidence_streak: 0,
             local_evidence_sufficient_streak: 0,
             evidence_sufficient_streak: 0,
+            no_progress_continuation_streak: 5,
         };
         controller.observe_turn(
             TurnEndReason::ToolContinuation,
@@ -8392,6 +8420,7 @@ This is the right first slice."#;
         assert!(controller.orientation_churn_streak < 4);
         assert_eq!(controller.repeated_action_failure_streak, 0);
         assert_eq!(controller.validation_thrash_streak, 0);
+        assert_eq!(controller.no_progress_continuation_streak, 0);
         assert_eq!(controller.constraint_discovery_streak, 1);
     }
 

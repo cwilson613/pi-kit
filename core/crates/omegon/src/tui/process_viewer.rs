@@ -91,8 +91,9 @@ pub(crate) fn render_process_viewer(
                 crate::tools::terminal::ExecutionSessionState::Failed => "failed",
             };
             let output = terminal_output_text(&snapshot.output, theme);
+            let safe_name = super::segments::strip_terminal_control(&snapshot.name);
             (
-                format!(" Process · {} · {status} ", snapshot.name),
+                format!(" Process · {safe_name} · {status} "),
                 process_body(&snapshot, output, theme),
                 if state.confirm_stop {
                     "Press x again to stop this process · Esc cancel"
@@ -103,14 +104,17 @@ pub(crate) fn render_process_viewer(
                 },
             )
         }
-        None => (
-            " Process · unavailable ".to_string(),
-            Text::styled(
-                format!("Session '{}' is no longer retained.", state.session_id),
-                theme.style_muted(),
-            ),
-            "Esc close",
-        ),
+        None => {
+            let safe_session_id = super::segments::strip_terminal_control(&state.session_id);
+            (
+                " Process · unavailable ".to_string(),
+                Text::styled(
+                    format!("Session '{safe_session_id}' is no longer retained."),
+                    theme.style_muted(),
+                ),
+                "Esc close",
+            )
+        }
     };
 
     let block = Block::default()
@@ -119,8 +123,9 @@ pub(crate) fn render_process_viewer(
         .border_style(theme.style_border())
         .title(title)
         .title_bottom(Line::from(footer).style(theme.style_dim()));
-    let inner_height = popup.height.saturating_sub(2);
-    let body_lines = body.lines.len() as u16;
+    let inner_height = popup.height.saturating_sub(2).max(1);
+    let inner_width = popup.width.saturating_sub(2).max(1);
+    let body_lines = wrapped_line_count(&body, inner_width);
     let max_scroll = body_lines.saturating_sub(inner_height);
     let scroll = if state.follow {
         max_scroll
@@ -135,6 +140,17 @@ pub(crate) fn render_process_viewer(
             .scroll((scroll, 0)),
         popup,
     );
+}
+
+fn wrapped_line_count(text: &Text<'_>, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    text.lines
+        .iter()
+        .map(|line| {
+            let columns = line.width();
+            columns.max(1).div_ceil(width) as u16
+        })
+        .fold(0u16, u16::saturating_add)
 }
 
 fn terminal_output_text(output: &str, theme: &dyn Theme) -> Text<'static> {

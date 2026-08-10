@@ -98,6 +98,7 @@ mod usage;
 mod value_context;
 mod workspace;
 
+mod active_worker_channel;
 mod agent_manifest;
 mod armory;
 mod bundle_verify;
@@ -6081,6 +6082,7 @@ fn build_tui_secret_readiness_snapshot(
                     let mut slow_turn_notifications: u32 = 0;
                     let mut notified_blocked_prompt_queue = false;
                     let mut cancellation_deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+                    let mut active_command_channel = active_worker_channel::ActiveWorkerCommandChannel::new();
 
                     loop {
                         tokio::select! {
@@ -6146,13 +6148,14 @@ fn build_tui_secret_readiness_snapshot(
                                 }
                                 slow_turn_probe.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
                             }
-                            maybe_cmd = command_rx.recv() => {
+                            maybe_cmd = active_command_channel.recv(&mut command_rx) => {
                                 let Some(cmd) = maybe_cmd else {
+                                    let first_close = active_command_channel.observe_closed();
+                                    debug_assert!(first_close, "disabled command branch returned closure twice");
                                     quit_after_turn = true;
-                                    if let Ok(guard) = shared_cancel.lock()
-                                        && let Some(ref cancel) = *guard
-                                    {
-                                        cancel.cancel();
+                                    turn_cancel.cancel();
+                                    if cancellation_deadline.is_none() {
+                                        cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
                                     }
                                     continue;
                                 };

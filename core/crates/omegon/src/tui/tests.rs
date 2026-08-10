@@ -10254,6 +10254,23 @@ fn secrets_menu_inventory_includes_first_party_catalog_rows() {
         .find(|row| row.id == "secrets.inventory.BRAVE_API_KEY")
         .expect("BRAVE_API_KEY inventory row");
 
+    let ollama_cloud = inventory.groups[0]
+        .rows
+        .iter()
+        .find(|row| row.id == "secrets.inventory.OLLAMA_API_KEY")
+        .expect("OLLAMA_API_KEY inventory row");
+    assert_eq!(ollama_cloud.label, "OLLAMA_API_KEY");
+    assert!(
+        ollama_cloud
+            .metadata
+            .iter()
+            .any(|item| { item == "consumer: HarnessCapability:llm_provider_api_keys" })
+    );
+    assert!(ollama_cloud.actions.iter().any(|action| {
+        action.label == "Replace entirely"
+            && action.editor_text.as_deref() == Some("/secrets set OLLAMA_API_KEY")
+    }));
+
     assert_eq!(row.label, "BRAVE_API_KEY");
     assert!(
         row.metadata

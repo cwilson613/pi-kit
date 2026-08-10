@@ -4151,7 +4151,14 @@ fn should_continue_text_only_turn(
     }
     let assistant = assistant_text.trim();
     if assistant.is_empty() {
-        return false;
+        // An empty provider message is not an operator-facing completion. This
+        // commonly occurs after tool results on OpenAI-compatible routes; if we
+        // accept it as complete the TUI returns to idle with no answer and an
+        // unfinished task. Re-enter the bounded dead-mouse recovery path when
+        // work has already started or the operator explicitly requested action.
+        return prior_tool_activity
+            || user_prompt_is_continue_or_proceed(user_prompt)
+            || user_prompt_expects_concrete_action(user_prompt);
     }
     if looks_like_blocked_response(assistant) || looks_like_completion(assistant) {
         return false;
@@ -7179,6 +7186,34 @@ This is the right first slice."#;
             crate::settings::AutomationLevel::Flow,
             "fix the release flow",
             "All done. The release flow has been updated and tested.",
+            true
+        ));
+    }
+
+    #[test]
+    fn empty_post_tool_message_reenters_bounded_recovery() {
+        assert!(should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Flow,
+            "What model are you?",
+            "   ",
+            true
+        ));
+        assert!(should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Guarded,
+            "fix the release flow",
+            "",
+            false
+        ));
+        assert!(!should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Flow,
+            "hello",
+            "",
+            false
+        ));
+        assert!(!should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Ask,
+            "fix the release flow",
+            "",
             true
         ));
     }

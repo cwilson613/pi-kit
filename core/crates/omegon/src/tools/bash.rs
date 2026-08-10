@@ -715,14 +715,16 @@ pub(crate) fn extract_shell_fs_intents_with_dialect(
     let command = scan_command.as_str();
 
     // Pattern 1a: Output redirects to quoted paths — > '/path with spaces'.
-    // Require shell whitespace before `>` so sed/grep expressions such as
-    // `s/foo/bar/g` and `/pattern/'` cannot be reinterpreted as redirects.
-    for cap in regex_lite::Regex::new(r#"(?:^|\s)([012]?>>?)\s*('[^']*'|\"[^\"]*\")"#)
+    // Quote/escape state, rather than whitespace, distinguishes operators from
+    // expression text while preserving valid compact forms such as `cmd>'x y'`.
+    for cap in regex_lite::Regex::new(r#"([012]?>>?)\s*('[^']*'|\"[^\"]*\")"#)
         .unwrap()
         .captures_iter(command)
     {
         if let (Some(op_match), Some(path_match)) = (cap.get(1), cap.get(2)) {
-            if shell_offset_is_quoted(command, op_match.start()) {
+            if shell_offset_is_quoted(command, op_match.start())
+                || shell_offset_is_escaped(command, op_match.start())
+            {
                 continue;
             }
             push_shell_intent(
@@ -750,6 +752,7 @@ pub(crate) fn extract_shell_fs_intents_with_dialect(
     {
         if let (Some(op_match), Some(path_match)) = (cap.get(1), cap.get(2)) {
             if shell_offset_is_quoted(command, op_match.start())
+                || shell_offset_is_escaped(command, op_match.start())
                 || path_match.as_str().starts_with(['\'', '"'])
             {
                 continue;
@@ -993,6 +996,16 @@ fn push_shell_intent(
         }),
         PathTarget::Unknown { .. } => {}
     }
+}
+
+fn shell_offset_is_escaped(command: &str, offset: usize) -> bool {
+    command[..offset]
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte == b'\\')
+        .count()
+        % 2
+        == 1
 }
 
 fn shell_offset_is_quoted(command: &str, offset: usize) -> bool {
@@ -1935,6 +1948,29 @@ PY
             assert!(
                 intents.is_empty(),
                 "expression fragments must not become filesystem intents for {command:?}: {intents:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_intent_extraction_preserves_compact_quoted_redirects() {
+        for (command, expected) in [
+            (r#"printf data>'output file.txt'"#, "output file.txt"),
+            (r#"printf data 2>>"error log.txt""#, "error log.txt"),
+        ] {
+            let intents = extract_shell_fs_intents(command);
+            assert_eq!(intents.len(), 1, "missing redirect for {command:?}");
+            assert_eq!(intents[0].raw_path(), expected);
+        }
+    }
+
+    #[test]
+    fn shell_intent_extraction_ignores_escaped_redirect_operators() {
+        for command in [r"printf '%s' \>literal", r"printf '%s' 2\>literal"] {
+            let intents = extract_shell_fs_intents(command);
+            assert!(
+                intents.is_empty(),
+                "escaped operator must stay literal for {command:?}: {intents:?}"
             );
         }
     }

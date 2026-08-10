@@ -180,6 +180,27 @@ impl App {
                 }
             }
             Event::Key(key) => {
+                // The process viewer is passive and must always yield operator
+                // agency, even while another responder-backed prompt changes
+                // state or the viewed process terminalizes in the background.
+                // Handle dismissal before permission/wait ownership and
+                // interrupt debounce can consume Escape.
+                if self.process_viewer.is_some()
+                    && matches!(
+                        key.code,
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
+                    )
+                {
+                    let cancelled = self
+                        .process_viewer
+                        .as_mut()
+                        .is_some_and(|viewer| viewer.cancel_confirmation());
+                    if !cancelled {
+                        self.process_viewer = None;
+                    }
+                    return InputDisposition::SkipLoop;
+                }
+
                 // Blocking responder-backed prompts own input before passive panels,
                 // scrollback controls, selectors, or editor actions.
                 if self.pending_operator_wait.is_some() {
@@ -370,14 +391,48 @@ impl App {
                 // ── Structured menu intercepts navigation when open ────
                 if self.process_viewer.is_some() {
                     match key.code {
-                        KeyCode::Up | KeyCode::PageUp => {
+                        KeyCode::Up | KeyCode::Char('k') => {
                             if let Some(viewer) = self.process_viewer.as_mut() {
-                                viewer.scroll_up();
+                                viewer.scroll_up(1);
                             }
                         }
-                        KeyCode::Down | KeyCode::PageDown => {
+                        KeyCode::PageUp | KeyCode::Char('u') => {
+                            let page_size = crossterm::terminal::size()
+                                .map(|(width, height)| {
+                                    process_viewer::process_viewer_page_size(
+                                        ratatui::layout::Rect::new(0, 0, width, height),
+                                    )
+                                })
+                                .unwrap_or(10);
                             if let Some(viewer) = self.process_viewer.as_mut() {
-                                viewer.scroll_down();
+                                viewer.scroll_up(page_size);
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if let Some(viewer) = self.process_viewer.as_mut() {
+                                viewer.scroll_down(1);
+                            }
+                        }
+                        KeyCode::PageDown | KeyCode::Char('d') => {
+                            let page_size = crossterm::terminal::size()
+                                .map(|(width, height)| {
+                                    process_viewer::process_viewer_page_size(
+                                        ratatui::layout::Rect::new(0, 0, width, height),
+                                    )
+                                })
+                                .unwrap_or(10);
+                            if let Some(viewer) = self.process_viewer.as_mut() {
+                                viewer.scroll_down(page_size);
+                            }
+                        }
+                        KeyCode::Home => {
+                            if let Some(viewer) = self.process_viewer.as_mut() {
+                                viewer.jump_to_top();
+                            }
+                        }
+                        KeyCode::End | KeyCode::Char('f') | KeyCode::Char('F') => {
+                            if let Some(viewer) = self.process_viewer.as_mut() {
+                                viewer.follow_tail();
                             }
                         }
                         KeyCode::Left => {
@@ -388,11 +443,6 @@ impl App {
                         KeyCode::Right => {
                             if let Some(viewer) = self.process_viewer.as_mut() {
                                 viewer.switch_session(1);
-                            }
-                        }
-                        KeyCode::Char('f') | KeyCode::Char('F') => {
-                            if let Some(viewer) = self.process_viewer.as_mut() {
-                                viewer.toggle_follow();
                             }
                         }
                         KeyCode::Char('x') | KeyCode::Char('X') => {

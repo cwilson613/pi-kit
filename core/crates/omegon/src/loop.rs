@@ -3183,6 +3183,32 @@ fn enrich_plan_list_tool_results(
     }
 }
 
+fn normalize_tool_result_content(
+    tool_name: &str,
+    result: &mut omegon_traits::ToolResult,
+    is_error: bool,
+) {
+    let has_substantive_content = result.content.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        ContentBlock::Image { .. } => true,
+    });
+    if has_substantive_content {
+        return;
+    }
+
+    let details_are_empty = result.details.is_null()
+        || matches!(&result.details, Value::Object(map) if map.is_empty())
+        || matches!(&result.details, Value::Array(items) if items.is_empty());
+    let text = if !details_are_empty {
+        serde_json::to_string_pretty(&result.details).unwrap_or_else(|_| result.details.to_string())
+    } else if is_error {
+        format!("Tool `{tool_name}` failed without returning diagnostic content.")
+    } else {
+        format!("Tool `{tool_name}` completed successfully with no output.")
+    };
+    result.content = vec![ContentBlock::Text { text }];
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_single_tool(
     bus: &crate::bus::EventBus,
@@ -3195,7 +3221,7 @@ async fn dispatch_single_tool(
     permission_policy: Option<&crate::permissions::LayeredPermissionPolicy>,
     permission_role: Option<styrene_rbac::Role>,
 ) -> ToolResultEntry {
-    let (result, is_error) = execute_tool_invocation(
+    let (mut result, is_error) = execute_tool_invocation(
         bus,
         &call.id,
         &call.name,
@@ -3213,6 +3239,7 @@ async fn dispatch_single_tool(
     )
     .await;
 
+    normalize_tool_result_content(&call.name, &mut result, is_error);
     ToolResultEntry {
         call_id: call.id.clone(),
         tool_name: call.name.clone(),
@@ -4151,7 +4178,14 @@ fn should_continue_text_only_turn(
     }
     let assistant = assistant_text.trim();
     if assistant.is_empty() {
-        return false;
+        // An empty provider message is not an operator-facing completion. This
+        // commonly occurs after tool results on OpenAI-compatible routes; if we
+        // accept it as complete the TUI returns to idle with no answer and an
+        // unfinished task. Re-enter the bounded dead-mouse recovery path when
+        // work has already started or the operator explicitly requested action.
+        return prior_tool_activity
+            || user_prompt_is_continue_or_proceed(user_prompt)
+            || user_prompt_expects_concrete_action(user_prompt);
     }
     if looks_like_blocked_response(assistant) || looks_like_completion(assistant) {
         return false;
@@ -7181,6 +7215,75 @@ This is the right first slice."#;
             "All done. The release flow has been updated and tested.",
             true
         ));
+    }
+
+    #[test]
+    fn empty_post_tool_message_reenters_bounded_recovery() {
+        assert!(should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Flow,
+            "What model are you?",
+            "   ",
+            true
+        ));
+        assert!(should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Guarded,
+            "fix the release flow",
+            "",
+            false
+        ));
+        assert!(!should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Flow,
+            "hello",
+            "",
+            false
+        ));
+        assert!(!should_continue_text_only_turn(
+            crate::settings::AutomationLevel::Ask,
+            "fix the release flow",
+            "",
+            true
+        ));
+    }
+
+    #[test]
+    fn empty_tool_results_are_normalized_at_dispatch_boundary() {
+        let mut empty = omegon_traits::ToolResult {
+            content: Vec::new(),
+            details: Value::Null,
+        };
+        normalize_tool_result_content("whoami", &mut empty, false);
+        assert_eq!(
+            empty.content[0].as_text(),
+            Some("Tool `whoami` completed successfully with no output.")
+        );
+
+        let mut whitespace = omegon_traits::ToolResult {
+            content: vec![ContentBlock::Text {
+                text: "  \n".into(),
+            }],
+            details: serde_json::json!({"status": "ok"}),
+        };
+        normalize_tool_result_content("status", &mut whitespace, false);
+        assert!(whitespace.content[0].as_text().unwrap().contains("status"));
+
+        let mut failed = omegon_traits::ToolResult {
+            content: Vec::new(),
+            details: Value::Null,
+        };
+        normalize_tool_result_content("broken", &mut failed, true);
+        assert!(failed.content[0].as_text().unwrap().contains("failed"));
+    }
+
+    #[test]
+    fn substantive_tool_results_are_preserved() {
+        let mut result = omegon_traits::ToolResult {
+            content: vec![ContentBlock::Text {
+                text: "identity".into(),
+            }],
+            details: Value::Null,
+        };
+        normalize_tool_result_content("whoami", &mut result, false);
+        assert_eq!(result.content[0].as_text(), Some("identity"));
     }
 
     #[test]

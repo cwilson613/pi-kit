@@ -584,7 +584,7 @@ pub fn registry_ids_by_endpoint(
 /// transport, gated here identically.
 pub fn endpoint_credentialed(endpoint_id: &str) -> bool {
     match contract_for_endpoint(endpoint_id) {
-        Some(DiscoveryContract::OllamaLocal) => true,
+        Some(DiscoveryContract::OllamaLocal | DiscoveryContract::OllamaCloud) => true,
         Some(_) => crate::providers::resolve_api_key_sync(endpoint_id).is_some(),
         None => false,
     }
@@ -937,14 +937,18 @@ mod tests {
             contract_for_endpoint("ollama-cloud"),
             Some(DiscoveryContract::OllamaCloud)
         );
+        assert!(
+            endpoint_credentialed("ollama-cloud"),
+            "public tags enumeration must not depend on an inference credential"
+        );
         let body = json!({"models": [{
-            "name": "qwen3-coder:480b-cloud",
-            "model": "qwen3-coder:480b-cloud",
+            "name": "qwen3.5:397b",
+            "model": "qwen3.5:397b",
             "modified_at": "2026-08-10T00:00:00Z"
         }]});
         let models = parse_for_contract(DiscoveryContract::OllamaCloud, &body);
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "qwen3-coder:480b-cloud");
+        assert_eq!(models[0].id, "qwen3.5:397b");
     }
 
     #[test]

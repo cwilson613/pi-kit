@@ -952,16 +952,16 @@
       "executionClass": "api-cloud"
     },
     {
-      "id": "qwen3-coder:480b-cloud",
+      "id": "qwen3.5:397b",
       "provider": "ollama-cloud",
-      "name": "Qwen3 Coder 480B Cloud",
+      "name": "Qwen3.5 397B Cloud",
       "contextInput": 256000,
       "contextOutput": 32768,
       "capabilities": [
         "reasoning",
         "coding"
       ],
-      "description": "Hosted Qwen coder model via Ollama Cloud",
+      "description": "Hosted Qwen3.5 model via Ollama Cloud",
       "producer": "qwen",
       "executionClass": "api-cloud"
     },

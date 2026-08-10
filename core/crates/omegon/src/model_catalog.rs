@@ -686,6 +686,41 @@ mod tests {
     }
 
     #[test]
+    fn ollama_cloud_live_discovery_replaces_retired_registry_routes() {
+        use crate::inference_discovery::{DiscoveredModel, DiscoveredModels, DiscoveryCache};
+        let mut cache = DiscoveryCache::default();
+        cache.record(DiscoveredModels {
+            endpoint_id: "ollama-cloud".into(),
+            models: vec![
+                DiscoveredModel {
+                    id: "gpt-oss:120b".into(),
+                    ..Default::default()
+                },
+                DiscoveredModel {
+                    id: "qwen3.5:397b".into(),
+                    ..Default::default()
+                },
+            ],
+            fetched_at: crate::inference_discovery::unix_now(),
+            ttl_secs: 3600,
+            cached: false,
+        });
+
+        let cat = ModelCatalog::project_with_gate(&cache, |p| p == "ollama-cloud");
+        let models = cat
+            .providers
+            .get("Ollama Cloud")
+            .expect("Ollama Cloud section present");
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert!(ids.contains(&"ollama-cloud:gpt-oss:120b"), "{ids:?}");
+        assert!(ids.contains(&"ollama-cloud:qwen3.5:397b"), "{ids:?}");
+        assert!(
+            !ids.iter().any(|id| id.contains("qwen3-coder:480b")),
+            "retired route remained selectable: {ids:?}"
+        );
+    }
+
+    #[test]
     fn catalog_projection_without_cache_matches_bootstrap_and_is_network_free() {
         use crate::inference_discovery::DiscoveryCache;
         let cache = DiscoveryCache::default();

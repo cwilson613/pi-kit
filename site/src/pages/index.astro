@@ -5,6 +5,8 @@ import releases from "../data/releases.json";
 const installUrl = "https://omegon.styrene.io/install.sh";
 const stableTag = releases.latestStable?.tag ?? "latest";
 const stableUrl = releases.latestStable?.url ?? "https://github.com/styrene-lab/omegon/releases";
+const nightlyTag = releases.latestNightly?.tag ?? "latest nightly";
+const nightlyUrl = releases.latestNightly?.url ?? "https://github.com/styrene-lab/omegon/releases";
 
 const valueCards = [
   {
@@ -119,7 +121,7 @@ const valueCards = [
         <div class="install-label">Install</div>
         <select id="version-select" class="version-select" aria-label="Channel">
           <option value="stable" data-tag={stableTag} data-url={stableUrl} selected>Stable ({stableTag})</option>
-          <option value="nightly" data-tag="">Nightly</option>
+          <option value="nightly" data-tag={nightlyTag} data-url={nightlyUrl}>Nightly ({nightlyTag})</option>
         </select>
       </div>
       <div class="install-cmd-wrap">

@@ -39,6 +39,10 @@ test('homepage has version selector and install section', () => {
   assert.match(content, /version-select/);
   assert.match(content, /Stable/);
   assert.match(content, /Nightly/);
+  assert.match(content, /latestNightly/);
+  assert.match(content, /data-tag=\{nightlyTag\}/);
+  assert.match(content, /data-url=\{nightlyUrl\}/);
+  assert.match(content, /--channel=nightly/);
   assert.match(content, /install-cmd/);
   assert.match(content, /copy-btn/);
   assert.doesNotMatch(content, /omegon\.styrene\.dev/);

@@ -1110,120 +1110,91 @@ package:
     echo ""
     echo "Archives in ${DIST}/"
 
-# Finalize a draft nightly release on this Mac using the YubiKey signing flow.
-# Builds from the tagged source in a temporary worktree, signs/notarizes the
-# macOS binary, uploads the signed archive + refreshed checksums, and publishes
-# the draft GitHub release.
-finalize-nightly tag='':
+# Sign and notarize the macOS nightly artifact locally with the YubiKey, then
+# upload a signed handoff bundle. Publication remains a CI responsibility.
+prepare-nightly-notarization tag='':
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "✗ GitHub CLI (gh) is required. Install it and run 'gh auth login'."
+    if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+        echo "✗ Authenticated GitHub CLI (gh) is required."
         exit 1
     fi
-
-    if ! gh auth status >/dev/null 2>&1; then
-        echo "✗ gh is not authenticated. Run 'gh auth login'."
-        exit 1
-    fi
-
     if ! xcrun notarytool history --keychain-profile "omegon" >/dev/null 2>&1; then
         echo "✗ Apple notarization profile 'omegon' is not configured on this Mac."
         echo "  Run 'just setup-notarize' first."
         exit 1
     fi
 
-    if [ -z "{{tag}}" ]; then
+    TAG="{{tag}}"
+    if [ -z "$TAG" ]; then
         TAG=$(gh release list --limit 50 --json tagName,isDraft,isPrerelease \
             --jq '.[] | select(.isDraft == true and .isPrerelease == true and (.tagName | contains("-nightly."))) | .tagName' | head -1)
-        if [ -z "$TAG" ]; then
-            echo "✗ No draft nightly release found. Pass an explicit tag: just finalize-nightly vX.Y.Z-nightly.YYYYMMDD"
-            exit 1
-        fi
-    else
-        TAG="{{tag}}"
     fi
+    if [ -z "$TAG" ]; then
+        echo "✗ No draft nightly release found. Pass: just prepare-nightly-notarization vX.Y.Z-nightly.YYYYMMDD"
+        exit 1
+    fi
+    case "$TAG" in v*-nightly.*) ;; *) echo "✗ Refusing non-nightly tag: $TAG"; exit 1 ;; esac
 
     VERSION="${TAG#v}"
     TARGET="aarch64-apple-darwin"
     ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
     WORKTREE="$(mktemp -d /tmp/omegon-nightly-XXXXXX)"
-    ARTIFACT_DIR="$(mktemp -d /tmp/omegon-nightly-artifacts-XXXXXX)"
-    CHECKSUMS="$ARTIFACT_DIR/checksums.sha256"
-
+    ARTIFACT_DIR="$(mktemp -d /tmp/omegon-nightly-handoff-XXXXXX)"
     cleanup() {
         set +e
-        if [ -d "$WORKTREE/.git" ] || [ -f "$WORKTREE/.git" ]; then
-            git worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
-        else
-            rm -rf "$WORKTREE"
-        fi
+        git worktree remove --force "$WORKTREE" >/dev/null 2>&1 || rm -rf "$WORKTREE"
         rm -rf "$ARTIFACT_DIR"
     }
     trap cleanup EXIT
 
-    echo "Preparing worktree for $TAG..."
+    echo "Verifying immutable draft release for $TAG..."
+    RELEASE=$(gh release view "$TAG" --json isDraft,isPrerelease,targetCommitish)
+    test "$(jq -r .isDraft <<<"$RELEASE")" = true || { echo "✗ Release is not draft"; exit 1; }
+    test "$(jq -r .isPrerelease <<<"$RELEASE")" = true || { echo "✗ Release is not prerelease"; exit 1; }
     git fetch --tags origin "$TAG"
+    TAG_COMMIT=$(git rev-list -n1 "$TAG")
+    REMOTE_TAG_COMMIT=$(gh api "repos/styrene-lab/omegon/commits/$TAG" --jq .sha)
+    test "$TAG_COMMIT" = "$REMOTE_TAG_COMMIT" || { echo "✗ Local tag does not match immutable GitHub tag commit"; exit 1; }
     git worktree add --detach "$WORKTREE" "$TAG"
 
-    echo "Building macOS release binary..."
+    echo "Building tagged macOS release binary..."
     (cd "$WORKTREE" && {{cargo}} build --release -p omegon)
     BINARY="$WORKTREE/target/release/omegon"
 
     echo "Signing with Apple Developer ID (YubiKey)..."
     if [ -n "${SMARTCARD_PIN:-}" ]; then
-        echo "Using SMARTCARD_PIN from environment"
         echo "⚡ Touch YubiKey when it blinks"
-        "$HOME/.cargo/bin/rcodesign" sign \
-            --smartcard-slot 9c \
-            --smartcard-pin-env SMARTCARD_PIN \
-            --code-signature-flags runtime \
-            "$BINARY"
+        "$HOME/.cargo/bin/rcodesign" sign --smartcard-slot 9c \
+            --smartcard-pin-env SMARTCARD_PIN --code-signature-flags runtime "$BINARY"
     else
         echo "⚡ Enter PIN when prompted, then touch YubiKey when it blinks"
-        "$HOME/.cargo/bin/rcodesign" sign \
-            --smartcard-slot 9c \
-            --code-signature-flags runtime \
-            "$BINARY"
+        "$HOME/.cargo/bin/rcodesign" sign --smartcard-slot 9c \
+            --code-signature-flags runtime "$BINARY"
     fi
+    codesign --verify --deep --strict --verbose=2 "$BINARY"
 
-    echo "Verifying signature..."
-    codesign -dvvv "$BINARY" 2>&1 | grep -E "Authority|Team|Signature|Identifier"
-
-    echo "Submitting for Apple notarization (blocking)..."
     NOTARY_ZIP="$ARTIFACT_DIR/${ARCHIVE%.tar.gz}.zip"
     ditto -c -k --keepParent "$BINARY" "$NOTARY_ZIP"
-    xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "omegon" --wait
+    xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile omegon --wait
 
-    echo "Packaging signed macOS archive..."
     tar czf "$ARTIFACT_DIR/$ARCHIVE" -C "$(dirname "$BINARY")" omegon
-    shasum -a 256 "$ARTIFACT_DIR/$ARCHIVE" > "$ARTIFACT_DIR/$ARCHIVE.sha256"
+    (cd "$ARTIFACT_DIR" && shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256")
+    SHA=$(awk '{print $1}' "$ARTIFACT_DIR/$ARCHIVE.sha256")
+    printf '%s\n' \
+        "{\"schema_version\":1,\"tag\":\"$TAG\",\"commit\":\"$TAG_COMMIT\",\"target\":\"$TARGET\",\"archive\":\"$ARCHIVE\",\"sha256\":\"$SHA\"}" \
+        > "$ARTIFACT_DIR/notarization-handoff.json"
 
-    echo "Refreshing release checksums..."
-    gh release download "$TAG" -p 'checksums.sha256' -D "$ARTIFACT_DIR" >/dev/null 2>&1 || true
-    if [ -f "$CHECKSUMS" ]; then
-        grep -v "$TARGET" "$CHECKSUMS" > "$CHECKSUMS.tmp" || true
-        mv "$CHECKSUMS.tmp" "$CHECKSUMS"
-    else
-        : > "$CHECKSUMS"
-    fi
-    cat "$ARTIFACT_DIR/$ARCHIVE.sha256" >> "$CHECKSUMS"
+    echo "Uploading signed handoff assets; release remains draft..."
+    gh release upload "$TAG" "$ARTIFACT_DIR/$ARCHIVE" "$ARTIFACT_DIR/$ARCHIVE.sha256" \
+        "$ARTIFACT_DIR/notarization-handoff.json" --clobber
+    gh workflow run publish-notarized-nightly.yml --ref main -f tag_name="$TAG"
+    echo "✓ Uploaded signed handoff and dispatched CI publication for $TAG"
 
-    echo "Uploading signed nightly assets to $TAG..."
-    gh release upload "$TAG" \
-        "$ARTIFACT_DIR/$ARCHIVE" \
-        "$ARTIFACT_DIR/$ARCHIVE.sha256" \
-        "$CHECKSUMS" \
-        --clobber
-
-    echo "Publishing draft nightly release..."
-    gh release edit "$TAG" --draft=false
-
-    echo ""
-    echo "✓ Finalized nightly $TAG"
-    echo "  Uploaded: $ARCHIVE"
-    echo "  Release:  $(gh release view "$TAG" --json url --jq .url)"
+# Backward-compatible alias. Publication is intentionally delegated to CI.
+finalize-nightly tag='':
+    just prepare-nightly-notarization "{{tag}}"
 
 # ─── Armory (omegon-armory) ─────────────────────────────────
 

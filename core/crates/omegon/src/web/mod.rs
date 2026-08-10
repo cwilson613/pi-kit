@@ -1384,6 +1384,48 @@ pub(crate) async fn process_next_daemon_event(state: &WebState) -> anyhow::Resul
             request: crate::operator_commands::InterfaceControlRequest::ModelList,
             respond_to: None,
         }),
+        "runtime-inventory-status" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::RuntimeInventoryStatus,
+            respond_to: None,
+        }),
+        "profile-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::ProfileView,
+            respond_to: None,
+        }),
+        "workspace-status-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceStatusView,
+            respond_to: None,
+        }),
+        "workspace-list-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::WorkspaceListView,
+            respond_to: None,
+        }),
+        "skills-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::SkillsView,
+            respond_to: None,
+        }),
+        "extension-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::ExtensionView,
+            respond_to: None,
+        }),
+        "armory-browse" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::ArmoryBrowse {
+                query: None,
+            },
+            respond_to: None,
+        }),
+        "catalog-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::CatalogView,
+            respond_to: None,
+        }),
+        "plugin-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::PluginView,
+            respond_to: None,
+        }),
+        "permissions-view" => Some(WebCommand::ExecuteControl {
+            request: crate::operator_commands::InterfaceControlRequest::PermissionsView,
+            respond_to: None,
+        }),
         "set-model" => event
             .payload
             .get("model")

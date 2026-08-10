@@ -206,6 +206,68 @@ async fn handle_client_command(
             };
             let _ = snapshot_tx.send(reply).await;
         }
+        "runtime-inventory-status"
+        | "profile-view"
+        | "workspace-status-view"
+        | "workspace-list-view"
+        | "skills-view"
+        | "extension-view"
+        | "armory-browse"
+        | "catalog-view"
+        | "plugin-view"
+        | "permissions-view" => {
+            let request = match cmd_type {
+                "runtime-inventory-status" => {
+                    crate::operator_commands::InterfaceControlRequest::RuntimeInventoryStatus
+                }
+                "profile-view" => crate::operator_commands::InterfaceControlRequest::ProfileView,
+                "workspace-status-view" => {
+                    crate::operator_commands::InterfaceControlRequest::WorkspaceStatusView
+                }
+                "workspace-list-view" => {
+                    crate::operator_commands::InterfaceControlRequest::WorkspaceListView
+                }
+                "skills-view" => crate::operator_commands::InterfaceControlRequest::SkillsView,
+                "extension-view" => {
+                    crate::operator_commands::InterfaceControlRequest::ExtensionView
+                }
+                "armory-browse" => {
+                    crate::operator_commands::InterfaceControlRequest::ArmoryBrowse { query: None }
+                }
+                "catalog-view" => crate::operator_commands::InterfaceControlRequest::CatalogView,
+                "plugin-view" => crate::operator_commands::InterfaceControlRequest::PluginView,
+                "permissions-view" => {
+                    crate::operator_commands::InterfaceControlRequest::PermissionsView
+                }
+                _ => unreachable!(),
+            };
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let accepted = command_tx
+                .send(WebCommand::ExecuteControl {
+                    request,
+                    respond_to: Some(reply_tx),
+                })
+                .await
+                .is_ok();
+            let response = if accepted {
+                reply_rx
+                    .await
+                    .unwrap_or_else(|_| omegon_traits::ControlOutputResponse {
+                        accepted: false,
+                        output: Some(format!(
+                            "{cmd_type} executor dropped response before completion"
+                        )),
+                    })
+            } else {
+                omegon_traits::ControlOutputResponse {
+                    accepted: false,
+                    output: Some(format!("failed to enqueue {cmd_type}")),
+                }
+            };
+            let _ = snapshot_tx
+                .send(control_result_message(cmd_type, response))
+                .await;
+        }
         "user_prompt" => {
             let classified = crate::control_actions::classify_web_method("user_prompt");
             if !crate::control_actions::is_role_sufficient(caller_role, classified.role) {

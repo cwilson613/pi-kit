@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -74,3 +75,29 @@ jobs:
           git commit -m "chore(release): ${VERSION}"
           git tag "$TAG"
           git push origin "refs/tags/${TAG}"
+
+      - name: Dispatch standard release workflow
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.nightly.outputs.tag }}'
+          gh workflow run release.yml --ref main -f tag_name="$TAG"
+
+      - name: Summarize nightly cutoff
+        if: always()
+        run: |
+          {
+            echo "## Nightly cutoff"
+            echo ""
+            echo "- Scheduled cutoff: 07:17 UTC"
+            echo "- Main cutoff commit: \`${GITHUB_SHA}\`"
+            echo "- Candidate tag: \`${{ steps.nightly.outputs.tag }}\`"
+            if [ '${{ steps.exists.outputs.exists }}' = 'true' ]; then
+              echo "- Result: immutable tag already exists; no replacement candidate was created"
+            else
+              echo "- Result: immutable tag pushed and standard release workflow dispatched"
+            fi
+            echo "- Quality gate: normal required PR checks and reviews; no nightly-specific hold"
+          } >> "$GITHUB_STEP_SUMMARY"

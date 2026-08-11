@@ -207,6 +207,16 @@ Ordinary dependency changes may update dependency entries in `Cargo.toml` and `C
 
 Stable releases are cut from `release/X.Y` branches. Release branches own stable tags for that line; trunk owns normal development and nightly/dev builds.
 
+### Nightly cutoff and merge policy
+
+Omegon automatically cuts one nightly from `main` every day at **07:17 UTC**. The immutable cutoff is the `main` commit checked out when the scheduled workflow starts. A pull request is included when its merge commit is reachable from that checkout; a pull request merged after the cutoff enters the following nightly.
+
+Required branch-protection checks and reviews are the complete pre-cut quality gate. There is no nightly-specific merge freeze, hold label, observation window, or manual release approval. Do not rush or bypass a required PR gate to catch a nightly cutoff, and do not move an existing nightly tag to include a late merge.
+
+Nightlies are integration builds and may contain functional bugs. A nightly is considered mechanically broken only when the standard release pipeline cannot build, sign, notarize, package, describe, publish, install, or launch its artifacts. Failed candidates are fixed forward on `main`; they are not reconstructed by mutating an immutable tag. Stable releases add deliberate release judgment and stronger validation beyond the nightly contract.
+
+The scheduled workflow generates release metadata in a detached release commit derived from the cutoff commit, pushes an immutable nightly tag, and explicitly dispatches the standard release workflow. It does not commit generated version state back to `main`.
+
 Use the existing release helpers rather than hand-rolling branch/version mechanics:
 
 ```bash
@@ -418,7 +428,7 @@ Omegon uses a **release candidate** flow. All releases go through RC builds befo
 |---|---|---|---|
 | **Stable** | When ready | `X.Y.Z` | `0.19.5` |
 | **RC** | Per-feature batch | `X.Y.Z-rc.N` | `0.19.6-rc.2` |
-| **Nightly** | Daily (planned) | `X.Y.Z-nightly.YYYYMMDD` | `0.19.6-nightly.20260510` |
+| **Nightly** | Daily at 07:17 UTC | `X.Y.Z-nightly.YYYYMMDD` | `0.19.6-nightly.20260510` |
 
 ### Commands
 

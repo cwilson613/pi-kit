@@ -27,6 +27,10 @@ test('install docs use canonical snippets for all channels', () => {
   assert.match(content, /snippet\("install\.quick_install"\)/);
   assert.match(content, /snippet\("install\.install_nightly"\)/);
   assert.match(content, /snippet\("install\.install_version"\)/);
+  assert.match(content, /0\.29 Nightly Preview/);
+  assert.match(content, /v0\.29\.0-nightly\.20260811\.2/);
+  assert.match(content, /--version 0\.29\.0-nightly\.20260811\.2/);
+  assert.match(content, /releases\/tag\/v0\.29\.0-nightly\.20260811\.2/);
   assert.doesNotMatch(content, /omegon\.styrene\.dev/);
   // Auth commands use correct form
   assert.match(content, /snippet\("auth\.login_anthropic"\)/);
@@ -43,6 +47,8 @@ test('homepage has version selector and install section', () => {
   assert.match(content, /data-tag=\{nightlyTag\}/);
   assert.match(content, /data-url=\{nightlyUrl\}/);
   assert.match(content, /--channel=nightly/);
+  assert.match(content, /Want the 0\.29 preview/);
+  assert.match(content, /--version \{nightlyVersion\}/);
   assert.match(content, /install-cmd/);
   assert.match(content, /copy-btn/);
   assert.doesNotMatch(content, /omegon\.styrene\.dev/);

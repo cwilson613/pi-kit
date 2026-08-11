@@ -13,6 +13,22 @@ import { snippet } from "../../lib/snippets";
     verifies the SHA-256 checksum, and installs to <code>/usr/local/bin</code> by default.
   </p>
 
+  <h2>0.29 Nightly Preview</h2>
+  <p>
+    The current 0.29 preview is
+    <a href="https://github.com/styrene-lab/omegon/releases/tag/v0.29.0-nightly.20260811.2"><code>v0.29.0-nightly.20260811.2</code></a>.
+    It is a prerelease build from <code>main</code>; use stable 0.28 for production workflows that require a stable channel.
+  </p>
+  <pre><code># Install this exact assessed 0.29 nightly
+curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --version 0.29.0-nightly.20260811.2
+
+# Or track the newest published nightly
+{snippet("install.install_nightly")}</code></pre>
+  <p>
+    Direct archives are available on the release page for macOS arm64/x86_64 and Linux
+    x86_64/aarch64, with SHA-256 checksums and Sigstore signatures.
+  </p>
+
   <h3>Options</h3>
   <pre><code># Install to a custom directory
 {snippet("install.install_custom_dir")}

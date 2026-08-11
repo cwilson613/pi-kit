@@ -7,6 +7,7 @@ const stableTag = releases.latestStable?.tag ?? "latest";
 const stableUrl = releases.latestStable?.url ?? "https://github.com/styrene-lab/omegon/releases";
 const nightlyTag = releases.latestNightly?.tag ?? "latest nightly";
 const nightlyUrl = releases.latestNightly?.url ?? "https://github.com/styrene-lab/omegon/releases";
+const nightlyVersion = nightlyTag.startsWith("v") ? nightlyTag.slice(1) : nightlyTag;
 
 const valueCards = [
   {
@@ -141,6 +142,13 @@ const valueCards = [
         <span class="install-then">then run <code>om</code></span>
         <a href="/docs/install">all install options</a>
       </div>
+      {releases.latestNightly && (
+        <p class="nightly-available">
+          Want the 0.29 preview? Install <a href={nightlyUrl}>{nightlyTag}</a> with
+          <code>curl -fsSL {installUrl} | sh -s -- --version {nightlyVersion}</code>.
+          Nightlies are prerelease builds from <code>main</code>.
+        </p>
+      )}
     </section>
 
     <section class="cards">

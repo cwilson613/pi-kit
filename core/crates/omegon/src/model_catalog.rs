@@ -120,7 +120,7 @@ impl ModelCatalog {
             &crate::inference_discovery::default_cache_path(),
         );
         let mut cat = Self::project_with_gate(&cache, |provider| {
-            crate::providers::resolve_api_key_sync(provider).is_some()
+            provider == "ollama-cloud" || crate::providers::resolve_api_key_sync(provider).is_some()
         });
 
         if !cache.endpoints.contains_key("ollama") {

@@ -11,6 +11,8 @@ use super::selector;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SelectorKind {
     Model,
+    ModelProviders,
+    ModelProviderInventory,
     ModelGrade,
     ModelProvider,
     ModelPolicy,

@@ -681,6 +681,44 @@ impl App {
                                 s.move_down();
                             }
                         }
+                        KeyCode::Char(' ')
+                            if matches!(
+                                self.selector_kind,
+                                Some(SelectorKind::ModelProviderInventory)
+                            ) =>
+                        {
+                            let route = self
+                                .selector
+                                .as_ref()
+                                .map(|s| s.selected_value().to_string());
+                            if let Some(route) = route {
+                                let mut preferences =
+                                    crate::model_preferences::ModelMenuPreferences::load_default();
+                                match preferences.toggle(&route).and_then(|favorite| {
+                                    preferences.save_default()?;
+                                    Ok(favorite)
+                                }) {
+                                    Ok(favorite) => {
+                                        let provider = self.model_inventory_provider.clone();
+                                        if let Some(provider) = provider {
+                                            self.open_model_provider_inventory_selector(&provider);
+                                        }
+                                        self.show_toast(
+                                            if favorite {
+                                                "Added model favorite"
+                                            } else {
+                                                "Removed model favorite"
+                                            },
+                                            ratatui_toaster::ToastType::Info,
+                                        );
+                                    }
+                                    Err(error) => self.show_toast(
+                                        &format!("Could not save model favorite: {error}"),
+                                        ratatui_toaster::ToastType::Error,
+                                    ),
+                                }
+                            }
+                        }
                         KeyCode::Enter => {
                             if let Some(msg) = self.confirm_selector(command_tx) {
                                 self.show_toast(&msg, ratatui_toaster::ToastType::Info);

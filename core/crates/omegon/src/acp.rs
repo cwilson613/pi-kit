@@ -29,9 +29,7 @@ mod resource_context;
 mod surfaces;
 
 use labels::compact_tool_call_label;
-use model_options::{
-    acp_model_provider_available, compact_model_label, unavailable_current_model_label,
-};
+use model_options::{compact_model_label, unavailable_current_model_label};
 use resource_context::prompt_blocks_to_text;
 use surfaces::{
     ACP_CONVERSATION_SURFACE_METHOD, ACP_CONVERSATION_SURFACE_REDACTION, AcpConversationEvent,
@@ -791,64 +789,51 @@ impl OmegonAcpAgent {
         current_profile: &str,
         cwd: &std::path::Path,
     ) -> Vec<SessionConfigOption> {
-        let mut model_options: Vec<SessionConfigSelectOption> = Vec::new();
+        let catalog = crate::model_catalog::ModelCatalog::discover();
+        let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
+        let projection =
+            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, current_model);
+        let mut model_options: Vec<SessionConfigSelectOption> = projection
+            .favorite_groups
+            .into_iter()
+            .flat_map(|group| {
+                group
+                    .models
+                    .into_iter()
+                    .filter(|model| model.selectable)
+                    .map(move |model| {
+                        SessionConfigSelectOption::new(
+                            model.route_id,
+                            compact_model_label(&model.display_name, &group.provider_id),
+                        )
+                    })
+            })
+            .collect();
 
-        // Probe Ollama models synchronously
-        let ollama_ok = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:11434".parse().unwrap(),
-            std::time::Duration::from_millis(100),
-        )
-        .is_ok();
-        if ollama_ok && let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:11434") {
-            use std::io::{Read, Write};
-            let mut s = stream;
-            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-            let _ = s.write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n");
-            let mut buf = vec![0u8; 65536];
-            let mut total = 0;
-            while let Ok(n) = s.read(&mut buf[total..]) {
-                if n == 0 {
-                    break;
-                }
-                total += n;
-            }
-            let body = String::from_utf8_lossy(&buf[..total]);
-            if let Some(start) = body.find('{')
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&body[start..])
-                && let Some(models) = v["models"].as_array()
-            {
-                for m in models {
-                    if let Some(name) = m["name"].as_str() {
-                        let size = m["size"].as_u64().unwrap_or(0);
-                        let gb = size as f64 / 1_000_000_000.0;
-                        model_options.push(SessionConfigSelectOption::new(
-                            format!("ollama:{name}"),
-                            format!("{name} ({gb:.0}GB local)"),
-                        ));
-                    }
-                }
-            }
-        }
-
-        let registry = crate::model_registry::ModelRegistry::global();
-        let mut registry_models: Vec<_> = registry.all_models().collect();
-        registry_models.sort_by(|a, b| {
-            a.provider
-                .cmp(&b.provider)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        for model in registry_models {
-            let id = format!("{}:{}", model.provider, model.id);
-            if model_options.iter().any(|o| o.value.0.as_ref() == id) {
+        // ACP select options are flat, so append every remaining concrete route
+        // after the curated shortlist while preserving the shared projection's
+        // provider inventory and de-duplicating favorites.
+        for provider in projection.providers {
+            let Some(group) = crate::surfaces::model_menu::project_provider_inventory(
+                &catalog,
+                &preferences,
+                current_model,
+                &provider.provider_id,
+            ) else {
                 continue;
+            };
+            for model in group.models.into_iter().filter(|model| model.selectable) {
+                if model_options
+                    .iter()
+                    .any(|option| option.value.0.as_ref() == model.route_id)
+                {
+                    continue;
+                }
+                model_options.push(SessionConfigSelectOption::new(
+                    model.route_id,
+                    compact_model_label(&model.display_name, &provider.provider_id),
+                ));
             }
-            if !acp_model_provider_available(&model.provider) {
-                continue;
-            }
-            model_options.push(SessionConfigSelectOption::new(
-                id,
-                compact_model_label(&model.name, &model.provider),
-            ));
         }
 
         if !model_options

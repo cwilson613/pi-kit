@@ -36,6 +36,7 @@ fn model_name_already_mentions_provider(name: &str, suffix: &str) -> bool {
         || (suffix == "openai" && name.contains("gpt"))
 }
 
+#[cfg(test)]
 pub(super) fn acp_model_provider_available(provider_id: &str) -> bool {
     if matches!(provider_id, "ollama") {
         return true;

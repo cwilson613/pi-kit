@@ -116,6 +116,7 @@ mod lifecycle;
 mod r#loop;
 mod managed_agent_supervisor;
 mod model_catalog;
+mod model_preferences;
 mod model_registry;
 mod mqtt_bridge;
 mod native_io;

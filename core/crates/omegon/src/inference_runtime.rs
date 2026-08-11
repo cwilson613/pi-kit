@@ -545,11 +545,17 @@ impl InferenceRuntimeState {
     pub async fn refresh_discovery(&self, force: bool) -> Vec<String> {
         let registry = ModelRegistry::global();
         let now = crate::inference_discovery::unix_now();
-        let candidate_ids: Vec<String> = registry
+        let mut candidate_ids: Vec<String> = registry
             .endpoints()
             .iter()
             .map(|endpoint| endpoint.id.clone())
             .collect();
+        // Hosted Ollama is currently a logical provider route rather than a
+        // registry endpoint record. Its public tags endpoint is nevertheless a
+        // supported discovery producer and must participate in every refresh.
+        if !candidate_ids.iter().any(|id| id == "ollama-cloud") {
+            candidate_ids.push("ollama-cloud".into());
+        }
         let due = {
             let cache = self.discovery.read().await;
             cache.due_endpoints(candidate_ids.iter().map(String::as_str), now, force)
@@ -665,6 +671,29 @@ mod tests {
         let embedded = InventoryLayer::embedded_registry(ModelRegistry::global());
         let initial = InventorySnapshot::build(1, vec![embedded.clone()]).unwrap();
         InferenceRuntimeState::with_parts(initial, embedded, Vec::new())
+    }
+
+    #[tokio::test]
+    async fn discovery_refresh_includes_logical_ollama_cloud_endpoint() {
+        let runtime = runtime_with_embedded();
+        let registry_ids: Vec<_> = ModelRegistry::global()
+            .endpoints()
+            .iter()
+            .map(|endpoint| endpoint.id.as_str())
+            .collect();
+        assert!(!registry_ids.contains(&"ollama-cloud"));
+        assert!(crate::inference_discovery::endpoint_credentialed(
+            "ollama-cloud"
+        ));
+        // The actual network producer is covered independently. This guards
+        // the registry/logical-provider mismatch that previously prevented the
+        // refresh loop from ever considering Ollama Cloud.
+        let mut candidates: Vec<String> = registry_ids.iter().map(|id| (*id).to_string()).collect();
+        if !candidates.iter().any(|id| id == "ollama-cloud") {
+            candidates.push("ollama-cloud".into());
+        }
+        assert!(candidates.iter().any(|id| id == "ollama-cloud"));
+        drop(runtime);
     }
 
     #[tokio::test]

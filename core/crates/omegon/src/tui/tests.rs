@@ -9910,6 +9910,47 @@ fn auth_menu_summary_includes_route_state_and_warning() {
 }
 
 #[test]
+fn model_selector_opens_curated_shortlist_with_full_inventory_escape_hatch() {
+    let mut app = test_app();
+    app.open_model_selector();
+    let selector = app.selector.as_ref().expect("model selector");
+    assert!(
+        selector
+            .options
+            .iter()
+            .any(|option| option.value == "__browse_all__")
+    );
+}
+
+#[test]
+fn model_selector_browse_all_opens_provider_inventory() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_model_selector();
+    let selector = app.selector.as_mut().expect("model selector");
+    selector.cursor = selector
+        .options
+        .iter()
+        .position(|option| option.value == "__browse_all__")
+        .unwrap();
+    assert!(app.confirm_selector(&tx).is_none());
+    assert!(matches!(
+        app.selector_kind,
+        Some(SelectorKind::ModelProviders)
+    ));
+    let provider = app.selector.as_ref().unwrap().selected_value().to_string();
+    assert!(app.confirm_selector(&tx).is_none());
+    assert!(matches!(
+        app.selector_kind,
+        Some(SelectorKind::ModelProviderInventory)
+    ));
+    assert_eq!(
+        app.model_inventory_provider.as_deref(),
+        Some(provider.as_str())
+    );
+}
+
+#[test]
 fn model_menu_summary_uses_configured_model_label() {
     let mut app = test_app();
 
@@ -10253,6 +10294,23 @@ fn secrets_menu_inventory_includes_first_party_catalog_rows() {
         .iter()
         .find(|row| row.id == "secrets.inventory.BRAVE_API_KEY")
         .expect("BRAVE_API_KEY inventory row");
+
+    let ollama_cloud = inventory.groups[0]
+        .rows
+        .iter()
+        .find(|row| row.id == "secrets.inventory.OLLAMA_API_KEY")
+        .expect("OLLAMA_API_KEY inventory row");
+    assert_eq!(ollama_cloud.label, "OLLAMA_API_KEY");
+    assert!(
+        ollama_cloud
+            .metadata
+            .iter()
+            .any(|item| { item == "consumer: HarnessCapability:llm_provider_api_keys" })
+    );
+    assert!(ollama_cloud.actions.iter().any(|action| {
+        action.label == "Replace entirely"
+            && action.editor_text.as_deref() == Some("/secrets set OLLAMA_API_KEY")
+    }));
 
     assert_eq!(row.label, "BRAVE_API_KEY");
     assert!(

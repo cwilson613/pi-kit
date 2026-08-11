@@ -14,6 +14,7 @@ pub mod instruments;
 pub mod layout;
 pub mod memory_status;
 pub mod menu;
+pub mod model_menu;
 pub mod operations;
 pub mod palette;
 pub mod profile;

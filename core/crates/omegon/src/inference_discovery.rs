@@ -44,6 +44,8 @@ pub const EXT_METADATA_OBSERVED: &str = "discovery/metadata_observed";
 pub enum DiscoveryContract {
     /// `GET {base_url}/models` with a bearer credential (OpenAI wire shape).
     OpenAiCompatible,
+    /// Hosted Ollama's native, publicly enumerable `GET /api/tags` endpoint.
+    OllamaCloud,
     /// OpenRouter's enriched `GET /api/v1/models` listing.
     OpenRouter,
     /// Anthropic `GET /v1/models`.
@@ -65,7 +67,8 @@ pub enum DiscoveryContract {
 pub fn contract_for_endpoint(endpoint_id: &str) -> Option<DiscoveryContract> {
     match endpoint_id {
         "openai" | "groq" | "mistral" | "xai" | "moonshot" | "huggingface-router"
-        | "ollama-cloud" | "gemini-openai" => Some(DiscoveryContract::OpenAiCompatible),
+        | "gemini-openai" => Some(DiscoveryContract::OpenAiCompatible),
+        "ollama-cloud" => Some(DiscoveryContract::OllamaCloud),
         "openrouter" => Some(DiscoveryContract::OpenRouter),
         "anthropic" => Some(DiscoveryContract::Anthropic),
         "google" => Some(DiscoveryContract::Google),
@@ -369,11 +372,11 @@ pub fn parse_ollama_tags(body: &Value) -> Vec<DiscoveredModel> {
 pub fn parse_for_contract(contract: DiscoveryContract, body: &Value) -> Vec<DiscoveredModel> {
     match contract {
         DiscoveryContract::OpenAiCompatible => parse_openai_compatible(body),
+        DiscoveryContract::OllamaCloud | DiscoveryContract::OllamaLocal => parse_ollama_tags(body),
         DiscoveryContract::OpenRouter => parse_openrouter(body),
         DiscoveryContract::Anthropic => parse_anthropic(body),
         DiscoveryContract::Google => parse_google(body),
         DiscoveryContract::GithubCopilot => parse_copilot(body),
-        DiscoveryContract::OllamaLocal => parse_ollama_tags(body),
     }
 }
 
@@ -581,7 +584,7 @@ pub fn registry_ids_by_endpoint(
 /// transport, gated here identically.
 pub fn endpoint_credentialed(endpoint_id: &str) -> bool {
     match contract_for_endpoint(endpoint_id) {
-        Some(DiscoveryContract::OllamaLocal) => true,
+        Some(DiscoveryContract::OllamaLocal | DiscoveryContract::OllamaCloud) => true,
         Some(_) => crate::providers::resolve_api_key_sync(endpoint_id).is_some(),
         None => false,
     }
@@ -638,6 +641,22 @@ pub async fn fetch_endpoint(
                 .unwrap_or(DEFAULT_TTL_SECS);
             (payload.body, ttl)
         }
+        DiscoveryContract::OllamaCloud => {
+            let base = base_url.unwrap_or("https://ollama.com/api");
+            let url = format!("{}/tags", base.trim_end_matches('/'));
+            let body = reqwest::Client::new()
+                .get(url)
+                .header("Accept", "application/json")
+                .send()
+                .await
+                .map_err(|e| err(e.to_string()))?
+                .error_for_status()
+                .map_err(|e| err(e.to_string()))?
+                .json::<Value>()
+                .await
+                .map_err(|e| err(e.to_string()))?;
+            (body, DEFAULT_TTL_SECS)
+        }
         DiscoveryContract::OllamaLocal => {
             let base = base_url.unwrap_or("http://127.0.0.1:11434");
             let url = format!("{}/api/tags", base.trim_end_matches('/'));
@@ -678,6 +697,7 @@ pub async fn fetch_endpoint(
                     format!("{}/v1/models", base.trim_end_matches('/'))
                 }
                 DiscoveryContract::OpenAiCompatible
+                | DiscoveryContract::OllamaCloud
                 | DiscoveryContract::GithubCopilot
                 | DiscoveryContract::OllamaLocal => {
                     format!("{}/models", base.trim_end_matches('/'))
@@ -912,12 +932,33 @@ mod tests {
     }
 
     #[test]
+    fn ollama_cloud_uses_native_tags_discovery_contract() {
+        assert_eq!(
+            contract_for_endpoint("ollama-cloud"),
+            Some(DiscoveryContract::OllamaCloud)
+        );
+        assert!(
+            endpoint_credentialed("ollama-cloud"),
+            "public tags enumeration must not depend on an inference credential"
+        );
+        let body = json!({"models": [{
+            "name": "qwen3.5:397b",
+            "model": "qwen3.5:397b",
+            "modified_at": "2026-08-10T00:00:00Z"
+        }]});
+        let models = parse_for_contract(DiscoveryContract::OllamaCloud, &body);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "qwen3.5:397b");
+    }
+
+    #[test]
     fn malformed_and_empty_bodies_yield_no_models() {
         for contract in [
             DiscoveryContract::OpenAiCompatible,
             DiscoveryContract::OpenRouter,
             DiscoveryContract::Anthropic,
             DiscoveryContract::Google,
+            DiscoveryContract::OllamaCloud,
             DiscoveryContract::GithubCopilot,
             DiscoveryContract::OllamaLocal,
         ] {

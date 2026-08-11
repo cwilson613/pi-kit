@@ -470,6 +470,8 @@ struct App {
     selector: Option<selector::Selector>,
     /// What the selector is for — determines what happens on confirm.
     selector_kind: Option<SelectorKind>,
+    /// Provider whose complete model inventory is currently being browsed.
+    model_inventory_provider: Option<String>,
     /// Active structured menu popup for command inventories such as /skills.
     active_menu: Option<ActiveMenu>,
     /// Read-only detail viewer for a retained managed execution session.
@@ -908,6 +910,7 @@ impl App {
             command_prompt: None,
             selector: None,
             selector_kind: None,
+            model_inventory_provider: None,
             active_menu: None,
             process_viewer: None,
             route_state: None,
@@ -1114,59 +1117,110 @@ impl App {
 
     fn open_model_selector(&mut self) {
         let current = self.settings().model.clone();
-
-        // Build selector options from the unified model catalog
         let catalog = crate::model_catalog::ModelCatalog::discover();
-        let mut options: Vec<selector::SelectOption> = Vec::new();
-
-        // Group models by provider for visual organization
-        for (provider_name, models) in &catalog.providers {
-            for model in models {
-                // Format: "Provider: Model Name — description (context, capabilities)"
-                let context = model.context_str();
-                let caps = if model.capabilities.is_empty() {
-                    String::new()
-                } else {
-                    format!(", {}", model.capability_str())
-                };
-                let label = format!("{}: {}", provider_name, model.name);
-                let freshness = catalog
-                    .freshness
-                    .get(provider_name)
-                    .map(|state| format!(" · inventory {state}"))
-                    .unwrap_or_default();
-                let pricing = model
-                    .context_pricing_notice
-                    .as_ref()
-                    .map(|notice| format!(" · {}", notice.summary()))
-                    .unwrap_or_default();
-                let description = format!(
-                    "{} — {}{}{}{}",
-                    model.description, context, caps, freshness, pricing
-                );
-
+        let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
+        let projection =
+            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, &current);
+        let mut options = Vec::new();
+        for group in projection.favorite_groups {
+            for model in group.models {
                 options.push(selector::SelectOption {
-                    value: model.id.clone(),
-                    label,
-                    description,
-                    active: model.id == current,
+                    value: model.route_id,
+                    label: format!("{}: {}", group.display_name, model.display_name),
+                    description: format!(
+                        "{} · {} context{}",
+                        model.description,
+                        model.context_input,
+                        if model.seeded {
+                            " · default"
+                        } else if model.favorite {
+                            " · favorite"
+                        } else {
+                            ""
+                        }
+                    ),
+                    active: model.current,
                 });
             }
         }
+        options.push(selector::SelectOption {
+            value: "__browse_all__".into(),
+            label: "Browse all providers…".into(),
+            description: "Open complete live provider inventories".into(),
+            active: false,
+        });
 
-        if options.is_empty() {
+        if options.len() == 1 {
             self.show_command_toast(CommandToast::new(
-                "Model catalog is empty — use /model list for available options",
+                "Model catalog is empty — refresh provider discovery",
                 CommandSeverity::Warning,
             ));
             return;
         }
-
-        // Sort by provider, then by name for consistency
-        options.sort_by(|a, b| a.label.cmp(&b.label));
-
         self.selector = Some(selector::Selector::new("Select Model", options));
         self.selector_kind = Some(SelectorKind::Model);
+    }
+
+    fn open_model_providers_selector(&mut self) {
+        let current = self.settings().model.clone();
+        let catalog = crate::model_catalog::ModelCatalog::discover();
+        let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
+        let projection =
+            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, &current);
+        let options = projection
+            .providers
+            .into_iter()
+            .map(|provider| selector::SelectOption {
+                value: provider.provider_id,
+                label: provider.display_name,
+                description: format!(
+                    "{} models · {} favorites",
+                    provider.model_count, provider.favorite_count
+                ),
+                active: false,
+            })
+            .collect();
+        self.selector = Some(selector::Selector::new("Browse Model Providers", options));
+        self.selector_kind = Some(SelectorKind::ModelProviders);
+    }
+
+    fn open_model_provider_inventory_selector(&mut self, provider_id: &str) {
+        let current = self.settings().model.clone();
+        let catalog = crate::model_catalog::ModelCatalog::discover();
+        let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
+        let Some(group) = crate::surfaces::model_menu::project_provider_inventory(
+            &catalog,
+            &preferences,
+            &current,
+            provider_id,
+        ) else {
+            self.show_command_toast(CommandToast::new(
+                "Provider inventory is unavailable",
+                CommandSeverity::Warning,
+            ));
+            return;
+        };
+        let title = format!("{} Models", group.display_name);
+        let options = group
+            .models
+            .into_iter()
+            .map(|model| selector::SelectOption {
+                value: model.route_id,
+                label: format!(
+                    "{} {}",
+                    if model.favorite { "★" } else { "☆" },
+                    model.display_name
+                ),
+                description: format!(
+                    "{} · Enter selects · Space toggles favorite",
+                    model.description
+                ),
+                active: model.current,
+            })
+            .collect();
+        self.model_inventory_provider = Some(provider_id.to_string());
+        self.selector = Some(selector::Selector::new(&title, options));
+        self.selector_kind = Some(SelectorKind::ModelProviderInventory);
     }
 
     fn open_model_grade_selector(&mut self) {
@@ -4634,6 +4688,22 @@ warning: {warning}"
 
         match kind {
             SelectorKind::Model => {
+                if value == "__browse_all__" {
+                    self.open_model_providers_selector();
+                    return None;
+                }
+                let _ = tx.try_send(TuiCommand::SetModel {
+                    model: value.clone(),
+                    respond_to: None,
+                });
+                Some(format!("Switching model → {value}"))
+            }
+            SelectorKind::ModelProviders => {
+                self.open_model_provider_inventory_selector(&value);
+                None
+            }
+            SelectorKind::ModelProviderInventory => {
+                self.model_inventory_provider = None;
                 let _ = tx.try_send(TuiCommand::SetModel {
                     model: value.clone(),
                     respond_to: None,

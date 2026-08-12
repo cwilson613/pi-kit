@@ -81,6 +81,7 @@ impl Default for TabState {
 }
 
 const MAX_SYSTEM_NOTIFICATION_BYTES: usize = 64 * 1024;
+const MAX_SYSTEM_NOTIFICATION_SEGMENTS: usize = 64;
 
 fn bounded_system_notification(text: &str) -> String {
     if text.len() <= MAX_SYSTEM_NOTIFICATION_BYTES {
@@ -418,6 +419,28 @@ impl ConversationView {
         self.conv_state.auto_scroll_to_bottom();
     }
 
+    fn enforce_system_notification_limit(&mut self) {
+        let mut excess = self
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.content, SegmentContent::SystemNotification { .. }))
+            .count()
+            .saturating_sub(MAX_SYSTEM_NOTIFICATION_SEGMENTS);
+        if excess == 0 {
+            return;
+        }
+        self.segments.retain(|segment| {
+            if excess > 0 && matches!(segment.content, SegmentContent::SystemNotification { .. }) {
+                excess -= 1;
+                false
+            } else {
+                true
+            }
+        });
+        self.selected_segment = None;
+        self.pinned_segment = None;
+    }
+
     pub fn push_system(&mut self, text: &str) {
         if is_plan_progress_text(text)
             && let Some(existing) = self
@@ -455,6 +478,7 @@ impl ConversationView {
         }
         self.segments
             .push(Segment::system(bounded_system_notification(text)));
+        self.enforce_system_notification_limit();
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();
     }
@@ -1897,6 +1921,24 @@ mod tests {
         };
         assert!(text.len() <= MAX_SYSTEM_NOTIFICATION_BYTES);
         assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn system_notification_history_has_an_aggregate_segment_cap() {
+        let mut cv = ConversationView::new();
+        for index in 0..(MAX_SYSTEM_NOTIFICATION_SEGMENTS + 10) {
+            cv.push_system(&format!(
+                "{}-{index}",
+                "x".repeat(MAX_SYSTEM_NOTIFICATION_BYTES)
+            ));
+        }
+
+        let system_count = cv
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.content, SegmentContent::SystemNotification { .. }))
+            .count();
+        assert_eq!(system_count, MAX_SYSTEM_NOTIFICATION_SEGMENTS);
     }
 
     #[test]

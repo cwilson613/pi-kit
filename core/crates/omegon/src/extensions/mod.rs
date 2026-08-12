@@ -107,6 +107,27 @@ impl ExtensionNotificationSink {
     }
 }
 
+fn configure_extension_process(command: &mut tokio::process::Command) {
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+}
+
+#[cfg(unix)]
+fn kill_extension_process_group(pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    // SAFETY: extension commands are spawned as leaders of dedicated process
+    // groups, so a negative PID cannot target the Omegon host process.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_extension_process_group(_pid: Option<u32>) {}
+
 /// Handles for communicating with an extension process.
 pub struct ProcessHandles {
     child: tokio::process::Child,
@@ -195,6 +216,7 @@ impl ProcessHandles {
     async fn shutdown(&mut self, grace: std::time::Duration) -> Result<()> {
         use tokio::io::AsyncWriteExt as _;
 
+        let pid = self.child.id();
         let _ = self.stdin.shutdown().await;
         let deadline = tokio::time::Instant::now() + grace;
         loop {
@@ -207,6 +229,7 @@ impl ProcessHandles {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
 
+        kill_extension_process_group(pid);
         self.child.kill().await?;
         let _ = self.child.wait().await?;
         Ok(())
@@ -221,6 +244,7 @@ impl Drop for ProcessHandles {
         // `cargo test` can hang after assertions complete. Respawn paths still
         // perform explicit async kill/wait; this synchronous drop path is the
         // deterministic backstop for tests and normal shutdown.
+        kill_extension_process_group(self.child.id());
         let _ = self.child.start_kill();
     }
 }
@@ -1067,6 +1091,7 @@ async fn spawn_process_handles(
         RuntimeConfig::Native { .. } => {
             let binary = manifest.native_binary_path(ext_dir)?;
             let mut cmd = clean_command(&binary, manifest)?;
+            configure_extension_process(&mut cmd);
             cmd.arg("--rpc")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -1076,6 +1101,7 @@ async fn spawn_process_handles(
         RuntimeConfig::Oci { .. } => {
             let image = manifest.oci_image()?;
             let mut cmd = clean_command("podman", manifest)?;
+            configure_extension_process(&mut cmd);
             cmd.args(["run", "--rm", "-i"]);
             for (name, value) in resolved_runtime_env(manifest)? {
                 cmd.args(["--env", &format!("{name}={value}")]);

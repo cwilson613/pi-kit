@@ -80,6 +80,8 @@ impl Default for TabState {
     }
 }
 
+const MAX_MERGED_SYSTEM_NOTIFICATION_BYTES: usize = 64 * 1024;
+
 /// Conversation view state — segment list + scroll.
 pub struct ConversationView {
     segments: Vec<Segment>,
@@ -418,11 +420,15 @@ impl ConversationView {
         }
 
         // Merge consecutive system notifications into a single card to avoid
-        // excessive vertical padding (each card has border overhead).
+        // excessive vertical padding (each card has border overhead). Bound
+        // the card: a repeated lifecycle/error producer must not turn this
+        // convenience merge into an unbounded String allocation storm.
         if let Some(last) = self.segments.last_mut()
             && let SegmentContent::SystemNotification {
                 text: ref mut existing,
             } = last.content
+            && existing.len().saturating_add(text.len()).saturating_add(1)
+                <= MAX_MERGED_SYSTEM_NOTIFICATION_BYTES
         {
             existing.push('\n');
             existing.push_str(text);
@@ -1861,6 +1867,31 @@ mod tests {
         assert!(cv.segments.iter().any(
             |segment| matches!(&segment.content, SegmentContent::ToolCard { name, complete: true, .. } if name == "read")
         ));
+    }
+
+    #[test]
+    fn repeated_system_notifications_roll_over_before_unbounded_growth() {
+        let mut cv = ConversationView::new();
+        let chunk = "x".repeat(16 * 1024);
+
+        for _ in 0..10 {
+            cv.push_system(&chunk);
+        }
+
+        let system_cards: Vec<_> = cv
+            .segments
+            .iter()
+            .filter_map(|segment| match &segment.content {
+                SegmentContent::SystemNotification { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(system_cards.len() > 1);
+        assert!(
+            system_cards
+                .iter()
+                .all(|text| text.len() <= MAX_MERGED_SYSTEM_NOTIFICATION_BYTES + chunk.len())
+        );
     }
 
     #[test]

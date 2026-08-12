@@ -4021,6 +4021,15 @@ fn background_completion_prompt(
     )
 }
 
+async fn request_exit_after_tui_boundary(
+    command_tx: &operator_commands::OperatorCommandTx,
+) -> bool {
+    command_tx
+        .send(operator_commands::OperatorCommand::Quit { confirmed: true })
+        .await
+        .is_ok()
+}
+
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -4519,11 +4528,20 @@ fn build_tui_secret_readiness_snapshot(
     };
     let tui_cancel = shared_cancel.clone();
     let tui_settings = shared_settings.clone();
+    // The coordinator owns the process lifetime, while the TUI owns the
+    // interactive terminal. Any TUI terminal boundary — orderly return,
+    // terminal EOF/HUP surfaced as an I/O error, or partial initialization
+    // failure — must therefore revoke the coordinator instead of leaving it
+    // running headless with IPC/background sender clones keeping its command
+    // channel open.
+    let tui_lifecycle_tx = command_tx.clone();
     let tui_handle = tokio::spawn(async move {
-        if let Err(e) =
-            tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await
-        {
-            tracing::error!("TUI error: {e}");
+        let result = tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await;
+        if let Err(error) = &result {
+            tracing::error!(%error, "TUI terminated at the terminal boundary");
+        }
+        if !request_exit_after_tui_boundary(&tui_lifecycle_tx).await {
+            tracing::debug!("interactive coordinator already stopped after TUI termination");
         }
     });
 
@@ -9105,6 +9123,17 @@ mod tests {
             voice_notification_receivers: vec![],
             voice_polling_handles: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn tui_terminal_boundary_requests_authoritative_coordinator_exit() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
+
+        assert!(super::request_exit_after_tui_boundary(&command_tx).await);
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(operator_commands::OperatorCommand::Quit { confirmed: true })
+        ));
     }
 
     #[test]

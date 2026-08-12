@@ -152,8 +152,18 @@ pub struct WireToolCall {
     pub arguments: Value,
 }
 
+/// Provider-neutral semantic expectation at a block boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryExpectation {
+    MoreReasoning,
+    MoreContent,
+    Terminal,
+    Unknown,
+}
+
 /// Events streamed from the bridge during an LLM call.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[allow(clippy::large_enum_variant)] // Done variant consumed immediately, never cloned
 pub enum LlmEvent {
@@ -178,6 +188,11 @@ pub enum LlmEvent {
     ToolCallDelta { delta: String },
     #[serde(rename = "toolcall_end")]
     ToolCallEnd { tool_call: WireToolCall },
+    /// Provider-normalized expectation after a semantic block boundary.
+    /// Adapters emit this only when the upstream protocol provides enough
+    /// evidence to distinguish reasoning, content, terminal, or unknown gaps.
+    #[serde(rename = "boundary")]
+    Boundary { expectation: BoundaryExpectation },
     #[serde(rename = "done")]
     Done {
         /// The complete assistant message in Omegon's format
@@ -316,6 +331,25 @@ impl LlmBridge for MockBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boundary_event_round_trips_without_render_payload() {
+        let event = LlmEvent::Boundary {
+            expectation: BoundaryExpectation::MoreReasoning,
+        };
+        let json = serde_json::to_string(&event).expect("serialize boundary");
+        assert_eq!(
+            json,
+            r#"{"type":"boundary","expectation":"more_reasoning"}"#
+        );
+        let parsed: LlmEvent = serde_json::from_str(&json).expect("deserialize boundary");
+        assert!(matches!(
+            parsed,
+            LlmEvent::Boundary {
+                expectation: BoundaryExpectation::MoreReasoning
+            }
+        ));
+    }
 
     #[test]
     fn llm_message_user_round_trip() {

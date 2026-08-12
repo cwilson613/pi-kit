@@ -908,7 +908,10 @@ impl IpcConnection {
                         serde_json::to_value(AcceptedResponse { accepted: true })?,
                     )
                     .await;
-                    let _ = cfg.command_tx.send(TuiCommand::Quit).await;
+                    let _ = cfg
+                        .command_tx
+                        .send(TuiCommand::Quit { confirmed: false })
+                        .await;
                     shutdown_requested = true;
                     break;
                 }

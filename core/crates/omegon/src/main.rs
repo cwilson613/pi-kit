@@ -2604,6 +2604,8 @@ async fn run_embedded_command(
     }
 
     let router = Arc::new(session_router::SessionRouter::new());
+    let mut extension_supervisors =
+        extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
     let agent_cwd = agent.cwd.clone();
     let agent_session_id = agent.session_id.clone();
     let agent_secrets = agent.secrets.clone();
@@ -3022,9 +3024,12 @@ async fn run_embedded_command(
                             },
                         );
                     }
-                    Some(operator_commands::OperatorCommand::Quit) => {
-                        tracing::info!("daemon: IPC shutdown requested");
+                    Some(operator_commands::OperatorCommand::Quit { confirmed: true }) => {
+                        tracing::info!("daemon: confirmed IPC shutdown requested");
                         break;
+                    }
+                    Some(operator_commands::OperatorCommand::Quit { confirmed: false }) => {
+                        tracing::warn!("daemon: rejected unconfirmed IPC shutdown request");
                     }
                     Some(_) => {
                         tracing::debug!("daemon: unhandled IPC command variant");
@@ -3209,6 +3214,7 @@ async fn run_embedded_command(
             );
         }
     }
+    extension_supervisors.shutdown().await;
     Ok(())
 }
 
@@ -4254,6 +4260,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         s.provider_connected = startup_decision.provider_connected;
     }
     let (events_tx, events_rx) = bootstrap::wire_event_channel(&agent, 256);
+    let mut extension_supervisors = extensions::ExtensionSupervisorSet::new(
+        std::mem::take(&mut agent.extension_supervisors),
+    );
     let startup_model_intent = settings::Profile::load(&agent.cwd)
         .model_intent
         .and_then(|intent| intent.to_route_intent())
@@ -4598,7 +4607,13 @@ fn build_tui_secret_readiness_snapshot(
         };
 
         match cmd {
-            operator_commands::OperatorCommand::Quit => break,
+            operator_commands::OperatorCommand::Quit { confirmed: true } => break,
+            operator_commands::OperatorCommand::Quit { confirmed: false } => {
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: "Shutdown rejected: destructive exit was not confirmed by an interactive surface.".to_string(),
+                });
+                continue;
+            }
             operator_commands::OperatorCommand::InstallUpdate { info, args } => {
                 let latest = info.latest.clone();
                 let operation_id = uuid::Uuid::new_v4().to_string();
@@ -5525,7 +5540,7 @@ fn build_tui_secret_readiness_snapshot(
                                         continue;
                                     }
                                     web::WebCommand::Shutdown => {
-                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::Quit).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::Quit { confirmed: false }).await.is_err() {
                                             break;
                                         }
                                         continue;
@@ -6202,17 +6217,38 @@ fn build_tui_secret_readiness_snapshot(
                                             submitted_by,
                                             via,
                                         );
-                                        if cancellation_deadline.is_none() {
-                                            cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
-                                        }
+                                        // Revocation is authoritative: abort the worker now rather
+                                        // than treating cancellation as a request that may be ignored.
+                                        // Durable state is supervisor-owned behind `state_for_turn`.
+                                        turn_task.abort();
+                                        let _ = (&mut turn_task).await;
+                                        if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
+                                        lifecycle.transition("worker_revoked", runtime.queue_depth(), &events_tx);
+                                        mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                        let _ = events_tx.send(AgentEvent::AgentEnd);
+                                        runtime_state = Arc::try_unwrap(state_for_turn)
+                                            .map_err(|_| anyhow::anyhow!("revoked worker retained durable state"))?
+                                            .into_inner();
+                                        break;
                                     }
-                                    operator_commands::OperatorCommand::Quit => {
+                                    operator_commands::OperatorCommand::Quit { confirmed: false } => {
+                                        let _ = events_tx.send(AgentEvent::SystemNotification {
+                                            message: "Shutdown rejected: destructive exit was not confirmed by an interactive surface.".to_string(),
+                                        });
+                                    }
+                                    operator_commands::OperatorCommand::Quit { confirmed: true } => {
                                         quit_after_turn = true;
-                                        if let Ok(guard) = shared_cancel.lock()
-                                            && let Some(ref cancel) = *guard
-                                        {
-                                            cancel.cancel();
-                                        }
+                                        turn_cancel.cancel();
+                                        turn_task.abort();
+                                        let _ = (&mut turn_task).await;
+                                        if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
+                                        lifecycle.transition("worker_revoked_for_exit", runtime.queue_depth(), &events_tx);
+                                        mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                        let _ = events_tx.send(AgentEvent::AgentEnd);
+                                        runtime_state = Arc::try_unwrap(state_for_turn)
+                                            .map_err(|_| anyhow::anyhow!("exit-revoked worker retained durable state"))?
+                                            .into_inner();
+                                        break;
                                     }
                                     operator_commands::OperatorCommand::InstallUpdate { info, args } => {
                                         deferred_commands.push_back(
@@ -6355,6 +6391,8 @@ fn build_tui_secret_readiness_snapshot(
     }
 
     bridge.read().await.shutdown().await;
+    extension_supervisors.shutdown().await;
+
     if let Some((binary, args)) = restart_request {
         let args = restart_args_for_session(args, &agent.session_id);
         crate::update::exec_restart(&binary, &args)?;
@@ -9056,6 +9094,7 @@ mod tests {
                 lease: workspace_lease,
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
+            extension_supervisors: vec![],
             extension_widgets: vec![],
             extension_metadata: Default::default(),
             extension_rpc_handles: Default::default(),

@@ -7733,7 +7733,7 @@ pub async fn run_tui(
                 // Terminal restoration alone must not leave the coordinator
                 // running headless while IPC/other sender clones keep the
                 // command channel open.
-                let _ = command_tx.send(TuiCommand::Quit).await;
+                let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
                 break;
             }
             event = events_rx.recv() => {
@@ -8859,7 +8859,8 @@ mod slash_command_parsing_tests {
         let settings = crate::settings::shared("anthropic:claude-sonnet-4-5");
         let mut app = App::new(settings);
         let (tx, _rx) = mpsc::channel(1);
-        tx.try_send(TuiCommand::Quit).expect("seed full channel");
+        tx.try_send(TuiCommand::Quit { confirmed: false })
+            .expect("seed full channel");
 
         let result = app.handle_slash_command("/skills create", &tx);
         match result {

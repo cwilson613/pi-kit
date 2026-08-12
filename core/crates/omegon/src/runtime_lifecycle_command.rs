@@ -4,7 +4,7 @@ use crate::tui;
 
 #[derive(Debug)]
 pub(crate) enum RuntimeLifecycleCommand {
-    Quit,
+    Quit { confirmed: bool },
     InstallUpdate {
         info: crate::update::UpdateInfo,
         args: Vec<String>,
@@ -35,7 +35,9 @@ pub(crate) enum LifecycleClassification {
 
 pub(crate) fn classify(command: tui::TuiCommand) -> LifecycleClassification {
     match command {
-        tui::TuiCommand::Quit => LifecycleClassification::Lifecycle(RuntimeLifecycleCommand::Quit),
+        tui::TuiCommand::Quit { confirmed } => LifecycleClassification::Lifecycle(
+            RuntimeLifecycleCommand::Quit { confirmed },
+        ),
         tui::TuiCommand::InstallUpdate { info, args } => {
             LifecycleClassification::Lifecycle(RuntimeLifecycleCommand::InstallUpdate {
                 info,
@@ -55,7 +57,7 @@ pub(crate) fn classify(command: tui::TuiCommand) -> LifecycleClassification {
 impl RuntimeLifecycleCommand {
     pub(crate) fn for_active_worker(self) -> ActiveWorkerLifecycleDisposition {
         match self {
-            Self::Quit => ActiveWorkerLifecycleDisposition::QuitAfterTurn,
+            Self::Quit { confirmed: _ } => ActiveWorkerLifecycleDisposition::QuitAfterTurn,
             Self::InstallUpdate { info, args } => {
                 ActiveWorkerLifecycleDisposition::DeferInstallUpdate { info, args }
             }
@@ -151,7 +153,7 @@ mod tests {
 
     #[test]
     fn active_worker_lifecycle_commands_have_typed_dispositions() {
-        let disposition = RuntimeLifecycleCommand::Quit.for_active_worker();
+        let disposition = RuntimeLifecycleCommand::Quit { confirmed: false }.for_active_worker();
         assert!(matches!(
             disposition,
             ActiveWorkerLifecycleDisposition::QuitAfterTurn

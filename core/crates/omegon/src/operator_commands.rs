@@ -320,8 +320,9 @@ pub enum OperatorCommand {
     /// the Kitty protocol around the subprocess without querying the
     /// terminal again (which can fail if stdin is redirected).
     ShellHandoff { keyboard_enhancement: bool },
-    /// User wants to quit (double Ctrl+C, or /exit).
-    Quit,
+    /// Destructive process exit. The coordinator rejects this unless the
+    /// submitting surface records that operator confirmation has completed.
+    Quit { confirmed: bool },
     /// Download and verify an update, then enter the graceful restart lifecycle.
     InstallUpdate {
         info: crate::update::UpdateInfo,

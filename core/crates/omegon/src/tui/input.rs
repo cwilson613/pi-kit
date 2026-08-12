@@ -624,7 +624,7 @@ impl App {
                                     SlashResult::Quit
                                 )
                             {
-                                let _ = command_tx.send(TuiCommand::Quit).await;
+                                let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
                             }
                         }
                         KeyCode::Enter => {
@@ -637,7 +637,7 @@ impl App {
                                     SlashResult::Quit
                                 )
                             {
-                                let _ = command_tx.send(TuiCommand::Quit).await;
+                                let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
                             }
                         }
                         KeyCode::Esc => {
@@ -1101,7 +1101,8 @@ impl App {
                             if let Some(last) = self.last_ctrl_c {
                                 if now.duration_since(last).as_millis() < 1000 {
                                     self.should_quit = true;
-                                    let _ = command_tx.send(TuiCommand::Quit).await;
+                                    let _ =
+                                        command_tx.send(TuiCommand::Quit { confirmed: true }).await;
                                 } else {
                                     self.last_ctrl_c = Some(now);
                                     self.show_command_toast(CommandToast::new(

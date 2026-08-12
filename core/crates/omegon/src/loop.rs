@@ -1478,6 +1478,16 @@ pub async fn run(
                     )
             })
             && plan_open_items(&conversation.intent).is_empty();
+        // A bookkeeping-only reconciliation may end without duplicate closure
+        // prose only when it actually closes the visible plan. An advance that
+        // merely moves to the next item still requires another model turn;
+        // otherwise the agent loop silently returns control halfway through the
+        // operator's task, which presents as an unexplained halt in the TUI.
+        let reconciled_plan_still_open =
+            reconciled_plan_requires_continuation(&conversation.intent, &dispatch_calls);
+        if reconciled_plan_still_open {
+            final_response_turn_due = true;
+        }
 
         let dominant_phase = classify_turn_phase(&tool_catalog, &dispatch_calls, &results);
         let drift_kind =
@@ -1961,6 +1971,20 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn reconciled_plan_requires_continuation(intent: &IntentDocument, calls: &[ToolCall]) -> bool {
+    intent.plan_reconciliation_nudges > 0
+        && calls.iter().any(|call| {
+            call.name == crate::tool_registry::core::PLAN
+                && matches!(
+                    call.arguments
+                        .get("action")
+                        .and_then(|value| value.as_str()),
+                    Some("advance" | "complete" | "skip")
+                )
+        })
+        && !plan_open_items(intent).is_empty()
 }
 
 fn should_remind_realtime_plan_progress(
@@ -9462,6 +9486,46 @@ This is the right first slice."#;
             }],
             &[failed],
         ));
+    }
+
+    #[test]
+    fn reconciled_plan_advancement_continues_while_visible_work_remains() {
+        let mut intent = IntentDocument {
+            plan_reconciliation_nudges: 1,
+            ..Default::default()
+        };
+        intent.set_work_plan(vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ]);
+        intent.execute_work_plan();
+        intent.advance_work_plan();
+        let advance = ToolCall {
+            id: "plan-advance".into(),
+            name: crate::tool_registry::core::PLAN.into(),
+            arguments: serde_json::json!({"action": "advance"}),
+        };
+
+        assert!(reconciled_plan_requires_continuation(&intent, &[advance]));
+    }
+
+    #[test]
+    fn reconciled_plan_does_not_continue_after_all_visible_work_closes() {
+        let mut intent = IntentDocument {
+            plan_reconciliation_nudges: 1,
+            ..Default::default()
+        };
+        intent.set_work_plan(vec!["only".to_string()]);
+        intent.execute_work_plan();
+        intent.advance_work_plan();
+        let complete = ToolCall {
+            id: "plan-complete".into(),
+            name: crate::tool_registry::core::PLAN.into(),
+            arguments: serde_json::json!({"action": "complete", "index": 1}),
+        };
+
+        assert!(!reconciled_plan_requires_continuation(&intent, &[complete]));
     }
 
     #[test]

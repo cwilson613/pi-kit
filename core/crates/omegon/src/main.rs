@@ -4021,13 +4021,8 @@ fn background_completion_prompt(
     )
 }
 
-async fn request_exit_after_tui_boundary(
-    command_tx: &operator_commands::OperatorCommandTx,
-) -> bool {
-    command_tx
-        .send(operator_commands::OperatorCommand::Quit { confirmed: true })
-        .await
-        .is_ok()
+fn signal_tui_boundary_exit(exit: &CancellationToken) {
+    exit.cancel();
 }
 
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
@@ -4534,15 +4529,14 @@ fn build_tui_secret_readiness_snapshot(
     // failure — must therefore revoke the coordinator instead of leaving it
     // running headless with IPC/background sender clones keeping its command
     // channel open.
-    let tui_lifecycle_tx = command_tx.clone();
+    let tui_exit = CancellationToken::new();
+    let tui_exit_signal = tui_exit.clone();
     let tui_handle = tokio::spawn(async move {
         let result = tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await;
         if let Err(error) = &result {
             tracing::error!(%error, "TUI terminated at the terminal boundary");
         }
-        if !request_exit_after_tui_boundary(&tui_lifecycle_tx).await {
-            tracing::debug!("interactive coordinator already stopped after TUI termination");
-        }
+        signal_tui_boundary_exit(&tui_exit_signal);
     });
 
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
@@ -4606,9 +4600,13 @@ fn build_tui_secret_readiness_snapshot(
         let cmd = if let Some(cmd) = deferred_commands.pop_front() {
             cmd
         } else {
-            match command_rx.recv().await {
-                Some(cmd) => cmd,
-                None => break,
+            tokio::select! {
+                biased;
+                _ = tui_exit.cancelled() => break,
+                cmd = command_rx.recv() => match cmd {
+                    Some(cmd) => cmd,
+                    None => break,
+                },
             }
         };
 
@@ -6120,6 +6118,20 @@ fn build_tui_secret_readiness_snapshot(
 
                     loop {
                         tokio::select! {
+                            _ = tui_exit.cancelled() => {
+                                quit_after_turn = true;
+                                turn_cancel.cancel();
+                                turn_task.abort();
+                                let _ = (&mut turn_task).await;
+                                if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
+                                lifecycle.transition("worker_revoked_by_terminal_loss", runtime.queue_depth(), &events_tx);
+                                mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                let _ = events_tx.send(AgentEvent::AgentEnd);
+                                runtime_state = Arc::try_unwrap(state_for_turn)
+                                    .map_err(|_| anyhow::anyhow!("terminal-revoked worker retained durable state"))?
+                                    .into_inner();
+                                break;
+                            }
                             turn_result = &mut turn_task => {
                                 if let Err(join_err) = turn_result {
                                     let message = format_interactive_turn_task_failure(&join_err);
@@ -9125,15 +9137,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn tui_terminal_boundary_requests_authoritative_coordinator_exit() {
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-
-        assert!(super::request_exit_after_tui_boundary(&command_tx).await);
-        assert!(matches!(
-            command_rx.recv().await,
-            Some(operator_commands::OperatorCommand::Quit { confirmed: true })
-        ));
+    #[test]
+    fn tui_terminal_boundary_signal_is_authoritative_without_channel_capacity() {
+        let exit = CancellationToken::new();
+        super::signal_tui_boundary_exit(&exit);
+        assert!(exit.is_cancelled());
     }
 
     #[test]

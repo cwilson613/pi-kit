@@ -553,7 +553,7 @@ impl ExtensionFeature {
                     self.runtime.name
                 )
             })?;
-        let handshake = handshake(
+        let handshake = match handshake(
             &mut handles,
             &self.runtime.manifest,
             &self.runtime.ext_dir,
@@ -561,12 +561,22 @@ impl ExtensionFeature {
             self.runtime.notification_sink.as_ref(),
         )
         .await
-        .map_err(|err| {
-            anyhow!(
-                "extension '{}' transport failed ({cause}); respawn handshake failed: {err}",
-                self.runtime.name
-            )
-        })?;
+        {
+            Ok(handshake) => handshake,
+            Err(err) => {
+                if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
+                    tracing::warn!(
+                        extension = %self.runtime.name,
+                        %cleanup_error,
+                        "failed to reap extension after respawn handshake failure"
+                    );
+                }
+                return Err(anyhow!(
+                    "extension '{}' transport failed ({cause}); respawn handshake failed: {err}",
+                    self.runtime.name
+                ));
+            }
+        };
         self.request_id.store(handles.next_id, Ordering::SeqCst);
         *guard = Some(handles);
         tracing::warn!(
@@ -1082,8 +1092,23 @@ async fn spawn_process_handles(
         spawn_extension_stderr_drain(extension_name, stderr);
     }
 
-    let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    let stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(anyhow!("no stdin"));
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            drop(stdin);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(anyhow!("no stdout"));
+        }
+    };
     Ok(ProcessHandles::new(child, stdin, stdout))
 }
 
@@ -2343,6 +2368,65 @@ binary = "sdk-extension.sh"
         )
         .unwrap();
         script
+    }
+
+    fn write_failing_extension(dir: &Path) -> PathBuf {
+        let script = dir.join("failing-extension.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '%s\n' $$ > "$1"
+while IFS= read -r line; do
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"forced handshake failure"}}'
+done
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        script
+    }
+
+    async fn assert_pid_reaped(pid: u32) {
+        for _ in 0..20 {
+            let status = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .unwrap();
+            if !status.success() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("extension child {pid} still exists after failed handshake");
+    }
+
+    #[tokio::test]
+    async fn failed_native_handshake_kills_and_reaps_child() {
+        let _guard = SDK_COMPAT_SPAWN_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_failing_extension(temp.path());
+        let pid_file = temp.path().join("pid");
+        let mut command = tokio::process::Command::new(&script);
+        command
+            .arg(&pid_file)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = command.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut handles = ProcessHandles::new(child, stdin, stdout);
+        handles.rpc_call("initialize", json!({})).await.unwrap_err();
+        handles.shutdown(std::time::Duration::ZERO).await.unwrap();
+
+        let pid: u32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_pid_reaped(pid).await;
     }
 
     #[tokio::test]

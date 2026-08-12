@@ -1549,6 +1549,21 @@ pub async fn run(
         }
 
         if !reconciled_visible_plan
+            && should_remind_realtime_plan_progress(
+                &conversation.intent,
+                &tool_catalog,
+                &dispatch_calls,
+                &results,
+            )
+        {
+            tracing::info!(
+                "Material progress boundary crossed with stale visible plan — injecting same-continuation plan reminder"
+            );
+            inject_nudge!(
+                "realtime_plan_progress",
+                "[System: Workbench progress may be stale. If the active item just finished, update it now with `plan advance`, `plan complete`, or `plan skip` before moving on.]"
+            );
+        } else if !reconciled_visible_plan
             && is_first_turn_orientation_churn(
                 turn,
                 config,
@@ -1946,6 +1961,25 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn should_remind_realtime_plan_progress(
+    intent: &IntentDocument,
+    tool_catalog: &ToolCapabilityCatalog,
+    calls: &[ToolCall],
+    results: &[ToolResultEntry],
+) -> bool {
+    if plan_open_items(intent).is_empty()
+        || calls
+            .iter()
+            .any(|call| call.name == crate::tool_registry::core::PLAN)
+    {
+        return false;
+    }
+
+    calls.iter().zip(results).any(|(call, result)| {
+        !result.is_error && behavior::is_progress_boundary_tool(tool_catalog, &call.name)
+    })
 }
 
 fn plan_status_notification(calls: &[ToolCall], intent: &IntentDocument) -> Option<String> {
@@ -9347,6 +9381,87 @@ This is the right first slice."#;
         assert!(!needs_final_response_turn(50, 49, 1));
         assert!(!needs_final_response_turn(50, 50, 0));
         assert!(!needs_final_response_turn(0, 500, 1));
+    }
+
+    #[test]
+    fn realtime_plan_progress_reminder_is_narrow_and_suppressed_by_plan_updates() {
+        let mut intent = IntentDocument::default();
+        intent.work_plan = vec![crate::conversation::WorkItem {
+            description: "Implement behavior".into(),
+            status: crate::conversation::WorkItemStatus::Active,
+            intent: None,
+            completion_policy: Default::default(),
+            evidence: vec![],
+        }];
+        let catalog = ToolCapabilityCatalog::from_tool_defs(&[
+            ToolDefinition {
+                name: "boundary".into(),
+                label: "boundary".into(),
+                description: String::new(),
+                parameters: Value::Null,
+                capabilities: vec![ToolCapability::ProgressBoundary],
+            },
+            ToolDefinition {
+                name: crate::tool_registry::core::PLAN.into(),
+                label: "plan".into(),
+                description: String::new(),
+                parameters: Value::Null,
+                capabilities: vec![],
+            },
+        ]);
+        let boundary = ToolCall {
+            id: "boundary-1".into(),
+            name: "boundary".into(),
+            arguments: Value::Null,
+        };
+        let success = ToolResultEntry {
+            call_id: "boundary-1".into(),
+            tool_name: "boundary".into(),
+            content: vec![],
+            is_error: false,
+            args_summary: None,
+        };
+
+        assert!(should_remind_realtime_plan_progress(
+            &intent,
+            &catalog,
+            std::slice::from_ref(&boundary),
+            std::slice::from_ref(&success),
+        ));
+
+        let plan_call = ToolCall {
+            id: "plan-1".into(),
+            name: crate::tool_registry::core::PLAN.into(),
+            arguments: serde_json::json!({"action": "advance"}),
+        };
+        assert!(!should_remind_realtime_plan_progress(
+            &intent,
+            &catalog,
+            &[boundary, plan_call],
+            &[
+                success.clone(),
+                ToolResultEntry {
+                    call_id: "plan-1".into(),
+                    tool_name: crate::tool_registry::core::PLAN.into(),
+                    content: vec![],
+                    is_error: false,
+                    args_summary: None,
+                }
+            ],
+        ));
+
+        let mut failed = success;
+        failed.is_error = true;
+        assert!(!should_remind_realtime_plan_progress(
+            &intent,
+            &catalog,
+            &[ToolCall {
+                id: "boundary-2".into(),
+                name: "boundary".into(),
+                arguments: Value::Null,
+            }],
+            &[failed],
+        ));
     }
 
     #[test]

@@ -947,18 +947,7 @@ impl ToolProvider for CoreTools {
             ToolDefinition {
                 name: reg::PLAN.into(),
                 label: reg::PLAN.into(),
-                description: "Manage the session work plan — the primary operator-facing \
-                    Workbench surface for what's happening now and the agent's guidepost while \
-                    working. Use 'list' to inspect the visible plan plus lifecycle/OpenSpec \
-                    plan summaries, 'set' to establish a plan at the start of multi-step work, \
-                    'approve' to mark operator approval, 'execute' to start mutation work, \
-                    'advance' to mark the current item done and move to the next item, \
-                    'complete' to mark a specific item done, 'skip' to deliberately bypass an \
-                    item, and 'clear' only when the visible plan gate is no longer useful. \
-                    If you create or inherit a visible plan, keep it truthful before final \
-                    replies: update, complete, skip, or clear stale active/todo items rather \
-                    than leaving the Workbench stale."
-                    .into(),
+                description: "Manage live Workbench progress while executing the current task. This is an ordinary same-turn progress-reporting primitive, not end-of-task cleanup: as soon as existing evidence establishes that a work item is finished, call 'advance' or 'complete' in the same response before starting the next item. Do not defer or batch completed-item updates until validation, commit, a milestone, or the final reply. Use 'list' to inspect the visible plan plus lifecycle/OpenSpec summaries, 'set' to establish a multi-step plan, 'approve' for operator approval, 'execute' to start mutation work, 'skip' for a deliberate bypass, and 'clear' only when the plan gate is no longer useful. Keep inherited plans truthful throughout execution.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -2239,12 +2228,15 @@ open_questions:
 
         assert!(
             plan.description
-                .contains("primary operator-facing Workbench surface")
+                .contains("ordinary same-turn progress-reporting primitive")
         );
-        assert!(plan.description.contains("agent's guidepost"));
         assert!(
             plan.description
-                .contains("keep it truthful before final replies")
+                .contains("same response before starting the next item")
+        );
+        assert!(
+            plan.description
+                .contains("Do not defer or batch completed-item updates")
         );
     }
 

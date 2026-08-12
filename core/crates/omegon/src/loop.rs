@@ -1483,8 +1483,14 @@ pub async fn run(
         // merely moves to the next item still requires another model turn;
         // otherwise the agent loop silently returns control halfway through the
         // operator's task, which presents as an unexplained halt in the TUI.
-        let reconciled_plan_still_open =
-            reconciled_plan_requires_continuation(&conversation.intent, &dispatch_calls);
+        let reconciled_plan_still_open = matches!(
+            select_continuation_cause(
+                false,
+                reconciled_plan_requires_continuation(&conversation.intent, &dispatch_calls),
+                false,
+            ),
+            Some(ContinuationCause::OpenReconciledPlan)
+        );
         if reconciled_plan_still_open {
             final_response_turn_due = true;
         }
@@ -1971,6 +1977,29 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContinuationCause {
+    FeatureMessage,
+    OpenReconciledPlan,
+    EmptyResponseRecovery,
+}
+
+fn select_continuation_cause(
+    feature_message_pending: bool,
+    open_reconciled_plan: bool,
+    empty_response_recovery: bool,
+) -> Option<ContinuationCause> {
+    if feature_message_pending {
+        Some(ContinuationCause::FeatureMessage)
+    } else if open_reconciled_plan {
+        Some(ContinuationCause::OpenReconciledPlan)
+    } else if empty_response_recovery {
+        Some(ContinuationCause::EmptyResponseRecovery)
+    } else {
+        None
+    }
 }
 
 fn reconciled_plan_requires_continuation(intent: &IntentDocument, calls: &[ToolCall]) -> bool {
@@ -9486,6 +9515,23 @@ This is the right first slice."#;
             }],
             &[failed],
         ));
+    }
+
+    #[test]
+    fn continuation_arbiter_selects_one_cause_by_precedence() {
+        assert_eq!(
+            select_continuation_cause(true, true, true),
+            Some(ContinuationCause::FeatureMessage)
+        );
+        assert_eq!(
+            select_continuation_cause(false, true, true),
+            Some(ContinuationCause::OpenReconciledPlan)
+        );
+        assert_eq!(
+            select_continuation_cause(false, false, true),
+            Some(ContinuationCause::EmptyResponseRecovery)
+        );
+        assert_eq!(select_continuation_cause(false, false, false), None);
     }
 
     #[test]

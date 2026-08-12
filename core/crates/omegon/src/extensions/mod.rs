@@ -1408,14 +1408,30 @@ async fn spawn_native(
         (None, None)
     };
 
-    let handshake = handshake(
+    let handshake = match handshake(
         &mut handles,
         manifest,
         ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            // Every successfully spawned child has an immediate reaping
+            // obligation, including failed startup negotiation. `Drop` can
+            // request a kill but cannot synchronously wait for Tokio children.
+            if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
+                tracing::warn!(
+                    extension = %manifest.extension.name,
+                    %cleanup_error,
+                    "failed to reap extension after handshake failure"
+                );
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(
         name = %manifest.extension.name,
@@ -1515,14 +1531,30 @@ async fn spawn_container(
         (None, None)
     };
 
-    let handshake = handshake(
+    let handshake = match handshake(
         &mut handles,
         manifest,
         ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            // Every successfully spawned child has an immediate reaping
+            // obligation, including failed startup negotiation. `Drop` can
+            // request a kill but cannot synchronously wait for Tokio children.
+            if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
+                tracing::warn!(
+                    extension = %manifest.extension.name,
+                    %cleanup_error,
+                    "failed to reap extension after handshake failure"
+                );
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(
         name = %manifest.extension.name,

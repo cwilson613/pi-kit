@@ -724,15 +724,31 @@ pub(crate) fn classify_progress_signal(
     tool_calls: &[ToolCall],
     results: &[ToolResultEntry],
 ) -> ProgressSignal {
-    if has_successful_tool_call(tool_calls, results, |call| {
-        is_progress_boundary_tool(catalog, &call.name)
+    let observations =
+        crate::observation::ObservationNormalizer::new(catalog).normalize(tool_calls, results);
+    if observations.iter().any(|event| {
+        matches!(
+            event,
+            crate::observation::ObservationEvent::ProgressBoundary { .. }
+        )
     }) {
         return ProgressSignal::Commit;
     }
-    if has_successful_tool_call(tool_calls, results, |call| {
-        is_mutation_tool_name(catalog, &call.name) || is_progress_boundary_tool(catalog, &call.name)
+    if observations.iter().any(|event| {
+        matches!(
+            event,
+            crate::observation::ObservationEvent::FileMutated { .. }
+        )
     }) {
         return ProgressSignal::Mutation;
+    }
+    if observations.iter().any(|event| {
+        matches!(
+            event,
+            crate::observation::ObservationEvent::ValidationRun { .. }
+        )
+    }) {
+        return ProgressSignal::TargetedValidation;
     }
 
     let validation_signal = classify_validation_scope(catalog, tool_calls, results);
@@ -1346,6 +1362,46 @@ mod tests {
             infer_task_mode_from_prompt("[mode: implementation]\nwhat file should change?"),
             TaskMode::Implementation
         );
+    }
+
+    #[test]
+    fn successful_shell_validation_resets_no_progress_streak() {
+        let catalog = ToolCapabilityCatalog::from_tool_defs(&[omegon_traits::ToolDefinition {
+            name: "bash".into(),
+            label: String::new(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            capabilities: vec![omegon_traits::ToolCapability::StateChanging],
+        }]);
+        let call = ToolCall {
+            id: "check".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "cargo check -p omegon"}),
+        };
+        let result = ToolResultEntry {
+            call_id: "check".into(),
+            tool_name: "bash".into(),
+            content: vec![],
+            is_error: false,
+            args_summary: None,
+        };
+        assert_eq!(
+            classify_progress_signal(0, 0, &catalog, &[call], &[result]),
+            ProgressSignal::TargetedValidation
+        );
+
+        let mut controller = ControllerState {
+            no_progress_continuation_streak: 7,
+            ..ControllerState::default()
+        };
+        controller.observe_turn(
+            omegon_traits::TurnEndReason::ToolContinuation,
+            None,
+            ProgressSignal::TargetedValidation,
+            EvidenceAssessment::default(),
+            false,
+        );
+        assert_eq!(controller.no_progress_continuation_streak, 0);
     }
 
     #[test]

@@ -115,13 +115,25 @@ pub async fn execute_with_boundary(
     cancel: CancellationToken,
     boundary: Option<super::WorkspaceBoundary>,
 ) -> Result<ToolResult> {
-    execute_streaming(
+    execute_with_boundary_and_env(command, cwd, timeout_secs, cancel, boundary, &[]).await
+}
+
+pub async fn execute_with_boundary_and_env(
+    command: &str,
+    cwd: &Path,
+    timeout_secs: Option<u64>,
+    cancel: CancellationToken,
+    boundary: Option<super::WorkspaceBoundary>,
+    env: &[(String, String)],
+) -> Result<ToolResult> {
+    execute_streaming_with_env(
         command,
         cwd,
         timeout_secs,
         cancel,
         ToolProgressSink::noop(),
         boundary,
+        env,
     )
     .await
 }
@@ -143,6 +155,18 @@ pub async fn execute_streaming(
     cancel: CancellationToken,
     sink: ToolProgressSink,
     boundary: Option<super::WorkspaceBoundary>,
+) -> Result<ToolResult> {
+    execute_streaming_with_env(command, cwd, timeout_secs, cancel, sink, boundary, &[]).await
+}
+
+pub async fn execute_streaming_with_env(
+    command: &str,
+    cwd: &Path,
+    timeout_secs: Option<u64>,
+    cancel: CancellationToken,
+    sink: ToolProgressSink,
+    boundary: Option<super::WorkspaceBoundary>,
+    env: &[(String, String)],
 ) -> Result<ToolResult> {
     let start = Instant::now();
 
@@ -218,6 +242,7 @@ pub async fn execute_streaming(
     cmd.args(["-c", command])
         .current_dir(cwd)
         .envs(git_discovery_env(cwd))
+        .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(std::process::Stdio::null()) // /dev/null — commands needing input fail fast
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

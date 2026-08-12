@@ -26,6 +26,7 @@ pub mod web_search;
 pub mod whoami;
 pub mod write;
 
+pub(crate) mod secret_env;
 pub mod secret_tools;
 
 // Phase 0+ stubs:
@@ -631,6 +632,7 @@ pub struct CoreTools {
     /// Workspace boundary enforcer — shared with other tool providers.
     boundary: WorkspaceBoundary,
     terminal_tool_enabled: bool,
+    secrets: Option<std::sync::Arc<omegon_secrets::SecretsManager>>,
 }
 
 impl CoreTools {
@@ -641,6 +643,7 @@ impl CoreTools {
             repo_model: None,
             boundary,
             terminal_tool_enabled: true,
+            secrets: None,
         }
     }
 
@@ -655,6 +658,7 @@ impl CoreTools {
             repo_model: Some(repo_model),
             boundary,
             terminal_tool_enabled: true,
+            secrets: None,
         }
     }
 
@@ -662,6 +666,11 @@ impl CoreTools {
     pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
         self.terminal_tool_enabled = settings.lock().map(|s| s.terminal_tool).unwrap_or(true);
         self.boundary = self.boundary.with_settings(settings);
+        self
+    }
+
+    pub fn with_secrets(mut self, secrets: std::sync::Arc<omegon_secrets::SecretsManager>) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 

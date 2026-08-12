@@ -1055,6 +1055,7 @@ impl AgentSetup {
         } else {
             core_tools
         };
+        let core_tools = core_tools.with_secrets(secrets.clone());
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "core-tools",
             Box::new(core_tools),

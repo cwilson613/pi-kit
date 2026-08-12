@@ -87,6 +87,8 @@ pub struct AgentSetup {
     pub resume_info: Option<ResumeInfo>,
     /// Startup-local workspace ownership metadata.
     pub workspace_state: WorkspaceStartupState,
+    /// Canonical owners for deterministic extension process shutdown.
+    pub extension_supervisors: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Extension deployment metadata discovered during startup.
@@ -997,6 +999,7 @@ impl AgentSetup {
         // ─── Operator-installed extensions (RPC + OCI) ────────────────
         // All extensions, including bundled ones (scribe-rpc), are discovered here
         let (
+            extension_supervisors,
             extension_widgets,
             widget_receivers,
             vox_polling_handles,
@@ -1008,6 +1011,7 @@ impl AgentSetup {
             .await
         {
             Ok((
+                supervisors,
                 widgets,
                 receivers,
                 handles,
@@ -1016,6 +1020,7 @@ impl AgentSetup {
                 metadata,
                 rpc_handles,
             )) => (
+                supervisors,
                 widgets,
                 receivers,
                 handles,
@@ -1027,6 +1032,7 @@ impl AgentSetup {
             Err(e) => {
                 tracing::warn!("extension discovery failed: {}", e);
                 (
+                    vec![],
                     vec![],
                     vec![],
                     vec![],
@@ -1512,6 +1518,7 @@ impl AgentSetup {
             workspace_state,
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),
+            extension_supervisors,
             extension_widgets,
             extension_metadata,
             extension_rpc_handles,
@@ -1878,6 +1885,7 @@ async fn discover_and_register_extensions(
     bus: &mut crate::bus::EventBus,
     secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
 ) -> anyhow::Result<(
+    Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
     Vec<crate::extensions::ExtensionTabWidget>,
     Vec<tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>>,
     Vec<crate::extensions::ExtensionPollingHandle>,
@@ -1896,6 +1904,7 @@ async fn discover_and_register_extensions(
             vec![],
             vec![],
             vec![],
+            vec![],
             Default::default(),
             Default::default(),
         ));
@@ -1905,6 +1914,7 @@ async fn discover_and_register_extensions(
     let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
     let env_disabled = crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS");
     let mut count = 0;
+    let mut extension_supervisors = Vec::new();
     let mut extension_widgets = vec![];
     let mut widget_receivers = vec![];
     let mut vox_polling_handles = vec![];
@@ -1964,6 +1974,7 @@ async fn discover_and_register_extensions(
                     widgets = widget_count,
                     "discovered and spawned extension"
                 );
+                extension_supervisors.push(spawned.supervisor.clone());
                 // Collect vox polling handle if present
                 if let Some(handle) = spawned.vox_polling_handle {
                     vox_polling_handles.push(handle);
@@ -2008,6 +2019,7 @@ async fn discover_and_register_extensions(
     }
 
     Ok((
+        extension_supervisors,
         extension_widgets,
         widget_receivers,
         vox_polling_handles,

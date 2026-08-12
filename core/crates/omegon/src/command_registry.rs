@@ -332,7 +332,7 @@ pub(crate) fn is_harness_owned_command(
             command_execution_owner(name) == CommandExecutionOwner::Harness
         }
         crate::operator_commands::OperatorCommand::CancelActiveTurn { .. }
-        | crate::operator_commands::OperatorCommand::Quit
+        | crate::operator_commands::OperatorCommand::Quit { confirmed: false }
         | crate::operator_commands::OperatorCommand::ModelView { .. }
         | crate::operator_commands::OperatorCommand::ModelList { .. }
         | crate::operator_commands::OperatorCommand::SetModel { .. }

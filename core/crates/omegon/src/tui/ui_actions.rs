@@ -63,7 +63,7 @@ impl App {
                         self.history.push(action.raw);
                         self.exit_history_recall();
                         self.should_quit = true;
-                        let _ = command_tx.send(TuiCommand::Quit).await;
+                        let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
                         UiActionOutcome::accepted_message("quit requested")
                     }
                     SlashResult::NotACommand => UiActionOutcome::rejected("not a slash command"),

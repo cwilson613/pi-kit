@@ -28,6 +28,8 @@ pub(crate) mod host_actions;
 pub mod manifest;
 pub mod mind;
 pub(crate) mod sdk_compat;
+mod supervisor_set;
+pub use supervisor_set::ExtensionSupervisorSet;
 pub mod state;
 mod tool_result;
 pub mod voice_bridge;
@@ -185,6 +187,30 @@ impl ProcessHandles {
             // Continue reading (may be out-of-order notifications or prior responses)
         }
     }
+    /// Deterministically stop and reap the canonical extension child.
+    ///
+    /// RPC/polling clones must not own process lifetime; the supervisor calls
+    /// this after disabling new calls and respawn. Closing stdin gives a
+    /// cooperative peer a bounded opportunity to exit before forced kill.
+    async fn shutdown(&mut self, grace: std::time::Duration) -> Result<()> {
+        use tokio::io::AsyncWriteExt as _;
+
+        let _ = self.stdin.shutdown().await;
+        let deadline = tokio::time::Instant::now() + grace;
+        loop {
+            if self.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        self.child.kill().await?;
+        let _ = self.child.wait().await?;
+        Ok(())
+    }
 }
 
 impl Drop for ProcessHandles {
@@ -248,13 +274,76 @@ struct ExtensionRuntimeContext {
     notification_sink: Option<ExtensionNotificationSink>,
 }
 
+/// Canonical owner of an extension child process. Feature and polling handles
+/// borrow RPC access through this supervisor; they never own process lifetime.
+pub struct ExtensionSupervisor {
+    name: String,
+    handles: Mutex<Option<ProcessHandles>>,
+    accepting_calls: std::sync::atomic::AtomicBool,
+}
+
+impl ExtensionSupervisor {
+    fn new(name: String, handles: ProcessHandles) -> Self {
+        Self {
+            name,
+            handles: Mutex::new(Some(handles)),
+            accepting_calls: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    fn ensure_accepting(&self) -> Result<()> {
+        if self.accepting_calls.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(anyhow!("extension '{}' is shutting down", self.name))
+        }
+    }
+
+    /// Disable new RPC/respawn work, take the canonical child exactly once,
+    /// then close, terminate if needed, and reap it.
+    pub async fn shutdown(&self, grace: std::time::Duration) -> Result<()> {
+        self.accepting_calls.store(false, Ordering::Release);
+        let mut handles = self.handles.lock().await.take();
+        if let Some(handles) = handles.as_mut()
+            && let Err(error) = handles.shutdown(grace).await
+        {
+            // A failed graceful/forced shutdown must not drop the canonical
+            // child before one final kill attempt. `Drop` remains the
+            // synchronous backstop, while this error is preserved for audit.
+            let _ = handles.child.start_kill();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Shut down all canonical extension children. Every runtime surface uses this
+/// function so cleanup semantics cannot drift between TUI, daemon, ACP, tests,
+/// startup failures, and ordinary exits.
+pub async fn shutdown_supervisors(
+    supervisors: &[Arc<ExtensionSupervisor>],
+    grace: std::time::Duration,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for supervisor in supervisors {
+        if let Err(error) = supervisor.shutdown(grace).await {
+            failures.push(format!("{}: {error}", supervisor.name()));
+        }
+    }
+    failures
+}
+
 /// Wrapper Feature for any extension (native or OCI).
 /// Manages RPC communication via stdin/stdout, agnostic to runtime type.
 #[derive(Clone)]
 pub struct ExtensionFeature {
     runtime: ExtensionRuntimeContext,
     tools: Vec<ToolDefinition>,
-    handles: Arc<Mutex<Option<ProcessHandles>>>,
+    supervisor: Arc<ExtensionSupervisor>,
     request_id: Arc<AtomicU64>,
     widgets: Vec<WidgetDeclaration>,
     widget_tx: broadcast::Sender<WidgetEvent>,
@@ -272,11 +361,12 @@ impl ExtensionFeature {
     ) -> (Self, broadcast::Receiver<WidgetEvent>) {
         let (widget_tx, widget_rx) = broadcast::channel::<WidgetEvent>(100);
         let next_id = handles.next_id;
+        let supervisor = Arc::new(ExtensionSupervisor::new(runtime.name.clone(), handles));
         (
             Self {
                 runtime,
                 tools,
-                handles: Arc::new(Mutex::new(Some(handles))),
+                supervisor,
                 request_id: Arc::new(AtomicU64::new(next_id)),
                 widgets,
                 widget_tx,
@@ -304,7 +394,8 @@ impl ExtensionFeature {
         cancel: CancellationToken,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<Value> {
-        let mut guard = self.handles.lock().await;
+        self.supervisor.ensure_accepting()?;
+        let mut guard = self.supervisor.handles.lock().await;
         let handles = guard
             .as_mut()
             .ok_or_else(|| anyhow!("extension process not running"))?;
@@ -447,7 +538,8 @@ impl ExtensionFeature {
     }
 
     async fn respawn_after_transport_error(&self, cause: &anyhow::Error) -> Result<()> {
-        let mut guard = self.handles.lock().await;
+        self.supervisor.ensure_accepting()?;
+        let mut guard = self.supervisor.handles.lock().await;
         if let Some(mut stale) = guard.take() {
             let _ = stale.child.kill().await;
             let _ = stale.child.wait().await;
@@ -520,7 +612,7 @@ impl ExtensionFeature {
     /// Used by the daemon's vox event bridge to poll for inbound messages.
     pub fn polling_handle(&self) -> ExtensionPollingHandle {
         ExtensionPollingHandle {
-            handles: self.handles.clone(),
+            supervisor: self.supervisor.clone(),
             request_id: self.request_id.clone(),
             name: self.runtime.name.clone(),
             notification_sink: self.runtime.notification_sink.clone(),
@@ -533,7 +625,7 @@ impl ExtensionFeature {
 /// can poll the extension without going through the EventBus/agent turn.
 #[derive(Clone)]
 pub struct ExtensionPollingHandle {
-    handles: Arc<Mutex<Option<ProcessHandles>>>,
+    supervisor: Arc<ExtensionSupervisor>,
     request_id: Arc<AtomicU64>,
     name: String,
     notification_sink: Option<ExtensionNotificationSink>,
@@ -549,7 +641,8 @@ impl std::fmt::Debug for ExtensionPollingHandle {
 
 impl ExtensionPollingHandle {
     pub async fn pump_notifications_for(&self, idle_timeout: std::time::Duration) -> Result<()> {
-        let mut guard = self.handles.lock().await;
+        self.supervisor.ensure_accepting()?;
+        let mut guard = self.supervisor.handles.lock().await;
         let handles = guard
             .as_mut()
             .ok_or_else(|| anyhow!("extension process not running"))?;
@@ -585,7 +678,8 @@ impl ExtensionPollingHandle {
 
     /// Send a JSON-RPC request and receive the response.
     pub async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
-        let mut guard = self.handles.lock().await;
+        self.supervisor.ensure_accepting()?;
+        let mut guard = self.supervisor.handles.lock().await;
         let handles = guard
             .as_mut()
             .ok_or_else(|| anyhow!("extension process not running"))?;
@@ -807,6 +901,8 @@ impl Feature for ExtensionFeature {
 
 /// Result of spawning an extension: feature + widgets
 pub struct SpawnedExtension {
+    /// Canonical process owner used for deterministic host shutdown.
+    pub supervisor: Arc<ExtensionSupervisor>,
     pub feature: Box<dyn Feature>,
     pub widgets: Vec<ExtensionTabWidget>,
     pub widget_rx: broadcast::Receiver<WidgetEvent>,
@@ -1381,7 +1477,9 @@ async fn spawn_native(
     };
 
     let rpc_polling_handle = feature.polling_handle();
+    let supervisor = feature.supervisor.clone();
     Ok(SpawnedExtension {
+        supervisor,
         feature: Box::new(feature),
         widgets: tab_widgets,
         widget_rx,
@@ -1481,7 +1579,9 @@ async fn spawn_container(
     };
 
     let rpc_polling_handle = feature.polling_handle();
+    let supervisor = feature.supervisor.clone();
     Ok(SpawnedExtension {
+        supervisor,
         feature: Box::new(feature),
         widgets: tab_widgets,
         widget_rx,

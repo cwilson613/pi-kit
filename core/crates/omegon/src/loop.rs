@@ -4,7 +4,7 @@
 //! Includes: turn limits, retry with backoff, stuck detection,
 //! context wiring, and parallel tool dispatch.
 
-use crate::bridge::{LlmBridge, LlmEvent, LlmMessage, StreamOptions};
+use crate::bridge::{BoundaryExpectation, LlmBridge, LlmEvent, LlmMessage, StreamOptions};
 
 use crate::context::ContextManager;
 use crate::conversation::{
@@ -2152,12 +2152,13 @@ async fn stream_with_retry(
         // of aborting immediately via `?`.
         let err = match bridge.stream(system_prompt, messages, tools, options).await {
             Ok(mut rx) => {
-                match consume_llm_stream(
+                match consume_llm_stream_with_policy(
                     &mut rx,
                     events,
                     &provider,
                     &model,
                     config.cancel_keeps_prompt.as_ref(),
+                    StreamIdlePolicy::from_env(),
                 )
                 .await
                 {
@@ -2508,41 +2509,67 @@ impl StreamIdleState {
     }
 }
 
-fn select_stream_idle_budget(
-    phase: StreamIdlePhase,
-    _initial: std::time::Duration,
+#[derive(Debug, Clone, Copy)]
+struct StreamIdlePolicy {
+    initial: std::time::Duration,
     active: std::time::Duration,
-    reasoning_budget: std::time::Duration,
-) -> std::time::Duration {
-    match phase {
-        StreamIdlePhase::OutputStreaming | StreamIdlePhase::ToolStreaming => active,
-        StreamIdlePhase::AwaitingFirstEvent
-        | StreamIdlePhase::ReasoningStreaming
-        | StreamIdlePhase::AmbiguousSilent => reasoning_budget,
+    reasoning: std::time::Duration,
+}
+
+impl StreamIdlePolicy {
+    fn from_env() -> Self {
+        let initial = std::env::var("OMEGON_LLM_INITIAL_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds >= 30)
+            .map(std::time::Duration::from_secs)
+            .unwrap_or_else(|| std::time::Duration::from_secs(90));
+        let reasoning = std::env::var("OMEGON_LLM_REASONING_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds >= 60)
+            .map(std::time::Duration::from_secs)
+            .unwrap_or_else(|| std::time::Duration::from_secs(600));
+        Self {
+            initial,
+            active: std::time::Duration::from_secs(90),
+            reasoning,
+        }
+    }
+
+    fn budget(self, phase: StreamIdlePhase, visible_output_seen: bool) -> std::time::Duration {
+        if visible_output_seen {
+            // Once the operator has observed output or a tool effect, silence
+            // is a stalled active turn regardless of the adapter's last phase.
+            // A provider cannot silently promote a visible turn back onto the
+            // long pre-output reasoning leash.
+            return self.active;
+        }
+        match phase {
+            // A provider must emit an explicit reasoning/inter-item boundary to
+            // receive the long leash. Visible text does not permanently ban
+            // reasoning, but an adapter that leaves the stream in an active
+            // output/tool phase cannot silently promote itself to 600 seconds.
+            StreamIdlePhase::AwaitingFirstEvent
+            | StreamIdlePhase::ReasoningStreaming
+            | StreamIdlePhase::AmbiguousSilent => self.reasoning,
+            StreamIdlePhase::OutputStreaming | StreamIdlePhase::ToolStreaming => self.active,
+        }
     }
 }
 
-/// Decide whether a stream that idled out under the tight *active* budget
-/// should be re-armed with the generous reasoning budget instead of being
-/// treated as a stall.
-///
-/// Reasoning-capable providers (notably the OpenAI Responses API behind
-/// `openai-codex`) can stream output deltas for one item, then pause for
-/// minutes while deciding the next item — *without* first emitting a
-/// `TextEnd`/`ToolCallEnd` that would move the phase out of the active band.
-/// The first such silence should not abort the turn; it should fall through to
-/// the ambiguous-silent phase and get the reasoning leash. A second silence
-/// (now evaluated in `AmbiguousSilent`) is a genuine stall and is *not*
-/// re-armed, so a dead stream still dies inside the retry budget.
-fn rearm_idle_phase(phase: StreamIdlePhase) -> Option<StreamIdlePhase> {
-    match phase {
-        StreamIdlePhase::OutputStreaming | StreamIdlePhase::ToolStreaming => {
-            Some(StreamIdlePhase::AmbiguousSilent)
-        }
-        StreamIdlePhase::AwaitingFirstEvent
-        | StreamIdlePhase::ReasoningStreaming
-        | StreamIdlePhase::AmbiguousSilent => None,
+fn select_stream_idle_budget(
+    phase: StreamIdlePhase,
+    initial: std::time::Duration,
+    active: std::time::Duration,
+    reasoning_budget: std::time::Duration,
+) -> std::time::Duration {
+    StreamIdlePolicy {
+        initial,
+        active,
+        reasoning: reasoning_budget,
     }
+    .budget(phase, false)
 }
 
 fn stream_idle_phase_after_event(current: StreamIdlePhase, event: &LlmEvent) -> StreamIdlePhase {
@@ -2556,6 +2583,12 @@ fn stream_idle_phase_after_event(current: StreamIdlePhase, event: &LlmEvent) -> 
         LlmEvent::ThinkingEnd => StreamIdlePhase::AmbiguousSilent,
         LlmEvent::ToolCallStart | LlmEvent::ToolCallDelta { .. } => StreamIdlePhase::ToolStreaming,
         LlmEvent::ToolCallEnd { .. } => StreamIdlePhase::AmbiguousSilent,
+        LlmEvent::Boundary { expectation } => match expectation {
+            BoundaryExpectation::MoreReasoning => StreamIdlePhase::ReasoningStreaming,
+            BoundaryExpectation::MoreContent => StreamIdlePhase::OutputStreaming,
+            BoundaryExpectation::Unknown => StreamIdlePhase::AmbiguousSilent,
+            BoundaryExpectation::Terminal => current,
+        },
         LlmEvent::Done { .. } | LlmEvent::Error { .. } => current,
     }
 }
@@ -2567,12 +2600,33 @@ async fn consume_llm_stream(
     model: &str,
     cancel_keeps_prompt: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<AssistantMessage> {
+    consume_llm_stream_with_policy(
+        rx,
+        events,
+        provider,
+        model,
+        cancel_keeps_prompt,
+        StreamIdlePolicy::from_env(),
+    )
+    .await
+}
+
+async fn consume_llm_stream_with_policy(
+    rx: &mut tokio::sync::mpsc::Receiver<LlmEvent>,
+    events: &broadcast::Sender<AgentEvent>,
+    provider: &str,
+    model: &str,
+    cancel_keeps_prompt: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    idle_policy: StreamIdlePolicy,
+) -> anyhow::Result<AssistantMessage> {
     let mut text_parts: Vec<String> = Vec::new();
     let mut thinking_parts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut final_raw: Value = Value::Null;
     let mut provider_tokens: (u64, u64, u64, u64) = (0, 0, 0, 0); // (input, output, cache_read, cache_write)
     let mut provider_telemetry = None;
+    let mut completed = false;
+    let mut visible_output_seen = false;
 
     let _ = events.send(AgentEvent::MessageStart {
         role: "assistant".into(),
@@ -2597,105 +2651,47 @@ async fn consume_llm_stream(
     //   text/thinking/tool-call blocks while deciding the next item.
     // The legacy initial budget is retained as an input for compatibility, but
     // AwaitingFirstEvent intentionally selects the reasoning budget below.
-    let initial_idle_timeout = std::env::var("OMEGON_LLM_INITIAL_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds >= 30)
-        .map(std::time::Duration::from_secs)
-        .unwrap_or_else(|| std::time::Duration::from_secs(90));
-    let content_idle_timeout = std::time::Duration::from_secs(90);
-    // Reasoning phase: the model has begun thinking but emitted no content or
-    // tool call yet. Reasoning models (OpenAI gpt-5.x/o-series, Anthropic
-    // interleaved thinking) can stream nothing — not even reasoning-summary
-    // deltas — for minutes. Give this phase a strictly longer leash than the
-    // active-content phase, mirroring the provider-side SSE watchdog.
-    let reasoning_idle_timeout = std::env::var("OMEGON_LLM_REASONING_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds >= 60)
-        .map(std::time::Duration::from_secs)
-        .unwrap_or_else(|| std::time::Duration::from_secs(600));
-    // Active output phases use a tight watchdog; explicit thinking and
-    // provider decision gaps between output items use the generous reasoning
-    // budget. This mirrors provider-side SSE gates for Anthropic/Codex and
-    // local thinking-capable providers such as Ollama.
     let stream_idle_phase =
         std::sync::atomic::AtomicU8::new(StreamIdlePhase::AwaitingFirstEvent as u8);
-    let idle_timeout = || {
-        select_stream_idle_budget(
+    let idle_timeout = |visible_output_seen: bool| {
+        idle_policy.budget(
             StreamIdlePhase::from_u8(stream_idle_phase.load(std::sync::atomic::Ordering::Relaxed)),
-            initial_idle_timeout,
-            content_idle_timeout,
-            reasoning_idle_timeout,
+            visible_output_seen,
         )
     };
-    while let Some(event) = 'recv: loop {
-        match tokio::time::timeout(idle_timeout(), rx.recv()).await {
-            Ok(event) => break 'recv event,
-            Err(_) => {
-                let phase = StreamIdlePhase::from_u8(
-                    stream_idle_phase.load(std::sync::atomic::Ordering::Relaxed),
-                );
-                // A silent gap *after* active output/tool streaming is most
-                // often a reasoning-capable provider (notably the OpenAI
-                // Responses API used by openai-codex) pausing between output
-                // items without first emitting a TextEnd/ToolCallEnd. The phase
-                // is still OutputStreaming/ToolStreaming, so the tight active
-                // budget would abort a live reasoning gap and surface as a
-                // spurious "stalled stream — retrying". Downgrade once to the
-                // ambiguous-silent phase and re-arm with the generous reasoning
-                // budget instead of aborting. A genuinely dead stream still
-                // dies on the next timeout (now evaluated in the ambiguous
-                // phase), and any resumed delta flips the phase back to active.
-                if let Some(rearmed) = rearm_idle_phase(phase) {
-                    stream_idle_phase.store(rearmed as u8, std::sync::atomic::Ordering::Relaxed);
-                    let idle_secs = idle_timeout().as_secs();
-                    tracing::debug!(
-                        provider,
-                        model,
-                        from_phase = phase.label(),
-                        idle_secs,
-                        "stream idle after active output — re-arming with reasoning budget before treating as a stall"
-                    );
-                    let _ = events.send(AgentEvent::StreamIdle {
-                        provider: provider.to_string(),
-                        model: model.to_string(),
-                        phase: phase.label().to_string(),
-                        idle_secs,
-                        ambiguous: true,
-                        message: format!(
-                            "LLM stream idle for {idle_secs}s after {} — re-arming with reasoning budget before treating as a stall",
-                            phase.label()
-                        ),
-                    });
-                    continue 'recv;
-                }
-                let reason = if phase.is_ambiguous_reasoning() {
-                    format!(
-                        "LLM stream had no observable activity for {}s during {} — this may be a long-running reasoning window or a stalled stream",
-                        idle_timeout().as_secs(),
-                        phase.label()
-                    )
-                } else {
-                    format!(
-                        "LLM stream idle for {}s during {} — connection may be stalled",
-                        idle_timeout().as_secs(),
-                        phase.label()
-                    )
-                };
-                let _ = events.send(AgentEvent::StreamIdle {
-                    provider: provider.to_string(),
-                    model: model.to_string(),
-                    phase: phase.label().to_string(),
-                    idle_secs: idle_timeout().as_secs(),
-                    ambiguous: phase.is_ambiguous_reasoning(),
-                    message: reason.clone(),
-                });
-                let _ = events.send(AgentEvent::MessageAbort {
-                    reason: Some(reason.clone()),
-                });
-                anyhow::bail!("{reason}");
-            }
+    while let Some(event) = match tokio::time::timeout(idle_timeout(visible_output_seen), rx.recv())
+        .await
+    {
+        Ok(event) => event,
+        Err(_) => {
+            let phase = StreamIdlePhase::from_u8(
+                stream_idle_phase.load(std::sync::atomic::Ordering::Relaxed),
+            );
+            let reason = if phase.is_ambiguous_reasoning() && !visible_output_seen {
+                format!(
+                    "LLM stream had no observable activity for {}s during {} — this may be a long-running reasoning window or a stalled stream",
+                    idle_timeout(visible_output_seen).as_secs(),
+                    phase.label()
+                )
+            } else {
+                format!(
+                    "LLM stream idle for {}s during {} — connection may be stalled",
+                    idle_timeout(visible_output_seen).as_secs(),
+                    phase.label()
+                )
+            };
+            let _ = events.send(AgentEvent::StreamIdle {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                phase: phase.label().to_string(),
+                idle_secs: idle_timeout(visible_output_seen).as_secs(),
+                ambiguous: phase.is_ambiguous_reasoning() && !visible_output_seen,
+                message: reason.clone(),
+            });
+            let _ = events.send(AgentEvent::MessageAbort {
+                reason: Some(reason.clone()),
+            });
+            anyhow::bail!("{reason}");
         }
     } {
         let next_phase = stream_idle_phase_after_event(
@@ -2711,6 +2707,7 @@ async fn consume_llm_stream(
             LlmEvent::TextStart => {}
             LlmEvent::TextDelta { delta } => {
                 if !delta.is_empty() {
+                    visible_output_seen = true;
                     // Partial assistant output is visible to the operator. If
                     // they interrupt now, keep the prompt in canonical replay.
                     // This makes Escape useful for cutting off rambling output
@@ -2795,11 +2792,18 @@ async fn consume_llm_stream(
                 // Deltas accumulated by the bridge — complete tool call in ToolCallEnd
             }
             LlmEvent::ToolCallEnd { tool_call } => {
+                visible_output_seen = true;
+                if let Some(cancel_keeps_prompt) = cancel_keeps_prompt {
+                    cancel_keeps_prompt.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 tool_calls.push(ToolCall {
                     id: tool_call.id,
                     name: tool_call.name,
                     arguments: tool_call.arguments,
                 });
+            }
+            LlmEvent::Boundary { .. } => {
+                // Semantic-only boundary consumed by the watchdog state machine.
             }
             LlmEvent::Done {
                 message,
@@ -2818,6 +2822,7 @@ async fn consume_llm_stream(
                     cache_creation_tokens,
                 );
                 provider_telemetry = done_provider_telemetry;
+                completed = true;
                 break;
             }
             LlmEvent::Error { message } => {
@@ -2831,10 +2836,10 @@ async fn consume_llm_stream(
 
     let _ = events.send(AgentEvent::MessageEnd);
 
-    // Detect incomplete streams — if we never got a Done event, the bridge
-    // probably died. An empty message with no text and no tool calls is
-    // almost certainly a dropped connection, not a valid LLM response.
-    if final_raw == Value::Null && text_parts.is_empty() && tool_calls.is_empty() {
+    // A stream is complete only after the provider's explicit terminal event.
+    // EOF after partial text/tool output is still an abnormal protocol close;
+    // accepting it would leave the outer loop reasoning from a truncated turn.
+    if !completed {
         anyhow::bail!("LLM stream ended without a completion event — the bridge may have crashed");
     }
 
@@ -5027,39 +5032,104 @@ mod tests {
     }
 
     #[test]
-    fn active_output_silence_rearms_to_reasoning_budget() {
+    fn visible_output_forces_active_budget_for_every_phase() {
         use std::time::Duration;
-        let initial = Duration::from_secs(90);
-        let content = Duration::from_secs(90);
-        let reasoning = Duration::from_secs(600);
 
-        // Regression: openai-codex (OpenAI Responses API) streams text deltas
-        // for one item, then pauses for minutes deciding the next item without
-        // first emitting TextEnd. The phase is still OutputStreaming, so the
-        // *first* silence must re-arm to the ambiguous-silent phase and pick up
-        // the generous reasoning leash instead of aborting at the tight budget.
-        for active_phase in [
+        let policy = StreamIdlePolicy {
+            initial: Duration::from_secs(30),
+            active: Duration::from_secs(2),
+            reasoning: Duration::from_secs(60),
+        };
+        for phase in [
+            StreamIdlePhase::AwaitingFirstEvent,
             StreamIdlePhase::OutputStreaming,
             StreamIdlePhase::ToolStreaming,
+            StreamIdlePhase::ReasoningStreaming,
+            StreamIdlePhase::AmbiguousSilent,
         ] {
-            let rearmed =
-                rearm_idle_phase(active_phase).expect("active output silence must re-arm once");
-            assert_eq!(rearmed, StreamIdlePhase::AmbiguousSilent);
             assert_eq!(
-                select_stream_idle_budget(rearmed, initial, content, reasoning),
-                reasoning,
-                "re-armed phase must use the generous reasoning budget"
+                policy.budget(phase, true),
+                policy.active,
+                "visible output in {} must retain the active-turn deadline",
+                phase.label()
             );
         }
+    }
 
-        // A *second* silence is now evaluated in the ambiguous phase: it must
-        // NOT re-arm, so a genuinely dead stream still dies inside the retry
-        // budget rather than looping forever.
-        assert_eq!(rearm_idle_phase(StreamIdlePhase::AmbiguousSilent), None);
-        assert_eq!(rearm_idle_phase(StreamIdlePhase::ReasoningStreaming), None);
-        // Awaiting-first-event silence is a connection problem, not a reasoning
-        // gap; it must surface as a stall, not re-arm.
-        assert_eq!(rearm_idle_phase(StreamIdlePhase::AwaitingFirstEvent), None);
+    #[tokio::test(start_paused = true)]
+    async fn visible_output_then_silence_terminalizes_with_abort() {
+        use std::time::Duration;
+
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        stream_tx.send(LlmEvent::TextStart).await.unwrap();
+        stream_tx
+            .send(LlmEvent::TextDelta {
+                delta: "visible".into(),
+            })
+            .await
+            .unwrap();
+
+        let result = consume_llm_stream_with_policy(
+            &mut stream_rx,
+            &events_tx,
+            "test-provider",
+            "test-model",
+            None,
+            StreamIdlePolicy {
+                initial: Duration::from_secs(30),
+                active: Duration::from_secs(2),
+                reasoning: Duration::from_secs(60),
+            },
+        );
+        tokio::pin!(result);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        let error = result.await.expect_err("silent partial stream must fail");
+        assert!(error.to_string().contains("idle for 2s"));
+
+        let mut saw_visible = false;
+        let mut abort_reason = None;
+        while let Ok(event) = events_rx.try_recv() {
+            match event {
+                AgentEvent::MessageChunk { text } if text == "visible" => saw_visible = true,
+                AgentEvent::MessageAbort { reason } => abort_reason = reason,
+                _ => {}
+            }
+        }
+        assert!(saw_visible, "partial output must remain observable");
+        assert!(
+            abort_reason.is_some_and(|reason| reason.contains("idle for 2s")),
+            "stall must emit an explicit terminal abort"
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_output_then_stream_close_is_an_abnormal_terminal_error() {
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let (events_tx, _) = broadcast::channel(16);
+        stream_tx
+            .send(LlmEvent::TextDelta {
+                delta: "truncated".into(),
+            })
+            .await
+            .unwrap();
+        drop(stream_tx);
+
+        let error = consume_llm_stream_with_policy(
+            &mut stream_rx,
+            &events_tx,
+            "test-provider",
+            "test-model",
+            None,
+            StreamIdlePolicy {
+                initial: std::time::Duration::from_secs(30),
+                active: std::time::Duration::from_secs(2),
+                reasoning: std::time::Duration::from_secs(60),
+            },
+        )
+        .await
+        .expect_err("EOF without Done must fail");
+        assert!(error.to_string().contains("without a completion event"));
     }
 
     #[test]

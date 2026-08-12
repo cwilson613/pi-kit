@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
-use crate::bridge::{LlmBridge, LlmEvent, LlmMessage, StreamOptions};
+use crate::bridge::{BoundaryExpectation, LlmBridge, LlmEvent, LlmMessage, StreamOptions};
 
 /// Claude Code CLI version for OAuth user-agent header.
 /// Must match what Anthropic expects for subscription recognition.
@@ -1645,6 +1645,9 @@ async fn parse_anthropic_stream(
                     Some("text") => {
                         content_blocks.push(json!({"type": "text", "text": current_block_text.clone()}));
                         let _ = tx.try_send(LlmEvent::TextEnd);
+                        let _ = tx.try_send(LlmEvent::Boundary {
+                            expectation: BoundaryExpectation::MoreReasoning,
+                        });
                     }
                     Some("thinking") => {
                         let mut block = json!({

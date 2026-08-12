@@ -235,6 +235,6 @@ mod tests {
             respond_to: None,
         }));
         assert!(!is_model_command(&tui::TuiCommand::Compact));
-        assert!(!is_model_command(&tui::TuiCommand::Quit));
+        assert!(!is_model_command(&tui::TuiCommand::Quit { confirmed: false }));
     }
 }

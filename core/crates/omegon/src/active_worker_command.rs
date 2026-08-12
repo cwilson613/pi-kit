@@ -220,7 +220,7 @@ mod tests {
         let mut runtime = InteractiveRuntimeSupervisor::default();
         let mut completion = PostWorkerCompletionPolicy::default();
         let effect = apply(
-            classify(tui::TuiCommand::Quit),
+            classify(tui::TuiCommand::Quit { confirmed: false }),
             &mut runtime,
             &mut completion,
         );
@@ -237,9 +237,9 @@ mod tests {
     #[test]
     fn active_worker_control_commands_have_typed_dispositions() {
         assert!(matches!(
-            classify(tui::TuiCommand::Quit),
+            classify(tui::TuiCommand::Quit { confirmed: false }),
             ActiveWorkerCommand::Lifecycle(
-                runtime_lifecycle_command::RuntimeLifecycleCommand::Quit
+                runtime_lifecycle_command::RuntimeLifecycleCommand::Quit { confirmed }
             )
         ));
         assert!(matches!(

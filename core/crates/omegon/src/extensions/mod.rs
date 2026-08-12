@@ -107,6 +107,27 @@ impl ExtensionNotificationSink {
     }
 }
 
+fn configure_extension_process(command: &mut tokio::process::Command) {
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+}
+
+#[cfg(unix)]
+fn kill_extension_process_group(pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    // SAFETY: extension commands are spawned as leaders of dedicated process
+    // groups, so a negative PID cannot target the Omegon host process.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_extension_process_group(_pid: Option<u32>) {}
+
 /// Handles for communicating with an extension process.
 pub struct ProcessHandles {
     child: tokio::process::Child,
@@ -195,6 +216,7 @@ impl ProcessHandles {
     async fn shutdown(&mut self, grace: std::time::Duration) -> Result<()> {
         use tokio::io::AsyncWriteExt as _;
 
+        let pid = self.child.id();
         let _ = self.stdin.shutdown().await;
         let deadline = tokio::time::Instant::now() + grace;
         loop {
@@ -207,6 +229,7 @@ impl ProcessHandles {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
 
+        kill_extension_process_group(pid);
         self.child.kill().await?;
         let _ = self.child.wait().await?;
         Ok(())
@@ -221,6 +244,7 @@ impl Drop for ProcessHandles {
         // `cargo test` can hang after assertions complete. Respawn paths still
         // perform explicit async kill/wait; this synchronous drop path is the
         // deterministic backstop for tests and normal shutdown.
+        kill_extension_process_group(self.child.id());
         let _ = self.child.start_kill();
     }
 }
@@ -553,7 +577,7 @@ impl ExtensionFeature {
                     self.runtime.name
                 )
             })?;
-        let handshake = handshake(
+        let handshake = match handshake(
             &mut handles,
             &self.runtime.manifest,
             &self.runtime.ext_dir,
@@ -561,12 +585,22 @@ impl ExtensionFeature {
             self.runtime.notification_sink.as_ref(),
         )
         .await
-        .map_err(|err| {
-            anyhow!(
-                "extension '{}' transport failed ({cause}); respawn handshake failed: {err}",
-                self.runtime.name
-            )
-        })?;
+        {
+            Ok(handshake) => handshake,
+            Err(err) => {
+                if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
+                    tracing::warn!(
+                        extension = %self.runtime.name,
+                        %cleanup_error,
+                        "failed to reap extension after respawn handshake failure"
+                    );
+                }
+                return Err(anyhow!(
+                    "extension '{}' transport failed ({cause}); respawn handshake failed: {err}",
+                    self.runtime.name
+                ));
+            }
+        };
         self.request_id.store(handles.next_id, Ordering::SeqCst);
         *guard = Some(handles);
         tracing::warn!(
@@ -1057,6 +1091,7 @@ async fn spawn_process_handles(
         RuntimeConfig::Native { .. } => {
             let binary = manifest.native_binary_path(ext_dir)?;
             let mut cmd = clean_command(&binary, manifest)?;
+            configure_extension_process(&mut cmd);
             cmd.arg("--rpc")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -1066,6 +1101,7 @@ async fn spawn_process_handles(
         RuntimeConfig::Oci { .. } => {
             let image = manifest.oci_image()?;
             let mut cmd = clean_command("podman", manifest)?;
+            configure_extension_process(&mut cmd);
             cmd.args(["run", "--rm", "-i"]);
             for (name, value) in resolved_runtime_env(manifest)? {
                 cmd.args(["--env", &format!("{name}={value}")]);
@@ -1082,8 +1118,23 @@ async fn spawn_process_handles(
         spawn_extension_stderr_drain(extension_name, stderr);
     }
 
-    let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    let stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(anyhow!("no stdin"));
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            drop(stdin);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(anyhow!("no stdout"));
+        }
+    };
     Ok(ProcessHandles::new(child, stdin, stdout))
 }
 
@@ -1408,14 +1459,30 @@ async fn spawn_native(
         (None, None)
     };
 
-    let handshake = handshake(
+    let handshake = match handshake(
         &mut handles,
         manifest,
         ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            // Every successfully spawned child has an immediate reaping
+            // obligation, including failed startup negotiation. `Drop` can
+            // request a kill but cannot synchronously wait for Tokio children.
+            if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
+                tracing::warn!(
+                    extension = %manifest.extension.name,
+                    %cleanup_error,
+                    "failed to reap extension after handshake failure"
+                );
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(
         name = %manifest.extension.name,
@@ -1515,14 +1582,30 @@ async fn spawn_container(
         (None, None)
     };
 
-    let handshake = handshake(
+    let handshake = match handshake(
         &mut handles,
         manifest,
         ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            // Every successfully spawned child has an immediate reaping
+            // obligation, including failed startup negotiation. `Drop` can
+            // request a kill but cannot synchronously wait for Tokio children.
+            if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
+                tracing::warn!(
+                    extension = %manifest.extension.name,
+                    %cleanup_error,
+                    "failed to reap extension after handshake failure"
+                );
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(
         name = %manifest.extension.name,
@@ -2311,6 +2394,65 @@ binary = "sdk-extension.sh"
         )
         .unwrap();
         script
+    }
+
+    fn write_failing_extension(dir: &Path) -> PathBuf {
+        let script = dir.join("failing-extension.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '%s\n' $$ > "$1"
+while IFS= read -r line; do
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"forced handshake failure"}}'
+done
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        script
+    }
+
+    async fn assert_pid_reaped(pid: u32) {
+        for _ in 0..20 {
+            let status = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .unwrap();
+            if !status.success() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("extension child {pid} still exists after failed handshake");
+    }
+
+    #[tokio::test]
+    async fn failed_native_handshake_kills_and_reaps_child() {
+        let _guard = SDK_COMPAT_SPAWN_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_failing_extension(temp.path());
+        let pid_file = temp.path().join("pid");
+        let mut command = tokio::process::Command::new(&script);
+        command
+            .arg(&pid_file)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = command.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut handles = ProcessHandles::new(child, stdin, stdout);
+        handles.rpc_call("initialize", json!({})).await.unwrap_err();
+        handles.shutdown(std::time::Duration::ZERO).await.unwrap();
+
+        let pid: u32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_pid_reaped(pid).await;
     }
 
     #[tokio::test]

@@ -4021,6 +4021,38 @@ fn background_completion_prompt(
     )
 }
 
+const RETAINED_STATE_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn save_shared_interactive_session_with_timeout(
+    state: &Arc<tokio::sync::Mutex<InteractiveAgentState>>,
+    cwd: &Path,
+    session_id: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<PathBuf> {
+    let state = tokio::time::timeout(timeout, state.lock())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for retained interactive state"))?;
+    session::save_session(&state.conversation, cwd, Some(session_id))
+}
+
+async fn save_shared_interactive_session(
+    state: &Arc<tokio::sync::Mutex<InteractiveAgentState>>,
+    cwd: &Path,
+    session_id: &str,
+) -> anyhow::Result<PathBuf> {
+    save_shared_interactive_session_with_timeout(
+        state,
+        cwd,
+        session_id,
+        RETAINED_STATE_SAVE_TIMEOUT,
+    )
+    .await
+}
+
+fn signal_tui_boundary_exit(exit: &CancellationToken) {
+    exit.cancel();
+}
+
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local
@@ -4519,12 +4551,20 @@ fn build_tui_secret_readiness_snapshot(
     };
     let tui_cancel = shared_cancel.clone();
     let tui_settings = shared_settings.clone();
+    // The coordinator owns the process lifetime, while the TUI owns the
+    // interactive terminal. Any TUI terminal boundary — orderly return,
+    // terminal EOF/HUP surfaced as an I/O error, or partial initialization
+    // failure — must therefore revoke the coordinator instead of leaving it
+    // running headless with IPC/background sender clones keeping its command
+    // channel open.
+    let tui_exit = CancellationToken::new();
+    let tui_exit_signal = tui_exit.clone();
     let tui_handle = tokio::spawn(async move {
-        if let Err(e) =
-            tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await
-        {
-            tracing::error!("TUI error: {e}");
+        let result = tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await;
+        if let Err(error) = &result {
+            tracing::error!(%error, "TUI terminated at the terminal boundary");
         }
+        signal_tui_boundary_exit(&tui_exit_signal);
     });
 
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
@@ -4588,9 +4628,13 @@ fn build_tui_secret_readiness_snapshot(
         let cmd = if let Some(cmd) = deferred_commands.pop_front() {
             cmd
         } else {
-            match command_rx.recv().await {
-                Some(cmd) => cmd,
-                None => break,
+            tokio::select! {
+                biased;
+                _ = tui_exit.cancelled() => break,
+                cmd = command_rx.recv() => match cmd {
+                    Some(cmd) => cmd,
+                    None => break,
+                },
             }
         };
 
@@ -6102,6 +6146,48 @@ fn build_tui_secret_readiness_snapshot(
 
                     loop {
                         tokio::select! {
+                            _ = tui_exit.cancelled() => {
+                                quit_after_turn = true;
+                                ipc_cancel.cancel();
+                                turn_cancel.cancel();
+                                turn_task.abort();
+                                let _ = (&mut turn_task).await;
+                                if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
+                                lifecycle.transition("worker_revoked_by_terminal_loss", runtime.queue_depth(), &events_tx);
+                                mark_interactive_session_busy(&agent.dashboard_handles, false);
+                                let _ = events_tx.send(AgentEvent::AgentEnd);
+                                runtime_state = match Arc::try_unwrap(state_for_turn) {
+                                    Ok(state) => state.into_inner(),
+                                    Err(shared_state) => {
+                                        if !cli.no_session {
+                                            match save_shared_interactive_session(
+                                                &shared_state,
+                                                &agent.cwd,
+                                                &agent.session_id,
+                                            )
+                                            .await
+                                            {
+                                                Ok(path) => {
+                                                    tracing::debug!(
+                                                        path = %path.display(),
+                                                        session_id = %agent.session_id,
+                                                        "saved retained interactive state after terminal loss"
+                                                    );
+                                                }
+                                                Err(error) => tracing::error!(
+                                                    %error,
+                                                    session_id = %agent.session_id,
+                                                    "failed to save retained interactive state after terminal loss"
+                                                ),
+                                            }
+                                        }
+                                        extension_supervisors.shutdown().await;
+                                        bridge.read().await.shutdown().await;
+                                        return Ok(());
+                                    }
+                                };
+                                break;
+                            }
                             turn_result = &mut turn_task => {
                                 if let Err(join_err) = turn_result {
                                     let message = format_interactive_turn_task_failure(&join_err);
@@ -6324,6 +6410,9 @@ fn build_tui_secret_readiness_snapshot(
     // owns terminal modes. Stop it and restore those modes before printing
     // session diagnostics or exec-restarting; otherwise those writes land in
     // the still-active alternate screen and corrupt the next TUI frame.
+    // Revoke IPC/background ingress before waiting on any presentation task.
+    // Terminal loss must not leave sender clones able to prolong teardown.
+    ipc_cancel.cancel();
     tui_handle.abort();
     let _ = tui_handle.await;
     let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
@@ -9105,6 +9194,81 @@ mod tests {
             voice_notification_receivers: vec![],
             voice_polling_handles: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn retained_terminal_state_can_be_saved_without_unique_arc_ownership() {
+        let setup = test_agent_setup();
+        let cwd = setup.cwd.clone();
+        let session_id = "2026-08-12T12-00-00_deadbeef".to_string();
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
+            bus: setup.bus,
+            context_manager: setup.context_manager,
+            conversation: setup.conversation,
+            inference_runtime: setup.inference_runtime,
+        }));
+        let retained = state.clone();
+
+        let path = super::save_shared_interactive_session(&state, &cwd, &session_id)
+            .await
+            .expect("retained state remains persistable");
+
+        assert!(path.exists());
+        drop(retained);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn retained_terminal_state_save_times_out_when_lock_is_still_held() {
+        let setup = test_agent_setup();
+        let cwd = setup.cwd.clone();
+        let session_id = "2026-08-12T12-00-01_deadbeef";
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
+            bus: setup.bus,
+            context_manager: setup.context_manager,
+            conversation: setup.conversation,
+            inference_runtime: setup.inference_runtime,
+        }));
+        let _guard = state.lock().await;
+
+        let error = super::save_shared_interactive_session_with_timeout(
+            &state,
+            &cwd,
+            session_id,
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect_err("held state lock must not hang terminal teardown");
+
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn retained_state_fallback_performs_resource_shutdown_before_return() {
+        let source = include_str!("main.rs");
+        let fallback = source
+            .split("Err(shared_state) =>")
+            .nth(1)
+            .and_then(|tail| tail.split("turn_result = &mut turn_task").next())
+            .expect("terminal-loss fallback source");
+        let extension_shutdown = fallback
+            .find("extension_supervisors.shutdown().await")
+            .expect("extension shutdown remains reachable");
+        let bridge_shutdown = fallback
+            .find("bridge.read().await.shutdown().await")
+            .expect("bridge shutdown remains reachable");
+        let return_position = fallback
+            .find("return Ok(())")
+            .expect("bounded fallback return");
+        assert!(extension_shutdown < return_position);
+        assert!(bridge_shutdown < return_position);
+    }
+
+    #[test]
+    fn tui_terminal_boundary_signal_is_authoritative_without_channel_capacity() {
+        let exit = CancellationToken::new();
+        super::signal_tui_boundary_exit(&exit);
+        assert!(exit.is_cancelled());
     }
 
     #[test]

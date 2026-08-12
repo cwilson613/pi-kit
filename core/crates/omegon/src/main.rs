@@ -4021,6 +4021,15 @@ fn background_completion_prompt(
     )
 }
 
+async fn save_shared_interactive_session(
+    state: &Arc<tokio::sync::Mutex<InteractiveAgentState>>,
+    cwd: &Path,
+    session_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let state = state.lock().await;
+    session::save_session(&state.conversation, cwd, Some(session_id))
+}
+
 fn signal_tui_boundary_exit(exit: &CancellationToken) {
     exit.cancel();
 }
@@ -6128,9 +6137,32 @@ fn build_tui_secret_readiness_snapshot(
                                 lifecycle.transition("worker_revoked_by_terminal_loss", runtime.queue_depth(), &events_tx);
                                 mark_interactive_session_busy(&agent.dashboard_handles, false);
                                 let _ = events_tx.send(AgentEvent::AgentEnd);
-                                runtime_state = Arc::try_unwrap(state_for_turn)
-                                    .map_err(|_| anyhow::anyhow!("terminal-revoked worker retained durable state after IPC cancellation"))?
-                                    .into_inner();
+                                runtime_state = match Arc::try_unwrap(state_for_turn) {
+                                    Ok(state) => state.into_inner(),
+                                    Err(shared_state) => {
+                                        if !cli.no_session {
+                                            match save_shared_interactive_session(
+                                                &shared_state,
+                                                &agent.cwd,
+                                                &agent.session_id,
+                                            )
+                                            .await
+                                            {
+                                                Ok(path) => tracing::debug!(
+                                                    path = %path.display(),
+                                                    session_id = %agent.session_id,
+                                                    "saved retained interactive state after terminal loss"
+                                                ),
+                                                Err(error) => tracing::error!(
+                                                    %error,
+                                                    session_id = %agent.session_id,
+                                                    "failed to save retained interactive state after terminal loss"
+                                                ),
+                                            }
+                                        }
+                                        return Ok(());
+                                    }
+                                };
                                 break;
                             }
                             turn_result = &mut turn_task => {
@@ -9139,6 +9171,28 @@ mod tests {
             voice_notification_receivers: vec![],
             voice_polling_handles: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn retained_terminal_state_can_be_saved_without_unique_arc_ownership() {
+        let setup = test_agent_setup();
+        let cwd = setup.cwd.clone();
+        let session_id = "2026-08-12T12-00-00_deadbeef".to_string();
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
+            bus: setup.bus,
+            context_manager: setup.context_manager,
+            conversation: setup.conversation,
+            inference_runtime: setup.inference_runtime,
+        }));
+        let retained = state.clone();
+
+        let path = super::save_shared_interactive_session(&state, &cwd, &session_id)
+            .await
+            .expect("retained state remains persistable");
+
+        assert!(path.exists());
+        drop(retained);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

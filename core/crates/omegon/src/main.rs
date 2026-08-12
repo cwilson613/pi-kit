@@ -4021,13 +4021,32 @@ fn background_completion_prompt(
     )
 }
 
+const RETAINED_STATE_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn save_shared_interactive_session_with_timeout(
+    state: &Arc<tokio::sync::Mutex<InteractiveAgentState>>,
+    cwd: &Path,
+    session_id: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<PathBuf> {
+    let state = tokio::time::timeout(timeout, state.lock())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for retained interactive state"))?;
+    session::save_session(&state.conversation, cwd, Some(session_id))
+}
+
 async fn save_shared_interactive_session(
     state: &Arc<tokio::sync::Mutex<InteractiveAgentState>>,
     cwd: &Path,
     session_id: &str,
 ) -> anyhow::Result<PathBuf> {
-    let state = state.lock().await;
-    session::save_session(&state.conversation, cwd, Some(session_id))
+    save_shared_interactive_session_with_timeout(
+        state,
+        cwd,
+        session_id,
+        RETAINED_STATE_SAVE_TIMEOUT,
+    )
+    .await
 }
 
 fn signal_tui_boundary_exit(exit: &CancellationToken) {
@@ -6148,11 +6167,13 @@ fn build_tui_secret_readiness_snapshot(
                                             )
                                             .await
                                             {
-                                                Ok(path) => tracing::debug!(
-                                                    path = %path.display(),
-                                                    session_id = %agent.session_id,
-                                                    "saved retained interactive state after terminal loss"
-                                                ),
+                                                Ok(path) => {
+                                                    tracing::debug!(
+                                                        path = %path.display(),
+                                                        session_id = %agent.session_id,
+                                                        "saved retained interactive state after terminal loss"
+                                                    );
+                                                }
                                                 Err(error) => tracing::error!(
                                                     %error,
                                                     session_id = %agent.session_id,
@@ -6160,6 +6181,8 @@ fn build_tui_secret_readiness_snapshot(
                                                 ),
                                             }
                                         }
+                                        extension_supervisors.shutdown().await;
+                                        bridge.read().await.shutdown().await;
                                         return Ok(());
                                     }
                                 };
@@ -9193,6 +9216,52 @@ mod tests {
         assert!(path.exists());
         drop(retained);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn retained_terminal_state_save_times_out_when_lock_is_still_held() {
+        let setup = test_agent_setup();
+        let cwd = setup.cwd.clone();
+        let session_id = "2026-08-12T12-00-01_deadbeef";
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
+            bus: setup.bus,
+            context_manager: setup.context_manager,
+            conversation: setup.conversation,
+            inference_runtime: setup.inference_runtime,
+        }));
+        let _guard = state.lock().await;
+
+        let error = super::save_shared_interactive_session_with_timeout(
+            &state,
+            &cwd,
+            session_id,
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect_err("held state lock must not hang terminal teardown");
+
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn retained_state_fallback_performs_resource_shutdown_before_return() {
+        let source = include_str!("main.rs");
+        let fallback = source
+            .split("Err(shared_state) =>")
+            .nth(1)
+            .and_then(|tail| tail.split("turn_result = &mut turn_task").next())
+            .expect("terminal-loss fallback source");
+        let extension_shutdown = fallback
+            .find("extension_supervisors.shutdown().await")
+            .expect("extension shutdown remains reachable");
+        let bridge_shutdown = fallback
+            .find("bridge.read().await.shutdown().await")
+            .expect("bridge shutdown remains reachable");
+        let return_position = fallback
+            .find("return Ok(())")
+            .expect("bounded fallback return");
+        assert!(extension_shutdown < return_position);
+        assert!(bridge_shutdown < return_position);
     }
 
     #[test]

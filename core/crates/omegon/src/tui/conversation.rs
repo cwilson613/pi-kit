@@ -80,7 +80,24 @@ impl Default for TabState {
     }
 }
 
-const MAX_MERGED_SYSTEM_NOTIFICATION_BYTES: usize = 64 * 1024;
+const MAX_SYSTEM_NOTIFICATION_BYTES: usize = 64 * 1024;
+
+fn bounded_system_notification(text: &str) -> String {
+    if text.len() <= MAX_SYSTEM_NOTIFICATION_BYTES {
+        return text.to_string();
+    }
+
+    const ELLIPSIS: &str = "…";
+    let max_prefix_bytes = MAX_SYSTEM_NOTIFICATION_BYTES.saturating_sub(ELLIPSIS.len());
+    let mut boundary = max_prefix_bytes.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let mut bounded = String::with_capacity(boundary + ELLIPSIS.len());
+    bounded.push_str(&text[..boundary]);
+    bounded.push_str(ELLIPSIS);
+    bounded
+}
 
 /// Conversation view state — segment list + scroll.
 pub struct ConversationView {
@@ -413,7 +430,7 @@ impl ConversationView {
                 })
                 .find(|existing| is_plan_progress_text(existing))
         {
-            *existing = text.to_string();
+            *existing = bounded_system_notification(text);
             self.conv_state.invalidate();
             self.conv_state.auto_scroll_to_bottom();
             return;
@@ -428,7 +445,7 @@ impl ConversationView {
                 text: ref mut existing,
             } = last.content
             && existing.len().saturating_add(text.len()).saturating_add(1)
-                <= MAX_MERGED_SYSTEM_NOTIFICATION_BYTES
+                <= MAX_SYSTEM_NOTIFICATION_BYTES
         {
             existing.push('\n');
             existing.push_str(text);
@@ -436,7 +453,8 @@ impl ConversationView {
             self.conv_state.auto_scroll_to_bottom();
             return;
         }
-        self.segments.push(Segment::system(text));
+        self.segments
+            .push(Segment::system(bounded_system_notification(text)));
         self.conv_state.invalidate();
         self.conv_state.auto_scroll_to_bottom();
     }
@@ -1870,6 +1888,18 @@ mod tests {
     }
 
     #[test]
+    fn one_oversized_system_notification_is_truncated_at_ingress() {
+        let mut cv = ConversationView::new();
+        cv.push_system(&"é".repeat(MAX_SYSTEM_NOTIFICATION_BYTES));
+
+        let SegmentContent::SystemNotification { text } = &cv.segments[0].content else {
+            panic!("expected system notification");
+        };
+        assert!(text.len() <= MAX_SYSTEM_NOTIFICATION_BYTES);
+        assert!(text.ends_with('…'));
+    }
+
+    #[test]
     fn repeated_system_notifications_roll_over_before_unbounded_growth() {
         let mut cv = ConversationView::new();
         let chunk = "x".repeat(16 * 1024);
@@ -1890,7 +1920,7 @@ mod tests {
         assert!(
             system_cards
                 .iter()
-                .all(|text| text.len() <= MAX_MERGED_SYSTEM_NOTIFICATION_BYTES + chunk.len())
+                .all(|text| text.len() <= MAX_SYSTEM_NOTIFICATION_BYTES)
         );
     }
 

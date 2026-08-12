@@ -6120,6 +6120,7 @@ fn build_tui_secret_readiness_snapshot(
                         tokio::select! {
                             _ = tui_exit.cancelled() => {
                                 quit_after_turn = true;
+                                ipc_cancel.cancel();
                                 turn_cancel.cancel();
                                 turn_task.abort();
                                 let _ = (&mut turn_task).await;
@@ -6128,7 +6129,7 @@ fn build_tui_secret_readiness_snapshot(
                                 mark_interactive_session_busy(&agent.dashboard_handles, false);
                                 let _ = events_tx.send(AgentEvent::AgentEnd);
                                 runtime_state = Arc::try_unwrap(state_for_turn)
-                                    .map_err(|_| anyhow::anyhow!("terminal-revoked worker retained durable state"))?
+                                    .map_err(|_| anyhow::anyhow!("terminal-revoked worker retained durable state after IPC cancellation"))?
                                     .into_inner();
                                 break;
                             }
@@ -6354,6 +6355,9 @@ fn build_tui_secret_readiness_snapshot(
     // owns terminal modes. Stop it and restore those modes before printing
     // session diagnostics or exec-restarting; otherwise those writes land in
     // the still-active alternate screen and corrupt the next TUI frame.
+    // Revoke IPC/background ingress before waiting on any presentation task.
+    // Terminal loss must not leave sender clones able to prolong teardown.
+    ipc_cancel.cancel();
     tui_handle.abort();
     let _ = tui_handle.await;
     let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);

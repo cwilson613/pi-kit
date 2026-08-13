@@ -171,20 +171,8 @@ fn claude_skill_roots(cwd: &Path) -> Vec<(PathBuf, bool)> {
 }
 
 fn import_claude_skill(path: &Path, project: bool, cwd: &Path) -> anyhow::Result<()> {
-    if project {
-        let original = std::env::current_dir()?;
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-        std::env::set_current_dir(cwd)?;
-        let _restore = Restore(original);
-        crate::skills::cmd_import(path, true, false)
-    } else {
-        crate::skills::cmd_import(path, false, false)
-    }
+    let project_root = project.then_some(cwd);
+    crate::skills::import_skill_at_root(path, project_root, false).map(|_| ())
 }
 
 fn migrate_claude_skills(cwd: &Path, r: &mut MigrationReport) {
@@ -1125,8 +1113,10 @@ mod tests {
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(skill_dir.join("scripts/run.sh"), "echo ok\n").unwrap();
 
+        let original_cwd = std::env::current_dir().unwrap();
         let report = migrate_claude_code(cwd.path());
 
+        assert_eq!(std::env::current_dir().unwrap(), original_cwd);
         assert!(report.items.iter().any(|item| item.kind == "skill"));
         assert!(
             cwd.path()

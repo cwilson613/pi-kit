@@ -387,6 +387,15 @@ pub fn import_skill(
     project: bool,
     force: bool,
 ) -> anyhow::Result<SkillImportSummary> {
+    let project_root = project.then(std::env::current_dir).transpose()?;
+    import_skill_at_root(path, project_root.as_deref(), force)
+}
+
+pub(crate) fn import_skill_at_root(
+    path: &std::path::Path,
+    project_root: Option<&std::path::Path>,
+    force: bool,
+) -> anyhow::Result<SkillImportSummary> {
     let source = path.canonicalize()?;
     let (source_dir, skill_file) = if source.is_dir() {
         (source.clone(), source.join("SKILL.md"))
@@ -412,8 +421,8 @@ pub fn import_skill(
         manifest.name
     };
     let slug = validate_skill_name(&name)?;
-    let base = if project {
-        std::env::current_dir()?.join(".omegon/skills")
+    let base = if let Some(project_root) = project_root {
+        project_root.join(".omegon/skills")
     } else {
         skills_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
     };
@@ -438,7 +447,12 @@ pub fn import_skill(
     let bundle = summarize_imported_skill(&destination, &slug);
     Ok(SkillImportSummary {
         name: slug,
-        scope: if project { "project" } else { "user" }.into(),
+        scope: if project_root.is_some() {
+            "project"
+        } else {
+            "user"
+        }
+        .into(),
         source,
         destination,
         bundle,

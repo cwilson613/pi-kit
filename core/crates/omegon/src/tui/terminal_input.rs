@@ -12,13 +12,51 @@ const INTERRUPT_QUEUE_CAPACITY: usize = 8;
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalBoundaryFault {
+    InputOverload,
+    ReadFailed,
+}
+
+impl TerminalBoundaryFault {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::InputOverload => "terminal input overloaded; shutting down safely",
+            Self::ReadFailed => "terminal input boundary closed; shutting down safely",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalInterrupt {
     CtrlC,
+}
+
+fn route_input(
+    input: Event,
+    event_tx: &mpsc::Sender<Event>,
+    interrupt_tx: &mpsc::Sender<TerminalInterrupt>,
+    boundary_tx: &mpsc::Sender<TerminalBoundaryFault>,
+) -> bool {
+    if let Some(interrupt) = classify_interrupt(&input) {
+        // Priority ingress is independent of ordinary input congestion.
+        // Duplicate chords may be coalesced.
+        let _ = interrupt_tx.try_send(interrupt);
+        return true;
+    }
+    match event_tx.try_send(input) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            let _ = boundary_tx.try_send(TerminalBoundaryFault::InputOverload);
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 pub(crate) struct TerminalInputPump {
     events: mpsc::Receiver<Event>,
     interrupts: mpsc::Receiver<TerminalInterrupt>,
+    boundaries: mpsc::Receiver<TerminalBoundaryFault>,
     stop: Arc<AtomicBool>,
 }
 
@@ -26,6 +64,7 @@ impl TerminalInputPump {
     pub(crate) fn spawn() -> Self {
         let (event_tx, events) = mpsc::channel(INPUT_QUEUE_CAPACITY);
         let (interrupt_tx, interrupts) = mpsc::channel(INTERRUPT_QUEUE_CAPACITY);
+        let (boundary_tx, boundaries) = mpsc::channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
 
@@ -36,18 +75,20 @@ impl TerminalInputPump {
                     match event::poll(INPUT_POLL_INTERVAL) {
                         Ok(true) => match event::read() {
                             Ok(input) => {
-                                if let Some(interrupt) = classify_interrupt(&input) {
-                                    // Priority ingress is independent of ordinary input
-                                    // congestion. Duplicate chords may be coalesced.
-                                    let _ = interrupt_tx.try_send(interrupt);
-                                } else if event_tx.blocking_send(input).is_err() {
+                                if !route_input(input, &event_tx, &interrupt_tx, &boundary_tx) {
                                     break;
                                 }
                             }
-                            Err(_) => break,
+                            Err(_) => {
+                                let _ = boundary_tx.try_send(TerminalBoundaryFault::ReadFailed);
+                                break;
+                            }
                         },
                         Ok(false) => {}
-                        Err(_) => break,
+                        Err(_) => {
+                            let _ = boundary_tx.try_send(TerminalBoundaryFault::ReadFailed);
+                            break;
+                        }
                     }
                 }
             })
@@ -56,6 +97,7 @@ impl TerminalInputPump {
         Self {
             events,
             interrupts,
+            boundaries,
             stop,
         }
     }
@@ -68,6 +110,12 @@ impl TerminalInputPump {
         &mut self,
     ) -> Result<TerminalInterrupt, mpsc::error::TryRecvError> {
         self.interrupts.try_recv()
+    }
+
+    pub(crate) fn try_recv_boundary(
+        &mut self,
+    ) -> Result<TerminalBoundaryFault, mpsc::error::TryRecvError> {
+        self.boundaries.try_recv()
     }
 
     pub(crate) async fn recv(&mut self) -> Option<Event> {
@@ -125,6 +173,50 @@ mod tests {
             classify_interrupt(&key(KeyCode::Char('c'), KeyModifiers::NONE)),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn ordinary_lane_saturation_emits_explicit_boundary_fault() {
+        let (event_tx, _events) = mpsc::channel::<Event>(1);
+        let (interrupt_tx, _interrupts) = mpsc::channel(1);
+        let (boundary_tx, mut boundaries) = mpsc::channel(1);
+        assert!(route_input(
+            key(KeyCode::Char('x'), KeyModifiers::NONE),
+            &event_tx,
+            &interrupt_tx,
+            &boundary_tx,
+        ));
+
+        assert!(!route_input(
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            &event_tx,
+            &interrupt_tx,
+            &boundary_tx,
+        ));
+        assert_eq!(
+            boundaries.recv().await,
+            Some(TerminalBoundaryFault::InputOverload)
+        );
+    }
+
+    #[tokio::test]
+    async fn priority_interrupt_bypasses_saturated_ordinary_lane() {
+        let (event_tx, _events) = mpsc::channel::<Event>(1);
+        let (interrupt_tx, mut interrupts) = mpsc::channel(1);
+        let (boundary_tx, _boundaries) = mpsc::channel(1);
+        assert!(route_input(
+            key(KeyCode::Char('x'), KeyModifiers::NONE),
+            &event_tx,
+            &interrupt_tx,
+            &boundary_tx,
+        ));
+        assert!(route_input(
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &event_tx,
+            &interrupt_tx,
+            &boundary_tx,
+        ));
+        assert_eq!(interrupts.recv().await, Some(TerminalInterrupt::CtrlC));
     }
 
     #[tokio::test]

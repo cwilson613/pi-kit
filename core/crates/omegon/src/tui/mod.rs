@@ -7735,6 +7735,12 @@ pub async fn run_tui(
             break;
         }
 
+        if let Ok(boundary) = terminal_input.try_recv_boundary() {
+            let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
+            eprintln!("{}", boundary.message());
+            break;
+        }
+
         while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
             let _ = interrupt_tx.try_send(interrupt);
         }

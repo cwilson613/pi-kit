@@ -1767,16 +1767,19 @@
     {
       "name": "transactional-native-scrollback-publication",
       "title": "Transactional native scrollback publication",
-      "state": "planned",
+      "state": "archived",
       "bound_node": null,
       "specs": [
         "tui-presentation"
       ],
-      "test_files": [],
+      "test_files": [
+        "core/crates/omegon/src/tui/native_publication.rs",
+        "core/crates/omegon/src/tui/mod.rs"
+      ],
       "tasks_total": 9,
-      "tasks_done": 0,
+      "tasks_done": 9,
       "created_at": "2026-08-13T20:41:41Z",
-      "updated_at": "2026-08-13T20:42:18Z"
+      "updated_at": "2026-08-13T21:25:39Z"
     }
   ],
   "milestones": [],
@@ -4325,6 +4328,42 @@
       "entity_id": "transactional-native-scrollback-publication",
       "from_state": "specced",
       "to_state": "planned",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:08:47Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "planned",
+      "to_state": "testing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:08:47Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "testing",
+      "to_state": "implementing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:25:30Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "implementing",
+      "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:25:39Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "verifying",
+      "to_state": "archived",
       "reason": null,
       "forced": false
     }

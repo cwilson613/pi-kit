@@ -32,6 +32,8 @@ Adversarial review found the first draft overstated what an input thread guarant
 
 ### 1. Dedicated terminal input owner
 
+**Status:**
+
 **Rationale:** One dedicated OS thread exclusively owns `crossterm::event::poll/read`. A finite nonzero poll timeout permits cooperative shutdown without hot-looping. The worker never writes terminal output and never mutates application or conversation state.
 
 Input transport has separate policies:
@@ -44,6 +46,8 @@ Input transport has separate policies:
 Only this worker may call Crossterm event-read APIs. Shutdown requests stop but does not indefinitely join a worker blocked below Crossterm or OS control.
 
 ### 2. Supervisor-owned interrupt ingress
+
+**Status:**
 
 **Rationale:** The input thread does not directly mutate `InteractiveRuntimeSupervisor`, `SharedCancel`, or conversation state. The coordinator creates a narrow thread-safe ingress consumed independently of the TUI render loop and ordinary coordinator command queue.
 
@@ -58,6 +62,8 @@ The winner closes admission for that identity, cancels its token, and emits the 
 Once revocation wins, no provider request, forced synthesis, mutation, or assistant completion may begin or publish for that turn.
 
 ### 3. One normal output owner; independent best-effort fallback
+
+**Status:**
 
 **Rationale:** The TUI presentation task remains the sole owner of normal terminal writes, Ratatui draws, viewport changes, and mode transitions. Normal output is serialized without a lock that emergency restoration must acquire.
 
@@ -76,6 +82,8 @@ No in-process design guarantees restoration if the kernel or terminal driver blo
 
 ### 4. Transactional, resumable transcript publication
 
+**Status:**
+
 **Rationale:** Replace “take all, flatten all, insert all” with a per-terminal-attachment state machine:
 
 ```text
@@ -93,6 +101,8 @@ Reset, revocation, terminal loss, and superseding message boundaries bypass defe
 
 ### 5. Explicit streaming backpressure
 
+**Status:**
+
 **Rationale:** Streaming presentation currently permits unbounded authoritative text, pending deltas, and blocked events. Add count and byte caps to every retained class.
 
 - canonical conversation remains the source of record;
@@ -105,6 +115,8 @@ Reset, revocation, terminal loss, and superseding message boundaries bypass defe
 A superseding `MessageStart`, reset, revocation, or boundary loss cannot remain trapped behind blocked presentation events. Draw acknowledgement identifies the exact canonical snapshot and publication revision successfully rendered; beginning or attempting a draw is not acknowledgement.
 
 ### 6. Revisioned frame scheduling and circuit breaker
+
+**Status:**
 
 **Rationale:** Replace Boolean dirty state with monotonic requested and drawn revisions. A draw captures its requested revision; completion advances only to that captured value, so dirtiness raised during drawing survives. Urgent input reduces latency but remains frame-rate bounded and cannot create an unbounded redraw loop.
 
@@ -120,11 +132,15 @@ Slow successful rendering and terminal I/O failure are distinct breaker causes. 
 
 ### 7. Revision-keyed caches with independent retention
 
+**Status:**
+
 **Rationale:** Cache immutable completed-segment projections by canonical segment identity/revision, width, theme revision, and presentation level. Streaming invalidates only the active segment. Cache bytes and entries have explicit LRU bounds.
 
 TUI cache eviction never evicts canonical conversation or audit data. Publication preparation indexes canonical revisions incrementally and must not rescan all retained history each frame.
 
 ### 8. Native mouse capture is an explicit policy
+
+**Status:**
 
 **Rationale:** Mouse capture is not enabled unconditionally because it interferes with native terminal selection in some emulators and multiplexers.
 
@@ -137,6 +153,8 @@ Provide `auto | on | off`:
 Keyboard operation remains complete in all modes. Capture state is observable and restored by terminal-session ownership.
 
 ### 9. One-shot no-progress synthesis
+
+**Status:**
 
 **Rationale:** Replace deterministic surrender with one explicit terminal phase shared with the existing final-response reservation, not a second independent mechanism.
 
@@ -175,3 +193,10 @@ An open visible plan remains open or is explicitly marked blocked with evidence.
 **Status:** accepted
 
 **Rationale:** Investigation can be real progress without mutation. The cutoff must share final-response state, prohibit tools/nudges, respect cancellation, and provenance-label any runtime fallback.
+
+## Implementation Notes
+
+### File Scope
+
+- `core/crates/omegon/src/tui/native_publication.rs` —
+- `core/crates/omegon/src/tui/mod.rs` —

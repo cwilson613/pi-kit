@@ -4050,6 +4050,35 @@ async fn save_shared_interactive_session(
     .await
 }
 
+fn clear_published_runtime_identity(
+    published: &std::sync::Mutex<Option<RuntimeTurnIdentity>>,
+    settled: RuntimeTurnIdentity,
+) -> bool {
+    let mut guard = published
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.as_ref() == Some(&settled) {
+        *guard = None;
+        true
+    } else {
+        false
+    }
+}
+
+const TUI_COOPERATIVE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+async fn stop_background_task(mut task: tokio::task::JoinHandle<()>) -> bool {
+    if tokio::time::timeout(TUI_COOPERATIVE_SHUTDOWN_TIMEOUT, &mut task)
+        .await
+        .is_ok()
+    {
+        return true;
+    }
+    task.abort();
+    let _ = task.await;
+    false
+}
+
 fn signal_tui_boundary_exit(exit: &CancellationToken) {
     exit.cancel();
 }
@@ -4543,6 +4572,10 @@ fn build_tui_secret_readiness_snapshot(
         debug_tui: cli.debug_tui,
         initial_prompt,
         start_tutorial: cli.tutorial,
+        startup_mouse_capture: shared_settings
+            .lock()
+            .map(|settings| settings.startup_mouse_capture)
+            .unwrap_or_default(),
         resume_info: agent.resume_info.clone(),
         login_prompt_tx: login_prompt_tx.clone(),
         extension_widgets,
@@ -4560,12 +4593,36 @@ fn build_tui_secret_readiness_snapshot(
     // channel open.
     let tui_exit = CancellationToken::new();
     let tui_exit_signal = tui_exit.clone();
+    let tui_interrupt_identity = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let tui_interrupt_identity_for_relay = tui_interrupt_identity.clone();
+    let (tui_interrupt_tx, mut tui_interrupt_rx) = tokio::sync::mpsc::channel(8);
+    let (runtime_interrupt_tx, mut runtime_interrupt_rx) = tokio::sync::mpsc::channel(8);
     let tui_handle = tokio::spawn(async move {
-        let result = tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await;
+        let result = tui::run_tui(
+            events_rx,
+            command_tx,
+            tui_interrupt_tx,
+            tui_config,
+            tui_cancel,
+            tui_settings,
+        )
+        .await;
         if let Err(error) = &result {
             tracing::error!(%error, "TUI terminated at the terminal boundary");
         }
         signal_tui_boundary_exit(&tui_exit_signal);
+    });
+    let tui_interrupt_task = tokio::spawn(async move {
+        while tui_interrupt_rx.recv().await.is_some() {
+            let identity = tui_interrupt_identity_for_relay
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .copied();
+            if let Some(identity) = identity {
+                let _ = runtime_interrupt_tx.try_send(identity);
+            }
+        }
     });
 
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
@@ -4632,6 +4689,25 @@ fn build_tui_secret_readiness_snapshot(
             tokio::select! {
                 biased;
                 _ = tui_exit.cancelled() => break,
+                interrupt = runtime_interrupt_rx.recv() => match interrupt {
+                    Some(identity) => {
+                        let admission = runtime.admit_interrupt(
+                            identity,
+                            RuntimeActor::tui(),
+                            ControlSurface::Tui,
+                        );
+                        if admission == InterruptAdmission::Admitted {
+                            let guard = shared_cancel
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if let Some(token) = guard.as_ref() {
+                                token.cancel();
+                            }
+                        }
+                        continue;
+                    }
+                    None => continue,
+                },
                 cmd = command_rx.recv() => match cmd {
                     Some(cmd) => cmd,
                     None => break,
@@ -6102,6 +6178,11 @@ fn build_tui_secret_readiness_snapshot(
                 }
 
                 while let Some(active) = runtime.maybe_start_next_turn() {
+                    let active_identity = runtime.current_identity().expect("promoted turn identity");
+                    *tui_interrupt_identity
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        runtime.current_identity();
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
                     let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
                     lifecycle.transition("promoted", runtime.queue_depth(), &events_tx);
@@ -6168,13 +6249,11 @@ fn build_tui_secret_readiness_snapshot(
                                             )
                                             .await
                                             {
-                                                Ok(path) => {
-                                                    tracing::debug!(
-                                                        path = %path.display(),
-                                                        session_id = %agent.session_id,
-                                                        "saved retained interactive state after terminal loss"
-                                                    );
-                                                }
+                                                Ok(path) => tracing::debug!(
+                                                    path = %path.display(),
+                                                    session_id = %agent.session_id,
+                                                    "saved retained interactive state after terminal loss"
+                                                ),
                                                 Err(error) => tracing::error!(
                                                     %error,
                                                     session_id = %agent.session_id,
@@ -6383,9 +6462,18 @@ fn build_tui_secret_readiness_snapshot(
                         }
                     }
 
+                    let _ = clear_published_runtime_identity(
+                        &tui_interrupt_identity,
+                        active_identity,
+                    );
                     lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
-                    runtime.complete_active_turn();
-                    lifecycle.transition("supervisor_completed", runtime.queue_depth(), &events_tx);
+                    let terminal_phase = match runtime.settle_active_worker() {
+                        Some((_, RuntimeTurnOutcome::Revoked)) => "supervisor_revoked",
+                        Some((_, RuntimeTurnOutcome::Failed)) => "supervisor_failed",
+                        Some((_, RuntimeTurnOutcome::Completed)) => "supervisor_completed",
+                        None => "supervisor_terminal_duplicate",
+                    };
+                    lifecycle.transition(terminal_phase, runtime.queue_depth(), &events_tx);
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
                     mark_interactive_session_busy(&agent.dashboard_handles, runtime.is_busy());
 
@@ -6414,8 +6502,14 @@ fn build_tui_secret_readiness_snapshot(
     // Revoke IPC/background ingress before waiting on any presentation task.
     // Terminal loss must not leave sender clones able to prolong teardown.
     ipc_cancel.cancel();
-    tui_handle.abort();
-    let _ = tui_handle.await;
+    tui_interrupt_task.abort();
+    let _ = tui_interrupt_task.await;
+    if !stop_background_task(tui_handle).await {
+        tracing::warn!(
+            timeout_ms = TUI_COOPERATIVE_SHUTDOWN_TIMEOUT.as_millis(),
+            "TUI teardown exceeded its cooperative deadline and was aborted"
+        );
+    }
     let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
     let _ = io::stdout().execute(DisableMouseCapture);
     let _ = io::stdout().execute(crossterm::event::PopKeyboardEnhancementFlags);
@@ -9219,52 +9313,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[tokio::test]
-    async fn retained_terminal_state_save_times_out_when_lock_is_still_held() {
-        let setup = test_agent_setup();
-        let cwd = setup.cwd.clone();
-        let session_id = "2026-08-12T12-00-01_deadbeef";
-        let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
-            bus: setup.bus,
-            context_manager: setup.context_manager,
-            conversation: setup.conversation,
-            inference_runtime: setup.inference_runtime,
-        }));
-        let _guard = state.lock().await;
-
-        let error = super::save_shared_interactive_session_with_timeout(
-            &state,
-            &cwd,
-            session_id,
-            std::time::Duration::from_millis(1),
-        )
-        .await
-        .expect_err("held state lock must not hang terminal teardown");
-
-        assert!(error.to_string().contains("timed out"));
-    }
-
-    #[test]
-    fn retained_state_fallback_performs_resource_shutdown_before_return() {
-        let source = include_str!("main.rs");
-        let fallback = source
-            .split("Err(shared_state) =>")
-            .nth(1)
-            .and_then(|tail| tail.split("turn_result = &mut turn_task").next())
-            .expect("terminal-loss fallback source");
-        let extension_shutdown = fallback
-            .find("extension_supervisors.shutdown().await")
-            .expect("extension shutdown remains reachable");
-        let bridge_shutdown = fallback
-            .find("bridge.read().await.shutdown().await")
-            .expect("bridge shutdown remains reachable");
-        let return_position = fallback
-            .find("return Ok(())")
-            .expect("bounded fallback return");
-        assert!(extension_shutdown < return_position);
-        assert!(bridge_shutdown < return_position);
-    }
-
     #[test]
     fn tui_terminal_boundary_signal_is_authoritative_without_channel_capacity() {
         let exit = CancellationToken::new();
@@ -9603,9 +9651,197 @@ mod tests {
 
         assert!(supervisor.is_busy(), "cancel request must not imply idle");
 
-        let completed = supervisor.complete_active_turn().expect("completed turn");
+        let (completed, outcome) = supervisor.settle_active_worker().expect("settled turn");
+        assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
         assert!(!supervisor.is_busy(), "busy clears only after completion");
+    }
+
+    #[tokio::test]
+    async fn retained_terminal_state_save_times_out_when_lock_is_still_held() {
+        let setup = test_agent_setup();
+        let cwd = setup.cwd.clone();
+        let session_id = "2026-08-12T12-00-01_deadbeef";
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
+            bus: setup.bus,
+            context_manager: setup.context_manager,
+            conversation: setup.conversation,
+            inference_runtime: setup.inference_runtime,
+        }));
+        let _guard = state.lock().await;
+
+        let error = super::save_shared_interactive_session_with_timeout(
+            &state,
+            &cwd,
+            session_id,
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect_err("held state lock must not hang terminal teardown");
+
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn retained_state_fallback_performs_resource_shutdown_before_return() {
+        let source = include_str!("main.rs");
+        let fallback = source
+            .split("Err(shared_state) =>")
+            .nth(1)
+            .and_then(|tail| tail.split("turn_result = &mut turn_task").next())
+            .expect("terminal-loss fallback source");
+        let extension_shutdown = fallback
+            .find("extension_supervisors.shutdown().await")
+            .expect("extension shutdown remains reachable");
+        let bridge_shutdown = fallback
+            .find("bridge.read().await.shutdown().await")
+            .expect("bridge shutdown remains reachable");
+        let return_position = fallback
+            .find("return Ok(())")
+            .expect("bounded fallback return");
+        assert!(extension_shutdown < return_position);
+        assert!(bridge_shutdown < return_position);
+    }
+
+    #[tokio::test]
+    async fn cooperative_background_task_finishes_without_abort() {
+        let task = tokio::spawn(async {});
+        assert!(stop_background_task(task).await);
+    }
+
+    #[tokio::test]
+    async fn blocked_background_task_is_aborted_after_deadline() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let started = std::time::Instant::now();
+        assert!(!stop_background_task(task).await);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn published_runtime_identity_clears_only_for_matching_settled_turn() {
+        let first = RuntimeTurnIdentity {
+            session_epoch: 7,
+            runtime_turn_id: 11,
+        };
+        let second = RuntimeTurnIdentity {
+            session_epoch: 7,
+            runtime_turn_id: 12,
+        };
+        let published = std::sync::Mutex::new(Some(second));
+
+        assert!(!clear_published_runtime_identity(&published, first));
+        assert_eq!(*published.lock().unwrap(), Some(second));
+        assert!(clear_published_runtime_identity(&published, second));
+        assert_eq!(*published.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_interrupt_admission_rejects_stale_identity() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "first".to_string(),
+            Vec::new(),
+            RuntimeActor::tui(),
+            ControlSurface::Tui,
+            operator_commands::PromptMetadata::default(),
+            None,
+        );
+        let active = supervisor.maybe_start_next_turn().expect("active turn");
+        let stale = RuntimeTurnIdentity {
+            session_epoch: supervisor.session_epoch,
+            runtime_turn_id: active.runtime_turn_id + 1,
+        };
+
+        assert_eq!(
+            supervisor.admit_interrupt(stale, RuntimeActor::tui(), ControlSurface::Tui),
+            InterruptAdmission::Stale
+        );
+        assert!(matches!(
+            supervisor.active_turn.as_ref().unwrap().phase,
+            ActiveTurnPhase::Running
+        ));
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_interrupt_admission_is_idempotent() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "first".to_string(),
+            Vec::new(),
+            RuntimeActor::tui(),
+            ControlSurface::Tui,
+            operator_commands::PromptMetadata::default(),
+            None,
+        );
+        supervisor.maybe_start_next_turn().expect("active turn");
+        let identity = supervisor.current_identity().expect("runtime identity");
+
+        assert_eq!(
+            supervisor.admit_interrupt(identity, RuntimeActor::tui(), ControlSurface::Tui),
+            InterruptAdmission::Admitted
+        );
+        assert_eq!(
+            supervisor.admit_interrupt(identity, RuntimeActor::tui(), ControlSurface::Tui),
+            InterruptAdmission::Duplicate
+        );
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_cancelled_worker_revokes_exactly_once() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "first".to_string(),
+            Vec::new(),
+            RuntimeActor::tui(),
+            ControlSurface::Tui,
+            operator_commands::PromptMetadata::default(),
+            None,
+        );
+        let active = supervisor.maybe_start_next_turn().expect("active turn");
+        supervisor.request_cancel(RuntimeActor::tui(), ControlSurface::Tui);
+
+        assert!(
+            supervisor
+                .finish_active_turn(active.runtime_turn_id, RuntimeTurnOutcome::Completed)
+                .is_none(),
+            "late completion must lose after cancellation admission"
+        );
+        let (settled, outcome) = supervisor.settle_active_worker().expect("revoked turn");
+        assert_eq!(settled.runtime_turn_id, active.runtime_turn_id);
+        assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
+        assert!(supervisor.settle_active_worker().is_none());
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_stale_outcome_cannot_finish_next_turn() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        for text in ["first", "second"] {
+            supervisor.enqueue_prompt(
+                text.to_string(),
+                Vec::new(),
+                RuntimeActor::tui(),
+                ControlSurface::Tui,
+                operator_commands::PromptMetadata::default(),
+                None,
+            );
+        }
+        let first = supervisor.maybe_start_next_turn().expect("first turn");
+        supervisor
+            .finish_active_turn(first.runtime_turn_id, RuntimeTurnOutcome::Completed)
+            .expect("first completion");
+        let second = supervisor.maybe_start_next_turn().expect("second turn");
+
+        assert!(
+            supervisor
+                .finish_active_turn(first.runtime_turn_id, RuntimeTurnOutcome::Revoked)
+                .is_none()
+        );
+        assert_eq!(
+            supervisor.active_turn.as_ref().unwrap().runtime_turn_id,
+            second.runtime_turn_id
+        );
     }
 
     #[test]
@@ -9690,7 +9926,8 @@ mod tests {
             .maybe_start_next_turn()
             .expect("first active turn");
         supervisor.request_cancel(RuntimeActor::tui(), ControlSurface::Tui);
-        let completed = supervisor.complete_active_turn().expect("completed turn");
+        let (completed, outcome) = supervisor.settle_active_worker().expect("settled turn");
+        assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
 
         let next = supervisor

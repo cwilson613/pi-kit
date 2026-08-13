@@ -52,7 +52,11 @@ impl TerminalSessionGuard {
         let chained = original.clone();
         let modes = self.modes.clone();
         std::panic::set_hook(Box::new(move |info| {
-            restore_snapshot(snapshot(&modes));
+            // A panic can occur while the normal path owns this mutex. Panic
+            // restoration must never wait for that owner: use the tracked
+            // snapshot when immediately available, otherwise issue the full
+            // idempotent emergency restore sequence.
+            restore_snapshot(emergency_snapshot(&modes));
             chained(info);
         }));
         PanicHookGuard {
@@ -98,6 +102,19 @@ impl Drop for PanicHookGuard {
 
 fn snapshot(modes: &Arc<Mutex<TerminalModes>>) -> TerminalModes {
     modes.lock().map(|modes| *modes).unwrap_or_default()
+}
+
+fn emergency_snapshot(modes: &Arc<Mutex<TerminalModes>>) -> TerminalModes {
+    modes
+        .try_lock()
+        .map(|modes| *modes)
+        .unwrap_or(TerminalModes {
+            raw: true,
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            keyboard_enhancement: true,
+        })
 }
 
 fn restore_snapshot(modes: TerminalModes) {
@@ -158,6 +175,23 @@ mod tests {
         guard.restore();
         assert_eq!(snapshot(&guard.modes), TerminalModes::default());
         guard.restore();
+    }
+
+    #[test]
+    fn emergency_snapshot_never_waits_for_normal_mode_owner() {
+        let modes = Arc::new(Mutex::new(TerminalModes {
+            raw: true,
+            ..TerminalModes::default()
+        }));
+        let _normal_owner = modes.lock().expect("normal owner");
+
+        let emergency = emergency_snapshot(&modes);
+
+        assert!(emergency.raw);
+        assert!(emergency.alternate_screen);
+        assert!(emergency.mouse_capture);
+        assert!(emergency.bracketed_paste);
+        assert!(emergency.keyboard_enhancement);
     }
 
     #[test]

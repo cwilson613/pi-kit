@@ -9,6 +9,18 @@ pub(super) enum StreamContentKind {
     Thinking,
 }
 
+const MAX_AUTHORITATIVE_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_DELTA_BYTES: usize = 256 * 1024;
+const MAX_BLOCKED_EVENTS: usize = 256;
+
+fn trailing_utf8_window_start(text: &str, max_bytes: usize) -> usize {
+    let mut start = text.len().saturating_sub(max_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    start
+}
+
 /// TUI-local stream publication state. Runtime events remain authoritative; this
 /// controller preserves their order while deciding when progressive content
 /// becomes a presentation revision and when later events may overtake it.
@@ -23,6 +35,8 @@ pub(super) struct StreamingPresentationController {
     authoritative_text: String,
     published_len: usize,
     pending_deltas: Vec<StreamDelta>,
+    pending_delta_bytes: usize,
+    snapshot_rebuild_required: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -45,11 +59,19 @@ pub(super) struct StreamPublication {
 
 impl StreamingPresentationController {
     pub(super) fn classify(&mut self, event: AgentEvent) -> StreamIngestDecision {
-        // Session reset is an out-of-band lifecycle boundary. It cancels the
-        // current presentation generation and must not queue behind content
-        // that the reset is explicitly discarding.
+        // Session reset and a superseding message start are out-of-band
+        // lifecycle boundaries. Neither may remain trapped behind presentation
+        // work owned by the generation it invalidates.
         if matches!(event, AgentEvent::SessionReset) {
             self.reset_generation();
+            return StreamIngestDecision {
+                apply_now: true,
+                publication_due: false,
+            };
+        }
+        if matches!(event, AgentEvent::MessageStart { .. }) && !self.blocked_events.is_empty() {
+            self.start_generation();
+            self.blocked_events.clear();
             return StreamIngestDecision {
                 apply_now: true,
                 publication_due: false,
@@ -60,7 +82,7 @@ impl StreamingPresentationController {
         // event must remain behind it. Replaying the front event after a draw
         // re-enters this method only after it has been removed from the queue.
         if !self.blocked_events.is_empty() {
-            self.blocked_events.push_back(event);
+            self.queue_blocked(event);
             return StreamIngestDecision {
                 apply_now: false,
                 publication_due: self.unpublished_content,
@@ -90,7 +112,7 @@ impl StreamingPresentationController {
                 }
             }
             event if self.unpublished_content => {
-                self.blocked_events.push_back(event);
+                self.queue_blocked(event);
                 StreamIngestDecision {
                     apply_now: false,
                     publication_due: true,
@@ -103,13 +125,24 @@ impl StreamingPresentationController {
         }
     }
 
+    fn queue_blocked(&mut self, event: AgentEvent) {
+        if self.blocked_events.len() >= MAX_BLOCKED_EVENTS {
+            self.snapshot_rebuild_required = true;
+            return;
+        }
+        self.blocked_events.push_back(event);
+    }
+
     fn reset_generation(&mut self) {
         self.start_generation();
         self.blocked_events.clear();
     }
 
     fn start_generation(&mut self) {
-        self.generation = self.generation.saturating_add(1);
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("stream presentation generation exhausted");
         self.accumulated_revision = 0;
         self.published_revision = 0;
         self.drawn_revision = 0;
@@ -117,18 +150,61 @@ impl StreamingPresentationController {
         self.authoritative_text.clear();
         self.published_len = 0;
         self.pending_deltas.clear();
+        self.pending_delta_bytes = 0;
+        self.snapshot_rebuild_required = false;
     }
 
     fn accumulate(&mut self, kind: StreamContentKind, text: String) {
-        self.authoritative_text.push_str(&text);
-        if let Some(last) = self.pending_deltas.last_mut()
-            && last.kind == kind
-        {
-            last.text.push_str(&text);
-        } else {
-            self.pending_deltas.push(StreamDelta { kind, text });
+        if text.len() > MAX_AUTHORITATIVE_BYTES {
+            let start = trailing_utf8_window_start(&text, MAX_AUTHORITATIVE_BYTES);
+            self.authoritative_text.clear();
+            self.authoritative_text.push_str(&text[start..]);
+            self.published_len = 0;
+            self.snapshot_rebuild_required = true;
+            self.pending_deltas.clear();
+            self.pending_delta_bytes = 0;
+            self.accumulated_revision = self
+                .accumulated_revision
+                .checked_add(1)
+                .expect("stream presentation revision exhausted");
+            self.unpublished_content = true;
+            return;
         }
-        self.accumulated_revision = self.accumulated_revision.saturating_add(1);
+        let overflow = self
+            .authoritative_text
+            .len()
+            .saturating_add(text.len())
+            .saturating_sub(MAX_AUTHORITATIVE_BYTES);
+        if overflow > 0 {
+            let trim_at = trailing_utf8_window_start(
+                &self.authoritative_text,
+                self.authoritative_text.len() - overflow,
+            );
+            self.authoritative_text.drain(..trim_at);
+            self.published_len = 0;
+            self.snapshot_rebuild_required = true;
+            self.pending_deltas.clear();
+            self.pending_delta_bytes = 0;
+        }
+        self.authoritative_text.push_str(&text);
+        if self.pending_delta_bytes.saturating_add(text.len()) > MAX_PENDING_DELTA_BYTES {
+            self.snapshot_rebuild_required = true;
+            self.pending_deltas.clear();
+            self.pending_delta_bytes = 0;
+        } else {
+            self.pending_delta_bytes += text.len();
+            if let Some(last) = self.pending_deltas.last_mut()
+                && last.kind == kind
+            {
+                last.text.push_str(&text);
+            } else {
+                self.pending_deltas.push(StreamDelta { kind, text });
+            }
+        }
+        self.accumulated_revision = self
+            .accumulated_revision
+            .checked_add(1)
+            .expect("stream presentation revision exhausted");
         self.unpublished_content = true;
     }
 
@@ -139,14 +215,24 @@ impl StreamingPresentationController {
         self.published_revision = self.accumulated_revision;
         self.published_len = self.authoritative_text.len();
         self.unpublished_content = false;
+        self.pending_delta_bytes = 0;
+        let deltas = if self.snapshot_rebuild_required {
+            self.snapshot_rebuild_required = false;
+            self.pending_deltas.clear();
+            vec![(
+                StreamContentKind::Assistant,
+                self.authoritative_text.clone(),
+            )]
+        } else {
+            self.pending_deltas
+                .drain(..)
+                .map(|delta| (delta.kind, delta.text))
+                .collect()
+        };
         Some(StreamPublication {
             generation: self.generation,
             revision: self.published_revision,
-            deltas: self
-                .pending_deltas
-                .drain(..)
-                .map(|delta| (delta.kind, delta.text))
-                .collect(),
+            deltas,
         })
     }
 
@@ -189,6 +275,67 @@ mod tests {
         let publication = controller.publish().expect("stream publication");
         controller.acknowledge_draw(publication.generation, publication.revision);
         publication
+    }
+
+    #[test]
+    fn oversized_unicode_record_retains_bounded_trailing_snapshot() {
+        let mut controller = StreamingPresentationController::default();
+        let oversized = "🦀".repeat((MAX_AUTHORITATIVE_BYTES / 4) + 50);
+        controller.classify(AgentEvent::MessageChunk {
+            text: oversized.clone(),
+        });
+
+        assert!(controller.authoritative_text().len() <= MAX_AUTHORITATIVE_BYTES);
+        assert!(controller.authoritative_text().is_char_boundary(0));
+        assert!(oversized.ends_with(controller.authoritative_text()));
+        let publication = controller.publish().expect("bounded snapshot");
+        assert_eq!(publication.deltas.len(), 1);
+        assert_eq!(publication.deltas[0].1, controller.authoritative_text());
+    }
+
+    #[test]
+    fn cumulative_overflow_keeps_latest_content_without_splitting_utf8() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageChunk {
+            text: "a".repeat(MAX_AUTHORITATIVE_BYTES - 2),
+        });
+        controller.classify(AgentEvent::MessageChunk {
+            text: "🦀tail".into(),
+        });
+
+        assert!(controller.authoritative_text().len() <= MAX_AUTHORITATIVE_BYTES);
+        assert!(controller.authoritative_text().ends_with("🦀tail"));
+        assert!(std::str::from_utf8(controller.authoritative_text().as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn pending_delta_bytes_are_bounded_and_collapse_to_snapshot() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageStart {
+            role: "assistant".into(),
+        });
+        for _ in 0..300 {
+            controller.classify(AgentEvent::MessageChunk {
+                text: "x".repeat(1024),
+            });
+        }
+        assert!(controller.pending_delta_bytes <= MAX_PENDING_DELTA_BYTES);
+        let publication = controller.publish().expect("snapshot publication");
+        assert_eq!(publication.deltas.len(), 1);
+        assert_eq!(publication.deltas[0].1, controller.authoritative_text());
+    }
+
+    #[test]
+    fn blocked_control_lane_is_count_bounded() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageChunk { text: "x".into() });
+        for index in 0..(MAX_BLOCKED_EVENTS + 50) {
+            controller.classify(AgentEvent::MessageAbort {
+                reason: Some(index.to_string()),
+            });
+        }
+        assert_eq!(controller.blocked_events.len(), MAX_BLOCKED_EVENTS);
+        assert!(controller.snapshot_rebuild_required);
     }
 
     #[test]
@@ -393,5 +540,39 @@ mod tests {
             publication.revision,
         );
         assert!(controller.take_drawn_event().is_none());
+    }
+
+    #[test]
+    fn superseding_message_start_bypasses_blocked_generation() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageChunk {
+            text: "stale".into(),
+        });
+        controller.classify(AgentEvent::MessageEnd);
+
+        let decision = controller.classify(AgentEvent::MessageStart {
+            role: "assistant".into(),
+        });
+
+        assert!(decision.apply_now);
+        assert!(!decision.publication_due);
+        assert!(!controller.has_blocked_events());
+        assert!(controller.publish().is_none());
+    }
+
+    #[test]
+    fn generation_increment_fails_closed_at_exhaustion() {
+        let mut controller = StreamingPresentationController {
+            generation: u64::MAX,
+            ..Default::default()
+        };
+
+        let exhausted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            controller.classify(AgentEvent::MessageStart {
+                role: "assistant".into(),
+            });
+        }));
+
+        assert!(exhausted.is_err());
     }
 }

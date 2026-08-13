@@ -401,6 +401,9 @@ pub async fn run(
     // Reserve one response-only turn so the hard ceiling cannot strand the TUI
     // at "turn supervisor completed" without an assistant conclusion.
     let mut final_response_turn_due = false;
+    // The no-progress terminal phase shares the response-only reservation. It
+    // may be admitted once and cannot recursively schedule itself.
+    let mut forced_synthesis_attempted = false;
     // Infer the guidance task mode for this operator prompt (A1). Explicit
     // operator declarations pin the mode; otherwise inference updates it for
     // the current task without overriding a previously pinned mode.
@@ -1478,6 +1481,16 @@ pub async fn run(
                     )
             })
             && plan_open_items(&conversation.intent).is_empty();
+        // A bookkeeping-only reconciliation may end without duplicate closure
+        // prose only when it actually closes the visible plan. An advance that
+        // merely moves to the next item still requires another model turn;
+        // otherwise the agent loop silently returns control halfway through the
+        // operator's task, which presents as an unexplained halt in the TUI.
+        let reconciled_plan_still_open =
+            reconciled_plan_requires_continuation(&conversation.intent, &dispatch_calls);
+        if reconciled_plan_still_open {
+            final_response_turn_due = true;
+        }
 
         let dominant_phase = classify_turn_phase(&tool_catalog, &dispatch_calls, &results);
         let drift_kind =
@@ -1507,23 +1520,19 @@ pub async fn run(
             evidence,
             behavior::is_substantive_interleaved_prose(&assistant_msg.text),
         );
-        const MAX_NO_PROGRESS_TOOL_CONTINUATIONS: u32 = 8;
-        let no_progress_stop =
-            controller.no_progress_continuation_streak >= MAX_NO_PROGRESS_TOOL_CONTINUATIONS;
+        let no_progress_action = no_progress_terminal_action(
+            controller.no_progress_continuation_streak,
+            final_response_turn_due,
+            forced_synthesis_attempted,
+        );
+        let no_progress_stop = no_progress_action == NoProgressTerminalAction::ForceSynthesis;
         if no_progress_stop {
             tracing::warn!(
                 streak = controller.no_progress_continuation_streak,
-                "Stopping autonomous continuation after repeated no-progress tool turns"
+                "Scheduling one response-only synthesis turn after repeated no-progress tool turns"
             );
-            conversation.push_assistant(AssistantMessage {
-                text: "I stopped after repeated tool turns produced no measurable progress. Review the latest tool results or provide a narrower direction before continuing."
-                    .into(),
-                thinking: None,
-                tool_calls: Vec::new(),
-                raw: serde_json::Value::Null,
-                provider_tokens: (0, 0, 0, 0),
-                provider_telemetry: None,
-            });
+            forced_synthesis_attempted = true;
+            final_response_turn_due = true;
         }
         let behavior = behavioral_tier(config);
         let continuation_tier = continuation_pressure_tier(
@@ -1864,7 +1873,7 @@ pub async fn run(
         })));
 
         if no_progress_stop {
-            break;
+            continue;
         }
 
         if reconciled_visible_plan {
@@ -1961,6 +1970,43 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContinuationCause {
+    FeatureMessage,
+    OpenReconciledPlan,
+    EmptyResponseRecovery,
+}
+
+fn select_continuation_cause(
+    feature_message_pending: bool,
+    open_reconciled_plan: bool,
+    empty_response_recovery: bool,
+) -> Option<ContinuationCause> {
+    if feature_message_pending {
+        Some(ContinuationCause::FeatureMessage)
+    } else if open_reconciled_plan {
+        Some(ContinuationCause::OpenReconciledPlan)
+    } else if empty_response_recovery {
+        Some(ContinuationCause::EmptyResponseRecovery)
+    } else {
+        None
+    }
+}
+
+fn reconciled_plan_requires_continuation(intent: &IntentDocument, calls: &[ToolCall]) -> bool {
+    intent.plan_reconciliation_nudges > 0
+        && calls.iter().any(|call| {
+            call.name == crate::tool_registry::core::PLAN
+                && matches!(
+                    call.arguments
+                        .get("action")
+                        .and_then(|value| value.as_str()),
+                    Some("advance" | "complete" | "skip")
+                )
+        })
+        && !plan_open_items(intent).is_empty()
 }
 
 fn should_remind_realtime_plan_progress(
@@ -4195,7 +4241,49 @@ fn needs_final_response_turn(max_turns: u32, turn: u32, tool_call_count: usize) 
     max_turns > 0 && turn >= max_turns && tool_call_count > 0
 }
 
-/// Check if the conversation contains any file mutations (edit or write calls).
+fn no_progress_terminal_action(
+    consecutive_tool_continuations: u32,
+    final_response_reserved: bool,
+    forced_synthesis_attempted: bool,
+) -> NoProgressTerminalAction {
+    if consecutive_tool_continuations < 8 || final_response_reserved || forced_synthesis_attempted {
+        NoProgressTerminalAction::Continue
+    } else {
+        NoProgressTerminalAction::ForceSynthesis
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoProgressTerminalAction {
+    Continue,
+    ForceSynthesis,
+}
+
+#[cfg(test)]
+mod no_progress_terminal_tests {
+    use super::*;
+
+    #[test]
+    fn synthesis_is_reserved_once_and_never_competes_with_final_response() {
+        assert_eq!(
+            no_progress_terminal_action(7, false, false),
+            NoProgressTerminalAction::Continue
+        );
+        assert_eq!(
+            no_progress_terminal_action(8, false, false),
+            NoProgressTerminalAction::ForceSynthesis
+        );
+        assert_eq!(
+            no_progress_terminal_action(8, true, false),
+            NoProgressTerminalAction::Continue
+        );
+        assert_eq!(
+            no_progress_terminal_action(9, false, true),
+            NoProgressTerminalAction::Continue
+        );
+    }
+}
+
 fn has_mutations(conversation: &ConversationState) -> bool {
     !conversation.intent.files_modified.is_empty()
 }
@@ -9582,6 +9670,63 @@ This is the right first slice."#;
             }],
             &[failed],
         ));
+    }
+
+    #[test]
+    fn continuation_arbiter_selects_one_cause_by_precedence() {
+        assert_eq!(
+            select_continuation_cause(true, true, true),
+            Some(ContinuationCause::FeatureMessage)
+        );
+        assert_eq!(
+            select_continuation_cause(false, true, true),
+            Some(ContinuationCause::OpenReconciledPlan)
+        );
+        assert_eq!(
+            select_continuation_cause(false, false, true),
+            Some(ContinuationCause::EmptyResponseRecovery)
+        );
+        assert_eq!(select_continuation_cause(false, false, false), None);
+    }
+
+    #[test]
+    fn reconciled_plan_advancement_continues_while_visible_work_remains() {
+        let mut intent = IntentDocument {
+            plan_reconciliation_nudges: 1,
+            ..Default::default()
+        };
+        intent.set_work_plan(vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ]);
+        intent.execute_work_plan();
+        intent.advance_work_plan();
+        let advance = ToolCall {
+            id: "plan-advance".into(),
+            name: crate::tool_registry::core::PLAN.into(),
+            arguments: serde_json::json!({"action": "advance"}),
+        };
+
+        assert!(reconciled_plan_requires_continuation(&intent, &[advance]));
+    }
+
+    #[test]
+    fn reconciled_plan_does_not_continue_after_all_visible_work_closes() {
+        let mut intent = IntentDocument {
+            plan_reconciliation_nudges: 1,
+            ..Default::default()
+        };
+        intent.set_work_plan(vec!["only".to_string()]);
+        intent.execute_work_plan();
+        intent.advance_work_plan();
+        let complete = ToolCall {
+            id: "plan-complete".into(),
+            name: crate::tool_registry::core::PLAN.into(),
+            arguments: serde_json::json!({"action": "complete", "index": 1}),
+        };
+
+        assert!(!reconciled_plan_requires_continuation(&intent, &[complete]));
     }
 
     #[test]

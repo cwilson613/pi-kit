@@ -312,6 +312,38 @@ impl StartupSplashMode {
     }
 }
 
+/// Startup mouse-capture policy for interactive TUI sessions.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StartupMouseCaptureMode {
+    /// Preserve native selection unless capability-aware auto-enablement is available.
+    #[default]
+    Auto,
+    /// Enable mouse capture at startup.
+    On,
+    /// Keep terminal-native selection and disable mouse-only affordances.
+    Off,
+}
+
+impl StartupMouseCaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" | "enabled" | "true" => Some(Self::On),
+            "off" | "disabled" | "false" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 /// Runtime settings that can change mid-session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -390,6 +422,10 @@ pub struct Settings {
     /// Startup splash policy for interactive sessions.
     #[serde(default)]
     pub startup_splash: StartupSplashMode,
+
+    /// Startup mouse-capture policy for interactive sessions.
+    #[serde(default)]
+    pub startup_mouse_capture: StartupMouseCaptureMode,
 
     /// Update channel for in-app self-update.
     #[serde(default = "default_update_channel")]
@@ -724,6 +760,7 @@ impl Default for Settings {
             tool_detail: ToolDetail::Detailed,
             ui_presentation: crate::surfaces::layout::UiPresentationLevel::Om,
             startup_splash: StartupSplashMode::default(),
+            startup_mouse_capture: StartupMouseCaptureMode::default(),
             profile_source: ProfileSource::BuiltInDefault,
             provider_order: Vec::new(),
             fallback_providers: Vec::new(),
@@ -2587,6 +2624,23 @@ mod tests {
 
         assert_eq!(loaded.profile.compact_label(), Some("review"));
         assert!(!tmp.path().join(".omegon/active-profile.json").exists());
+    }
+
+    #[test]
+    fn startup_mouse_capture_mode_defaults_and_parses_stably() {
+        assert_eq!(
+            Settings::default().startup_mouse_capture,
+            StartupMouseCaptureMode::Auto
+        );
+        assert_eq!(
+            StartupMouseCaptureMode::parse("on"),
+            Some(StartupMouseCaptureMode::On)
+        );
+        assert_eq!(
+            StartupMouseCaptureMode::parse("off"),
+            Some(StartupMouseCaptureMode::Off)
+        );
+        assert_eq!(StartupMouseCaptureMode::parse("sometimes"), None);
     }
 
     #[test]

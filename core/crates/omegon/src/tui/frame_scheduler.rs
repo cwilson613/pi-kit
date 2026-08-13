@@ -24,9 +24,12 @@ pub(crate) struct TuiFrameScheduler {
     min_frame_interval: Duration,
     max_idle_poll: Duration,
     agent_budget: AgentDrainBudget,
-    dirty: bool,
-    urgent: bool,
+    requested_revision: u64,
+    drawn_revision: u64,
+    urgent_revision: Option<u64>,
     last_draw: Instant,
+    consecutive_over_budget_draws: u8,
+    presentation_retry_at: Option<Instant>,
 }
 
 impl TuiFrameScheduler {
@@ -38,16 +41,22 @@ impl TuiFrameScheduler {
                 max_events: 64,
                 max_duration: Duration::from_millis(4),
             },
-            dirty: true,
-            urgent: true,
+            requested_revision: 1,
+            drawn_revision: 0,
+            urgent_revision: Some(1),
             last_draw: now.checked_sub(Duration::from_millis(16)).unwrap_or(now),
+            consecutive_over_budget_draws: 0,
+            presentation_retry_at: None,
         }
     }
 
     pub(crate) fn mark_dirty(&mut self, reason: TuiDrawReason) {
-        self.dirty = true;
+        self.requested_revision = self
+            .requested_revision
+            .checked_add(1)
+            .expect("TUI frame revision exhausted");
         if matches!(reason, TuiDrawReason::OperatorInput) {
-            self.urgent = true;
+            self.urgent_revision = Some(self.requested_revision);
         }
     }
 
@@ -55,22 +64,75 @@ impl TuiFrameScheduler {
         self.agent_budget
     }
 
+    pub(crate) fn receiver_budget(&self) -> AgentDrainBudget {
+        self.agent_budget
+    }
+
     pub(crate) fn should_draw(&self, now: Instant) -> bool {
-        self.dirty && (self.urgent || now.duration_since(self.last_draw) >= self.min_frame_interval)
+        if self
+            .presentation_retry_at
+            .is_some_and(|retry_at| now < retry_at)
+        {
+            return false;
+        }
+        self.requested_revision > self.drawn_revision
+            && (self.is_urgent() || now.duration_since(self.last_draw) >= self.min_frame_interval)
+    }
+
+    pub(crate) fn presentation_degraded(&self) -> bool {
+        self.presentation_retry_at.is_some()
+    }
+
+    pub(crate) fn observe_draw_duration(&mut self, elapsed: Duration, completed_at: Instant) {
+        const DRAW_BUDGET: Duration = Duration::from_millis(250);
+        const OPEN_AFTER: u8 = 3;
+        const RETRY_DELAY: Duration = Duration::from_millis(250);
+
+        if elapsed > DRAW_BUDGET {
+            self.consecutive_over_budget_draws = self
+                .consecutive_over_budget_draws
+                .saturating_add(1)
+                .min(OPEN_AFTER);
+            if self.consecutive_over_budget_draws >= OPEN_AFTER {
+                self.presentation_retry_at = Some(completed_at + RETRY_DELAY);
+                self.mark_dirty(TuiDrawReason::BackgroundEvent);
+            }
+        } else {
+            self.consecutive_over_budget_draws = 0;
+            self.presentation_retry_at = None;
+        }
     }
 
     pub(crate) fn is_urgent(&self) -> bool {
-        self.urgent
+        self.urgent_revision
+            .is_some_and(|revision| revision > self.drawn_revision)
     }
 
-    pub(crate) fn after_draw(&mut self, completed_at: Instant) {
-        self.dirty = false;
-        self.urgent = false;
+    /// Capture the exact dirty revision represented by a frame. Mutations that
+    /// arrive while the draw is running receive a later revision and therefore
+    /// remain dirty after this frame completes.
+    pub(crate) fn begin_draw(&self) -> Option<u64> {
+        (self.requested_revision > self.drawn_revision).then_some(self.requested_revision)
+    }
+
+    pub(crate) fn after_draw(&mut self, drawn_revision: u64, completed_at: Instant) {
+        self.drawn_revision = self.drawn_revision.max(drawn_revision);
+        if self
+            .urgent_revision
+            .is_some_and(|revision| revision <= self.drawn_revision)
+        {
+            self.urgent_revision = None;
+        }
         self.last_draw = completed_at;
     }
 
     pub(crate) fn idle_poll_timeout(&self, now: Instant) -> Duration {
-        if self.dirty {
+        if let Some(retry_at) = self.presentation_retry_at
+            && now < retry_at
+        {
+            return retry_at.duration_since(now).min(self.max_idle_poll);
+        }
+        if self.requested_revision > self.drawn_revision {
             self.min_frame_interval
                 .saturating_sub(now.duration_since(self.last_draw))
                 .min(self.max_idle_poll)
@@ -81,7 +143,9 @@ impl TuiFrameScheduler {
     }
 
     pub(crate) fn mark_timer_due(&mut self, now: Instant) {
-        if !self.dirty && now.duration_since(self.last_draw) >= self.max_idle_poll {
+        if self.requested_revision == self.drawn_revision
+            && now.duration_since(self.last_draw) >= self.max_idle_poll
+        {
             self.mark_dirty(TuiDrawReason::TimerTick);
         }
     }
@@ -92,10 +156,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repeated_over_budget_draws_open_breaker_with_bounded_backoff() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(scheduler.begin_draw().unwrap(), now);
+
+        for offset in 1..=3 {
+            scheduler.observe_draw_duration(
+                Duration::from_millis(300),
+                now + Duration::from_millis(offset),
+            );
+        }
+
+        assert!(scheduler.presentation_degraded());
+        assert!(!scheduler.should_draw(now + Duration::from_millis(50)));
+        assert!(scheduler.should_draw(now + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn successful_half_open_probe_closes_breaker() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(scheduler.begin_draw().unwrap(), now);
+        for offset in 1..=3 {
+            scheduler.observe_draw_duration(
+                Duration::from_millis(300),
+                now + Duration::from_millis(offset),
+            );
+        }
+        let retry = now + Duration::from_millis(300);
+        assert!(scheduler.should_draw(retry));
+        scheduler.observe_draw_duration(Duration::from_millis(5), retry);
+
+        assert!(!scheduler.presentation_degraded());
+    }
+
+    #[test]
+    fn operator_input_remains_dirty_while_breaker_is_open() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(scheduler.begin_draw().unwrap(), now);
+        for offset in 1..=3 {
+            scheduler.observe_draw_duration(
+                Duration::from_millis(300),
+                now + Duration::from_millis(offset),
+            );
+        }
+        scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+
+        assert!(scheduler.is_urgent());
+        assert!(!scheduler.should_draw(now + Duration::from_millis(10)));
+        assert!(scheduler.should_draw(now + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn dirty_state_raised_during_draw_survives_completion() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        let drawn_revision = scheduler.begin_draw().expect("initial frame");
+
+        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        scheduler.after_draw(drawn_revision, now + Duration::from_millis(1));
+
+        assert!(scheduler.should_draw(now + Duration::from_millis(18)));
+    }
+
+    #[test]
     fn operator_input_forces_immediate_draw() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
 
         scheduler.mark_dirty(TuiDrawReason::OperatorInput);
 
@@ -106,12 +236,15 @@ mod tests {
     fn operator_urgency_survives_until_the_draw() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
         scheduler.mark_dirty(TuiDrawReason::OperatorInput);
         scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
 
         assert!(scheduler.is_urgent());
-        scheduler.after_draw(now + Duration::from_millis(1));
+        scheduler.after_draw(
+            scheduler.begin_draw().expect("frame"),
+            now + Duration::from_millis(1),
+        );
         assert!(!scheduler.is_urgent());
     }
 
@@ -119,7 +252,10 @@ mod tests {
     fn draw_completion_restarts_idle_deadline() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now + Duration::from_millis(40));
+        scheduler.after_draw(
+            scheduler.begin_draw().expect("frame"),
+            now + Duration::from_millis(40),
+        );
 
         assert_eq!(
             scheduler.idle_poll_timeout(now + Duration::from_millis(40)),
@@ -131,7 +267,7 @@ mod tests {
     fn background_events_are_coalesced_to_frame_interval() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
 
         scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
 
@@ -143,7 +279,7 @@ mod tests {
     fn dirty_background_frame_waits_only_until_frame_deadline() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
         scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
 
         assert_eq!(
@@ -160,7 +296,7 @@ mod tests {
     fn clean_idle_uses_bounded_background_refresh() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
 
         assert_eq!(scheduler.idle_poll_timeout(now), Duration::from_secs(1));
         assert_eq!(
@@ -177,7 +313,7 @@ mod tests {
     fn elapsed_idle_deadline_marks_timer_frame_due() {
         let now = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(now);
-        scheduler.after_draw(now);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
 
         scheduler.mark_timer_due(now + Duration::from_millis(999));
         assert!(!scheduler.should_draw(now + Duration::from_millis(999)));
@@ -233,7 +369,7 @@ mod tests {
     fn deterministic_streaming_scroll_trace() {
         let origin = Instant::now();
         let mut scheduler = TuiFrameScheduler::new(origin);
-        scheduler.after_draw(origin);
+        scheduler.after_draw(scheduler.begin_draw().expect("frame"), origin);
 
         let mut pending_stream_events = 0usize;
         let mut stream_events = 0usize;
@@ -279,7 +415,7 @@ mod tests {
                 if let Some(input_at) = pending_input_at.take() {
                     input_to_frame_ms.push(elapsed.saturating_sub(input_at).as_millis() as u64);
                 }
-                scheduler.after_draw(now);
+                scheduler.after_draw(scheduler.begin_draw().expect("frame"), now);
             }
         }
 

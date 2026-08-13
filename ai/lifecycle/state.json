@@ -1487,6 +1487,21 @@
       "bound_change": null,
       "created_at": "2026-08-11T17:37:15Z",
       "updated_at": "2026-08-11T17:37:15Z"
+    },
+    {
+      "id": "authoritative-tui-input-and-bounded-presentation",
+      "title": "Authoritative TUI input and bounded presentation",
+      "state": "decided",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-08-13T02:00:08Z",
+      "updated_at": "2026-08-13T02:06:17Z"
     }
   ],
   "changes": [
@@ -1748,6 +1763,23 @@
       "tasks_done": 0,
       "created_at": "2026-07-25T02:54:18Z",
       "updated_at": "2026-07-25T02:55:11Z"
+    },
+    {
+      "name": "transactional-native-scrollback-publication",
+      "title": "Transactional native scrollback publication",
+      "state": "archived",
+      "bound_node": null,
+      "specs": [
+        "tui-presentation"
+      ],
+      "test_files": [
+        "core/crates/omegon/src/tui/native_publication.rs",
+        "core/crates/omegon/src/tui/mod.rs"
+      ],
+      "tasks_total": 9,
+      "tasks_done": 9,
+      "created_at": "2026-08-13T20:41:41Z",
+      "updated_at": "2026-08-13T21:25:39Z"
     }
   ],
   "milestones": [],
@@ -4233,6 +4265,105 @@
       "entity_id": "stream-idle-boundary-semantics",
       "from_state": "(new)",
       "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T02:00:08Z",
+      "entity_type": "node",
+      "entity_id": "authoritative-tui-input-and-bounded-presentation",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T02:00:31Z",
+      "entity_type": "node",
+      "entity_id": "authoritative-tui-input-and-bounded-presentation",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T02:06:14Z",
+      "entity_type": "node",
+      "entity_id": "authoritative-tui-input-and-bounded-presentation",
+      "from_state": "exploring",
+      "to_state": "resolved",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T02:06:17Z",
+      "entity_type": "node",
+      "entity_id": "authoritative-tui-input-and-bounded-presentation",
+      "from_state": "resolved",
+      "to_state": "decided",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T20:41:41Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "(new)",
+      "to_state": "proposed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T20:41:53Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "proposed",
+      "to_state": "specced",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T20:42:18Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "specced",
+      "to_state": "planned",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:08:47Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "planned",
+      "to_state": "testing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:08:47Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "testing",
+      "to_state": "implementing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:25:30Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "implementing",
+      "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T21:25:39Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "verifying",
+      "to_state": "archived",
       "reason": null,
       "forced": false
     }

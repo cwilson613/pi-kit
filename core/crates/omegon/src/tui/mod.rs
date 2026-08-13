@@ -37,6 +37,7 @@ pub mod layout_projection;
 mod markdown_publication;
 mod menu_effects;
 pub(crate) mod menu_surface;
+mod native_publication;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
@@ -55,6 +56,7 @@ mod startup_splash;
 pub mod statusline;
 mod streaming_presentation;
 pub mod tab_bar;
+mod terminal_input;
 mod terminal_session;
 pub mod theme;
 pub mod tool_inspection;
@@ -88,6 +90,13 @@ fn declared_command_surface(
         .iter()
         .find(|definition| definition.name == name)
         .map(|definition| definition.surface)
+}
+
+fn segment_projection_revision_for_native_publication(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn should_toast_slash_response(response: &str) -> bool {
@@ -414,6 +423,7 @@ struct App {
     editor: Editor,
     conversation: ConversationView,
     stream_presentation: streaming_presentation::StreamingPresentationController,
+    native_publication: native_publication::NativePublicationState,
     agent_active: bool,
     should_quit: bool,
     turn: u32,
@@ -875,6 +885,7 @@ impl App {
             editor: Editor::new(),
             conversation: ConversationView::new(),
             stream_presentation: streaming_presentation::StreamingPresentationController::default(),
+            native_publication: native_publication::NativePublicationState::default(),
             agent_active: false,
             should_quit: false,
             turn: 0,
@@ -6552,6 +6563,37 @@ warning: {warning}"
             );
             return;
         }
+        if self.native_publication.is_degraded() {
+            self.show_toast(
+                "Native scrollback delivery is uncertain; use /export or the managed transcript",
+                ratatui_toaster::ToastType::Warning,
+            );
+            return;
+        }
+
+        let target_revision = segment_projection_revision_for_native_publication(&transcript);
+        let prepared = match self.native_publication.prepare(
+            &transcript,
+            target_revision,
+            native_publication::PreparationBudget::default(),
+        ) {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
+                self.show_toast(
+                    "Native scrollback is already current",
+                    ratatui_toaster::ToastType::Info,
+                );
+                return;
+            }
+            Err(_) => {
+                self.native_publication.begin_attachment();
+                self.show_toast(
+                    "Native scrollback projection changed; publication cursor rebuilt",
+                    ratatui_toaster::ToastType::Warning,
+                );
+                return;
+            }
+        };
 
         let mouse_capture = self.mouse_capture_enabled;
         let keyboard_enhancement = self.keyboard_enhancement;
@@ -6565,19 +6607,35 @@ warning: {warning}"
             }
             out.execute(LeaveAlternateScreen)?;
             writeln!(out)?;
-            writeln!(out, "----- Omegon transcript -----")?;
-            writeln!(out, "{transcript}")?;
-            writeln!(out, "----- End Omegon transcript -----")?;
+            if prepared.range.start == 0 {
+                writeln!(out, "----- Omegon transcript -----")?;
+            }
+            write!(out, "{}", prepared.text)?;
+            if prepared.range.end == transcript.len() {
+                writeln!(out)?;
+                writeln!(out, "----- End Omegon transcript -----")?;
+            }
             writeln!(out)?;
             out.flush()?;
             Self::restore_tui_after_native_scrollback(&mut out, keyboard_enhancement, mouse_capture)
         })();
 
+        let delivery = if result.is_ok() {
+            native_publication::DeliveryResult::Committed
+        } else {
+            // A write or flush error after leaving the alternate screen cannot
+            // prove whether bytes reached physical scrollback. Do not retry.
+            native_publication::DeliveryResult::Ambiguous
+        };
+        let _ = self.native_publication.settle(&prepared, delivery);
+
         if result.is_ok() {
-            self.show_toast(
-                "Transcript printed to native scrollback",
-                ratatui_toaster::ToastType::Success,
-            );
+            let message = if prepared.range.end == transcript.len() {
+                "Transcript printed to native scrollback"
+            } else {
+                "Transcript chunk printed; run /print again to continue"
+            };
+            self.show_toast(message, ratatui_toaster::ToastType::Success);
         } else {
             let mut out = io::stdout();
             let _ = Self::restore_tui_after_native_scrollback(
@@ -6586,7 +6644,7 @@ warning: {warning}"
                 mouse_capture,
             );
             self.show_toast(
-                "Could not print transcript to native scrollback",
+                "Native scrollback delivery is uncertain; blind retry disabled",
                 ratatui_toaster::ToastType::Warning,
             );
         }
@@ -6993,6 +7051,14 @@ warning: {warning}"
     }
 }
 
+fn startup_mouse_capture_enabled(mode: crate::settings::StartupMouseCaptureMode) -> bool {
+    match mode {
+        crate::settings::StartupMouseCaptureMode::On => true,
+        crate::settings::StartupMouseCaptureMode::Auto
+        | crate::settings::StartupMouseCaptureMode::Off => false,
+    }
+}
+
 /// Run the interactive TUI. Returns when the user quits.
 ///
 /// This spawns the ratatui event loop and communicates with the agent
@@ -7028,6 +7094,8 @@ pub struct TuiConfig {
     /// oneshot sender here; the TUI Enter handler consumes it.
     pub login_prompt_tx:
         std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
+    /// Initial mouse capture policy resolved from settings.
+    pub startup_mouse_capture: crate::settings::StartupMouseCaptureMode,
     /// Extension widgets discovered during setup — for tab rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Widget event receivers — one per discovered extension.
@@ -7335,6 +7403,77 @@ fn drain_agent_events_budgeted(
     }
 }
 
+fn drain_smoke_events_budgeted(
+    rx: &std::sync::mpsc::Receiver<AgentEvent>,
+    budget: AgentDrainBudget,
+) -> (Vec<AgentEvent>, DrainOutcome, bool) {
+    let started = std::time::Instant::now();
+    let mut events = Vec::new();
+    let mut disconnected = false;
+    while events.len() < budget.max_events && started.elapsed() < budget.max_duration {
+        match rx.try_recv() {
+            Ok(event) => events.push(event),
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    let handled = events.len();
+    (
+        events,
+        DrainOutcome {
+            handled,
+            hit_budget: handled == budget.max_events || started.elapsed() >= budget.max_duration,
+        },
+        disconnected,
+    )
+}
+
+fn drain_widget_events_budgeted(
+    receivers: &mut [tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>],
+    budget: AgentDrainBudget,
+) -> (Vec<crate::extensions::WidgetEvent>, DrainOutcome) {
+    let started = std::time::Instant::now();
+    let mut events = Vec::new();
+    let mut cursor = 0;
+    while !receivers.is_empty()
+        && events.len() < budget.max_events
+        && started.elapsed() < budget.max_duration
+    {
+        let mut progressed = false;
+        for _ in 0..receivers.len() {
+            let index = cursor % receivers.len();
+            cursor = cursor.wrapping_add(1);
+            match receivers[index].try_recv() {
+                Ok(event) => {
+                    events.push(event);
+                    progressed = true;
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    progressed = true;
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {}
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    let handled = events.len();
+    (
+        events,
+        DrainOutcome {
+            handled,
+            hit_budget: handled == budget.max_events || started.elapsed() >= budget.max_duration,
+        },
+    )
+}
+
 fn runtime_contention_snapshot(app: &App) -> runtime_trace::RuntimeContentionSnapshot {
     let terminal_sessions = crate::tools::terminal::execution_session_snapshots();
     runtime_trace::RuntimeContentionSnapshot {
@@ -7358,6 +7497,7 @@ fn runtime_contention_snapshot(app: &App) -> runtime_trace::RuntimeContentionSna
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
     command_tx: OperatorCommandTx,
+    interrupt_tx: tokio::sync::mpsc::Sender<terminal_input::TerminalInterrupt>,
     config: TuiConfig,
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
@@ -7384,13 +7524,11 @@ pub async fn run_tui(
     io::stdout().execute(crossterm::terminal::Clear(
         crossterm::terminal::ClearType::All,
     ))?;
-    // Mouse capture is ON by default for wheel and pane interaction. Native
-    // terminal selection remains available without changing modes by holding
-    // Shift while dragging (the standard terminal mouse-capture override).
-    // `/mouse off` remains the guaranteed passthrough fallback for terminals
-    // that do not implement the Shift override.
-    io::stdout().execute(EnableMouseCapture)?;
-    terminal_guard.mark_mouse_capture();
+    let mouse_capture_enabled = startup_mouse_capture_enabled(config.startup_mouse_capture);
+    if mouse_capture_enabled {
+        io::stdout().execute(EnableMouseCapture)?;
+        terminal_guard.mark_mouse_capture();
+    }
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
     terminal_guard.mark_bracketed_paste();
 
@@ -7431,11 +7569,9 @@ pub async fn run_tui(
         },
     );
 
-    // Mouse capture starts enabled because two-finger/trackpad scrolling is a
-    // conversation-view invariant. Shift-drag asks the terminal to bypass
-    // capture for native selection; `/mouse off` is the guaranteed fallback.
     let mut app = App::new(settings.clone());
-    app.mouse_capture_enabled = true;
+    app.mouse_capture_enabled = mouse_capture_enabled;
+    app.terminal_copy_mode = !mouse_capture_enabled;
     app.keyboard_enhancement = has_keyboard_enhancement;
     app.secret_readiness = config.secret_readiness.clone();
     if let Some(snapshot) = app.secret_readiness.as_ref() {
@@ -7562,6 +7698,7 @@ pub async fn run_tui(
     }
 
     let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
+    let mut terminal_input = terminal_input::TerminalInputPump::spawn();
     let mut runtime_trace = runtime_trace::TuiRuntimeTrace::new(config.debug_tui);
 
     loop {
@@ -7575,13 +7712,17 @@ pub async fn run_tui(
         // ingesting producer traffic so streaming cannot starve scrolling,
         // cancellation, or editor control.
         let mut handled_input = false;
+        while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
+            // This channel is consumed outside the presentation task. The send
+            // is non-awaiting so cancellation cannot queue behind a wedged draw.
+            let _ = interrupt_tx.try_send(interrupt);
+        }
         let mut handled_input_count = 0_u64;
         let input_started = std::time::Instant::now();
         for _ in 0..16 {
-            if !event::poll(Duration::ZERO)? {
+            let Ok(input_event) = terminal_input.try_recv() else {
                 break;
-            }
-            let input_event = event::read()?;
+            };
             handled_input = true;
             handled_input_count += 1;
             if matches!(
@@ -7610,20 +7751,13 @@ pub async fn run_tui(
         }
 
         if let Some(rx) = &app.smoke_event_rx {
-            let mut smoke_events = Vec::new();
-            let mut smoke_disconnected = false;
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => smoke_events.push(event),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        smoke_disconnected = true;
-                        break;
-                    }
-                }
-            }
+            let (smoke_events, smoke_drain, smoke_disconnected) =
+                drain_smoke_events_budgeted(rx, scheduler.receiver_budget());
             for event in smoke_events {
                 app.handle_agent_event(event);
+                scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+            }
+            if smoke_drain.hit_budget {
                 scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
             }
             if smoke_disconnected {
@@ -7631,38 +7765,40 @@ pub async fn run_tui(
             }
         }
 
-        // Poll widget receivers for updates
-        for rx in &mut app.widget_receivers {
-            while let Ok(event) = rx.try_recv() {
-                match event {
-                    crate::extensions::WidgetEvent::Update {
-                        widget_id,
-                        title,
-                        data,
-                    } => {
-                        if let Some(widget) = app.extension_widgets.get_mut(&widget_id) {
-                            if let Some(new_title) = title {
-                                widget.label = new_title;
-                            }
-                            widget.current_data = data;
-                            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        let (widget_events, widget_drain) =
+            drain_widget_events_budgeted(&mut app.widget_receivers, scheduler.receiver_budget());
+        for event in widget_events {
+            match event {
+                crate::extensions::WidgetEvent::Update {
+                    widget_id,
+                    title,
+                    data,
+                } => {
+                    if let Some(widget) = app.extension_widgets.get_mut(&widget_id) {
+                        if let Some(new_title) = title {
+                            widget.label = new_title;
                         }
-                    }
-                    crate::extensions::WidgetEvent::ShowModal {
-                        widget_id,
-                        data,
-                        auto_dismiss_ms,
-                    } => {
-                        app.active_modal =
-                            Some((widget_id, data, auto_dismiss_ms, std::time::Instant::now()));
-                        scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
-                    }
-                    crate::extensions::WidgetEvent::ActionRequired { widget_id, actions } => {
-                        app.active_action_prompt = Some((widget_id, actions));
+                        widget.current_data = data;
                         scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
                     }
                 }
+                crate::extensions::WidgetEvent::ShowModal {
+                    widget_id,
+                    data,
+                    auto_dismiss_ms,
+                } => {
+                    app.active_modal =
+                        Some((widget_id, data, auto_dismiss_ms, std::time::Instant::now()));
+                    scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                }
+                crate::extensions::WidgetEvent::ActionRequired { widget_id, actions } => {
+                    app.active_action_prompt = Some((widget_id, actions));
+                    scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+                }
             }
+        }
+        if widget_drain.hit_budget {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
         }
 
         // Coalesce background mutations to the frame interval. Operator input
@@ -7670,6 +7806,9 @@ pub async fn run_tui(
         let now = std::time::Instant::now();
         scheduler.mark_timer_due(now);
         if scheduler.should_draw(now) {
+            let drawn_revision = scheduler
+                .begin_draw()
+                .expect("scheduled frame has a revision");
             let urgent = scheduler.is_urgent();
             let publication_revision = app.publish_stream_presentation();
             let draw_started = std::time::Instant::now();
@@ -7685,6 +7824,8 @@ pub async fn run_tui(
                 scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
             }
             let draw_finished = std::time::Instant::now();
+            scheduler
+                .observe_draw_duration(draw_finished.duration_since(draw_started), draw_finished);
             if let Some(trace) = &mut runtime_trace {
                 let segments = app.conversation.segments().len();
                 let scroll_offset = app.conversation.conv_state.scroll_offset;
@@ -7703,7 +7844,13 @@ pub async fn run_tui(
                 });
                 trace.flush_if_due(draw_finished, runtime_contention_snapshot(&app));
             }
-            scheduler.after_draw(draw_finished);
+            scheduler.after_draw(drawn_revision, draw_finished);
+            if scheduler.presentation_degraded() {
+                app.show_toast(
+                    "Presentation is behind; retrying with bounded backoff",
+                    ratatui_toaster::ToastType::Warning,
+                );
+            }
         } else if let Some(trace) = &mut runtime_trace {
             trace.record_dirty_without_draw();
             trace.flush_if_due(now, runtime_contention_snapshot(&app));
@@ -7711,6 +7858,16 @@ pub async fn run_tui(
 
         if app.should_quit {
             break;
+        }
+
+        if let Ok(boundary) = terminal_input.try_recv_boundary() {
+            let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
+            eprintln!("{}", boundary.message());
+            break;
+        }
+
+        while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
+            let _ = interrupt_tx.try_send(interrupt);
         }
 
         // If the agent budget was exhausted, yield only long enough to service
@@ -7748,9 +7905,8 @@ pub async fn run_tui(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-            polled = async { event::poll(poll_timeout) } => {
-                if polled? {
-                    let input_event = event::read()?;
+            input = terminal_input.recv() => {
+                if let Some(input_event) = input {
                     let input_at = std::time::Instant::now();
                     let _ = app.handle_terminal_event(input_event, &command_tx).await;
                     scheduler.mark_dirty(TuiDrawReason::OperatorInput);
@@ -7759,6 +7915,7 @@ pub async fn run_tui(
                     }
                 }
             }
+            _ = tokio::time::sleep(poll_timeout) => {}
         }
     }
 
@@ -7779,6 +7936,57 @@ pub async fn run_tui(
 #[cfg(test)]
 mod auspex_copy_tests {
     use super::*;
+
+    #[test]
+    fn smoke_receiver_drain_stops_at_shared_budget() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..10 {
+            tx.send(AgentEvent::SessionReset).unwrap();
+        }
+        let (events, outcome, disconnected) = drain_smoke_events_budgeted(
+            &rx,
+            AgentDrainBudget {
+                max_events: 3,
+                max_duration: Duration::from_secs(1),
+            },
+        );
+        assert_eq!(events.len(), 3);
+        assert!(outcome.hit_budget);
+        assert!(!disconnected);
+    }
+
+    #[test]
+    fn widget_receiver_drain_stops_at_shared_budget() {
+        let (tx, rx) = tokio::sync::broadcast::channel(16);
+        for index in 0..10 {
+            tx.send(crate::extensions::WidgetEvent::Update {
+                widget_id: "test".into(),
+                title: None,
+                data: serde_json::json!(index),
+            })
+            .unwrap();
+        }
+        let (events, outcome) = drain_widget_events_budgeted(
+            &mut [rx],
+            AgentDrainBudget {
+                max_events: 3,
+                max_duration: Duration::from_secs(1),
+            },
+        );
+        assert_eq!(events.len(), 3);
+        assert!(outcome.hit_budget);
+    }
+
+    #[test]
+    fn startup_mouse_capture_policy_is_explicit_and_selection_safe_by_default() {
+        use crate::settings::StartupMouseCaptureMode;
+
+        assert!(!startup_mouse_capture_enabled(
+            StartupMouseCaptureMode::Auto
+        ));
+        assert!(startup_mouse_capture_enabled(StartupMouseCaptureMode::On));
+        assert!(!startup_mouse_capture_enabled(StartupMouseCaptureMode::Off));
+    }
 
     #[test]
     fn command_copy_marks_auspex_primary_without_dash_autocomplete() {

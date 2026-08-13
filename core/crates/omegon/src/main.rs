@@ -4531,7 +4531,6 @@ fn build_tui_secret_readiness_snapshot(
         voice_polling_handles,
     };
     let tui_cancel = shared_cancel.clone();
-    let tui_interrupt_cancel = shared_cancel.clone();
     let tui_settings = shared_settings.clone();
     // The coordinator owns the process lifetime, while the TUI owns the
     // interactive terminal. Any TUI terminal boundary — orderly return,
@@ -4541,7 +4540,10 @@ fn build_tui_secret_readiness_snapshot(
     // channel open.
     let tui_exit = CancellationToken::new();
     let tui_exit_signal = tui_exit.clone();
+    let tui_interrupt_identity = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let tui_interrupt_identity_for_relay = tui_interrupt_identity.clone();
     let (tui_interrupt_tx, mut tui_interrupt_rx) = tokio::sync::mpsc::channel(8);
+    let (runtime_interrupt_tx, mut runtime_interrupt_rx) = tokio::sync::mpsc::channel(8);
     let tui_handle = tokio::spawn(async move {
         let result = tui::run_tui(
             events_rx,
@@ -4559,11 +4561,13 @@ fn build_tui_secret_readiness_snapshot(
     });
     let tui_interrupt_task = tokio::spawn(async move {
         while tui_interrupt_rx.recv().await.is_some() {
-            let mut guard = tui_interrupt_cancel
+            let identity = tui_interrupt_identity_for_relay
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(token) = guard.take() {
-                token.cancel();
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .copied();
+            if let Some(identity) = identity {
+                let _ = runtime_interrupt_tx.try_send(identity);
             }
         }
     });
@@ -4632,6 +4636,25 @@ fn build_tui_secret_readiness_snapshot(
             tokio::select! {
                 biased;
                 _ = tui_exit.cancelled() => break,
+                interrupt = runtime_interrupt_rx.recv() => match interrupt {
+                    Some(identity) => {
+                        let admission = runtime.admit_interrupt(
+                            identity,
+                            RuntimeActor::tui(),
+                            ControlSurface::Tui,
+                        );
+                        if admission == InterruptAdmission::Admitted {
+                            let guard = shared_cancel
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if let Some(token) = guard.as_ref() {
+                                token.cancel();
+                            }
+                        }
+                        continue;
+                    }
+                    None => continue,
+                },
                 cmd = command_rx.recv() => match cmd {
                     Some(cmd) => cmd,
                     None => break,
@@ -6102,6 +6125,10 @@ fn build_tui_secret_readiness_snapshot(
                 }
 
                 while let Some(active) = runtime.maybe_start_next_turn() {
+                    *tui_interrupt_identity
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        runtime.current_identity();
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
                     let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
                     lifecycle.transition("promoted", runtime.queue_depth(), &events_tx);
@@ -9564,6 +9591,57 @@ mod tests {
         assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
         assert!(!supervisor.is_busy(), "busy clears only after completion");
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_interrupt_admission_rejects_stale_identity() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "first".to_string(),
+            Vec::new(),
+            RuntimeActor::tui(),
+            ControlSurface::Tui,
+            operator_commands::PromptMetadata::default(),
+            None,
+        );
+        let active = supervisor.maybe_start_next_turn().expect("active turn");
+        let stale = RuntimeTurnIdentity {
+            session_epoch: supervisor.session_epoch,
+            runtime_turn_id: active.runtime_turn_id + 1,
+        };
+
+        assert_eq!(
+            supervisor.admit_interrupt(stale, RuntimeActor::tui(), ControlSurface::Tui),
+            InterruptAdmission::Stale
+        );
+        assert!(matches!(
+            supervisor.active_turn.as_ref().unwrap().phase,
+            ActiveTurnPhase::Running
+        ));
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_interrupt_admission_is_idempotent() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "first".to_string(),
+            Vec::new(),
+            RuntimeActor::tui(),
+            ControlSurface::Tui,
+            operator_commands::PromptMetadata::default(),
+            None,
+        );
+        supervisor.maybe_start_next_turn().expect("active turn");
+        let identity = supervisor.current_identity().expect("runtime identity");
+
+        assert_eq!(
+            supervisor.admit_interrupt(identity, RuntimeActor::tui(), ControlSurface::Tui),
+            InterruptAdmission::Admitted
+        );
+        assert_eq!(
+            supervisor.admit_interrupt(identity, RuntimeActor::tui(), ControlSurface::Tui),
+            InterruptAdmission::Duplicate
+        );
     }
 
     #[test]

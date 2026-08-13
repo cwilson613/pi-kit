@@ -101,6 +101,20 @@ impl PromptEnvelope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeTurnIdentity {
+    session_epoch: u64,
+    runtime_turn_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterruptAdmission {
+    Admitted,
+    Duplicate,
+    Stale,
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeTurnOutcome {
     Completed,
     Revoked,
@@ -729,6 +743,7 @@ async fn stop_voice_session_if_requested(
 struct InteractiveRuntimeSupervisor {
     queue: VecDeque<PromptEnvelope>,
     active_turn: Option<ActiveTurnMeta>,
+    session_epoch: u64,
     next_prompt_id: u64,
     next_runtime_turn_id: u64,
     default_queue_mode: QueueMode,
@@ -847,18 +862,44 @@ impl InteractiveRuntimeSupervisor {
         Some(active)
     }
 
+    fn current_identity(&self) -> Option<RuntimeTurnIdentity> {
+        self.active_turn.as_ref().map(|active| RuntimeTurnIdentity {
+            session_epoch: self.session_epoch,
+            runtime_turn_id: active.runtime_turn_id,
+        })
+    }
+
+    fn admit_interrupt(
+        &mut self,
+        identity: RuntimeTurnIdentity,
+        actor: RuntimeActor,
+        via: ControlSurface,
+    ) -> InterruptAdmission {
+        let Some(active) = self.active_turn.as_mut() else {
+            return InterruptAdmission::Idle;
+        };
+        if identity.session_epoch != self.session_epoch
+            || identity.runtime_turn_id != active.runtime_turn_id
+        {
+            return InterruptAdmission::Stale;
+        }
+        if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
+            return InterruptAdmission::Duplicate;
+        }
+        active.phase = ActiveTurnPhase::Cancelling {
+            requested_by: actor,
+            via,
+        };
+        InterruptAdmission::Admitted
+    }
+
     fn request_cancel(
         &mut self,
         actor: RuntimeActor,
         via: ControlSurface,
     ) -> Option<&ActiveTurnMeta> {
-        let active = self.active_turn.as_mut()?;
-        if matches!(active.phase, ActiveTurnPhase::Running) {
-            active.phase = ActiveTurnPhase::Cancelling {
-                requested_by: actor,
-                via,
-            };
-        }
+        let identity = self.current_identity()?;
+        let _ = self.admit_interrupt(identity, actor, via);
         self.active_turn.as_ref()
     }
 

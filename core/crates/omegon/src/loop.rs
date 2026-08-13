@@ -1483,14 +1483,8 @@ pub async fn run(
         // merely moves to the next item still requires another model turn;
         // otherwise the agent loop silently returns control halfway through the
         // operator's task, which presents as an unexplained halt in the TUI.
-        let reconciled_plan_still_open = matches!(
-            select_continuation_cause(
-                false,
-                reconciled_plan_requires_continuation(&conversation.intent, &dispatch_calls),
-                false,
-            ),
-            Some(ContinuationCause::OpenReconciledPlan)
-        );
+        let reconciled_plan_still_open =
+            reconciled_plan_requires_continuation(&conversation.intent, &dispatch_calls);
         if reconciled_plan_still_open {
             final_response_turn_due = true;
         }

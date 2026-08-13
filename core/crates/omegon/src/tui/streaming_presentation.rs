@@ -13,6 +13,14 @@ const MAX_AUTHORITATIVE_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_DELTA_BYTES: usize = 256 * 1024;
 const MAX_BLOCKED_EVENTS: usize = 256;
 
+fn trailing_utf8_window_start(text: &str, max_bytes: usize) -> usize {
+    let mut start = text.len().saturating_sub(max_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    start
+}
+
 /// TUI-local stream publication state. Runtime events remain authoritative; this
 /// controller preserves their order while deciding when progressive content
 /// becomes a presentation revision and when later events may overtake it.
@@ -147,12 +155,36 @@ impl StreamingPresentationController {
     }
 
     fn accumulate(&mut self, kind: StreamContentKind, text: String) {
-        if self.authoritative_text.len().saturating_add(text.len()) > MAX_AUTHORITATIVE_BYTES {
+        if text.len() > MAX_AUTHORITATIVE_BYTES {
+            let start = trailing_utf8_window_start(&text, MAX_AUTHORITATIVE_BYTES);
+            self.authoritative_text.clear();
+            self.authoritative_text.push_str(&text[start..]);
+            self.published_len = 0;
             self.snapshot_rebuild_required = true;
             self.pending_deltas.clear();
             self.pending_delta_bytes = 0;
+            self.accumulated_revision = self
+                .accumulated_revision
+                .checked_add(1)
+                .expect("stream presentation revision exhausted");
             self.unpublished_content = true;
             return;
+        }
+        let overflow = self
+            .authoritative_text
+            .len()
+            .saturating_add(text.len())
+            .saturating_sub(MAX_AUTHORITATIVE_BYTES);
+        if overflow > 0 {
+            let trim_at = trailing_utf8_window_start(
+                &self.authoritative_text,
+                self.authoritative_text.len() - overflow,
+            );
+            self.authoritative_text.drain(..trim_at);
+            self.published_len = 0;
+            self.snapshot_rebuild_required = true;
+            self.pending_deltas.clear();
+            self.pending_delta_bytes = 0;
         }
         self.authoritative_text.push_str(&text);
         if self.pending_delta_bytes.saturating_add(text.len()) > MAX_PENDING_DELTA_BYTES {
@@ -243,6 +275,37 @@ mod tests {
         let publication = controller.publish().expect("stream publication");
         controller.acknowledge_draw(publication.generation, publication.revision);
         publication
+    }
+
+    #[test]
+    fn oversized_unicode_record_retains_bounded_trailing_snapshot() {
+        let mut controller = StreamingPresentationController::default();
+        let oversized = "🦀".repeat((MAX_AUTHORITATIVE_BYTES / 4) + 50);
+        controller.classify(AgentEvent::MessageChunk {
+            text: oversized.clone(),
+        });
+
+        assert!(controller.authoritative_text().len() <= MAX_AUTHORITATIVE_BYTES);
+        assert!(controller.authoritative_text().is_char_boundary(0));
+        assert!(oversized.ends_with(controller.authoritative_text()));
+        let publication = controller.publish().expect("bounded snapshot");
+        assert_eq!(publication.deltas.len(), 1);
+        assert_eq!(publication.deltas[0].1, controller.authoritative_text());
+    }
+
+    #[test]
+    fn cumulative_overflow_keeps_latest_content_without_splitting_utf8() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageChunk {
+            text: "a".repeat(MAX_AUTHORITATIVE_BYTES - 2),
+        });
+        controller.classify(AgentEvent::MessageChunk {
+            text: "🦀tail".into(),
+        });
+
+        assert!(controller.authoritative_text().len() <= MAX_AUTHORITATIVE_BYTES);
+        assert!(controller.authoritative_text().ends_with("🦀tail"));
+        assert!(std::str::from_utf8(controller.authoritative_text().as_bytes()).is_ok());
     }
 
     #[test]

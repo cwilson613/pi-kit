@@ -64,6 +64,10 @@ impl TuiFrameScheduler {
         self.agent_budget
     }
 
+    pub(crate) fn receiver_budget(&self) -> AgentDrainBudget {
+        self.agent_budget
+    }
+
     pub(crate) fn should_draw(&self, now: Instant) -> bool {
         if self
             .presentation_retry_at

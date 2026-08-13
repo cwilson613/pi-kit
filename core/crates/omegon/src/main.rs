@@ -4045,6 +4045,20 @@ fn clear_published_runtime_identity(
     }
 }
 
+const TUI_COOPERATIVE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+async fn stop_background_task(mut task: tokio::task::JoinHandle<()>) -> bool {
+    if tokio::time::timeout(TUI_COOPERATIVE_SHUTDOWN_TIMEOUT, &mut task)
+        .await
+        .is_ok()
+    {
+        return true;
+    }
+    task.abort();
+    let _ = task.await;
+    false
+}
+
 fn signal_tui_boundary_exit(exit: &CancellationToken) {
     exit.cancel();
 }
@@ -6466,10 +6480,14 @@ fn build_tui_secret_readiness_snapshot(
     // Revoke IPC/background ingress before waiting on any presentation task.
     // Terminal loss must not leave sender clones able to prolong teardown.
     ipc_cancel.cancel();
-    tui_handle.abort();
-    let _ = tui_handle.await;
     tui_interrupt_task.abort();
     let _ = tui_interrupt_task.await;
+    if !stop_background_task(tui_handle).await {
+        tracing::warn!(
+            timeout_ms = TUI_COOPERATIVE_SHUTDOWN_TIMEOUT.as_millis(),
+            "TUI teardown exceeded its cooperative deadline and was aborted"
+        );
+    }
     let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
     let _ = io::stdout().execute(DisableMouseCapture);
     let _ = io::stdout().execute(crossterm::event::PopKeyboardEnhancementFlags);
@@ -9615,6 +9633,22 @@ mod tests {
         assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
         assert!(!supervisor.is_busy(), "busy clears only after completion");
+    }
+
+    #[tokio::test]
+    async fn cooperative_background_task_finishes_without_abort() {
+        let task = tokio::spawn(async {});
+        assert!(stop_background_task(task).await);
+    }
+
+    #[tokio::test]
+    async fn blocked_background_task_is_aborted_after_deadline() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let started = std::time::Instant::now();
+        assert!(!stop_background_task(task).await);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

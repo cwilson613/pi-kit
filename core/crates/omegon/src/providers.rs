@@ -1055,13 +1055,39 @@ fn sse_idle_budget() -> SseIdleBudget {
     }
 }
 
+fn drain_sse_lines<F>(buffer: &mut Vec<u8>, mut on_data: F) -> bool
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut consumed = 0;
+    while let Some(relative_newline) = buffer[consumed..].iter().position(|byte| *byte == b'\n') {
+        let newline = consumed + relative_newline;
+        let mut end = newline;
+        if end > consumed && buffer[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let line = String::from_utf8_lossy(&buffer[consumed..end]);
+        consumed = newline + 1;
+        if let Some(data) = line.strip_prefix("data: ")
+            && (data == "[DONE]" || !on_data(data))
+        {
+            buffer.drain(..consumed);
+            return false;
+        }
+    }
+    if consumed > 0 {
+        buffer.drain(..consumed);
+    }
+    true
+}
+
 async fn process_sse<F>(response: reqwest::Response, mut on_data: F) -> anyhow::Result<()>
 where
     F: FnMut(&str, &SsePhaseGate) -> bool, // returns false to stop
 {
     let budget = sse_idle_budget();
     let gate = SsePhaseGate::new();
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut stream = response.bytes_stream();
 
     loop {
@@ -1073,17 +1099,10 @@ where
         match tokio::time::timeout(idle_timeout, stream.next()).await {
             Ok(Some(chunk)) => {
                 let chunk = chunk?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                buffer.extend_from_slice(&chunk);
 
-                while let Some(newline) = buffer.find('\n') {
-                    let line = buffer[..newline].trim_end_matches('\r').to_string();
-                    buffer = buffer[newline + 1..].to_string();
-
-                    if let Some(data) = line.strip_prefix("data: ")
-                        && (data == "[DONE]" || !on_data(data, &gate))
-                    {
-                        return Ok(());
-                    }
+                if !drain_sse_lines(&mut buffer, |data| on_data(data, &gate)) {
+                    return Ok(());
                 }
             }
             Ok(None) => break, // stream ended
@@ -3464,17 +3483,28 @@ async fn parse_codex_stream(
                 ));
                 return false;
             }
-            "response.content_part.added" | "response.reasoning_summary_part.added" => {}
+            "response.created" | "response.in_progress" => {
+                if let Some(event) = crate::codex_events::liveness_event_for_codex_type(etype) {
+                    let _ = tx.try_send(event);
+                }
+            }
+            "response.content_part.added" | "response.reasoning_summary_part.added" => {
+                if let Some(event) = crate::codex_events::liveness_event_for_codex_type(etype) {
+                    let _ = tx.try_send(event);
+                }
+            }
             _ => {
-                // Forward unhandled Codex events as a no-op heartbeat.
-                // The Responses API sends events like response.created,
-                // response.in_progress, and reasoning.delta during model
-                // thinking — these don't map to LlmEvents but MUST reset
-                // the 30s consumer idle timer in consume_llm_stream,
-                // otherwise the consumer assumes the stream is stalled
-                // while the model is still reasoning.  LlmEvent::Start is
-                // already handled as a no-op by the consumer.
-                let _ = tx.try_send(LlmEvent::Start);
+                // Unknown/no-op Responses events prove transport liveness only.
+                // They must never masquerade as a new stream start or reset the
+                // semantic-progress watchdog.
+                tracing::debug!(
+                    provider = "openai-codex",
+                    event_type = %crate::util::truncate(etype, 160),
+                    "unhandled Codex SSE event treated as transport heartbeat"
+                );
+                if let Some(event) = crate::codex_events::liveness_event_for_codex_type(etype) {
+                    let _ = tx.try_send(event);
+                }
             }
         }
         true
@@ -6673,6 +6703,40 @@ mod tests {
         .expect_err("malformed arguments should fail");
 
         assert!(error.to_string().contains("arguments are not valid JSON"));
+    }
+
+    #[test]
+    fn sse_framer_preserves_partial_chunks_crlf_and_multiple_events() {
+        let mut buffer = Vec::new();
+        let mut data = Vec::new();
+
+        buffer.extend_from_slice(b"data: fir");
+        assert!(drain_sse_lines(&mut buffer, |value| {
+            data.push(value.to_string());
+            true
+        }));
+        assert!(data.is_empty());
+        assert_eq!(&buffer[..], b"data: fir");
+
+        buffer.extend_from_slice(b"st\r\ndata: second\n");
+        assert!(drain_sse_lines(&mut buffer, |value| {
+            data.push(value.to_string());
+            true
+        }));
+        assert_eq!(data, ["first", "second"]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn sse_framer_stops_at_done_without_consuming_following_partial_data() {
+        let mut buffer = Vec::from(&b"data: first\ndata: [DONE]\ndata: later"[..]);
+        let mut data = Vec::new();
+        assert!(!drain_sse_lines(&mut buffer, |value| {
+            data.push(value.to_string());
+            true
+        }));
+        assert_eq!(data, ["first"]);
+        assert_eq!(&buffer[..], b"data: later");
     }
 
     #[test]

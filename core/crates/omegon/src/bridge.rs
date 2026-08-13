@@ -170,6 +170,10 @@ pub enum LlmEvent {
     /// Initial event with partial message — we ignore the content but must accept the variant.
     #[serde(rename = "start")]
     Start,
+    /// Transport activity that carries no model-visible progress. This proves
+    /// the connection is alive but must not extend semantic-progress budgets.
+    #[serde(rename = "transport_heartbeat")]
+    TransportHeartbeat,
     #[serde(rename = "text_delta")]
     TextDelta { delta: String },
     #[serde(rename = "thinking_delta")]

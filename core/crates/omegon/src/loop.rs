@@ -2548,6 +2548,7 @@ struct StreamIdlePolicy {
     initial: std::time::Duration,
     active: std::time::Duration,
     reasoning: std::time::Duration,
+    absolute: std::time::Duration,
 }
 
 impl StreamIdlePolicy {
@@ -2564,10 +2565,17 @@ impl StreamIdlePolicy {
             .filter(|seconds| *seconds >= 60)
             .map(std::time::Duration::from_secs)
             .unwrap_or_else(|| std::time::Duration::from_secs(600));
+        let absolute = std::env::var("OMEGON_LLM_ABSOLUTE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds >= 60)
+            .map(std::time::Duration::from_secs)
+            .unwrap_or_else(|| std::time::Duration::from_secs(1800));
         Self {
             initial,
             active: std::time::Duration::from_secs(90),
             reasoning,
+            absolute,
         }
     }
 
@@ -2602,13 +2610,14 @@ fn select_stream_idle_budget(
         initial,
         active,
         reasoning: reasoning_budget,
+        absolute: std::time::Duration::from_secs(1800),
     }
     .budget(phase, false)
 }
 
 fn stream_idle_phase_after_event(current: StreamIdlePhase, event: &LlmEvent) -> StreamIdlePhase {
     match event {
-        LlmEvent::Start => current,
+        LlmEvent::Start | LlmEvent::TransportHeartbeat => current,
         LlmEvent::TextStart | LlmEvent::TextDelta { .. } => StreamIdlePhase::OutputStreaming,
         LlmEvent::TextEnd => StreamIdlePhase::AmbiguousSilent,
         LlmEvent::ThinkingStart | LlmEvent::ThinkingDelta { .. } => {
@@ -2661,6 +2670,11 @@ async fn consume_llm_stream_with_policy(
     let mut provider_telemetry = None;
     let mut completed = false;
     let mut visible_output_seen = false;
+    let mut stream_started = false;
+    let stream_started_at = tokio::time::Instant::now();
+    let absolute_deadline = stream_started_at + idle_policy.absolute;
+    let mut last_semantic_progress = stream_started_at;
+    let mut transport_heartbeats: u64 = 0;
 
     let _ = events.send(AgentEvent::MessageStart {
         role: "assistant".into(),
@@ -2693,25 +2707,33 @@ async fn consume_llm_stream_with_policy(
             visible_output_seen,
         )
     };
-    while let Some(event) = match tokio::time::timeout(idle_timeout(visible_output_seen), rx.recv())
-        .await
+    while let Some(event) = match tokio::time::timeout(
+        idle_timeout(visible_output_seen)
+            .saturating_sub(last_semantic_progress.elapsed())
+            .min(absolute_deadline.saturating_duration_since(tokio::time::Instant::now())),
+        rx.recv(),
+    )
+    .await
     {
         Ok(event) => event,
         Err(_) => {
             let phase = StreamIdlePhase::from_u8(
                 stream_idle_phase.load(std::sync::atomic::Ordering::Relaxed),
             );
-            let reason = if phase.is_ambiguous_reasoning() && !visible_output_seen {
+            let absolute_expired = tokio::time::Instant::now() >= absolute_deadline;
+            let reason = if absolute_expired {
                 format!(
-                    "LLM stream had no observable activity for {}s during {} — this may be a long-running reasoning window or a stalled stream",
-                    idle_timeout(visible_output_seen).as_secs(),
-                    phase.label()
+                    "LLM stream exceeded the absolute {}s turn deadline during {} — transport received {} heartbeat event(s)",
+                    idle_policy.absolute.as_secs(),
+                    phase.label(),
+                    transport_heartbeats
                 )
             } else {
                 format!(
-                    "LLM stream idle for {}s during {} — connection may be stalled",
+                    "LLM stream made no semantic progress for {}s during {} — transport received {} heartbeat event(s)",
                     idle_timeout(visible_output_seen).as_secs(),
-                    phase.label()
+                    phase.label(),
+                    transport_heartbeats
                 )
             };
             let _ = events.send(AgentEvent::StreamIdle {
@@ -2735,12 +2757,22 @@ async fn consume_llm_stream_with_policy(
         stream_idle_phase.store(next_phase as u8, std::sync::atomic::Ordering::Relaxed);
         match event {
             LlmEvent::Start => {
-                // Heartbeat — any server activity proves connection is alive.
-                // Does NOT count as "content" for timeout phase transition.
+                // Stream start is semantic only once. Providers may repeat
+                // lifecycle markers; repeats must not re-arm the watchdog.
+                if !stream_started {
+                    stream_started = true;
+                    last_semantic_progress = tokio::time::Instant::now();
+                }
             }
-            LlmEvent::TextStart => {}
+            LlmEvent::TransportHeartbeat => {
+                transport_heartbeats = transport_heartbeats.saturating_add(1);
+            }
+            LlmEvent::TextStart => {
+                last_semantic_progress = tokio::time::Instant::now();
+            }
             LlmEvent::TextDelta { delta } => {
                 if !delta.is_empty() {
+                    last_semantic_progress = tokio::time::Instant::now();
                     visible_output_seen = true;
                     // Partial assistant output is visible to the operator. If
                     // they interrupt now, keep the prompt in canonical replay.
@@ -2800,10 +2832,14 @@ async fn consume_llm_stream_with_policy(
                 text_parts.push(String::new());
             }
             LlmEvent::ThinkingStart => {
+                last_semantic_progress = tokio::time::Instant::now();
                 // Active reasoning has begun. This is a liveness phase, not a
                 // promise that every provider exposes raw chain-of-thought.
             }
             LlmEvent::ThinkingDelta { delta } => {
+                if !delta.is_empty() {
+                    last_semantic_progress = tokio::time::Instant::now();
+                }
                 if !delta.is_empty()
                     && let Some(cancel_keeps_prompt) = cancel_keeps_prompt
                 {
@@ -2821,11 +2857,17 @@ async fn consume_llm_stream_with_policy(
             LlmEvent::ThinkingEnd => {
                 thinking_parts.push(String::new());
             }
-            LlmEvent::ToolCallStart => {}
-            LlmEvent::ToolCallDelta { .. } => {
+            LlmEvent::ToolCallStart => {
+                last_semantic_progress = tokio::time::Instant::now();
+            }
+            LlmEvent::ToolCallDelta { delta } => {
+                if !delta.is_empty() {
+                    last_semantic_progress = tokio::time::Instant::now();
+                }
                 // Deltas accumulated by the bridge — complete tool call in ToolCallEnd
             }
             LlmEvent::ToolCallEnd { tool_call } => {
+                last_semantic_progress = tokio::time::Instant::now();
                 visible_output_seen = true;
                 if let Some(cancel_keeps_prompt) = cancel_keeps_prompt {
                     cancel_keeps_prompt.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2836,8 +2878,12 @@ async fn consume_llm_stream_with_policy(
                     arguments: tool_call.arguments,
                 });
             }
-            LlmEvent::Boundary { .. } => {
-                // Semantic-only boundary consumed by the watchdog state machine.
+            LlmEvent::Boundary { expectation } => {
+                // A repeated unknown boundary carries no new semantic evidence.
+                // Explicit content/reasoning/terminal expectations do.
+                if !matches!(expectation, BoundaryExpectation::Unknown) {
+                    last_semantic_progress = tokio::time::Instant::now();
+                }
             }
             LlmEvent::Done {
                 message,
@@ -5065,6 +5111,77 @@ mod tests {
         assert!(reasoning > content);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn transport_heartbeat_flood_cannot_extend_semantic_deadline() {
+        use std::time::Duration;
+
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(64);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        stream_tx.send(LlmEvent::Start).await.unwrap();
+        for _ in 0..32 {
+            stream_tx.send(LlmEvent::TransportHeartbeat).await.unwrap();
+        }
+
+        let result = consume_llm_stream_with_policy(
+            &mut stream_rx,
+            &events_tx,
+            "openai-codex",
+            "test-model",
+            None,
+            StreamIdlePolicy {
+                initial: Duration::from_secs(2),
+                active: Duration::from_secs(2),
+                reasoning: Duration::from_secs(2),
+                absolute: Duration::from_secs(120),
+            },
+        );
+        tokio::pin!(result);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        let error = result
+            .await
+            .expect_err("heartbeat flood must not extend semantic deadline");
+        assert!(error.to_string().contains("32 heartbeat event(s)"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_deadline_is_not_reset_by_semantic_progress() {
+        use std::time::Duration;
+
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(16);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        stream_tx.send(LlmEvent::Start).await.unwrap();
+
+        let producer = tokio::spawn(async move {
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                stream_tx
+                    .send(LlmEvent::TextDelta { delta: "x".into() })
+                    .await
+                    .unwrap();
+            }
+        });
+        let result = consume_llm_stream_with_policy(
+            &mut stream_rx,
+            &events_tx,
+            "test-provider",
+            "test-model",
+            None,
+            StreamIdlePolicy {
+                initial: Duration::from_secs(30),
+                active: Duration::from_secs(30),
+                reasoning: Duration::from_secs(30),
+                absolute: Duration::from_secs(3),
+            },
+        );
+        tokio::pin!(result);
+        tokio::time::advance(Duration::from_secs(4)).await;
+        let error = result
+            .await
+            .expect_err("semantic progress must not reset absolute deadline");
+        assert!(error.to_string().contains("absolute 3s turn deadline"));
+        producer.abort();
+    }
+
     #[test]
     fn visible_output_forces_active_budget_for_every_phase() {
         use std::time::Duration;
@@ -5073,6 +5190,7 @@ mod tests {
             initial: Duration::from_secs(30),
             active: Duration::from_secs(2),
             reasoning: Duration::from_secs(60),
+            absolute: Duration::from_secs(120),
         };
         for phase in [
             StreamIdlePhase::AwaitingFirstEvent,
@@ -5114,12 +5232,13 @@ mod tests {
                 initial: Duration::from_secs(30),
                 active: Duration::from_secs(2),
                 reasoning: Duration::from_secs(60),
+                absolute: Duration::from_secs(120),
             },
         );
         tokio::pin!(result);
         tokio::time::advance(Duration::from_secs(3)).await;
         let error = result.await.expect_err("silent partial stream must fail");
-        assert!(error.to_string().contains("idle for 2s"));
+        assert!(error.to_string().contains("no semantic progress for 2s"));
 
         let mut saw_visible = false;
         let mut abort_reason = None;
@@ -5132,7 +5251,7 @@ mod tests {
         }
         assert!(saw_visible, "partial output must remain observable");
         assert!(
-            abort_reason.is_some_and(|reason| reason.contains("idle for 2s")),
+            abort_reason.is_some_and(|reason| reason.contains("no semantic progress for 2s")),
             "stall must emit an explicit terminal abort"
         );
     }
@@ -5159,6 +5278,7 @@ mod tests {
                 initial: std::time::Duration::from_secs(30),
                 active: std::time::Duration::from_secs(2),
                 reasoning: std::time::Duration::from_secs(60),
+                absolute: std::time::Duration::from_secs(120),
             },
         )
         .await

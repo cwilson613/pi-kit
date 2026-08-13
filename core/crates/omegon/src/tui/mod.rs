@@ -6544,6 +6544,17 @@ warning: {warning}"
         }
     }
 
+    fn native_scrollback_transcript(transcript: &str) -> std::io::Result<&str> {
+        const MAX_BYTES: usize = 1024 * 1024;
+        if transcript.len() > MAX_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "transcript exceeds native scrollback publication budget",
+            ));
+        }
+        Ok(transcript)
+    }
+
     fn print_transcript_to_native_scrollback(&mut self) {
         let transcript = self.build_session_transcript(SegmentExportMode::Raw);
         if transcript.trim().is_empty() {
@@ -6558,6 +6569,7 @@ warning: {warning}"
         let keyboard_enhancement = self.keyboard_enhancement;
         let result = (|| -> std::io::Result<()> {
             use std::io::Write;
+            let transcript = Self::native_scrollback_transcript(&transcript)?;
             let mut out = io::stdout();
             let _ = disable_raw_mode();
             let _ = out.execute(DisableMouseCapture);
@@ -7793,6 +7805,24 @@ pub async fn run_tui(
 #[cfg(test)]
 mod auspex_copy_tests {
     use super::*;
+
+    #[test]
+    fn native_scrollback_publication_rejects_oversized_transcript_before_terminal_writes() {
+        let oversized = "x".repeat(1024 * 1024 + 1);
+        let error =
+            App::native_scrollback_transcript(&oversized).expect_err("oversized transcript");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("publication budget"));
+    }
+
+    #[test]
+    fn native_scrollback_publication_accepts_budget_boundary() {
+        let boundary = "x".repeat(1024 * 1024);
+        assert_eq!(
+            App::native_scrollback_transcript(&boundary).expect("budget boundary"),
+            boundary
+        );
+    }
 
     #[test]
     fn command_copy_marks_auspex_primary_without_dash_autocomplete() {

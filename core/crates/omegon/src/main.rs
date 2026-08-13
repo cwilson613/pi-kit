@@ -53,6 +53,7 @@ pub mod code_act;
 pub mod code_act_proxy;
 pub mod code_act_sandbox;
 mod codex_config;
+mod codex_events;
 mod command_registry;
 mod container_runtime;
 mod context;

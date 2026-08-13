@@ -1763,6 +1763,20 @@
       "tasks_done": 0,
       "created_at": "2026-07-25T02:54:18Z",
       "updated_at": "2026-07-25T02:55:11Z"
+    },
+    {
+      "name": "transactional-native-scrollback-publication",
+      "title": "Transactional native scrollback publication",
+      "state": "planned",
+      "bound_node": null,
+      "specs": [
+        "tui-presentation"
+      ],
+      "test_files": [],
+      "tasks_total": 9,
+      "tasks_done": 0,
+      "created_at": "2026-08-13T20:41:41Z",
+      "updated_at": "2026-08-13T20:42:18Z"
     }
   ],
   "milestones": [],
@@ -4284,6 +4298,33 @@
       "entity_id": "authoritative-tui-input-and-bounded-presentation",
       "from_state": "resolved",
       "to_state": "decided",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T20:41:41Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "(new)",
+      "to_state": "proposed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T20:41:53Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "proposed",
+      "to_state": "specced",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-13T20:42:18Z",
+      "entity_type": "change",
+      "entity_id": "transactional-native-scrollback-publication",
+      "from_state": "specced",
+      "to_state": "planned",
       "reason": null,
       "forced": false
     }

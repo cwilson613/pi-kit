@@ -37,6 +37,7 @@ pub mod layout_projection;
 mod markdown_publication;
 mod menu_effects;
 pub(crate) mod menu_surface;
+mod native_publication;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
@@ -89,6 +90,13 @@ fn declared_command_surface(
         .iter()
         .find(|definition| definition.name == name)
         .map(|definition| definition.surface)
+}
+
+fn segment_projection_revision_for_native_publication(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn should_toast_slash_response(response: &str) -> bool {
@@ -415,6 +423,7 @@ struct App {
     editor: Editor,
     conversation: ConversationView,
     stream_presentation: streaming_presentation::StreamingPresentationController,
+    native_publication: native_publication::NativePublicationState,
     agent_active: bool,
     should_quit: bool,
     turn: u32,
@@ -876,6 +885,7 @@ impl App {
             editor: Editor::new(),
             conversation: ConversationView::new(),
             stream_presentation: streaming_presentation::StreamingPresentationController::default(),
+            native_publication: native_publication::NativePublicationState::default(),
             agent_active: false,
             should_quit: false,
             turn: 0,
@@ -6544,17 +6554,6 @@ warning: {warning}"
         }
     }
 
-    fn native_scrollback_transcript(transcript: &str) -> std::io::Result<&str> {
-        const MAX_BYTES: usize = 1024 * 1024;
-        if transcript.len() > MAX_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "transcript exceeds native scrollback publication budget",
-            ));
-        }
-        Ok(transcript)
-    }
-
     fn print_transcript_to_native_scrollback(&mut self) {
         let transcript = self.build_session_transcript(SegmentExportMode::Raw);
         if transcript.trim().is_empty() {
@@ -6564,12 +6563,42 @@ warning: {warning}"
             );
             return;
         }
+        if self.native_publication.is_degraded() {
+            self.show_toast(
+                "Native scrollback delivery is uncertain; use /export or the managed transcript",
+                ratatui_toaster::ToastType::Warning,
+            );
+            return;
+        }
+
+        let target_revision = segment_projection_revision_for_native_publication(&transcript);
+        let prepared = match self.native_publication.prepare(
+            &transcript,
+            target_revision,
+            native_publication::PreparationBudget::default(),
+        ) {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
+                self.show_toast(
+                    "Native scrollback is already current",
+                    ratatui_toaster::ToastType::Info,
+                );
+                return;
+            }
+            Err(_) => {
+                self.native_publication.begin_attachment();
+                self.show_toast(
+                    "Native scrollback projection changed; publication cursor rebuilt",
+                    ratatui_toaster::ToastType::Warning,
+                );
+                return;
+            }
+        };
 
         let mouse_capture = self.mouse_capture_enabled;
         let keyboard_enhancement = self.keyboard_enhancement;
         let result = (|| -> std::io::Result<()> {
             use std::io::Write;
-            let transcript = Self::native_scrollback_transcript(&transcript)?;
             let mut out = io::stdout();
             let _ = disable_raw_mode();
             let _ = out.execute(DisableMouseCapture);
@@ -6578,19 +6607,35 @@ warning: {warning}"
             }
             out.execute(LeaveAlternateScreen)?;
             writeln!(out)?;
-            writeln!(out, "----- Omegon transcript -----")?;
-            writeln!(out, "{transcript}")?;
-            writeln!(out, "----- End Omegon transcript -----")?;
+            if prepared.range.start == 0 {
+                writeln!(out, "----- Omegon transcript -----")?;
+            }
+            write!(out, "{}", prepared.text)?;
+            if prepared.range.end == transcript.len() {
+                writeln!(out)?;
+                writeln!(out, "----- End Omegon transcript -----")?;
+            }
             writeln!(out)?;
             out.flush()?;
             Self::restore_tui_after_native_scrollback(&mut out, keyboard_enhancement, mouse_capture)
         })();
 
+        let delivery = if result.is_ok() {
+            native_publication::DeliveryResult::Committed
+        } else {
+            // A write or flush error after leaving the alternate screen cannot
+            // prove whether bytes reached physical scrollback. Do not retry.
+            native_publication::DeliveryResult::Ambiguous
+        };
+        let _ = self.native_publication.settle(&prepared, delivery);
+
         if result.is_ok() {
-            self.show_toast(
-                "Transcript printed to native scrollback",
-                ratatui_toaster::ToastType::Success,
-            );
+            let message = if prepared.range.end == transcript.len() {
+                "Transcript printed to native scrollback"
+            } else {
+                "Transcript chunk printed; run /print again to continue"
+            };
+            self.show_toast(message, ratatui_toaster::ToastType::Success);
         } else {
             let mut out = io::stdout();
             let _ = Self::restore_tui_after_native_scrollback(
@@ -6599,7 +6644,7 @@ warning: {warning}"
                 mouse_capture,
             );
             self.show_toast(
-                "Could not print transcript to native scrollback",
+                "Native scrollback delivery is uncertain; blind retry disabled",
                 ratatui_toaster::ToastType::Warning,
             );
         }
@@ -7835,24 +7880,6 @@ mod auspex_copy_tests {
         ));
         assert!(startup_mouse_capture_enabled(StartupMouseCaptureMode::On));
         assert!(!startup_mouse_capture_enabled(StartupMouseCaptureMode::Off));
-    }
-
-    #[test]
-    fn native_scrollback_publication_rejects_oversized_transcript_before_terminal_writes() {
-        let oversized = "x".repeat(1024 * 1024 + 1);
-        let error =
-            App::native_scrollback_transcript(&oversized).expect_err("oversized transcript");
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("publication budget"));
-    }
-
-    #[test]
-    fn native_scrollback_publication_accepts_budget_boundary() {
-        let boundary = "x".repeat(1024 * 1024);
-        assert_eq!(
-            App::native_scrollback_transcript(&boundary).expect("budget boundary"),
-            boundary
-        );
     }
 
     #[test]

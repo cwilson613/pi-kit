@@ -5,6 +5,9 @@
 //! - Visible-only rendering (only segments in the viewport are drawn)
 //! - Scroll state with segment-awareness
 
+use std::collections::{HashMap, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use ratatui::prelude::*;
 
 use super::conversation_render_projection::{
@@ -12,6 +15,58 @@ use super::conversation_render_projection::{
 };
 use super::segments::{Segment, SegmentRenderMode};
 use super::theme::Theme;
+
+const MAX_COMPLETED_HEIGHT_CACHE_ENTRIES: usize = 2_048;
+const MAX_COMPLETED_HEIGHT_CACHE_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct HeightCacheKey {
+    revision: u64,
+    width: u16,
+    mode: SegmentRenderMode,
+    selected: bool,
+}
+
+#[derive(Debug, Default)]
+struct CompletedHeightCache {
+    entries: HashMap<HeightCacheKey, u16>,
+    lru: VecDeque<HeightCacheKey>,
+    bytes: usize,
+}
+
+impl CompletedHeightCache {
+    const ENTRY_BYTES: usize = std::mem::size_of::<HeightCacheKey>() + std::mem::size_of::<u16>();
+
+    fn get(&mut self, key: HeightCacheKey) -> Option<u16> {
+        let value = self.entries.get(&key).copied()?;
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: HeightCacheKey, height: u16) {
+        if self.entries.insert(key, height).is_none() {
+            self.bytes = self.bytes.saturating_add(Self::ENTRY_BYTES);
+        }
+        self.touch(key);
+        while self.entries.len() > MAX_COMPLETED_HEIGHT_CACHE_ENTRIES
+            || self.bytes > MAX_COMPLETED_HEIGHT_CACHE_BYTES
+        {
+            let Some(oldest) = self.lru.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                self.bytes = self.bytes.saturating_sub(Self::ENTRY_BYTES);
+            }
+        }
+    }
+
+    fn touch(&mut self, key: HeightCacheKey) {
+        if let Some(position) = self.lru.iter().position(|candidate| *candidate == key) {
+            self.lru.remove(position);
+        }
+        self.lru.push_back(key);
+    }
+}
 
 /// Scroll state for the conversation widget.
 pub struct ConvState {
@@ -29,6 +84,8 @@ pub struct ConvState {
     cached_count: usize,
     /// Selected segment when heights were last computed.
     cached_selected_segment: Option<usize>,
+    /// Revision-keyed measurements for immutable completed projections.
+    completed_height_cache: CompletedHeightCache,
     /// One-shot request to align the selected projected segment to the viewport top.
     snap_to_selected: bool,
     /// Total rendered height from the previous frame.
@@ -49,6 +106,7 @@ impl ConvState {
             cached_mode: None,
             cached_count: 0,
             cached_selected_segment: None,
+            completed_height_cache: CompletedHeightCache::default(),
             snap_to_selected: false,
             last_total_height: 0,
             copy_hitboxes: Vec::new(),
@@ -132,17 +190,13 @@ impl ConvState {
         // output without inventing blank rows below the viewport.
         if !segments.is_empty() && self.cached_count == segments.len() {
             let last = segments.len() - 1;
-            self.heights[last] = measured_segment_height(
-                &segments[last],
-                width,
-                ctx,
-                selected_segment == Some(last),
-            );
+            self.heights[last] =
+                self.measure_segment(&segments[last], width, ctx, selected_segment == Some(last));
         }
 
         // Compute any new segments
         while self.cached_count < segments.len() {
-            let h = measured_segment_height(
+            let h = self.measure_segment(
                 &segments[self.cached_count],
                 width,
                 ctx,
@@ -155,6 +209,30 @@ impl ConvState {
             }
             self.cached_count += 1;
         }
+    }
+
+    fn measure_segment(
+        &mut self,
+        segment: &Segment,
+        width: u16,
+        ctx: &SegmentRenderContext<'_>,
+        selected: bool,
+    ) -> u16 {
+        if segment.is_live_render_segment() {
+            return measured_segment_height(segment, width, ctx, selected);
+        }
+        let key = HeightCacheKey {
+            revision: segment_projection_revision(segment),
+            width,
+            mode: ctx.mode,
+            selected,
+        };
+        if let Some(height) = self.completed_height_cache.get(key) {
+            return height;
+        }
+        let height = measured_segment_height(segment, width, ctx, selected);
+        self.completed_height_cache.insert(key, height);
+        height
     }
 
     /// Total height of all segments.
@@ -585,6 +663,12 @@ fn segment_anchor_at_top(heights: &[u16], top_offset: u16) -> Option<(usize, u16
         .map(|index| (index, heights[index].saturating_sub(1)))
 }
 
+fn segment_projection_revision(segment: &Segment) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    format!("{segment:?}").hash(&mut hasher);
+    hasher.finish()
+}
+
 fn measured_segment_height(
     segment: &Segment,
     width: u16,
@@ -1002,6 +1086,47 @@ mod tests {
         state.force_scroll_to_bottom();
         assert_eq!(state.scroll_offset, 0);
         assert!(!state.user_scrolled);
+    }
+
+    #[test]
+    fn completed_height_cache_is_bounded_by_entries_and_bytes() {
+        let mut cache = CompletedHeightCache::default();
+        for revision in 0..(MAX_COMPLETED_HEIGHT_CACHE_ENTRIES as u64 + 100) {
+            cache.insert(
+                HeightCacheKey {
+                    revision,
+                    width: 80,
+                    mode: SegmentRenderMode::Full,
+                    selected: false,
+                },
+                1,
+            );
+        }
+        assert!(cache.entries.len() <= MAX_COMPLETED_HEIGHT_CACHE_ENTRIES);
+        assert!(cache.bytes <= MAX_COMPLETED_HEIGHT_CACHE_BYTES);
+    }
+
+    #[test]
+    fn completed_projection_mutation_changes_revision_and_height() {
+        let mut segment = Segment::user_prompt("short");
+        let first_revision = segment_projection_revision(&segment);
+        let first_height = measured_segment_height(
+            &segment,
+            20,
+            &SegmentRenderContext::new(&Alpharius, SegmentRenderMode::Full),
+            false,
+        );
+        segment =
+            Segment::user_prompt("a much longer completed prompt that wraps over several rows");
+        let second_revision = segment_projection_revision(&segment);
+        let second_height = measured_segment_height(
+            &segment,
+            20,
+            &SegmentRenderContext::new(&Alpharius, SegmentRenderMode::Full),
+            false,
+        );
+        assert_ne!(first_revision, second_revision);
+        assert_ne!(first_height, second_height);
     }
 
     #[test]

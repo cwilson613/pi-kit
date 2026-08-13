@@ -7707,6 +7707,8 @@ pub async fn run_tui(
                 scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
             }
             let draw_finished = std::time::Instant::now();
+            scheduler
+                .observe_draw_duration(draw_finished.duration_since(draw_started), draw_finished);
             if let Some(trace) = &mut runtime_trace {
                 let segments = app.conversation.segments().len();
                 let scroll_offset = app.conversation.conv_state.scroll_offset;
@@ -7726,6 +7728,12 @@ pub async fn run_tui(
                 trace.flush_if_due(draw_finished, runtime_contention_snapshot(&app));
             }
             scheduler.after_draw(drawn_revision, draw_finished);
+            if scheduler.presentation_degraded() {
+                app.show_toast(
+                    "Presentation is behind; retrying with bounded backoff",
+                    ratatui_toaster::ToastType::Warning,
+                );
+            }
         } else if let Some(trace) = &mut runtime_trace {
             trace.record_dirty_without_draw();
             trace.flush_if_due(now, runtime_contention_snapshot(&app));

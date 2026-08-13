@@ -28,6 +28,8 @@ pub(crate) struct TuiFrameScheduler {
     drawn_revision: u64,
     urgent_revision: Option<u64>,
     last_draw: Instant,
+    consecutive_over_budget_draws: u8,
+    presentation_retry_at: Option<Instant>,
 }
 
 impl TuiFrameScheduler {
@@ -43,6 +45,8 @@ impl TuiFrameScheduler {
             drawn_revision: 0,
             urgent_revision: Some(1),
             last_draw: now.checked_sub(Duration::from_millis(16)).unwrap_or(now),
+            consecutive_over_budget_draws: 0,
+            presentation_retry_at: None,
         }
     }
 
@@ -61,8 +65,38 @@ impl TuiFrameScheduler {
     }
 
     pub(crate) fn should_draw(&self, now: Instant) -> bool {
+        if self
+            .presentation_retry_at
+            .is_some_and(|retry_at| now < retry_at)
+        {
+            return false;
+        }
         self.requested_revision > self.drawn_revision
             && (self.is_urgent() || now.duration_since(self.last_draw) >= self.min_frame_interval)
+    }
+
+    pub(crate) fn presentation_degraded(&self) -> bool {
+        self.presentation_retry_at.is_some()
+    }
+
+    pub(crate) fn observe_draw_duration(&mut self, elapsed: Duration, completed_at: Instant) {
+        const DRAW_BUDGET: Duration = Duration::from_millis(250);
+        const OPEN_AFTER: u8 = 3;
+        const RETRY_DELAY: Duration = Duration::from_millis(250);
+
+        if elapsed > DRAW_BUDGET {
+            self.consecutive_over_budget_draws = self
+                .consecutive_over_budget_draws
+                .saturating_add(1)
+                .min(OPEN_AFTER);
+            if self.consecutive_over_budget_draws >= OPEN_AFTER {
+                self.presentation_retry_at = Some(completed_at + RETRY_DELAY);
+                self.mark_dirty(TuiDrawReason::BackgroundEvent);
+            }
+        } else {
+            self.consecutive_over_budget_draws = 0;
+            self.presentation_retry_at = None;
+        }
     }
 
     pub(crate) fn is_urgent(&self) -> bool {
@@ -89,6 +123,11 @@ impl TuiFrameScheduler {
     }
 
     pub(crate) fn idle_poll_timeout(&self, now: Instant) -> Duration {
+        if let Some(retry_at) = self.presentation_retry_at
+            && now < retry_at
+        {
+            return retry_at.duration_since(now).min(self.max_idle_poll);
+        }
         if self.requested_revision > self.drawn_revision {
             self.min_frame_interval
                 .saturating_sub(now.duration_since(self.last_draw))
@@ -111,6 +150,60 @@ impl TuiFrameScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_over_budget_draws_open_breaker_with_bounded_backoff() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(scheduler.begin_draw().unwrap(), now);
+
+        for offset in 1..=3 {
+            scheduler.observe_draw_duration(
+                Duration::from_millis(300),
+                now + Duration::from_millis(offset),
+            );
+        }
+
+        assert!(scheduler.presentation_degraded());
+        assert!(!scheduler.should_draw(now + Duration::from_millis(50)));
+        assert!(scheduler.should_draw(now + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn successful_half_open_probe_closes_breaker() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(scheduler.begin_draw().unwrap(), now);
+        for offset in 1..=3 {
+            scheduler.observe_draw_duration(
+                Duration::from_millis(300),
+                now + Duration::from_millis(offset),
+            );
+        }
+        let retry = now + Duration::from_millis(300);
+        assert!(scheduler.should_draw(retry));
+        scheduler.observe_draw_duration(Duration::from_millis(5), retry);
+
+        assert!(!scheduler.presentation_degraded());
+    }
+
+    #[test]
+    fn operator_input_remains_dirty_while_breaker_is_open() {
+        let now = Instant::now();
+        let mut scheduler = TuiFrameScheduler::new(now);
+        scheduler.after_draw(scheduler.begin_draw().unwrap(), now);
+        for offset in 1..=3 {
+            scheduler.observe_draw_duration(
+                Duration::from_millis(300),
+                now + Duration::from_millis(offset),
+            );
+        }
+        scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+
+        assert!(scheduler.is_urgent());
+        assert!(!scheduler.should_draw(now + Duration::from_millis(10)));
+        assert!(scheduler.should_draw(now + Duration::from_millis(300)));
+    }
 
     #[test]
     fn dirty_state_raised_during_draw_survives_completion() {

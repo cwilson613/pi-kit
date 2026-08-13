@@ -4531,6 +4531,7 @@ fn build_tui_secret_readiness_snapshot(
         voice_polling_handles,
     };
     let tui_cancel = shared_cancel.clone();
+    let tui_interrupt_cancel = shared_cancel.clone();
     let tui_settings = shared_settings.clone();
     // The coordinator owns the process lifetime, while the TUI owns the
     // interactive terminal. Any TUI terminal boundary — orderly return,
@@ -4540,12 +4541,31 @@ fn build_tui_secret_readiness_snapshot(
     // channel open.
     let tui_exit = CancellationToken::new();
     let tui_exit_signal = tui_exit.clone();
+    let (tui_interrupt_tx, mut tui_interrupt_rx) = tokio::sync::mpsc::channel(8);
     let tui_handle = tokio::spawn(async move {
-        let result = tui::run_tui(events_rx, command_tx, tui_config, tui_cancel, tui_settings).await;
+        let result = tui::run_tui(
+            events_rx,
+            command_tx,
+            tui_interrupt_tx,
+            tui_config,
+            tui_cancel,
+            tui_settings,
+        )
+        .await;
         if let Err(error) = &result {
             tracing::error!(%error, "TUI terminated at the terminal boundary");
         }
         signal_tui_boundary_exit(&tui_exit_signal);
+    });
+    let tui_interrupt_task = tokio::spawn(async move {
+        while tui_interrupt_rx.recv().await.is_some() {
+            let mut guard = tui_interrupt_cancel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(token) = guard.take() {
+                token.cancel();
+            }
+        }
     });
 
     let ipc_cancel = tokio_util::sync::CancellationToken::new();
@@ -6360,8 +6380,13 @@ fn build_tui_secret_readiness_snapshot(
                     }
 
                     lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
-                    runtime.complete_active_turn();
-                    lifecycle.transition("supervisor_completed", runtime.queue_depth(), &events_tx);
+                    let terminal_phase = match runtime.settle_active_worker() {
+                        Some((_, RuntimeTurnOutcome::Revoked)) => "supervisor_revoked",
+                        Some((_, RuntimeTurnOutcome::Failed)) => "supervisor_failed",
+                        Some((_, RuntimeTurnOutcome::Completed)) => "supervisor_completed",
+                        None => "supervisor_terminal_duplicate",
+                    };
+                    lifecycle.transition(terminal_phase, runtime.queue_depth(), &events_tx);
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
                     mark_interactive_session_busy(&agent.dashboard_handles, runtime.is_busy());
 
@@ -6392,6 +6417,8 @@ fn build_tui_secret_readiness_snapshot(
     ipc_cancel.cancel();
     tui_handle.abort();
     let _ = tui_handle.await;
+    tui_interrupt_task.abort();
+    let _ = tui_interrupt_task.await;
     let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
     let _ = io::stdout().execute(DisableMouseCapture);
     let _ = io::stdout().execute(crossterm::event::PopKeyboardEnhancementFlags);
@@ -9533,9 +9560,66 @@ mod tests {
 
         assert!(supervisor.is_busy(), "cancel request must not imply idle");
 
-        let completed = supervisor.complete_active_turn().expect("completed turn");
+        let (completed, outcome) = supervisor.settle_active_worker().expect("settled turn");
+        assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
         assert!(!supervisor.is_busy(), "busy clears only after completion");
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_cancelled_worker_revokes_exactly_once() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "first".to_string(),
+            Vec::new(),
+            RuntimeActor::tui(),
+            ControlSurface::Tui,
+            operator_commands::PromptMetadata::default(),
+            None,
+        );
+        let active = supervisor.maybe_start_next_turn().expect("active turn");
+        supervisor.request_cancel(RuntimeActor::tui(), ControlSurface::Tui);
+
+        assert!(
+            supervisor
+                .finish_active_turn(active.runtime_turn_id, RuntimeTurnOutcome::Completed)
+                .is_none(),
+            "late completion must lose after cancellation admission"
+        );
+        let (settled, outcome) = supervisor.settle_active_worker().expect("revoked turn");
+        assert_eq!(settled.runtime_turn_id, active.runtime_turn_id);
+        assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
+        assert!(supervisor.settle_active_worker().is_none());
+    }
+
+    #[test]
+    fn interactive_runtime_supervisor_stale_outcome_cannot_finish_next_turn() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        for text in ["first", "second"] {
+            supervisor.enqueue_prompt(
+                text.to_string(),
+                Vec::new(),
+                RuntimeActor::tui(),
+                ControlSurface::Tui,
+                operator_commands::PromptMetadata::default(),
+                None,
+            );
+        }
+        let first = supervisor.maybe_start_next_turn().expect("first turn");
+        supervisor
+            .finish_active_turn(first.runtime_turn_id, RuntimeTurnOutcome::Completed)
+            .expect("first completion");
+        let second = supervisor.maybe_start_next_turn().expect("second turn");
+
+        assert!(
+            supervisor
+                .finish_active_turn(first.runtime_turn_id, RuntimeTurnOutcome::Revoked)
+                .is_none()
+        );
+        assert_eq!(
+            supervisor.active_turn.as_ref().unwrap().runtime_turn_id,
+            second.runtime_turn_id
+        );
     }
 
     #[test]
@@ -9620,7 +9704,8 @@ mod tests {
             .maybe_start_next_turn()
             .expect("first active turn");
         supervisor.request_cancel(RuntimeActor::tui(), ControlSurface::Tui);
-        let completed = supervisor.complete_active_turn().expect("completed turn");
+        let (completed, outcome) = supervisor.settle_active_worker().expect("settled turn");
+        assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
 
         let next = supervisor

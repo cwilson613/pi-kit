@@ -100,6 +100,13 @@ impl PromptEnvelope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeTurnOutcome {
+    Completed,
+    Revoked,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ActiveTurnPhase {
     Running,
@@ -855,8 +862,38 @@ impl InteractiveRuntimeSupervisor {
         self.active_turn.as_ref()
     }
 
-    fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
+    fn finish_active_turn(
+        &mut self,
+        runtime_turn_id: u64,
+        outcome: RuntimeTurnOutcome,
+    ) -> Option<ActiveTurnMeta> {
+        let active = self.active_turn.as_ref()?;
+        if active.runtime_turn_id != runtime_turn_id {
+            return None;
+        }
+        if outcome == RuntimeTurnOutcome::Completed
+            && matches!(active.phase, ActiveTurnPhase::Cancelling { .. })
+        {
+            return None;
+        }
         self.active_turn.take()
+    }
+
+    fn settle_active_worker(&mut self) -> Option<(ActiveTurnMeta, RuntimeTurnOutcome)> {
+        let active = self.active_turn.as_ref()?;
+        let runtime_turn_id = active.runtime_turn_id;
+        let outcome = if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
+            RuntimeTurnOutcome::Revoked
+        } else {
+            RuntimeTurnOutcome::Completed
+        };
+        self.finish_active_turn(runtime_turn_id, outcome)
+            .map(|active| (active, outcome))
+    }
+
+    fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
+        let runtime_turn_id = self.active_turn.as_ref()?.runtime_turn_id;
+        self.finish_active_turn(runtime_turn_id, RuntimeTurnOutcome::Completed)
     }
 
     fn pop_front_prompt(&mut self) -> Option<PromptEnvelope> {

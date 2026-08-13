@@ -55,6 +55,7 @@ mod startup_splash;
 pub mod statusline;
 mod streaming_presentation;
 pub mod tab_bar;
+mod terminal_input;
 mod terminal_session;
 pub mod theme;
 pub mod tool_inspection;
@@ -7358,6 +7359,7 @@ fn runtime_contention_snapshot(app: &App) -> runtime_trace::RuntimeContentionSna
 pub async fn run_tui(
     mut events_rx: broadcast::Receiver<AgentEvent>,
     command_tx: OperatorCommandTx,
+    interrupt_tx: tokio::sync::mpsc::Sender<terminal_input::TerminalInterrupt>,
     config: TuiConfig,
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
@@ -7562,6 +7564,7 @@ pub async fn run_tui(
     }
 
     let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
+    let mut terminal_input = terminal_input::TerminalInputPump::spawn();
     let mut runtime_trace = runtime_trace::TuiRuntimeTrace::new(config.debug_tui);
 
     loop {
@@ -7575,13 +7578,17 @@ pub async fn run_tui(
         // ingesting producer traffic so streaming cannot starve scrolling,
         // cancellation, or editor control.
         let mut handled_input = false;
+        while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
+            // This channel is consumed outside the presentation task. The send
+            // is non-awaiting so cancellation cannot queue behind a wedged draw.
+            let _ = interrupt_tx.try_send(interrupt);
+        }
         let mut handled_input_count = 0_u64;
         let input_started = std::time::Instant::now();
         for _ in 0..16 {
-            if !event::poll(Duration::ZERO)? {
+            let Ok(input_event) = terminal_input.try_recv() else {
                 break;
-            }
-            let input_event = event::read()?;
+            };
             handled_input = true;
             handled_input_count += 1;
             if matches!(
@@ -7670,6 +7677,9 @@ pub async fn run_tui(
         let now = std::time::Instant::now();
         scheduler.mark_timer_due(now);
         if scheduler.should_draw(now) {
+            let drawn_revision = scheduler
+                .begin_draw()
+                .expect("scheduled frame has a revision");
             let urgent = scheduler.is_urgent();
             let publication_revision = app.publish_stream_presentation();
             let draw_started = std::time::Instant::now();
@@ -7703,7 +7713,7 @@ pub async fn run_tui(
                 });
                 trace.flush_if_due(draw_finished, runtime_contention_snapshot(&app));
             }
-            scheduler.after_draw(draw_finished);
+            scheduler.after_draw(drawn_revision, draw_finished);
         } else if let Some(trace) = &mut runtime_trace {
             trace.record_dirty_without_draw();
             trace.flush_if_due(now, runtime_contention_snapshot(&app));
@@ -7711,6 +7721,10 @@ pub async fn run_tui(
 
         if app.should_quit {
             break;
+        }
+
+        while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
+            let _ = interrupt_tx.try_send(interrupt);
         }
 
         // If the agent budget was exhausted, yield only long enough to service
@@ -7748,9 +7762,8 @@ pub async fn run_tui(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-            polled = async { event::poll(poll_timeout) } => {
-                if polled? {
-                    let input_event = event::read()?;
+            input = terminal_input.recv() => {
+                if let Some(input_event) = input {
                     let input_at = std::time::Instant::now();
                     let _ = app.handle_terminal_event(input_event, &command_tx).await;
                     scheduler.mark_dirty(TuiDrawReason::OperatorInput);
@@ -7759,6 +7772,7 @@ pub async fn run_tui(
                     }
                 }
             }
+            _ = tokio::time::sleep(poll_timeout) => {}
         }
     }
 

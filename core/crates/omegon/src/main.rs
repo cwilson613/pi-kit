@@ -4030,6 +4030,21 @@ async fn save_shared_interactive_session(
     session::save_session(&state.conversation, cwd, Some(session_id))
 }
 
+fn clear_published_runtime_identity(
+    published: &std::sync::Mutex<Option<RuntimeTurnIdentity>>,
+    settled: RuntimeTurnIdentity,
+) -> bool {
+    let mut guard = published
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.as_ref() == Some(&settled) {
+        *guard = None;
+        true
+    } else {
+        false
+    }
+}
+
 fn signal_tui_boundary_exit(exit: &CancellationToken) {
     exit.cancel();
 }
@@ -6125,6 +6140,7 @@ fn build_tui_secret_readiness_snapshot(
                 }
 
                 while let Some(active) = runtime.maybe_start_next_turn() {
+                    let active_identity = runtime.current_identity().expect("promoted turn identity");
                     *tui_interrupt_identity
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -6406,6 +6422,10 @@ fn build_tui_secret_readiness_snapshot(
                         }
                     }
 
+                    let _ = clear_published_runtime_identity(
+                        &tui_interrupt_identity,
+                        active_identity,
+                    );
                     lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
                     let terminal_phase = match runtime.settle_active_worker() {
                         Some((_, RuntimeTurnOutcome::Revoked)) => "supervisor_revoked",
@@ -9591,6 +9611,24 @@ mod tests {
         assert_eq!(outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(completed.prompt.text, "first");
         assert!(!supervisor.is_busy(), "busy clears only after completion");
+    }
+
+    #[test]
+    fn published_runtime_identity_clears_only_for_matching_settled_turn() {
+        let first = RuntimeTurnIdentity {
+            session_epoch: 7,
+            runtime_turn_id: 11,
+        };
+        let second = RuntimeTurnIdentity {
+            session_epoch: 7,
+            runtime_turn_id: 12,
+        };
+        let published = std::sync::Mutex::new(Some(second));
+
+        assert!(!clear_published_runtime_identity(&published, first));
+        assert_eq!(*published.lock().unwrap(), Some(second));
+        assert!(clear_published_runtime_identity(&published, second));
+        assert_eq!(*published.lock().unwrap(), None);
     }
 
     #[test]

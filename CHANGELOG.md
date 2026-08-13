@@ -24,6 +24,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Distinguished provider transport heartbeats from semantic model progress so keepalives, unknown Codex Responses events, and repeated lifecycle markers cannot retain a stalled turn indefinitely. Streams now enforce phase-aware semantic-progress budgets plus a non-resettable absolute deadline, emit bounded stall diagnostics, and parse fragmented or CRLF SSE frames without repeatedly copying the unconsumed buffer.
+
+- Hardened interactive terminal-loss teardown so loss of the controlling TTY authoritatively cancels active work and IPC ingress, restores terminal modes, persists sessions even when another task retains shared state, and still reaches bridge and extension shutdown. Extension startup and shutdown now reap failed children and terminate dedicated process groups, while TUI system notifications have per-card and aggregate retention bounds to prevent runaway memory growth.
+
 - Added `OLLAMA_API_KEY` to the first-party `/secrets` inventory and ensured logical Ollama Cloud routes participate in discovery refresh even without a conventional registry endpoint record. Retired `qwen3-coder:480b-cloud` catalog data was replaced with the verified `qwen3.5:397b` route.
 
 - Fixed the native TUI remaining locally active after a completed first turn when `AgentEnd` was delayed or lost, which rendered the answer but blocked the operator from submitting a second turn. Authoritative `supervisor_completed` lifecycle events and idle runtime-queue snapshots now bypass presentation buffering and idempotently reconcile streaming, busy, interrupt, spinner, and tool state. Parallel terminal-completion coverage was also isolated from the process-global registry and broadcast channel. The repaired release binary at `537dee1` passed the full Omegon suite (4,220 passed, 0 failed, 2 ignored), and an operator subsequently verified the original scribe-session reproduction by completing consecutive turns without the lockup.

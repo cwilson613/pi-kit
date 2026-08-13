@@ -4538,6 +4538,10 @@ fn build_tui_secret_readiness_snapshot(
         debug_tui: cli.debug_tui,
         initial_prompt,
         start_tutorial: cli.tutorial,
+        startup_mouse_capture: shared_settings
+            .lock()
+            .map(|settings| settings.startup_mouse_capture)
+            .unwrap_or_default(),
         resume_info: agent.resume_info.clone(),
         login_prompt_tx: login_prompt_tx.clone(),
         extension_widgets,

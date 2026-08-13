@@ -7006,6 +7006,14 @@ warning: {warning}"
     }
 }
 
+fn startup_mouse_capture_enabled(mode: crate::settings::StartupMouseCaptureMode) -> bool {
+    match mode {
+        crate::settings::StartupMouseCaptureMode::On => true,
+        crate::settings::StartupMouseCaptureMode::Auto
+        | crate::settings::StartupMouseCaptureMode::Off => false,
+    }
+}
+
 /// Run the interactive TUI. Returns when the user quits.
 ///
 /// This spawns the ratatui event loop and communicates with the agent
@@ -7041,6 +7049,8 @@ pub struct TuiConfig {
     /// oneshot sender here; the TUI Enter handler consumes it.
     pub login_prompt_tx:
         std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
+    /// Initial mouse capture policy resolved from settings.
+    pub startup_mouse_capture: crate::settings::StartupMouseCaptureMode,
     /// Extension widgets discovered during setup — for tab rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Widget event receivers — one per discovered extension.
@@ -7398,13 +7408,11 @@ pub async fn run_tui(
     io::stdout().execute(crossterm::terminal::Clear(
         crossterm::terminal::ClearType::All,
     ))?;
-    // Mouse capture is ON by default for wheel and pane interaction. Native
-    // terminal selection remains available without changing modes by holding
-    // Shift while dragging (the standard terminal mouse-capture override).
-    // `/mouse off` remains the guaranteed passthrough fallback for terminals
-    // that do not implement the Shift override.
-    io::stdout().execute(EnableMouseCapture)?;
-    terminal_guard.mark_mouse_capture();
+    let mouse_capture_enabled = startup_mouse_capture_enabled(config.startup_mouse_capture);
+    if mouse_capture_enabled {
+        io::stdout().execute(EnableMouseCapture)?;
+        terminal_guard.mark_mouse_capture();
+    }
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
     terminal_guard.mark_bracketed_paste();
 
@@ -7445,11 +7453,9 @@ pub async fn run_tui(
         },
     );
 
-    // Mouse capture starts enabled because two-finger/trackpad scrolling is a
-    // conversation-view invariant. Shift-drag asks the terminal to bypass
-    // capture for native selection; `/mouse off` is the guaranteed fallback.
     let mut app = App::new(settings.clone());
-    app.mouse_capture_enabled = true;
+    app.mouse_capture_enabled = mouse_capture_enabled;
+    app.terminal_copy_mode = !mouse_capture_enabled;
     app.keyboard_enhancement = has_keyboard_enhancement;
     app.secret_readiness = config.secret_readiness.clone();
     if let Some(snapshot) = app.secret_readiness.as_ref() {
@@ -7819,6 +7825,17 @@ pub async fn run_tui(
 #[cfg(test)]
 mod auspex_copy_tests {
     use super::*;
+
+    #[test]
+    fn startup_mouse_capture_policy_is_explicit_and_selection_safe_by_default() {
+        use crate::settings::StartupMouseCaptureMode;
+
+        assert!(!startup_mouse_capture_enabled(
+            StartupMouseCaptureMode::Auto
+        ));
+        assert!(startup_mouse_capture_enabled(StartupMouseCaptureMode::On));
+        assert!(!startup_mouse_capture_enabled(StartupMouseCaptureMode::Off));
+    }
 
     #[test]
     fn native_scrollback_publication_rejects_oversized_transcript_before_terminal_writes() {

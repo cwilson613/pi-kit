@@ -55,15 +55,13 @@ fn route_input(
 
 pub(crate) struct TerminalInputPump {
     events: mpsc::Receiver<Event>,
-    interrupts: mpsc::Receiver<TerminalInterrupt>,
     boundaries: mpsc::Receiver<TerminalBoundaryFault>,
     stop: Arc<AtomicBool>,
 }
 
 impl TerminalInputPump {
-    pub(crate) fn spawn() -> Self {
+    pub(crate) fn spawn(interrupt_tx: mpsc::Sender<TerminalInterrupt>) -> Self {
         let (event_tx, events) = mpsc::channel(INPUT_QUEUE_CAPACITY);
-        let (interrupt_tx, interrupts) = mpsc::channel(INTERRUPT_QUEUE_CAPACITY);
         let (boundary_tx, boundaries) = mpsc::channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -96,7 +94,6 @@ impl TerminalInputPump {
 
         Self {
             events,
-            interrupts,
             boundaries,
             stop,
         }
@@ -104,12 +101,6 @@ impl TerminalInputPump {
 
     pub(crate) fn try_recv(&mut self) -> Result<Event, mpsc::error::TryRecvError> {
         self.events.try_recv()
-    }
-
-    pub(crate) fn try_recv_interrupt(
-        &mut self,
-    ) -> Result<TerminalInterrupt, mpsc::error::TryRecvError> {
-        self.interrupts.try_recv()
     }
 
     pub(crate) fn try_recv_boundary(

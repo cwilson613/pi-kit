@@ -684,6 +684,15 @@ fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
     (editor_rows + 2).clamp(3, max_editor) // +2 for border
 }
 
+fn try_admit_operator_command(
+    command_tx: &OperatorCommandTx,
+    command: TuiCommand,
+) -> Result<(), Box<TuiCommand>> {
+    command_tx
+        .try_send(command)
+        .map_err(|error| Box::new(error.into_inner()))
+}
+
 impl App {
     fn displayed_model_grade(model_provider: &str, model_id: &str, fallback: &str) -> String {
         let model = model_id
@@ -5850,6 +5859,19 @@ warning: {warning}"
         }
     }
 
+    fn restore_prompt_submission(&mut self, command: TuiCommand, raw_text: String) {
+        if let TuiCommand::SubmitPrompt(submission) = command {
+            self.editor.set_text(&raw_text);
+            for path in submission.image_paths {
+                self.editor.insert_attachment(path);
+            }
+        }
+        self.show_command_toast(CommandToast::new(
+            "Coordinator busy; prompt retained",
+            CommandSeverity::Warning,
+        ));
+    }
+
     async fn submit_editor_buffer(&mut self, command_tx: &OperatorCommandTx) {
         let (raw_text, attachments) = self.editor.take_submission();
         if raw_text.is_empty() && attachments.is_empty() {
@@ -5927,23 +5949,25 @@ warning: {warning}"
                     }
                     self.history.push(raw_text.clone());
                     self.exit_history_recall();
-                    let _ = command_tx
-                        .send(TuiCommand::ShellHandoff {
+                    let _ = try_admit_operator_command(
+                        command_tx,
+                        TuiCommand::ShellHandoff {
                             keyboard_enhancement: self.keyboard_enhancement,
-                        })
-                        .await;
+                        },
+                    );
                     return;
                 }
 
                 self.history.push(raw_text.clone());
                 self.exit_history_recall();
                 self.conversation.push_user(&raw_text);
-                let _ = command_tx
-                    .send(TuiCommand::RunShellCommand {
+                let _ = try_admit_operator_command(
+                    command_tx,
+                    TuiCommand::RunShellCommand {
                         command: text,
                         respond_to: None,
-                    })
-                    .await;
+                    },
+                );
                 return;
             }
             PromptPrefixMode::Agent
@@ -5974,24 +5998,27 @@ warning: {warning}"
             let should_interrupt = matches!(self.queue_mode, PromptQueueMode::InterruptAfterTurn);
             self.history.push(raw_text.clone());
             self.history_idx = None;
-            let _ = command_tx
-                .send(TuiCommand::SubmitPrompt(PromptSubmission {
-                    text: final_text,
-                    image_paths: attachments,
-                    submitted_by: "local-tui".to_string(),
-                    via: "tui",
-                    queue_mode: self.queue_mode,
-                    metadata: PromptMetadata::default(),
-                }))
-                .await;
+            let command = TuiCommand::SubmitPrompt(PromptSubmission {
+                text: final_text,
+                image_paths: attachments,
+                submitted_by: "local-tui".to_string(),
+                via: "tui",
+                queue_mode: self.queue_mode,
+                metadata: PromptMetadata::default(),
+            });
+            if let Err(command) = try_admit_operator_command(command_tx, command) {
+                self.restore_prompt_submission(*command, raw_text);
+                return;
+            }
             if should_interrupt {
                 self.prepare_interrupt_ui();
-                let _ = command_tx
-                    .send(TuiCommand::CancelActiveTurn {
+                let _ = try_admit_operator_command(
+                    command_tx,
+                    TuiCommand::CancelActiveTurn {
                         submitted_by: "local-tui".to_string(),
                         via: "tui",
-                    })
-                    .await;
+                    },
+                );
             }
             if let Some(ref mut overlay) = self.tutorial_overlay {
                 overlay.check_any_input();
@@ -6003,16 +6030,20 @@ warning: {warning}"
         self.exit_history_recall();
         self.agent_active = true;
         self.dashboard_handles.session().set_busy(true);
-        let _ = command_tx
-            .send(TuiCommand::SubmitPrompt(PromptSubmission {
-                text: final_text,
-                image_paths: attachments,
-                submitted_by: "local-tui".to_string(),
-                via: "tui",
-                queue_mode: self.queue_mode,
-                metadata: PromptMetadata::default(),
-            }))
-            .await;
+        let command = TuiCommand::SubmitPrompt(PromptSubmission {
+            text: final_text,
+            image_paths: attachments,
+            submitted_by: "local-tui".to_string(),
+            via: "tui",
+            queue_mode: self.queue_mode,
+            metadata: PromptMetadata::default(),
+        });
+        if let Err(command) = try_admit_operator_command(command_tx, command) {
+            self.restore_prompt_submission(*command, raw_text);
+            self.agent_active = false;
+            self.dashboard_handles.session().set_busy(false);
+            return;
+        }
         if let Some(ref mut overlay) = self.tutorial_overlay {
             overlay.check_any_input();
         }
@@ -6030,34 +6061,45 @@ warning: {warning}"
         }
         let decorated = format!("🎙 {text}");
         if self.agent_active {
-            let _ = command_tx
-                .send(TuiCommand::SubmitPrompt(PromptSubmission {
-                    text: decorated,
-                    image_paths: Vec::new(),
-                    submitted_by: "voice".to_string(),
-                    via: "voice",
-                    queue_mode: self.queue_mode,
-                    metadata: PromptMetadata::default(),
-                }))
-                .await;
-            return;
-        }
-
-        self.conversation.push_user(&decorated);
-        self.history.push(decorated.clone());
-        self.exit_history_recall();
-        self.agent_active = true;
-        self.dashboard_handles.session().set_busy(true);
-        let _ = command_tx
-            .send(TuiCommand::SubmitPrompt(PromptSubmission {
+            let command = TuiCommand::SubmitPrompt(PromptSubmission {
                 text: decorated,
                 image_paths: Vec::new(),
                 submitted_by: "voice".to_string(),
                 via: "voice",
                 queue_mode: self.queue_mode,
                 metadata: PromptMetadata::default(),
-            }))
-            .await;
+            });
+            if try_admit_operator_command(command_tx, command).is_err() {
+                self.conversation
+                    .push_system("Coordinator busy; voice prompt was not admitted.");
+            }
+            return;
+        }
+
+        let was_idle = !self.agent_active;
+        if was_idle {
+            self.conversation.push_user(&decorated);
+            self.history.push(decorated.clone());
+            self.exit_history_recall();
+            self.agent_active = true;
+            self.dashboard_handles.session().set_busy(true);
+        }
+        let command = TuiCommand::SubmitPrompt(PromptSubmission {
+            text: decorated,
+            image_paths: Vec::new(),
+            submitted_by: "voice".to_string(),
+            via: "voice",
+            queue_mode: self.queue_mode,
+            metadata: PromptMetadata::default(),
+        });
+        if try_admit_operator_command(command_tx, command).is_err() {
+            self.conversation
+                .push_system("Coordinator busy; voice prompt was not admitted.");
+            if was_idle {
+                self.agent_active = false;
+                self.dashboard_handles.session().set_busy(false);
+            }
+        }
     }
 
     fn suppress_editor_input_for(&mut self, duration: Duration) {
@@ -7679,16 +7721,17 @@ pub async fn run_tui(
 
     // Queue initial prompt if provided (--initial-prompt / --initial-prompt-file)
     if let Some(prompt) = config.initial_prompt {
-        let _ = command_tx
-            .send(TuiCommand::SubmitPrompt(PromptSubmission {
+        let _ = try_admit_operator_command(
+            &command_tx,
+            TuiCommand::SubmitPrompt(PromptSubmission {
                 text: prompt,
                 image_paths: Vec::new(),
                 submitted_by: "startup".to_string(),
                 via: "tui",
                 queue_mode: app.queue_mode,
                 metadata: PromptMetadata::default(),
-            }))
-            .await;
+            }),
+        );
     }
 
     // Start tutorial overlay if --tutorial flag was passed (e.g. from demo exec)
@@ -7698,7 +7741,7 @@ pub async fn run_tui(
     }
 
     let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
-    let mut terminal_input = terminal_input::TerminalInputPump::spawn();
+    let mut terminal_input = terminal_input::TerminalInputPump::spawn(interrupt_tx);
     let mut runtime_trace = runtime_trace::TuiRuntimeTrace::new(config.debug_tui);
 
     loop {
@@ -7712,11 +7755,6 @@ pub async fn run_tui(
         // ingesting producer traffic so streaming cannot starve scrolling,
         // cancellation, or editor control.
         let mut handled_input = false;
-        while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
-            // This channel is consumed outside the presentation task. The send
-            // is non-awaiting so cancellation cannot queue behind a wedged draw.
-            let _ = interrupt_tx.try_send(interrupt);
-        }
         let mut handled_input_count = 0_u64;
         let input_started = std::time::Instant::now();
         for _ in 0..16 {
@@ -7864,10 +7902,6 @@ pub async fn run_tui(
             let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
             eprintln!("{}", boundary.message());
             break;
-        }
-
-        while let Ok(interrupt) = terminal_input.try_recv_interrupt() {
-            let _ = interrupt_tx.try_send(interrupt);
         }
 
         // If the agent budget was exhausted, yield only long enough to service

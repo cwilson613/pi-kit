@@ -9,6 +9,7 @@ pub mod change;
 pub mod chronos;
 pub mod codebase_search;
 pub mod edit;
+mod file_io;
 pub mod local_inference;
 pub mod native_cmd;
 pub mod openapi;

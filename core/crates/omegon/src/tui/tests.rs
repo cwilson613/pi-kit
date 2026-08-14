@@ -1321,6 +1321,54 @@ async fn star_prefix_wraps_prompt_as_memory_injection_request() {
     }
 }
 #[tokio::test]
+async fn saturated_active_turn_lane_retains_prompt_and_does_not_interrupt() {
+    let mut app = active_test_app();
+    app.queue_mode = PromptQueueMode::InterruptAfterTurn;
+    app.editor.set_text("do not lose this steering prompt");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    tx.try_send(TuiCommand::StartWebDashboard)
+        .expect("fill coordinator lane");
+
+    app.submit_editor_buffer(&tx).await;
+
+    assert_eq!(app.editor.render_text(), "do not lose this steering prompt");
+    assert!(!app.interrupt_pending);
+    assert!(matches!(rx.try_recv(), Ok(TuiCommand::StartWebDashboard)));
+}
+
+#[tokio::test]
+async fn disconnected_command_lane_retains_prompt_and_reports_boundary() {
+    let mut app = test_app();
+    app.agent_active = true;
+    app.editor.set_text("retain after disconnect");
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        app.submit_editor_buffer(&tx),
+    )
+    .await
+    .expect("disconnected lane must not block");
+
+    assert_eq!(app.editor.render_text(), "retain after disconnect");
+}
+
+#[tokio::test]
+async fn saturated_command_lane_retains_prompt_draft_without_blocking() {
+    let mut app = active_test_app();
+    app.editor.set_text("queued behind blocked turn");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    tx.try_send(TuiCommand::StartWebDashboard)
+        .expect("fill coordinator lane");
+
+    app.submit_editor_buffer(&tx).await;
+
+    assert_eq!(app.editor.render_text(), "queued behind blocked turn");
+    assert!(matches!(rx.try_recv(), Ok(TuiCommand::StartWebDashboard)));
+}
+
+#[tokio::test]
 async fn submitting_while_agent_active_submits_to_runtime_queue_without_interrupt_by_default() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();

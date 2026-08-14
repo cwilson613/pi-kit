@@ -684,13 +684,25 @@ fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
     (editor_rows + 2).clamp(3, max_editor) // +2 for border
 }
 
+enum CommandAdmission {
+    Accepted,
+    Busy(Box<TuiCommand>),
+    Disconnected(Box<TuiCommand>),
+}
+
 fn try_admit_operator_command(
     command_tx: &OperatorCommandTx,
     command: TuiCommand,
-) -> Result<(), Box<TuiCommand>> {
-    command_tx
-        .try_send(command)
-        .map_err(|error| Box::new(error.into_inner()))
+) -> CommandAdmission {
+    match command_tx.try_send(command) {
+        Ok(()) => CommandAdmission::Accepted,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(command)) => {
+            CommandAdmission::Busy(Box::new(command))
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(command)) => {
+            CommandAdmission::Disconnected(Box::new(command))
+        }
+    }
 }
 
 impl App {
@@ -6006,9 +6018,19 @@ warning: {warning}"
                 queue_mode: self.queue_mode,
                 metadata: PromptMetadata::default(),
             });
-            if let Err(command) = try_admit_operator_command(command_tx, command) {
-                self.restore_prompt_submission(*command, raw_text);
-                return;
+            match try_admit_operator_command(command_tx, command) {
+                CommandAdmission::Accepted => {}
+                CommandAdmission::Busy(command) => {
+                    self.restore_prompt_submission(*command, raw_text);
+                    return;
+                }
+                CommandAdmission::Disconnected(command) => {
+                    self.restore_prompt_submission(*command, raw_text);
+                    self.conversation.push_system(
+                        "Coordinator disconnected; prompt retained. Exit and restart Omegon.",
+                    );
+                    return;
+                }
             }
             if should_interrupt {
                 self.prepare_interrupt_ui();
@@ -6038,11 +6060,23 @@ warning: {warning}"
             queue_mode: self.queue_mode,
             metadata: PromptMetadata::default(),
         });
-        if let Err(command) = try_admit_operator_command(command_tx, command) {
-            self.restore_prompt_submission(*command, raw_text);
-            self.agent_active = false;
-            self.dashboard_handles.session().set_busy(false);
-            return;
+        match try_admit_operator_command(command_tx, command) {
+            CommandAdmission::Accepted => {}
+            CommandAdmission::Busy(command) => {
+                self.restore_prompt_submission(*command, raw_text);
+                self.agent_active = false;
+                self.dashboard_handles.session().set_busy(false);
+                return;
+            }
+            CommandAdmission::Disconnected(command) => {
+                self.restore_prompt_submission(*command, raw_text);
+                self.agent_active = false;
+                self.dashboard_handles.session().set_busy(false);
+                self.conversation.push_system(
+                    "Coordinator disconnected; prompt retained. Exit and restart Omegon.",
+                );
+                return;
+            }
         }
         if let Some(ref mut overlay) = self.tutorial_overlay {
             overlay.check_any_input();
@@ -6069,7 +6103,10 @@ warning: {warning}"
                 queue_mode: self.queue_mode,
                 metadata: PromptMetadata::default(),
             });
-            if try_admit_operator_command(command_tx, command).is_err() {
+            if !matches!(
+                try_admit_operator_command(command_tx, command),
+                CommandAdmission::Accepted
+            ) {
                 self.conversation
                     .push_system("Coordinator busy; voice prompt was not admitted.");
             }
@@ -6092,7 +6129,10 @@ warning: {warning}"
             queue_mode: self.queue_mode,
             metadata: PromptMetadata::default(),
         });
-        if try_admit_operator_command(command_tx, command).is_err() {
+        if !matches!(
+            try_admit_operator_command(command_tx, command),
+            CommandAdmission::Accepted
+        ) {
             self.conversation
                 .push_system("Coordinator busy; voice prompt was not admitted.");
             if was_idle {

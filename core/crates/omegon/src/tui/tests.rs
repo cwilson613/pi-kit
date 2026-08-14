@@ -1337,6 +1337,24 @@ async fn saturated_active_turn_lane_retains_prompt_and_does_not_interrupt() {
 }
 
 #[tokio::test]
+async fn disconnected_command_lane_retains_prompt_and_reports_boundary() {
+    let mut app = test_app();
+    app.agent_active = true;
+    app.editor.set_text("retain after disconnect");
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        app.submit_editor_buffer(&tx),
+    )
+    .await
+    .expect("disconnected lane must not block");
+
+    assert_eq!(app.editor.render_text(), "retain after disconnect");
+}
+
+#[tokio::test]
 async fn saturated_command_lane_retains_prompt_draft_without_blocking() {
     let mut app = active_test_app();
     app.editor.set_text("queued behind blocked turn");

@@ -4,12 +4,13 @@ use anyhow::Result;
 use omegon_traits::{ContentBlock, ToolResult};
 use std::path::Path;
 
+use super::file_io::{self, ReadBudget};
+
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
-
-/// Read timeout — 30 seconds should handle any local file system.
-/// Network-mounted filesystems that stall will hit this.
-const READ_TIMEOUT_SECS: u64 = 30;
+const MAX_TEXT_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_IMAGE_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
+const READ_TIMEOUT_SECS: u64 = 5;
 
 pub async fn execute(
     path: &Path,
@@ -20,18 +21,16 @@ pub async fn execute(
         anyhow::bail!("File not found: {}", path.display());
     }
 
-    let timeout = std::time::Duration::from_secs(READ_TIMEOUT_SECS);
-
-    // Check if it's an image
+    // Images have an independent source ceiling because base64 expands them.
     if is_image(path) {
-        let data = tokio::time::timeout(timeout, tokio::fs::read(path))
+        let data = file_io::read_binary_bounded(path, MAX_IMAGE_SOURCE_BYTES)
             .await
-            .map_err(|_| {
+            .map_err(|err| {
                 anyhow::anyhow!(
-                    "Read timed out after {READ_TIMEOUT_SECS}s: {}",
+                    "Cannot read {}: image source ceiling exceeded: {err}",
                     path.display()
                 )
-            })??;
+            })?;
         let base64 = base64_encode(&data);
         let media_type = mime_from_ext(path);
         return Ok(ToolResult {
@@ -48,53 +47,26 @@ pub async fn execute(
         });
     }
 
-    let data = tokio::time::timeout(timeout, tokio::fs::read(path))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Read timed out after {READ_TIMEOUT_SECS}s: {}",
-                path.display()
-            )
-        })??;
-    if looks_binary(&data) {
-        anyhow::bail!(
-            "Cannot read {} as text: file appears to be binary ({} bytes). Use `view` for supported images or `bash`/`xxd` for byte-level inspection.",
-            path.display(),
-            data.len()
-        );
-    }
-    let content = String::from_utf8(data).map_err(|err| {
-        anyhow::anyhow!(
-            "Cannot read {} as UTF-8 text: invalid byte sequence starting at byte {}. Use `bash`/`file`/`xxd` for byte-level inspection, or convert the file to UTF-8 before using `read`.",
-            path.display(),
-            err.utf8_error().valid_up_to()
-        )
-    })?;
-    let lines: Vec<&str> = content.lines().collect();
-    let total_lines = lines.len();
-
-    let start = offset.unwrap_or(1).saturating_sub(1); // 1-indexed to 0-indexed
+    let start = offset.unwrap_or(1);
     let max = limit.unwrap_or(MAX_LINES).min(MAX_LINES);
+    let window = file_io::read_text_window(
+        path,
+        start,
+        max,
+        ReadBudget {
+            max_source_bytes: MAX_TEXT_SOURCE_BYTES,
+            max_emitted_bytes: MAX_BYTES,
+            max_lines: MAX_LINES,
+            max_elapsed: std::time::Duration::from_secs(READ_TIMEOUT_SECS),
+        },
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("Cannot read {}: {err}", path.display()))?;
 
-    let selected: Vec<&str> = lines.iter().skip(start).take(max).copied().collect();
-
-    let mut text = selected.join("\n");
-
-    // Truncate by bytes if needed, but only at UTF-8 character boundaries.
-    if text.len() > MAX_BYTES {
-        text.truncate(text.floor_char_boundary(MAX_BYTES));
-        if let Some(last_newline) = text.rfind('\n') {
-            text.truncate(last_newline);
-        }
-    }
-
-    let shown_lines = text.lines().count();
-    let remaining = total_lines.saturating_sub(start + shown_lines);
-
-    if remaining > 0 {
+    let mut text = window.text;
+    if let Some(next_offset) = window.next_offset {
         text.push_str(&format!(
-            "\n\n[{remaining} more lines in file. Use offset={} to continue.]",
-            start + shown_lines + 1
+            "\n\n[more lines in file; total is not yet exact. Use offset={next_offset} to continue.]"
         ));
     }
 
@@ -102,9 +74,13 @@ pub async fn execute(
         content: vec![ContentBlock::Text { text }],
         details: serde_json::json!({
             "path": path.display().to_string(),
-            "totalLines": total_lines,
-            "shownLines": shown_lines,
-            "offset": start + 1,
+            "totalLines": window.total_lines_exact.then_some(window.observed_lines),
+            "totalLinesExact": window.total_lines_exact,
+            "shownLines": window.lines_emitted,
+            "offset": window.start_line,
+            "nextOffset": window.next_offset,
+            "sourceBytesRead": window.source_bytes_read,
+            "truncated": window.truncated,
         }),
     })
 }
@@ -243,6 +219,60 @@ mod tests {
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
         assert_eq!(base64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_fifo_before_opening_for_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("blocked.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let error = execute(&fifo, None, Some(1)).await.unwrap_err();
+        assert!(error.to_string().contains("regular files"));
+    }
+
+    #[tokio::test]
+    async fn bounded_window_reports_truthful_inexact_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("large.txt");
+        let content = (1..=10_000)
+            .map(|line| format!("line-{line}\n"))
+            .collect::<String>();
+        std::fs::write(&file, content).unwrap();
+
+        let result = execute(&file, Some(1), Some(10)).await.unwrap();
+        assert_eq!(result.details["shownLines"], 10);
+        assert_eq!(result.details["totalLinesExact"], false);
+        assert_eq!(result.details["nextOffset"], 11);
+        assert!(result.details["sourceBytesRead"].as_u64().unwrap() < 4096);
+    }
+
+    #[tokio::test]
+    async fn oversized_image_is_rejected_before_base64_expansion() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("large.png");
+        let data = vec![0_u8; MAX_IMAGE_SOURCE_BYTES as usize + 1];
+        std::fs::write(&file, data).unwrap();
+
+        let error = execute(&file, None, None).await.unwrap_err();
+        assert!(error.to_string().contains("image source ceiling"));
+    }
+
+    #[tokio::test]
+    async fn exact_total_is_reported_when_window_observes_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("small.txt");
+        std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+
+        let result = execute(&file, None, Some(10)).await.unwrap();
+        assert_eq!(result.details["totalLines"], 3);
+        assert_eq!(result.details["totalLinesExact"], true);
+        assert!(result.details["nextOffset"].is_null());
     }
 
     #[tokio::test]

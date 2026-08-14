@@ -1502,6 +1502,21 @@
       "bound_change": null,
       "created_at": "2026-08-13T02:00:08Z",
       "updated_at": "2026-08-13T02:06:17Z"
+    },
+    {
+      "id": "cpu-bound-tui-liveness-and-authoritative-interrupts",
+      "title": "CPU-bound TUI liveness and authoritative interrupts",
+      "state": "exploring",
+      "parent": null,
+      "tags": [],
+      "priority": null,
+      "issue_type": null,
+      "open_questions": [],
+      "decisions": [],
+      "overview": "",
+      "bound_change": null,
+      "created_at": "2026-08-14T02:33:04Z",
+      "updated_at": "2026-08-14T02:33:04Z"
     }
   ],
   "changes": [
@@ -4366,6 +4381,24 @@
       "to_state": "archived",
       "reason": null,
       "forced": false
+    },
+    {
+      "timestamp": "2026-08-14T02:33:04Z",
+      "entity_type": "node",
+      "entity_id": "cpu-bound-tui-liveness-and-authoritative-interrupts",
+      "from_state": "(new)",
+      "to_state": "seed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-14T02:33:04Z",
+      "entity_type": "node",
+      "entity_id": "cpu-bound-tui-liveness-and-authoritative-interrupts",
+      "from_state": "seed",
+      "to_state": "exploring",
+      "reason": "initial status on create",
+      "forced": true
     }
   ]
 }

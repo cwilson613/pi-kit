@@ -1,5 +1,6 @@
 //! Skill manifest parsing and portable SKILL.md helpers.
 
+pub mod adapters;
 pub mod contribution;
 pub mod disclosure;
 

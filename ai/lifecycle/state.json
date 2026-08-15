@@ -1711,7 +1711,7 @@
     {
       "name": "dynamic-inference-inventory",
       "title": "Dynamic inference inventory foundation",
-      "state": "implementing",
+      "state": "archived",
       "bound_node": null,
       "specs": [
         "inference-inventory"
@@ -1720,9 +1720,9 @@
         "core/crates/omegon/src/inference_inventory.rs"
       ],
       "tasks_total": 18,
-      "tasks_done": 16,
+      "tasks_done": 18,
       "created_at": "2026-07-10T04:14:17Z",
-      "updated_at": "2026-07-10T04:21:48Z"
+      "updated_at": "2026-08-15T18:38:30Z"
     },
     {
       "name": "operator-shell-observations",
@@ -1742,6 +1742,7 @@
       "state": "archived",
       "bound_node": null,
       "specs": [
+        "inference-discovery",
         "inference/catalog-unification",
         "inference/discovery"
       ],
@@ -4534,6 +4535,24 @@
       "timestamp": "2026-08-15T16:53:48Z",
       "entity_type": "change",
       "entity_id": "a3-evidence-ledger",
+      "from_state": "verifying",
+      "to_state": "archived",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:38:24Z",
+      "entity_type": "change",
+      "entity_id": "dynamic-inference-inventory",
+      "from_state": "implementing",
+      "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:38:30Z",
+      "entity_type": "change",
+      "entity_id": "dynamic-inference-inventory",
       "from_state": "verifying",
       "to_state": "archived",
       "reason": null,

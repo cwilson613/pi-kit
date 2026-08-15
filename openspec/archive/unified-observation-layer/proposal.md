@@ -1,3 +1,6 @@
+---
+state: implementing
+---
 # Unified observation layer
 
 ## Intent

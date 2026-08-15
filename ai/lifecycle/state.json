@@ -1758,14 +1758,19 @@
     {
       "name": "evidence-backed-model-admission",
       "title": "evidence-backed-model-admission",
-      "state": "proposed",
+      "state": "archived",
       "bound_node": null,
-      "specs": [],
-      "test_files": [],
+      "specs": [
+        "inference/model-admission"
+      ],
+      "test_files": [
+        "core/crates/omegon/src/inference_inventory.rs",
+        "core/crates/omegon/src/control_runtime.rs"
+      ],
       "tasks_total": 9,
       "tasks_done": 9,
       "created_at": "2026-07-24T21:17:24Z",
-      "updated_at": "2026-07-24T21:17:24Z"
+      "updated_at": "2026-08-15T12:14:58Z"
     },
     {
       "name": "auspex-managed-command-delivery",
@@ -4399,6 +4404,60 @@
       "to_state": "exploring",
       "reason": "initial status on create",
       "forced": true
+    },
+    {
+      "timestamp": "2026-08-15T12:14:34Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "proposed",
+      "to_state": "specced",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T12:14:34Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "specced",
+      "to_state": "planned",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T12:14:49Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "planned",
+      "to_state": "testing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T12:14:49Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "testing",
+      "to_state": "implementing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T12:14:53Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "implementing",
+      "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T12:14:58Z",
+      "entity_type": "change",
+      "entity_id": "evidence-backed-model-admission",
+      "from_state": "verifying",
+      "to_state": "archived",
+      "reason": null,
+      "forced": false
     }
   ]
 }

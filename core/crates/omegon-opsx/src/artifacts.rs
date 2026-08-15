@@ -457,12 +457,17 @@ fn render_state_metadata(
 }
 
 fn contains_markdown(path: &Path) -> bool {
-    path.is_dir()
-        && fs::read_dir(path).ok().is_some_and(|entries| {
-            entries
-                .flatten()
-                .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
-        })
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            contains_markdown(&path)
+        } else {
+            path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        }
+    })
 }
 
 fn task_counts(path: &Path) -> (usize, usize) {

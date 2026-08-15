@@ -199,6 +199,32 @@ mod tests {
     }
 
     #[test]
+    fn sync_change_by_name_registers_nested_spec_domains() {
+        let dir = tempfile::tempdir().unwrap();
+        super::spec::propose_change(dir.path(), "demo", "Demo", "intent").unwrap();
+        std::fs::create_dir_all(dir.path().join("openspec/changes/demo/specs/inference")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("openspec/changes/demo/specs/inference/model-admission.md"),
+            "# Admission\n\n## ADDED Requirements\n\n### Requirement: Evidence\n\n#### Scenario: Curated\nGiven evidence\nWhen derived\nThen curated\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("openspec/changes/demo/tasks.md"),
+            "- [x] Verify admission\n",
+        )
+        .unwrap();
+
+        let mut opsx = OpsxLifecycle::load(JsonFileStore::new(dir.path())).unwrap();
+        let (change, report) = sync_change_by_name(&mut opsx, dir.path(), "demo").unwrap();
+
+        assert!(change.has_specs);
+        assert_eq!(change.specs[0].domain, "inference/model-admission");
+        assert_eq!(report.specs_registered, 1);
+        assert_eq!(change_state(&opsx, "demo"), Some(ChangeState::Planned));
+    }
+
+    #[test]
     fn sync_creates_change_and_advances_to_specced() {
         let dir = tempfile::tempdir().unwrap();
         super::spec::propose_change(dir.path(), "demo", "Demo", "intent").unwrap();

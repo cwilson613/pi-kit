@@ -237,13 +237,18 @@ fn shell_quote_path(path: &std::path::Path) -> String {
 
 pub fn doctor_report() -> anyhow::Result<String> {
     let cwd = std::env::current_dir()?;
+    doctor_report_for(&cwd)
+}
+
+fn doctor_report_for(cwd: &std::path::Path) -> anyhow::Result<String> {
     let entries = list_structured()?;
     let mut lines = vec!["# Skills doctor".to_string(), String::new()];
     lines.push("Detected compatible skill roots:".into());
     let mut total = 0usize;
     let mut conflict_count = 0usize;
     let mut missing_scripts = 0usize;
-    for (source, root) in claude_skill_roots(&cwd) {
+    let mut retrieval_key_findings = 0usize;
+    for (source, root) in claude_skill_roots(cwd) {
         let bundles = discover_skill_bundles(&source, &root)?;
         if bundles.is_empty() {
             lines.push(format!("  ○ {source:<15} {}", root.display()));
@@ -281,6 +286,7 @@ pub fn doctor_report() -> anyhow::Result<String> {
                 if let Some(finding) =
                     omegon_skills::disclosure::lint_retrieval_key(&manifest.description)
                 {
+                    retrieval_key_findings += 1;
                     metadata.push(format!("retrieval-key:{}", finding.message()));
                 }
             }
@@ -315,7 +321,7 @@ pub fn doctor_report() -> anyhow::Result<String> {
             lines.push(String::new());
         }
     }
-    lines.push(format!("Summary: {total} compatible external skill bundle(s), {conflict_count} conflict marker(s), {missing_scripts} missing script reference(s)."));
+    lines.push(format!("Summary: {total} compatible external skill bundle(s), {conflict_count} conflict marker(s), {missing_scripts} missing script reference(s), {retrieval_key_findings} retrieval-key finding(s)."));
     lines.push(String::new());
     lines.push("Recommended next steps:".into());
     lines.push("  - Fast path: run `omegon migrate claude-code` to copy detected Claude user/project skills plus Claude settings into Omegon.".into());
@@ -1055,6 +1061,22 @@ fn extract_description(content: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_doctor_surfaces_retrieval_key_findings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skill = tmp.path().join(".claude/skills/vague");
+        std::fs::create_dir_all(&skill).expect("skill dir");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: vague\ndescription: Helps with things\n---\nDo useful work.\n",
+        )
+        .expect("skill file");
+
+        let report = doctor_report_for(tmp.path()).expect("doctor report");
+        assert!(report.contains("retrieval-key:"), "{report}");
+        assert!(report.contains("1 retrieval-key finding(s)"), "{report}");
+    }
 
     #[test]
     fn rust_only_workspace_keeps_unmatched_skills_resident_only() {

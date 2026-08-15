@@ -1742,7 +1742,6 @@
       "state": "archived",
       "bound_node": null,
       "specs": [
-        "inference-discovery",
         "inference/catalog-unification",
         "inference/discovery"
       ],

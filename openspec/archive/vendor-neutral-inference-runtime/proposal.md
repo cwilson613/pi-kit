@@ -1,3 +1,6 @@
+---
+state: implementing
+---
 # Vendor-neutral inference runtime model
 
 ## Intent

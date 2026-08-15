@@ -1761,7 +1761,8 @@
       "state": "archived",
       "bound_node": null,
       "specs": [
-        "inference/model-admission"
+        "inference/model-admission",
+        "inference-model-admission"
       ],
       "test_files": [
         "core/crates/omegon/src/inference_inventory.rs",
@@ -1800,6 +1801,23 @@
       "tasks_done": 9,
       "created_at": "2026-08-13T20:41:41Z",
       "updated_at": "2026-08-13T21:25:39Z"
+    },
+    {
+      "name": "a3-evidence-ledger",
+      "title": "a3-evidence-ledger",
+      "state": "archived",
+      "bound_node": null,
+      "specs": [
+        "harness-guidance/evidence-ledger"
+      ],
+      "test_files": [
+        "core/crates/omegon/src/conversation.rs",
+        "core/crates/omegon/src/behavior.rs"
+      ],
+      "tasks_total": 9,
+      "tasks_done": 9,
+      "created_at": "2026-08-15T13:42:35Z",
+      "updated_at": "2026-08-15T16:53:48Z"
     }
   ],
   "milestones": [],
@@ -4454,6 +4472,69 @@
       "timestamp": "2026-08-15T12:14:58Z",
       "entity_type": "change",
       "entity_id": "evidence-backed-model-admission",
+      "from_state": "verifying",
+      "to_state": "archived",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T13:42:35Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
+      "from_state": "(new)",
+      "to_state": "proposed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T16:10:49Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
+      "from_state": "proposed",
+      "to_state": "specced",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T16:10:49Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
+      "from_state": "specced",
+      "to_state": "planned",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T16:10:55Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
+      "from_state": "planned",
+      "to_state": "testing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T16:10:55Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
+      "from_state": "testing",
+      "to_state": "implementing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T16:11:07Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
+      "from_state": "implementing",
+      "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T16:53:48Z",
+      "entity_type": "change",
+      "entity_id": "a3-evidence-ledger",
       "from_state": "verifying",
       "to_state": "archived",
       "reason": null,

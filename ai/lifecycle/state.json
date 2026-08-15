@@ -1856,6 +1856,23 @@
       "tasks_done": 13,
       "created_at": "2026-08-15T18:46:10Z",
       "updated_at": "2026-08-15T18:50:42Z"
+    },
+    {
+      "name": "runtime-inference-manifests",
+      "title": "runtime-inference-manifests",
+      "state": "archived",
+      "bound_node": null,
+      "specs": [
+        "inference-manifests"
+      ],
+      "test_files": [
+        "core/crates/omegon/src/inference_manifest.rs",
+        "core/crates/omegon/src/inference_runtime.rs"
+      ],
+      "tasks_total": 15,
+      "tasks_done": 15,
+      "created_at": "2026-08-15T18:56:30Z",
+      "updated_at": "2026-08-15T18:56:49Z"
     }
   ],
   "milestones": [],
@@ -4717,6 +4734,69 @@
       "timestamp": "2026-08-15T18:50:42Z",
       "entity_type": "change",
       "entity_id": "progressive-skill-disclosure",
+      "from_state": "verifying",
+      "to_state": "archived",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:30Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
+      "from_state": "(new)",
+      "to_state": "proposed",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:30Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
+      "from_state": "proposed",
+      "to_state": "specced",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:30Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
+      "from_state": "specced",
+      "to_state": "planned",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:30Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
+      "from_state": "planned",
+      "to_state": "testing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:30Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
+      "from_state": "testing",
+      "to_state": "implementing",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:41Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
+      "from_state": "implementing",
+      "to_state": "verifying",
+      "reason": null,
+      "forced": false
+    },
+    {
+      "timestamp": "2026-08-15T18:56:49Z",
+      "entity_type": "change",
+      "entity_id": "runtime-inference-manifests",
       "from_state": "verifying",
       "to_state": "archived",
       "reason": null,

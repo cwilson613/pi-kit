@@ -1,3 +1,6 @@
+---
+state: implementing
+---
 # Runtime inference manifest loading and atomic reload
 
 ## Intent

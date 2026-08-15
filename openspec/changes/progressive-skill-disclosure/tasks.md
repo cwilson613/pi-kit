@@ -10,7 +10,7 @@
 <!-- specs: skills/progressive-disclosure -->
 
 - [x] 2.1 Add description quality lint rejecting missing, sub-24-character, and placeholder descriptions.
-- [ ] 2.2 Surface findings through the existing skill doctor report.
+- [x] 2.2 Surface findings through the existing skill doctor report.
 - [x] 2.3 Test that every bundled skill in `skills/*/SKILL.md` passes the lint.
 
 ## 3. Inventory adapter
@@ -29,8 +29,4 @@
 
 ## Remaining
 
-- 2.2 is deliberately open. The lint exists and gates bundled skills at test time
-  (`every_bundled_skill_declares_matchable_signals`, `lint_activation`), but its
-  findings are not yet surfaced through the operator-facing skill doctor report.
-  Disclosure shipped in 0.28.11 without it; the gap is diagnostic reach, not
-  correctness.
+None. Retrieval-key lint findings are emitted per external skill bundle and counted in the operator-facing `omegon skills doctor` summary.

@@ -70,6 +70,8 @@ pub struct ProviderEndpoint {
     #[serde(rename = "class")]
     pub class_: EndpointClass,
     pub protocol: EndpointProtocol,
+    #[serde(default = "default_discovery_protocol")]
+    pub discovery_protocol: EndpointDiscoveryProtocol,
     pub base_url: Option<String>,
     pub auth_scheme: EndpointAuthScheme,
     #[serde(default)]
@@ -236,9 +238,22 @@ pub enum EndpointClass {
 #[serde(rename_all = "camelCase")]
 pub enum EndpointProtocol {
     OpenAiCompatible,
+    OpenAiResponses,
     Anthropic,
     GeminiNative,
     OllamaNative,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EndpointDiscoveryProtocol {
+    OpenAiModels,
+    Static,
+    OllamaTags,
+}
+
+fn default_discovery_protocol() -> EndpointDiscoveryProtocol {
+    EndpointDiscoveryProtocol::Static
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -791,7 +806,9 @@ fn validate_endpoints(endpoints: Vec<ProviderEndpoint>) -> Result<Vec<ProviderEn
             return Err(format!("duplicate endpoint id '{}'", endpoint.id));
         }
         match endpoint.protocol {
-            EndpointProtocol::OpenAiCompatible if endpoint.open_ai_compatible_profile.is_none() => {
+            EndpointProtocol::OpenAiCompatible | EndpointProtocol::OpenAiResponses
+                if endpoint.open_ai_compatible_profile.is_none() =>
+            {
                 return Err(format!(
                     "OpenAI-compatible endpoint '{}' lacks an openAiCompatibleProfile",
                     endpoint.id
@@ -807,7 +824,7 @@ fn validate_endpoints(endpoints: Vec<ProviderEndpoint>) -> Result<Vec<ProviderEn
                     ));
                 }
             }
-            EndpointProtocol::OpenAiCompatible => {}
+            EndpointProtocol::OpenAiCompatible | EndpointProtocol::OpenAiResponses => {}
         }
     }
     Ok(endpoints)

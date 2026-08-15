@@ -1,3 +1,6 @@
+---
+state: specced
+---
 # Evidence-backed model admission
 
 ## Intent

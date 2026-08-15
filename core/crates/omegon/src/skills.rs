@@ -1,8 +1,8 @@
 //! Skill management — schema, parsing, listing, and installation.
 //!
 //! Skills are markdown directive files injected into the system prompt at session start.
-//! Bundled skills ship embedded in the binary so `omegon skills install` works regardless
-//! of whether a source tree is present.
+//! Shipped skills are discovered from an installed contribution-pack directory;
+//! user and project skills retain their existing override precedence.
 //!
 //! Two-tier load order (established by AugmentRegistry::load_skills):
 //!   1. ~/.omegon/skills/*/SKILL.md   — bundled / user-installed
@@ -69,36 +69,80 @@ use omegon_skills::{
 #[cfg(any(feature = "tui", test))]
 pub use omegon_skills::skill_builder_prompt;
 
-/// All skills bundled into the binary at compile time.
-/// Each entry is (name, skill_markdown_content).
-pub const BUNDLED: &[(&str, &str)] = &[
-    (
-        "code-act",
-        include_str!("../../../../skills/code-act/SKILL.md"),
-    ),
-    (
-        "codebase-init",
-        include_str!("../../../../skills/codebase-init/SKILL.md"),
-    ),
-    ("git", include_str!("../../../../skills/git/SKILL.md")),
-    ("oci", include_str!("../../../../skills/oci/SKILL.md")),
-    (
-        "openspec",
-        include_str!("../../../../skills/openspec/SKILL.md"),
-    ),
-    ("python", include_str!("../../../../skills/python/SKILL.md")),
-    ("rust", include_str!("../../../../skills/rust/SKILL.md")),
-    (
-        "security",
-        include_str!("../../../../skills/security/SKILL.md"),
-    ),
-    ("style", include_str!("../../../../skills/style/SKILL.md")),
-    (
-        "typescript",
-        include_str!("../../../../skills/typescript/SKILL.md"),
-    ),
-    ("flynt", include_str!("../../../../skills/flynt/SKILL.md")),
-];
+const SHIPPED_SKILL_MANIFEST: &str = include_str!("../../../../skills/manifest.txt");
+
+fn shipped_skill_names() -> impl Iterator<Item = &'static str> {
+    SHIPPED_SKILL_MANIFEST
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
+#[derive(Debug, Clone)]
+struct ShippedSkill {
+    name: String,
+    content: String,
+}
+
+fn contribution_pack_root() -> anyhow::Result<std::path::PathBuf> {
+    if let Some(root) = std::env::var_os("OMEGON_CONTRIBUTION_PACK") {
+        let root = std::path::PathBuf::from(root);
+        if root.is_dir() {
+            return Ok(root);
+        }
+        anyhow::bail!(
+            "OMEGON_CONTRIBUTION_PACK does not name an installed contribution pack: {}",
+            root.display()
+        );
+    }
+
+    let executable = std::env::current_exe()?;
+    let executable_dir = executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine executable directory"))?;
+    let candidates = [
+        executable_dir.join("share/omegon"),
+        executable_dir.join("../share/omegon"),
+        executable_dir.join("../Resources/omegon"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+    ];
+    candidates
+        .into_iter()
+        .find(|root| root.join("skills").is_dir())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "shipped skill contribution pack is missing; reinstall Omegon or set OMEGON_CONTRIBUTION_PACK"
+            )
+        })
+}
+
+fn shipped_skills() -> anyhow::Result<Vec<ShippedSkill>> {
+    let root = contribution_pack_root()?.canonicalize()?;
+    let skills_root = root.join("skills").canonicalize()?;
+    if !skills_root.starts_with(&root) {
+        anyhow::bail!("shipped skills directory escapes contribution pack root");
+    }
+    let mut expected_names = shipped_skill_names().collect::<Vec<_>>();
+    expected_names.sort_unstable();
+    let mut skills = Vec::with_capacity(expected_names.len());
+    for name in expected_names {
+        let path = skills_root.join(name).join("SKILL.md");
+        let canonical = path.canonicalize().map_err(|error| {
+            anyhow::anyhow!(
+                "shipped skill '{name}' is missing at {}: {error}",
+                path.display()
+            )
+        })?;
+        if !canonical.starts_with(&skills_root) || !canonical.is_file() {
+            anyhow::bail!("shipped skill '{name}' escapes the contribution pack root");
+        }
+        skills.push(ShippedSkill {
+            name: (*name).to_string(),
+            content: std::fs::read_to_string(canonical)?,
+        });
+    }
+    Ok(skills)
+}
 
 fn skills_dir() -> Option<std::path::PathBuf> {
     crate::paths::omegon_home().ok().map(|h| h.join("skills"))
@@ -108,15 +152,17 @@ fn skills_dir() -> Option<std::path::PathBuf> {
 pub fn list_summary() -> anyhow::Result<String> {
     let skills_dir = skills_dir();
 
-    let mut lines = vec![format!("Bundled skills ({})\n", BUNDLED.len())];
+    let mut lines = vec![format!("Bundled skills ({})\n", shipped_skills()?.len())];
 
-    for (name, content) in BUNDLED {
+    for shipped in shipped_skills().expect("shipped skills") {
+        let name = shipped.name;
+        let content = shipped.content;
         // Extract description from frontmatter if present
-        let description = extract_description(content).unwrap_or("(no description)");
+        let description = extract_description(&content).unwrap_or("(no description)");
 
         let installed = skills_dir
             .as_ref()
-            .is_some_and(|d| d.join(name).join("SKILL.md").exists());
+            .is_some_and(|d| d.join(&name).join("SKILL.md").exists());
         let status = if installed { "✓" } else { "○" };
         lines.push(format!("  {status} {name:<14} {description}"));
     }
@@ -505,8 +551,10 @@ pub fn install_bundled_skills() -> anyhow::Result<SkillInstallSummary> {
 
     let removed_legacy = remove_legacy_bundled_vault_skill(&skills_dir)?;
 
-    for (name, content) in BUNDLED {
-        let skill_dir = skills_dir.join(name);
+    for shipped in shipped_skills().expect("shipped skills") {
+        let name = shipped.name;
+        let content = shipped.content;
+        let skill_dir = skills_dir.join(&name);
         let skill_file = skill_dir.join("SKILL.md");
 
         std::fs::create_dir_all(&skill_dir)?;
@@ -518,7 +566,7 @@ pub fn install_bundled_skills() -> anyhow::Result<SkillInstallSummary> {
             None
         };
 
-        let changed = existing_content.as_deref() != Some(content);
+        let changed = existing_content.as_deref() != Some(content.as_str());
 
         std::fs::write(&skill_file, content)?;
 
@@ -545,7 +593,8 @@ pub fn cmd_install() -> anyhow::Result<()> {
     if summary.removed_legacy {
         println!("  - vault  (removed; renamed to flynt)");
     }
-    for (name, _content) in BUNDLED {
+    for shipped in shipped_skills().expect("shipped skills") {
+        let name = shipped.name;
         println!("  ✓ {name}");
     }
 
@@ -688,14 +737,16 @@ pub fn list_structured() -> anyhow::Result<Vec<SkillEntry>> {
     let mut seen = std::collections::HashSet::new();
 
     // Bundled skills — always present, may or may not be installed
-    for (name, content) in BUNDLED {
-        let (manifest, _body) = parse_skill_file(content);
+    for shipped in shipped_skills().expect("shipped skills") {
+        let name = shipped.name;
+        let content = shipped.content;
+        let (manifest, _body) = parse_skill_file(&content);
         let installed = home_skills
             .as_ref()
-            .is_some_and(|d| d.join(name).join("SKILL.md").exists());
+            .is_some_and(|d| d.join(&name).join("SKILL.md").exists());
         let path = home_skills
             .as_ref()
-            .map(|d| d.join(name).display().to_string())
+            .map(|d| d.join(&name).display().to_string())
             .unwrap_or_default();
         entries.push(SkillEntry {
             name: name.to_string(),
@@ -954,9 +1005,11 @@ pub fn get_skill(name: &str) -> anyhow::Result<(SkillManifest, String, std::path
     }
 
     // Check if it's a known bundled skill (not yet installed)
-    for (bname, content) in BUNDLED {
-        if *bname == name {
-            let (manifest, body) = parse_skill_file(content);
+    for shipped in shipped_skills().expect("shipped skills") {
+        let bname = shipped.name;
+        let content = shipped.content;
+        if bname == name {
+            let (manifest, body) = parse_skill_file(&content);
             let path = skills_dir().map(|d| d.join(name)).unwrap_or_default();
             return Ok((manifest, body, path));
         }
@@ -1014,13 +1067,15 @@ mod tests {
         // Every bundled skill, judged against a workspace that only proves Rust.
         let mut resident = Vec::new();
         let mut admitted = Vec::new();
-        for (name, content) in BUNDLED {
-            let (manifest, _body) = parse_skill_file(content);
+        for shipped in shipped_skills().expect("shipped skills") {
+            let name = shipped.name;
+            let content = shipped.content;
+            let (manifest, _body) = parse_skill_file(&content);
             let entry = disclose(&manifest, root, None);
             if entry.tier == DisclosureTier::Resident {
-                resident.push(*name);
+                resident.push(name.clone());
             } else {
-                admitted.push(*name);
+                admitted.push(name.clone());
             }
             // Resident-tier metadata must survive regardless of admission.
             assert!(!entry.name.is_empty(), "{name} lost its name");
@@ -1029,14 +1084,14 @@ mod tests {
 
         // The Rust skill is signal-backed and its signal is present.
         assert!(
-            admitted.contains(&"rust"),
+            admitted.iter().any(|name| name == "rust"),
             "rust must be admitted in a Cargo workspace, admitted: {admitted:?}"
         );
 
         // Skills whose evidence is absent must stay resident, not be guessed in.
         for withheld in ["oci", "typescript", "flynt"] {
             assert!(
-                resident.contains(&withheld),
+                resident.iter().any(|name| name == withheld),
                 "{withheld} has no evidence here and must stay resident, resident: {resident:?}"
             );
         }
@@ -1049,7 +1104,9 @@ mod tests {
 
     #[test]
     fn bundled_skills_all_have_content() {
-        for (name, content) in BUNDLED {
+        for shipped in shipped_skills().expect("shipped skills") {
+            let name = shipped.name;
+            let content = shipped.content;
             assert!(!content.is_empty(), "skill '{name}' is empty");
             assert!(content.len() > 100, "skill '{name}' seems too short");
         }
@@ -1057,9 +1114,11 @@ mod tests {
 
     #[test]
     fn bundled_skills_all_have_descriptions() {
-        for (name, content) in BUNDLED {
+        for shipped in shipped_skills().expect("shipped skills") {
+            let name = shipped.name;
+            let content = shipped.content;
             assert!(
-                extract_description(content).is_some(),
+                extract_description(&content).is_some(),
                 "skill '{name}' missing frontmatter description"
             );
         }
@@ -1083,9 +1142,8 @@ mod tests {
             .collect::<Vec<_>>();
         directory_names.sort();
 
-        let mut bundled_names = BUNDLED
-            .iter()
-            .map(|(name, _)| (*name).to_string())
+        let mut bundled_names = shipped_skill_names()
+            .map(str::to_string)
             .collect::<Vec<_>>();
         bundled_names.sort();
 
@@ -1662,8 +1720,10 @@ description: Project git override
 
     #[test]
     fn bundled_skills_declare_activation_metadata() {
-        for (name, content) in BUNDLED {
-            let (manifest, _) = parse_skill_file(content);
+        for shipped in shipped_skills().expect("shipped skills") {
+            let name = shipped.name;
+            let content = shipped.content;
+            let (manifest, _) = parse_skill_file(&content);
             assert!(
                 manifest.activation.is_some(),
                 "bundled skill {name} must declare activation"

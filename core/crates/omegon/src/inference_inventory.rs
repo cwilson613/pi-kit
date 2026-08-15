@@ -32,6 +32,7 @@ pub struct AdapterId(pub String);
 
 impl AdapterId {
     pub const CHAT_COMPLETIONS: &'static str = "chat-completions";
+    pub const OPENAI_RESPONSES: &'static str = "openai-responses";
     pub const RESPONSES: &'static str = "responses";
     pub const ANTHROPIC_MESSAGES: &'static str = "anthropic-messages";
     pub const GEMINI_GENERATE: &'static str = "gemini-generate-content";
@@ -349,6 +350,7 @@ impl InventoryLayer {
 fn adapter_for_protocol(protocol: EndpointProtocol) -> AdapterId {
     let value = match protocol {
         EndpointProtocol::OpenAiCompatible => AdapterId::CHAT_COMPLETIONS,
+        EndpointProtocol::OpenAiResponses => AdapterId::OPENAI_RESPONSES,
         EndpointProtocol::Anthropic => AdapterId::ANTHROPIC_MESSAGES,
         EndpointProtocol::GeminiNative => AdapterId::GEMINI_GENERATE,
         EndpointProtocol::OllamaNative => AdapterId::OLLAMA_CHAT,

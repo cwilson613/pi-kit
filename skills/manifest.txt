@@ -1,0 +1,12 @@
+# Shipped contribution-pack skill names, one per line.
+code-act
+codebase-init
+flynt
+git
+oci
+openspec
+python
+rust
+security
+style
+typescript

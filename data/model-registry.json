@@ -121,7 +121,8 @@
         "kind": "oauthProvider",
         "provider": "anthropic"
       },
-      "enabled": true
+      "enabled": true,
+      "discoveryProtocol": "static"
     },
     {
       "id": "openai",
@@ -145,13 +146,14 @@
         "quirks": [],
         "docsUrl": "https://platform.openai.com/docs/api-reference/chat/create",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "openai-codex",
       "displayName": "OpenAI Codex",
       "class": "upstream",
-      "protocol": "openAiCompatible",
+      "protocol": "openAiResponses",
       "baseUrl": "https://api.openai.com/v1",
       "authScheme": {
         "kind": "oauthProvider",
@@ -169,7 +171,8 @@
         "quirks": [],
         "docsUrl": "https://platform.openai.com/docs/api-reference/chat/create",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "static"
     },
     {
       "id": "github-copilot",
@@ -195,7 +198,8 @@
         ],
         "docsUrl": "https://docs.github.com/en/copilot",
         "verifiedAt": "2026-07-06"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "openrouter",
@@ -225,7 +229,8 @@
         ],
         "docsUrl": "https://openrouter.ai/docs/api-reference/chat-completion",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "groq",
@@ -257,7 +262,8 @@
         ],
         "docsUrl": "https://console.groq.com/docs/openai",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "mistral",
@@ -284,7 +290,8 @@
         ],
         "docsUrl": "https://docs.mistral.ai/api/#tag/chat/operation/chat_completion_v1_chat_completions_post",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "xai",
@@ -310,7 +317,8 @@
         ],
         "docsUrl": "https://docs.x.ai/docs/api-reference#chat-completions",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "moonshot",
@@ -337,7 +345,8 @@
         ],
         "docsUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart",
         "verifiedAt": "2026-07-19"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "huggingface-router",
@@ -364,7 +373,8 @@
         ],
         "docsUrl": "https://huggingface.co/docs/api-inference/tasks/chat-completion",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "gemini-openai",
@@ -390,7 +400,8 @@
         ],
         "docsUrl": "https://ai.google.dev/gemini-api/docs/openai",
         "verifiedAt": "2026-06-11"
-      }
+      },
+      "discoveryProtocol": "openAiModels"
     },
     {
       "id": "ollama",
@@ -401,7 +412,8 @@
       "authScheme": {
         "kind": "none"
       },
-      "enabled": true
+      "enabled": true,
+      "discoveryProtocol": "ollamaTags"
     }
   ],
   "routes": [
@@ -976,7 +988,7 @@
         "instruction",
         "coding"
       ],
-      "description": "Llama 3.3 70B on Groq — fast inference, free tier",
+      "description": "Llama 3.3 70B on Groq \u2014 fast inference, free tier",
       "producer": "meta",
       "executionClass": "api-cloud"
     },
@@ -1093,7 +1105,7 @@
         "reasoning",
         "coding"
       ],
-      "description": "Qwen's reasoning model — fast, cheap",
+      "description": "Qwen's reasoning model \u2014 fast, cheap",
       "producer": "qwen",
       "executionClass": "broker-cloud"
     },
@@ -1148,7 +1160,7 @@
       "capabilities": [
         "instruction"
       ],
-      "description": "Meta's Llama 2 via OpenRouter — solid baseline",
+      "description": "Meta's Llama 2 via OpenRouter \u2014 solid baseline",
       "producer": "meta",
       "executionClass": "broker-cloud"
     },
@@ -1213,7 +1225,7 @@
         "coding"
       ],
       "supportsReasoning": true,
-      "description": "GPT-5.6 via ChatGPT/Codex OAuth — operator-facing alias; Omegon native dispatch expands this to gpt-5.6-sol without relying on Codex CLI alias expansion. Rollout remains plan/workspace gated.",
+      "description": "GPT-5.6 via ChatGPT/Codex OAuth \u2014 operator-facing alias; Omegon native dispatch expands this to gpt-5.6-sol without relying on Codex CLI alias expansion. Rollout remains plan/workspace gated.",
       "conceptualModelId": "gpt-5.6",
       "clientRequirements": {
         "chatgpt-desktop-codex": ">=26.707.30751"
@@ -1294,7 +1306,7 @@
         "coding"
       ],
       "supportsReasoning": true,
-      "description": "GPT-5.5 via ChatGPT/Codex OAuth — experimental consumer route, 1M context",
+      "description": "GPT-5.5 via ChatGPT/Codex OAuth \u2014 experimental consumer route, 1M context",
       "conceptualModelId": "gpt-5.5",
       "producer": "openai",
       "executionClass": "api-cloud"
@@ -1374,7 +1386,7 @@
         "reasoning",
         "coding"
       ],
-      "description": "DeepSeek V4 Pro via OpenCode Go — $10/mo subscription",
+      "description": "DeepSeek V4 Pro via OpenCode Go \u2014 $10/mo subscription",
       "producer": "deepseek",
       "executionClass": "api-cloud"
     },
@@ -1388,7 +1400,7 @@
         "fast",
         "coding"
       ],
-      "description": "DeepSeek V4 Flash via OpenCode Go — fast, cheap",
+      "description": "DeepSeek V4 Flash via OpenCode Go \u2014 fast, cheap",
       "producer": "deepseek",
       "executionClass": "api-cloud"
     },
@@ -1456,7 +1468,7 @@
         "search",
         "coding"
       ],
-      "description": "Perplexity Sonar — search-augmented coding and Q&A ($0.25/$2.50 per 1M tokens)",
+      "description": "Perplexity Sonar \u2014 search-augmented coding and Q&A ($0.25/$2.50 per 1M tokens)",
       "producer": "perplexity",
       "executionClass": "broker-cloud"
     },
@@ -1471,7 +1483,7 @@
         "coding",
         "search"
       ],
-      "description": "Claude Sonnet 4.6 via Perplexity — search-augmented ($3/$15 per 1M tokens)",
+      "description": "Claude Sonnet 4.6 via Perplexity \u2014 search-augmented ($3/$15 per 1M tokens)",
       "conceptualModelId": "claude-sonnet-4.6",
       "producer": "anthropic",
       "executionClass": "broker-cloud"
@@ -1487,7 +1499,7 @@
         "coding",
         "search"
       ],
-      "description": "GPT 5.4 via Perplexity — search-augmented ($2.50/$15 per 1M tokens)",
+      "description": "GPT 5.4 via Perplexity \u2014 search-augmented ($2.50/$15 per 1M tokens)",
       "conceptualModelId": "gpt-5.4",
       "producer": "openai",
       "executionClass": "broker-cloud"
@@ -1503,7 +1515,7 @@
         "coding",
         "search"
       ],
-      "description": "GPT 5.4 Mini via Perplexity — fast search-augmented ($0.75/$4.50 per 1M tokens)",
+      "description": "GPT 5.4 Mini via Perplexity \u2014 fast search-augmented ($0.75/$4.50 per 1M tokens)",
       "conceptualModelId": "gpt-5.4-mini",
       "producer": "openai",
       "executionClass": "broker-cloud"

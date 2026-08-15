@@ -129,3 +129,323 @@ Before external-agent import is implemented, specify a provider-neutral `SkillIm
 - project/user skill discovery and override precedence remain unchanged;
 - `just link` and package workflows install the contribution pack;
 - default and headless compile matrices remain green.
+
+---
+
+## Unified runtime capability-admission contract
+
+The first extraction slice proved that optional content can leave the binary without changing the operator contract. The next boundary is broader: binary features, runtime features, model tools, skills, operator commands, and surface projections currently decide availability independently. Further extraction must not add another allowlist. Every surface must consume one canonical admission snapshot.
+
+### Design status
+
+**Decided.** This section is the target contract for subsequent implementation slices. It does not claim that the current runtime already conforms.
+
+### Design laws
+
+1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.
+2. **Visibility is not authority.** A capability may be discoverable without being invocable; a hidden capability must not become executable merely because a caller knows its identifier.
+3. **One decision, many projections.** TUI, CLI, ACP, IPC, WebSocket, prompt construction, and audit surfaces derive from the same versioned snapshot.
+4. **Operator authority dominates inference.** Explicit operator enablement may admit an eligible capability; model inference may recommend or request admission but cannot bypass policy, RBAC, safety, or unavailable dependencies.
+5. **Safety can only narrow.** Posture, workspace evidence, model limits, surface support, RBAC, and runtime health intersect. No downstream adapter may widen an upstream denial.
+6. **Execution rechecks admission.** Schema projection is advisory evidence, not a security boundary. Dispatch validates the current snapshot and caller before side effects.
+7. **Canonical evidence is retained.** Withholding a capability body, schema, command, or renderer does not discard its inventory, provenance, denial reason, or prior audit records.
+8. **Removal is observable and generation-scoped.** Admission changes publish a new generation. Work admitted under an older generation either completes under an explicit lease or is revoked according to the capability's transition policy; it never silently inherits new authority.
+
+### Capability identity and ownership
+
+Every runtime contribution declares one or more capabilities under stable, namespaced identifiers:
+
+```rust
+pub struct CapabilityId(String); // e.g. "tool:read", "command:context.compact"
+
+pub enum CapabilityKind {
+    KernelService,
+    Tool,
+    OperatorAction,
+    Skill,
+    ContextProvider,
+    Projection,
+    TransportAdapter,
+    Workflow,
+}
+
+pub struct CapabilityDeclaration {
+    pub id: CapabilityId,
+    pub kind: CapabilityKind,
+    pub owner: ContributionRef,
+    pub version: u32,
+    pub dependencies: Vec<CapabilityRequirement>,
+    pub conflicts: Vec<CapabilityId>,
+    pub supported_surfaces: SurfaceSet,
+    pub audience: AudienceSet,
+    pub safety: CapabilitySafety,
+    pub activation: ActivationPolicy,
+    pub transition: TransitionPolicy,
+}
+```
+
+`ContributionRef` identifies the kernel, a compiled feature, an installed contribution pack, an extension, or an operator/project-owned contribution. Tool names and slash aliases remain transport vocabulary; they resolve to capability IDs rather than serving as authority keys.
+
+A declaration is metadata, not executable authority. Duplicate capability IDs are a startup/configuration error unless an explicit replacement contract names the superseded declaration. The current `EventBus::finalize` first-registration-wins behavior must not remain the policy boundary.
+
+### Admission state machine
+
+A capability has one canonical state per runtime generation:
+
+```text
+Absent
+  ↓ composition/install
+Resident
+  ↓ dependency + compatibility resolution
+Eligible
+  ↓ policy/evidence/operator decision
+Admitted
+  ↓ caller + surface + safety + health check
+Callable
+```
+
+The states mean:
+
+| State | Meaning | May appear in inventory? | May expose body/schema? | May execute? |
+|---|---|---:|---:|---:|
+| `Absent` | Not compiled, installed, or discovered | no | no | no |
+| `Resident` | Declaration and implementation/content are present | yes | metadata only | no |
+| `Eligible` | Dependencies, platform, configuration, and surface compatibility pass | yes | discovery metadata | no |
+| `Admitted` | Active policy permits use in this runtime scope | yes | audience-appropriate projection | not necessarily |
+| `Callable` | Admitted and authorized for this caller/surface at this moment | yes | yes | yes |
+| `Degraded` | Resident/admitted but temporarily unhealthy | yes | bounded status | only if degradation policy permits |
+| `Revoked` | Previously admitted, explicitly withdrawn for this generation | yes | denial/status | no new execution |
+
+`Degraded` and `Revoked` are outcome states attached to the last nonterminal admission state; they are not aliases for disabled-name sets.
+
+### Admission inputs and precedence
+
+The admission engine evaluates typed inputs in this order:
+
+1. **Kernel invariant** — required safety and control-plane capabilities cannot be disabled by model or posture policy.
+2. **Composition evidence** — compiled feature, installed contribution, adapter availability, platform compatibility.
+3. **Dependency health** — required binaries/services/configuration and declared capability dependencies.
+4. **Workspace policy** — project rules, workspace admission, sandbox, trust grants, and repository-local configuration.
+5. **Operator profile** — explicit enabled/disabled capabilities and named posture defaults.
+6. **Task evidence** — declared project signals, prompt triggers, focused lifecycle state, or other bounded evidence matchers.
+7. **Model constraints** — context/tool-schema budget and provider protocol support; these may reduce projection but never grant authority.
+8. **Caller authorization** — principal, RBAC capability, transport, safety class, confirmation, and current runtime health.
+
+Explicit deny wins over inferred allow at the same or lower layer. Kernel safety requirements and RBAC denial cannot be overridden. An explicit operator enable can override posture or evidence defaults only when the capability is otherwise eligible. The model may call a request-admission action such as `manage_tools`, but that action is itself policy-bound and records the requester and reason.
+
+### Canonical snapshot
+
+The admission engine publishes an immutable snapshot:
+
+```rust
+pub struct CapabilityAdmissionSnapshot {
+    pub generation: u64,
+    pub runtime_scope: RuntimeScopeId,
+    pub entries: BTreeMap<CapabilityId, CapabilityAdmission>,
+    pub created_at: SystemTime,
+}
+
+pub struct CapabilityAdmission {
+    pub declaration: CapabilityDeclarationSummary,
+    pub state: CapabilityState,
+    pub reasons: Vec<AdmissionReason>,
+    pub evidence: Vec<AdmissionEvidenceRef>,
+    pub allowed_callers: CallerPolicy,
+    pub allowed_surfaces: SurfaceSet,
+    pub lease_policy: TransitionPolicy,
+}
+```
+
+Reasons are structured and redacted: `not_installed`, `dependency_missing`, `profile_disabled`, `workspace_denied`, `signal_absent`, `rbac_denied`, `surface_unsupported`, `budget_withheld`, `temporarily_unhealthy`, or `conflict`. Operator-facing projections may summarize them; diagnostics and audit retain the typed form.
+
+Updates are computed off to the side, validated, and atomically activated. Invalid declarations or dependency cycles retain the last-known-good snapshot and publish diagnostics. Consumers receive a generation change event and never reconstruct admission from local settings.
+
+### Audience-specific projection
+
+Admission has separate audiences; there is no universal "visible" Boolean.
+
+| Audience | Projection rule |
+|---|---|
+| Model tool schema | Only callable tool capabilities for the model principal, current turn, and provider budget |
+| Model prompt/context | Only admitted context/skill capabilities; withheld bodies are not loaded into prompt assembly |
+| Local operator inventory | All resident entries plus state, provenance, and bounded denial reasons |
+| Remote operator surface | Entries callable or inspectable under that principal's RBAC and transport support |
+| Renderer/menu | Admitted operator actions supported by that renderer; unavailable entries may appear only in an explicit inventory/status view |
+| Audit/diagnostics | All decisions and generation transitions, subject to redaction |
+
+Schema compaction and lazy projection are presentation optimizations over the callable set. They must not create a second admission state. In particular, turn-one "show everything" behavior is removed as an authority concept: a schema can only be shown if the capability is callable, and execution still rechecks the snapshot.
+
+### Tools
+
+The current `EventBus` registration cache becomes a declaration/implementation registry, not the source of policy. `DisabledTools`, `TOOL_GROUPS`, `is_core_tool`, `is_dynamic_tool`, and model-hidden-name checks migrate into declarations and policy inputs.
+
+Required behavior:
+
+- `tool_definitions*` projects the snapshot for the model principal and provider budget;
+- `execute_tool*` rejects absent, non-callable, stale-generation, or unauthorized calls before locating the implementation;
+- internal execution uses a distinct kernel/service principal and explicit internal audience, not a fallback that can execute any disabled registered tool;
+- tool groups are data-owned collections of capability IDs validated against the registry;
+- `manage_tools` requests profile/session admission changes and reports resulting snapshot state; it does not mutate a shared disabled-name set directly;
+- duplicate tool vocabulary cannot silently select the first owner.
+
+### Skills and prompt contributions
+
+`SkillDisclosure` becomes an adapter into the same admission engine:
+
+- installed skill metadata maps to `Resident`;
+- resolvability and format validation map to `Eligible`;
+- activation metadata, project signals, prompt triggers, explicit subsets, and conflict policy determine `Admitted`;
+- prompt assembly receives bodies only for admitted skill capabilities;
+- explicit parent/child skill subsets are operator/orchestrator evidence, not an untyped bypass;
+- provenance and suppression reasons remain visible in inventory and activation events.
+
+Personas, tones, prompt packs, lifecycle methodologies, and memory/context providers use the same declaration and admission vocabulary rather than bespoke loaded/active flags.
+
+### Operator actions and commands
+
+The canonical control-action registry is the declaration source for operator actions. Slash commands, CLI subcommands, IPC methods, WebSocket messages, and TUI menus are bindings to action capability IDs.
+
+Required behavior:
+
+- transport availability is declaration metadata, then narrowed by admission and RBAC;
+- generic `run_slash_command`/`slash_command` tunnels resolve to a canonical action and pass the same authorization path, or refuse actions without a remote-safe binding;
+- command menus project admitted actions instead of renderer-local hidden-name lists;
+- command execution owner, safety class, confirmation, and prompt-injection sensitivity participate in the admission/callability decision;
+- an adapter cannot advertise an action that the snapshot denies or the transport cannot execute.
+
+### Projections and capability advertisement
+
+`_runtime/capabilities`, ACP initialization metadata, IPC/WS discovery, TUI menus, web controls, help, and doctor output project the same snapshot with audience-specific filtering. They share stable capability IDs and generation numbers.
+
+A transport may expose fewer capabilities than the runtime, never more. Projection tests must assert that advertised actions route successfully or carry an explicit unavailable status in an inventory-only view. Surface-specific allowlists are forbidden except as generated transport bindings validated against declarations.
+
+### Binary and process composition
+
+Cargo features and separate artifacts remain coarse composition boundaries:
+
+- `omegon-kernel`/headless composition owns the loop, admission engine, safety boundaries, minimal tools, and protocol contracts;
+- TUI, web/dashboard, lifecycle, embeddings, managed integrations, signing/archive, and contribution content are optional compiled features, companion artifacts, or installed packs;
+- compiling a feature makes its declarations resident but does not admit them;
+- installed packs are discovered without executing optional code during kernel startup;
+- missing optional contributions cannot prevent kernel startup unless an explicit profile marks them required.
+
+A future crate split is subordinate to this contract. Moving code between crates without changing declarations, dependencies, and admission does not count as surface reduction.
+
+### Runtime transitions and concurrency
+
+Admission changes are transactional and generation-scoped:
+
+1. validate requested policy/configuration change;
+2. resolve declarations, dependencies, conflicts, and evidence;
+3. build and validate a candidate snapshot;
+4. atomically publish the new generation;
+5. notify projections and invalidate schema/context caches;
+6. revoke or grandfather active leases according to declaration policy;
+7. append an audit event with actor, reason, old generation, and new generation.
+
+Default transition policies:
+
+- read-only/context projection capabilities switch at the next projection boundary;
+- new tool/action calls require the current generation;
+- running non-destructive calls may complete under a captured lease;
+- permission, secret, destructive, or externally side-effecting capabilities revoke immediately when authority narrows;
+- kernel interrupt, cancellation, audit, and redaction capabilities are non-disableable.
+
+### Assumptions resolved
+
+- **Dynamic admission is required.** Profiles, `manage_tools`, skill evidence, extensions, and runtime health already change during a session; startup-only composition cannot be canonical.
+- **Inventory must include denied capabilities.** Operators need provenance and actionable reasons; model and remote projections remain filtered.
+- **Model self-service is request authority, not grant authority.** A model can request activation only through an admitted action whose policy permits it.
+- **Commands and tools share admission semantics but remain distinct kinds.** They have different audiences, safety metadata, and execution adapters; forcing them into one invocation ABI would erase useful constraints.
+- **Presentation level is orthogonal.** Om/Active/Full changes density, not capability authority.
+- **Feature absence is not a runtime denial.** `Absent` is composition truth; `Resident` plus a denial reason is policy truth.
+- **Compatibility aliases do not create capabilities.** Aliases resolve to one canonical ID and inherit its decision.
+
+## Migration plan
+
+### Slice 1 — declarations and read-only inventory
+
+- Add capability IDs, kinds, declaration metadata, admission states/reasons, and immutable snapshot types to `omegon-traits` or a narrow shared crate.
+- Adapt existing tool and command registries into declarations without changing behavior.
+- Project a diagnostic inventory alongside current `ToolInventorySnapshot`.
+- Detect duplicate IDs/vocabulary, dangling groups, dependency cycles, and surface advertisements without owners.
+
+**Exit gate:** current runtime behavior is unchanged, but every registered tool and built-in command has one validated capability declaration and provenance owner.
+
+### Slice 2 — model-tool authority
+
+- Replace `DisabledTools` mutation with profile/session policy inputs.
+- Make EventBus schema projection and execution consume the snapshot.
+- Convert tool groups, core/dynamic classification, hidden/internal tools, slim mode, posture overrides, lazy injection, and constrained-model budgets.
+- Add captured-generation execution leases and denial results.
+
+**Exit gate:** no model tool can execute unless the canonical snapshot marks it callable; schema inventory equals callable inventory for that audience.
+
+### Slice 3 — skills and context contributions
+
+- Adapt progressive skill disclosure to declarations and admission evidence.
+- Move persona, tone, prompt pack, lifecycle context, and memory/context-provider admission onto the same snapshot.
+- Ensure withheld content is never loaded into model prompt buffers.
+
+**Exit gate:** prompt assembly can enumerate every injected contribution by capability ID, generation, owner, and admission reason.
+
+### Slice 4 — canonical operator actions and surfaces
+
+- Bind command registry rows, CLI, TUI, ACP, IPC, and WebSocket actions to capability IDs.
+- Remove renderer-local hidden command lists and narrow generic slash tunnels.
+- Generate capability advertisement/help/menu projections from the snapshot and transport bindings.
+
+**Exit gate:** parity tests prove no surface advertises an unrouteable or unauthorized action and no adapter widens admission.
+
+### Slice 5 — composition extraction
+
+- Define the minimal kernel Cargo/artifact profile from declarations proven universal.
+- Move lifecycle methods, rich presentation, web/dashboard, embeddings, managed integrations, signing/archive, remaining prompt/catalog/persona content, and optional provider transports behind features, companion artifacts, or packs.
+- Add startup degradation behavior for absent optional packs.
+
+**Exit gate:** minimal headless/kernel and default interactive matrices compile and pass contract tests; optional domains can be absent without kernel startup failure.
+
+### Slice 6 — budgets and deletion
+
+- Remove legacy disabled-name sets, hard-coded tool groups, first-registration-wins arbitration, per-surface capability allowlists, and duplicate loaded/active flags.
+- Establish dependency, artifact-size, schema-token, default-callable-count, and startup-task budgets.
+- Report budget deltas in CI and require explicit approval for regressions.
+
+**Exit gate:** one admission engine and snapshot remain as the authority; legacy compatibility adapters are read-only or removed.
+
+## Enforcement gates
+
+The following tests become mandatory as slices land:
+
+1. **Registry integrity:** unique IDs and invocation vocabulary, valid owners, dependencies, groups, aliases, and transport bindings.
+2. **Monotonic narrowing:** randomized policy combinations prove downstream layers never widen an upstream denial.
+3. **Projection/dispatch parity:** every advertised callable capability dispatches through the same snapshot; every denied capability is rejected even if invoked by name.
+4. **Cross-surface parity:** TUI, CLI, ACP, IPC, WebSocket, and web projections are subsets of one generation and principal policy.
+5. **Prompt provenance:** every injected skill/context body has an admitted capability ID and no withheld body reaches provider input.
+6. **Generation safety:** stale calls, concurrent profile changes, immediate revocation, and grandfathered leases follow transition policy exactly once.
+7. **Absence/degradation:** optional feature, pack, executable, credential, or service absence degrades locally and does not prevent kernel startup unless required.
+8. **Security:** RBAC, confirmation, redaction, path boundaries, and secret handling are rechecked at execution; model requests cannot self-grant.
+9. **Feature matrices:** minimal kernel/headless, default interactive, and selected optional-feature combinations compile and run contract tests.
+10. **Budgets:** CI records binary size, dependency count, startup task count, default model schema count/tokens, and resident/admitted capability counts.
+
+## Explicit non-goals
+
+- A plugin ABI or dynamic-library loader in the first four slices.
+- Treating fewer visible controls as proof of a smaller or safer kernel.
+- Coupling UI presentation density to capability authority.
+- Allowing task classifiers or LLM inference to grant privileges.
+- Replacing RBAC, permission mediation, or tool-specific input validation with admission metadata.
+- Forcing tools, commands, skills, and projections into one execution interface.
+- Removing compatibility aliases before canonical bindings and migration telemetry exist.
+
+## Final success criteria
+
+The harness-surface reduction program is complete when:
+
+- the default model, every operator transport, and prompt assembly consume one versioned capability-admission snapshot;
+- compiled/installed, discoverable, admitted, visible, and callable are distinct and observable states;
+- execution cannot bypass an admission denial through internal, generic slash, stale schema, or surface-specific paths;
+- optional workflows and content can be absent or replaced without rebuilding or destabilizing the kernel;
+- the minimal artifact contains only capabilities satisfying the kernel-admission criteria;
+- default surface and binary budgets are measured and enforced against regression;
+- each capability's owner, provenance, policy inputs, denial reasons, and generation are inspectable without exposing secrets.

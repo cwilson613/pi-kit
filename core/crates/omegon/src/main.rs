@@ -45,6 +45,7 @@ mod bootstrap;
 mod bootstrap_projection;
 mod bridge;
 pub mod bus;
+mod capability_admission;
 mod capacity;
 mod cleave;
 mod cleave_smoke;

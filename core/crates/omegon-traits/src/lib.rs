@@ -25,6 +25,191 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Runtime capability declaration contract
+//
+// These types describe resident runtime contributions and registry integrity.
+// They are deliberately authority-neutral: admission policy and execution
+// leases remain outside this first contract slice.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RuntimeCapabilityId(String);
+
+impl RuntimeCapabilityId {
+    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
+        let value = value.into();
+        let Some((namespace, name)) = value.split_once(':') else {
+            return Err("capability id must contain a namespace separator");
+        };
+        if namespace.is_empty()
+            || name.is_empty()
+            || name
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "..")
+            || !value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '-' | '_' | '.' | '/'))
+        {
+            return Err("capability id contains invalid characters");
+        }
+        Ok(Self(value))
+    }
+
+    pub fn tool(name: &str) -> Self {
+        Self::new(format!("tool:{name}")).expect("tool names form valid capability ids")
+    }
+
+    pub fn action(name: &str) -> Self {
+        Self::new(format!("action:{name}")).expect("command names form valid capability ids")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCapabilityKind {
+    KernelService,
+    Tool,
+    OperatorAction,
+    Skill,
+    ContextProvider,
+    Projection,
+    TransportAdapter,
+    Workflow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCapabilityOwnerKind {
+    Kernel,
+    Feature,
+    ContributionPack,
+    Extension,
+    Project,
+    Operator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RuntimeCapabilityOwner {
+    pub kind: RuntimeCapabilityOwnerKind,
+    pub id: String,
+}
+
+impl RuntimeCapabilityOwner {
+    pub fn feature(id: impl Into<String>) -> Self {
+        Self {
+            kind: RuntimeCapabilityOwnerKind::Feature,
+            id: id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInvocationKind {
+    Tool,
+    Command,
+    Cli,
+    Acp,
+    Ipc,
+    WebSocket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RuntimeCapabilityInvocation {
+    pub kind: RuntimeInvocationKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCapabilityDeclaration {
+    pub id: RuntimeCapabilityId,
+    pub kind: RuntimeCapabilityKind,
+    pub owner: RuntimeCapabilityOwner,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invocations: Vec<RuntimeCapabilityInvocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCapabilityGroup {
+    pub name: String,
+    pub members: Vec<RuntimeCapabilityId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeCapabilityDiagnostic {
+    DuplicateCapabilityId {
+        capability_id: RuntimeCapabilityId,
+        first_owner: RuntimeCapabilityOwner,
+        conflicting_owner: RuntimeCapabilityOwner,
+    },
+    AmbiguousInvocation {
+        invocation_kind: RuntimeInvocationKind,
+        name: String,
+        first_capability_id: RuntimeCapabilityId,
+        conflicting_capability_id: RuntimeCapabilityId,
+    },
+    MissingOwner {
+        capability_id: RuntimeCapabilityId,
+    },
+    DanglingGroupMember {
+        group: String,
+        capability_id: RuntimeCapabilityId,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCapabilityRegistry {
+    pub declarations: Vec<RuntimeCapabilityDeclaration>,
+    pub groups: Vec<RuntimeCapabilityGroup>,
+    pub diagnostics: Vec<RuntimeCapabilityDiagnostic>,
+}
+
+#[cfg(test)]
+mod runtime_capability_contract_tests {
+    use super::*;
+
+    #[test]
+    fn capability_registry_json_round_trip_preserves_identity_and_diagnostics() {
+        let registry = RuntimeCapabilityRegistry {
+            declarations: vec![RuntimeCapabilityDeclaration {
+                id: RuntimeCapabilityId::tool("read"),
+                kind: RuntimeCapabilityKind::Tool,
+                owner: RuntimeCapabilityOwner::feature("core-tools"),
+                invocations: vec![RuntimeCapabilityInvocation {
+                    kind: RuntimeInvocationKind::Tool,
+                    name: "read".into(),
+                }],
+            }],
+            groups: vec![RuntimeCapabilityGroup {
+                name: "core".into(),
+                members: vec![RuntimeCapabilityId::tool("read")],
+            }],
+            diagnostics: vec![RuntimeCapabilityDiagnostic::MissingOwner {
+                capability_id: RuntimeCapabilityId::tool("orphan"),
+            }],
+        };
+
+        let encoded = serde_json::to_vec(&registry).expect("serialize capability registry");
+        let decoded: RuntimeCapabilityRegistry =
+            serde_json::from_slice(&encoded).expect("deserialize capability registry");
+        assert_eq!(decoded, registry);
+    }
+
+    #[test]
+    fn capability_id_rejects_unscoped_or_unsafe_values() {
+        assert!(RuntimeCapabilityId::new("read").is_err());
+        assert!(RuntimeCapabilityId::new("tool:../../read").is_err());
+        assert_eq!(RuntimeCapabilityId::tool("read").as_str(), "tool:read");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Native IPC contract — transport-facing Auspex/Omegon boundary (v1)
 //
 // Transport:  Unix domain socket

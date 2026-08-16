@@ -22,7 +22,9 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-        rustToolchain = pkgs.rust-bin.stable.latest.default;
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "clippy" "rust-src" "rustfmt" ];
+        };
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # Read version from Cargo.toml so OCI image tags stay in sync

@@ -8,6 +8,8 @@ core/target/
 
 # Environment & secrets
 .env
+.envrc.local
+.direnv/
 auth.json
 settings.json
 

@@ -29,6 +29,28 @@ On the issue reporter's NixOS environment, `command -v zeditor` resolves to `/et
 
 Repository policy supports macOS, Linux, and Linux processes under WSL2; native Windows semantics and reliable lifecycle control after dispatch to Windows-host executables are out of scope (`CONTRIBUTING.md`, `docs/windows-compatibility.md`). Zed's current CLI documentation says a Windows Zed CLI can handle WSL paths automatically, but adopting `zed.exe` discovery would cross the explicitly deferred WSL-to-Windows process boundary. SSH/Coder/devcontainer sessions can expose a Zed CLI without a locally visible GUI. ACP's primary integration direction is editor -> `omegon acp`; `/editor zed` configures and opportunistically launches the editor, so configuration success must remain independent from GUI launch success.
 
+## Future implementation targets
+
+Issue #219 intentionally stops at Zed launch resolution plus a reusable profile configuration surface. `editorCommands` accepts stable integration IDs, but arbitrary keys do not imply that Omegon knows an editor's launch arguments, status probe, ACP installation mechanism, or configuration format.
+
+A follow-up should replace the remaining editor-specific branching with a typed editor integration registry. Each registered editor should declare:
+
+- a stable ID and display name;
+- default executable candidates and platform-native fallbacks;
+- a side-effect-free status probe;
+- argument-vector launch behavior (never a shell command string);
+- ACP setup/configuration behavior;
+- remote/headless launch policy and diagnostic provenance.
+
+Initial registry targets:
+
+1. **VS Code** — honor `editorCommands["vscode"]` for both status and launch; consider `code`, `code-insiders`, and `codium` as explicit candidates; retain the current `vscode-acp` setup instructions until a safe settings writer exists.
+2. **Other ACP-capable editors** — add only after their executable, launch, and ACP contracts are documented and tested. Unknown configured IDs should be reported as configured-but-unsupported, not executed generically.
+3. **Shared status surface** — make `/editor status` iterate registry entries so TUI and future non-interactive surfaces consume one semantic projection rather than adding frontend-specific checks.
+4. **Remote environments** — define behavior for SSH, Coder, devcontainers, and WSL host dispatch separately from local executable discovery. Do not infer GUI reachability solely from `--version` success.
+
+Tests should inject command probes and launchers, assert override precedence and argument vectors, and avoid requiring installed GUI applications. Manual GUI verification remains appropriate for confirming that a resolved editor accepts the launch request.
+
 ## Open Questions
 
 - [assumption] A successful `zed`/`zeditor --version` is sufficient evidence that the CLI can dispatch to a GUI in the current session; remote/headless environments may have the CLI installed without a reachable GUI.

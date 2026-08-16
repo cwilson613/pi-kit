@@ -1322,6 +1322,13 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tone: Option<String>,
 
+    // ── External applications ──
+    /// Explicit executable paths or command names for editor integrations.
+    /// Keys are stable integration IDs such as `zed` and `vscode`. Values are
+    /// passed directly to `Command::new`; shell syntax is never interpreted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub editor_commands: BTreeMap<String, String>,
+
     // ── Optional integrations ──
     /// Optional bridge integrations. Missing integrations stay disabled unless
     /// explicitly enabled by project/global profile or environment.

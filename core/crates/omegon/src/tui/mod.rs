@@ -7210,6 +7210,72 @@ fn save_milestones(
     std::fs::write(path, json)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ZedInstallation {
+    Cli { command: String, configured: bool },
+    MacOsApp,
+}
+
+fn resolve_zed_installation_with(
+    configured_command: Option<&str>,
+    mut available: impl FnMut(&ZedInstallation) -> bool,
+) -> Option<ZedInstallation> {
+    let configured = configured_command
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(|command| ZedInstallation::Cli {
+            command: command.to_string(),
+            configured: true,
+        });
+    let candidates = configured
+        .into_iter()
+        .chain(
+            ["zed", "zeditor"]
+                .into_iter()
+                .map(|command| ZedInstallation::Cli {
+                    command: command.to_string(),
+                    configured: false,
+                }),
+        );
+
+    candidates
+        .chain(std::iter::once(ZedInstallation::MacOsApp))
+        .find(|candidate| available(candidate))
+}
+
+fn zed_installation_available(candidate: &ZedInstallation) -> bool {
+    match candidate {
+        ZedInstallation::Cli { command, .. } => std::process::Command::new(command)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success()),
+        ZedInstallation::MacOsApp => {
+            cfg!(target_os = "macos")
+                && std::process::Command::new("open")
+                    .args(["-Ra", "Zed"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+        }
+    }
+}
+
+fn resolve_zed_installation(configured_command: Option<&str>) -> Option<ZedInstallation> {
+    resolve_zed_installation_with(configured_command, zed_installation_available)
+}
+
+fn editor_command<'a>(profile: &'a crate::settings::Profile, editor: &str) -> Option<&'a str> {
+    profile
+        .editor_commands
+        .get(editor)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+}
+
 fn merge_zed_agent_server(
     content: &str,
     omegon_entry: serde_json::Value,
@@ -7239,7 +7305,58 @@ fn merge_zed_agent_server(
 
 #[cfg(test)]
 mod editor_config_tests {
-    use super::merge_zed_agent_server;
+    use super::{ZedInstallation, merge_zed_agent_server, resolve_zed_installation_with};
+
+    fn cli(command: &str, configured: bool) -> ZedInstallation {
+        ZedInstallation::Cli {
+            command: command.to_string(),
+            configured,
+        }
+    }
+
+    #[test]
+    fn zed_resolution_prefers_configured_command() {
+        let resolved =
+            resolve_zed_installation_with(Some("/opt/zed/bin/custom-zed"), |candidate| {
+                matches!(candidate, ZedInstallation::Cli { .. })
+            });
+
+        assert_eq!(resolved, Some(cli("/opt/zed/bin/custom-zed", true)));
+    }
+
+    #[test]
+    fn zed_resolution_prefers_canonical_cli() {
+        let resolved = resolve_zed_installation_with(
+            None,
+            |candidate| matches!(candidate, ZedInstallation::Cli { command, .. } if command == "zed" || command == "zeditor"),
+        );
+
+        assert_eq!(resolved, Some(cli("zed", false)));
+    }
+
+    #[test]
+    fn zed_resolution_falls_back_to_nixos_cli_name() {
+        let resolved = resolve_zed_installation_with(
+            None,
+            |candidate| matches!(candidate, ZedInstallation::Cli { command, .. } if command == "zeditor"),
+        );
+
+        assert_eq!(resolved, Some(cli("zeditor", false)));
+    }
+
+    #[test]
+    fn zed_resolution_uses_macos_app_after_cli_candidates() {
+        let resolved = resolve_zed_installation_with(None, |candidate| {
+            matches!(candidate, ZedInstallation::MacOsApp)
+        });
+
+        assert_eq!(resolved, Some(ZedInstallation::MacOsApp));
+    }
+
+    #[test]
+    fn zed_resolution_reports_unavailable_when_no_candidate_works() {
+        assert_eq!(resolve_zed_installation_with(None, |_| false), None);
+    }
 
     #[test]
     fn merges_zed_jsonc_with_comments_and_trailing_commas() {
@@ -7290,6 +7407,10 @@ fn handle_editor_command(args: &str) -> String {
     let omegon_bin = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "omegon".to_string());
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let profile = crate::settings::Profile::load(&cwd);
+    let zed = resolve_zed_installation(editor_command(&profile, "zed"));
+    let vscode_command = editor_command(&profile, "vscode").unwrap_or("code");
 
     match args.split_whitespace().next().unwrap_or("") {
         "zed" => {
@@ -7349,19 +7470,28 @@ fn handle_editor_command(args: &str) -> String {
                 }
             }
 
-            // Try to launch Zed — check CLI first, then macOS app bundle
-            let launched = if std::process::Command::new("zed").arg(".").spawn().is_ok() {
-                true
-            } else {
-                cfg!(target_os = "macos")
-                    && std::process::Command::new("open")
-                        .args(["-a", "Zed", "."])
-                        .spawn()
-                        .is_ok()
+            // Launch the same installation reported by `/editor status`.
+            let launched = match &zed {
+                Some(ZedInstallation::Cli { command, .. }) => {
+                    std::process::Command::new(command).arg(".").spawn().is_ok()
+                }
+                Some(ZedInstallation::MacOsApp) => std::process::Command::new("open")
+                    .args(["-a", "Zed", "."])
+                    .spawn()
+                    .is_ok(),
+                None => false,
             };
 
             if launched {
-                result_lines.push("✓ Launching Zed...".to_string());
+                let command_detail = match &zed {
+                    Some(ZedInstallation::Cli {
+                        command,
+                        configured: true,
+                    }) => format!(" using configured command `{command}`"),
+                    Some(ZedInstallation::Cli { command, .. }) => format!(" using `{command}`"),
+                    _ => String::new(),
+                };
+                result_lines.push(format!("✓ Launching Zed{command_detail}..."));
                 result_lines.push("  Select Omegon from the Agent Panel (+ button).".to_string());
             } else {
                 result_lines.push("Zed not found on PATH or in /Applications.".to_string());
@@ -7398,31 +7528,23 @@ fn handle_editor_command(args: &str) -> String {
             lines.push(format!("  Binary: {omegon_bin}"));
             lines.push("  ACP: omegon acp".to_string());
 
-            // Check if Zed is installed (CLI or macOS app bundle)
-            let has_zed_cli = std::process::Command::new("zed")
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok();
-            let has_zed_app = cfg!(target_os = "macos")
-                && std::process::Command::new("open")
-                    .args(["-Ra", "Zed"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .is_ok_and(|s| s.success());
-            let zed_status = if has_zed_cli {
-                "installed (CLI on PATH)"
-            } else if has_zed_app {
-                "installed (app bundle, CLI not on PATH — run Zed > Install CLI)"
-            } else {
-                "not found"
+            let zed_status = match &zed {
+                Some(ZedInstallation::Cli {
+                    command,
+                    configured: true,
+                }) => format!("installed (configured command `{command}`)"),
+                Some(ZedInstallation::Cli { command, .. }) => {
+                    format!("installed (`{command}` on PATH)")
+                }
+                Some(ZedInstallation::MacOsApp) => {
+                    "installed (app bundle, CLI not on PATH — run Zed > Install CLI)".to_string()
+                }
+                None => "not found".to_string(),
             };
             lines.push(format!("  Zed: {zed_status}"));
 
-            // Check if VS Code is installed
-            let has_code = std::process::Command::new("code")
+            // Check the configured VS Code executable, or its canonical default.
+            let has_code = std::process::Command::new(vscode_command)
                 .arg("--version")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

@@ -63,6 +63,11 @@ toolDetail: ("lean"|"compact"|"detailed"|"verbose")?
 /// Mouse interaction mode. false = terminal-native text selection.
 mouse: Boolean?
 
+/// Per-editor executable overrides. Keys are stable integration IDs such as
+/// `zed` and `vscode`; values may be absolute paths or command names resolved
+/// through `PATH`. Values are executed directly, never through a shell.
+editorCommands: Mapping<String, String>?
+
 /// Active persona to restore on session start.
 persona: String?
 

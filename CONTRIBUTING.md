@@ -93,9 +93,20 @@ Expect maintainers to explain blocking requests, distinguish required changes fr
 
 ## Development Setup
 
+This repository owns its Rust toolchain through `flake.nix`; Cargo is not
+expected to be installed globally. With `direnv` installed and hooked into your
+shell, authorize the repository once:
+
 ```bash
+direnv allow
 just bootstrap --check
 just build
+```
+
+Without direnv, enter the same environment explicitly:
+
+```bash
+nix develop
 ```
 
 The repository is a Cargo workspace rooted at this directory. The main binary is `core/crates/omegon`, and `cargo` commands are run from the repo root unless a recipe says otherwise. Use the focused validation table above while iterating; reserve `just test-rust` for broad or release-hardening gates.

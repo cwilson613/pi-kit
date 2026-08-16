@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regression checks for nightly releases using the standard CI release path."""
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
 
@@ -39,6 +39,12 @@ class NightlyStandardReleaseTests(unittest.TestCase):
         self.assertIn("Import Apple signing certificate", self.text)
         self.assertIn("codesign --force --options runtime --timestamp", self.text)
         self.assertIn("xcrun notarytool submit", self.text)
+
+    def test_nightly_release_is_published_as_a_prerelease(self) -> None:
+        """A successful nightly build must be visible to update clients."""
+        self.assertIn('PRERELEASE_FLAG="--prerelease"', self.text)
+        self.assertNotIn('DRAFT_FLAG="--draft"', self.text)
+        self.assertNotRegex(self.text, r"gh release create[\s\S]*?--draft")
 
     def test_manual_handoff_path_is_absent(self) -> None:
         self.assertFalse(

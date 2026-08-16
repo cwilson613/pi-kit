@@ -354,6 +354,37 @@ impl EventBus {
         );
     }
 
+    /// Build the authority-neutral runtime capability inventory for the
+    /// definitions currently finalized on this bus. This mirrors the legacy
+    /// registries and does not participate in filtering or dispatch.
+    pub fn runtime_capability_registry(&self) -> omegon_traits::RuntimeCapabilityRegistry {
+        let tools = self.tool_defs.iter().map(|(feature_index, definition)| {
+            crate::capability_admission::OwnedToolDefinition {
+                owner: self.features[*feature_index].name().to_string(),
+                definition: definition.clone(),
+            }
+        });
+        let commands = self.command_defs.iter().map(|(feature_index, definition)| {
+            crate::capability_admission::OwnedCommandDefinition {
+                owner: self.features[*feature_index].name().to_string(),
+                definition: definition.clone(),
+            }
+        });
+        let declarations =
+            crate::capability_admission::declarations_from_registries(tools, commands);
+        let groups = crate::features::manage_tools::TOOL_GROUPS
+            .iter()
+            .map(|(name, members)| omegon_traits::RuntimeCapabilityGroup {
+                name: (*name).to_string(),
+                members: members
+                    .iter()
+                    .map(|member| omegon_traits::RuntimeCapabilityId::tool(member))
+                    .collect(),
+            })
+            .collect();
+        crate::capability_admission::validate_registry(declarations, groups)
+    }
+
     fn refresh_tool_inventory(&self) {
         let Some(handle) = &self.tool_inventory else {
             return;
@@ -892,6 +923,78 @@ mod tests {
                 details: json!(null),
             })
         }
+    }
+
+    #[test]
+    fn finalized_bus_projects_read_only_capability_inventory_without_changing_tools() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 0 }));
+        bus.register(Box::new(NotifierFeature));
+        bus.finalize();
+
+        let legacy_tools = bus.tool_definitions();
+        let registry = bus.runtime_capability_registry();
+        let projected_tools = registry
+            .declarations
+            .iter()
+            .filter(|declaration| declaration.kind == omegon_traits::RuntimeCapabilityKind::Tool)
+            .map(|declaration| declaration.invocations[0].name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(projected_tools, vec!["count"]);
+        assert_eq!(legacy_tools.len(), projected_tools.len());
+        assert!(
+            registry.diagnostics.iter().all(|diagnostic| matches!(
+                diagnostic,
+                omegon_traits::RuntimeCapabilityDiagnostic::DanglingGroupMember { .. }
+            )),
+            "minimal test bus should expose only expected absent-group diagnostics: {:?}",
+            registry.diagnostics
+        );
+        assert!(
+            registry
+                .declarations
+                .iter()
+                .any(|declaration| declaration.id.as_str() == "action:notify")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_capability_inventory_does_not_change_legacy_dispatch() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 7 }));
+        bus.finalize();
+
+        let before = bus
+            .execute_tool(
+                "count",
+                "before",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("legacy dispatch before inventory projection");
+        let registry = bus.runtime_capability_registry();
+        let after = bus
+            .execute_tool(
+                "count",
+                "after",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("legacy dispatch after inventory projection");
+
+        assert_eq!(
+            serde_json::to_value(&before).expect("serialize pre-projection result"),
+            serde_json::to_value(&after).expect("serialize post-projection result")
+        );
+        assert!(
+            registry
+                .declarations
+                .iter()
+                .any(|declaration| declaration.id.as_str() == "tool:count")
+        );
     }
 
     #[test]

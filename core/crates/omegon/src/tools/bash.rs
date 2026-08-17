@@ -18,6 +18,28 @@ use tokio_util::sync::CancellationToken;
 const MAX_OUTPUT_BYTES: usize = 50 * 1024;
 const MAX_OUTPUT_LINES: usize = 2000;
 const PROCESS_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const PROCESS_REAP_DEADLINE: Duration = Duration::from_secs(2);
+const DEFAULT_ABSOLUTE_TIMEOUT_SECS: u64 = 60 * 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReapOutcome {
+    Reaped,
+    DeadlineExceeded,
+}
+
+async fn await_reap_with_budget<F>(reap: F, budget: Duration) -> ReapOutcome
+where
+    F: std::future::Future<Output = ()>,
+{
+    match tokio::time::timeout(budget, reap).await {
+        Ok(()) => ReapOutcome::Reaped,
+        Err(_) => ReapOutcome::DeadlineExceeded,
+    }
+}
+
+fn effective_timeout_secs(timeout_secs: Option<u64>) -> u64 {
+    timeout_secs.unwrap_or(DEFAULT_ABSOLUTE_TIMEOUT_SECS)
+}
 
 #[cfg(unix)]
 fn configure_process_group(command: &mut Command) {
@@ -275,13 +297,8 @@ pub async fn execute_streaming_with_env(
     let mut last_flush = Instant::now();
     let sink_active = sink.is_active();
 
-    let timeout_fut = async {
-        if let Some(secs) = timeout_secs {
-            tokio::time::sleep(Duration::from_secs(secs)).await;
-        } else {
-            std::future::pending::<()>().await;
-        }
-    };
+    let effective_timeout_secs = effective_timeout_secs(timeout_secs);
+    let timeout_fut = tokio::time::sleep(Duration::from_secs(effective_timeout_secs));
     tokio::pin!(timeout_fut);
 
     // Heartbeat ticker — only matters when a sink is attached. We construct
@@ -296,29 +313,44 @@ pub async fn execute_streaming_with_env(
     let mut stdout_open = true;
     let mut stderr_open = true;
     let exit_status = loop {
-        // Keep timeout and cancellation active until both pipes close. Draining
-        // one pipe in an uninterruptible inner loop lets a descendant that
-        // inherited the other pipe hold execution open past either deadline.
-        if !stdout_open && !stderr_open {
-            break child.wait().await?;
-        }
-
+        // Keep timeout and cancellation active through leader reap. Even after
+        // both pipes reach EOF, a pathological leader may remain nonterminal;
+        // leaving the select here would bypass the absolute runtime deadline.
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
                 terminate_process_group(child_pid).await;
-                let _ = child.wait().await;
-                process_group_guard.disarm();
-                anyhow::bail!("Command aborted; the command process group was terminated");
-            }
-            _ = &mut timeout_fut => {
-                let secs = timeout_secs.unwrap();
-                terminate_process_group(child_pid).await;
-                let _ = child.wait().await;
+                let reap = await_reap_with_budget(
+                    async { let _ = child.wait().await; },
+                    PROCESS_REAP_DEADLINE,
+                ).await;
                 process_group_guard.disarm();
                 anyhow::bail!(
-                    "Command timed out after {secs} seconds; the command process group was terminated before Omegon could observe a final exit status. This is an indeterminate host-action result: the operation may have partially completed, completed just before the timeout, or made no progress. Verify with an idempotent status/check command before retrying or reporting failure. For installers, check whether the target is already present."
+                    "Command aborted; the command process group was terminated ({})",
+                    match reap {
+                        ReapOutcome::Reaped => "leader reaped",
+                        ReapOutcome::DeadlineExceeded => "leader reap deadline exceeded",
+                    }
                 );
+            }
+            _ = &mut timeout_fut => {
+                let secs = effective_timeout_secs;
+                terminate_process_group(child_pid).await;
+                let reap = await_reap_with_budget(
+                    async { let _ = child.wait().await; },
+                    PROCESS_REAP_DEADLINE,
+                ).await;
+                process_group_guard.disarm();
+                anyhow::bail!(
+                    "Command timed out after {secs} seconds; the command process group was terminated ({}) before Omegon could observe a final exit status. This is an indeterminate host-action result: the operation may have partially completed, completed just before the timeout, or made no progress. Verify with an idempotent status/check command before retrying or reporting failure. For installers, check whether the target is already present.",
+                    match reap {
+                        ReapOutcome::Reaped => "leader reaped",
+                        ReapOutcome::DeadlineExceeded => "leader reap deadline exceeded",
+                    }
+                );
+            }
+            status = child.wait(), if !stdout_open && !stderr_open => {
+                break status?;
             }
             _ = heartbeat.tick() => {
                 // Only emit if quiet — if we've flushed content recently
@@ -1314,6 +1346,24 @@ mod tests {
     #[test]
     fn strip_terminal_noise_empty_input() {
         assert_eq!(strip_terminal_noise(""), "");
+    }
+
+    #[tokio::test]
+    async fn non_reaping_child_cannot_hold_terminalization_past_budget() {
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            await_reap_with_budget(std::future::pending::<()>(), Duration::from_millis(10)),
+        )
+        .await
+        .expect("reap helper itself must never remain pending");
+
+        assert_eq!(result, ReapOutcome::DeadlineExceeded);
+    }
+
+    #[test]
+    fn missing_explicit_timeout_uses_finite_runtime_default() {
+        assert_eq!(effective_timeout_secs(None), DEFAULT_ABSOLUTE_TIMEOUT_SECS);
+        assert_eq!(effective_timeout_secs(Some(17)), 17);
     }
 
     #[tokio::test]

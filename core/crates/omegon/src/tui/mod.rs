@@ -34,6 +34,8 @@ pub mod inline_render;
 mod input;
 pub mod instruments;
 pub mod layout_projection;
+#[cfg(test)]
+mod liveness_contract_tests;
 mod markdown_publication;
 mod menu_effects;
 pub(crate) mod menu_surface;
@@ -8061,7 +8063,11 @@ pub async fn run_tui(
         }
 
         if let Ok(boundary) = terminal_input.try_recv_boundary() {
-            let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
+            tracing::error!(
+                fault = ?boundary,
+                boundary = "terminal_input_lost",
+                "terminal input boundary lost; returning control to the runtime supervisor"
+            );
             eprintln!("{}", boundary.message());
             break;
         }
@@ -8101,14 +8107,26 @@ pub async fn run_tui(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-            input = terminal_input.recv() => {
-                if let Some(input_event) = input {
-                    let input_at = std::time::Instant::now();
-                    let _ = app.handle_terminal_event(input_event, &command_tx).await;
-                    scheduler.mark_dirty(TuiDrawReason::OperatorInput);
-                    if let Some(trace) = &mut runtime_trace {
-                        trace.record_input(1, input_at);
+            terminal_event = terminal_input.recv_next() => {
+                match terminal_event {
+                    Some(terminal_input::TerminalInputEvent::Input(input_event)) => {
+                        let input_at = std::time::Instant::now();
+                        let _ = app.handle_terminal_event(input_event, &command_tx).await;
+                        scheduler.mark_dirty(TuiDrawReason::OperatorInput);
+                        if let Some(trace) = &mut runtime_trace {
+                            trace.record_input(1, input_at);
+                        }
                     }
+                    Some(terminal_input::TerminalInputEvent::Boundary(boundary)) => {
+                        tracing::error!(
+                            fault = ?boundary,
+                            boundary = "terminal_input_lost",
+                            "terminal input boundary lost; returning control to the runtime supervisor"
+                        );
+                        eprintln!("{}", boundary.message());
+                        break;
+                    }
+                    None => break,
                 }
             }
             _ = tokio::time::sleep(poll_timeout) => {}

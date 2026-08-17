@@ -31,7 +31,7 @@ pub(crate) enum TerminalInterrupt {
     CtrlC,
 }
 
-fn route_input(
+pub(crate) fn route_input(
     input: Event,
     event_tx: &mpsc::Sender<Event>,
     interrupt_tx: &mpsc::Sender<TerminalInterrupt>,
@@ -51,6 +51,12 @@ fn route_input(
         }
         Err(mpsc::error::TrySendError::Closed(_)) => false,
     }
+}
+
+#[derive(Debug)]
+pub(crate) enum TerminalInputEvent {
+    Input(Event),
+    Boundary(TerminalBoundaryFault),
 }
 
 pub(crate) struct TerminalInputPump {
@@ -109,8 +115,12 @@ impl TerminalInputPump {
         self.boundaries.try_recv()
     }
 
-    pub(crate) async fn recv(&mut self) -> Option<Event> {
-        self.events.recv().await
+    pub(crate) async fn recv_next(&mut self) -> Option<TerminalInputEvent> {
+        tokio::select! {
+            biased;
+            boundary = self.boundaries.recv() => boundary.map(TerminalInputEvent::Boundary),
+            input = self.events.recv() => input.map(TerminalInputEvent::Input),
+        }
     }
 }
 

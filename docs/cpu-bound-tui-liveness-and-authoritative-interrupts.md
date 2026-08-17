@@ -1,15 +1,10 @@
 ---
 id: cpu-bound-tui-liveness-and-authoritative-interrupts
 title: "CPU-bound TUI liveness and authoritative interrupts"
-status: exploring
+status: decided
 parent: authoritative-tui-input-and-bounded-presentation
 tags: [tui, runtime, liveness, interrupts, tool-processes, scheduling, observability]
-open_questions:
-  - "Which exact thread and loop consumed the CPU during the incident: terminal input pump, TUI coordinator scheduling, provider/tool completion polling, frame scheduling, or another background worker?"
-  - "At which boundary did Ctrl+C disappear: Crossterm acquisition, priority channel send, identity snapshot lookup, coordinator receive, supervisor admission, cancellation-token propagation, or child-process reap?"
-  - "Why did `git diff --check` remain nonterminal for 55 minutes, and what process/PTY/file-descriptor condition prevented its wrapper from completing?"
-  - "[assumption] The incident can be reproduced deterministically with a synthetic permanently nonterminal tool subprocess and does not require the exact feature/tui-presentation-settings repository state."
-  - "[assumption] Bounded CPU usage and interrupt latency can be asserted in CI without relying on wall-clock-sensitive terminal integration tests."
+open_questions: []
 dependencies: []
 related:
   - authoritative-tui-input-and-bounded-presentation
@@ -26,6 +21,12 @@ Eliminate a confirmed native-TUI failure mode where a nonterminal tool subproces
 ### Confirmed incident and falsified guarantee
 
 Live incident evidence on 2026-08-13: Omegon PID 97222 remained near 99–100% CPU for roughly two hours while the visible active turn was stuck. Its tool wrapper `/bin/bash -lc cargo fmt --all && just test-crate omegon && just clippy-changed && git diff --check` had been alive for about 56 minutes; child `git diff --check` had been alive for about 55 minutes. Killing the child and wrapper did not stop Omegon's CPU-hot loop. The terminal fd remained open. A process sample showed ordinary Tokio workers mostly asleep, so the hot path was likely another runtime/TUI-owned thread or an uninstrumented loop. No keyboard or mouse interaction was observable. This disproves the assumption that a dedicated Crossterm reader alone establishes end-to-end operator authority.
+
+A later fleet inspection found six additional Omegon processes surviving for roughly two to four days with stdin, stdout, and stderr all revoked. They consumed approximately 900% aggregate CPU and about 1.3 GiB aggregate RSS. Exact process groups ignored `SIGTERM` and required `SIGKILL`. Removing them dropped machine load from approximately 10 to approximately 2. Separately, an attached session retained a quiet `git diff --check` descendant for roughly 16 hours. This resolves the design's earlier uncertainty: terminal detachment and child terminalization are independently non-bounded, and detached runtimes can remain CPU-hot even after their child process is removed. The first implementation slice therefore does not depend on identifying one historical hot function; it proves and enforces the lifecycle boundaries that were observably violated.
+
+### Assumptions resolved for TDD
+
+The reproducer need not recreate the exact historical repository state. The violated contracts are transport- and command-independent: a synthetic child can model a nonterminal reap, and an injected terminal-boundary event can model revoked descriptors. CI will assert state-machine steps, bounded poll/yield counts, and completion under Tokio's paused clock where possible; a small wall-clock ceiling remains only as a deadlock guard. CPU percentage itself is diagnostic evidence, not the deterministic assertion.
 
 ## Decisions
 
@@ -59,13 +60,13 @@ Live incident evidence on 2026-08-13: Omegon PID 97222 remained near 99–100% C
 
 **Rationale:** Expose a daemon/IPC control-plane cancellation path that targets the same runtime identity and supervisor admission logic. This is a last-resort authority path when terminal input acquisition or the entire TUI process is compromised; it must not create a second cancellation state machine.
 
-## Open Questions
+## Resolved Questions
 
-- Which exact thread and loop consumed the CPU during the incident: terminal input pump, TUI coordinator scheduling, provider/tool completion polling, frame scheduling, or another background worker?
-- At which boundary did Ctrl+C disappear: Crossterm acquisition, priority channel send, identity snapshot lookup, coordinator receive, supervisor admission, cancellation-token propagation, or child-process reap?
-- Why did `git diff --check` remain nonterminal for 55 minutes, and what process/PTY/file-descriptor condition prevented its wrapper from completing?
-- [assumption] The incident can be reproduced deterministically with a synthetic permanently nonterminal tool subprocess and does not require the exact feature/tui-presentation-settings repository state.
-- [assumption] Bounded CPU usage and interrupt latency can be asserted in CI without relying on wall-clock-sensitive terminal integration tests.
+- The exact historical hot function is not required to gate the first fix. Fleet evidence proves the process remained runnable after terminal revocation and after child removal; the implementation must instrument boundary progress so any future loop is attributable.
+- Ctrl+C loss is treated as an end-to-end authority failure rather than assigned speculatively to one boundary. The liveness ledger must expose the last completed boundary.
+- The historical `git diff --check` kernel/PTY condition is unknown, but the contract failure is known: ordinary Bash execution allowed an unbounded command and subsequently awaited reap without an independent deadline.
+- A synthetic permanently nonterminal child plus injected terminal-boundary loss is sufficient to test the violated contracts without the historical repository state.
+- CI asserts bounded state transitions and yield/poll budgets with controlled time; wall-clock limits serve only as deadlock guards, not CPU-performance thresholds.
 
 ## Implementation Notes
 

@@ -1,0 +1,15 @@
+{
+  "archive_format": "tar.gz",
+  "archive_name": "omegon-<version>-<target>.tar.gz",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "repository": "styrene-lab/omegon",
+  "schema_version": 1,
+  "targets": [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl"
+  ],
+  "workflow_identity_template": "https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/<tag>"
+}

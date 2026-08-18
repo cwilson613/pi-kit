@@ -32,6 +32,9 @@ For user-facing docs, edit `site/src/pages/docs/` and the command snippets in `s
 - `docs/project-memory.md`: project memory behavior.
 - `docs/openapi-tools.md`: project-local OpenAPI specs compiled into agent tools.
 - `docs/prompt-and-user-command-surfaces.md`: reusable prompt definitions, `/prompt` routing, safety verdicts, and user-defined command aliases.
+- [`docs/harness-architecture-parity/`](harness-architecture-parity/README.md): evidence-pinned architecture matrix, harness profiles, and philosophy/tradeoff analysis for OpenCode, Omegon, Pi, and DeepSeek Harness.
+- [`docs/selective-kernel-decomposition.md`](selective-kernel-decomposition.md): adopted assessment of DeepSeek Harness's "everything is a plugin" philosophy and the selective decomposition of Omegon into a constitutional kernel, system modules, services, external contributions, content packs, and frontend adapters.
+- [`docs/omegon-maintain.md`](omegon-maintain.md): Slice-zero contract for the independent maintenance executable, including commands, trust boundaries, mutation roots, deadlines, structured output, packaging, and deferred operations.
 
 ## Directory Boundaries
 

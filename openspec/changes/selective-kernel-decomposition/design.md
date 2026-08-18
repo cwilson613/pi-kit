@@ -1,0 +1,197 @@
+# Design: selective Omegon kernel decomposition
+
+## Source design
+
+- `docs/selective-kernel-decomposition.md`
+- `docs/omegon-maintain.md`
+- `docs/binary-composition-and-kernel-admission.md`
+- `docs/harness-architecture-parity/deepseek-harness.md`
+- `openspec/archive/runtime-capability-declarations/`
+
+## Decision
+
+Adopt "everything optional attaches through a contract," not "everything is an ordinary plugin."
+
+The constitutional kernel owns only identity, contribution lifecycle, durable session transition truth, admission combination, invocation leases, event ordering, process/resource ownership, and recovery bootstrap. Default loop behavior, providers, tools, memory, lifecycle, planning, context policy, orchestration, and frontends are system modules or selectively composed services. Third-party code remains separated by explicit trust and transport boundaries.
+
+## Lifecycle status
+
+This change remains `proposed` overall. The Slice-zero maintenance contract passed adversarial review and task 0.3 is complete; implementation tasks 0.4-0.10 may proceed. Implementation of Slice 1 or later additionally waits for approval of task 1.1 and refinement of each later group's concrete ownership and red tests.
+
+## Architectural layers
+
+### Constitutional kernel
+
+The kernel owns:
+
+- stable runtime, contribution, capability, session, prompt, turn, invocation, lease, and generation identities;
+- renderer-neutral protocol and semantic event vocabulary;
+- contribution dependency validation, generation construction, promotion, drain, rollback, and retirement;
+- one session state machine and supervisor implementation, instantiated once per session;
+- monotonic admission combination and privileged execution leases;
+- crash-consistent invocation state;
+- semantic event sequencing, snapshot cursors, and terminal closure;
+- host-owned process/resource supervision and machine-readable recovery diagnostics.
+
+These are release-only authorities. They may be split into internal crates, but they are not ordinary operator-installed plugins.
+
+### Release-coupled system modules
+
+System modules use the same declaration and lifecycle vocabulary while retaining privileged, in-tree status:
+
+- the separately runnable `omegon-maintain` companion executable;
+- the default loop policy driver;
+- provider route selection and route leases;
+- provider-history and transcript projections;
+- filesystem, process, network, terminal, secret, and resource host-effect executors;
+- required configuration and packaging adapters.
+
+Replacement occurs at boot or a declared quiescent generation boundary, never mid-turn.
+
+### In-process services
+
+Memory, lifecycle, Git, codescan, context/compaction, behavior policy, plans/work aggregation, provider transports, and catalog resolution are statically linked Rust services with explicit contracts, dependencies, and teardown. Extraction from the main crate does not grant third-party replacement authority.
+
+### Out-of-process contributions
+
+Native/OCI extensions, MCP, HTTP/OpenAPI, and optional remote providers/tools negotiate versioned capabilities. Unsandboxed native, script, and MCP processes are trusted host-authority code. Least authority is claimed only when verified confinement blocks direct host access and privileged effects cross kernel brokers.
+
+### Content and frontend contributions
+
+Skills, prompts, personas, tones, workflows, and catalog data are content packs. TUI, ACP, Web, IPC, CLI, daemon ingress, and schedulers are frontend/host adapters. Neither content nor frontends own runtime authority.
+
+## Maintenance artifact
+
+Slice 0 adds workspace package `omegon-maintain` at `core/crates/omegon-maintain/`, producing the separate `omegon-maintain` executable rather than a flag or second binary target in package `omegon`. Package `omegon-maintenance-contracts` at `core/crates/omegon-maintenance-contracts/` supplies only versioned deny, session-deny, ownership-record, exclusion-lock, transaction, audit, package-manifest, and canonical-key schemas used by both executables; it does not pull normal runtime code into maintenance. The executable shares the workspace release version, must not depend on package `omegon`, and is packaged beside `omegon` as a required release companion. It excludes normal TUI startup, the default agent loop, provider clients, project configuration evaluation, project contribution or extension code, MCP, mutable packs, memory, lifecycle, and orchestration.
+
+The maintenance artifact supports:
+
+- compiled maintenance-profile identity, exclusions, and bounded inert-entry diagnostics;
+- inert contribution list/inspect plus maintenance-owned disable and reversible quarantine;
+- session snapshot/metadata framing inspection plus resume-deny quarantine without semantic rewriting;
+- durable ownership-record inspection and stale-record pruning without killing arbitrary processes;
+- offline signed release archive and companion-artifact verification;
+- maintenance audit inspection and verification.
+
+Slice zero explicitly excludes generic read/search/patch/shell, project source or configuration mutation, semantic session repair, contribution enable/purge/install/update, process killing outside the current invocation, network release discovery/download, installation activation, update, and rollback. Later slices establish some prerequisites but do not implicitly add those maintenance operations; each requires separate requirements, safety analysis, and tasks.
+
+The exact command tree and safety requirements are normative in `specs/kernel-composition/maintenance.md`; wire schemas, roots, locks, crash transitions, evidence rules, and command outcomes are normative in `specs/kernel-composition/maintenance-protocol-v1.md`. `docs/omegon-maintain.md` is their durable architecture summary.
+
+Source, linked-development, and release-package launch paths are tested in this first slice rather than deferred to final packaging.
+
+## Durable session authority
+
+Before the shared supervisor becomes authoritative, define minimum append-only facts for:
+
+- session creation and identity;
+- prompt admission or rejection;
+- queue insertion, removal, and ordering;
+- turn start and generation identity;
+- cancellation and revocation requests;
+- invocation preparation and terminal settlement;
+- turn completion, failure, cancellation, timeout, or unknown outcome.
+
+Each event has a monotonic sequence and compatibility version. A snapshot records the last applied sequence and can reconstruct queue, active-turn, cancellation, and terminal state without relying on broadcast replay.
+
+One supervisor implementation is instantiated per session. Cross-session hosts may own many supervisors, but TUI, ACP, daemon, Web/IPC, and bounded ingress submit to the owning session instance. Frontend busy and streaming state is a projection of supervisor state.
+
+The default loop is a policy driver. It proposes typed step, message, invocation, continuation, and terminal intents. The kernel session state machine validates and commits each transition exactly once. The loop does not independently mutate canonical session truth or publish terminal completion.
+
+## Contribution lifecycle
+
+### Static contributions
+
+Statically linked contributions publish declarations before activation. The candidate graph validates IDs, invocation bindings, owner tier, dependencies, conflicts, platform support, effects, protocol ranges, and transition policy. Duplicate or ambiguous ownership is fatal unless an explicit replacement declaration names the superseded owner.
+
+### Dynamic contributions
+
+Dynamic protocols use two admission stages:
+
+1. **Trust admission:** static preflight identifies code, protocol range, minimum dependencies, requested trust, and probe requirements. Probe code may execute only after explicit trusted-code admission or verified confinement.
+2. **Capability admission:** the host starts an admitted probe in quarantine without brokered host-effect leases, negotiates a frozen declaration set, validates the graph, waits for readiness, and atomically promotes the candidate generation.
+
+Heartbeat loss, startup timeout, crash loops, dependency degradation, restart/backoff, drain deadlines, forced cleanup, and quarantine are typed lifecycle outcomes. Required dynamic contributions must expose minimum dependency and trust requirements statically.
+
+### Generations
+
+Registrations and calls bind to one generation. Candidate failure leaves the previous generation callable and removes all candidate resources. Active calls either drain under their captured lease or revoke according to declared transition policy. Model-visible schemas change only at turn-safe promotion boundaries.
+
+## Admission and invocation
+
+The kernel invocation path covers model tools, operator actions, trust-boundary calls, calls consuming caller authority, durable mutations, and host-effect-bearing internal calls. Pure in-process computation and read-only domain queries may use typed service handles directly.
+
+The path is:
+
+```text
+resolve owner and generation
+  -> combine admission policy
+  -> persist Prepared and issue lease
+  -> persist Dispatched
+  -> hand request to owner with stable call/deduplication ID
+  -> persist Acknowledged when authoritative acknowledgement arrives
+  -> persist Settled or Unknown
+  -> close lease exactly once
+```
+
+`Dispatched` is durable before transport handoff. Every unsettled `Dispatched` invocation recovers as unknown completion. Mutating calls are not retried unless the owner contract enforces idempotency or deduplication for the stable call ID. Failure to persist settlement fences further mutation and records emergency recovery evidence; it does not report ordinary completion.
+
+Admission is monotonic. Policy sources can narrow authority, but no downstream adapter can widen a denial. Unknown owners, capabilities, effects, schemas, or provenance receive no privileged lease. Declarations request effects; they do not prove confinement.
+
+## Process ownership
+
+Every process, task, socket, listener, subscription, temporary file, and durable writer has one host-recorded owner and generation. Complete tree settlement is required only inside a lifecycle boundary Omegon can own. Cross-boundary processes, including Windows-host executables launched from WSL, settle as degraded or unverified; profiles requiring strict cleanup reject those transports.
+
+## Semantic event spine
+
+The minimum supervisor facts expand into a complete semantic session event contract containing admitted input, model-visible context provenance, provider route and schema generation, assistant output, tool calls/results, invocation states, step/turn boundaries, and cancellation/interruption evidence.
+
+Current storage is plural input to migration:
+
+- resumable whole-file snapshots persist an LLM-facing projection;
+- checkpoint JSONL persists metadata rather than semantic replay facts;
+- the agent journal is a human narrative;
+- audit streams have separate schemas and authority.
+
+Storage backends, provider-history projection, transcript rendering, compaction, and snapshots derive from the semantic record. No current stream is silently reclassified as canonical without explicit conversion and compatibility tests.
+
+## Migration strategy
+
+1. Build and release-test the independent maintenance artifact.
+2. Define minimum durable session facts and promote one supervisor per session.
+3. Evolve authority-neutral capability declarations into the pre-activation contribution graph.
+4. Extract admission, leases, scheduling, progress, terminalization, and retry classification into one invocation pipeline.
+5. Unify provider contribution metadata and reduce the loop to a transition-intent driver.
+6. Complete the semantic event spine and migrate projections/storage.
+7. Extract optional domains and unify external contribution discovery.
+8. Complete artifact separation, contribution locks, and composition budgets.
+
+Each step retains adapters for current behavior until parity and absence tests pass. Crate movement without authority, lifecycle, or failure-isolation change does not satisfy a migration task.
+
+## Documentation co-delivery
+
+Documentation is part of each implementation lane, not a final release activity. Before mutation, every lane classifies:
+
+- the durable architecture/developer documents it owns;
+- serialized compatibility or migration notes;
+- operator-visible command, configuration, output, permission, recovery, packaging, or availability changes;
+- affected public pages under `site/src/pages/docs/`;
+- affected canonical command examples under `site/snippets/`;
+- the narrowest documentation and site validation commands.
+
+A lane cannot pass its exit gate until implemented behavior, source design, OpenSpec requirements/tasks, durable docs, public site pages, snippets, CLI help, and operator terminology agree. A lane with no public delta records that decision explicitly. Later groups may refine earlier documentation when authority migrates, but they may not serve as a deferred documentation bucket for behavior already shipped.
+
+## Safety invariants
+
+- Trust admission precedes execution of dynamic probe code.
+- Requested confinement fails closed when the required boundary is unavailable.
+- Unknown effects and capability owners fail closed.
+- Mutating unknown-completion calls do not retry without owner-enforced deduplication.
+- Frontends can expose less authority than the runtime, never more.
+- No optional contribution or normal integration startup path is required to diagnose, deny, or quarantine that contribution.
+- Durable facts and reconstructable snapshots precede advisory broadcasts.
+- Strict cleanup claims are limited to process trees inside the host ownership boundary.
+- Documentation and applicable public site/snippet changes pass within the same lane as their behavior.
+
+## Open design gate
+
+Before implementation beyond the maintenance artifact begins, approve the exact minimum semantic event vocabulary, serialized evolution policy, and snapshot reconstruction contract for Slice 1.

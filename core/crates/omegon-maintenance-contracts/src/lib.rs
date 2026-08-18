@@ -26,10 +26,10 @@ pub use recovery::{
 };
 pub use selector::{ContributionSelector, ListScope, resolve_list_scope};
 pub use state::{
-    MaintenanceStateV1, append_bytes_at, audit_receipt, create_record_no_replace_at,
-    entry_identity_at, file_identity, open_or_create_secure_dir_at, open_secure_dir_at,
-    path_identity, read_bytes_at, read_record_at, read_record_with_identity_at, record_identity_at,
-    remove_record_at, rename_entry_no_replace_at, replace_record_at,
+    MaintenanceStateV1, SessionResumeGuard, append_bytes_at, audit_receipt,
+    create_record_no_replace_at, entry_identity_at, file_identity, open_or_create_secure_dir_at,
+    open_secure_dir_at, path_identity, read_bytes_at, read_record_at, read_record_with_identity_at,
+    record_identity_at, remove_record_at, rename_entry_no_replace_at, replace_record_at,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -62,6 +62,8 @@ pub enum ContractError {
     Lock(#[source] std::io::Error),
     #[error("maintenance filesystem operation failed: {0}")]
     Filesystem(#[source] std::io::Error),
+    #[error("session resume is denied by maintenance policy")]
+    SessionResumeDenied,
 }
 
 pub type Result<T> = std::result::Result<T, ContractError>;

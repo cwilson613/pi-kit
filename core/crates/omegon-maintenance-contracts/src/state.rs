@@ -10,9 +10,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AUDIT_SEGMENT_RECORDS, AuditCheckpointV1, AuditFrontierV1, AuditReceiptV1, AuditRecordV1,
-    AuthorityKey, ContractError, FileIdentityV1, InstallationStateV1, LockMode, PathIdentityV1,
-    ProtocolLock, Record, Result, SCHEMA_VERSION, canonical_digest, canonical_json, derive_key,
-    parse_record, validate_child_name,
+    AuthorityKey, ContractError, FenceV1, FileIdentityV1, InstallationStateV1, LockMode,
+    PathIdentityV1, ProtocolLock, Record, Result, SCHEMA_VERSION, SessionDenyRecordV1,
+    canonical_digest, canonical_json, derive_key, parse_record, session_domain_key, session_key,
+    validate_child_name,
 };
 
 pub struct MaintenanceStateV1 {
@@ -26,6 +27,11 @@ pub struct MaintenanceStateV1 {
     pub audit_segments: File,
     pub audit_receipts: File,
     pub installation: InstallationStateV1,
+}
+
+pub struct SessionResumeGuard {
+    _lock: ProtocolLock,
+    pub session_key: AuthorityKey,
 }
 
 static TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -168,6 +174,69 @@ impl MaintenanceStateV1 {
 }
 
 impl MaintenanceStateV1 {
+    pub fn admit_session_resume(
+        &self,
+        session_id: &str,
+        workspace_key: AuthorityKey,
+        nonblocking: bool,
+    ) -> Result<SessionResumeGuard> {
+        let authority_key = session_key(session_id, workspace_key);
+        let lock_name = format!("session-{authority_key}.lock");
+        let lock = self.acquire_or_create_protocol_lock(
+            lock_name.as_bytes(),
+            LockMode::Shared,
+            nonblocking,
+        )?;
+        let fence_name = format!("{}.json", session_domain_key(authority_key));
+        if read_record_at::<FenceV1>(&self.fences, fence_name.as_bytes())?.is_some() {
+            return Err(ContractError::InvalidValue(
+                "session resume is blocked by an unresolved maintenance fence".into(),
+            ));
+        }
+        let deny_name = format!("{authority_key}.json");
+        if let Some(deny) =
+            read_record_at::<SessionDenyRecordV1>(&self.session_deny, deny_name.as_bytes())?
+        {
+            if deny.session_key != authority_key
+                || deny.session_id != session_id
+                || deny.workspace_key != workspace_key
+            {
+                return Err(ContractError::InvalidValue(
+                    "session deny record does not match its requested authority".into(),
+                ));
+            }
+            return Err(ContractError::SessionResumeDenied);
+        }
+        Ok(SessionResumeGuard {
+            _lock: lock,
+            session_key: authority_key,
+        })
+    }
+
+    fn acquire_or_create_protocol_lock(
+        &self,
+        name: &[u8],
+        mode: LockMode,
+        nonblocking: bool,
+    ) -> Result<ProtocolLock> {
+        let _bootstrap = ProtocolLock::acquire_at(
+            &self.locks,
+            b"bootstrap.lock",
+            LockMode::Exclusive,
+            false,
+            nonblocking,
+        )?;
+        match ProtocolLock::acquire_at(&self.locks, name, mode, true, nonblocking) {
+            Ok(lock) => Ok(lock),
+            Err(ContractError::Lock(error))
+                if error.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                ProtocolLock::acquire_at(&self.locks, name, mode, false, nonblocking)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn reconcile_audit(&mut self, temporary_tag: &str) -> Result<()> {
         let installation: InstallationStateV1 = read_record_at(&self.root, b"state.json")?
             .ok_or_else(|| ContractError::InvalidValue("installation state is absent".into()))?;

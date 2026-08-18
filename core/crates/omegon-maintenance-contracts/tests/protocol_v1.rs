@@ -11,11 +11,12 @@ use omegon_maintenance_contracts::{
     ErrorV1, FenceV1, FileIdentityV1, InstallationStateV1, ListScope, LockMode,
     MaintenanceResultV1, MaintenanceStateV1, MutationResultV1, MutationState, OwnershipRecordV1,
     PackageManifestV1, PathIdentityV1, PostStateV1, ProtocolLock, ReconciliationDecision, Record,
-    RecordObservation, ResultStatus, SCHEMA_VERSION, SessionDenyRecordV1, TransactionState,
-    TransactionStepKind, TransactionStepState, TransactionStepV1, TransactionV1, append_bytes_at,
-    canonical_digest, canonical_json, command_fingerprint, derive_key, normalize_workspace_path,
-    parse_record, path_identity, read_bytes_at, read_record_at, reconcile_detach, reconcile_record,
-    record_identity_at, replace_record_at, resolve_list_scope, validate_child_name,
+    RecordObservation, ResultStatus, SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState,
+    TransactionState, TransactionStepKind, TransactionStepState, TransactionStepV1, TransactionV1,
+    append_bytes_at, canonical_digest, canonical_json, command_fingerprint,
+    create_record_no_replace_at, derive_key, normalize_workspace_path, parse_record, path_identity,
+    read_bytes_at, read_record_at, reconcile_detach, reconcile_record, record_identity_at,
+    replace_record_at, resolve_list_scope, session_key, validate_child_name, workspace_key,
 };
 
 const ZERO_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -804,6 +805,101 @@ fn lock_child_helper() {
         )
         .is_err(),
         "child unexpectedly acquired a shared lock"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn session_resume_admission_holds_shared_lock_and_rejects_deny() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let state = MaintenanceStateV1::bootstrap(
+        &home,
+        identity,
+        "11111111-1111-1111-1111-111111111111",
+        false,
+    )
+    .unwrap();
+    let workspace = workspace_key("unix", b"/tmp/workspace");
+    let session_id = "2026-08-17T00-00-00_00000000";
+    let authority = session_key(session_id, workspace);
+    let guard = state
+        .admit_session_resume(session_id, workspace, false)
+        .unwrap();
+    assert_eq!(guard.session_key, authority);
+    let lock_name = format!("session-{authority}.lock");
+    assert!(
+        ProtocolLock::acquire_at(
+            &state.locks,
+            lock_name.as_bytes(),
+            LockMode::Exclusive,
+            false,
+            true,
+        )
+        .is_err()
+    );
+    drop(guard);
+
+    let request_id = "00000000-0000-0000-0000-000000000001";
+    let deny = SessionDenyRecordV1 {
+        schema_version: SCHEMA_VERSION,
+        record_kind: "session_deny".into(),
+        record_id: derive_key(
+            "session-deny",
+            &[authority.as_bytes(), request_id.as_bytes()],
+        ),
+        session_key: authority,
+        session_id: session_id.into(),
+        workspace_key: workspace,
+        state: SessionDenyState::ResumeDenied,
+        request_id: request_id.into(),
+        created_at: "2026-08-17T00:00:00Z".into(),
+    };
+    let deny_name = format!("{authority}.json");
+    create_record_no_replace_at(&state.session_deny, deny_name.as_bytes(), &deny, "test").unwrap();
+    assert!(matches!(
+        state.admit_session_resume(session_id, workspace, false),
+        Err(omegon_maintenance_contracts::ContractError::SessionResumeDenied)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn session_resume_admission_fails_closed_on_malformed_deny() {
+    use std::{fs::File, io::Write, os::unix::fs::OpenOptionsExt};
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let state = MaintenanceStateV1::bootstrap(
+        &home,
+        identity,
+        "11111111-1111-1111-1111-111111111111",
+        false,
+    )
+    .unwrap();
+    let workspace = workspace_key("unix", b"/tmp/workspace");
+    let session_id = "2026-08-17T00-00-00_00000000";
+    let authority = session_key(session_id, workspace);
+    let deny_name = format!("{authority}.json");
+    let deny_path = directory
+        .path()
+        .join("maintain/v1/session-deny")
+        .join(deny_name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(deny_path)
+        .unwrap();
+    file.write_all(b"{not-json").unwrap();
+    assert!(
+        state
+            .admit_session_resume(session_id, workspace, false)
+            .is_err()
     );
 }
 

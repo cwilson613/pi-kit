@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 mod audit;
 mod mutation;
+#[allow(dead_code)]
+mod release;
 
 const MAX_METADATA_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
@@ -300,7 +302,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
             "release_verifier_unavailable",
             "verification",
             false,
-            "offline release verification remains fail-closed until task 0.6b provides vetted Sigstore bundle-v0.3 verification and compiled trust roots",
+            "offline release verification remains fail-closed until task 0.6b completes its immutable fixture and release-producer matrix",
         );
         finalize(&mut result);
         return emit(&result, cli.json);

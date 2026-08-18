@@ -20,7 +20,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Added the independently runnable `omegon-maintain` workspace executable with compiled maintenance identity/composition reporting; bounded, descriptor-confined diagnostics; crash-safe contribution disable/quarantine, session quarantine, and stale ownership-record pruning; stable list pagination; and bounded hash-chained audit inspection/verification. Release verification, packaging, and normal-runtime enforcement remain separately gated.
 
-- Added release-producer support for packaging `omegon` with `omegon-maintain`, canonical per-target package manifests, and tag-bound offline Sigstore bundle-v0.3 evidence without timestamp-authority material. The consumer remains fail-closed until the immutable production fixture matrix passes.
+- Added release-producer support for packaging `omegon` with `omegon-maintain`, canonical per-target package manifests, and tag-bound offline Sigstore bundle-v0.3 evidence without timestamp-authority material. `omegon-maintain release verify` now validates those explicit operands offline against compiled identity and trust-root policy.
 
 - Added authoritative native-TUI input and bounded presentation under sustained runtime load. A dedicated terminal-input owner and generation-scoped supervisor ingress keep cancellation available independently of rendering; revisioned frame scheduling, bounded producer drains and caches, transactional resumable native-scrollback publication, slow-presentation backoff, bounded teardown, explicit mouse-capture policy, and one-shot no-progress synthesis prevent presentation work from monopolizing runtime authority.
 

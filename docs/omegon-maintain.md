@@ -227,6 +227,27 @@ admitted roots, effective scope or workspace, and last emitted diagnostic key;
 changed or forged boundaries fail closed. Audit cursors are anchored through
 validated successor segments to the current checkpoint.
 
+## Offline release verification
+
+Verify a downloaded release without discovery, network access, extraction, or
+execution:
+
+```sh
+omegon-maintain --json release verify \
+  --archive /absolute/path/omegon-<version>-<target>.tar.gz \
+  --manifest /absolute/path/omegon-<version>-<target>.tar.gz.manifest.json \
+  --bundle /absolute/path/omegon-<version>-<target>.tar.gz.manifest.sigstore.json
+```
+
+Verification accepts only the compiled `styrene-lab/omegon` release workflow
+identity and issuer, Sigstore bundle v0.3 message signatures, one Rekor
+`hashedrekord` v0.0.1 entry, and complete SET, inclusion-proof, and signed
+checkpoint evidence. It evaluates the Fulcio certificate and trust material at
+the authenticated Rekor integrated time, rejects timestamp-authority evidence,
+and streams a bounded regular-file-only archive without extracting it. The
+archive must exactly match the signed manifest and contain both root executables
+with mode `0755`. All three operand paths must be absolute regular files.
+
 ## Read authority
 
 Maintenance may read only:

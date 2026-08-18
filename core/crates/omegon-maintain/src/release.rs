@@ -1069,4 +1069,51 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn production_fixture_rejects_wrong_ref_and_checkpoint() {
+        let (_directory, archive, manifest, bundle) = production_fixture();
+        let mut manifest_bytes = std::fs::read(&manifest).unwrap();
+        let git_ref = manifest_bytes
+            .windows(31)
+            .position(|window| window == b"refs/tags/v0.29.0-dev-fixture.1")
+            .unwrap();
+        manifest_bytes[git_ref + 30] = b'2';
+        std::fs::write(&manifest, manifest_bytes).unwrap();
+        assert_eq!(
+            verify_release_inner(
+                &archive,
+                &manifest,
+                &bundle,
+                Instant::now(),
+                Duration::from_secs(30),
+            )
+            .unwrap_err()
+            .code,
+            "release_policy_mismatch"
+        );
+
+        let (_directory, archive, manifest, bundle) = production_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+        let checkpoint = value["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]
+            ["checkpoint"]["envelope"]
+            .as_str()
+            .unwrap();
+        value["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]["checkpoint"]["envelope"] =
+            json!(format!("x{}", &checkpoint[1..]));
+        std::fs::write(&bundle, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            verify_release_inner(
+                &archive,
+                &manifest,
+                &bundle,
+                Instant::now(),
+                Duration::from_secs(30),
+            )
+            .unwrap_err()
+            .code,
+            "release_transparency_invalid"
+        );
+    }
 }

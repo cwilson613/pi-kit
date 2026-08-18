@@ -2791,31 +2791,16 @@ pub async fn resume_session_response(
             )),
         };
     };
-    match crate::conversation::ConversationState::load_session(&path) {
-        Ok(conversation) => {
-            let meta_path = path.with_extension("meta.json");
-            let meta = std::fs::read_to_string(&meta_path)
-                .ok()
-                .and_then(|j| serde_json::from_str::<session::SessionMeta>(&j).ok());
-            let session_id = meta
-                .as_ref()
-                .map(|m| m.session_id.clone())
-                .or_else(|| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| id.to_string());
-            let description = meta
-                .as_ref()
-                .map(session::session_display_description)
-                .unwrap_or_else(|| format!("Session {session_id}"));
-            agent.resume_info = meta.as_ref().map(|m| crate::setup::ResumeInfo {
-                session_id: m.session_id.clone(),
-                turns: m.turns,
+    match session::load_for_resume(&agent.cwd, &path) {
+        Ok((conversation, meta)) => {
+            let session_id = meta.session_id.clone();
+            let description = session::session_display_description(&meta);
+            agent.resume_info = Some(crate::setup::ResumeInfo {
+                session_id: meta.session_id,
+                turns: meta.turns,
                 description: description.clone(),
-                last_prompt_snippet: m.last_prompt_snippet.clone(),
-                created_at: m.created_at.clone(),
+                last_prompt_snippet: meta.last_prompt_snippet,
+                created_at: meta.created_at,
             });
             agent.session_id = session_id.clone();
             runtime_state.conversation = conversation;

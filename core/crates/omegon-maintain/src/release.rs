@@ -794,18 +794,42 @@ mod tests {
     }
 
     fn verify_archive(bytes: &[u8]) -> Result<(), VerificationError> {
-        let mut file = tempfile::tempfile().unwrap();
-        file.write_all(bytes).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-        verify_archive_members(
-            file,
+        verify_archive_with_members(
+            bytes,
             &[
                 package_member("omegon", b"agent"),
                 package_member("omegon-maintain", b"maintain"),
             ],
-            Instant::now(),
-            Duration::from_secs(5),
         )
+    }
+
+    fn verify_archive_with_members(
+        bytes: &[u8],
+        members: &[PackageMemberV1],
+    ) -> Result<(), VerificationError> {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        verify_archive_members(file, members, Instant::now(), Duration::from_secs(5))
+    }
+
+    fn incomplete_bundle() -> serde_json::Value {
+        json!({
+            "mediaType": OFFICIAL_BUNDLE_V03,
+            "verificationMaterial": {
+                "certificate": { "rawBytes": "" },
+                "tlogEntries": [],
+                "timestampVerificationData": { "rfc3161Timestamps": [] }
+            },
+            "messageSignature": {
+                "messageDigest": { "algorithm": "SHA2_256", "digest": "" },
+                "signature": ""
+            }
+        })
+    }
+
+    fn parse_test_bundle(value: serde_json::Value) -> Bundle {
+        Bundle::from_json(&value.to_string()).unwrap()
     }
 
     #[test]
@@ -862,6 +886,73 @@ mod tests {
         assert_eq!(
             verify_archive(&concatenated).unwrap_err().code,
             "release_archive_invalid"
+        );
+    }
+
+    #[test]
+    fn archive_rejects_missing_or_corrupt_companions() {
+        let bytes = archive_bytes(false, false);
+        assert_eq!(
+            verify_archive_with_members(&bytes, &[package_member("omegon", b"agent")])
+                .unwrap_err()
+                .code,
+            "release_archive_invalid"
+        );
+        assert_eq!(
+            verify_archive_with_members(
+                &bytes,
+                &[
+                    package_member("omegon", b"agent"),
+                    package_member("omegon-maintain", b"corrupt!"),
+                ],
+            )
+            .unwrap_err()
+            .code,
+            "release_archive_digest_mismatch"
+        );
+    }
+
+    #[test]
+    fn bundle_profile_rejects_wrong_media_and_material() {
+        let mut value = incomplete_bundle();
+        value["mediaType"] = json!("application/vnd.dev.sigstore.bundle.v0.2+json");
+        assert_eq!(
+            verify_bundle_profile(&parse_test_bundle(value))
+                .unwrap_err()
+                .code,
+            "release_bundle_invalid"
+        );
+
+        let mut value = incomplete_bundle();
+        value["verificationMaterial"]
+            .as_object_mut()
+            .unwrap()
+            .remove("certificate");
+        value["verificationMaterial"]["publicKey"] = json!({ "hint": "test" });
+        assert_eq!(
+            verify_bundle_profile(&parse_test_bundle(value))
+                .unwrap_err()
+                .code,
+            "release_bundle_invalid"
+        );
+    }
+
+    #[test]
+    fn bundle_profile_rejects_wrong_digest_and_missing_transparency() {
+        let mut value = incomplete_bundle();
+        value["messageSignature"]["messageDigest"]["algorithm"] = json!("SHA2_384");
+        assert_eq!(
+            verify_bundle_profile(&parse_test_bundle(value))
+                .unwrap_err()
+                .code,
+            "release_bundle_invalid"
+        );
+
+        assert_eq!(
+            verify_bundle_profile(&parse_test_bundle(incomplete_bundle()))
+                .unwrap_err()
+                .code,
+            "release_transparency_invalid"
         );
     }
 }

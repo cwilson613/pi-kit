@@ -46,7 +46,7 @@ jobs:
           fetch-depth: 0
 
       - name: Require stable release version on main
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') && !contains(github.ref_name, '-fixture.') && !inputs.fixture_only }}
         run: |
           set -euo pipefail
           git fetch origin main

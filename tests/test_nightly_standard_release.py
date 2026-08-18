@@ -29,6 +29,8 @@ class NightlyStandardReleaseTests(unittest.TestCase):
         self.assertFalse(triggers["fixture_only"]["default"])
         fixture = self.workflow["jobs"]["release-verifier-fixture"]
         self.assertIn("contains(github.ref_name, '-fixture.')", fixture["if"])
+        stable_gate = self.workflow["jobs"]["verify-trunk-version"]["steps"][1]
+        self.assertIn("contains(github.ref_name, '-fixture.')", stable_gate["if"])
         self.assertIn("--no-default-tsa", self.text)
         self.assertIn("Upload immutable fixture candidate", self.text)
         for job in (

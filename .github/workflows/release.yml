@@ -9,6 +9,11 @@ on:
         description: 'Tag to release (e.g. v0.15.5). Must already exist on origin.'
         required: true
         type: string
+      fixture_only:
+        description: 'Generate signed verifier fixtures without publishing a release.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -55,12 +60,73 @@ jobs:
             exit 1
           }
 
+  release-verifier-fixture:
+    name: Generate release verifier fixture
+    needs: verify-trunk-version
+    if: ${{ inputs.fixture_only }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Build deterministic fixture archive and manifest
+        run: |
+          set -euo pipefail
+          VERSION=${RELEASE_TAG#v}
+          TARGET=x86_64-unknown-linux-gnu
+          ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
+          FIXTURE_DIR="$RUNNER_TEMP/release-verifier-fixture"
+          mkdir -p "$FIXTURE_DIR"
+          printf '#!/bin/sh\necho omegon fixture\n' > "$FIXTURE_DIR/omegon"
+          printf '#!/bin/sh\necho omegon-maintain fixture\n' > "$FIXTURE_DIR/omegon-maintain"
+          chmod 0755 "$FIXTURE_DIR/omegon" "$FIXTURE_DIR/omegon-maintain"
+          tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime='@0' \
+            -cf - -C "$FIXTURE_DIR" omegon omegon-maintain | gzip -n > "$ARCHIVE"
+          python3 scripts/release_manifest.py generate-package \
+            --archive "$ARCHIVE" \
+            --tag "$RELEASE_TAG" \
+            --target "$TARGET" \
+            --output "${ARCHIVE}.manifest.json" \
+            --repo "${{ github.repository }}" \
+            --commit "$(git rev-parse HEAD)"
+          echo "FIXTURE_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Sign fixture manifest without TSA evidence
+        run: |
+          set -euo pipefail
+          cosign signing-config create --with-default-services --no-default-tsa \
+            --out "$RUNNER_TEMP/signing-config.json"
+          cosign sign-blob --yes \
+            --signing-config "$RUNNER_TEMP/signing-config.json" \
+            --bundle "${FIXTURE_ARCHIVE}.manifest.sigstore.json" \
+            "${FIXTURE_ARCHIVE}.manifest.json"
+
+      - name: Upload immutable fixture candidate
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-verifier-fixture-${{ env.RELEASE_TAG }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ env.FIXTURE_ARCHIVE }}
+            ${{ env.FIXTURE_ARCHIVE }}.manifest.json
+            ${{ env.FIXTURE_ARCHIVE }}.manifest.sigstore.json
+
   # ── Primary builds (macOS + Linux x86_64) ──────────────────────
   # These finish in ~10 minutes and unblock the release.
   build:
     name: Build ${{ matrix.target }}
     needs: verify-trunk-version
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -247,7 +313,7 @@ jobs:
   # Runs in parallel but does not block release publication.
   build-extended:
     name: Build aarch64-unknown-linux-gnu
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -326,7 +392,7 @@ jobs:
 
   live-upstream-smoke:
     name: Live upstream smoke (non-blocking)
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
@@ -376,6 +442,7 @@ jobs:
   linux-abi-validation:
     name: Linux ABI validation (${{ matrix.name }})
     needs: build
+    if: ${{ !inputs.fixture_only }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -422,6 +489,7 @@ jobs:
   release:
     name: Create release
     needs: [build, build-extended, linux-abi-validation]
+    if: ${{ !inputs.fixture_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -607,7 +675,7 @@ jobs:
     needs: release
     # Only build OCI images for stable releases — nightlies don't
     # need container images, and 7 Nix builds burn ~70 runner-minutes.
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
+    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
     runs-on: ubuntu-latest
     permissions:
       packages: write

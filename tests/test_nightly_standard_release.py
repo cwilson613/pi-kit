@@ -23,6 +23,24 @@ class NightlyStandardReleaseTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", triggers)
         self.assertIn("contains(env.RELEASE_TAG, '-nightly.')", self.text)
 
+    def test_fixture_dispatch_signs_without_publishing(self) -> None:
+        triggers = self.workflow[True]["workflow_dispatch"]["inputs"]
+        self.assertEqual(triggers["fixture_only"]["type"], "boolean")
+        self.assertFalse(triggers["fixture_only"]["default"])
+        fixture = self.workflow["jobs"]["release-verifier-fixture"]
+        self.assertIn("inputs.fixture_only", fixture["if"])
+        self.assertIn("--no-default-tsa", self.text)
+        self.assertIn("Upload immutable fixture candidate", self.text)
+        for job in (
+            "build",
+            "build-extended",
+            "live-upstream-smoke",
+            "linux-abi-validation",
+            "release",
+            "oci-images",
+        ):
+            self.assertIn("!inputs.fixture_only", self.workflow["jobs"][job]["if"])
+
     def test_nightly_uses_standard_ci_signing_and_notarization_credentials(self) -> None:
         env = self.workflow["env"]
         for name in (

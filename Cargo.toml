@@ -4,6 +4,7 @@ members = [
     "core/crates/omegon",
     "core/crates/omegon-git",
     "core/crates/omegon-memory",
+    "core/crates/omegon-maintenance-contracts",
     "core/crates/omegon-secrets",
     "core/crates/omegon-traits",
     "core/crates/omegon-opsx",

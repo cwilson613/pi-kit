@@ -10,7 +10,7 @@ Definition of done for every group: classify documentation impact before impleme
 - [x] 0.1 Record the comparative architecture assessment and selective decomposition source design.
 - [x] 0.2 Draft the initial proposal, design, normative specs, and ordered implementation tasks.
 - [x] 0.3 Specify the maintenance crate topology, command contract, shared exclusion/deny/transaction schemas, mutation roots, deadlines, output schema, dependency posture, and excluded/deferred operations.
-- [ ] 0.4 Build `omegon-maintenance-contracts` with canonical v1 fixtures and red interoperability, corruption, lock-race, crash-point, path, and outcome tests.
+- [x] 0.4 Build `omegon-maintenance-contracts` with canonical v1 fixtures and red interoperability, corruption, lock-race, crash-point, path, and outcome tests.
 - [ ] 0.5 Build the separately runnable maintenance artifact with compiled-profile composition, inert contribution, session-framing, and durable ownership-record diagnostics.
 - [ ] 0.6 Add inert contribution disable/quarantine, session quarantine, stale-record pruning, offline release verification, and maintenance audit workflows.
 - [ ] 0.7 Integrate and test deny/exclusion locks in every normal contribution startup path, session-deny locks in every resume path, and v1 ownership-record writers.

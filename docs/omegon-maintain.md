@@ -27,6 +27,12 @@ maintenance requirements; this document is the durable architecture summary.
 Implementation is tracked by
 `openspec/changes/selective-kernel-decomposition/tasks.md`.
 
+Package `omegon-maintenance-contracts` is now implemented with canonical v1
+records/results, domain-separated key and digest derivation, descriptor-relative
+Unix advisory locks, pure crash-reconciliation decisions, and shared valid plus
+corruption fixtures. The `omegon-maintain` executable and normal-runtime
+consumers are not yet implemented.
+
 ## Purpose
 
 `omegon-maintain` is the independent recovery companion for Omegon. It must

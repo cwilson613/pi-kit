@@ -1,5 +1,8 @@
+import hashlib
+import io
 import json
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -98,6 +101,73 @@ class ReleaseManifestTests(unittest.TestCase):
             self.assertIn('sha256 "bb"', updated)
             self.assertIn('sha256 "cc"', updated)
             self.assertIn('sha256 "dd"', updated)
+
+    def test_generate_canonical_package_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive = tmp / "omegon-1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+            with tarfile.open(archive, "w:gz") as package:
+                for name, payload in (("omegon", b"agent"), ("omegon-maintain", b"maintain")):
+                    member = tarfile.TarInfo(name)
+                    member.mode = 0o755
+                    member.size = len(payload)
+                    package.addfile(member, io.BytesIO(payload))
+            output = tmp / "package-manifest.json"
+
+            result = self.run_script(
+                "generate-package",
+                "--archive",
+                str(archive),
+                "--tag",
+                "v1.2.3",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--output",
+                str(output),
+                "--repo",
+                "styrene-lab/omegon",
+                "--commit",
+                "a" * 40,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            raw = output.read_bytes()
+            manifest = json.loads(raw)
+            self.assertEqual(raw, json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode() + b"\n")
+            self.assertEqual([member["path"] for member in manifest["members"]], ["omegon", "omegon-maintain"])
+            self.assertEqual(manifest["members"][0]["digest"], hashlib.sha256(b"agent").hexdigest())
+            self.assertEqual(manifest["archive_filename"], archive.name)
+            self.assertEqual(manifest["git_ref"], "refs/tags/v1.2.3")
+            self.assertEqual(len(manifest["record_id"]), 64)
+
+    def test_package_manifest_rejects_archive_confusion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive = tmp / "omegon-1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+            with tarfile.open(archive, "w:gz") as package:
+                member = tarfile.TarInfo("omegon")
+                member.mode = 0o755
+                member.size = 1
+                package.addfile(member, io.BytesIO(b"x"))
+
+            result = self.run_script(
+                "generate-package",
+                "--archive",
+                str(archive),
+                "--tag",
+                "v1.2.3",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--output",
+                str(tmp / "package-manifest.json"),
+                "--repo",
+                "styrene-lab/omegon",
+                "--commit",
+                "a" * 40,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("both root executables", result.stderr)
 
 
 if __name__ == "__main__":

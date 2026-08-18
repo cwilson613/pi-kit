@@ -5037,6 +5037,7 @@ dependencies = [
  "omegon-codescan",
  "omegon-extension",
  "omegon-git",
+ "omegon-maintenance-contracts",
  "omegon-memory",
  "omegon-opsx",
  "omegon-rbac",

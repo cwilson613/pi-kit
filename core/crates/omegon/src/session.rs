@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::conversation::ConversationState;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ResumeLoadError {
+    #[error("session resume authority failed: {0}")]
+    Authority(#[source] anyhow::Error),
+    #[error("saved session could not be restored: {0}")]
+    Snapshot(#[source] anyhow::Error),
+}
+
 /// Metadata stored alongside each session for listing without loading the full file.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -31,6 +39,86 @@ pub struct SessionMeta {
 pub struct SessionEntry {
     pub path: PathBuf,
     pub meta: SessionMeta,
+}
+
+pub fn load_for_resume(
+    cwd: &Path,
+    path: &Path,
+) -> Result<(ConversationState, SessionMeta), ResumeLoadError> {
+    let home_path = crate::paths::omegon_home().map_err(ResumeLoadError::Authority)?;
+    load_for_resume_with_home(cwd, path, &home_path)
+}
+
+fn load_for_resume_with_home(
+    cwd: &Path,
+    path: &Path,
+    home_path: &Path,
+) -> Result<(ConversationState, SessionMeta), ResumeLoadError> {
+    let session_id = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| is_canonical_session_id(value))
+        .ok_or_else(|| {
+            ResumeLoadError::Authority(anyhow::anyhow!(
+                "selected session path has no canonical session ID"
+            ))
+        })?;
+    if !home_path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(home_path)
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(ResumeLoadError::Authority(error.into()));
+            }
+        }
+        #[cfg(not(unix))]
+        if let Err(error) = std::fs::create_dir(home_path)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(ResumeLoadError::Authority(error.into()));
+        }
+    }
+    let home = omegon_maintenance_contracts::open_secure_root(home_path)
+        .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+    let home_identity = omegon_maintenance_contracts::path_identity(&home)
+        .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+    let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+        &home,
+        home_identity,
+        &uuid::Uuid::new_v4().to_string(),
+        false,
+    )
+    .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+    let normalized =
+        omegon_maintenance_contracts::normalize_workspace_path(cwd.as_os_str().as_encoded_bytes())
+            .map_err(|error| ResumeLoadError::Authority(anyhow::anyhow!(error)))?;
+    let workspace_key = omegon_maintenance_contracts::workspace_key("unix", &normalized);
+    let _admission = state
+        .admit_session_resume(session_id, workspace_key, false)
+        .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+
+    let meta_path = path.with_extension("meta.json");
+    let meta_bytes =
+        std::fs::read(&meta_path).map_err(|error| ResumeLoadError::Snapshot(error.into()))?;
+    let meta: SessionMeta = serde_json::from_slice(&meta_bytes)
+        .map_err(|error| ResumeLoadError::Snapshot(error.into()))?;
+    if meta.session_id != session_id {
+        return Err(ResumeLoadError::Authority(anyhow::anyhow!(
+            "session metadata identity does not match selected session"
+        )));
+    }
+    let meta_workspace =
+        omegon_maintenance_contracts::normalize_workspace_path(meta.cwd.as_bytes())
+            .map_err(|error| ResumeLoadError::Authority(anyhow::anyhow!(error)))?;
+    if meta_workspace != normalized {
+        return Err(ResumeLoadError::Authority(anyhow::anyhow!(
+            "session metadata belongs to a different workspace"
+        )));
+    }
+    let conversation = ConversationState::load_session(path).map_err(ResumeLoadError::Snapshot)?;
+    Ok((conversation, meta))
 }
 
 /// Get the sessions directory for a given cwd.
@@ -392,6 +480,85 @@ mod tests {
         assert!(!is_canonical_session_id("2026-01-02T03-04-05"));
         assert!(!is_canonical_session_id("2026-01-02T03-04-05_nothexzz"));
         assert!(!is_canonical_session_id("2026-1-02T03-04-05_deadbeef"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_resume_rejects_settled_session_deny() {
+        use omegon_maintenance_contracts::{
+            SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState, create_record_no_replace_at,
+            derive_key, normalize_workspace_path, open_secure_root, path_identity, session_key,
+            workspace_key,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let home_path = directory.path().join("home");
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&home_path).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let session_id = "2026-08-17T00-00-00_00000000";
+        let path = directory.path().join(format!("{session_id}.json"));
+        ConversationState::new().save_session(&path).unwrap();
+        let meta = SessionMeta {
+            session_id: session_id.into(),
+            cwd: workspace.to_string_lossy().into_owned(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+            turns: 0,
+            tool_calls: 0,
+            description: String::new(),
+            friendly_name: String::new(),
+            last_prompt_snippet: String::new(),
+        };
+        fs::write(
+            path.with_extension("meta.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        assert!(load_for_resume_with_home(&workspace, &path, &home_path).is_ok());
+
+        let home = open_secure_root(&home_path).unwrap();
+        let identity = path_identity(&home).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            identity,
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let normalized =
+            normalize_workspace_path(workspace.as_os_str().as_encoded_bytes()).unwrap();
+        let workspace_authority = workspace_key("unix", &normalized);
+        let session_authority = session_key(session_id, workspace_authority);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let deny = SessionDenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "session_deny".into(),
+            record_id: derive_key(
+                "session-deny",
+                &[session_authority.as_bytes(), request_id.as_bytes()],
+            ),
+            session_key: session_authority,
+            session_id: session_id.into(),
+            workspace_key: workspace_authority,
+            state: SessionDenyState::ResumeDenied,
+            request_id: request_id.into(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+        };
+        let name = format!("{session_authority}.json");
+        create_record_no_replace_at(&state.session_deny, name.as_bytes(), &deny, "test").unwrap();
+        assert!(matches!(
+            load_for_resume_with_home(&workspace, &path, &home_path),
+            Err(ResumeLoadError::Authority(_))
+        ));
+        fs::write(
+            home_path.join("maintain/v1/session-deny").join(name),
+            b"{not-json",
+        )
+        .unwrap();
+        assert!(matches!(
+            load_for_resume_with_home(&workspace, &path, &home_path),
+            Err(ResumeLoadError::Authority(_))
+        ));
     }
 
     #[test]

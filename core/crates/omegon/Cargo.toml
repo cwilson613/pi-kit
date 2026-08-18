@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 omegon-extension = "0.25"
+omegon-maintenance-contracts = { path = "../omegon-maintenance-contracts" }
 omegon-traits = { path = "../omegon-traits" }
 omegon-git = { path = "../omegon-git" }
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }

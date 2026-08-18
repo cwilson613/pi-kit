@@ -1292,50 +1292,42 @@ impl AgentSetup {
             match session::find_session(&cwd, resume_id) {
                 Some(path) => {
                     tracing::info!(path = %path.display(), "Resuming session");
-                    match ConversationState::load_session(&path) {
-                        Ok(conv) => {
-                            // Read the companion meta file to populate the resumption brief
-                            let meta_path = path.with_extension("meta.json");
-                            if let Ok(json) = std::fs::read_to_string(&meta_path)
-                                && let Ok(meta) =
-                                    serde_json::from_str::<session::SessionMeta>(&json)
+                    match session::load_for_resume(&cwd, &path) {
+                        Ok((conv, meta)) => {
+                            // ── Checkpoint consistency verification ──
+                            if let Some(latest_cp) =
+                                crate::checkpoint::read_last_checkpoint(&meta.session_id)
                             {
-                                // ── Checkpoint consistency verification ──
-                                if let Some(latest_cp) =
-                                    crate::checkpoint::read_last_checkpoint(&meta.session_id)
-                                {
-                                    let cp_turns = latest_cp.intent.stats_turns;
-                                    let session_turns = meta.turns;
-                                    if cp_turns > session_turns {
-                                        tracing::warn!(
-                                            session_turns,
-                                            checkpoint_turns = cp_turns,
-                                            session_id = %meta.session_id,
-                                            "checkpoint is ahead of session file — \
-                                             session may be stale (crash during prior run?)"
-                                        );
-                                    } else {
-                                        tracing::debug!(
-                                            session_turns,
-                                            checkpoint_turns = cp_turns,
-                                            "checkpoint consistent with session"
-                                        );
-                                    }
+                                let cp_turns = latest_cp.intent.stats_turns;
+                                let session_turns = meta.turns;
+                                if cp_turns > session_turns {
+                                    tracing::warn!(
+                                        session_turns,
+                                        checkpoint_turns = cp_turns,
+                                        session_id = %meta.session_id,
+                                        "checkpoint is ahead of session file — \
+                                         session may be stale (crash during prior run?)"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        session_turns,
+                                        checkpoint_turns = cp_turns,
+                                        "checkpoint consistent with session"
+                                    );
                                 }
-
-                                let description =
-                                    crate::session::session_display_description(&meta);
-                                resume_info = Some(ResumeInfo {
-                                    session_id: meta.session_id,
-                                    turns: meta.turns,
-                                    description,
-                                    last_prompt_snippet: meta.last_prompt_snippet,
-                                    created_at: meta.created_at,
-                                });
                             }
+
+                            let description = crate::session::session_display_description(&meta);
+                            resume_info = Some(ResumeInfo {
+                                session_id: meta.session_id,
+                                turns: meta.turns,
+                                description,
+                                last_prompt_snippet: meta.last_prompt_snippet,
+                                created_at: meta.created_at,
+                            });
                             conv
                         }
-                        Err(e) => {
+                        Err(session::ResumeLoadError::Snapshot(e)) => {
                             tracing::warn!(
                                 path = %path.display(),
                                 error = %e,
@@ -1348,6 +1340,9 @@ impl AgentSetup {
                                 path.display()
                             );
                             ConversationState::new()
+                        }
+                        Err(error @ session::ResumeLoadError::Authority(_)) => {
+                            return Err(error.into());
                         }
                     }
                 }

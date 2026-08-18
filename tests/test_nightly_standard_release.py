@@ -28,7 +28,7 @@ class NightlyStandardReleaseTests(unittest.TestCase):
         self.assertEqual(triggers["fixture_only"]["type"], "boolean")
         self.assertFalse(triggers["fixture_only"]["default"])
         fixture = self.workflow["jobs"]["release-verifier-fixture"]
-        self.assertIn("inputs.fixture_only", fixture["if"])
+        self.assertIn("contains(github.ref_name, '-fixture.')", fixture["if"])
         self.assertIn("--no-default-tsa", self.text)
         self.assertIn("Upload immutable fixture candidate", self.text)
         for job in (
@@ -39,7 +39,7 @@ class NightlyStandardReleaseTests(unittest.TestCase):
             "release",
             "oci-images",
         ):
-            self.assertIn("!inputs.fixture_only", self.workflow["jobs"][job]["if"])
+            self.assertIn("contains(github.ref_name, '-fixture.')", self.workflow["jobs"][job]["if"])
 
     def test_nightly_uses_standard_ci_signing_and_notarization_credentials(self) -> None:
         env = self.workflow["env"]

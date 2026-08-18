@@ -63,7 +63,7 @@ jobs:
   release-verifier-fixture:
     name: Generate release verifier fixture
     needs: verify-trunk-version
-    if: ${{ inputs.fixture_only }}
+    if: ${{ inputs.fixture_only || contains(github.ref_name, '-fixture.') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,7 +126,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     needs: verify-trunk-version
-    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !(inputs.fixture_only || contains(github.ref_name, '-fixture.')) && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -313,7 +313,7 @@ jobs:
   # Runs in parallel but does not block release publication.
   build-extended:
     name: Build aarch64-unknown-linux-gnu
-    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !(inputs.fixture_only || contains(github.ref_name, '-fixture.')) && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -392,7 +392,7 @@ jobs:
 
   live-upstream-smoke:
     name: Live upstream smoke (non-blocking)
-    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !(inputs.fixture_only || contains(github.ref_name, '-fixture.')) && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
@@ -442,7 +442,7 @@ jobs:
   linux-abi-validation:
     name: Linux ABI validation (${{ matrix.name }})
     needs: build
-    if: ${{ !inputs.fixture_only }}
+    if: ${{ !(inputs.fixture_only || contains(github.ref_name, '-fixture.')) }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -489,7 +489,7 @@ jobs:
   release:
     name: Create release
     needs: [build, build-extended, linux-abi-validation]
-    if: ${{ !inputs.fixture_only }}
+    if: ${{ !(inputs.fixture_only || contains(github.ref_name, '-fixture.')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -675,7 +675,7 @@ jobs:
     needs: release
     # Only build OCI images for stable releases — nightlies don't
     # need container images, and 7 Nix builds burn ~70 runner-minutes.
-    if: ${{ !inputs.fixture_only && !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
+    if: ${{ !(inputs.fixture_only || contains(github.ref_name, '-fixture.')) && !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
     runs-on: ubuntu-latest
     permissions:
       packages: write

@@ -22,7 +22,6 @@ use uuid::Uuid;
 
 mod audit;
 mod mutation;
-#[allow(dead_code)]
 mod release;
 
 const MAX_METADATA_BYTES: usize = 1024 * 1024;
@@ -291,19 +290,17 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
         finalize(&mut result);
         return emit(&result, cli.json);
     }
-    if matches!(
-        &cli.command,
-        Command::Release {
-            command: ReleaseCommand::Verify { .. }
-        }
-    ) {
-        fail(
-            &mut result,
-            "release_verifier_unavailable",
-            "verification",
-            false,
-            "offline release verification remains fail-closed until task 0.6b completes its immutable fixture and release-producer matrix",
-        );
+    if let Command::Release {
+        command:
+            ReleaseCommand::Verify {
+                archive,
+                manifest,
+                bundle,
+            },
+    } = &cli.command
+    {
+        release::verify_release(archive, manifest, bundle, started, deadline, &mut result);
+        settle_deadline(&mut result, started, deadline);
         finalize(&mut result);
         return emit(&result, cli.json);
     }

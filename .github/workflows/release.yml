@@ -47,6 +47,14 @@ jobs:
           git fetch origin main
           python3 scripts/release_branch.py verify-publish
 
+      - name: Require tag-bound workflow identity
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/tags/${RELEASE_TAG}" || {
+            echo "Release workflow must run from refs/tags/${RELEASE_TAG}, got $GITHUB_REF" >&2
+            exit 1
+          }
+
   # ── Primary builds (macOS + Linux x86_64) ──────────────────────
   # These finish in ~10 minutes and unblock the release.
   build:
@@ -102,9 +110,9 @@ jobs:
           RUSTFLAGS: ${{ matrix.static && '-C target-feature=+crt-static' || '' }}
         run: |
           if [ "${{ matrix.zigbuild }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} -p omegon
+            cargo zigbuild --release --target ${{ matrix.target }} -p omegon -p omegon-maintain
           else
-            cargo build --release --target ${{ matrix.target }} -p omegon
+            cargo build --release --target ${{ matrix.target }} -p omegon -p omegon-maintain
           fi
 
       - name: Build omegon-browser extension
@@ -120,10 +128,13 @@ jobs:
       - name: Strip binary
         run: |
           BINARY="target/${{ matrix.target }}/release/omegon"
+          MAINTAIN_BINARY="target/${{ matrix.target }}/release/omegon-maintain"
           if command -v llvm-strip >/dev/null 2>&1; then
             llvm-strip "$BINARY"
+            llvm-strip "$MAINTAIN_BINARY"
           elif command -v strip >/dev/null 2>&1; then
             strip "$BINARY" 2>/dev/null || true
+            strip "$MAINTAIN_BINARY" 2>/dev/null || true
           fi
           EXT_BINARY="extensions/omegon-browser/target/${{ matrix.target }}/release/omegon-browser"
           if [ -f "$EXT_BINARY" ]; then
@@ -155,19 +166,22 @@ jobs:
         if: runner.os == 'macOS' && env.APPLE_SIGNING_CERT_B64 != '' && env.APPLE_CODESIGN_IDENTITY != ''
         run: |
           set -euo pipefail
-          BINARY="target/${{ matrix.target }}/release/omegon"
-          codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$BINARY"
-          codesign --verify --deep --strict --verbose=2 "$BINARY"
+          for BINARY in target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain; do
+            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$BINARY"
+            codesign --verify --deep --strict --verbose=2 "$BINARY"
+          done
 
       - name: Notarize macOS binary
         if: runner.os == 'macOS' && env.APPLE_SIGNING_CERT_B64 != '' && env.APPLE_CODESIGN_IDENTITY != '' && env.APPLE_API_KEY_P8_B64 != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER != ''
         run: |
           set -euo pipefail
-          BINARY="target/${{ matrix.target }}/release/omegon"
+          PACKAGE_DIR="$RUNNER_TEMP/omegon-${{ matrix.target }}-notary"
+          mkdir -p "$PACKAGE_DIR"
+          cp target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain "$PACKAGE_DIR/"
           NOTARY_ZIP="$RUNNER_TEMP/omegon-${{ matrix.target }}-notary.zip"
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "$APPLE_API_KEY_P8_B64" | base64 --decode > "$KEY_PATH"
-          ditto -c -k --keepParent "$BINARY" "$NOTARY_ZIP"
+          ditto -c -k --keepParent "$PACKAGE_DIR" "$NOTARY_ZIP"
           # Retry notarization up to 3 times — Apple's service frequently times out
           for attempt in 1 2 3; do
             echo "Notarization attempt $attempt/3..."
@@ -194,8 +208,9 @@ jobs:
         run: |
           VERSION=${RELEASE_TAG#v}
           ARCHIVE="omegon-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
-          BINARY="target/${{ matrix.target }}/release/omegon"
-          tar czf "$ARCHIVE" -C "$(dirname $BINARY)" omegon
+          BINARY_DIR="target/${{ matrix.target }}/release"
+          chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
+          COPYFILE_DISABLE=1 tar --format=ustar -czf "$ARCHIVE" -C "$BINARY_DIR" omegon omegon-maintain
           EXT_ARCHIVE="omegon-browser-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
           EXT_BINARY="extensions/omegon-browser/target/${{ matrix.target }}/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"
@@ -252,7 +267,7 @@ jobs:
         run: cargo install cargo-zigbuild
 
       - name: Build release binary
-        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
+        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon -p omegon-maintain
 
       - name: Build omegon-browser extension
         run: cargo zigbuild --manifest-path extensions/omegon-browser/Cargo.toml --release --target aarch64-unknown-linux-gnu
@@ -260,10 +275,13 @@ jobs:
       - name: Strip binary
         run: |
           BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
+          MAINTAIN_BINARY="target/aarch64-unknown-linux-gnu/release/omegon-maintain"
           if command -v llvm-strip >/dev/null 2>&1; then
             llvm-strip "$BINARY"
+            llvm-strip "$MAINTAIN_BINARY"
           elif command -v strip >/dev/null 2>&1; then
             strip "$BINARY" 2>/dev/null || true
+            strip "$MAINTAIN_BINARY" 2>/dev/null || true
           fi
           EXT_BINARY="extensions/omegon-browser/target/aarch64-unknown-linux-gnu/release/omegon-browser"
           if command -v llvm-strip >/dev/null 2>&1; then
@@ -276,8 +294,9 @@ jobs:
         run: |
           VERSION=${RELEASE_TAG#v}
           ARCHIVE="omegon-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
-          BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
-          tar czf "$ARCHIVE" -C "$(dirname $BINARY)" omegon
+          BINARY_DIR="target/aarch64-unknown-linux-gnu/release"
+          chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
+          tar --format=ustar -czf "$ARCHIVE" -C "$BINARY_DIR" omegon omegon-maintain
           EXT_ARCHIVE="omegon-browser-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
           EXT_BINARY="extensions/omegon-browser/target/aarch64-unknown-linux-gnu/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"
@@ -412,6 +431,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download primary build artifacts
         uses: actions/download-artifact@v6
@@ -428,13 +449,26 @@ jobs:
 
       - name: Generate release manifest
         run: |
+          COMMIT=$(git rev-parse HEAD)
           python3 scripts/release_manifest.py generate \
             --tag "${RELEASE_TAG}" \
             --checksums artifacts/checksums.sha256 \
             --output artifacts/release-manifest.json \
             --repo "${{ github.repository }}" \
-            --commit "${{ github.sha }}"
+            --commit "$COMMIT"
           cat artifacts/release-manifest.json
+
+          for target in aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            archive="artifacts/omegon-${RELEASE_TAG#v}-${target}.tar.gz"
+            test -f "$archive" || continue
+            python3 scripts/release_manifest.py generate-package \
+              --archive "$archive" \
+              --tag "$RELEASE_TAG" \
+              --target "$target" \
+              --output "${archive}.manifest.json" \
+              --repo "${{ github.repository }}" \
+              --commit "$COMMIT"
+          done
 
       - name: Install Rust toolchain (for cargo-cyclonedx)
         if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
@@ -465,7 +499,9 @@ jobs:
           cp THIRD_PARTY_NOTICES.md artifacts/THIRD_PARTY_NOTICES.md
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
 
       - name: Sign release artifacts
         run: |
@@ -475,6 +511,15 @@ jobs:
             cosign sign-blob --yes "$archive" \
               --output-signature "${archive}.sig" \
               --output-certificate "${archive}.pem"
+          done
+
+          cosign signing-config create --with-default-services --no-default-tsa \
+            --out "$RUNNER_TEMP/signing-config.json"
+          for manifest in omegon-[0-9]*.tar.gz.manifest.json; do
+            cosign sign-blob --yes \
+              --signing-config "$RUNNER_TEMP/signing-config.json" \
+              --bundle "${manifest%.manifest.json}.manifest.sigstore.json" \
+              "$manifest"
           done
 
       - name: Sign SBOM and notices
@@ -513,6 +558,8 @@ jobs:
           # Collect asset files
           ASSET_FILES=(artifacts/omegon-[0-9]*.tar.gz artifacts/omegon-[0-9]*.tar.gz.sha256)
           ASSET_FILES+=(artifacts/omegon-[0-9]*.tar.gz.sig artifacts/omegon-[0-9]*.tar.gz.pem)
+          ASSET_FILES+=(artifacts/omegon-[0-9]*.tar.gz.manifest.json)
+          ASSET_FILES+=(artifacts/omegon-[0-9]*.tar.gz.manifest.sigstore.json)
           ASSET_FILES+=(artifacts/omegon-browser-*.tar.gz artifacts/omegon-browser-*.tar.gz.sha256)
           ASSET_FILES+=(artifacts/omegon-browser-*.tar.gz.sig artifacts/omegon-browser-*.tar.gz.pem)
           ASSET_FILES+=(artifacts/checksums.sha256 artifacts/release-manifest.json)

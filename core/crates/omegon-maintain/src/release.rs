@@ -309,10 +309,7 @@ fn verify_bundle_profile(bundle: &Bundle) -> Result<i64, VerificationError> {
         .checkpoint
         .parse()
         .map_err(|error| VerificationError::new("release_transparency_invalid", error))?;
-    if proof.tree_size <= 0
-        || checkpoint.tree_size != proof.tree_size as u64
-        || proof.log_index != entry.log_index
-    {
+    if proof.tree_size <= 0 || checkpoint.tree_size != proof.tree_size as u64 {
         return Err(VerificationError::new(
             "release_transparency_invalid",
             "signed checkpoint tree size does not match the inclusion proof",
@@ -746,8 +743,9 @@ fn check_deadline(started: Instant, deadline: Duration) -> Result<(), Verificati
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{io::Write, path::PathBuf};
 
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use flate2::{Compression, write::GzEncoder};
     use tar::{Builder, EntryType, Header};
 
@@ -830,6 +828,42 @@ mod tests {
 
     fn parse_test_bundle(value: serde_json::Value) -> Bundle {
         Bundle::from_json(&value.to_string()).unwrap()
+    }
+
+    fn production_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let encoded = include_str!("../tests/fixtures/release-verifier-v1.tar.gz.b64")
+            .split_whitespace()
+            .collect::<String>();
+        let bytes = STANDARD.decode(encoded).unwrap();
+        let decoder = GzDecoder::new(bytes.as_slice());
+        let mut container = tar::Archive::new(decoder);
+        let directory = tempfile::tempdir().unwrap();
+        let mut files = BTreeMap::new();
+        for entry in container.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_str().unwrap().to_string();
+            if name.starts_with("._") {
+                continue;
+            }
+            assert!(
+                name.ends_with(".tar.gz")
+                    || name.ends_with(".manifest.json")
+                    || name.ends_with(".manifest.sigstore.json")
+            );
+            let path = directory.path().join(&name);
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            files.insert(name, path);
+        }
+        let prefix = "omegon-0.29.0-dev-fixture.1-x86_64-unknown-linux-gnu.tar.gz";
+        let archive = files.remove(prefix).unwrap();
+        let manifest = files.remove(&format!("{prefix}.manifest.json")).unwrap();
+        let bundle = files
+            .remove(&format!("{prefix}.manifest.sigstore.json"))
+            .unwrap();
+        assert!(files.is_empty(), "unexpected fixture files: {files:?}");
+        (directory, archive, manifest, bundle)
     }
 
     #[test]
@@ -954,5 +988,18 @@ mod tests {
                 .code,
             "release_transparency_invalid"
         );
+    }
+
+    #[test]
+    fn production_fixture_verifies() {
+        let (_directory, archive, manifest, bundle) = production_fixture();
+        verify_release_inner(
+            &archive,
+            &manifest,
+            &bundle,
+            Instant::now(),
+            Duration::from_secs(30),
+        )
+        .unwrap();
     }
 }

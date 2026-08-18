@@ -25,8 +25,7 @@ class NightlyStandardReleaseTests(unittest.TestCase):
 
     def test_fixture_dispatch_signs_without_publishing(self) -> None:
         triggers = self.workflow[True]["workflow_dispatch"]["inputs"]
-        self.assertEqual(triggers["fixture_only"]["type"], "boolean")
-        self.assertFalse(triggers["fixture_only"]["default"])
+        self.assertNotIn("fixture_only", triggers)
         fixture = self.workflow["jobs"]["release-verifier-fixture"]
         self.assertIn("contains(github.ref_name, '-fixture.')", fixture["if"])
         stable_gate = self.workflow["jobs"]["verify-trunk-version"]["steps"][1]

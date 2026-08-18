@@ -866,6 +866,31 @@ mod tests {
         (directory, archive, manifest, bundle)
     }
 
+    fn mutated_fixture_bundle(
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let (directory, archive, manifest, bundle) = production_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+        mutate(&mut value);
+        std::fs::write(&bundle, serde_json::to_vec(&value).unwrap()).unwrap();
+        (directory, archive, manifest, bundle)
+    }
+
+    fn verify_fixture_paths(
+        archive: &Path,
+        manifest: &Path,
+        bundle: &Path,
+    ) -> Result<serde_json::Value, VerificationError> {
+        verify_release_inner(
+            archive,
+            manifest,
+            bundle,
+            Instant::now(),
+            Duration::from_secs(30),
+        )
+    }
+
     #[test]
     fn member_paths_reject_confusion_forms() {
         for path in [
@@ -1114,6 +1139,45 @@ mod tests {
             .unwrap_err()
             .code,
             "release_transparency_invalid"
+        );
+    }
+
+    #[test]
+    fn production_fixture_rejects_timestamp_and_log_substitution() {
+        let (_directory, archive, manifest, bundle) = mutated_fixture_bundle(|value| {
+            value["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"] =
+                json!([{ "signedTimestamp": "" }]);
+        });
+        assert_eq!(
+            verify_fixture_paths(&archive, &manifest, &bundle)
+                .unwrap_err()
+                .code,
+            "release_bundle_invalid"
+        );
+
+        let (_directory, archive, manifest, bundle) = mutated_fixture_bundle(|value| {
+            value["verificationMaterial"]["tlogEntries"][0]["logId"]["keyId"] =
+                json!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        });
+        assert_eq!(
+            verify_fixture_paths(&archive, &manifest, &bundle)
+                .unwrap_err()
+                .code,
+            "release_transparency_invalid"
+        );
+    }
+
+    #[test]
+    fn production_fixture_rejects_tampered_proof_root() {
+        let (_directory, archive, manifest, bundle) = mutated_fixture_bundle(|value| {
+            value["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]["rootHash"] =
+                json!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        });
+        assert_eq!(
+            verify_fixture_paths(&archive, &manifest, &bundle)
+                .unwrap_err()
+                .code,
+            "release_signature_invalid"
         );
     }
 }

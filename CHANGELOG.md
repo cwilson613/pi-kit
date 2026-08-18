@@ -28,6 +28,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Enforced maintenance session quarantine across startup/headless resume, live interactive `/resume`, and ACP `session/load`. Resume admission now holds the shared session lock through metadata and snapshot parsing, rejects malformed maintenance authority without silently starting fresh, and leaves an active session unchanged when a target resume is denied.
+
 - Distinguished provider transport heartbeats from semantic model progress so keepalives, unknown Codex Responses events, and repeated lifecycle markers cannot retain a stalled turn indefinitely. Streams now enforce phase-aware semantic-progress budgets plus a non-resettable absolute deadline, emit bounded stall diagnostics, and parse fragmented or CRLF SSE frames without repeatedly copying the unconsumed buffer.
 
 - Hardened interactive terminal-loss teardown so loss of the controlling TTY authoritatively cancels active work and IPC ingress, restores terminal modes, persists sessions even when another task retains shared state, and still reaches bridge and extension shutdown. Extension startup and shutdown now reap failed children and terminate dedicated process groups, while TUI system notifications have per-card and aggregate retention bounds to prevent runaway memory growth.

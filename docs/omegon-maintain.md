@@ -28,15 +28,15 @@ behavior is owned by the OpenSpec maintenance requirements. Remaining
 implementation is tracked by
 `openspec/changes/selective-kernel-decomposition/tasks.md`.
 
-Package `omegon-maintenance-contracts` is now implemented with canonical v1
-records/results, domain-separated key and digest derivation, descriptor-relative
-Unix advisory locks, pure crash-reconciliation decisions, and shared valid plus
-corruption fixtures. Package `omegon-maintain` now builds as an independent
-executable with compiled identity/composition reporting, descriptor-confined
-inert contribution inventory, session-pair framing, and durable ownership-record
-diagnostics. Mutation workflows, offline release verification, audit workflows,
-normal-runtime consumers, packaging, and launch-matrix integration remain
-deferred to tasks 0.6 through 0.10.
+Package `omegon-maintenance-contracts` implements canonical v1 records/results,
+domain-separated key and digest derivation, descriptor-relative Unix advisory
+locks, crash reconciliation, and shared valid plus corruption fixtures. Package
+`omegon-maintain` builds independently with diagnostics, contribution and session
+quarantine, stale ownership pruning, durable audit workflows, and offline release
+verification. Normal Omegon now enforces session-deny authority across startup,
+headless, live interactive, and ACP resume paths. Contribution-startup consumers,
+v1 ownership writers, packaging, and launch-matrix integration remain tracked by
+tasks 0.7 through 0.10.
 
 ## Purpose
 

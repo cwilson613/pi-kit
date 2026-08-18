@@ -1,9 +1,52 @@
 use std::{
     fs::File,
     io::{Read, Write},
+    path::Path,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+pub fn open_secure_root(path: &Path) -> Result<File> {
+    use std::{
+        ffi::CString, os::fd::FromRawFd, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt,
+    };
+
+    if !path.is_absolute() || path == Path::new("/") {
+        return Err(ContractError::InvalidValue(
+            "protocol root must be an absolute directory other than /".into(),
+        ));
+    }
+    let encoded = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        ContractError::InvalidValue("protocol root contains an interior NUL".into())
+    })?;
+    // SAFETY: encoded remains valid for the call; the returned descriptor is owned below.
+    let descriptor = unsafe {
+        libc::open(
+            encoded.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(ContractError::Filesystem(std::io::Error::last_os_error()));
+    }
+    // SAFETY: open returned a new owned descriptor.
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    let metadata = file.metadata().map_err(ContractError::Filesystem)?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(ContractError::InvalidValue(
+            "protocol root must be a directory owned by the effective user".into(),
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+pub fn open_secure_root(_path: &Path) -> Result<File> {
+    Err(ContractError::InvalidValue(
+        "maintenance protocol v1 roots support Unix only".into(),
+    ))
+}
 
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};

@@ -14,9 +14,10 @@ use omegon_maintenance_contracts::{
     RecordObservation, ResultStatus, SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState,
     TransactionState, TransactionStepKind, TransactionStepState, TransactionStepV1, TransactionV1,
     append_bytes_at, canonical_digest, canonical_json, command_fingerprint,
-    create_record_no_replace_at, derive_key, normalize_workspace_path, parse_record, path_identity,
-    read_bytes_at, read_record_at, reconcile_detach, reconcile_record, record_identity_at,
-    replace_record_at, resolve_list_scope, session_key, validate_child_name, workspace_key,
+    create_record_no_replace_at, derive_key, normalize_workspace_path, open_secure_root,
+    parse_record, path_identity, read_bytes_at, read_record_at, reconcile_detach, reconcile_record,
+    record_identity_at, replace_record_at, resolve_list_scope, session_key, validate_child_name,
+    workspace_key,
 };
 
 const ZERO_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -901,6 +902,20 @@ fn session_resume_admission_fails_closed_on_malformed_deny() {
             .admit_session_resume(session_id, workspace, false)
             .is_err()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn secure_root_admission_rejects_relative_root_and_final_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    assert!(open_secure_root(directory.path()).is_ok());
+    assert!(open_secure_root(std::path::Path::new("relative")).is_err());
+    assert!(open_secure_root(std::path::Path::new("/")).is_err());
+    let alias = directory.path().with_extension("alias");
+    symlink(directory.path(), &alias).unwrap();
+    assert!(open_secure_root(&alias).is_err());
 }
 
 #[cfg(unix)]

@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added the independently runnable `omegon-maintain` workspace executable with compiled maintenance identity/composition reporting; bounded, descriptor-confined diagnostics; crash-safe contribution disable/quarantine, session quarantine, and stale ownership-record pruning; stable list pagination; and bounded hash-chained audit inspection/verification. Release verification, packaging, and normal-runtime enforcement remain separately gated.
+
 - Added authoritative native-TUI input and bounded presentation under sustained runtime load. A dedicated terminal-input owner and generation-scoped supervisor ingress keep cancellation available independently of rendering; revisioned frame scheduling, bounded producer drains and caches, transactional resumable native-scrollback publication, slow-presentation backoff, bounded teardown, explicit mouse-capture policy, and one-shot no-progress synthesis prevent presentation work from monopolizing runtime authority.
 
 - Added provider-neutral model browsing over complete live inventories. `/model` now opens a curated provider-grouped shortlist with a path into every discovered route, including the full Ollama Cloud `/api/tags` inventory; operators can persist global favorites with `Space`, select concrete routes with `Enter`, and ACP consumes the same shared projection instead of maintaining a separate static/probed catalog.

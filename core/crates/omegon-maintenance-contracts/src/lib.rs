@@ -10,6 +10,7 @@ mod lock;
 mod records;
 mod recovery;
 mod selector;
+mod state;
 
 pub use canonical::{canonical_json, parse_record};
 pub use key::{
@@ -24,8 +25,15 @@ pub use recovery::{
     reconcile_record,
 };
 pub use selector::{ContributionSelector, ListScope, resolve_list_scope};
+pub use state::{
+    MaintenanceStateV1, append_bytes_at, audit_receipt, create_record_no_replace_at,
+    entry_identity_at, file_identity, open_or_create_secure_dir_at, open_secure_dir_at,
+    path_identity, read_bytes_at, read_record_at, read_record_with_identity_at, record_identity_at,
+    remove_record_at, rename_entry_no_replace_at, replace_record_at,
+};
 
 pub const SCHEMA_VERSION: u32 = 1;
+pub const AUDIT_SEGMENT_RECORDS: u64 = 100_000;
 pub const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -52,6 +60,8 @@ pub enum ContractError {
     InvalidValue(String),
     #[error("protocol lock operation failed: {0}")]
     Lock(#[source] std::io::Error),
+    #[error("maintenance filesystem operation failed: {0}")]
+    Filesystem(#[source] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, ContractError>;

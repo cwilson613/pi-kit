@@ -10,7 +10,7 @@ Paths are never authority-bearing display strings. A `PathIdentityV1` contains `
 
 All authority keys use `H(label, fields...) = sha256("omegon-maint-v1\0" || u64be(len(label)) || label || each(u64be(len(field)) || field))`. The formulas are: path key `H("path", dialect, canonical_path_bytes)`; scope key `H("scope", kind, scope, parent_path_key)`; valid entry key `H("entry", kind, scope_key, raw_basename_bytes)`; opaque selector `entry:sha256:` plus that entry key in lowercase hex; session key `H("session", session_id, workspace_key)`; workspace key `H("workspace", dialect, lexical_absolute_workspace_bytes)`; resource domain key `H("resource", workspace_key)`; contribution domain key `H("contribution", scope_key)`; session domain key `H("session-domain", session_key)`; and command fingerprint `H("command", canonical JSON of command, semantic options, opened root keys, and selector)`. Formatting flags, request ID, deadline, and dry-run are excluded from the command fingerprint.
 
-Record IDs are kind-specific: installation state `H("installation", installation_uuid)`; deny state `H("deny-state", scope_key, u64be(generation))`; deny entry `H("deny", scope_key, entry_key, request_id)`; session deny `H("session-deny", session_key, request_id)`; transaction `H("transaction", request_id)`; fence `H("fence", domain_key, transaction_record_id)`; audit `H("audit", installation_uuid, u64be(sequence))`; audit checkpoint `H("audit-checkpoint", installation_uuid, u64be(last_sequence), last_digest)`; ownership `H("ownership", workspace_key, runtime_id, generation_id)`; and package manifest `H("package", archive_digest, target, version)`. Display paths are optional redacted diagnostics. Slice zero supports the current Linux and macOS release targets; unsupported path dialects fail before mutation.
+Record IDs are kind-specific: installation state `H("installation", installation_uuid)`; deny state `H("deny-state", scope_key, u64be(generation))`; deny entry `H("deny", scope_key, entry_key, request_id)`; session deny `H("session-deny", session_key, request_id)`; transaction `H("transaction", request_id)`; fence `H("fence", domain_key, transaction_record_id)`; audit `H("audit", installation_uuid, u64be(sequence))`; audit checkpoint `H("audit-checkpoint", installation_uuid, u64be(last_sequence), last_digest)`; audit frontier `H("audit-frontier", installation_uuid, u64be(current_segment_start), current_segment_previous_digest-or-zero, u64be(previous_segment_start-or-zero), previous_segment_previous_digest-or-zero)`; audit receipt `H("audit-receipt", installation_uuid, request_id, command, outcome, u64be(sequence), audit_digest)`; ownership `H("ownership", workspace_key, runtime_id, generation_id)`; and package manifest `H("package", archive_digest, target, version)`. Display paths are optional redacted diagnostics. Slice zero supports the current Linux and macOS release targets; unsupported path dialects fail before mutation.
 
 #### Scenario: The binaries disagree about a record
 Given the same canonical v1 fixture is loaded by `omegon` and `omegon-maintain`
@@ -67,13 +67,28 @@ The complete state tree is:
   fences/<domain-key>.json
   audit/segments/<first-sequence>.jsonl
   audit/checkpoint.json
+  audit/frontier.json
+  audit/receipts/<request-id>.json
 ```
 
 Each allowlisted contribution parent may additionally contain
 `.omegon-maintain-quarantine/<request-id>-<entry-key>` on that parent's
 filesystem. It is not a child of the maintenance state root.
 
+Secure creation of the fixed `.omegon-maintain-quarantine` directory is
+transaction-exempt protocol infrastructure: it occurs under the contribution
+domain lock before transaction preparation, uses descriptor-relative
+create-exclusive mode `0700`, validates an existing directory by owner, mode,
+type, and descriptor identity, fsyncs the contribution parent after creation,
+and is included in the command audit outcome. It never creates a destination
+entry before the transaction is prepared.
+
 Bootstrap may create only missing components in this tree, descriptor-relative, with user-only permissions, create-exclusive files/directories, and parent fsync. The first creator establishes `bootstrap.lock`; later processes open and lock it before creating another component. Normal startup and maintenance share this bootstrap code. Infrastructure creation is not a target mutation and is exempt from transaction recursion, but every creation is recorded in the command audit and cannot overwrite existing state. Existing wrong-type, symlinked, wrongly owned, or group/other-writable components fail closed. Dry-run may bootstrap `state.json`, `audit/`, and required lock files but no transaction, fence, deny, quarantine, session-deny, or ownership target.
+
+The fixed empty `deny/`, `session-deny/`, `transactions/`, and `fences/`
+directories are finite bootstrap infrastructure rather than target records and
+may be created by dry-run; dry-run creates no file or quarantine entry within
+them.
 
 Lock ordering is bootstrap, then one domain lock, then transaction/fence writes,
 then `audit.lock` only while assigning and appending an audit sequence. Code never
@@ -90,6 +105,8 @@ the syscall and its post-observed identity; it reports `unknown` if that identit
 differs from the prepared observation.
 
 `state.json` binds the opened home identity, schema version, next audit sequence, and installation UUID. A different home identity or duplicate installation UUID is refused rather than silently adopted.
+
+`audit/frontier.json` is the canonical bounded segment-recovery frontier and binds the current and immediately previous segment boundaries to their predecessor digests. `audit/receipts/<request-id>.json` is the canonical durable settlement receipt binding one request, command, outcome, sequence, and audit digest. Both are authority-bearing records covered by the canonical encoding, validation, fixture, and corruption requirements above; receipt filenames are lowercase request UUIDs.
 
 #### Scenario: First mutation starts with no maintenance state
 Given the trusted home exists and `maintain/v1` does not
@@ -115,12 +132,12 @@ And a cache from generation N-1 is unusable
 
 ### Requirement: Mutation transactions have step-level crash semantics
 
-`TransactionV1` contains a lowercase UUID request ID, canonical command fingerprint, domain key, complete opened root identities, ordered `steps`, current state, UTC timestamps, and audit sequence. Each step contains `kind`, complete parent identity, basename digest, exactly one of expected existing target identity or expected absence, intended canonical-content digest for record writes, state, and observed post-state including destination identity/content digest where applicable. Record IDs, session keys, timestamps, state/step combinations, and evidence combinations are validated as one semantic unit. Transaction infrastructure writes and audit writes are not represented as recursively nested target steps.
+`TransactionV1` contains a lowercase UUID request ID, canonical command fingerprint, domain key, complete opened root identities, ordered `steps`, current state, UTC timestamps, and audit sequence. Each step contains `kind`, complete source parent identity, base64url-no-pad source basename bytes plus their SHA-256 digest, exactly one of expected existing target identity or expected absence, intended canonical-content digest for record writes, state, and observed post-state. Persisting the validated basename bytes is required so restart reconciliation can prove source absence even for opaque non-UTF-8 entries; the digest must match those bytes and the decoded value must remain one safe child name. A real-entry quarantine rename additionally contains the complete already-open destination-parent identity and equally framed destination basename; settlement proves source absence and destination identity without reading or inventing a recursive directory-content digest. Symlink quarantine uses the distinct `quarantine_symlink_unlink` step and settles only by proving source absence with no destination. Record IDs, session keys, timestamps, state/step combinations, and evidence combinations are validated as one semantic unit. Transaction infrastructure writes and audit writes are not represented as recursively nested target steps.
 
 The state machine is:
 
 ```text
-Prepared -> StepDispatched(n) -> StepSettled(n) -> ... -> Settled
+Prepared -> StepDispatched(n) -> StepSettled(n) -> ... -> TargetsSettled -> Settled
                               \-> Unknown
 Prepared -> Aborted
 ```
@@ -177,6 +194,15 @@ Pruning decisions are:
 
 Linux boot ID is `/proc/sys/kernel/random/boot_id` and the process-start token is `/proc/<pid>/stat` field 22 interpreted with the kernel clock tick rate. macOS boot identity is the kernel boot time tuple and process-start token is PID plus `proc_pidinfo` start time. Failure to retrieve these values never proves death.
 
+The v1 string encodings are `linux:<boot-uuid>` and
+`linux:<decimal-field-22>` on Linux, and
+`macos:<seconds>:<microseconds>` for both boot and process-start tuples on
+macOS. `heartbeat_monotonic_ticks` is nanoseconds from the platform monotonic
+clock on the recorded boot. Different-boot decisions use expired UTC evidence;
+same-boot pruning requires compatible monotonic evidence plus a definitive PID
+absence or start-token mismatch. Missing, future, overflowing, or disagreeing
+clock evidence is unverifiable rather than authority to prune.
+
 #### Scenario: A stale PID has been reused
 Given heartbeat is expired and the live PID start token differs from the record
 When pruning runs
@@ -215,7 +241,7 @@ Command-specific rules are:
 | `release inspect` | inspects only package manifest adjacent to the running executable and reports absent/mismatch as degraded; does not trust it as signed release evidence |
 | `release verify` | requires archive, manifest, and bundle; dry-run is invalid |
 | `audit inspect` | reads a bounded newest-first page selected by `--cursor`; reports sequence and structural status |
-| `audit verify` | verifies up to the v1 record limit from a supplied/default checkpoint; structural continuity only |
+| `audit verify` | verifies up to the v1 per-segment record limit from a supplied/default checkpoint; an older continuation is accepted only after its segment anchor is independently derived through structurally valid successor segments from the current checkpoint |
 
 `--dry-run` is rejected for commands other than contribution/session/resource mutations. `--scope` is legal only for contribution commands. Unknown options fail before root opening.
 

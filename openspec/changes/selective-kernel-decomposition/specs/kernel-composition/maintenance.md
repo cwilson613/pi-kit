@@ -28,19 +28,19 @@ omegon-maintain
   identity
   doctor
   composition inspect
-  contribution list [--scope <user|project>]
+  contribution list [--scope <user|project>] [--cursor <cursor>]
   contribution inspect <selector> --scope <user|project>
   contribution disable <selector> --scope <user|project>
   contribution quarantine <selector> --scope <user|project>
-  session list
+  session list [--cursor <cursor>]
   session inspect <session-id> --workspace <absolute-path>
   session quarantine <session-id> --workspace <absolute-path>
-  resource list --workspace <absolute-path>
+  resource list --workspace <absolute-path> [--cursor <cursor>]
   resource prune-stale --workspace <absolute-path>
   release inspect
   release verify --archive <path> --manifest <path> --bundle <path>
   audit inspect [--cursor <cursor>]
-  audit verify
+  audit verify [--cursor <cursor>]
 ```
 
 Global options are `--json`, `--deadline <duration>`, `--home <absolute-path>`, `--config-home <absolute-path>`, `--workspace <absolute-path>`, `--dry-run`, and `--request-id <uuid>`. Project contribution, selected-session, and resource commands require explicit `--workspace`; mutation targets are never inferred from Git, project configuration, or contribution metadata. Every mutation, including dry-run mutation planning, requires explicit `--deadline`. Durations use an unsigned integer plus `ms`, `s`, or `m`, reject zero/overflow, and round neither upward nor downward. Read-only commands default to 30 seconds, offline release verification defaults to 5 minutes, and no accepted deadline may exceed 10 minutes.

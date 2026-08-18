@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{AuthorityKey, ContractError, Result, SCHEMA_VERSION, derive_key, path_key};
 
@@ -270,12 +271,57 @@ pub struct TransactionV1 {
 pub struct TransactionStepV1 {
     pub kind: TransactionStepKind,
     pub parent: PathIdentityV1,
+    pub basename_bytes: String,
     pub basename_digest: AuthorityKey,
+    pub destination_parent: Option<PathIdentityV1>,
+    pub destination_basename_bytes: Option<String>,
+    pub destination_basename_digest: Option<AuthorityKey>,
     pub expected_existing: Option<FileIdentityV1>,
     pub expected_absence: bool,
     pub intended_content_digest: Option<AuthorityKey>,
     pub state: TransactionStepState,
     pub observed: Option<PostStateV1>,
+}
+
+impl TransactionStepV1 {
+    pub fn encode_basename(bytes: &[u8]) -> Result<(String, AuthorityKey)> {
+        validate_child_name(bytes)?;
+        Ok((
+            URL_SAFE_NO_PAD.encode(bytes),
+            AuthorityKey::from_bytes(Sha256::digest(bytes).into()),
+        ))
+    }
+
+    pub fn basename(&self) -> Result<Vec<u8>> {
+        decode_transaction_basename(&self.basename_bytes, self.basename_digest)
+    }
+
+    pub fn destination_basename(&self) -> Result<Option<Vec<u8>>> {
+        match (
+            self.destination_basename_bytes.as_deref(),
+            self.destination_basename_digest,
+        ) {
+            (Some(bytes), Some(digest)) => decode_transaction_basename(bytes, digest).map(Some),
+            (None, None) => Ok(None),
+            _ => Err(ContractError::InvalidValue(
+                "transaction destination basename framing is incomplete".into(),
+            )),
+        }
+    }
+}
+
+fn decode_transaction_basename(encoded: &str, expected: AuthorityKey) -> Result<Vec<u8>> {
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|error| {
+        ContractError::InvalidValue(format!("invalid transaction basename bytes: {error}"))
+    })?;
+    validate_child_name(&bytes)?;
+    let actual = AuthorityKey::from_bytes(Sha256::digest(&bytes).into());
+    if actual != expected {
+        return Err(ContractError::InvalidValue(
+            "transaction basename digest does not match bytes".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +330,7 @@ pub enum TransactionStepKind {
     DenyStateReplace,
     SessionDenyCreate,
     QuarantineDetach,
+    QuarantineSymlinkUnlink,
     ResourceRecordPrune,
 }
 
@@ -303,6 +350,7 @@ pub enum TransactionState {
     Prepared,
     StepDispatched,
     StepSettled,
+    TargetsSettled,
     Settled,
     Aborted,
     Unknown,
@@ -365,6 +413,33 @@ pub struct AuditCheckpointV1 {
     pub installation_uuid: String,
     pub last_sequence: u64,
     pub last_digest: AuthorityKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditFrontierV1 {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub record_id: AuthorityKey,
+    pub installation_uuid: String,
+    pub current_segment_start: u64,
+    pub current_segment_previous_digest: Option<AuthorityKey>,
+    pub previous_segment_start: Option<u64>,
+    pub previous_segment_previous_digest: Option<AuthorityKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditReceiptV1 {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub record_id: AuthorityKey,
+    pub installation_uuid: String,
+    pub request_id: String,
+    pub command: String,
+    pub outcome: ResultStatus,
+    pub sequence: u64,
+    pub audit_digest: AuthorityKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -505,15 +580,7 @@ impl MaintenanceResultV1 {
                 "mutation and error outcomes cannot be truncated".into(),
             ));
         }
-        ensure_sorted(&self.diagnostics, |value| {
-            (
-                value.severity,
-                value.code.clone(),
-                value.scope.clone(),
-                value.message.clone(),
-                value.evidence.clone(),
-            )
-        })?;
+        // Diagnostic order is command-specific (for example contribution kind/scope/raw bytes).
         ensure_sorted(&self.errors, |value| {
             (
                 value.code.clone(),
@@ -772,6 +839,9 @@ fn validate_transaction_state(value: &TransactionV1) -> Result<()> {
             .all(|state| *state == TransactionStepState::Prepared),
         TransactionState::StepDispatched => prefix_then(TransactionStepState::Dispatched, false),
         TransactionState::StepSettled => prefix_then(TransactionStepState::Prepared, true),
+        TransactionState::TargetsSettled => states
+            .iter()
+            .all(|state| *state == TransactionStepState::Settled),
         TransactionState::Settled => states
             .iter()
             .all(|state| *state == TransactionStepState::Settled),
@@ -790,7 +860,8 @@ fn validate_transaction_state(value: &TransactionV1) -> Result<()> {
         TransactionState::Settled | TransactionState::Aborted => value.audit_sequence.is_some(),
         TransactionState::Prepared
         | TransactionState::StepDispatched
-        | TransactionState::StepSettled => value.audit_sequence.is_none(),
+        | TransactionState::StepSettled
+        | TransactionState::TargetsSettled => value.audit_sequence.is_none(),
         TransactionState::Unknown => true,
     };
     if !audit_valid {
@@ -818,8 +889,9 @@ fn validate_step_evidence(step: &TransactionStepV1) -> Result<()> {
                 ContractError::InvalidValue("settled step requires post-state evidence".into())
             })?;
             match step.kind {
-                TransactionStepKind::DenyStateReplace | TransactionStepKind::SessionDenyCreate => {
-                    if observed.destination.is_none()
+                TransactionStepKind::DenyStateReplace => {
+                    if !observed.source_present
+                        || observed.destination.is_none()
                         || observed.destination_content_digest != step.intended_content_digest
                     {
                         return Err(ContractError::InvalidValue(
@@ -827,18 +899,29 @@ fn validate_step_evidence(step: &TransactionStepV1) -> Result<()> {
                         ));
                     }
                 }
-                TransactionStepKind::QuarantineDetach => {
+                TransactionStepKind::SessionDenyCreate => {
                     if observed.source_present
                         || observed.destination.is_none()
-                        || observed.destination_content_digest.is_none()
+                        || observed.destination_content_digest != step.intended_content_digest
                     {
                         return Err(ContractError::InvalidValue(
-                            "settled detach requires source absence and destination identity/content"
+                            "settled session deny does not prove exclusive creation".into(),
+                        ));
+                    }
+                }
+                TransactionStepKind::QuarantineDetach => {
+                    if observed.source_present
+                        || observed.destination.as_ref() != step.expected_existing.as_ref()
+                        || observed.destination_content_digest.is_some()
+                    {
+                        return Err(ContractError::InvalidValue(
+                            "settled detach requires source absence and destination identity"
                                 .into(),
                         ));
                     }
                 }
-                TransactionStepKind::ResourceRecordPrune => {
+                TransactionStepKind::QuarantineSymlinkUnlink
+                | TransactionStepKind::ResourceRecordPrune => {
                     if observed.source_present
                         || observed.destination.is_some()
                         || observed.destination_content_digest.is_some()
@@ -862,6 +945,11 @@ impl_record!(
         require_header(value)?;
         validate_uuid(&value.installation_uuid)?;
         value.home.validate()?;
+        if value.next_audit_sequence == 0 {
+            return Err(ContractError::InvalidValue(
+                "installation next audit sequence must be nonzero".into(),
+            ));
+        }
         require_record_id(
             value.record_id,
             derive_key("installation", &[value.installation_uuid.as_bytes()]),
@@ -941,6 +1029,37 @@ impl_record!(
                 "ownership expiry must be 300 seconds".into(),
             ));
         }
+        if value.runtime_id.is_empty()
+            || value.generation_id.is_empty()
+            || value.pid == 0
+            || value.process_start_token.is_empty()
+            || value.boot_id.is_empty()
+            || value.writer.version.is_empty()
+            || value.writer.commit.is_empty()
+            || value.writer.target.is_empty()
+            || matches!(
+                (value.lifecycle_boundary, value.cleanup_capability),
+                (LifecycleBoundary::CrossBoundary, CleanupCapability::Strict)
+            )
+        {
+            return Err(ContractError::InvalidValue(
+                "ownership record contains incomplete or contradictory evidence".into(),
+            ));
+        }
+        let platform_identity_valid = if value.writer.target.contains("apple-darwin") {
+            valid_tuple_token(&value.boot_id, "macos")
+                && valid_tuple_token(&value.process_start_token, "macos")
+        } else if value.writer.target.contains("linux") {
+            valid_linux_boot_id(&value.boot_id)
+                && valid_linux_process_token(&value.process_start_token)
+        } else {
+            false
+        };
+        if !platform_identity_valid {
+            return Err(ContractError::InvalidValue(
+                "ownership boot or process-start identity encoding is invalid".into(),
+            ));
+        }
         validate_timestamp(&value.heartbeat_utc)?;
         require_record_id(
             value.record_id,
@@ -955,6 +1074,35 @@ impl_record!(
         )
     }
 );
+
+fn valid_tuple_token(value: &str, platform: &str) -> bool {
+    let mut fields = value.split(':');
+    matches!(
+        (fields.next(), fields.next(), fields.next(), fields.next()),
+        (Some(actual), Some(seconds), Some(micros), None)
+            if actual == platform
+                && seconds.parse::<u64>().is_ok()
+                && micros.parse::<u32>().is_ok_and(|value| value < 1_000_000)
+    )
+}
+
+fn valid_linux_boot_id(value: &str) -> bool {
+    let Some(value) = value.strip_prefix("linux:") else {
+        return false;
+    };
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 8 | 13 | 18 | 23) && byte == b'-'
+                || !matches!(index, 8 | 13 | 18 | 23)
+                    && (byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+fn valid_linux_process_token(value: &str) -> bool {
+    value
+        .strip_prefix("linux:")
+        .is_some_and(|value| !value.is_empty() && value.parse::<u64>().is_ok())
+}
 impl_record!(TransactionV1, "transaction", |value: &TransactionV1| {
     require_header(value)?;
     require_record_id(
@@ -976,6 +1124,18 @@ impl_record!(TransactionV1, "transaction", |value: &TransactionV1| {
     }
     for step in &value.steps {
         step.parent.validate()?;
+        step.basename()?;
+        if let Some(parent) = &step.destination_parent {
+            parent.validate()?;
+        }
+        if step.destination_parent.is_some() != step.destination_basename_digest.is_some()
+            || step.destination_parent.is_some() != step.destination_basename_bytes.is_some()
+        {
+            return Err(ContractError::InvalidValue(
+                "transaction destination requires both parent and basename digest".into(),
+            ));
+        }
+        step.destination_basename()?;
         if step.expected_absence == step.expected_existing.is_some() {
             return Err(ContractError::InvalidValue(
                 "transaction step must expect exactly absence or an existing identity".into(),
@@ -993,16 +1153,26 @@ impl_record!(TransactionV1, "transaction", |value: &TransactionV1| {
                 !step.expected_absence
                     && step.expected_existing.is_some()
                     && step.intended_content_digest.is_some()
+                    && step.destination_parent.is_none()
             }
             TransactionStepKind::SessionDenyCreate => {
                 step.expected_absence
                     && step.expected_existing.is_none()
                     && step.intended_content_digest.is_some()
+                    && step.destination_parent.is_none()
             }
-            TransactionStepKind::QuarantineDetach | TransactionStepKind::ResourceRecordPrune => {
+            TransactionStepKind::QuarantineDetach => {
                 !step.expected_absence
                     && step.expected_existing.is_some()
                     && step.intended_content_digest.is_none()
+                    && step.destination_parent.is_some()
+            }
+            TransactionStepKind::QuarantineSymlinkUnlink
+            | TransactionStepKind::ResourceRecordPrune => {
+                !step.expected_absence
+                    && step.expected_existing.is_some()
+                    && step.intended_content_digest.is_none()
+                    && step.destination_parent.is_none()
             }
         };
         if !kind_valid {
@@ -1040,6 +1210,11 @@ impl_record!(AuditRecordV1, "audit", |value: &AuditRecordV1| {
     require_header(value)?;
     validate_uuid(&value.installation_uuid)?;
     validate_uuid(&value.request_id)?;
+    if value.sequence == 0 {
+        return Err(ContractError::InvalidValue(
+            "audit sequence must be nonzero".into(),
+        ));
+    }
     require_record_id(
         value.record_id,
         derive_key(
@@ -1051,12 +1226,50 @@ impl_record!(AuditRecordV1, "audit", |value: &AuditRecordV1| {
         ),
     )
 });
+impl_record!(AuditReceiptV1, "audit_receipt", |value: &AuditReceiptV1| {
+    require_header(value)?;
+    validate_uuid(&value.installation_uuid)?;
+    validate_uuid(&value.request_id)?;
+    if value.sequence == 0 || value.command.is_empty() || value.command.len() > 4096 {
+        return Err(ContractError::InvalidValue(
+            "audit receipt contains an invalid sequence or command".into(),
+        ));
+    }
+    require_record_id(
+        value.record_id,
+        derive_key(
+            "audit-receipt",
+            &[
+                value.installation_uuid.as_bytes(),
+                value.request_id.as_bytes(),
+                value.command.as_bytes(),
+                result_status_bytes(value.outcome),
+                &value.sequence.to_be_bytes(),
+                value.audit_digest.as_bytes(),
+            ],
+        ),
+    )
+});
+
+const fn result_status_bytes(value: ResultStatus) -> &'static [u8] {
+    match value {
+        ResultStatus::Success => b"success",
+        ResultStatus::Failure => b"failure",
+        ResultStatus::Degraded => b"degraded",
+    }
+}
 impl_record!(
     AuditCheckpointV1,
     "audit_checkpoint",
     |value: &AuditCheckpointV1| {
         require_header(value)?;
         validate_uuid(&value.installation_uuid)?;
+        let zero_digest = AuthorityKey::from_bytes([0; 32]);
+        if (value.last_sequence == 0) != (value.last_digest == zero_digest) {
+            return Err(ContractError::InvalidValue(
+                "zero audit checkpoint sequence and digest must agree".into(),
+            ));
+        }
         require_record_id(
             value.record_id,
             derive_key(
@@ -1065,6 +1278,49 @@ impl_record!(
                     value.installation_uuid.as_bytes(),
                     &value.last_sequence.to_be_bytes(),
                     value.last_digest.as_bytes(),
+                ],
+            ),
+        )
+    }
+);
+impl_record!(
+    AuditFrontierV1,
+    "audit_frontier",
+    |value: &AuditFrontierV1| {
+        require_header(value)?;
+        validate_uuid(&value.installation_uuid)?;
+        let previous_start = value
+            .current_segment_start
+            .checked_sub(crate::AUDIT_SEGMENT_RECORDS);
+        if value.current_segment_start == 0
+            || !(value.current_segment_start - 1).is_multiple_of(crate::AUDIT_SEGMENT_RECORDS)
+            || value.current_segment_previous_digest.is_some() != (value.current_segment_start > 1)
+            || value.previous_segment_start != previous_start
+            || value.previous_segment_previous_digest.is_some()
+                != previous_start.is_some_and(|start| start > 1)
+        {
+            return Err(ContractError::InvalidValue(
+                "audit frontier segment anchors are inconsistent".into(),
+            ));
+        }
+        let zero = AuthorityKey::from_bytes([0; 32]);
+        let previous_start = value.previous_segment_start.unwrap_or(0);
+        require_record_id(
+            value.record_id,
+            derive_key(
+                "audit-frontier",
+                &[
+                    value.installation_uuid.as_bytes(),
+                    &value.current_segment_start.to_be_bytes(),
+                    value
+                        .current_segment_previous_digest
+                        .unwrap_or(zero)
+                        .as_bytes(),
+                    &previous_start.to_be_bytes(),
+                    value
+                        .previous_segment_previous_digest
+                        .unwrap_or(zero)
+                        .as_bytes(),
                 ],
             ),
         )

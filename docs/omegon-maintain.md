@@ -21,17 +21,22 @@ related = ["harness-architecture-parity"]
 
 ## Status
 
-This is the approved Slice-zero target contract. It is not a description of a
-currently shipped executable. Normative behavior is owned by the OpenSpec
-maintenance requirements; this document is the durable architecture summary.
-Implementation is tracked by
+This is the approved Slice-zero target contract and durable architecture
+summary. The independently runnable executable and its read-only diagnostic
+slice are implemented in the workspace but are not yet shipped. Normative
+behavior is owned by the OpenSpec maintenance requirements. Remaining
+implementation is tracked by
 `openspec/changes/selective-kernel-decomposition/tasks.md`.
 
 Package `omegon-maintenance-contracts` is now implemented with canonical v1
 records/results, domain-separated key and digest derivation, descriptor-relative
 Unix advisory locks, pure crash-reconciliation decisions, and shared valid plus
-corruption fixtures. The `omegon-maintain` executable and normal-runtime
-consumers are not yet implemented.
+corruption fixtures. Package `omegon-maintain` now builds as an independent
+executable with compiled identity/composition reporting, descriptor-confined
+inert contribution inventory, session-pair framing, and durable ownership-record
+diagnostics. Mutation workflows, offline release verification, audit workflows,
+normal-runtime consumers, packaging, and launch-matrix integration remain
+deferred to tasks 0.6 through 0.10.
 
 ## Purpose
 
@@ -98,18 +103,18 @@ omegon-maintain
     inspect
 
   contribution
-    list [--scope <user|project>]
+    list [--scope <user|project>] [--cursor <cursor>]
     inspect <selector> --scope <user|project>
     disable <selector> --scope <user|project>
     quarantine <selector> --scope <user|project>
 
   session
-    list
+    list [--cursor <cursor>]
     inspect <session-id> --workspace <absolute-path>
     quarantine <session-id> --workspace <absolute-path>
 
   resource
-    list --workspace <absolute-path>
+    list --workspace <absolute-path> [--cursor <cursor>]
     prune-stale --workspace <absolute-path>
 
   release
@@ -118,7 +123,7 @@ omegon-maintain
 
   audit
     inspect [--cursor <cursor>]
-    verify
+    verify [--cursor <cursor>]
 ```
 
 No ambiguous aliases such as `fix`, `repair`, `clean`, or `update` are part of
@@ -217,7 +222,10 @@ impossible output guarantee.
 
 Paths in output are scope-labelled and redacted where home disclosure is not
 needed. Errors have stable code, phase, retry-safety, and bounded message fields.
-Untrusted bytes never become unbounded error text.
+Untrusted bytes never become unbounded error text. List cursors bind the command,
+admitted roots, effective scope or workspace, and last emitted diagnostic key;
+changed or forged boundaries fail closed. Audit cursors are anchored through
+validated successor segments to the current checkpoint.
 
 ## Read authority
 
@@ -287,6 +295,9 @@ the external mutation, followed by `Settled` or `Unknown`. Same-fingerprint
 request-ID reuse reconciles deterministically; conflicting reuse is refused.
 Audit records are sequence-numbered and hash-chained, but `audit verify` claims
 structural continuity only, not authenticity against an external attacker.
+Rotated segments contain at most 100,000 records. A bounded authenticated
+frontier and request-keyed receipts let bootstrap, same-request replay, and
+append recovery avoid rescanning aggregate history.
 
 The deadline begins before root admission and is cooperative, not a hard
 real-time promise. It is checked before each lock and potentially blocking

@@ -77,6 +77,15 @@ Slice zero explicitly excludes generic read/search/patch/shell, project source o
 
 The exact command tree and safety requirements are normative in `specs/kernel-composition/maintenance.md`; wire schemas, roots, locks, crash transitions, evidence rules, and command outcomes are normative in `specs/kernel-composition/maintenance-protocol-v1.md`. `docs/omegon-maintain.md` is their durable architecture summary.
 
+Offline release verification has an explicit implementation prerequisite: the
+selected verifier must support Sigstore bundle v0.3 and actually validate the
+Fulcio chain, Rekor SET, Merkle inclusion proof, and signed checkpoint entirely
+offline against compiled trust roots. The existing locked verifier supports only
+older bundle profiles and omits those transparency checks, so mutation/audit
+work lands as task 0.6a while verifier selection, trust material, and the signed
+fixture matrix remain fail-closed task 0.6b. This split does not relax the
+normative `release verify` contract.
+
 Source, linked-development, and release-package launch paths are tested in this first slice rather than deferred to final packaging.
 
 ## Durable session authority

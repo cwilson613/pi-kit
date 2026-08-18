@@ -8,5 +8,7 @@
   {"expected_error":"record_invalid_id","field":"record_id","fixture":"fence-v1.json","replacement":"0000000000000000000000000000000000000000000000000000000000000000"},
   {"expected_error":"record_invalid_id","field":"record_id","fixture":"audit-v1.json","replacement":"0000000000000000000000000000000000000000000000000000000000000000"},
   {"expected_error":"record_invalid_id","field":"record_id","fixture":"audit-checkpoint-v1.json","replacement":"0000000000000000000000000000000000000000000000000000000000000000"},
+  {"expected_error":"record_invalid_id","field":"record_id","fixture":"audit-frontier-v1.json","replacement":"0000000000000000000000000000000000000000000000000000000000000000"},
+  {"expected_error":"record_invalid_id","field":"record_id","fixture":"audit-receipt-v1.json","replacement":"0000000000000000000000000000000000000000000000000000000000000000"},
   {"expected_error":"record_invalid_id","field":"record_id","fixture":"package-manifest-v1.json","replacement":"0000000000000000000000000000000000000000000000000000000000000000"}
 ]

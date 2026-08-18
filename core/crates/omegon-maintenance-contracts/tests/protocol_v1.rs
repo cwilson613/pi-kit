@@ -6,14 +6,16 @@ use std::{
 };
 
 use omegon_maintenance_contracts::{
-    AuditCheckpointV1, AuditRecordV1, AuthorityKey, CommandSemanticsV1, ContributionSelector,
-    DenyRecordV1, DenyStateV1, DetachObservation, ErrorV1, FenceV1, FileIdentityV1,
-    InstallationStateV1, ListScope, LockMode, MaintenanceResultV1, MutationResultV1, MutationState,
-    OwnershipRecordV1, PackageManifestV1, PathIdentityV1, PostStateV1, ProtocolLock,
-    ReconciliationDecision, Record, RecordObservation, ResultStatus, SCHEMA_VERSION,
-    SessionDenyRecordV1, TransactionState, TransactionStepKind, TransactionStepState,
-    TransactionV1, canonical_json, command_fingerprint, derive_key, normalize_workspace_path,
-    parse_record, reconcile_detach, reconcile_record, resolve_list_scope, validate_child_name,
+    AuditCheckpointV1, AuditFrontierV1, AuditReceiptV1, AuditRecordV1, AuthorityKey,
+    CommandSemanticsV1, ContributionSelector, DenyRecordV1, DenyStateV1, DetachObservation,
+    ErrorV1, FenceV1, FileIdentityV1, InstallationStateV1, ListScope, LockMode,
+    MaintenanceResultV1, MaintenanceStateV1, MutationResultV1, MutationState, OwnershipRecordV1,
+    PackageManifestV1, PathIdentityV1, PostStateV1, ProtocolLock, ReconciliationDecision, Record,
+    RecordObservation, ResultStatus, SCHEMA_VERSION, SessionDenyRecordV1, TransactionState,
+    TransactionStepKind, TransactionStepState, TransactionStepV1, TransactionV1, append_bytes_at,
+    canonical_digest, canonical_json, command_fingerprint, derive_key, normalize_workspace_path,
+    parse_record, path_identity, read_bytes_at, read_record_at, reconcile_detach, reconcile_record,
+    record_identity_at, replace_record_at, resolve_list_scope, validate_child_name,
 };
 
 const ZERO_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -54,6 +56,8 @@ fn every_authority_record_has_a_canonical_fixture() {
     assert_fixture::<FenceV1>(include_bytes!("fixtures/fence-v1.json"));
     assert_fixture::<AuditRecordV1>(include_bytes!("fixtures/audit-v1.json"));
     assert_fixture::<AuditCheckpointV1>(include_bytes!("fixtures/audit-checkpoint-v1.json"));
+    assert_fixture::<AuditFrontierV1>(include_bytes!("fixtures/audit-frontier-v1.json"));
+    assert_fixture::<AuditReceiptV1>(include_bytes!("fixtures/audit-receipt-v1.json"));
     assert_fixture::<PackageManifestV1>(include_bytes!("fixtures/package-manifest-v1.json"));
 }
 
@@ -117,7 +121,12 @@ fn result_validation_rejects_unstable_codes_and_unsafe_truncation() {
     result.errors.clear();
     assert!(
         result.validate().is_ok(),
-        "paginated diagnostics may truncate"
+        "paginated list diagnostics may truncate with a continuation cursor"
+    );
+    result.command = "audit.inspect".into();
+    assert!(
+        result.validate().is_ok(),
+        "audit inspection may truncate with a continuation cursor"
     );
 
     result.truncated = false;
@@ -311,6 +320,26 @@ fn parser_rejects_semantically_contradictory_records() {
     let bad_request = include_str!("fixtures/audit-v1.json")
         .replace("00000000-0000-0000-0000-000000000001", "NOT-A-UUID");
     assert!(parse_record::<AuditRecordV1>(bad_request.as_bytes()).is_err());
+
+    let bad_frontier = include_str!("fixtures/audit-frontier-v1.json").replace(
+        "\"previous_segment_start\":1",
+        "\"previous_segment_start\":2",
+    );
+    assert!(parse_record::<AuditFrontierV1>(bad_frontier.as_bytes()).is_err());
+
+    let bad_receipt =
+        include_str!("fixtures/audit-receipt-v1.json").replace("\"sequence\":1", "\"sequence\":0");
+    assert!(parse_record::<AuditReceiptV1>(bad_receipt.as_bytes()).is_err());
+
+    let bad_boot = include_str!("fixtures/ownership-v1.json").replace(
+        "linux:00000000-0000-0000-0000-000000000001",
+        "different-boot",
+    );
+    assert!(parse_record::<OwnershipRecordV1>(bad_boot.as_bytes()).is_err());
+
+    let bad_process =
+        include_str!("fixtures/ownership-v1.json").replace("linux:42", "different-token");
+    assert!(parse_record::<OwnershipRecordV1>(bad_process.as_bytes()).is_err());
 }
 
 #[test]
@@ -327,7 +356,7 @@ fn transaction_frontier_and_evidence_matrix_is_strict() {
     settled.audit_sequence = Some(1);
     settled.steps[0].state = TransactionStepState::Settled;
     settled.steps[0].observed = Some(PostStateV1 {
-        source_present: true,
+        source_present: false,
         destination: Some(FileIdentityV1 {
             device: 7,
             inode: 12,
@@ -337,6 +366,19 @@ fn transaction_frontier_and_evidence_matrix_is_strict() {
         destination_content_digest: settled.steps[0].intended_content_digest,
     });
     settled.validate().unwrap();
+
+    let mut contradictory_create = settled.clone();
+    contradictory_create.steps[0]
+        .observed
+        .as_mut()
+        .unwrap()
+        .source_present = true;
+    assert!(contradictory_create.validate().is_err());
+
+    let mut targets_settled = settled.clone();
+    targets_settled.state = TransactionState::TargetsSettled;
+    targets_settled.audit_sequence = None;
+    targets_settled.validate().unwrap();
 
     let mut step_settled = settled.clone();
     step_settled.state = TransactionState::StepSettled;
@@ -384,6 +426,75 @@ fn transaction_frontier_and_evidence_matrix_is_strict() {
     assert!(time_reversed.validate().is_err());
 }
 
+#[test]
+fn quarantine_steps_bind_rename_destination_and_distinguish_symlink_unlink() {
+    let base: TransactionV1 = parse_record(include_bytes!("fixtures/transaction-v1.json")).unwrap();
+    let identity = FileIdentityV1 {
+        device: 7,
+        inode: 12,
+        size: 1,
+        modified_ns: 1,
+    };
+
+    let mut rename = base.clone();
+    rename.steps[0].kind = TransactionStepKind::QuarantineDetach;
+    rename.steps[0].expected_absence = false;
+    rename.steps[0].expected_existing = Some(identity.clone());
+    rename.steps[0].intended_content_digest = None;
+    rename.steps[0].destination_parent = Some(rename.steps[0].parent.clone());
+    let (destination_bytes, destination_digest) =
+        TransactionStepV1::encode_basename(b"destination").unwrap();
+    rename.steps[0].destination_basename_bytes = Some(destination_bytes.clone());
+    rename.steps[0].destination_basename_digest = Some(destination_digest);
+    rename.steps[0].state = TransactionStepState::Settled;
+    rename.steps[0].observed = Some(PostStateV1 {
+        source_present: false,
+        destination: Some(identity.clone()),
+        destination_content_digest: None,
+    });
+    rename.state = TransactionState::Settled;
+    rename.audit_sequence = Some(1);
+    rename.validate().unwrap();
+
+    let mut mismatched_destination = rename.clone();
+    mismatched_destination.steps[0]
+        .observed
+        .as_mut()
+        .unwrap()
+        .destination = Some(FileIdentityV1 {
+        inode: 13,
+        ..identity.clone()
+    });
+    assert!(mismatched_destination.validate().is_err());
+
+    let mut unbound_rename = rename.clone();
+    unbound_rename.steps[0].destination_parent = None;
+    unbound_rename.steps[0].destination_basename_bytes = None;
+    unbound_rename.steps[0].destination_basename_digest = None;
+    assert!(unbound_rename.validate().is_err());
+
+    let mut unlink = base;
+    unlink.steps[0].kind = TransactionStepKind::QuarantineSymlinkUnlink;
+    unlink.steps[0].expected_absence = false;
+    unlink.steps[0].expected_existing = Some(identity);
+    unlink.steps[0].intended_content_digest = None;
+    unlink.steps[0].state = TransactionStepState::Settled;
+    unlink.steps[0].observed = Some(PostStateV1 {
+        source_present: false,
+        destination: None,
+        destination_content_digest: None,
+    });
+    unlink.state = TransactionState::Settled;
+    unlink.audit_sequence = Some(1);
+    unlink.validate().unwrap();
+
+    let mut unlink_with_destination = unlink;
+    unlink_with_destination.steps[0].destination_parent = Some(rename.steps[0].parent.clone());
+    unlink_with_destination.steps[0].destination_basename_bytes = Some(destination_bytes);
+    unlink_with_destination.steps[0].destination_basename_digest = Some(destination_digest);
+    assert!(unlink_with_destination.validate().is_err());
+}
+
 fn valid_without_lf() -> &'static [u8] {
     include_bytes!("fixtures/installation-state-v1.json")
         .strip_suffix(b"\n")
@@ -414,6 +525,8 @@ fn every_fixture_rejects_a_forged_record_id() {
     assert_bad_record_id::<FenceV1>(include_bytes!("fixtures/fence-v1.json"));
     assert_bad_record_id::<AuditRecordV1>(include_bytes!("fixtures/audit-v1.json"));
     assert_bad_record_id::<AuditCheckpointV1>(include_bytes!("fixtures/audit-checkpoint-v1.json"));
+    assert_bad_record_id::<AuditFrontierV1>(include_bytes!("fixtures/audit-frontier-v1.json"));
+    assert_bad_record_id::<AuditReceiptV1>(include_bytes!("fixtures/audit-receipt-v1.json"));
     assert_bad_record_id::<PackageManifestV1>(include_bytes!("fixtures/package-manifest-v1.json"));
 }
 
@@ -428,7 +541,7 @@ fn corruption_fixture_inventory_is_cross_consumer_data() {
     }
     let cases: Vec<CorruptionCase> =
         serde_json::from_slice(include_bytes!("fixtures/corruption-cases-v1.json")).unwrap();
-    assert_eq!(cases.len(), 10);
+    assert_eq!(cases.len(), 12);
     for case in cases {
         assert!(case.fixture.ends_with("-v1.json"));
         assert_eq!(case.field, "record_id");
@@ -720,4 +833,226 @@ fn lock_rejects_symlinks_and_permissive_modes() {
     assert!(
         ProtocolLock::acquire_at(&parent, b"link.lock", LockMode::Exclusive, false, true).is_err()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_state_bootstrap_is_race_safe_and_home_bound() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let mut workers = Vec::new();
+    for candidate in [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ] {
+        let home = home.try_clone().unwrap();
+        let identity = identity.clone();
+        let barrier = Arc::clone(&barrier);
+        workers.push(thread::spawn(move || {
+            barrier.wait();
+            MaintenanceStateV1::bootstrap(&home, identity, candidate, false)
+                .unwrap()
+                .installation
+                .installation_uuid
+        }));
+    }
+    barrier.wait();
+    let identities: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(identities[0], identities[1]);
+
+    for relative in [
+        "maintain/v1/state.json",
+        "maintain/v1/locks/bootstrap.lock",
+        "maintain/v1/locks/audit.lock",
+        "maintain/v1/deny",
+        "maintain/v1/session-deny",
+        "maintain/v1/transactions",
+        "maintain/v1/fences",
+        "maintain/v1/audit/checkpoint.json",
+        "maintain/v1/audit/frontier.json",
+        "maintain/v1/audit/receipts",
+        "maintain/v1/audit/segments",
+    ] {
+        assert!(
+            directory.path().join(relative).exists(),
+            "missing {relative}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_state_bootstrap_is_nonblocking_when_audit_lock_is_held() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let candidate = "11111111-1111-1111-1111-111111111111";
+    let state = MaintenanceStateV1::bootstrap(&home, identity.clone(), candidate, false).unwrap();
+    let _audit_lock = ProtocolLock::acquire_at(
+        &state.locks,
+        b"audit.lock",
+        LockMode::Exclusive,
+        false,
+        false,
+    )
+    .unwrap();
+
+    assert!(MaintenanceStateV1::bootstrap(&home, identity, candidate, true).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_state_bootstrap_rejects_symlink_components() {
+    use std::{
+        fs::{self, File},
+        os::unix::fs::symlink,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), directory.path().join("maintain")).unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    assert!(
+        MaintenanceStateV1::bootstrap(
+            &home,
+            identity,
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .is_err()
+    );
+    assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_state_bootstrap_repairs_durable_audit_tail() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let candidate = "11111111-1111-1111-1111-111111111111";
+    let state = MaintenanceStateV1::bootstrap(&home, identity.clone(), candidate, false).unwrap();
+    let record = AuditRecordV1 {
+        schema_version: SCHEMA_VERSION,
+        record_kind: "audit".into(),
+        record_id: derive_key(
+            "audit",
+            &[
+                state.installation.installation_uuid.as_bytes(),
+                &1_u64.to_be_bytes(),
+            ],
+        ),
+        installation_uuid: state.installation.installation_uuid.clone(),
+        sequence: 1,
+        previous_digest: None,
+        request_id: "00000000-0000-0000-0000-000000000001".into(),
+        command: "crash.fixture".into(),
+        outcome: ResultStatus::Success,
+    };
+    append_bytes_at(
+        &state.audit_segments,
+        b"1.jsonl",
+        &canonical_json(&record).unwrap(),
+    )
+    .unwrap();
+    append_bytes_at(&state.audit_segments, b"1.jsonl", b"partial").unwrap();
+    drop(state);
+
+    let repaired =
+        MaintenanceStateV1::bootstrap(&home, identity.clone(), candidate, false).unwrap();
+    assert_eq!(repaired.installation.next_audit_sequence, 2);
+    let checkpoint: AuditCheckpointV1 = read_record_at(&repaired.audit, b"checkpoint.json")
+        .unwrap()
+        .unwrap();
+    assert_eq!(checkpoint.last_sequence, 1);
+    assert_eq!(checkpoint.last_digest, canonical_digest(&record).unwrap());
+    let receipt_name = format!("{}.json", record.request_id);
+    let receipt: AuditReceiptV1 = read_record_at(&repaired.audit_receipts, receipt_name.as_bytes())
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.command, record.command);
+    assert_eq!(receipt.outcome, record.outcome);
+    assert_eq!(receipt.sequence, record.sequence);
+    assert_eq!(receipt.audit_digest, canonical_digest(&record).unwrap());
+    assert_eq!(
+        read_bytes_at(&repaired.audit_segments, b"1.jsonl", 1024)
+            .unwrap()
+            .unwrap(),
+        canonical_json(&record).unwrap()
+    );
+
+    let receipt_identity =
+        record_identity_at(&repaired.audit_receipts, receipt_name.as_bytes()).unwrap();
+    drop(repaired);
+    let repaired_again = MaintenanceStateV1::bootstrap(&home, identity, candidate, false).unwrap();
+    assert_eq!(
+        record_identity_at(&repaired_again.audit_receipts, receipt_name.as_bytes()).unwrap(),
+        receipt_identity,
+        "a repaired tail receipt must not be rewritten on later bootstrap"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_state_bootstrap_does_not_scan_segments_beyond_its_frontier() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let candidate = "11111111-1111-1111-1111-111111111111";
+    let state = MaintenanceStateV1::bootstrap(&home, identity.clone(), candidate, false).unwrap();
+    append_bytes_at(&state.audit_segments, b"100001.jsonl", b"not-json\n").unwrap();
+    drop(state);
+
+    let state = MaintenanceStateV1::bootstrap(&home, identity, candidate, false).unwrap();
+    assert_eq!(state.installation.next_audit_sequence, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn maintenance_state_bootstrap_rejects_unauthenticated_rotated_boundary() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let identity = path_identity(&home).unwrap();
+    let candidate = "11111111-1111-1111-1111-111111111111";
+    let state = MaintenanceStateV1::bootstrap(&home, identity.clone(), candidate, false).unwrap();
+    let digest = AuthorityKey::from_bytes([7; 32]);
+    let checkpoint = AuditCheckpointV1 {
+        schema_version: SCHEMA_VERSION,
+        record_kind: "audit_checkpoint".into(),
+        record_id: derive_key(
+            "audit-checkpoint",
+            &[
+                candidate.as_bytes(),
+                &100_000_u64.to_be_bytes(),
+                digest.as_bytes(),
+            ],
+        ),
+        installation_uuid: candidate.into(),
+        last_sequence: 100_000,
+        last_digest: digest,
+    };
+    replace_record_at(&state.audit, b"checkpoint.json", &checkpoint, candidate).unwrap();
+    let mut installation = state.installation.clone();
+    installation.next_audit_sequence = 100_001;
+    replace_record_at(&state.root, b"state.json", &installation, candidate).unwrap();
+    state.prepare_audit_segment(100_001, candidate).unwrap();
+    drop(state);
+
+    assert!(MaintenanceStateV1::bootstrap(&home, identity, candidate, false).is_err());
 }

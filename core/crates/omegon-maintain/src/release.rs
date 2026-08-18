@@ -1002,4 +1002,71 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn production_fixture_rejects_manifest_and_archive_corruption() {
+        let (_directory, archive, manifest, bundle) = production_fixture();
+        let mut manifest_bytes = std::fs::read(&manifest).unwrap();
+        let commit = manifest_bytes
+            .windows(40)
+            .position(|window| window == b"d4ee9a6bfd500052fb52419e87af7b750321b35f")
+            .unwrap();
+        manifest_bytes[commit] = b'e';
+        std::fs::write(&manifest, manifest_bytes).unwrap();
+        assert_eq!(
+            verify_release_inner(
+                &archive,
+                &manifest,
+                &bundle,
+                Instant::now(),
+                Duration::from_secs(30),
+            )
+            .unwrap_err()
+            .code,
+            "release_signature_invalid"
+        );
+
+        let (_directory, archive, manifest, bundle) = production_fixture();
+        let mut archive_bytes = std::fs::read(&archive).unwrap();
+        archive_bytes[0] ^= 1;
+        std::fs::write(&archive, archive_bytes).unwrap();
+        assert_eq!(
+            verify_release_inner(
+                &archive,
+                &manifest,
+                &bundle,
+                Instant::now(),
+                Duration::from_secs(30),
+            )
+            .unwrap_err()
+            .code,
+            "release_archive_digest_mismatch"
+        );
+    }
+
+    #[test]
+    fn production_fixture_requires_set_and_inclusion_proof() {
+        for field in ["inclusionPromise", "inclusionProof"] {
+            let (_directory, archive, manifest, bundle) = production_fixture();
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+            value["verificationMaterial"]["tlogEntries"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            std::fs::write(&bundle, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                verify_release_inner(
+                    &archive,
+                    &manifest,
+                    &bundle,
+                    Instant::now(),
+                    Duration::from_secs(30),
+                )
+                .unwrap_err()
+                .code,
+                "release_transparency_invalid"
+            );
+        }
+    }
 }

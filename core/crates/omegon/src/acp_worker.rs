@@ -632,13 +632,20 @@ async fn worker_loop(
                 let result = if !crate::session::is_canonical_session_id(&requested_id) {
                     Err(format!("invalid session id `{requested_id}`"))
                 } else {
-                    crate::conversation::ConversationState::load_session(&path)
-                        .map(|loaded| {
+                    crate::session::load_for_resume(&cwd, &path)
+                        .and_then(|(loaded, meta)| {
+                            if meta.session_id != requested_id {
+                                return Err(crate::session::ResumeLoadError::Authority(
+                                    anyhow::anyhow!(
+                                        "loaded session identity does not match ACP request"
+                                    ),
+                                ));
+                            }
                             let replay = project_replay_messages(&loaded);
                             conversation = loaded;
-                            resume_id = Some(requested_id);
+                            resume_id = Some(meta.session_id);
                             first_prompt = false;
-                            replay
+                            Ok(replay)
                         })
                         .map_err(|error| format!("could not load session: {error}"))
                 };

@@ -200,11 +200,38 @@ impl GuardedContributionMutationDirectory {
         expected_manifest: &[u8],
         overwrite: bool,
     ) -> anyhow::Result<()> {
+        self.import_extension_directory_with_state(
+            raw_name,
+            source,
+            binary_path,
+            expected_manifest,
+            overwrite,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn import_extension_directory_with_state(
+        &self,
+        raw_name: &[u8],
+        source: &File,
+        binary_path: Option<&Path>,
+        expected_manifest: &[u8],
+        overwrite: bool,
+        expected_existing: Option<&omegon_maintenance_contracts::PathIdentityV1>,
+        install_source: Option<&[u8]>,
+        config: Option<&[u8]>,
+        state: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
         omegon_maintenance_contracts::validate_child_name(raw_name)?;
         let binary = binary_path.map(relative_path_components).transpose()?;
         let mut entries = 0_usize;
         let mut bytes = 0_u64;
-        self.stage_and_replace(raw_name, overwrite, |staging| {
+        self.stage_and_replace_expected(raw_name, overwrite, expected_existing, |staging| {
             copy_extension_source_tree(
                 source,
                 staging,
@@ -218,6 +245,19 @@ impl GuardedContributionMutationDirectory {
             if copied_manifest != expected_manifest {
                 anyhow::bail!("extension manifest changed during import");
             }
+            if let Some(config) = config {
+                replace_file_at(staging, b"config.toml", config, 0o600)?;
+            }
+            if install_source.is_some() || state.is_some() {
+                let (internal, _) = open_or_create_child_directory(staging, b".omegon")?;
+                if let Some(install_source) = install_source {
+                    replace_file_at(&internal, b"install-source.toml", install_source, 0o600)?;
+                }
+                if let Some(state) = state {
+                    replace_file_at(&internal, b"state.toml", state, 0o600)?;
+                }
+                internal.sync_all()?;
+            }
             Ok(())
         })
     }
@@ -230,6 +270,23 @@ impl GuardedContributionMutationDirectory {
         _binary_path: Option<&Path>,
         _expected_manifest: &[u8],
         _overwrite: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(not(unix))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn import_extension_directory_with_state(
+        &self,
+        _raw_name: &[u8],
+        _source: &File,
+        _binary_path: Option<&Path>,
+        _expected_manifest: &[u8],
+        _overwrite: bool,
+        _expected_existing: Option<&omegon_maintenance_contracts::PathIdentityV1>,
+        _install_source: Option<&[u8]>,
+        _config: Option<&[u8]>,
+        _state: Option<&[u8]>,
     ) -> anyhow::Result<()> {
         anyhow::bail!("guarded contribution mutation requires Unix")
     }
@@ -327,6 +384,11 @@ impl GuardedContributionMutationDirectory {
     pub(crate) fn entry_names(&self, limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
         self.validate_binding()?;
         read_directory_names(&self.directory, limit)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn entry_names(&self, _limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]
@@ -499,8 +561,27 @@ impl GuardedContributionMutationDirectory {
         overwrite: bool,
         populate: impl FnOnce(&File) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
+        self.stage_and_replace_expected(raw_name, overwrite, None, populate)
+    }
+
+    #[cfg(unix)]
+    fn stage_and_replace_expected(
+        &self,
+        raw_name: &[u8],
+        overwrite: bool,
+        expected_existing: Option<&omegon_maintenance_contracts::PathIdentityV1>,
+        populate: impl FnOnce(&File) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         self.validate_binding()?;
         let existing = open_child_directory(&self.directory, raw_name)?;
+        if let Some(expected) = expected_existing {
+            let current = existing
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("contribution disappeared before replacement"))?;
+            if &omegon_maintenance_contracts::path_identity(current)? != expected {
+                anyhow::bail!("contribution identity changed before replacement");
+            }
+        }
         if existing.is_some() && !overwrite {
             anyhow::bail!(
                 "contribution '{}' already exists",
@@ -517,7 +598,18 @@ impl GuardedContributionMutationDirectory {
             let _ = remove_tree_at(&self.directory, &staging_name);
             return Err(error);
         }
-        let replaced = open_child_directory(&self.directory, raw_name)?.is_some();
+        let current = open_child_directory(&self.directory, raw_name)?;
+        if let Some(expected) = expected_existing {
+            let current = current
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("contribution disappeared during replacement"))?;
+            if &omegon_maintenance_contracts::path_identity(current)? != expected {
+                let _ = remove_tree_at(&self.directory, &staging_name);
+                anyhow::bail!("contribution identity changed during replacement");
+            }
+        }
+        let replaced = current.is_some();
+        drop(current);
         let commit = if replaced {
             exchange_at(&self.directory, &staging_name, raw_name)
         } else {
@@ -961,7 +1053,11 @@ fn copy_extension_source_tree(
                 destination,
                 &raw_name,
                 &bytes,
-                if mode & 0o111 != 0 { 0o700 } else { 0o600 },
+                if mode & 0o111 != 0 || binary.is_some_and(|binary| binary == path.as_slice()) {
+                    0o700
+                } else {
+                    0o600
+                },
             )?;
         }
         path.pop();

@@ -320,88 +320,195 @@ pub fn remove(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Update an extension (or all extensions) by running `git pull`.
+/// Update an extension (or all git-backed extensions).
 pub fn update(name: Option<&str>) -> anyhow::Result<()> {
-    let extensions_dir = extensions_dir()?;
-
-    if !extensions_dir.exists() {
+    let explicit_name = name.is_some();
+    let Some(mutation) = extension_mutation_directory(false)? else {
+        if let Some(name) = name {
+            anyhow::bail!("Extension '{name}' not found");
+        }
         println!("No extensions installed.");
         return Ok(());
-    }
-
-    let dirs_to_update: Vec<PathBuf> = if let Some(name) = name {
-        validate_name(name)?;
-        let path = extensions_dir.join(name);
-        if !path.exists() {
-            anyhow::bail!("Extension '{}' not found", name);
-        }
-        vec![path]
-    } else {
-        std::fs::read_dir(&extensions_dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir() && !p.is_symlink())
-            .collect()
     };
-
-    if dirs_to_update.is_empty() {
-        println!("No updatable extensions (symlinked extensions are managed externally).");
+    let names = if let Some(name) = name {
+        validate_name(name)?;
+        vec![name.as_bytes().to_vec()]
+    } else {
+        let mut names = mutation.entry_names(10_000)?;
+        names.sort();
+        names
+    };
+    if names.is_empty() {
+        println!("No updatable extensions.");
         return Ok(());
     }
-
-    for dir in &dirs_to_update {
-        let name = dir.file_name().unwrap_or_default().to_string_lossy();
-        let git_dir = dir.join(".git");
-
-        if !git_dir.exists() {
-            println!("  {name}: skipped (not a git repo)");
+    let mut updates = Vec::new();
+    for raw_name in names {
+        if crate::contribution_loading::is_internal_contribution_entry(&raw_name) {
             continue;
         }
-
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .arg("pull")
-            .output()?;
-
-        if output.status.success() {
-            let pull_out = String::from_utf8_lossy(&output.stdout);
-            let already_up_to_date = pull_out.contains("Already up to date");
-
-            // Rebuild native Cargo extensions if git pull brought changes
-            if !already_up_to_date && dir.join("Cargo.toml").exists() {
-                let manifest_path = dir.join("manifest.toml");
-                let is_native = manifest_path
-                    .exists()
-                    .then(|| ExtensionManifest::from_file(&manifest_path).ok())
-                    .flatten()
-                    .is_some_and(|m| m.is_native());
-
-                if is_native {
-                    print!("  {name}: rebuilding... ");
-                    let build = std::process::Command::new("cargo")
-                        .arg("build")
-                        .arg("--release")
-                        .current_dir(dir)
-                        .status();
-                    match build {
-                        Ok(s) if s.success() => println!("updated + rebuilt"),
-                        _ => println!(
-                            "updated but rebuild failed — run cargo build --release manually"
-                        ),
-                    }
-                    continue;
-                }
-            }
-
-            println!("  {name}: updated");
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("  {name}: failed — {}", stderr.trim());
+        let Ok(name) = std::str::from_utf8(&raw_name) else {
+            continue;
+        };
+        let discovered = (|| -> anyhow::Result<Option<PendingExtensionUpdate>> {
+            let directory = mutation
+                .open_directory(&raw_name)?
+                .ok_or_else(|| anyhow::anyhow!("not a canonical extension directory"))?;
+            let Some(source) = extension_update_source(&mutation, &raw_name)? else {
+                return Ok(None);
+            };
+            let manifest = crate::contribution_loading::read_file_at(
+                &directory,
+                b"manifest.toml",
+                1024 * 1024,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("installed extension has no manifest"))?;
+            let manifest: ExtensionManifest = toml::from_str(std::str::from_utf8(&manifest)?)?;
+            Ok(Some(PendingExtensionUpdate {
+                name: name.to_string(),
+                extension_name: manifest.extension.name,
+                source,
+                identity: omegon_maintenance_contracts::path_identity(&directory)?,
+            }))
+        })();
+        match discovered {
+            Ok(Some(update)) => updates.push(update),
+            Ok(None) => println!("  {name}: skipped (no git source metadata)"),
+            Err(error) if explicit_name => return Err(error),
+            Err(error) => eprintln!("  {name}: discovery failed: {error:#}"),
         }
     }
+    drop(mutation);
 
+    for pending in updates {
+        let result = update_one(&pending);
+        if let Err(error) = result {
+            if explicit_name {
+                return Err(error);
+            }
+            eprintln!("  {}: update failed: {error:#}", pending.name);
+            continue;
+        }
+        println!("  {}: updated", pending.name);
+    }
     Ok(())
+}
+
+fn update_one(pending: &PendingExtensionUpdate) -> anyhow::Result<()> {
+    let prepared = prepare_git_source(&pending.source)?;
+    if prepared.manifest.extension.name != pending.extension_name {
+        anyhow::bail!(
+            "updated extension identity changed from '{}' to '{}'",
+            pending.extension_name,
+            prepared.manifest.extension.name
+        );
+    }
+    let mutation = extension_mutation_directory(false)?
+        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", pending.name))?;
+    let directory = mutation
+        .open_directory(pending.name.as_bytes())?
+        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", pending.name))?;
+    if omegon_maintenance_contracts::path_identity(&directory)? != pending.identity {
+        anyhow::bail!("extension identity changed while preparing update");
+    }
+    let config =
+        crate::contribution_loading::read_file_at(&directory, b"config.toml", 1024 * 1024)?;
+    let (_, state) = mutation.read_file_in_directory(
+        pending.name.as_bytes(),
+        b".omegon",
+        b"state.toml",
+        1024 * 1024,
+    )?;
+    import_extension_source(
+        &mutation,
+        &prepared.source,
+        &prepared.manifest_bytes,
+        Some(&pending.name),
+        true,
+        Some(&prepared.source_metadata()?),
+        Some(&pending.identity),
+        config.as_deref(),
+        state.as_deref(),
+    )?;
+    Ok(())
+}
+
+struct PendingExtensionUpdate {
+    name: String,
+    extension_name: String,
+    source: GitSource,
+    identity: omegon_maintenance_contracts::PathIdentityV1,
+}
+
+#[derive(Clone)]
+struct GitSource {
+    uri: String,
+    reference: Option<String>,
+}
+
+fn extension_update_source(
+    mutation: &crate::contribution_loading::GuardedContributionMutationDirectory,
+    raw_name: &[u8],
+) -> anyhow::Result<Option<GitSource>> {
+    let (_, metadata) = mutation.read_file_in_directory(
+        raw_name,
+        b".omegon",
+        b"install-source.toml",
+        1024 * 1024,
+    )?;
+    if let Some(metadata) = metadata {
+        let table: toml::Table = toml::from_str(std::str::from_utf8(&metadata)?)?;
+        return Ok(table
+            .get("source")
+            .and_then(toml::Value::as_str)
+            .map(|source| GitSource {
+                uri: source.to_string(),
+                reference: table
+                    .get("reference")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+            }));
+    }
+    let (_, config) = mutation.read_file_in_directory(raw_name, b".git", b"config", 1024 * 1024)?;
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    let Some(source) = git_origin_from_config(std::str::from_utf8(&config)?) else {
+        return Ok(None);
+    };
+    let (_, head) = mutation.read_file_in_directory(raw_name, b".git", b"HEAD", 1024)?;
+    let reference = head
+        .as_deref()
+        .and_then(|head| git_reference_from_head(std::str::from_utf8(head).ok()?));
+    Ok(Some(GitSource {
+        uri: source,
+        reference,
+    }))
+}
+
+fn git_origin_from_config(config: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_origin = line == r#"[remote "origin"]"#;
+        } else if in_origin
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "url"
+        {
+            let value = value.trim();
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    None
+}
+
+fn git_reference_from_head(head: &str) -> Option<String> {
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref: refs/heads/") {
+        return (!reference.is_empty()).then(|| reference.to_string());
+    }
+    (!head.is_empty()).then(|| head.to_string())
 }
 
 /// Enable a disabled extension.
@@ -594,89 +701,33 @@ fn install_local(local_path: &Path) -> anyhow::Result<()> {
 }
 
 fn install_git(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
-    let name = infer_extension_name(uri)?;
-    let target = extensions_dir.join(&name);
-
-    if target.exists() {
-        anyhow::bail!(
-            "Extension '{}' already exists at {}",
-            name,
-            target.display()
-        );
-    }
-
-    let status = std::process::Command::new("git")
-        .arg("clone")
-        .arg(uri)
-        .arg(&target)
-        .status()?;
-
-    if !status.success() {
-        anyhow::bail!(
-            "git clone failed for {uri}\n  \
-             Check: URL is correct, you have network access, and git credentials are configured."
-        );
-    }
-
-    let manifest_path = target.join("manifest.toml");
-    if !manifest_path.exists() {
-        std::fs::remove_dir_all(&target).ok();
-        anyhow::bail!("cloned repository does not contain manifest.toml");
-    }
-
-    let manifest = ExtensionManifest::from_file(&manifest_path)?;
-    if manifest.extension.name != name {
+    let _ = extensions_dir;
+    let inferred_name = infer_extension_name(uri)?;
+    let prepared = prepare_git_source(&GitSource {
+        uri: uri.to_string(),
+        reference: None,
+    })?;
+    let source = &prepared.source;
+    let manifest = &prepared.manifest;
+    if manifest.extension.name != inferred_name {
         println!(
             "Note: inferred name '{}' but manifest declares '{}'.",
-            name, manifest.extension.name
+            inferred_name, manifest.extension.name
         );
     }
 
-    // Build native extensions that have a Cargo.toml
-    if manifest.is_native() && target.join("Cargo.toml").exists() {
-        println!("Building extension '{}'...", manifest.extension.name);
-        let build = std::process::Command::new("cargo")
-            .arg("build")
-            .arg("--release")
-            .current_dir(&target)
-            .status();
-
-        match build {
-            Ok(s) if s.success() => {
-                println!("Build succeeded.");
-            }
-            Ok(s) => {
-                std::fs::remove_dir_all(&target).ok();
-                anyhow::bail!(
-                    "cargo build --release failed (exit {}) for extension '{}'",
-                    s.code().unwrap_or(-1),
-                    manifest.extension.name
-                );
-            }
-            Err(e) => {
-                std::fs::remove_dir_all(&target).ok();
-                anyhow::bail!(
-                    "failed to run cargo build for extension '{}': {e}",
-                    manifest.extension.name
-                );
-            }
-        }
-    } else if manifest.is_native() {
-        match manifest.native_binary_path(&target) {
-            Ok(_) => {}
-            Err(_) => {
-                println!(
-                    "Warning: native binary not found. Build manually in the extension directory."
-                );
-            }
-        }
-    }
+    publish_extension_source(
+        source,
+        &prepared.manifest_bytes,
+        false,
+        Some(&prepared.source_metadata()?),
+    )?;
 
     println!(
         "Installed extension '{}' from {uri}",
         manifest.extension.name
     );
-    print_secrets_hint(&manifest);
+    print_secrets_hint(manifest);
 
     Ok(())
 }
@@ -686,50 +737,53 @@ fn install_git(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
 /// The tarball must contain a `manifest.toml` and (for native extensions) the
 /// pre-built binary.  No build step is performed — this is the path for users
 /// without a Rust toolchain.
-pub(crate) fn install_tarball(extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
-    let tmp = std::env::temp_dir().join(format!(
-        "omegon-ext-install-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&tmp)?;
+pub(crate) fn install_tarball(_extensions_dir: &Path, uri: &str) -> anyhow::Result<()> {
+    const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+    let cleanup = create_prepared_directory("omegon-ext-install")?;
+    let tmp = &cleanup.0;
     let archive_path = tmp.join("extension.tar.gz");
 
     if uri.starts_with("http://") || uri.starts_with("https://") {
-        // Download
         println!("Downloading {uri}...");
-        let status = std::process::Command::new("curl")
-            .args(["-fSL", "-o"])
-            .arg(&archive_path)
-            .arg(uri)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("download failed for {uri}");
+        let mut response = reqwest::blocking::get(uri)?.error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_ARCHIVE_BYTES)
+        {
+            anyhow::bail!("extension archive exceeds the download size limit");
+        }
+        let mut archive = std::fs::File::create(&archive_path)?;
+        let copied = std::io::copy(
+            &mut std::io::Read::take(&mut response, MAX_ARCHIVE_BYTES + 1),
+            &mut archive,
+        )?;
+        if copied > MAX_ARCHIVE_BYTES {
+            anyhow::bail!("extension archive exceeds the download size limit");
         }
     } else {
-        // Local tarball
         let local = Path::new(uri);
-        if !local.exists() {
-            anyhow::bail!("tarball not found: {uri}");
+        let mut local = std::fs::File::open(local)
+            .map_err(|error| anyhow::anyhow!("could not open tarball {uri}: {error}"))?;
+        let metadata = local.metadata()?;
+        if !metadata.is_file() {
+            anyhow::bail!("tarball source is not a regular file: {uri}");
         }
-        std::fs::copy(local, &archive_path)?;
+        if metadata.len() > MAX_ARCHIVE_BYTES {
+            anyhow::bail!("extension archive exceeds the download size limit");
+        }
+        let mut archive = std::fs::File::create(&archive_path)?;
+        let copied = std::io::copy(
+            &mut std::io::Read::take(&mut local, MAX_ARCHIVE_BYTES + 1),
+            &mut archive,
+        )?;
+        if copied > MAX_ARCHIVE_BYTES {
+            anyhow::bail!("extension archive exceeds the download size limit");
+        }
     }
 
-    // Extract
     let extract_dir = tmp.join("extracted");
     std::fs::create_dir_all(&extract_dir)?;
-    let status = std::process::Command::new("tar")
-        .args(["xzf"])
-        .arg(&archive_path)
-        .arg("-C")
-        .arg(&extract_dir)
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to extract tarball");
-    }
+    extract_extension_archive(&archive_path, &extract_dir)?;
 
     // Find manifest.toml — may be at root or one level deep
     let manifest_path = if extract_dir.join("manifest.toml").exists() {
@@ -751,31 +805,14 @@ pub(crate) fn install_tarball(extensions_dir: &Path, uri: &str) -> anyhow::Resul
         .parent()
         .ok_or_else(|| anyhow::anyhow!("invalid manifest path"))?;
     let manifest = ExtensionManifest::from_file(&manifest_path)?;
+    let manifest_bytes = std::fs::read(&manifest_path)?;
     let name = &manifest.extension.name;
-
-    let target = extensions_dir.join(name);
-    if target.exists() || target.is_symlink() {
-        anyhow::bail!(
-            "Extension '{}' already installed at {}. Remove first with: omegon extension remove {}",
-            name,
-            target.display(),
-            name
-        );
-    }
-
-    // Copy extracted contents to extensions dir (not symlink — this is a real install)
-    copy_dir_recursive(ext_root, &target)?;
+    validate_name(name)?;
+    publish_extension_source(ext_root, &manifest_bytes, false, None)?;
 
     // Make native binary executable
     if manifest.is_native() {
-        if let Ok(bin_path) = manifest.native_binary_path(&target) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&bin_path)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&bin_path, perms)?;
-            }
+        if manifest.native_binary_path(ext_root).is_ok() {
             println!(
                 "Installed extension '{}' v{} (pre-built binary)",
                 name, manifest.extension.version
@@ -795,26 +832,261 @@ pub(crate) fn install_tarball(extensions_dir: &Path, uri: &str) -> anyhow::Resul
 
     print_secrets_hint(&manifest);
 
-    // Clean up temp dir
-    std::fs::remove_dir_all(&tmp).ok();
-
     Ok(())
 }
 
-/// Recursively copy a directory tree.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let dest_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &dest_path)?;
-        } else {
-            std::fs::copy(entry.path(), &dest_path)?;
+fn publish_extension_source(
+    source_path: &Path,
+    manifest_bytes: &[u8],
+    overwrite: bool,
+    install_source: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    let mutation = extension_mutation_directory(true)?.expect("create returns a mutation root");
+    import_extension_source(
+        &mutation,
+        source_path,
+        manifest_bytes,
+        None,
+        overwrite,
+        install_source,
+        None,
+        None,
+        None,
+    )
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_extension_source(
+    mutation: &crate::contribution_loading::GuardedContributionMutationDirectory,
+    source_path: &Path,
+    expected_manifest_bytes: &[u8],
+    target_name: Option<&str>,
+    overwrite: bool,
+    install_source: Option<&[u8]>,
+    expected_existing: Option<&omegon_maintenance_contracts::PathIdentityV1>,
+    config: Option<&[u8]>,
+    state: Option<&[u8]>,
+) -> anyhow::Result<ExtensionManifest> {
+    let source = std::fs::File::open(source_path)?;
+    let manifest_bytes =
+        crate::contribution_loading::read_file_at(&source, b"manifest.toml", 1024 * 1024)?
+            .ok_or_else(|| anyhow::anyhow!("extension source has no manifest.toml"))?;
+    if manifest_bytes != expected_manifest_bytes {
+        anyhow::bail!("extension manifest changed after candidate preparation");
+    }
+    let manifest: ExtensionManifest = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
+    validate_name(&manifest.extension.name)?;
+    let target_name = target_name.unwrap_or(&manifest.extension.name);
+    validate_name(target_name)?;
+    let binary_path = match &manifest.runtime {
+        crate::extensions::manifest::RuntimeConfig::Native { binary, .. } => {
+            Some(Path::new(binary.as_str()))
+        }
+        crate::extensions::manifest::RuntimeConfig::Oci { .. } => None,
+    };
+    if !overwrite
+        && mutation
+            .entry_names(10_000)?
+            .iter()
+            .any(|name| name == target_name.as_bytes())
+    {
+        anyhow::bail!(
+            "Extension '{}' is already installed",
+            manifest.extension.name
+        );
+    }
+    mutation.import_extension_directory_with_state(
+        target_name.as_bytes(),
+        &source,
+        binary_path,
+        &manifest_bytes,
+        overwrite,
+        expected_existing,
+        install_source,
+        config,
+        state,
+    )?;
+    Ok(manifest)
+}
+
+struct PreparedGitSource {
+    _directory: PreparedDirectory,
+    source: PathBuf,
+    manifest: ExtensionManifest,
+    manifest_bytes: Vec<u8>,
+    update_source: GitSource,
+}
+
+impl PreparedGitSource {
+    fn source_metadata(&self) -> anyhow::Result<Vec<u8>> {
+        let mut table = toml::Table::new();
+        table.insert(
+            "source".to_string(),
+            toml::Value::String(self.update_source.uri.clone()),
+        );
+        if let Some(reference) = &self.update_source.reference {
+            table.insert(
+                "reference".to_string(),
+                toml::Value::String(reference.clone()),
+            );
+        }
+        Ok(toml::to_string_pretty(&table)?.into_bytes())
+    }
+}
+
+struct PreparedDirectory(PathBuf);
+
+impl Drop for PreparedDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            tracing::warn!(path = %self.0.display(), %error, "could not remove extension preparation directory");
+        }
+    }
+}
+
+fn create_prepared_directory(prefix: &str) -> anyhow::Result<PreparedDirectory> {
+    let root = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir(&root)?;
+    Ok(PreparedDirectory(root))
+}
+
+fn extract_extension_archive(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
+    const MAX_ENTRIES: usize = 10_000;
+    const MAX_EXTRACTED_BYTES: u64 = 512 * 1024 * 1024;
+    let archive = std::fs::File::open(archive_path)?;
+    let decoder = flate2::read::GzDecoder::new(archive);
+    let mut archive = tar::Archive::new(decoder);
+    let mut paths = std::collections::HashSet::new();
+    let mut entries = 0_usize;
+    let mut extracted_bytes = 0_u64;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        entries += 1;
+        if entries > MAX_ENTRIES {
+            anyhow::bail!("extension archive exceeds the entry limit");
+        }
+        let path = entry.path()?.into_owned();
+        let components = path.components().collect::<Vec<_>>();
+        if components.is_empty()
+            || components.len() > 32
+            || components
+                .iter()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            anyhow::bail!("extension archive contains an unsafe path");
+        }
+        if !paths.insert(path.clone()) {
+            anyhow::bail!("extension archive contains duplicate paths");
+        }
+        let entry_type = entry.header().entry_type();
+        if !(entry_type.is_dir() || entry_type.is_file()) {
+            anyhow::bail!("extension archive contains links or special entries");
+        }
+        if entry_type.is_file() {
+            extracted_bytes = extracted_bytes
+                .checked_add(entry.header().size()?)
+                .ok_or_else(|| anyhow::anyhow!("extension archive size overflow"))?;
+            if extracted_bytes > MAX_EXTRACTED_BYTES {
+                anyhow::bail!("extension archive exceeds the extracted size limit");
+            }
+        }
+        if !entry.unpack_in(destination)? {
+            anyhow::bail!("extension archive entry escapes the extraction directory");
         }
     }
     Ok(())
+}
+
+fn prepare_git_source(update_source: &GitSource) -> anyhow::Result<PreparedGitSource> {
+    let uri = &update_source.uri;
+    let directory = create_prepared_directory("omegon-extension")?;
+    let root = directory.0.clone();
+    let source = root.join("source");
+    let status = std::process::Command::new("git")
+        .arg("clone")
+        .arg(uri)
+        .arg(&source)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "git clone failed for {uri}\n  \
+             Check: URL is correct, you have network access, and git credentials are configured."
+        );
+    }
+    if let Some(reference) = &update_source.reference {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["checkout", reference])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("git checkout failed for reference '{reference}' from {uri}");
+        }
+    }
+    let manifest_path = source.join("manifest.toml");
+    if !manifest_path.exists() {
+        anyhow::bail!("cloned repository does not contain manifest.toml");
+    }
+    let manifest_bytes = std::fs::read(&manifest_path)?;
+    let manifest: ExtensionManifest = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
+    validate_name(&manifest.extension.name)?;
+    if manifest.is_native() && source.join("Cargo.toml").exists() {
+        println!("Building extension '{}'...", manifest.extension.name);
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .current_dir(&source)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!(
+                "cargo build --release failed (exit {}) for extension '{}'",
+                status.code().unwrap_or(-1),
+                manifest.extension.name
+            );
+        }
+        println!("Build succeeded.");
+    } else if manifest.is_native() && manifest.native_binary_path(&source).is_err() {
+        println!("Warning: native binary not found. Build manually before installing.");
+    }
+    Ok(PreparedGitSource {
+        _directory: directory,
+        source,
+        manifest,
+        manifest_bytes,
+        update_source: GitSource {
+            uri: uri.clone(),
+            reference: git_reference(&root.join("source"))?,
+        },
+    })
+}
+
+fn git_reference(repository: &Path) -> anyhow::Result<Option<String>> {
+    let branch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()?;
+    if branch.status.success() {
+        let branch = String::from_utf8(branch.stdout)?.trim().to_string();
+        return Ok((!branch.is_empty()).then_some(branch));
+    }
+    let revision = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !revision.status.success() {
+        return Ok(None);
+    }
+    let revision = String::from_utf8(revision.stdout)?.trim().to_string();
+    Ok((!revision.is_empty()).then_some(revision))
 }
 
 fn infer_extension_name(uri: &str) -> anyhow::Result<String> {
@@ -1119,27 +1391,10 @@ binary = "target/release/test-ext"
         assert!(!installed.join("source-only").exists());
     }
 
-    #[test]
-    fn copy_dir_recursive_copies_files_and_subdirs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("src");
-        let dst = tmp.path().join("dst");
-
-        std::fs::create_dir_all(src.join("sub")).unwrap();
-        std::fs::write(src.join("a.txt"), "hello").unwrap();
-        std::fs::write(src.join("sub/b.txt"), "world").unwrap();
-
-        copy_dir_recursive(&src, &dst).unwrap();
-
-        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
-        assert_eq!(
-            std::fs::read_to_string(dst.join("sub/b.txt")).unwrap(),
-            "world"
-        );
-    }
-
+    #[cfg(unix)]
     #[test]
     fn install_tarball_from_local_file() {
+        let _lock = crate::test_support::env::lock();
         let tmp = tempfile::tempdir().unwrap();
 
         // Build a tarball containing manifest.toml + a fake binary
@@ -1175,10 +1430,12 @@ binary = "my-ext"
         assert!(status.success(), "tar should succeed");
 
         // Install into a fresh extensions dir
-        let ext_dir = tempfile::tempdir().unwrap();
-        install_tarball(ext_dir.path(), tarball.to_str().unwrap()).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let ext_dir = home.path().join("extensions");
+        install_tarball(&ext_dir, tarball.to_str().unwrap()).unwrap();
 
-        let installed = ext_dir.path().join("my-ext");
+        let installed = ext_dir.join("my-ext");
         assert!(installed.exists(), "extension dir should exist");
         assert!(
             installed.join("manifest.toml").exists(),
@@ -1219,8 +1476,10 @@ binary = "my-ext"
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_tarball_rejects_duplicate() {
+        let _lock = crate::test_support::env::lock();
         let tmp = tempfile::tempdir().unwrap();
 
         let staging = tmp.path().join("dup-ext");
@@ -1251,17 +1510,153 @@ binary = "dup-ext"
             .status()
             .unwrap();
 
-        let ext_dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let ext_dir = home.path().join("extensions");
 
         // First install succeeds
-        install_tarball(ext_dir.path(), tarball.to_str().unwrap()).unwrap();
+        install_tarball(&ext_dir, tarball.to_str().unwrap()).unwrap();
 
         // Second install fails with "already installed"
-        let err = install_tarball(ext_dir.path(), tarball.to_str().unwrap()).unwrap_err();
+        let err = install_tarball(&ext_dir, tarball.to_str().unwrap()).unwrap_err();
         assert!(
             err.to_string().contains("already installed"),
             "should reject duplicate: {}",
             err
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_tarball_rejects_links() {
+        let _lock = crate::test_support::env::lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join("linked-ext");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(
+            staging.join("manifest.toml"),
+            r#"[extension]
+name = "linked-ext"
+version = "1.0.0"
+description = "Link fixture"
+
+[runtime]
+type = "oci"
+image = "example.invalid/linked-ext:1.0.0"
+"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("manifest.toml", staging.join("linked-manifest")).unwrap();
+        let tarball = tmp.path().join("linked-ext.tar.gz");
+        let status = std::process::Command::new("tar")
+            .args(["czf"])
+            .arg(&tarball)
+            .arg("-C")
+            .arg(tmp.path())
+            .arg("linked-ext")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+
+        let error = install_tarball(&home.path().join("extensions"), tarball.to_str().unwrap())
+            .unwrap_err();
+        assert!(error.to_string().contains("links or special entries"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_extension_update_replaces_complete_guarded_bundle() {
+        let _lock = crate::test_support::env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let repository = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        run_git(repository.path(), &["init"]);
+        write_git_extension_manifest(repository.path(), "1.0.0");
+        run_git(repository.path(), &["add", "."]);
+        run_git(
+            repository.path(),
+            &[
+                "-c",
+                "user.name=Omegon Test",
+                "-c",
+                "user.email=omegon@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+
+        install_git(
+            &home.path().join("extensions"),
+            repository.path().to_str().unwrap(),
+        )
+        .unwrap();
+        let installed = home.path().join("extensions/git-fixture");
+        assert!(!installed.join(".git").exists());
+        assert!(installed.join(".omegon/install-source.toml").is_file());
+        disable("git-fixture").unwrap();
+        set_config("git-fixture", "endpoint", "operator-value").unwrap();
+
+        write_git_extension_manifest(repository.path(), "2.0.0");
+        run_git(repository.path(), &["add", "manifest.toml"]);
+        run_git(
+            repository.path(),
+            &[
+                "-c",
+                "user.name=Omegon Test",
+                "-c",
+                "user.email=omegon@example.invalid",
+                "commit",
+                "-m",
+                "update",
+            ],
+        );
+        update(Some("git-fixture")).unwrap();
+
+        let manifest = ExtensionManifest::from_extension_dir(&installed).unwrap();
+        assert_eq!(manifest.extension.version, "2.0.0");
+        assert!(installed.join(".omegon/install-source.toml").is_file());
+        assert!(!ExtensionState::load(&installed).unwrap().enabled);
+        assert!(
+            std::fs::read_to_string(installed.join("config.toml"))
+                .unwrap()
+                .contains("operator-value")
+        );
+    }
+
+    #[cfg(unix)]
+    fn write_git_extension_manifest(directory: &Path, version: &str) {
+        std::fs::write(
+            directory.join("manifest.toml"),
+            format!(
+                r#"[extension]
+name = "git-fixture"
+version = "{version}"
+description = "Git fixture"
+
+[runtime]
+type = "oci"
+image = "example.invalid/git-fixture:{version}"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn run_git(directory: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

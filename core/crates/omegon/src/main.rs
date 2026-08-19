@@ -2077,69 +2077,161 @@ struct DefaultSession {
 /// Type alias for the shared session state. `None` means a turn is in progress.
 type SharedSession = Arc<tokio::sync::Mutex<Option<DefaultSession>>>;
 
+#[derive(Clone)]
+struct DefaultSessionRuntime {
+    state: SharedSession,
+    supervisor: Arc<tokio::sync::Mutex<InteractiveRuntimeSupervisor>>,
+    active_cancel: operator_commands::SharedCancel,
+}
+
 /// Run a daemon turn with the take/replace pattern. Acquires the session
 /// briefly to extract state, runs the turn without holding the lock, then
 /// puts state back. Returns `Err` if the session is busy (turn in progress).
 async fn run_daemon_turn(
-    session: &SharedSession,
+    runtime: &DefaultSessionRuntime,
     shared_settings: &settings::SharedSettings,
     fallback_model: &str,
     events_tx: &tokio::sync::broadcast::Sender<omegon_traits::AgentEvent>,
     config: r#loop::LoopConfig,
-    setup_fn: impl FnOnce(&mut DefaultSession),
+    submission: operator_commands::PromptSubmission,
 ) -> anyhow::Result<()> {
-    // Read the current model from shared_settings so SIGHUP reloads and
-    // /set_model changes are picked up. Falls back to the startup model if
-    // the lock is poisoned.
-    let model = shared_settings
-        .lock()
-        .map(|s| s.model.clone())
-        .unwrap_or_else(|_| fallback_model.to_string());
-
-    // Resolve bridge per-turn so credential changes in auth.json are picked
-    // up without restarting the daemon.
-    let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&model).await {
-        Some(b) => b,
-        None => {
-            let _ = events_tx.send(AgentEvent::SystemNotification {
-                message: format!("No LLM provider available for model {model} — check auth"),
-            });
-            anyhow::bail!(
-                "No provider available for model {model}.\n\
-                 Run `omegon auth login` to set up authentication."
-            );
-        }
-    };
-
-    // Take ownership — Mutex held only for the .take() call.
-    let mut state = {
-        let mut guard = session.lock().await;
-        guard
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("session busy — turn already in progress"))?
-    };
-
-    setup_fn(&mut state);
-
-    let turn_cancel = CancellationToken::new();
-    let result = r#loop::run(
-        bridge.as_ref(),
-        &mut state.bus,
-        &mut state.context_manager,
-        &mut state.conversation,
-        events_tx,
-        turn_cancel,
-        &config,
-    )
-    .await;
-
-    // Always return state, even on error.
     {
-        let mut guard = session.lock().await;
-        *guard = Some(state);
+        let actor = RuntimeActor::from_submission(submission.submitted_by, submission.via);
+        let via = ControlSurface::from_via(submission.via);
+        let queue_mode = match submission.queue_mode {
+            operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
+            operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
+            operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
+        };
+        runtime.supervisor.lock().await.admit_prompt(
+            submission.text,
+            submission.image_paths,
+            actor,
+            via,
+            submission.metadata,
+            Some(queue_mode),
+        )?;
     }
+    let mut first_error = None;
 
-    result
+    loop {
+        let active = {
+            let mut supervisor = runtime.supervisor.lock().await;
+            match supervisor.start_next_turn()? {
+                Some(active) => active,
+                None => {
+                    return match first_error {
+                        Some(error) => Err(error),
+                        None => Ok(()),
+                    };
+                }
+            }
+        };
+
+        // Read the current model from shared_settings so SIGHUP reloads and
+        // /set_model changes are picked up. Falls back to the startup model if
+        // the lock is poisoned.
+        let model = shared_settings
+            .lock()
+            .map(|s| s.model.clone())
+            .unwrap_or_else(|_| fallback_model.to_string());
+
+        // Resolve bridge per-turn so credential changes in auth.json are picked
+        // up without restarting the daemon.
+        let bridge: Box<dyn LlmBridge> = match providers::auto_detect_bridge(&model).await {
+            Some(b) => b,
+            None => {
+                let _ = events_tx.send(AgentEvent::SystemNotification {
+                    message: format!("No LLM provider available for model {model} — check auth"),
+                });
+                runtime
+                    .supervisor
+                    .lock()
+                    .await
+                    .close_durable_worker(RuntimeTurnOutcome::Failed)?;
+                anyhow::bail!(
+                    "No provider available for model {model}.\n\
+                 Run `omegon auth login` to set up authentication."
+                );
+            }
+        };
+
+        // Take ownership — Mutex held only for the .take() call.
+        let mut state = {
+            let mut guard = runtime.state.lock().await;
+            guard
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("daemon session state unavailable"))?
+        };
+
+        state.conversation.push_user(active.prompt.text);
+
+        let turn_cancel = CancellationToken::new();
+        if let Ok(mut guard) = runtime.active_cancel.lock() {
+            *guard = Some(turn_cancel.clone());
+        }
+        let result = r#loop::run(
+            bridge.as_ref(),
+            &mut state.bus,
+            &mut state.context_manager,
+            &mut state.conversation,
+            events_tx,
+            turn_cancel.clone(),
+            &config,
+        )
+        .await;
+        if let Ok(mut guard) = runtime.active_cancel.lock() {
+            guard.take();
+        }
+
+        // Always return state, even on error.
+        {
+            let mut guard = runtime.state.lock().await;
+            *guard = Some(state);
+        }
+
+        let outcome = if turn_cancel.is_cancelled() {
+            RuntimeTurnOutcome::Revoked
+        } else if result.is_err() {
+            RuntimeTurnOutcome::Failed
+        } else {
+            RuntimeTurnOutcome::Completed
+        };
+        runtime
+            .supervisor
+            .lock()
+            .await
+            .close_durable_worker(outcome)?;
+        if let Err(error) = result
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+}
+
+async fn cancel_daemon_turn(
+    runtime: &DefaultSessionRuntime,
+    actor: RuntimeActor,
+    via: ControlSurface,
+) -> anyhow::Result<bool> {
+    let admitted = {
+        let mut supervisor = runtime.supervisor.lock().await;
+        let Some(identity) = supervisor.current_identity() else {
+            return Ok(false);
+        };
+        matches!(
+            supervisor.request_durable_interrupt(identity, actor, via)?,
+            InterruptAdmission::Admitted | InterruptAdmission::Duplicate
+        )
+    };
+    if admitted
+        && let Ok(guard) = runtime.active_cancel.lock()
+        && let Some(cancel) = guard.as_ref()
+    {
+        cancel.cancel();
+    }
+    Ok(admitted)
 }
 
 /// Pre-setup agent manifest resolution. Runs BEFORE AgentSetup::new() so
@@ -2590,11 +2682,31 @@ async fn run_embedded_command(
     // Wrap the pre-existing agent state as the default session. This
     // preserves single-session backward compatibility — events without
     // identity metadata route here (web API, anonymous vox messages).
-    let default_session: SharedSession = Arc::new(tokio::sync::Mutex::new(Some(DefaultSession {
-        bus: agent.bus,
-        context_manager: agent.context_manager,
-        conversation: agent.conversation,
-    })));
+    let daemon_session_snapshot = session::sessions_dir(&agent.cwd)
+        .ok_or_else(|| anyhow::anyhow!("cannot determine daemon session directory"))?
+        .join(format!("{}.json", agent.session_id));
+    let daemon_authority = session_authority::SessionAuthority::open(
+        &daemon_session_snapshot,
+        &agent.session_id,
+        &agent.workspace_state.lease.workspace_id,
+        &agent.instance_id,
+        session_authority::ActorIdentity {
+            principal: "daemon-host".into(),
+            ingress: "daemon".into(),
+        },
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )?;
+    let default_session = DefaultSessionRuntime {
+        state: Arc::new(tokio::sync::Mutex::new(Some(DefaultSession {
+            bus: agent.bus,
+            context_manager: agent.context_manager,
+            conversation: agent.conversation,
+        }))),
+        supervisor: Arc::new(tokio::sync::Mutex::new(
+            InteractiveRuntimeSupervisor::with_authority(daemon_authority)?,
+        )),
+        active_cancel: Arc::new(std::sync::Mutex::new(None)),
+    };
 
     let trigger_configs = triggers::load_trigger_configs(&cwd);
     let trigger_events = triggers::EventTriggers::from_configs(&trigger_configs);
@@ -2721,7 +2833,14 @@ async fn run_embedded_command(
 
                             if let Err(e) = run_daemon_turn(
                                 &session, &shared_settings, &model, &events_tx, loop_config,
-                                |state| { state.conversation.push_user(text); },
+                                operator_commands::PromptSubmission {
+                                    text,
+                                    image_paths: Vec::new(),
+                                    submitted_by: "vox-daemon".into(),
+                                    via: "http-event-ingress",
+                                    queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                    metadata: operator_commands::PromptMetadata::default(),
+                                },
                             ).await {
                                 tracing::error!(error = %e, "daemon vox event loop error");
                             }
@@ -2733,12 +2852,6 @@ async fn run_embedded_command(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(web::WebCommand::UserPrompt { text, image_paths }) => {
-                        if !image_paths.is_empty() {
-                            tracing::warn!(
-                                count = image_paths.len(),
-                                "daemon: prompt attachments are not yet supported in headless serve mode; ignoring"
-                            );
-                        }
                         tracing::info!(prompt_len = text.len(), "daemon: received user prompt");
 
                         // Clone handles for the spawned task.
@@ -2769,7 +2882,14 @@ async fn run_embedded_command(
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
-                                    |state| { state.conversation.push_user(text); },
+                                    operator_commands::PromptSubmission {
+                                        text,
+                                        image_paths: image_paths.into_iter().map(PathBuf::from).collect(),
+                                        submitted_by: "web-client".into(),
+                                        via: "websocket",
+                                        queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                        metadata: operator_commands::PromptMetadata::default(),
+                                    },
                                 ).await {
                                     tracing::error!(error = %e, "daemon agent loop error");
                                 }
@@ -2780,7 +2900,7 @@ async fn run_embedded_command(
                     Some(web::WebCommand::ManagedDelegateControl { method, payload, respond_to }) => {
                         let reply = match crate::managed_agent_supervisor::parse_operation(&method, &payload) {
                             Ok((envelope, crate::managed_agent_supervisor::SupervisorOperation::Execute { tool, args })) => {
-                                let session = default_session.lock().await;
+                                let session = default_session.state.lock().await;
                                 match session.as_ref() {
                                     Some(session) => match session.bus.execute_tool(
                                         tool,
@@ -2855,7 +2975,14 @@ async fn run_embedded_command(
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
-                                    |state| { state.conversation.push_user(prompt); },
+                                    operator_commands::PromptSubmission {
+                                        text: prompt,
+                                        image_paths: Vec::new(),
+                                        submitted_by: "web-slash".into(),
+                                        via: "websocket",
+                                        queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                        metadata: operator_commands::PromptMetadata::default(),
+                                    },
                                 ).await {
                                     tracing::error!(error = %e, "daemon slash command loop error");
                                 }
@@ -2872,7 +2999,17 @@ async fn run_embedded_command(
                         );
                     }
                     Some(web::WebCommand::Cancel) => {
-                        tracing::info!("daemon: cancel requested (no active loop)");
+                        match cancel_daemon_turn(
+                            &default_session,
+                            RuntimeActor::from_submission("web-client".into(), "websocket"),
+                            ControlSurface::WebSocket,
+                        )
+                        .await
+                        {
+                            Ok(true) => tracing::info!("daemon: web cancellation admitted"),
+                            Ok(false) => tracing::info!("daemon: web cancellation requested while idle"),
+                            Err(error) => tracing::error!(%error, "daemon: web cancellation rejected"),
+                        }
                     }
                     Some(web::WebCommand::Shutdown) => {
                         tracing::info!("daemon: shutdown requested");
@@ -2917,7 +3054,14 @@ async fn run_embedded_command(
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
-                                    |state| { state.conversation.push_user(text); },
+                                    operator_commands::PromptSubmission {
+                                        text,
+                                        image_paths: Vec::new(),
+                                        submitted_by: "ipc-controller".into(),
+                                        via: "ipc",
+                                        queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                        metadata: operator_commands::PromptMetadata::default(),
+                                    },
                                 ).await {
                                     tracing::error!(error = %e, "daemon IPC agent loop error");
                                 }
@@ -2985,7 +3129,14 @@ async fn run_embedded_command(
 
                                 if let Err(e) = run_daemon_turn(
                                     &session, &shared_settings, &model, &events_tx, loop_config,
-                                    |state| { state.conversation.push_user(prompt); },
+                                    operator_commands::PromptSubmission {
+                                        text: prompt,
+                                        image_paths: Vec::new(),
+                                        submitted_by: "ipc-controller".into(),
+                                        via: "ipc",
+                                        queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                        metadata: operator_commands::PromptMetadata::default(),
+                                    },
                                 ).await {
                                     tracing::error!(error = %e, "daemon IPC slash command loop error");
                                 }
@@ -3000,10 +3151,16 @@ async fn run_embedded_command(
                             },
                         );
                     }
-                    Some(operator_commands::OperatorCommand::CancelActiveTurn { .. }) => {
-                        // Preserve the legacy daemon cancellation behavior until
-                        // the daemon session adopts the shared turn supervisor.
-                        global_cancel.cancel();
+                    Some(operator_commands::OperatorCommand::CancelActiveTurn { submitted_by, via }) => {
+                        if let Err(error) = cancel_daemon_turn(
+                            &default_session,
+                            RuntimeActor::from_submission(submitted_by, via),
+                            ControlSurface::from_via(via),
+                        )
+                        .await
+                        {
+                            tracing::error!(%error, "daemon: IPC cancellation rejected");
+                        }
                     }
                     Some(operator_commands::OperatorCommand::Quit { confirmed: true }) => {
                         tracing::info!("daemon: confirmed IPC shutdown requested");
@@ -3089,7 +3246,14 @@ async fn run_embedded_command(
 
                         if let Err(e) = run_daemon_turn(
                             &session, &shared_settings, &model, &events_tx, loop_config,
-                            |state| { state.conversation.push_user(prompt); },
+                            operator_commands::PromptSubmission {
+                                text: prompt,
+                                image_paths: Vec::new(),
+                                submitted_by: "trigger-runtime".into(),
+                                via: "internal",
+                                queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                metadata: operator_commands::PromptMetadata::default(),
+                            },
                         ).await {
                             tracing::error!(
                                 trigger = %trigger_name,
@@ -3159,7 +3323,14 @@ async fn run_embedded_command(
 
                         if let Err(e) = run_daemon_turn(
                             &session, &shared_settings, &model, &events_tx, loop_config,
-                            |state| { state.conversation.push_user(prompt); },
+                            operator_commands::PromptSubmission {
+                                text: prompt,
+                                image_paths: Vec::new(),
+                                submitted_by: "daemon-event".into(),
+                                via: "http-event-ingress",
+                                queue_mode: operator_commands::PromptQueueMode::UntilReady,
+                                metadata: operator_commands::PromptMetadata::default(),
+                            },
                         ).await {
                             tracing::error!(
                                 node_id = %node_id,
@@ -3182,7 +3353,7 @@ async fn run_embedded_command(
 
     // Save the default session (if not currently in a turn).
     {
-        let guard = default_session.lock().await;
+        let guard = default_session.state.lock().await;
         if let Some(ref sess) = *guard {
             if let Err(e) =
                 session::save_session(&sess.conversation, &agent_cwd, Some(&agent_session_id))
@@ -10106,6 +10277,56 @@ mod tests {
             }
             other => panic!("expected system notification, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn daemon_cancel_uses_supervisor_admission_before_token_cancellation() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = session_authority::SessionAuthority::open(
+            &temp.path().join("daemon-session.json"),
+            "daemon-session",
+            "workspace-1",
+            "generation-1",
+            session_authority::ActorIdentity {
+                principal: "daemon".into(),
+                ingress: "daemon".into(),
+            },
+            "2026-08-19T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        supervisor
+            .admit_prompt(
+                "active".into(),
+                Vec::new(),
+                RuntimeActor::from_submission("web-client".into(), "websocket"),
+                ControlSurface::WebSocket,
+                operator_commands::PromptMetadata::default(),
+                None,
+            )
+            .unwrap();
+        supervisor.start_next_turn().unwrap().unwrap();
+        let token = CancellationToken::new();
+        let runtime = DefaultSessionRuntime {
+            state: Arc::new(tokio::sync::Mutex::new(None)),
+            supervisor: Arc::new(tokio::sync::Mutex::new(supervisor)),
+            active_cancel: Arc::new(std::sync::Mutex::new(Some(token.clone()))),
+        };
+
+        assert!(
+            cancel_daemon_turn(
+                &runtime,
+                RuntimeActor::from_submission("ipc-controller".into(), "ipc"),
+                ControlSurface::Ipc,
+            )
+            .await
+            .unwrap()
+        );
+        assert!(token.is_cancelled());
+        assert!(matches!(
+            runtime.supervisor.lock().await.active_turn().unwrap().phase,
+            ActiveTurnPhase::Cancelling { .. }
+        ));
     }
 
     #[test]

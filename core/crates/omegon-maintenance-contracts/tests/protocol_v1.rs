@@ -6,19 +6,20 @@ use std::{
 };
 
 use omegon_maintenance_contracts::{
-    AuditCheckpointV1, AuditFrontierV1, AuditReceiptV1, AuditRecordV1, AuthorityKey,
-    CommandSemanticsV1, ContributionKind, ContributionSelector, DenyRecordV1, DenyState,
-    DenyStateV1, DetachObservation, ErrorV1, FenceState, FenceV1, FileIdentityV1,
-    InstallationStateV1, ListScope, LockMode, MaintenanceResultV1, MaintenanceStateV1,
-    MutationResultV1, MutationState, OwnershipRecordV1, PackageManifestV1, PathIdentityV1,
-    PostStateV1, ProtocolLock, ReconciliationDecision, Record, RecordObservation, ResultStatus,
-    SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState, TransactionState, TransactionStepKind,
-    TransactionStepState, TransactionStepV1, TransactionV1, append_bytes_at, canonical_digest,
-    canonical_json, command_fingerprint, contribution_domain_key, create_record_no_replace_at,
-    derive_key, entry_key, normalize_workspace_path, open_secure_dir_at, open_secure_root,
-    parse_record, path_identity, read_bytes_at, read_record_at, reconcile_detach, reconcile_record,
-    record_identity_at, replace_record_at, resolve_list_scope, scope_key, session_key,
-    validate_child_name, workspace_key,
+    ArtifactIdentityV1, AuditCheckpointV1, AuditFrontierV1, AuditReceiptV1, AuditRecordV1,
+    AuthorityKey, CleanupCapability, CommandSemanticsV1, ContributionKind, ContributionSelector,
+    DenyRecordV1, DenyState, DenyStateV1, DetachObservation, ErrorV1, FenceState, FenceV1,
+    FileIdentityV1, InstallationStateV1, LifecycleBoundary, ListScope, LockMode,
+    MaintenanceResultV1, MaintenanceStateV1, MutationResultV1, MutationState, OwnershipRecordV1,
+    PackageManifestV1, PathIdentityV1, PostStateV1, ProtocolLock, ReconciliationDecision, Record,
+    RecordObservation, ResultStatus, SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState,
+    TransactionState, TransactionStepKind, TransactionStepState, TransactionStepV1, TransactionV1,
+    append_bytes_at, canonical_digest, canonical_json, command_fingerprint,
+    contribution_domain_key, create_record_no_replace_at, derive_key, entry_key,
+    normalize_workspace_path, open_secure_dir_at, open_secure_root, parse_record, path_identity,
+    read_bytes_at, read_record_at, reconcile_detach, reconcile_record, record_identity_at,
+    replace_record_at, resolve_list_scope, scope_key, session_key, validate_child_name,
+    workspace_key,
 };
 use sha2::{Digest, Sha256};
 
@@ -34,6 +35,39 @@ fn installation() -> InstallationStateV1 {
         home,
         next_audit_sequence: 1,
     }
+}
+
+#[test]
+fn ownership_constructor_and_refresh_preserve_identity() {
+    let workspace = workspace_key("unix", b"/tmp/omegon-workspace");
+    let writer = ArtifactIdentityV1 {
+        version: "1.0.0".into(),
+        commit: "abcdef0".into(),
+        target: "x86_64-unknown-linux-gnu".into(),
+        digest: AuthorityKey::from_bytes([7; 32]),
+    };
+    let mut record = OwnershipRecordV1::new(
+        "runtime-test".into(),
+        "generation-test".into(),
+        workspace,
+        "linux:00000000-0000-0000-0000-000000000001".into(),
+        42,
+        None,
+        "linux:123".into(),
+        LifecycleBoundary::OwnedProcessTree,
+        CleanupCapability::BestEffort,
+        writer,
+        "2026-08-19T00:00:00Z".into(),
+        100,
+    )
+    .unwrap();
+    let identity = record.record_id;
+    record
+        .refresh_heartbeat("2026-08-19T00:01:00Z".into(), 200)
+        .unwrap();
+    assert_eq!(record.record_id, identity);
+    assert_eq!(record.expires_after_seconds, 300);
+    assert_eq!(record.heartbeat_monotonic_ticks, 200);
 }
 
 #[test]

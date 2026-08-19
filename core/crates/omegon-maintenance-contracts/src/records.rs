@@ -234,6 +234,62 @@ pub struct OwnershipRecordV1 {
     pub expires_after_seconds: u32,
 }
 
+impl OwnershipRecordV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        runtime_id: String,
+        generation_id: String,
+        workspace_key: AuthorityKey,
+        boot_id: String,
+        pid: u32,
+        process_group: Option<i32>,
+        process_start_token: String,
+        lifecycle_boundary: LifecycleBoundary,
+        cleanup_capability: CleanupCapability,
+        writer: ArtifactIdentityV1,
+        heartbeat_utc: String,
+        heartbeat_monotonic_ticks: u64,
+    ) -> Result<Self> {
+        let value = Self {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "ownership".into(),
+            record_id: derive_key(
+                "ownership",
+                &[
+                    workspace_key.as_bytes(),
+                    runtime_id.as_bytes(),
+                    generation_id.as_bytes(),
+                ],
+            ),
+            runtime_id,
+            generation_id,
+            workspace_key,
+            boot_id,
+            pid,
+            process_group,
+            process_start_token,
+            lifecycle_boundary,
+            cleanup_capability,
+            writer,
+            heartbeat_utc,
+            heartbeat_monotonic_ticks,
+            expires_after_seconds: 300,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn refresh_heartbeat(
+        &mut self,
+        heartbeat_utc: String,
+        heartbeat_monotonic_ticks: u64,
+    ) -> Result<()> {
+        self.heartbeat_utc = heartbeat_utc;
+        self.heartbeat_monotonic_ticks = heartbeat_monotonic_ticks;
+        self.validate()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleBoundary {

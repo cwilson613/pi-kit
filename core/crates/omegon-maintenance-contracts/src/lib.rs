@@ -7,6 +7,7 @@
 mod canonical;
 mod key;
 mod lock;
+mod process;
 mod records;
 mod recovery;
 mod selector;
@@ -19,6 +20,9 @@ pub use key::{
     session_domain_key, session_key, workspace_key,
 };
 pub use lock::{LockMode, ProtocolLock};
+pub use process::{
+    ProcessObservation, current_boot_id, current_monotonic_ns, observe_process_start,
+};
 pub use records::*;
 pub use recovery::{
     DetachObservation, ReconciliationDecision, RecordObservation, reconcile_detach,

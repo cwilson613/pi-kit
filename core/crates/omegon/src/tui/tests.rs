@@ -6052,6 +6052,7 @@ activation: always
     let _cwd = push_current_dir(dir.path());
 
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().to_string_lossy().into_owned();
     let (tx, mut rx) = test_tx_with_rx();
     let result = app.handle_slash_command("/skills reload", &tx);
 
@@ -6507,6 +6508,7 @@ Loaded by runtime substrate refresh.
     let _cwd = push_current_dir(dir.path());
 
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().to_string_lossy().into_owned();
     let before_generation = app.runtime_generation;
     assert_eq!(
         app.augment_registry

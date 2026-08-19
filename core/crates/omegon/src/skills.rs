@@ -941,9 +941,16 @@ pub fn disclosure_projection(
 }
 
 pub fn delete_external_skill(name: &str) -> anyhow::Result<SkillDeleteSummary> {
-    let slug = validate_skill_name(name)?;
     let cwd = std::env::current_dir()?;
-    let project_dir = cwd.join(".omegon/skills").join(&slug);
+    delete_external_skill_at_root(name, &cwd)
+}
+
+pub(crate) fn delete_external_skill_at_root(
+    name: &str,
+    project_root: &std::path::Path,
+) -> anyhow::Result<SkillDeleteSummary> {
+    let slug = validate_skill_name(name)?;
+    let project_dir = project_root.join(".omegon/skills").join(&slug);
     if project_dir.exists() {
         std::fs::remove_dir_all(&project_dir)?;
         return Ok(SkillDeleteSummary {

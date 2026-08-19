@@ -9,17 +9,32 @@ use crate::features::persona::SharedAugmentRegistry;
 
 pub struct SkillsFeature {
     registry: SharedAugmentRegistry,
+    cwd: PathBuf,
+    home: PathBuf,
+    allowed_skills: Vec<String>,
 }
 
 impl SkillsFeature {
-    pub fn new(registry: SharedAugmentRegistry) -> Self {
-        Self { registry }
+    pub fn new(
+        registry: SharedAugmentRegistry,
+        cwd: PathBuf,
+        home: PathBuf,
+        allowed_skills: Vec<String>,
+    ) -> Self {
+        Self {
+            registry,
+            cwd,
+            home,
+            allowed_skills,
+        }
     }
 
     fn reload_skills(&self) {
-        if let Ok(cwd) = std::env::current_dir() {
-            self.registry.lock().load_skills(&cwd);
-        }
+        self.registry.lock().load_skills_subset_with_home(
+            &self.cwd,
+            &self.home,
+            &self.allowed_skills,
+        );
     }
 }
 
@@ -34,14 +49,14 @@ impl Feature for SkillsFeature {
             ToolDefinition {
                 name: crate::tool_registry::skills::SKILLS_LIST.into(),
                 label: "skills_list".into(),
-                description: "List resolved Omegon skills with source, editability, reloadability, shadow, and conflict metadata.".into(),
+                description: "List active Omegon skills from the current session's admitted snapshot with source and manifest metadata.".into(),
                 parameters: json!({ "type": "object", "properties": {} }),
                 capabilities: vec![omegon_traits::ToolCapability::Orientation],
             },
             ToolDefinition {
                 name: crate::tool_registry::skills::SKILLS_GET.into(),
                 label: "skills_get".into(),
-                description: "Read one resolved skill's manifest, body, path, and source metadata.".into(),
+                description: "Read one active skill's admitted manifest, body, path, and source metadata from the current session snapshot.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -135,46 +150,50 @@ impl Feature for SkillsFeature {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::skills::SKILLS_LIST => {
-                let entries = crate::skills::list_structured()?;
+                let registry = self.registry.lock();
+                let entries = registry.skill_snapshots();
                 let mut out = String::from("# Skills\n\n");
-                for entry in &entries {
+                let mut details = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let (manifest, _) = omegon_skills::parse_skill_file(&entry.content);
                     out.push_str(&format!(
-                        "- **{}** [{}]{}{}: {}\n",
-                        entry.name,
-                        entry.source,
-                        if entry.editable { " editable" } else { "" },
-                        if entry.reloadable { " reloadable" } else { "" },
-                        entry.description
+                        "- **{}** [{}]: {}\n",
+                        entry.name, entry.source, manifest.description
                     ));
+                    details.push(json!({
+                        "name": entry.name,
+                        "source": entry.source,
+                        "path": entry.path,
+                        "description": manifest.description,
+                        "manifest": manifest,
+                    }));
                 }
-                Ok(text_result_with_details(
-                    &out,
-                    serde_json::to_value(entries)?,
-                ))
+                Ok(text_result_with_details(&out, Value::Array(details)))
             }
             crate::tool_registry::skills::SKILLS_GET => {
                 let name = required_str(&args, "name")?;
-                let details = crate::skills::get_skill_details(name)?;
+                let registry = self.registry.lock();
+                let snapshot = registry
+                    .skill_snapshots()
+                    .iter()
+                    .find(|skill| skill.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("active skill '{name}' not found"))?;
+                let (manifest, body) = omegon_skills::parse_skill_file(&snapshot.content);
                 let mut out = format!(
                     "# Skill: {}\n\nPath: {}\n\nDescription: {}\n",
-                    details.manifest.name,
-                    details.path.display(),
-                    details.manifest.description
+                    manifest.name,
+                    snapshot.path.display(),
+                    manifest.description
                 );
-                if let Some(entry) = &details.entry {
-                    out.push_str(&format!(
-                        "Source: {}\nEditable: {}\nReloadable: {}\n",
-                        entry.source, entry.editable, entry.reloadable
-                    ));
-                }
+                out.push_str(&format!("Source: {}\n", snapshot.source));
                 out.push_str("\n## Body\n\n");
-                out.push_str(&details.body);
+                out.push_str(&body);
                 Ok(text_result_with_details(
                     &out,
                     json!({
-                        "manifest": details.manifest,
-                        "path": details.path,
-                        "entry": details.entry,
+                        "manifest": manifest,
+                        "path": snapshot.path,
+                        "source": snapshot.source,
                     }),
                 ))
             }
@@ -185,16 +204,21 @@ impl Feature for SkillsFeature {
                 ))
             }
             crate::tool_registry::skills::SKILLS_CREATE => {
-                let result = create_skill_file(&args)?;
+                let result = create_skill_file(&args, &self.cwd, &self.home)?;
                 self.reload_skills();
                 Ok(result)
             }
             crate::tool_registry::skills::SKILLS_IMPORT => {
-                let path = PathBuf::from(required_str(&args, "path")?);
+                let requested = PathBuf::from(required_str(&args, "path")?);
+                let path = if requested.is_absolute() {
+                    requested
+                } else {
+                    self.cwd.join(requested)
+                };
                 let scope = skill_scope(&args);
                 let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-                let summary =
-                    crate::skills::import_skill(&path, scope == SkillToolScope::Project, force)?;
+                let project_root = (scope == SkillToolScope::Project).then_some(self.cwd.as_path());
+                let summary = crate::skills::import_skill_at_root(&path, project_root, force)?;
                 self.reload_skills();
                 Ok(text_result_with_details(
                     &format!(
@@ -213,8 +237,7 @@ impl Feature for SkillsFeature {
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
                 let result = if let Some(name) = name {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    crate::armory::install(name, crate::armory::ArmoryInstallKind::Skill, &cwd)
+                    crate::armory::install(name, crate::armory::ArmoryInstallKind::Skill, &self.cwd)
                         .await
                         .map(|summary| {
                             text_result_with_details(
@@ -248,7 +271,7 @@ impl Feature for SkillsFeature {
             }
             crate::tool_registry::skills::SKILLS_DELETE => {
                 let name = required_str(&args, "name")?;
-                let summary = crate::skills::delete_external_skill(name)?;
+                let summary = crate::skills::delete_external_skill_at_root(name, &self.cwd)?;
                 self.reload_skills();
                 Ok(text_result_with_details(
                     &format!(
@@ -293,15 +316,19 @@ fn string_vec(args: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn create_skill_file(args: &Value) -> anyhow::Result<ToolResult> {
+fn create_skill_file(
+    args: &Value,
+    cwd: &std::path::Path,
+    home: &std::path::Path,
+) -> anyhow::Result<ToolResult> {
     let name = required_str(args, "name")?;
     let description = required_str(args, "description")?;
     let body = required_str(args, "body")?;
     let slug = crate::skills::validate_skill_name(name)?;
     let scope = skill_scope(args);
     let base = match scope {
-        SkillToolScope::Project => std::env::current_dir()?.join(".omegon/skills"),
-        SkillToolScope::User => crate::paths::omegon_home()?.join("skills"),
+        SkillToolScope::Project => cwd.join(".omegon/skills"),
+        SkillToolScope::User => home.join("skills"),
     };
     let destination = base.join(&slug);
     let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
@@ -394,9 +421,14 @@ mod tests {
     use super::*;
 
     fn feature() -> SkillsFeature {
-        SkillsFeature::new(SharedAugmentRegistry::new(
-            crate::plugins::registry::AugmentRegistry::new("Test Lex Imperialis.".into()),
-        ))
+        SkillsFeature::new(
+            SharedAugmentRegistry::new(crate::plugins::registry::AugmentRegistry::new(
+                "Test Lex Imperialis.".into(),
+            )),
+            std::env::current_dir().unwrap(),
+            crate::paths::omegon_home().unwrap(),
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -409,5 +441,68 @@ mod tests {
         assert!(tools.iter().any(|tool| tool.name == "skills_install"));
         assert!(tools.iter().any(|tool| tool.name == "skills_delete"));
         assert!(tools.iter().any(|tool| tool.name == "skills_reload"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reload_preserves_workspace_and_explicit_skill_subset() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        for (name, marker) in [
+            ("allowed", "ALLOWED_MARKER"),
+            ("excluded", "EXCLUDED_MARKER"),
+        ] {
+            let directory = project.path().join(".omegon/skills").join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: Test skill\nactivation: intent_detected\ntriggers: [{name}]\n---\n\n{marker}"
+                ),
+            )
+            .unwrap();
+        }
+        let registry = SharedAugmentRegistry::new(crate::plugins::registry::AugmentRegistry::new(
+            "Test Lex Imperialis.".into(),
+        ));
+        let feature = SkillsFeature::new(
+            registry.clone(),
+            project.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec!["allowed".into()],
+        );
+
+        feature.reload_skills();
+
+        {
+            let registry = registry.lock();
+            let prompt = registry.build_system_prompt();
+            let disclosed = registry.build_system_prompt_disclosed(project.path(), None);
+            assert_eq!(registry.skill_count(), 1);
+            assert!(prompt.contains("ALLOWED_MARKER"));
+            assert!(!prompt.contains("EXCLUDED_MARKER"));
+            assert!(disclosed.contains("ALLOWED_MARKER"));
+        }
+        assert!(
+            feature
+                .execute(
+                    crate::tool_registry::skills::SKILLS_GET,
+                    "test",
+                    json!({ "name": "excluded" }),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+        let listed = feature
+            .execute(
+                crate::tool_registry::skills::SKILLS_LIST,
+                "test",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.details.as_array().unwrap().len(), 1);
     }
 }

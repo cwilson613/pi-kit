@@ -966,6 +966,9 @@ impl AgentSetup {
         ));
         bus.register(Box::new(features::skills::SkillsFeature::new(
             shared_augment_registry,
+            cwd.clone(),
+            crate::paths::omegon_home()?,
+            child_skills,
         )));
 
         if let Some(ref settings) = settings {

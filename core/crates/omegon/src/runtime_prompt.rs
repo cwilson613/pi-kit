@@ -12,6 +12,7 @@ use std::path::PathBuf;
 pub(crate) enum RuntimeActorKind {
     Tui,
     Auspex,
+    AcpClient,
     IpcClient,
     WebClient,
     DaemonEvent,
@@ -29,6 +30,7 @@ impl RuntimeActor {
         let kind = match via {
             "tui" => RuntimeActorKind::Tui,
             "auspex" => RuntimeActorKind::Auspex,
+            "acp" => RuntimeActorKind::AcpClient,
             "ipc" => RuntimeActorKind::IpcClient,
             "websocket" | "http-event-ingress" => RuntimeActorKind::WebClient,
             _ => RuntimeActorKind::System,
@@ -44,6 +46,7 @@ impl RuntimeActor {
             match self.kind {
                 RuntimeActorKind::Tui => "tui",
                 RuntimeActorKind::Auspex => "auspex",
+                RuntimeActorKind::AcpClient => "acp-client",
                 RuntimeActorKind::IpcClient => "ipc-client",
                 RuntimeActorKind::WebClient => "web-client",
                 RuntimeActorKind::DaemonEvent => "daemon-event",
@@ -73,6 +76,7 @@ impl RuntimeActor {
 pub(crate) enum ControlSurface {
     Tui,
     Ipc,
+    Acp,
     WebSocket,
     HttpEventIngress,
     Internal,
@@ -83,6 +87,7 @@ impl ControlSurface {
         match via {
             "tui" => Self::Tui,
             "ipc" | "auspex" => Self::Ipc,
+            "acp" => Self::Acp,
             "websocket" => Self::WebSocket,
             "http-event-ingress" => Self::HttpEventIngress,
             _ => Self::Internal,
@@ -93,6 +98,7 @@ impl ControlSurface {
         match self {
             ControlSurface::Tui => "tui",
             ControlSurface::Ipc => "ipc",
+            ControlSurface::Acp => "acp",
             ControlSurface::WebSocket => "websocket",
             ControlSurface::HttpEventIngress => "http-event-ingress",
             ControlSurface::Internal => "internal",
@@ -433,6 +439,11 @@ mod tests {
     #[test]
     fn control_surface_labels_are_transport_specific() {
         assert_eq!(ControlSurface::WebSocket.label(), "websocket");
+        assert_eq!(ControlSurface::Acp.label(), "acp");
+        assert_eq!(
+            RuntimeActor::from_submission(String::new(), "acp").display_label(),
+            "acp-client"
+        );
         assert_eq!(
             ControlSurface::HttpEventIngress.label(),
             "http-event-ingress"

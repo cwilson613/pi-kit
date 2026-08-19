@@ -278,6 +278,7 @@ async fn await_turn_with_control<F>(
     request_rx: &mut mpsc::Receiver<WorkerRequest>,
     event_tx: &tokio::sync::broadcast::Sender<WorkerEvent>,
     cancel: &CancellationToken,
+    supervisor: &mut crate::runtime_supervisor::InteractiveRuntimeSupervisor,
     deferred_requests: &mut VecDeque<WorkerRequest>,
     request_channel_open: &mut bool,
 ) -> F::Output
@@ -290,15 +291,48 @@ where
             result = &mut turn => break result,
             request = request_rx.recv(), if *request_channel_open => match request {
                 Some(WorkerRequest::Cancel) => {
-                    cancel.cancel();
-                    let _ = event_tx.send(WorkerEvent::TurnCancelled {
-                        reason: "operator_cancelled".to_string(),
+                    let admission = supervisor.current_identity().map(|identity| {
+                        supervisor.request_durable_interrupt(
+                            identity,
+                            crate::runtime_prompt::RuntimeActor::from_submission(
+                                "acp-client".into(),
+                                "acp",
+                            ),
+                            crate::runtime_prompt::ControlSurface::Acp,
+                        )
                     });
+                    match admission.transpose() {
+                        Ok(Some(crate::runtime_turn::InterruptAdmission::Admitted | crate::runtime_turn::InterruptAdmission::Duplicate)) => {
+                            cancel.cancel();
+                            let _ = event_tx.send(WorkerEvent::TurnCancelled {
+                                reason: "operator_cancelled".to_string(),
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+                                "Cancellation was not accepted because session authority could not be updated: {error}"
+                            )));
+                        }
+                    }
                 }
                 Some(request) => deferred_requests.push_back(request),
                 None => {
                     *request_channel_open = false;
-                    cancel.cancel();
+                    if let Some(identity) = supervisor.current_identity()
+                        && supervisor
+                            .request_durable_interrupt(
+                                identity,
+                                crate::runtime_prompt::RuntimeActor::from_submission(
+                                    "acp-transport".into(),
+                                    "acp",
+                                ),
+                                crate::runtime_prompt::ControlSurface::Acp,
+                            )
+                            .is_ok()
+                    {
+                        cancel.cancel();
+                    }
                 }
             }
         }
@@ -359,13 +393,45 @@ async fn worker_loop(
 
     let session_id = agent_setup.session_id.clone();
     let instance_id = agent_setup.instance_id.clone();
+    let workspace_id = agent_setup.workspace_state.lease.workspace_id.clone();
+    let session_snapshot = match crate::session::sessions_dir(&cwd) {
+        Some(directory) => directory.join(format!("{session_id}.json")),
+        None => {
+            tracing::error!("cannot determine ACP session directory");
+            return;
+        }
+    };
+    let authority = match crate::session_authority::SessionAuthority::open(
+        &session_snapshot,
+        &session_id,
+        &workspace_id,
+        &instance_id,
+        crate::session_authority::ActorIdentity {
+            principal: "acp-client".into(),
+            ingress: "acp".into(),
+        },
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    ) {
+        Ok(authority) => authority,
+        Err(error) => {
+            tracing::error!(%error, "failed to open ACP session authority");
+            return;
+        }
+    };
+    let mut supervisor =
+        match crate::runtime_supervisor::InteractiveRuntimeSupervisor::with_authority(authority) {
+            Ok(supervisor) => supervisor,
+            Err(error) => {
+                tracing::error!(%error, "failed to restore ACP session supervisor");
+                return;
+            }
+        };
     let mut bus = agent_setup.bus;
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
     let secrets = agent_setup.secrets;
     let extension_metadata = agent_setup.extension_metadata.clone();
     let extension_rpc_handles = agent_setup.extension_rpc_handles.clone();
-    let mut cancel = CancellationToken::new();
     let mut resume_id: Option<String> = None;
 
     let _ = secrets_tx.send(secrets.clone());
@@ -393,16 +459,72 @@ async fn worker_loop(
         };
         match req {
             WorkerRequest::Prompt { text, response_tx } => {
+                let prompt_id = match supervisor.admit_prompt(
+                    text,
+                    Vec::new(),
+                    crate::runtime_prompt::RuntimeActor::from_submission(
+                        "acp-client".into(),
+                        "acp",
+                    ),
+                    crate::runtime_prompt::ControlSurface::Acp,
+                    crate::operator_commands::PromptMetadata::default(),
+                    Some(crate::runtime_prompt::QueueMode::UntilReady),
+                ) {
+                    Ok(prompt_id) => prompt_id,
+                    Err(error) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some(format!("Session authority rejected the prompt: {error}")),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                };
+                let active = match supervisor.start_next_turn() {
+                    Ok(Some(active)) if active.prompt.id == prompt_id => active,
+                    Ok(Some(_)) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some("Recovered queued work must settle before this ACP prompt can start".into()),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                    Ok(None) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some("ACP session is already running a turn".into()),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some(format!(
+                                "Session authority could not start the turn: {error}"
+                            )),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                };
                 if first_prompt {
                     first_prompt = false;
-                    let title: String =
-                        text.chars().take(80).collect::<String>().trim().to_string();
+                    let title: String = active
+                        .prompt
+                        .text
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .trim()
+                        .to_string();
                     let title = title.lines().next().unwrap_or(&title).trim().to_string();
                     if !title.is_empty() {
                         let _ = event_tx.send(WorkerEvent::SessionTitle(title));
                     }
                 }
-                conversation.push_user(text);
+                conversation.push_user(active.prompt.text.clone());
 
                 // Resolve the model from settings (may have been changed via SetModel)
                 let current_model = shared_settings
@@ -414,6 +536,8 @@ async fn worker_loop(
                 let bridge = match crate::providers::auto_detect_bridge(&current_model).await {
                     Some(b) => b,
                     None => {
+                        let _ = supervisor
+                            .close_durable_worker(crate::runtime_turn::RuntimeTurnOutcome::Failed);
                         let _ = response_tx.send(WorkerResponse {
                             text: String::new(),
                             error: Some(format!(
@@ -591,7 +715,7 @@ async fn worker_loop(
                     }
                 });
 
-                cancel = CancellationToken::new();
+                let cancel = CancellationToken::new();
 
                 let loop_config = crate::r#loop::LoopConfig {
                     max_turns: shared_settings
@@ -634,15 +758,11 @@ async fn worker_loop(
                     &mut request_rx,
                     &event_tx,
                     &cancel,
+                    &mut supervisor,
                     &mut deferred_requests,
                     &mut request_channel_open,
                 )
                 .await;
-
-                drop(loop_events_tx);
-                let _ = event_tx.send(WorkerEvent::TurnComplete);
-
-                let response_text = conversation.last_assistant_text().unwrap_or("").to_string();
 
                 let cancelled = cancel.is_cancelled();
                 let error = match result {
@@ -658,6 +778,28 @@ async fn worker_loop(
                         Some(humanize_agent_error(&raw, &model_name))
                     }
                 };
+                let outcome = if cancelled {
+                    crate::runtime_turn::RuntimeTurnOutcome::Revoked
+                } else if error.is_some() {
+                    crate::runtime_turn::RuntimeTurnOutcome::Failed
+                } else {
+                    crate::runtime_turn::RuntimeTurnOutcome::Completed
+                };
+                if let Err(authority_error) = supervisor.close_durable_worker(outcome) {
+                    let _ = response_tx.send(WorkerResponse {
+                        text: String::new(),
+                        error: Some(format!(
+                            "Turn finished locally but session authority could not record closure: {authority_error}"
+                        )),
+                        cancelled,
+                    });
+                    continue;
+                }
+
+                drop(loop_events_tx);
+                let _ = event_tx.send(WorkerEvent::TurnComplete);
+
+                let response_text = conversation.last_assistant_text().unwrap_or("").to_string();
 
                 // Save session, preserving the canonical ID after a load.
                 let _ = crate::session::save_session(&conversation, &cwd, resume_id.as_deref());
@@ -667,9 +809,6 @@ async fn worker_loop(
                     error,
                     cancelled,
                 });
-                if cancelled {
-                    cancel = CancellationToken::new();
-                }
             }
 
             WorkerRequest::LoadSession {
@@ -680,31 +819,46 @@ async fn worker_loop(
                 let result = if !crate::session::is_canonical_session_id(&requested_id) {
                     Err(format!("invalid session id `{requested_id}`"))
                 } else {
-                    crate::session::load_for_resume(&cwd, &path)
-                        .and_then(|(loaded, meta)| {
-                            if meta.session_id != requested_id {
-                                return Err(crate::session::ResumeLoadError::Authority(
-                                    anyhow::anyhow!(
-                                        "loaded session identity does not match ACP request"
-                                    ),
-                                ));
+                    match crate::session::load_for_resume(&cwd, &path) {
+                        Ok((loaded, meta)) if meta.session_id == requested_id => {
+                            let restored = crate::session_authority::SessionAuthority::open(
+                                &path,
+                                &meta.session_id,
+                                &workspace_id,
+                                &instance_id,
+                                crate::session_authority::ActorIdentity {
+                                    principal: "acp-client".into(),
+                                    ingress: "acp".into(),
+                                },
+                                &chrono::Utc::now()
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            )
+                            .and_then(
+                                crate::runtime_supervisor::InteractiveRuntimeSupervisor::with_authority,
+                            );
+                            match restored {
+                                Ok(restored) => {
+                                    let replay = project_replay_messages(&loaded);
+                                    conversation = loaded;
+                                    supervisor = restored;
+                                    resume_id = Some(meta.session_id);
+                                    first_prompt = false;
+                                    Ok(replay)
+                                }
+                                Err(error) => {
+                                    Err(format!("could not restore session authority: {error}"))
+                                }
                             }
-                            let replay = project_replay_messages(&loaded);
-                            conversation = loaded;
-                            resume_id = Some(meta.session_id);
-                            first_prompt = false;
-                            Ok(replay)
-                        })
-                        .map_err(|error| format!("could not load session: {error}"))
+                        }
+                        Ok(_) => Err("loaded session identity does not match ACP request".into()),
+                        Err(error) => Err(format!("could not load session: {error}")),
+                    }
                 };
                 let _ = ack.send(result);
             }
 
             WorkerRequest::Cancel => {
-                cancel.cancel();
-                let _ = event_tx.send(WorkerEvent::TurnCancelled {
-                    reason: "operator_cancelled".to_string(),
-                });
+                tracing::debug!("ACP cancel ignored while the session is idle");
             }
 
             WorkerRequest::SetModel { value, ack } => {
@@ -1576,6 +1730,16 @@ mod command_safety_tests {
         let observed_cancel = cancel.clone();
         let mut deferred = VecDeque::new();
         let mut channel_open = true;
+        let mut supervisor = crate::runtime_supervisor::InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "active".into(),
+            Vec::new(),
+            crate::runtime_prompt::RuntimeActor::from_submission("acp-client".into(), "acp"),
+            crate::runtime_prompt::ControlSurface::Acp,
+            crate::operator_commands::PromptMetadata::default(),
+            None,
+        );
+        supervisor.maybe_start_next_turn().unwrap();
         request_tx.send(WorkerRequest::Cancel).await.unwrap();
 
         let result = tokio::time::timeout(
@@ -1588,6 +1752,7 @@ mod command_safety_tests {
                 &mut request_rx,
                 &event_tx,
                 &cancel,
+                &mut supervisor,
                 &mut deferred,
                 &mut channel_open,
             ),

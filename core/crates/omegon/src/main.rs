@@ -6720,12 +6720,16 @@ fn build_tui_secret_readiness_snapshot(
                     lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
                     let submission = match terminal_intent {
                         Some(intent) => runtime.submit_loop_terminal_intent(intent),
-                        None => runtime
-                            .settle_durable_worker()
-                            .map(|settlement| match settlement {
-                                Some((_, outcome)) => TerminalSubmission::Committed { outcome },
-                                None => TerminalSubmission::Duplicate,
-                            }),
+                        None => {
+                            tracing::error!(
+                                runtime_turn_id = active_identity.runtime_turn_id,
+                                "interactive worker exited without a loop terminal intent"
+                            );
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: "The active worker exited without a terminal intent; session authority remains fenced for recovery.".into(),
+                            });
+                            break 'interactive;
+                        }
                     };
                     let submission = match submission {
                         Ok(submission) => submission,

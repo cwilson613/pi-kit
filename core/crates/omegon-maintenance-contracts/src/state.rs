@@ -85,6 +85,12 @@ pub struct ContributionAdmissionGuard {
     deny: DenyStateV1,
 }
 
+pub struct ContributionMutationGuard {
+    _lock: ProtocolLock,
+    pub scope_key: AuthorityKey,
+    pub generation: u64,
+}
+
 impl ContributionAdmissionGuard {
     pub fn allows(&self, raw_name: &[u8]) -> Result<bool> {
         validate_child_name(raw_name)?;
@@ -154,12 +160,64 @@ impl MaintenanceStateV1 {
                 nonblocking,
             )?;
         }
+        let deny = self.read_contribution_deny_state(kind, authority)?;
+        Ok(ContributionAdmissionGuard {
+            _lock: lock,
+            scope_key: authority,
+            generation: deny.generation,
+            kind,
+            deny,
+        })
+    }
+
+    pub fn lock_contribution_scope_mutation(
+        &self,
+        kind: ContributionKind,
+        scope: &str,
+        parent: &PathIdentityV1,
+        temporary_tag: &str,
+        nonblocking: bool,
+    ) -> Result<ContributionMutationGuard> {
+        let authority = scope_key(kind.as_str(), scope, parent.key);
+        let lock_name = format!("contribution-{authority}.lock");
+        let lock = self.acquire_or_create_protocol_lock(
+            lock_name.as_bytes(),
+            LockMode::Exclusive,
+            nonblocking,
+        )?;
+        let directory_name = authority.to_hex();
+        if open_secure_dir_at(&self.deny, directory_name.as_bytes())?.is_none() {
+            let directory = open_or_create_secure_dir_at(&self.deny, directory_name.as_bytes())?;
+            let empty = DenyStateV1 {
+                schema_version: SCHEMA_VERSION,
+                record_kind: "deny_state".into(),
+                record_id: derive_key("deny-state", &[authority.as_bytes(), &0_u64.to_be_bytes()]),
+                scope_key: authority,
+                generation: 0,
+                entries: Default::default(),
+            };
+            create_record_no_replace_at(&directory, b"state.json", &empty, temporary_tag)?;
+        }
+        let deny = self.read_contribution_deny_state(kind, authority)?;
+        Ok(ContributionMutationGuard {
+            _lock: lock,
+            scope_key: authority,
+            generation: deny.generation,
+        })
+    }
+
+    fn read_contribution_deny_state(
+        &self,
+        kind: ContributionKind,
+        authority: AuthorityKey,
+    ) -> Result<DenyStateV1> {
         let fence_name = format!("{}.json", contribution_domain_key(authority));
         if read_record_at::<FenceV1>(&self.fences, fence_name.as_bytes())?.is_some() {
             return Err(ContractError::InvalidValue(
-                "contribution startup is blocked by an unresolved maintenance fence".into(),
+                "contribution access is blocked by an unresolved maintenance fence".into(),
             ));
         }
+        let directory_name = authority.to_hex();
         let directory =
             open_secure_dir_at(&self.deny, directory_name.as_bytes())?.ok_or_else(|| {
                 ContractError::InvalidValue("initialized deny scope disappeared".into())
@@ -181,13 +239,7 @@ impl MaintenanceStateV1 {
                 "deny state contains a different contribution kind".into(),
             ));
         }
-        Ok(ContributionAdmissionGuard {
-            _lock: lock,
-            scope_key: authority,
-            generation: deny.generation,
-            kind,
-            deny,
-        })
+        Ok(deny)
     }
 
     #[cfg(unix)]

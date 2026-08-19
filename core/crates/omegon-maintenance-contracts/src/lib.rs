@@ -26,8 +26,8 @@ pub use recovery::{
 };
 pub use selector::{ContributionSelector, ListScope, resolve_list_scope};
 pub use state::{
-    ContributionAdmissionGuard, MaintenanceStateV1, SessionResumeGuard, append_bytes_at,
-    audit_receipt, create_record_no_replace_at, entry_identity_at, file_identity,
+    ContributionAdmissionGuard, ContributionMutationGuard, MaintenanceStateV1, SessionResumeGuard,
+    append_bytes_at, audit_receipt, create_record_no_replace_at, entry_identity_at, file_identity,
     open_or_create_secure_dir_at, open_secure_dir_at, open_secure_root, path_identity,
     read_bytes_at, read_record_at, read_record_with_identity_at, record_identity_at,
     remove_record_at, rename_entry_no_replace_at, replace_record_at,

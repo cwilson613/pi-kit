@@ -877,6 +877,44 @@ fn contribution_admission_initializes_state_and_holds_shared_lock() {
 
 #[cfg(unix)]
 #[test]
+fn contribution_mutation_initializes_state_and_holds_exclusive_lock() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let state = MaintenanceStateV1::bootstrap(
+        &home,
+        path_identity(&home).unwrap(),
+        "11111111-1111-1111-1111-111111111111",
+        false,
+    )
+    .unwrap();
+    let contributions = tempfile::tempdir().unwrap();
+    let parent = path_identity(&File::open(contributions.path()).unwrap()).unwrap();
+    let kind = ContributionKind::Skill;
+    let authority = scope_key(kind.as_str(), "project", parent.key);
+
+    let mutation = state
+        .lock_contribution_scope_mutation(kind, "project", &parent, "mutation", false)
+        .unwrap();
+    assert_eq!(mutation.scope_key, authority);
+    assert_eq!(mutation.generation, 0);
+    assert!(
+        state
+            .admit_contribution_scope(kind, "project", &parent, "blocked-reader", true)
+            .is_err()
+    );
+    drop(mutation);
+
+    let admission = state
+        .admit_contribution_scope(kind, "project", &parent, "reader", true)
+        .unwrap();
+    assert_eq!(admission.scope_key, authority);
+    assert_eq!(admission.generation, 0);
+}
+
+#[cfg(unix)]
+#[test]
 fn contribution_admission_matches_deny_to_exact_raw_name() {
     use std::fs::File;
 
@@ -993,6 +1031,11 @@ fn contribution_admission_rejects_fence_and_malformed_state() {
             .admit_contribution_scope(kind, "project", &parent, "fenced", false)
             .is_err()
     );
+    assert!(
+        state
+            .lock_contribution_scope_mutation(kind, "project", &parent, "fenced-write", false)
+            .is_err()
+    );
     std::fs::remove_file(directory.path().join("maintain/v1/fences").join(fence_name)).unwrap();
 
     let state_path = directory
@@ -1010,6 +1053,11 @@ fn contribution_admission_rejects_fence_and_malformed_state() {
     assert!(
         state
             .admit_contribution_scope(kind, "project", &parent, "malformed", false)
+            .is_err()
+    );
+    assert!(
+        state
+            .lock_contribution_scope_mutation(kind, "project", &parent, "malformed-write", false)
             .is_err()
     );
 }

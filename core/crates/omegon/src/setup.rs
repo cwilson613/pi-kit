@@ -1005,7 +1005,7 @@ impl AgentSetup {
 
         // ─── Operator-installed extensions (RPC + OCI) ────────────────
         // All extensions, including bundled ones (scribe-rpc), are discovered here
-        let (
+        let DiscoveredExtensions {
             extension_supervisors,
             extension_widgets,
             widget_receivers,
@@ -1014,40 +1014,14 @@ impl AgentSetup {
             voice_polling_handles,
             extension_metadata,
             extension_rpc_handles,
-        ) = match discover_and_register_extensions(&cwd, &mut bus, std::sync::Arc::clone(&secrets))
+            admission: extension_admission,
+        } = match discover_and_register_extensions(&cwd, &mut bus, std::sync::Arc::clone(&secrets))
             .await
         {
-            Ok((
-                supervisors,
-                widgets,
-                receivers,
-                handles,
-                voice_receivers,
-                voice_handles,
-                metadata,
-                rpc_handles,
-            )) => (
-                supervisors,
-                widgets,
-                receivers,
-                handles,
-                voice_receivers,
-                voice_handles,
-                metadata,
-                rpc_handles,
-            ),
+            Ok(discovered) => discovered,
             Err(e) => {
                 tracing::warn!("extension discovery failed: {}", e);
-                (
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    Default::default(),
-                    Default::default(),
-                )
+                DiscoveredExtensions::empty()
             }
         };
 
@@ -1086,6 +1060,7 @@ impl AgentSetup {
             // ─── Finalize bus (caches tool/command definitions) ─────────────
             bus.finalize();
         });
+        drop(extension_admission);
 
         // Wire ManageTools state so runtime filtering and list output reflect
         // the bus's finalized model-visible tool cache.
@@ -1885,35 +1860,54 @@ async fn resolve_extension_secrets(
 ///
 /// Resolves declared secrets at the enabled extension's spawn boundary and
 /// extension via `bootstrap_secrets` RPC — never via subprocess environment.
+struct DiscoveredExtensions {
+    extension_supervisors: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
+    extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
+    widget_receivers: Vec<tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>>,
+    vox_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
+    voice_notification_receivers:
+        Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
+    voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
+    extension_metadata: std::collections::BTreeMap<String, serde_json::Value>,
+    extension_rpc_handles:
+        std::collections::BTreeMap<String, crate::extensions::ExtensionPollingHandle>,
+    admission: Option<crate::contribution_loading::GuardedContributionDirectory>,
+}
+
+impl DiscoveredExtensions {
+    fn empty() -> Self {
+        Self {
+            extension_supervisors: vec![],
+            extension_widgets: vec![],
+            widget_receivers: vec![],
+            vox_polling_handles: vec![],
+            voice_notification_receivers: vec![],
+            voice_polling_handles: vec![],
+            extension_metadata: Default::default(),
+            extension_rpc_handles: Default::default(),
+            admission: None,
+        }
+    }
+}
+
 async fn discover_and_register_extensions(
     cwd: &Path,
     bus: &mut crate::bus::EventBus,
     secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
-) -> anyhow::Result<(
-    Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
-    Vec<crate::extensions::ExtensionTabWidget>,
-    Vec<tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>>,
-    Vec<crate::extensions::ExtensionPollingHandle>,
-    Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
-    Vec<crate::extensions::ExtensionPollingHandle>,
-    std::collections::BTreeMap<String, serde_json::Value>,
-    std::collections::BTreeMap<String, crate::extensions::ExtensionPollingHandle>,
-)> {
-    let ext_dir = crate::paths::omegon_home()?.join("extensions");
-
-    if !ext_dir.exists() {
+) -> anyhow::Result<DiscoveredExtensions> {
+    let home = crate::paths::omegon_home()?;
+    let ext_dir = home.join("extensions");
+    let Some(admission) = crate::contribution_loading::GuardedContributionDirectory::open(
+        &home,
+        &[b"extensions"],
+        &home,
+        omegon_maintenance_contracts::ContributionKind::Extension,
+        "user",
+    )?
+    else {
         tracing::debug!("extension directory not found: {}", ext_dir.display());
-        return Ok((
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            Default::default(),
-            Default::default(),
-        ));
-    }
+        return Ok(DiscoveredExtensions::empty());
+    };
 
     let profile = crate::settings::Profile::load(cwd);
     let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
@@ -1927,22 +1921,18 @@ async fn discover_and_register_extensions(
     let mut voice_polling_handles = vec![];
     let mut extension_metadata = std::collections::BTreeMap::new();
     let mut extension_rpc_handles = std::collections::BTreeMap::new();
-    for entry in std::fs::read_dir(&ext_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if !path.is_dir() {
+    let mut candidates = Vec::new();
+    let mut raw_names = admission.entry_names(10_000)?;
+    raw_names.sort();
+    for raw_name in raw_names {
+        if crate::contribution_loading::is_internal_contribution_entry(&raw_name)
+            || !admission.allows(&raw_name)?
+        {
             continue;
         }
-
-        let manifest_path = path.join("manifest.toml");
-        if !manifest_path.exists() {
+        let Ok(ext_name) = std::str::from_utf8(&raw_name) else {
             continue;
-        }
-        let ext_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
+        };
         if !profile
             .extensions
             .permits(ext_name, &env_enabled, &env_disabled)
@@ -1950,31 +1940,59 @@ async fn discover_and_register_extensions(
             tracing::debug!(extension = ext_name, "extension skipped by profile policy");
             continue;
         }
-        if extension_state_disabled(&path) {
+        let Some(directory) = admission.open_child_directory(&raw_name)? else {
+            continue;
+        };
+        if crate::contribution_loading::read_file_at(&directory, b"manifest.toml", 1024 * 1024)?
+            .is_none()
+        {
+            continue;
+        }
+        let snapshot = std::sync::Arc::new(
+            crate::contribution_loading::snapshot_contribution_directory(&directory)?,
+        );
+        if extension_state_disabled(snapshot.path()) {
             tracing::debug!(extension = ext_name, "disabled extension skipped");
             continue;
         }
+        let manifest = match crate::extensions::ExtensionManifest::from_extension_dir(
+            snapshot.path(),
+        ) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "invalid extension manifest skipped");
+                continue;
+            }
+        };
+        candidates.push((
+            ext_name.to_string(),
+            ext_dir.join(ext_name),
+            snapshot,
+            manifest,
+        ));
+    }
 
+    for (ext_name, state_dir, snapshot, manifest) in candidates {
         // Spawning an enabled extension is its explicit operation boundary:
         // resolve declared credentials on demand here, then deliver them only
         // through bootstrap_secrets RPC. Discovery/status paths remain
         // metadata-only and therefore cannot trigger secure-store access.
-        let resolved_secrets: Vec<(String, String)> = {
-            if let Ok(manifest) = crate::extensions::ExtensionManifest::from_extension_dir(&path) {
-                resolve_extension_secrets(&manifest, secrets.as_ref()).await
-            } else {
-                vec![]
-            }
-        };
+        let resolved_secrets = resolve_extension_secrets(&manifest, secrets.as_ref()).await;
 
         // Try to spawn this extension
-        match crate::extensions::spawn_from_manifest(&path, &resolved_secrets).await {
+        match crate::extensions::spawn_from_admitted_snapshot(
+            snapshot,
+            &state_dir,
+            &resolved_secrets,
+        )
+        .await
+        {
             Ok(spawned) => {
                 let tool_count = spawned.feature.tools().len();
                 let widget_count = spawned.widgets.len();
                 tracing::info!(
-                    name = ext_name,
-                    path = %path.display(),
+                    name = %ext_name,
+                    path = %state_dir.display(),
                     tools = tool_count,
                     widgets = widget_count,
                     "discovered and spawned extension"
@@ -1991,13 +2009,13 @@ async fn discover_and_register_extensions(
                     voice_notification_receivers.push(rx);
                 }
                 extension_metadata.insert(
-                    ext_name.to_string(),
+                    ext_name.clone(),
                     crate::extensions::metadata_with_sdk_compatibility(
                         spawned.metadata,
                         &spawned.sdk_compatibility,
                     ),
                 );
-                extension_rpc_handles.insert(ext_name.to_string(), spawned.rpc_polling_handle);
+                extension_rpc_handles.insert(ext_name, spawned.rpc_polling_handle);
                 bus.register(spawned.feature);
                 // Collect widgets and receivers for TUI
                 extension_widgets.extend(spawned.widgets);
@@ -2005,13 +2023,9 @@ async fn discover_and_register_extensions(
                 count += 1;
             }
             Err(e) => {
-                let ext_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown");
                 tracing::warn!(
-                    name = ext_name,
-                    path = %path.display(),
+                    name = %ext_name,
+                    path = %state_dir.display(),
                     error = %e,
                     "failed to spawn extension"
                 );
@@ -2023,7 +2037,7 @@ async fn discover_and_register_extensions(
         tracing::info!(count = count, "extension discovery complete");
     }
 
-    Ok((
+    Ok(DiscoveredExtensions {
         extension_supervisors,
         extension_widgets,
         widget_receivers,
@@ -2032,7 +2046,8 @@ async fn discover_and_register_extensions(
         voice_polling_handles,
         extension_metadata,
         extension_rpc_handles,
-    ))
+        admission: Some(admission),
+    })
 }
 
 fn extension_state_disabled(path: &Path) -> bool {
@@ -2086,6 +2101,30 @@ fn activate_startup_tone(
 mod tests {
     use super::*;
 
+    struct ExtensionEnvGuard(Option<std::ffi::OsString>);
+
+    impl ExtensionEnvGuard {
+        fn isolate(home: &Path) -> Self {
+            let previous = std::env::var_os("OMEGON_HOME");
+            // SAFETY: guarded extension tests hold the shared environment lock.
+            unsafe { std::env::set_var("OMEGON_HOME", home) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for ExtensionEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: guarded extension tests hold the shared environment lock.
+            unsafe {
+                if let Some(previous) = self.0.take() {
+                    std::env::set_var("OMEGON_HOME", previous);
+                } else {
+                    std::env::remove_var("OMEGON_HOME");
+                }
+            }
+        }
+    }
+
     fn with_auth_env_lock<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> T {
         let _guard = crate::auth::TEST_AUTH_ENV_LOCK
             .lock()
@@ -2129,6 +2168,185 @@ required = ["OMADA_TEST_SECRET"]
             resolved,
             vec![("OMADA_TEST_SECRET".to_string(), "omada-secret".to_string())]
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_extension_discovery_excludes_denied_entry_and_holds_scope_lock() {
+        use omegon_maintenance_contracts::{LockMode, MaintenanceStateV1, ProtocolLock};
+        use std::os::unix::fs::symlink;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home_path = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home_path.path());
+        let denied = home_path.path().join("extensions/denied");
+        std::fs::create_dir_all(&denied).unwrap();
+        std::fs::write(denied.join("manifest.toml"), "not valid toml").unwrap();
+        let linked_source = tempfile::tempdir().unwrap();
+        symlink(
+            linked_source.path(),
+            home_path.path().join("extensions/linked-local"),
+        )
+        .unwrap();
+        deny_extension(home_path.path(), b"denied");
+        let authority = extension_scope_key(&home_path.path().join("extensions"));
+        let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home_path.path()).unwrap());
+        let mut bus = crate::bus::EventBus::new();
+
+        let discovered = discover_and_register_extensions(project.path(), &mut bus, secrets)
+            .await
+            .unwrap();
+        assert!(discovered.extension_metadata.is_empty());
+        let lock_name = format!("contribution-{authority}.lock");
+        assert!(
+            ProtocolLock::acquire_at(
+                &state.locks,
+                lock_name.as_bytes(),
+                LockMode::Exclusive,
+                false,
+                true,
+            )
+            .is_err()
+        );
+        drop(discovered);
+        assert!(
+            ProtocolLock::acquire_at(
+                &state.locks,
+                lock_name.as_bytes(),
+                LockMode::Exclusive,
+                false,
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_extension_deny_state_fails_scope_closed() {
+        use std::io::Write;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home.path());
+        std::fs::create_dir_all(home.path().join("extensions/example")).unwrap();
+        std::fs::write(
+            home.path().join("extensions/example/manifest.toml"),
+            "not valid toml",
+        )
+        .unwrap();
+        let authority = initialize_extension_scope(home.path());
+        let state_path = home
+            .path()
+            .join("maintain/v1/deny")
+            .join(authority.to_hex())
+            .join("state.json");
+        let mut state = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(state_path)
+            .unwrap();
+        state.write_all(b"{not-json").unwrap();
+        state.sync_all().unwrap();
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home.path()).unwrap());
+        let mut bus = crate::bus::EventBus::new();
+
+        assert!(
+            discover_and_register_extensions(project.path(), &mut bus, secrets)
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    fn initialize_extension_scope(home: &Path) -> omegon_maintenance_contracts::AuthorityKey {
+        crate::contribution_loading::GuardedContributionDirectory::open(
+            home,
+            &[b"extensions"],
+            home,
+            omegon_maintenance_contracts::ContributionKind::Extension,
+            "user",
+        )
+        .unwrap()
+        .unwrap()
+        .scope_key()
+    }
+
+    #[cfg(unix)]
+    fn extension_scope_key(directory: &Path) -> omegon_maintenance_contracts::AuthorityKey {
+        let directory = std::fs::File::open(directory).unwrap();
+        let parent = omegon_maintenance_contracts::path_identity(&directory).unwrap();
+        omegon_maintenance_contracts::scope_key(
+            omegon_maintenance_contracts::ContributionKind::Extension.as_str(),
+            "user",
+            parent.key,
+        )
+    }
+
+    #[cfg(unix)]
+    fn deny_extension(home_path: &Path, raw_name: &[u8]) {
+        use omegon_maintenance_contracts::{
+            AuthorityKey, ContributionKind, DenyRecordV1, DenyState, DenyStateV1, SCHEMA_VERSION,
+            derive_key, entry_key, open_secure_dir_at, replace_record_at,
+        };
+        use sha2::{Digest, Sha256};
+
+        let authority = initialize_extension_scope(home_path);
+        let home = omegon_maintenance_contracts::open_secure_root(home_path).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+            .unwrap()
+            .unwrap();
+        let kind = ContributionKind::Extension;
+        let entry = entry_key(kind.as_str(), authority, raw_name);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let record = DenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny".into(),
+            record_id: derive_key(
+                "deny",
+                &[
+                    authority.as_bytes(),
+                    entry.as_bytes(),
+                    request_id.as_bytes(),
+                ],
+            ),
+            scope_key: authority,
+            contribution_kind: kind,
+            entry_key: entry,
+            raw_name_digest: AuthorityKey::from_bytes(Sha256::digest(raw_name).into()),
+            generation: 1,
+            state: DenyState::Denied,
+            request_id: request_id.into(),
+            created_at: "2026-08-19T00:00:00Z".into(),
+        };
+        let deny = DenyStateV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny_state".into(),
+            record_id: derive_key("deny-state", &[authority.as_bytes(), &1_u64.to_be_bytes()]),
+            scope_key: authority,
+            generation: 1,
+            entries: [(entry.to_hex(), record)].into(),
+        };
+        replace_record_at(&deny_directory, b"state.json", &deny, "deny-extension-test").unwrap();
     }
 
     #[test]

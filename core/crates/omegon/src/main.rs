@@ -7366,11 +7366,35 @@ async fn call_tdd_savepoint_extension(
     tool_name: &str,
     args: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let ext_dir = crate::extension_cli::extensions_dir()?.join("omegon-tdd-savepoint");
-    if !ext_dir.join("manifest.toml").is_file() {
+    let home = crate::paths::omegon_home()?;
+    let extension_name = b"omegon-tdd-savepoint";
+    let Some(admission) = crate::contribution_loading::GuardedContributionDirectory::open(
+        &home,
+        &[b"extensions"],
+        &home,
+        omegon_maintenance_contracts::ContributionKind::Extension,
+        "user",
+    )?
+    else {
         anyhow::bail!("omegon-tdd-savepoint extension is not installed");
+    };
+    if !admission.allows(extension_name)? {
+        anyhow::bail!("omegon-tdd-savepoint extension is disabled by maintenance policy");
     }
-    let spawned = crate::extensions::spawn_from_manifest(&ext_dir, &[]).await?;
+    let directory = admission
+        .open_child_directory(extension_name)?
+        .ok_or_else(|| anyhow::anyhow!("omegon-tdd-savepoint extension is not installed"))?;
+    if crate::contribution_loading::read_file_at(&directory, b"manifest.toml", 1024 * 1024)?
+        .is_none()
+    {
+        anyhow::bail!("omegon-tdd-savepoint extension manifest is missing");
+    }
+    let snapshot = std::sync::Arc::new(
+        crate::contribution_loading::snapshot_contribution_directory(&directory)?,
+    );
+    let ext_dir = home.join("extensions/omegon-tdd-savepoint");
+    let spawned = crate::extensions::spawn_from_admitted_snapshot(snapshot, &ext_dir, &[]).await?;
+    drop(admission);
     let result = spawned
         .feature
         .execute(

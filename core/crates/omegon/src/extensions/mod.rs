@@ -293,9 +293,26 @@ fn host_rpc_response_for_extension_request(
 struct ExtensionRuntimeContext {
     name: String,
     ext_dir: PathBuf,
+    state_dir: PathBuf,
     manifest: ExtensionManifest,
     resolved_secrets: Vec<(String, String)>,
     notification_sink: Option<ExtensionNotificationSink>,
+    _snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
+    state_binding: Option<ExtensionStateBinding>,
+}
+
+struct ExtensionSource {
+    ext_dir: PathBuf,
+    state_dir: PathBuf,
+    snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
+    state_binding: Option<ExtensionStateBinding>,
+}
+
+#[derive(Clone)]
+struct ExtensionStateBinding {
+    home: PathBuf,
+    raw_name: Vec<u8>,
+    source_identity: omegon_maintenance_contracts::PathIdentityV1,
 }
 
 /// Canonical owner of an extension child process. Feature and polling handles
@@ -626,7 +643,42 @@ impl ExtensionFeature {
     pub async fn record_error(&self, error: String) {
         let mut state = self.state.lock().await;
         state.record_error(error);
-        let _ = state.save(&self.runtime.ext_dir);
+        if let Some(binding) = &self.runtime.state_binding {
+            let content = match toml::to_string_pretty(&*state) {
+                Ok(content) => content,
+                Err(error) => {
+                    tracing::warn!(extension = %self.runtime.name, %error, "could not serialize extension state");
+                    return;
+                }
+            };
+            let mutation =
+                crate::contribution_loading::GuardedContributionMutationDirectory::open_existing(
+                    &binding.home,
+                    &[b"extensions"],
+                    &binding.home,
+                    omegon_maintenance_contracts::ContributionKind::Extension,
+                    "user",
+                );
+            match mutation {
+                Ok(Some(mutation)) => {
+                    if let Err(error) = mutation.write_file_in_directory(
+                        &binding.raw_name,
+                        b".omegon",
+                        b"state.toml",
+                        content.as_bytes(),
+                        &binding.source_identity,
+                    ) {
+                        tracing::warn!(extension = %self.runtime.name, %error, "could not persist admitted extension state");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(extension = %self.runtime.name, %error, "could not lock admitted extension state");
+                }
+            }
+        } else {
+            let _ = state.save(&self.runtime.state_dir);
+        }
     }
 
     /// Broadcast a widget event (for internal use).
@@ -963,7 +1015,43 @@ pub async fn spawn_from_manifest(
     ext_dir: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let manifest = ExtensionManifest::from_extension_dir(ext_dir)?;
+    spawn_from_manifest_source(ext_dir, ext_dir, None, None, resolved_secrets).await
+}
+
+pub(crate) async fn spawn_from_admitted_snapshot(
+    snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
+    state_dir: &Path,
+    resolved_secrets: &[(String, String)],
+) -> Result<SpawnedExtension> {
+    let ext_dir = snapshot.path().to_path_buf();
+    let state_binding = extension_state_binding(state_dir, &snapshot)?;
+    spawn_from_manifest_source(
+        &ext_dir,
+        state_dir,
+        Some(snapshot),
+        Some(state_binding),
+        resolved_secrets,
+    )
+    .await
+}
+
+async fn spawn_from_manifest_source(
+    ext_dir: &Path,
+    state_dir: &Path,
+    snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
+    state_binding: Option<ExtensionStateBinding>,
+    resolved_secrets: &[(String, String)],
+) -> Result<SpawnedExtension> {
+    let source = ExtensionSource {
+        ext_dir: ext_dir.to_path_buf(),
+        state_dir: state_dir.to_path_buf(),
+        snapshot,
+        state_binding,
+    };
+    let manifest = ExtensionManifest::from_extension_dir(&source.ext_dir)?;
+    if source.snapshot.is_some() {
+        validate_admitted_runtime_paths(&manifest)?;
+    }
 
     // Enforce required secrets before spending any resources on spawning.
     // Check against the pre-resolved pairs rather than process env.
@@ -1021,14 +1109,65 @@ pub async fn spawn_from_manifest(
 
     match manifest.runtime {
         RuntimeConfig::Native { .. } => {
-            let binary = manifest.native_binary_path(ext_dir)?;
-            spawn_native(&manifest, ext_dir, binary, widgets, state, resolved_secrets).await
+            let binary = manifest.native_binary_path(&source.ext_dir)?;
+            spawn_native(&manifest, source, binary, widgets, state, resolved_secrets).await
         }
         RuntimeConfig::Oci { .. } => {
             let image = manifest.oci_image()?;
-            spawn_container(&manifest, ext_dir, &image, widgets, state, resolved_secrets).await
+            spawn_container(&manifest, source, &image, widgets, state, resolved_secrets).await
         }
     }
+}
+
+#[cfg(unix)]
+fn extension_state_binding(
+    state_dir: &Path,
+    snapshot: &crate::contribution_loading::ContributionSnapshot,
+) -> Result<ExtensionStateBinding> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let raw_name = state_dir
+        .file_name()
+        .ok_or_else(|| anyhow!("extension state path has no contribution basename"))?
+        .as_bytes()
+        .to_vec();
+    let extensions = state_dir
+        .parent()
+        .ok_or_else(|| anyhow!("extension state path has no extensions root"))?;
+    if extensions.file_name().and_then(|name| name.to_str()) != Some("extensions") {
+        anyhow::bail!("extension state path is outside the canonical extensions root");
+    }
+    let home = extensions
+        .parent()
+        .ok_or_else(|| anyhow!("extension state path has no Omegon home"))?;
+    Ok(ExtensionStateBinding {
+        home: home.to_path_buf(),
+        raw_name,
+        source_identity: snapshot.source_identity().clone(),
+    })
+}
+
+#[cfg(not(unix))]
+fn extension_state_binding(
+    _state_dir: &Path,
+    _snapshot: &crate::contribution_loading::ContributionSnapshot,
+) -> Result<ExtensionStateBinding> {
+    anyhow::bail!("guarded extension state requires Unix")
+}
+
+fn validate_admitted_runtime_paths(manifest: &ExtensionManifest) -> Result<()> {
+    let RuntimeConfig::Native { binary, .. } = &manifest.runtime else {
+        return Ok(());
+    };
+    let path = Path::new(binary);
+    if path.as_os_str().is_empty()
+        || !path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("native extension binary must be a relative path within its admitted bundle");
+    }
+    Ok(())
 }
 
 /// Build a `Command` with a clean environment — only safe non-secret vars inherited.
@@ -1438,13 +1577,13 @@ fn config_value_to_json(field: &omegon_extension::ConfigField, value: &str) -> V
 
 async fn spawn_native(
     manifest: &ExtensionManifest,
-    ext_dir: &Path,
+    source: ExtensionSource,
     binary: PathBuf,
     widgets: Vec<WidgetDeclaration>,
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, ext_dir).await?;
+    let mut handles = spawn_process_handles(manifest, &source.ext_dir).await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1462,7 +1601,7 @@ async fn spawn_native(
     let handshake = match handshake(
         &mut handles,
         manifest,
-        ext_dir,
+        &source.ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
@@ -1495,10 +1634,13 @@ async fn spawn_native(
 
     let runtime = ExtensionRuntimeContext {
         name: manifest.extension.name.clone(),
-        ext_dir: ext_dir.to_path_buf(),
+        ext_dir: source.ext_dir,
+        state_dir: source.state_dir,
         manifest: manifest.clone(),
         resolved_secrets: resolved_secrets.to_vec(),
         notification_sink: notification_pair.0,
+        _snapshot: source.snapshot,
+        state_binding: source.state_binding,
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1561,13 +1703,13 @@ async fn spawn_native(
 
 async fn spawn_container(
     manifest: &ExtensionManifest,
-    ext_dir: &Path,
+    source: ExtensionSource,
     image: &str,
     widgets: Vec<WidgetDeclaration>,
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, ext_dir).await?;
+    let mut handles = spawn_process_handles(manifest, &source.ext_dir).await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1585,7 +1727,7 @@ async fn spawn_container(
     let handshake = match handshake(
         &mut handles,
         manifest,
-        ext_dir,
+        &source.ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
@@ -1618,10 +1760,13 @@ async fn spawn_container(
 
     let runtime = ExtensionRuntimeContext {
         name: manifest.extension.name.clone(),
-        ext_dir: ext_dir.to_path_buf(),
+        ext_dir: source.ext_dir,
+        state_dir: source.state_dir,
         manifest: manifest.clone(),
         resolved_secrets: resolved_secrets.to_vec(),
         notification_sink: notification_pair.0,
+        _snapshot: source.snapshot,
+        state_binding: source.state_binding,
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1837,7 +1982,7 @@ data_dir = "relative"
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn extension_tool_call_respawns_after_child_exits() {
+    async fn admitted_extension_respawns_from_original_snapshot_after_source_changes() {
         let _env_guard = crate::test_support::env::lock_async().await;
         unsafe {
             std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
@@ -1846,8 +1991,10 @@ data_dir = "relative"
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
+        let extension_dir = temp.path().join("extensions/flaky");
+        std::fs::create_dir_all(&extension_dir).unwrap();
         let marker = temp.path().join("first-call-done");
-        let script = temp.path().join("flaky-extension.sh");
+        let script = extension_dir.join("flaky-extension.sh");
         let script_body = r#"#!/bin/sh
 marker=__MARKER__
 while IFS= read -r line; do
@@ -1876,7 +2023,7 @@ done
         std::fs::set_permissions(&script, perms).unwrap();
 
         std::fs::write(
-            temp.path().join("manifest.toml"),
+            extension_dir.join("manifest.toml"),
             r#"
 [extension]
 name = "flaky"
@@ -1890,13 +2037,20 @@ binary = "flaky-extension.sh"
         )
         .unwrap();
 
-        let spawned = spawn_from_manifest(temp.path(), &[]).await.unwrap();
+        let source = std::fs::File::open(&extension_dir).unwrap();
+        let snapshot = Arc::new(
+            crate::contribution_loading::snapshot_contribution_directory(&source).unwrap(),
+        );
+        let spawned = spawn_from_admitted_snapshot(snapshot, &extension_dir, &[])
+            .await
+            .unwrap();
         let first = spawned
             .feature
             .execute("echo", "call-1", json!({}), CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(first.details["extension_reconnected"], Value::Null);
+        std::fs::write(&script, "#!/bin/sh\nexit 91\n").unwrap();
 
         let second = spawned
             .feature
@@ -1904,6 +2058,13 @@ binary = "flaky-extension.sh"
             .await
             .unwrap();
         assert_eq!(second.details["extension_reconnected"], true);
+        assert!(
+            ExtensionState::load(&extension_dir)
+                .unwrap()
+                .stability
+                .last_error
+                .is_some_and(|error| error.contains("transport failure"))
+        );
     }
 
     #[test]

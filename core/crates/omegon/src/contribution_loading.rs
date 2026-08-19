@@ -20,6 +20,7 @@ pub(crate) struct GuardedContributionMutationDirectory {
 
 pub(crate) struct ContributionSnapshot {
     path: std::path::PathBuf,
+    source_identity: omegon_maintenance_contracts::PathIdentityV1,
 }
 
 pub(crate) fn is_internal_contribution_entry(raw_name: &[u8]) -> bool {
@@ -37,6 +38,10 @@ pub(crate) fn is_internal_contribution_entry(raw_name: &[u8]) -> bool {
 impl ContributionSnapshot {
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn source_identity(&self) -> &omegon_maintenance_contracts::PathIdentityV1 {
+        &self.source_identity
     }
 }
 
@@ -274,6 +279,37 @@ impl GuardedContributionMutationDirectory {
     }
 
     #[cfg(unix)]
+    pub(crate) fn write_file_in_directory(
+        &self,
+        raw_name: &[u8],
+        child_name: &[u8],
+        file_name: &[u8],
+        bytes: &[u8],
+        expected_identity: &omegon_maintenance_contracts::PathIdentityV1,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        omegon_maintenance_contracts::validate_child_name(child_name)?;
+        omegon_maintenance_contracts::validate_child_name(file_name)?;
+        self.validate_binding()?;
+        let directory = open_child_directory(&self.directory, raw_name)?
+            .ok_or_else(|| anyhow::anyhow!("contribution directory disappeared during mutation"))?;
+        if &omegon_maintenance_contracts::path_identity(&directory)? != expected_identity {
+            anyhow::bail!("contribution identity changed before nested file mutation");
+        }
+        let (child, _) = open_or_create_child_directory(&directory, child_name)?;
+        replace_file_at(&child, file_name, bytes, 0o600)?;
+        child.sync_all()?;
+        directory.sync_all()?;
+        self.validate_binding()?;
+        let current = open_child_directory(&self.directory, raw_name)?
+            .ok_or_else(|| anyhow::anyhow!("contribution directory disappeared during mutation"))?;
+        if &omegon_maintenance_contracts::path_identity(&current)? != expected_identity {
+            anyhow::bail!("contribution identity changed during nested file mutation");
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
     fn stage_and_replace(
         &self,
         raw_name: &[u8],
@@ -345,7 +381,10 @@ pub(crate) fn snapshot_contribution_directory(
 
     let path = std::env::temp_dir().join(format!("omegon-plugin-{}", uuid::Uuid::new_v4()));
     std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-    let snapshot = ContributionSnapshot { path };
+    let snapshot = ContributionSnapshot {
+        path,
+        source_identity: omegon_maintenance_contracts::path_identity(source)?,
+    };
     let destination = File::open(snapshot.path())?;
     let mut entries = 0_usize;
     let mut bytes = 0_u64;
@@ -427,8 +466,18 @@ impl GuardedContributionDirectory {
         read_file_at(&self.directory, raw_name, limit)
     }
 
+    #[cfg(unix)]
     pub(crate) fn open_child_directory(&self, raw_name: &[u8]) -> anyhow::Result<Option<File>> {
+        let mode = entry_mode_at(&self.directory, raw_name)?;
+        if mode & libc::S_IFMT != libc::S_IFDIR {
+            return Ok(None);
+        }
         open_child_directory(&self.directory, raw_name)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn open_child_directory(&self, _raw_name: &[u8]) -> anyhow::Result<Option<File>> {
+        anyhow::bail!("guarded contribution loading requires Unix")
     }
 }
 
